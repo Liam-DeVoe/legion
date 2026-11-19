@@ -101,15 +101,13 @@ var personNodeTies = `
 		where current.asserted
 	)`
 
-// personNodeNotGone is the test that the node whose stored state the SQL state answers
-// (refs.StoredNodeJoin) is not gone, which a node the store holds no row of is not. Both
-// statements hold each tied node to it, after the visibility predicate of the node's own kind,
-// whatever kind that is (refs.VisibleNode, bound at the acting credential $2, refs.VisibilityArg):
-// so a node reserved for its author counts for its author alone, a node of a kind the registry
-// does not hold for nobody, and a node that is gone for nobody either.
-func personNodeNotGone(state string) string {
-	return state + ` is distinct from '` + graphstore.StateGone + `'`
-}
+// personNodeNotGone is the test that the node whose stored state refs.StoredNodeJoin answers
+// (refs.StoredState) is not gone, which a node the store holds no row of is not. Both statements
+// hold each tied node to it, after the visibility predicate of the node's own kind, whatever kind
+// that is (refs.VisibleNode, bound at the acting credential $2, refs.VisibilityArg): so a node
+// reserved for its author counts for its author alone, a node of a kind the registry does not
+// hold for nobody, and a node that is gone for nobody either.
+const personNodeNotGone = refs.StoredState + ` is distinct from '` + graphstore.StateGone + `'`
 
 // personNodesHeld is the nodes one person holds that the reader may see (personNodeNotGone), each
 // once with every relation that ties it to them, and beside each the state and the visibility the
@@ -119,16 +117,21 @@ var personNodesHeld = personNodeTies + `, related as (
 		select from_kind, from_id, array_agg(distinct relation order by relation) as relations
 		from (select * from authored union all select * from received) ties
 		group by from_kind, from_id
-	), seen as (
-		select r.from_kind, r.from_id, r.relations, ` + refs.StoredColumnsOf("stored_row") + `
-		from related r
-		` + refs.StoredNodeJoin("stored_row", "r.from_kind", "r.from_id") + `
-		where ` + refs.VisibleNode("r.from_kind", "r.from_id", "$2") + `
 	), held as (
-		select from_kind, from_id, relations, stored_state, stored_visibility
-		from seen
-		where ` + personNodeNotGone("stored_state") + `
+		select r.from_kind, r.from_id, r.relations, ` + relatedStoredColumns + `
+		from related r
+		` + relatedStoredJoin + `
+		where ` + refs.VisibleNode("r.from_kind", "r.from_id", "$2") + `
+		  and ` + personNodeNotGone + `
 	)`
+
+// relatedStoredJoin and relatedStoredColumns are the stored state and visibility of each node
+// personNodesHeld ties to the person, and tieStoredJoin the same of each tie personPageShownQuery
+// reads.
+var (
+	relatedStoredJoin, relatedStoredColumns = refs.StoredNodeJoin("r.from_kind", "r.from_id")
+	tieStoredJoin, _                        = refs.StoredNodeJoin("tie.from_kind", "tie.from_id")
+)
 
 // personPageShownQuery is whether the page of the person $1 names answers anyone but that
 // person: the store holds the person, not gone and visible to the reader, and the person holds
@@ -142,9 +145,9 @@ var personPageShownQuery = personNodeTies + `
 		  and ` + refs.VisibleRow("graph_nodes", "$2") + `
 	) and exists (
 		select 1 from (select from_kind, from_id from authored union all select from_kind, from_id from received) tie
-		` + refs.StoredNodeJoin("stored_row", "tie.from_kind", "tie.from_id") + `
+		` + tieStoredJoin + `
 		where ` + refs.VisibleNode("tie.from_kind", "tie.from_id", "$2") + `
-		  and ` + personNodeNotGone("stored_row.stored_state") + `
+		  and ` + personNodeNotGone + `
 	)`
 
 // personNodesQuery pages the nodes one person holds that the reader may see (personNodesHeld),

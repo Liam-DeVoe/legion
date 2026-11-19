@@ -563,7 +563,7 @@ var indexPasses = map[string]string{
 	// One node's state, written or settled through the store's writer from the request and the
 	// node's own row: the state is a base attribute of the node, which no projection row holds. A
 	// lens taken gone takes the findings and the risks under it gone in the same write, each from
-	// its own row, which the write reads through their current part_of tuples (nodesUnderLens).
+	// its own row, which the write reads through their current part_of tuples (graphstore.NodesUnder).
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row, the rows of the findings and the risks under a lens it takes gone, and the issue it stands under",
 	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
 	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
@@ -575,6 +575,14 @@ var indexPasses = map[string]string{
 	// Neither reads a row of either side to decide what the other should say.
 	"api/going.go#recordGoingRequest": "the POST's question, its project and the credential it proved",
 	"api/going.go#appendGoingEvent":   "the frame its writer hands it and the run's last sequence",
+	// The one writer of a run's node from its row (graphstore.WriteRun), for a run a pod of the
+	// release before recorded with no node: the first frame this build writes of such a run writes
+	// it first (lockGoingRun), and the backfill writes it for each such run it finds
+	// (writeOwedRun). Its input is that going_requests row's own content and the run's going_events
+	// rows, as the other backfill passes read each pre-store row's own, and a run whose node is
+	// already written it leaves alone rather than mending.
+	"api/going.go#lockGoingRun":            "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
+	"graphcensus/backfill.go#writeOwedRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
 	// The backfill's passes over what a process of the release before writes of a run during a
 	// roll: the frames it appended with no value, whose input is each going_events row's own
 	// content, found by an anti-join with the run's frame values and stated from the row, never
@@ -582,7 +590,7 @@ var indexPasses = map[string]string{
 	// as the store holds it, of which it moves the state alone, never mending a row from the store.
 	// Beside them, the retraction of each prevented_by a process of the release before left
 	// asserted at a check it dropped or at a check of a document it retired: the store's own
-	// relations, read as the store reads them now (refs.CurrentPreventionsSQL), with no projection
+	// relations, read as the store reads them now (refs.PreventionRetractions), with no projection
 	// read to mend another.
 	"graphcensus/backfill.go#writeRunFrames":        "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
 	"graphcensus/backfill.go#writeGoneRun":          "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
@@ -742,9 +750,11 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // the same use as one. The names are every exported function of graphstore that writes the store
 // or builds the statement that does, the list that test holds as storeWriteFunctions:
 // SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
-// store through it alone would otherwise be read as no writer at all, and FillScopes is the
-// backfill's fill of the project of a node stored with none.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget|QueueFrameTuple|WriteChangedForRun)\b`)
+// store through it alone would otherwise be read as no writer at all, FillScopes is the
+// backfill's fill of the project of a node stored with none, and WriteRun writes a run's node
+// from its row, the one call of the writer the frame path's lockGoingRun and the backfill's
+// writeOwedRun make.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget|QueueFrameTuple|WriteChangedForRun|WriteRun)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

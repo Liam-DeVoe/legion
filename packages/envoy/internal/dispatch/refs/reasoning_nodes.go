@@ -240,19 +240,29 @@ type placedNode struct {
 // Document and no version; its BlockID is its own block id, and its text is cut as a document
 // block's stored excerpt is (BlockExcerptRunes), which an edge at it shows whole.
 //
-// Its parent is that far end, as every loader's is the node it belongs to. A parent of a standing
-// kind is named by its kind, its store id and its address; any other parent is resolved through its
-// own kind's loader, in one more read for the whole batch (resolveNodes), so it carries the id and
-// the address that loader answers - an artifact's uuid, a block's node id - and a parent no loader
-// answers, a block no version holds now, names none.
+// Its parent is that far end, as every loader's is the node it belongs to, where the store does
+// not hold that node gone: a lens on a finding its lens took gone with it, or on a lens a person
+// took gone, names no parent, as no read answers that node, while the issue it stands under is
+// still the one the walk reaches through it. A parent of a standing kind is named by its kind, its
+// store id and its address; any other parent is resolved through its own kind's loader, in one more
+// read for the whole batch (resolveNodes), so it carries the id and the address that loader answers
+// - an artifact's uuid, a block's node id - and a parent no loader answers, a block no version
+// holds now, names none.
 func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select held.id, held.made_by, held.made_at, state, visibility, held.project_key, `+standingText[kind]("held", "$4")+`,
-		       placed.to_kind, placed.to_id, `+StandingIssueSQL(`placed.to_kind`, `placed.to_id`)+`
+		       case when placed_parent.state_held is distinct from $3 then placed.to_kind end,
+		       case when placed_parent.state_held is distinct from $3 then placed.to_id end,
+		       `+StandingIssueSQL(`placed.to_kind`, `placed.to_id`)+`
 		from graph_nodes held
 		left join lateral (
 			`+CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `held.kind`, `held.id`, graphstore.TuplePartOf)+`
 		) placed on true
+		left join lateral (
+			select parent_row.state as state_held from graph_nodes parent_row
+			where parent_row.kind = `+storedKindSQL(`placed.to_kind`)+` and parent_row.id = placed.to_id
+			offset 0
+		) placed_parent on true
 		where `+heldNodesWhere(kind),
 		StoredKindOf(kind), ids, graphstore.StateGone, VisibilityArg(who))
 	if err != nil {

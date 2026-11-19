@@ -2050,8 +2050,6 @@ The dashboard's comment editor (`MentionComposer`, `block-spans.ts`) reads the c
 
 `refs.storedActor` reads a single-actor column (a creator, an author, an event's actor, an edit's editor) and `refs.storedActors` a list column (a version's authors):
 SQL NULL (a left join that found no row, an edit that names no editor) and JSON null are nobody recorded, and any other value that does not decode as a `model.Actor` (a list of them) fails the read.
-`GET /api/v1/references` carries them on `node`, each `edges[].node` and each `edges[].block`, and `GET /api/v1/block-links` on `from`, `to` and both blocks of each link.
-Each entry of `nodeRegistry` reads its own kind's, and carries that kind's visibility predicate beside the loader (`refs/graph.go`).
 An issue is made by `issues.created_by` at `created_at`, last changed by the actor of its latest `issue.created`, `issue.updated` or `issue.closed` event at that event's time, and part of its parent issue.
 An artifact (a document, a file, a picture) is made by `artifacts.created_by` at `created_at`, last changed by the authors of its latest version at that version's time, and part of its issue, else of the session whose conversation owns it, else (a project document) of no node.
 A message is made by its author, and last changed by its maker when it was made, since no route edits one;
@@ -5646,6 +5644,7 @@ A caller that resolves to nobody (a lapsed cookie) is passed on to the `401` wri
 
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
 `login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
+The row holds a SHA-256 of the method, the route pattern, its path values, the query, the media type and the body (a multipart body with its boundary masked, since a client mints a boundary per attempt), so a repeat is told from a reuse:
 
 - Before it spools a byte of the body, the layer looks the key up by login and key alone, naming no digest.
   A repeat that finds its key held by a first request still running is never spooled:

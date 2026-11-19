@@ -2630,8 +2630,8 @@ export const dispatchToolSpecs = [
       "value: gone on a block of a document, an issue, a document, an ask, a comment or a " +
       "message, and any state on a block of an ask, a comment or a message, which the store " +
       "keeps no node of and every read answers live. Settle a proposal with dispatch settle. " +
-      "A lens taken gone takes everything under it, so a person alone takes a lens to gone: " +
-      "any other caller, the lens's own author included, is refused with 403 " +
+      "A lens taken gone takes its findings and its risks with it, so a person alone takes a " +
+      "lens to gone: any other caller, the lens's own author included, is refused with 403 " +
       "STATE_NOT_PERMITTED naming the lens, whatever it holds, and an agent marks a lens it " +
       "wrote overtaken instead. Any other move into or out of proposed or settled, and a move " +
       "of a finding, a risk or a constraint into gone, takes the settle's rule: a person makes " +

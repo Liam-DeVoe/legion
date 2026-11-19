@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -778,12 +779,11 @@ func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
 	risk := map[string]any{"lens": hidden.Address, "heading": "A failure.", "early_warning": "A sign.", "prevention": "A guard."}
 	stored := func(kind, id string) string {
 		t.Helper()
-		var visibility string
-		if err := rig.database.Pool.QueryRow(context.Background(),
-			`select visibility from graph_nodes where kind = $1 and id = $2`, kind, id).Scan(&visibility); err != nil {
-			t.Fatalf("read the stored visibility of %s %s: %v", kind, id, err)
+		node, held, err := graphstore.ReadNode(context.Background(), rig.database.Pool, kind, id)
+		if err != nil || !held {
+			t.Fatalf("read the stored visibility of %s %s: held %t, %v", kind, id, held, err)
 		}
-		return visibility
+		return node.Visibility
 	}
 
 	defaulted := rig.post("/risks", risk, "alice")
@@ -834,12 +834,7 @@ func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
 
 // withBody is body with every field of extra set on a copy of it.
 func withBody(body, extra map[string]any) map[string]any {
-	merged := make(map[string]any, len(body)+len(extra))
-	for key, value := range body {
-		merged[key] = value
-	}
-	for key, value := range extra {
-		merged[key] = value
-	}
+	merged := maps.Clone(body)
+	maps.Copy(merged, extra)
 	return merged
 }

@@ -35,20 +35,20 @@ const graphstoreDirectory = "internal/dispatch/graphstore"
 const graphstoretestDirectory = graphstoreDirectory + "/graphstoretest"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same thirteen docs' register of the tree's passes scans for
+// package goes through, the same fourteen docs' register of the tree's passes scans for
 // (storeWriterCall): Write, WriteUncaused and Caused in a caller's transaction, WriteArms and
 // WriteArmsUncaused spliced into a caller's statement, Authored, Reached and SessionRecorded,
 // which run those arms for the writers that record an author, a reached session and a session
 // an ask names, EraseNode, the erase's delete of a node and its tuples, FillScopes, the
 // backfill's fill of the project of a node stored with none, Retarget, the move of one pointer
 // tuple of a node from one far end to another, QueueFrameTuple, Write's append of one frame
-// value of a run queued on a caller's batch, and WriteChangedForRun, WriteUncaused of the node a
-// write made for a run names changed. Each is a function of the package, never a method,
-// so a call of one is named by the package and found here wherever it is made. A write that
-// holds a statement of its own instead is found by rawStoreWrite, and none outside this package
-// may hold one.
+// value of a run queued on a caller's batch, WriteChangedForRun, WriteUncaused of the node a
+// write made for a run names changed, and WriteRun, the write of a run's node from its row. Each
+// is a function of the package, never a method, so a call of one is named by the package and
+// found here wherever it is made. A write that holds a statement of its own instead is found by
+// rawStoreWrite, and none outside this package may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes", "Retarget", "QueueFrameTuple", "WriteChangedForRun"}
+	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes", "Retarget", "QueueFrameTuple", "WriteChangedForRun", "WriteRun"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -154,11 +154,18 @@ var storeWriteCallSites = map[string]string{
 	// Write before the going_events row. api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds
 	// both to their steps. A frame of a run a pod of the release before recorded with no node
 	// writes that node first through the one writer of a run's node from its row, which the
-	// backfill shares: it takes the run's going_requests row `for no key update` and then writes in
-	// one Write; its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write.
+	// backfill shares (lockGoingRun): it takes the run's going_requests row `for no key update` and
+	// then writes in one Write, which the same test holds a frame of such a run to, step by step.
 	"api/going.go#appendGoingEvent":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/going.go#lockGoingRun":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/going.go#recordGoingRequest":    "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"graphstore/interaction.go#WriteRun": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// The backfill's write of the node of each run a process of the release before recorded with
+	// no node (graphcensus' backfillRuns), through WriteRun in a transaction of its own: the run's
+	// going_requests row `for no key update`, then its nodes in ascending (kind, id) and their
+	// tuples, with no owner row. graphcensus' TestEveryBackfillBatchTakesTheStoreLockOrder holds it
+	// to those steps.
+	"graphcensus/backfill.go#writeOwedRun": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The backfill's passes over what a process of the release before writes of a run during a
 	// roll (graphcensus' TestTheBackfillMendsWhatAnOlderPodWroteOfARun): a frame it appended with
 	// no value, stated through Write after the run's interaction node row `for no key update`, the

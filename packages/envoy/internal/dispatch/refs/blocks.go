@@ -463,8 +463,7 @@ func IndexBlocks(
 // whose id is one of the SQL array blocks, each a check that covers a risk, as checked: the newest
 // tuple of each relation into those blocks, kept while it asserts (graphstore.CurrentTupleRead).
 // columns is what it answers, written over checked's from_kind, from_id, kind, to_kind and to_id.
-// The index pass retracts those tuples at the blocks a version drops (retractGonePointers), and a
-// retirement at the blocks of the document it retires (docs' retiredPreventions).
+// Every retraction of such a tuple reads them through PreventionRetractions.
 func CurrentPreventionsSQL(columns, blocks string) string {
 	return `select ` + columns + `
 		from (
@@ -475,15 +474,45 @@ func CurrentPreventionsSQL(columns, blocks string) string {
 		where checked.asserted`
 }
 
+// PreventionRetractions is the retraction of every prevented_by tuple the store asserts now at a
+// block of the SQL array blocks, whose parameters are args (CurrentPreventionsSQL), read in the
+// writer's transaction tx: each dated at, signed by writer and caused by cause, in the order of its
+// check and then of its risk. It is a writer's read, which answers no reader and so binds no
+// visibility predicate: the one read of the three writers that retract such tuples, each under the
+// owner row of the checks' document it took first - the index pass at the blocks a version drops
+// (retractGonePointers), a retirement at the blocks of the document it retires (docs'
+// retiredPreventions), and the backfill at the checks a process of the release before dropped or
+// retired without retracting them (graphcensus' writeEndedPreventions). Each logs what it retracts
+// in its own words.
+func PreventionRetractions(ctx context.Context, tx pgx.Tx, blocks string, args []any, at time.Time, writer model.Actor, cause int64) ([]graphstore.Tuple, error) {
+	rows, err := tx.Query(ctx, CurrentPreventionsSQL(`checked.from_kind, checked.from_id, checked.to_id`, blocks)+`
+		order by checked.to_id, checked.from_kind, checked.from_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the prevented_by tuples at the checks: %w", err)
+	}
+	retracted, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
+		tuple := graphstore.Tuple{
+			Kind: graphstore.TuplePreventedBy, ToKind: BlockNodeKind,
+			At: at, Who: writer, SourceEvent: cause, Asserted: false,
+		}
+		err := row.Scan(&tuple.FromKind, &tuple.FromID, &tuple.ToID)
+		return tuple, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the prevented_by tuples at the checks: %w", err)
+	}
+	return retracted, nil
+}
+
 // retractGonePointers is the retraction of every pointer tuple a block the version no longer holds
 // leaves behind (spec requirement r-constraint-risk): each asserted prevented_by whose
-// far end is one of the blocks at addresses, a check that covered a risk, and each asserted
-// constrained_by whose near end is one of them, a requirement held to a constraint. A constrained_by
-// points at a constraint, never at a block, so the one a gone block takes with it starts there.
-// Each retraction is dated at, the version's time, and signed by writer, as a dropped pair of
-// block_refs is, and rides with the facts the pass states for the version's event, so it is
-// appended in the pass's own transaction (graphstore.Caused). The pass holds the document's owner
-// row (its race with a prevented_by write: api's lockReasoningOwners).
+// far end is one of the blocks at addresses, a check that covered a risk (PreventionRetractions),
+// and each asserted constrained_by whose near end is one of them, a requirement held to a
+// constraint. A constrained_by points at a constraint, never at a block, so the one a gone block
+// takes with it starts there. Each retraction is dated at, the version's time, and signed by
+// writer, as a dropped pair of block_refs is, and rides with the facts the pass states for the
+// version's event, so it is appended in the pass's own transaction (graphstore.Caused). The pass
+// holds the document's owner row (its race with a prevented_by write: api's lockReasoningOwners).
 //
 // It logs how many it retracts at each block, with the block's address, and answers the number to
 // no reader: the risk a check covered may be one only its author may see, and a count served
@@ -492,13 +521,14 @@ func retractGonePointers(ctx context.Context, tx pgx.Tx, addresses []string, at 
 	if len(addresses) == 0 {
 		return nil, nil
 	}
-	const columns = `t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`
+	prevented, err := PreventionRetractions(ctx, tx, `$1`, []any{addresses}, at, writer, graphstore.NoEvent)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := tx.Query(ctx, `
-		`+CurrentPreventionsSQL(`checked.from_kind, checked.from_id, checked.kind, checked.to_kind, checked.to_id, checked.to_id`, `$1`)+`
-		union all
-		select held.from_kind, held.from_id, held.kind, held.to_kind, held.to_id, held.from_id
+		select held.from_kind, held.from_id, held.to_kind, held.to_id
 		from (
-			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, columns,
+			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_kind, t.from_id, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = any($1) and t.kind = '`+graphstore.TupleConstrainedBy+`'
 				and t.to_kind <> '`+graphstore.KindValue+`'`)+`
 		) held
@@ -507,20 +537,23 @@ func retractGonePointers(ctx context.Context, tx pgx.Tx, addresses []string, at 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var retracted []graphstore.UncausedTuple
-	perBlock := map[string]int{}
-	for rows.Next() {
-		tuple := graphstore.Tuple{At: at, Who: writer, Asserted: false}
-		var block string
-		if err := rows.Scan(&tuple.FromKind, &tuple.FromID, &tuple.Kind, &tuple.ToKind, &tuple.ToID, &block); err != nil {
-			return nil, err
-		}
-		retracted = append(retracted, graphstore.UncausedTuple{Tuple: tuple})
-		perBlock[block]++
-	}
-	if err := rows.Err(); err != nil {
+	constrained, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
+		tuple := graphstore.Tuple{Kind: graphstore.TupleConstrainedBy, At: at, Who: writer, Asserted: false}
+		err := row.Scan(&tuple.FromKind, &tuple.FromID, &tuple.ToKind, &tuple.ToID)
+		return tuple, err
+	})
+	if err != nil {
 		return nil, err
+	}
+	retracted := make([]graphstore.UncausedTuple, 0, len(prevented)+len(constrained))
+	perBlock := map[string]int{}
+	for _, tuple := range prevented {
+		retracted = append(retracted, graphstore.UncausedTuple{Tuple: tuple})
+		perBlock[tuple.ToID]++
+	}
+	for _, tuple := range constrained {
+		retracted = append(retracted, graphstore.UncausedTuple{Tuple: tuple})
+		perBlock[tuple.FromID]++
 	}
 	for _, block := range slices.Sorted(maps.Keys(perBlock)) {
 		slog.Info("dispatch: a block the version no longer holds takes its pointers with it",

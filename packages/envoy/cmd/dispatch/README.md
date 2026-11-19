@@ -4968,8 +4968,9 @@ Each item below names a path with its method and identity, then its purpose.
   A node the caller may not see under the issue is `404 NOT_FOUND`, in `FindNodeUnderIssue`'s words, gone or not.
   It writes `proposed`, `overtaken` and `live` on any node the store holds that is not `gone`, and `gone` only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block.
   `gone` is final: every write on a gone node is `409 NODE_GONE`, naming the node (`nodeGone`), because `proposed`, `overtaken` or `live` would bring it back, and a block of a document a version dropped would then read as a present block no version holds; the settle and the reasoning routes' writes on a gone node answer the same (`findWrittenNode`).
-  The write that takes a lens to `gone` takes each finding and each risk whose current `part_of` points at the lens to `gone` in the same transaction, those the caller may not see included (`writeNodeState`, `nodesUnderLens`), so no read by a finding's or a risk's own address answers it once its lens is gone.
+  The write that takes a lens to `gone` takes each finding and each risk whose current `part_of` points at the lens to `gone` in the same transaction, those the caller may not see included (`writeNodeState`, `graphstore.NodesUnder`), so no read by a finding's or a risk's own address answers it once its lens is gone.
   A write that found its lens, or the node it is written on, before such a write committed reads it again under the issue's row and is refused `409 NODE_GONE` (`refuseGoneParents`, `refuseGoneNode` in `api/reasoning_write.go`), so nothing is written under a gone lens.
+  A write that found the far end of its tuple under the issue - the lens a lens is triggered by, a `triggered_by`'s lens or a `constrained_by`'s constraint - reads it again under that row too, and one such a write took gone answers the `404 NOT_FOUND` an address nobody holds answers (`refuseGoneFarEnds`), so no tuple points at a gone node.
   `409 NODE_STATE_NOT_WRITABLE`, naming the node's kind, its state and the value asked for, refuses `settled` (the settle below writes it) and `gone` on a block of a document or on an issue, a document, an ask, a comment or a message.
   A block of an ask, a comment or a message is no node the store holds, since no writer writes a `graph_nodes` row for one: every read answers it `live`, and every value on it is that `409`, saying so (`itemBlockRefusal`).
   The write appends one `state` tuple on each node it moves, written by the caller - a person's as the person it acts for (`actingPerson`), whichever of her credentials made it, as the settle's is - through `graphstore.Write` and at no event, so every read of the node answers the new state at once; a write of the state the node holds appends nothing.
@@ -5428,6 +5429,12 @@ Each item below names a status and code, then its meaning.
 
   A write asks for `visibility` `author` on a node of a kind that takes no node reserved for its author, because not every read of that kind binds the visibility predicate: every kind but those the read registry flags (`packages/envoy/AGENTS.md`, "References form one graph"), a comment among them.
   The message names the kind (`the node kind comment takes no node reserved for its author, …`); nothing is written.
+
+- `400 VISIBILITY_WIDER_THAN_PARENT`
+
+  A write places a node every reader of its project may see under or on a node reserved for its author: a `part_of` tuple out of a node that is not reserved for its author at a lens, a finding, a risk or a constraint that is (`graphstore.ErrVisibilityWiderThanParent`, checked in the write's own transaction, whichever writer appends the tuple).
+  A lens invoked with `visibility: "project"` on such a node, and a risk written so under such a lens, are refused it; a write that names no visibility takes its parent's.
+  The message names the node the write drew and the node it would stand under or on, each by its `dispatch://` address; nothing is written.
 
 - `400 INVALID_POINTER`
 

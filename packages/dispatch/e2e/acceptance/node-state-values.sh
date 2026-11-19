@@ -6,7 +6,7 @@
 # finding and a risk, through proposed, overtaken, live and gone; and one requirement of the spec
 # through proposed, overtaken and back to live, after which gone is refused, since a document's own
 # write removes its block. Before the lens's gone, the shared agent bearer's gone on it, a move a
-# person alone makes, since it takes everything under the lens to gone, is refused 403
+# person alone makes, since it takes the lens's findings and its risks to gone, is refused 403
 # STATE_NOT_PERMITTED naming the lens, which keeps its value, and the finding and the risk each
 # read live by their own address and answer their words as a reference target. After it, the
 # finding and the risk each read gone by their own address, through GET /api/v1/references?to=

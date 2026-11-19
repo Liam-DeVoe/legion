@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -202,6 +203,55 @@ func hasDifference(found []Difference, at, cause string) bool {
 		}
 	}
 	return false
+}
+
+// requireTheOwedRunLockOrder holds writeOwedRun to its steps. A run stands under no owner row, so
+// the writer takes none. It takes the run's going_requests row `for no key update` first, as the
+// one writer of a run's node from its row does (graphstore.WriteRun), and has read nothing of the
+// store or of going_events while it waits there; then it writes the run's interaction node and its
+// asker's person node in one statement, in ascending (kind, id), each held as the same key a
+// transaction still open inserted, and appends their tuples after both, so it has appended no tuple
+// while it waits at either. The run is one an older pod recorded with one frame and no node, asked
+// by a person no write has recorded. The test follows the pass alone (backfillRuns), so a lock
+// another pass of Backfill takes is not read as this batch's.
+func requireTheOwedRunLockOrder(t *testing.T) {
+	database := storetest.Open(t)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	run := olderPodRun(t, database, alice, "", "who answers this?", "One ")
+	request := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the run's going_requests row", Step: lockstep.StepProjection, Taken: true,
+		Statement: "select id::text, author, project, words, created_at, ends_at from going_requests",
+		Unlocked:  []string{"going_events", "graph_nodes", "graph_tuples"},
+	}, `select 1 from going_requests where id = $1::uuid for update`, run)
+	now := time.Now()
+	interaction := holdWrite(t, database, &lockstep.Hold{
+		Name: "the run's interaction node row", Step: lockstep.StepNode, Taken: true,
+		Kind: graphstore.KindInteraction, ID: run, Statement: "with incoming as (", Unlocked: []string{"graph_tuples"},
+	}, []graphstore.Node{{
+		Kind: graphstore.KindInteraction, ID: run, Supertag: graphstore.KindInteraction,
+		Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+		MadeAt: now, MadeBy: alice, SourceEvent: graphstore.NoEvent,
+	}}, nil)
+	asker := holdWrite(t, database, &lockstep.Hold{
+		Name: "person alice's node row", Step: lockstep.StepNode, Taken: true,
+		Kind: graphstore.KindPerson, ID: alice.ID, Statement: "with incoming as (", Unlocked: []string{"graph_tuples"},
+	}, []graphstore.Node{graphstore.PersonNode(alice.ID, alice, now, graphstore.NoEvent)}, nil)
+
+	report := followTheRun(t, database, "writeOwedRun", func(ctx context.Context, database *store.Store) (BackfillReport, error) {
+		done, err := backfillRuns(ctx, database)
+		return BackfillReport{Kinds: []KindBackfill{done}}, err
+	}, []*lockstep.Hold{request, interaction, asker})
+	if done := reportedKind(t, report, graphstore.KindInteraction); done.Rows != 1 || !done.Complete {
+		t.Errorf("the backfill reports %#v for runs with no node, want 1 and the kind complete", done)
+	}
+	if node, held, err := graphstore.ReadNode(context.Background(), database.Pool, graphstore.KindInteraction, run); err != nil || !held ||
+		node.MadeBy.ID != alice.ID || node.Visibility != graphstore.VisibilityAuthor {
+		t.Errorf("the run reads node %+v (held %t, %v) after the backfill, want alice's, reserved for her: the run the test followed is not one that committed",
+			node, held, err)
+	}
+	if values := runFrameValues(t, database, run); values != 1 {
+		t.Errorf("the run holds %d frame values after the backfill, want its one frame", values)
+	}
 }
 
 // requireTheRunFramesLockOrder holds writeRunFrames to its steps. A run stands under no owner row,

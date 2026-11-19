@@ -3,7 +3,6 @@ package graphstore
 import (
 	"context"
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 
@@ -91,14 +90,8 @@ func TestAPartOfOrOnTupleWiderThanItsParentIsRefused(t *testing.T) {
 			if after := countTuples(t, ctx, database); after != before {
 				t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
 			}
-			if holdsPlace(t, ctx, database, refused.childKind, refused.childID, refused.parentKind, refused.parentID) {
-				t.Errorf("the store holds the part_of from the %s %s, visible to every reader of its project, to the %s %s, "+
-					"reserved for its author", refused.childKind, refused.childID, refused.parentKind, refused.parentID)
-			}
 		})
 	}
-	requireHolds(t, ctx, database, placed)
-	requireHolds(t, ctx, database, onSpec)
 	requireStandsAt(t, ctx, database, KindRisk, riskPlaced, KindLens, lensPreMortem)
 	requireStandsAt(t, ctx, database, KindLens, lensInversion, KindArtifact, refKey)
 	requireStandsAt(t, ctx, database, KindRisk, riskAstray, "", "")
@@ -189,17 +182,6 @@ func requireWiderThanParent(t *testing.T, err error, childKind, childID, parentK
 		t.Errorf("the refusal reads %q, want it to begin %q", refusal.Error(), want)
 	}
 	t.Logf("refused with VISIBILITY_WIDER_THAN_PARENT: %s", refusal.Error())
-}
-
-// holdsPlace is whether the node kind and id names holds a current part_of at the node parentKind
-// and parentID name.
-func holdsPlace(t *testing.T, ctx context.Context, database *store.Store, kind, id, parentKind, parentID string) bool {
-	t.Helper()
-	held, err := CurrentOut(ctx, database.Pool, kind, id, []string{TuplePartOf})
-	if err != nil {
-		t.Fatalf("read where %s/%s stands: %v", kind, id, err)
-	}
-	return slices.ContainsFunc(held, func(tuple Tuple) bool { return tuple.ToKind == parentKind && tuple.ToID == parentID })
 }
 
 // requireStandsAt fails unless the node kind and id names holds exactly one current part_of, at

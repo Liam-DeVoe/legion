@@ -453,6 +453,8 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	// The lens a refusal of the lens's triggered_by names after the lens; a lens invoked with no
 	// trigger leaves it the zero end, whose empty address NamedAt reads as not named.
 	var triggerNamed namedEnd
+	// The trigger, which the write reads again under the issue's row (refuseGoneFarEnds).
+	var farEnds []namedEnd
 	if input.TriggeredBy != nil {
 		trigger, triggerEnd, err := findEndUnderIssue(ctx, tx, reader, key, *input.TriggeredBy)
 		if err != nil {
@@ -465,13 +467,14 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		})
 		triggeredBy = &trigger.Ref
 		triggerNamed = namedEnd{storedEnd: triggerEnd, address: trigger.Ref}
+		farEnds = []namedEnd{{storedEnd: triggerEnd, address: *input.TriggeredBy}}
 	}
 	nodes := []reasoningNode{lens}
 	for _, text := range input.Findings {
 		nodes = append(nodes, newFinding(id, visibility, text))
 	}
 	written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
-		reasoningCaller: caller, issue: key, at: at, nodes: nodes,
+		reasoningCaller: caller, issue: key, at: at, nodes: nodes, farEnds: farEnds,
 	})
 	if err != nil {
 		// The ends a refusal of the lens's triggered_by names: the lens, then the lens it names.
@@ -1113,6 +1116,12 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 		FromKind: refs.StoredKindOf(nodeEnd.kind), FromID: nodeEnd.id, Kind: input.Kind, ToKind: toEnd.kind, ToID: toEnd.id,
 		At: at, Who: caller.recorded, SourceEvent: graphstore.NoEvent, Asserted: true,
 	}}
+	// A triggered_by's lens and a constrained_by's constraint stand under the issue, or a
+	// constraint of the catalogue under none, and a write that takes one of the issue's gone holds
+	// the issue's row, so the write reads to again under that row.
+	if input.Kind == graphstore.TupleTriggeredBy || input.Kind == graphstore.TupleConstrainedBy {
+		write.farEnds = []namedEnd{{storedEnd: toEnd, address: input.To}}
+	}
 	answer := pointerWritten{Node: endOf(node), Kind: input.Kind, Action: input.Action, To: endOf(to)}
 	if input.Action == pointerRetarget {
 		from, fromEnd, err := pointerEnd(ctx, tx, reader, key, input.Kind, *input.From)

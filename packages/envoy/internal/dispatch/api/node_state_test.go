@@ -90,6 +90,12 @@ func newestStateTuple(t *testing.T, database *store.Store, kind, id string) grap
 	return history[len(history)-1]
 }
 
+// stateTupleCount is how many state tuples the store holds, of every node.
+func stateTupleCount(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	return countRows(t, database, `select count(*) from graph_tuples where kind = $1`, graphstore.AttributeState)
+}
+
 // TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest drives
 // POST /api/v1/issues/{key}/nodes/{id}/state as a person's cookie, the Go twin of c-state-closed
 // of the verification document. A lens moves through proposed, overtaken,
@@ -119,21 +125,15 @@ func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testi
 			requireNodeState(t, rig.handler, lens.Address, "alice", state)
 		}
 	}
-	var row string
-	if err := rig.database.Pool.QueryRow(ctx, `select state from graph_nodes where kind = $1 and id = $2`,
-		graphstore.KindLens, lens.ID).Scan(&row); err != nil || row != graphstore.StateGone {
-		t.Fatalf("the lens's row is at %q (%v), want gone", row, err)
+	if node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindLens, lens.ID); err != nil || !held || node.State != graphstore.StateGone {
+		t.Fatalf("the lens's row is %+v (held %t, %v), want it at gone", node, held, err)
 	}
-	stateTuples := func() int64 {
-		return countRows(t, rig.database, `select count(*) from graph_tuples where kind = $1 and from_kind = $2 and from_id = $3`,
-			graphstore.AttributeState, graphstore.KindLens, lens.ID)
-	}
-	held := stateTuples()
+	held := stateTupleCount(t, rig.database)
 	for _, asked := range []string{graphstore.StateLive, graphstore.StateProposed, graphstore.StateOvertaken} {
 		requireGoneRefused(t, asked+" on the gone lens", writeStateAs(t, rig.handler, rig.issue, lens.Address, asked, "alice"), lens.ID)
 	}
-	if after := stateTuples(); after != held {
-		t.Fatalf("the refused writes on the gone lens moved its state tuples from %d to %d", held, after)
+	if after := stateTupleCount(t, rig.database); after != held {
+		t.Fatalf("the refused writes on the gone lens moved the state tuples from %d to %d", held, after)
 	}
 
 	for _, state := range []string{graphstore.StateProposed, graphstore.StateOvertaken, graphstore.StateLive} {
@@ -146,15 +146,12 @@ func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testi
 	requireRefused(t, "settled through the state route", writeStateAs(t, rig.handler, rig.issue, rig.requirement, graphstore.StateSettled, "alice"),
 		http.StatusConflict, codeStateNotWritable, "is live and takes no settled here: a proposed node is settled by POST")
 
-	tuples := func() int64 {
-		return countRows(t, rig.database, `select count(*) from graph_tuples where kind = $1`, graphstore.AttributeState)
-	}
-	before := tuples()
+	before := stateTupleCount(t, rig.database)
 	requireRefused(t, "a word that is no value", writeStateAs(t, rig.handler, rig.issue, rig.requirement, "propsed", "alice"),
 		http.StatusBadRequest, "INVALID_ATTRIBUTE_VALUE", `the node state "propsed" is none of live, gone, proposed, settled, overtaken`)
 	misspelled := countRows(t, rig.database, `select count(*) from graph_tuples where to_id = 'propsed'`)
-	if misspelled != 0 || tuples() != before {
-		t.Fatalf("the refused write stored %d tuples at propsed and moved the state tuples from %d to %d", misspelled, before, tuples())
+	if after := stateTupleCount(t, rig.database); misspelled != 0 || after != before {
+		t.Fatalf("the refused write stored %d tuples at propsed and moved the state tuples from %d to %d", misspelled, before, after)
 	}
 	requireNodeState(t, rig.handler, rig.requirement, "alice", graphstore.StateLive)
 
@@ -234,9 +231,6 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 		}
 		return node.State
 	}
-	stateTuples := func() int64 {
-		return countRows(t, rig.database, `select count(*) from graph_tuples where kind = $1`, graphstore.AttributeState)
-	}
 
 	lens := premortem("alice's pre-mortem", rig.post("/lenses", map[string]any{
 		"on": rig.spec, "kind": graphstore.LensKindPreMortem, "findings": []string{"The cache holds stale reads."},
@@ -250,14 +244,14 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 	// person, whatever the lens holds (lensGoneNotPermitted).
 	lensGoneWords := func(address string) string {
 		return "this credential may not move the lens " + address +
-			" to gone: a person alone takes a lens to gone, with everything under it, and its author marks it overtaken instead"
+			" to gone: a person alone takes a lens to gone, with its findings and its risks, and its author marks it overtaken instead"
 	}
-	before := stateTuples()
+	before := stateTupleCount(t, rig.database)
 	shared := asToken("agent-token", "ses_shared_bearer_01", nodePath(lens.Address, "state"), map[string]any{"state": graphstore.StateGone})
 	if refusal := requireRefused(t, "the shared bearer's gone on alice's lens", shared, http.StatusForbidden, codeStateNotPermitted, lens.ID); refusal.Error != lensGoneWords(lens.Address) {
 		t.Fatalf("the shared bearer's gone on alice's lens is refused %q, want %q", refusal.Error, lensGoneWords(lens.Address))
 	}
-	if after := stateTuples(); after != before {
+	if after := stateTupleCount(t, rig.database); after != before {
 		t.Fatalf("the shared bearer's refused gone moved the state tuples from %d to %d", before, after)
 	}
 	requireNodeState(t, rig.handler, lens.Address, "alice", graphstore.StateLive)
@@ -267,12 +261,12 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 	own := premortem("bob's own pre-mortem", asToken(bobToken, bobSession, "/lenses", map[string]any{
 		"on": rig.spec, "kind": graphstore.LensKindPreMortem, "findings": []string{"The bill doubles."},
 	}))
-	before = stateTuples()
+	before = stateTupleCount(t, rig.database)
 	refused := asToken(bobToken, bobSession, nodePath(own.Address, "state"), map[string]any{"state": graphstore.StateGone})
 	if refusal := requireRefused(t, "bob's gone on his own lens, holding only his own finding", refused, http.StatusForbidden, codeStateNotPermitted, own.ID); refusal.Error != lensGoneWords(own.Address) {
 		t.Fatalf("bob's gone on his own lens is refused %q, want %q", refusal.Error, lensGoneWords(own.Address))
 	}
-	if after := stateTuples(); after != before {
+	if after := stateTupleCount(t, rig.database); after != before {
 		t.Fatalf("bob's refused gone moved the state tuples from %d to %d", before, after)
 	}
 	for _, node := range [][2]string{{graphstore.KindLens, own.ID}, {refs.BlockNodeKind, own.Findings[0].ID}} {
@@ -339,14 +333,14 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 		t.Fatalf("the reference targets of the gone finding and risk answer their words: %s", targets.Body.String())
 	}
 
-	before = stateTuples()
+	before = stateTupleCount(t, rig.database)
 	for _, asked := range []string{graphstore.StateLive, graphstore.StateProposed, graphstore.StateOvertaken} {
 		requireGoneRefused(t, asked+" on the gone lens", writeStateAs(t, rig.handler, rig.issue, lens.Address, asked, "alice"), lens.ID)
 	}
 	requireGoneRefused(t, "proposed on the gone risk", writeStateAs(t, rig.handler, rig.issue, held.Address, graphstore.StateProposed, "alice"), held.ID)
 	requireGoneRefused(t, "the settle of the gone risk",
 		dispatchRequest(t, rig.handler, http.MethodPost, statePath(rig.issue, held.Address, "settle"), nil, "alice"), held.ID)
-	if after := stateTuples(); after != before {
+	if after := stateTupleCount(t, rig.database); after != before {
 		t.Fatalf("the refused writes on the gone nodes moved the state tuples from %d to %d", before, after)
 	}
 	lenses, lensTuples := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)

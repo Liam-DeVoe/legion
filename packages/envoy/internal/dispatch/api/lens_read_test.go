@@ -362,6 +362,32 @@ func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
 	}
 }
 
+// TestALensOnAFindingTakenGoneStandsOnNothing: a lens invoked on a finding reads that finding as
+// the node it stands on until a person takes the finding's lens to gone, which takes the finding
+// with it (writeNodeState). The lens on the finding stays live, and its on then names nothing, as a
+// lens's on names nothing where no read answers its node, a block a later version dropped among
+// them: no read answers a gone finding. It still stands under the issue, whose state route finds
+// and moves it.
+func TestALensOnAFindingTakenGoneStandsOnNothing(t *testing.T) {
+	rig := newReasoningRig(t)
+	parent := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"A finding a lens looks at."}})
+	finding := parent.Findings[0].Address
+	onFinding := rig.invoke(finding, "botec", "alice", nil)
+	if read := rig.lenses(onFinding.Address, "alice"); read.Lens == nil || read.Lens.On == nil || *read.Lens.On != finding {
+		t.Fatalf("the lens on the finding reads %+v before the finding's lens is gone, want it on %s", read.Lens, finding)
+	}
+
+	rig.writeState(parent.Address, graphstore.StateGone, "alice")
+	read := rig.lenses(onFinding.Address, "alice")
+	t.Logf("the lens on the finding once the finding's lens is gone: %+v", read.Lens)
+	if read.Lens == nil || read.Lens.State != graphstore.StateLive || read.Lens.On != nil {
+		t.Errorf("the lens on the finding reads %+v once the finding's lens is gone, want it live and on null", read.Lens)
+	}
+	if moved := rig.writeState(onFinding.Address, graphstore.StateOvertaken, "alice"); moved.Node.State != graphstore.StateOvertaken {
+		t.Errorf("the state route answers %+v for the lens on the gone finding, want it found under the issue and moved to overtaken", moved)
+	}
+}
+
 // TestATriggerPointsOnlyAtALensInvokedBefore: a lens is triggered only by a lens invoked before it
 // (R8, spec requirement r-lens-trigger), in the order the lens read answers, the seq
 // of each lens's first part_of. A, then B triggered by A, then C, on the spec. Through the pointer

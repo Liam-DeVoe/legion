@@ -272,6 +272,40 @@ const nodesOfKind = `
 		order by id
 	`
 
+// NodesUnder answers the row of each node of kinds, as the store keys them, that stands under the
+// node whose kind and id are parentKind and parentID and is not gone: each whose current part_of
+// tuple (CurrentTupleRead) points at that node, in (kind, id) order, in one statement. A node moved
+// under another parent holds its part_of here retracted, and a node of another kind under the
+// parent - a lens invoked on a lens - is none of these. The statement binds `to_kind <> 'value'`
+// as a literal, as CurrentIn does, so the planner proves the predicate of graph_tuples_inbound and
+// walks that index from the parent. The write that takes a lens to gone reads its findings and its
+// risks so (api's writeNodeState).
+func NodesUnder(ctx context.Context, q Queryer, parentKind, parentID string, kinds ...string) ([]Node, error) {
+	rows, err := q.Query(ctx, nodesUnder, parentKind, parentID, kinds, StateGone)
+	if err != nil {
+		return nil, fmt.Errorf("read the nodes under %s/%s: %w", parentKind, parentID, err)
+	}
+	under, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Node, error) { return scanNode(row) })
+	if err != nil {
+		return nil, fmt.Errorf("read the nodes under %s/%s: %w", parentKind, parentID, err)
+	}
+	return under, nil
+}
+
+// nodesUnder is the statement of NodesUnder: $1 and $2 the parent's kind and id, $3 the kinds of
+// the nodes it answers and $4 the gone state. The relation the read keeps is the near end alone,
+// the inbound index's columns past those it binds, so it sorts nothing.
+var nodesUnder = `
+		select ` + nodeColumns + `
+		from (
+			` + CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
+	`t.to_kind = $1 and t.to_id = $2 and t.kind = '`+TuplePartOf+`' and t.from_kind = any($3::text[])
+				and t.to_kind <> '`+KindValue+`'`) + `
+		) placed
+		join graph_nodes held on held.kind = placed.from_kind and held.id = placed.from_id
+		where placed.asserted and held.state <> $4
+		order by held.kind, held.id`
+
 // scanNodesOfKind reads every node row of kind a read of nodesOfKind answers.
 func scanNodesOfKind(rows pgx.Rows, kind string) ([]Node, error) {
 	defer rows.Close()

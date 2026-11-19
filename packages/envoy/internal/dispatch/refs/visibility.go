@@ -391,15 +391,16 @@ func VisibleKind(kind, address, param string) string {
 // predicate the registry rendered.
 const StoredNodeMarker = "/* the node's stored state and visibility */"
 
-// storedNodeAlias is the alias of the lateral join storedNode adds to a loader's from list.
+// storedNodeAlias is the alias of the lateral join StoredNodeJoin adds to a statement's from list.
 const storedNodeAlias = "stored_row"
+
+// StoredState is the stored state StoredNodeJoin's join answers, as a statement beside that join
+// names the column: null where the store holds no row of the node.
+const StoredState = storedNodeAlias + ".stored_state"
 
 // storedNode is what every loader of kind adds to its statement to answer the stored state and
 // visibility of the node whose id address names, as `graph_nodes` keys it - the address that
-// kind's predicate reads (VisibleKind): the lateral join to add to its from list, after every
-// relation address names, and the two columns to select off it, the state and then the
-// visibility the store holds for the node, each null where the store holds no row of it
-// (StoredNode, setStored). It reads `visibility` once, which StoredNodeMarker accounts for.
+// kind's predicate reads (VisibleKind): StoredNodeJoin of the kind the store keys kind by.
 //
 // It is a join that answers the row a read's own filters kept and nothing else: one more probe
 // of the `graph_nodes` primary key for each node a read answers, beside the predicate's own probe
@@ -408,7 +409,7 @@ const storedNodeAlias = "stored_row"
 // links points from - where the second probe cost a read of 5,001 blocks a fifth of its time
 // (check c-read-cost), so it reads both from one probe (visibleStoredKind).
 func storedNode(kind, address string) (join, columns string) {
-	return StoredNodeJoin(storedNodeAlias, `'`+StoredKindOf(kind)+`'`, address), StoredColumnsOf(storedNodeAlias)
+	return StoredNodeJoin(`'`+StoredKindOf(kind)+`'`, address)
 }
 
 // visibleStoredKind is VisibleKind and storedNode of the node of kind whose id address names,
@@ -436,15 +437,18 @@ func visibleStoredKind(kind, address, param string) (join, columns, predicate st
 	return join, StoredColumnsOf(alias), `coalesce(` + alias + `.seen, true)`
 }
 
-// StoredNodeJoin is storedNode's join for a node whose kind is the SQL kindExpr rather than a
-// literal, aliased alias, for a read outside this package that answers each node's stored state
-// and visibility beside rows of several kinds (api's person page, the coverage read): the same
-// probe, opened by the same marker, whose two columns StoredColumnsOf(alias) selects, each read
-// into a StoredNode.
-func StoredNodeJoin(alias, kindExpr, address string) string {
+// StoredNodeJoin is what a statement adds to answer the stored state and visibility of the node
+// whose kind is the SQL kindExpr and whose id the SQL address names, as `graph_nodes` keys it: the
+// lateral join to add to its from list, after every relation address names, and the two columns
+// to select off it, the state and then the visibility the store holds for the node, each null
+// where the store holds no row of it (StoredNode, setStored), the state named StoredState. Every
+// loader of the registry adds it for its own kind (storedNode), and a read outside this package
+// that answers rows of several kinds - api's person page - or binds the kind - the coverage read -
+// adds it with the kind as its own SQL. It reads `visibility` once, opened by StoredNodeMarker.
+func StoredNodeJoin(kindExpr, address string) (join, columns string) {
 	return `left join lateral (select ` + StoredRowOf(`stored_node`) + ` from graph_nodes stored_node
 		where stored_node.kind = ` + kindExpr + ` and stored_node.id = ` + address + `
-		offset 0) ` + alias + ` on true`
+		offset 0) ` + storedNodeAlias + ` on true`, StoredColumnsOf(storedNodeAlias)
 }
 
 // StoredRowOf is the stored state and the stored visibility of the `graph_nodes` row a statement

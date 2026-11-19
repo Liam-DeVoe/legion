@@ -143,14 +143,19 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 }
 
 // requirementStatesQuery reads the node state of each requirement block whose node id is in $1
-// (`<ref_key>#<block id>`, kind block) for a reader ($2), in one statement: each block through the
-// block kind's predicate (refs.VisibleKind), with the state and the visibility the store holds of
-// it (refs.StoredNodeJoin), null where the store holds no row of it.
+// (`<ref_key>#<block id>`, of the block kind $3) for a reader ($2), in one statement: each block
+// through the block kind's predicate (refs.VisibleKind), with the state and the visibility the
+// store holds of it (refs.StoredNodeJoin, requirementStoredJoin), null where the store holds no row
+// of it.
 var requirementStatesQuery = `
-	select requirement.id, ` + refs.StoredColumnsOf("stored_row") + `
+	select requirement.id, ` + requirementStoredColumns + `
 	from unnest($1::text[]) as requirement(id)
-	` + refs.StoredNodeJoin("stored_row", `'`+refs.BlockNodeKind+`'`, `requirement.id`) + `
+	` + requirementStoredJoin + `
 	where ` + refs.VisibleKind(refs.BlockNodeKind, `requirement.id`, `$2`)
+
+// requirementStoredJoin and requirementStoredColumns are the stored state and visibility of each
+// requirement requirementStatesQuery reads, its kind bound at $3.
+var requirementStoredJoin, requirementStoredColumns = refs.StoredNodeJoin(`$3`, `requirement.id`)
 
 // queueRequirementStates queues, in b, the read of the node state of each requirement of the spec
 // whose ref_key is refKey (requirementStatesQuery) for who, and fills states with each by block
@@ -162,7 +167,7 @@ func queueRequirementStates(b *pgx.Batch, who model.Actor, refKey string, requir
 	for index, requirement := range requirements {
 		ids[index] = refKey + "#" + requirement.BlockID
 	}
-	b.Queue(requirementStatesQuery, ids, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
+	b.Queue(requirementStatesQuery, ids, refs.VisibilityArg(who), refs.BlockNodeKind).Query(func(rows pgx.Rows) error {
 		for rows.Next() {
 			var id string
 			var stored refs.StoredNode

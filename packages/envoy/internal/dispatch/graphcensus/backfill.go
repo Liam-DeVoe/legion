@@ -1577,7 +1577,7 @@ func endedChecks(narrow string) string {
 
 // backfillEndedPreventions retracts every prevented_by the store asserts now at an ended check
 // (endedChecks), through the read the index pass and the retirement retract by
-// (refs.CurrentPreventionsSQL). It reads the documents that hold such a check in batches by
+// (refs.PreventionRetractions). It reads the documents that hold such a check in batches by
 // ref_key and retracts each batch's in a transaction of its own (writeEndedPreventions). Rows and
 // Tuples count the tuples it retracted.
 func backfillEndedPreventions(ctx context.Context, database *store.Store) (KindBackfill, error) {
@@ -1643,22 +1643,8 @@ func writeEndedPreventions(ctx context.Context, database *store.Store, documents
 	if err := lockDocumentOwners(ctx, tx, `ref_key = any($1)`, documents); err != nil {
 		return 0, err
 	}
-	rows, err := tx.Query(ctx, `
-		`+refs.CurrentPreventionsSQL(`checked.from_kind, checked.from_id, checked.to_id`, endedChecks(`split_part(p.to_id, '#', 1) = any($1)`))+`
-		order by checked.to_id, checked.from_kind, checked.from_id
-	`, documents)
-	if err != nil {
-		return 0, fmt.Errorf("read the prevented_by tuples at checks nobody runs: %w", err)
-	}
-	at := time.Now().UTC()
-	retracted, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
-		tuple := graphstore.Tuple{
-			Kind: graphstore.TuplePreventedBy, ToKind: refs.BlockNodeKind,
-			At: at, Who: backfillActor, SourceEvent: graphstore.NoEvent, Asserted: false,
-		}
-		err := row.Scan(&tuple.FromKind, &tuple.FromID, &tuple.ToID)
-		return tuple, err
-	})
+	retracted, err := refs.PreventionRetractions(ctx, tx, endedChecks(`split_part(p.to_id, '#', 1) = any($1)`),
+		[]any{documents}, time.Now().UTC(), backfillActor, graphstore.NoEvent)
 	if err != nil {
 		return 0, fmt.Errorf("read the prevented_by tuples at checks nobody runs: %w", err)
 	}

@@ -27,7 +27,7 @@ const storeStepWait = 20 * time.Second
 
 // TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of dispatch://INFRA-1149's
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
-// and tuple store's writers, beside the test that drives each site's lock steps. Nineteen of them
+// and tuple store's writers, beside the test that drives each site's lock steps. Twenty of them
 // live here, and this test drives them all, with docs' writeRetiredNode inside the removal that
 // runs it:
 //
@@ -41,7 +41,9 @@ const storeStepWait = 20 * time.Second
 //     message's (completeMessageDelivery), each of which records the session it reached through
 //     graphstore.Reached inside its own transaction;
 //   - a run of the command bar, its record (recordGoingRequest) and one frame of it
-//     (appendGoingEvent), which takes no owner row;
+//     (appendGoingEvent), which takes no owner row, and a frame of a run a pod of the release
+//     before recorded with no node, which writes that node from the run's row first
+//     (lockGoingRun, through graphstore.WriteRun);
 //   - an issue's own field write made for a run (patchIssue), which writes the issue's node, and an
 //     edit of an ask's words and of a comment's words made for a run (editAsk, editComment), which
 //     write the ask's and the comment's node;
@@ -97,7 +99,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.commentCreate("createCommentFor on a project document", "/api/v1/artifacts/"+rig.document+"/comments",
 			rig.documentOwnerStep()),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
-		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.artifactRemoval(),
+		rig.goingRecord(), rig.goingFrame(), rig.goingFrameOfARunWithNoNode(), rig.issuePatchForRun(), rig.artifactRemoval(),
 		rig.askEditForRun(), rig.commentEditForRun(),
 		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
@@ -225,9 +227,12 @@ const (
 	// tupleAppendStatement is graphstore's tuple append, which caused runs through graphstore.Write.
 	tupleAppendStatement = "insert into graph_tuples ("
 	// goingRequestInsertStatement writes a run's going_requests row (recordGoingRequest), and
-	// goingEventInsertStatement a frame's going_events row (goingFrameRow).
+	// goingEventInsertStatement a frame's going_events row (goingFrameRow). runRowReadStatement is
+	// graphstore.WriteRun's read of a run's going_requests row `for no key update`, which the frame
+	// of a run with no node takes before it writes the node (lockGoingRun).
 	goingRequestInsertStatement = "insert into going_requests ("
 	goingEventInsertStatement   = "insert into going_events ("
+	runRowReadStatement         = "select id::text, author, project, words, created_at, ends_at from going_requests"
 	// followStatement is asks.Follow's one statement: the follower row, with the store's node arm
 	// spliced in after it (graphstore.WriteArms, WriteArmsUncaused).
 	followStatement = "with followed as ("
@@ -535,6 +540,87 @@ func (r *storeWriterRig) goingFrame() storeWriter {
 				made: graphstore.Node{Kind: graphstore.KindInteraction, ID: run.ID},
 				write: func() error {
 					_, err := appendGoingEvent(ctx, r.callStore.Pool, run.ID, going.Text("A frame the lock steps hold."))
+					return err
+				},
+			}
+		},
+	}
+}
+
+// goingFrameOfARunWithNoNode is one frame of a run a pod of the release before recorded with no
+// interaction node (appendGoingEvent), whose node the frame writes first (lockGoingRun). Its first
+// statement looks for the run's node row `for no key update` and finds none, which still takes
+// graph_nodes' table lock; then the one writer of a run's node from its row (graphstore.WriteRun)
+// takes the run's going_requests row `for no key update` and writes the node and its author's in
+// one statement and their tuples, the older pod's frame's value among them, after it; then the
+// frame takes the node it wrote, reads the next sequence under the run's row, appends its own
+// value and writes its going_events row. Those three come after locks the steps before took
+// already - the node's table, the run's row, the tuple append - so the frame's row is the one of
+// them a hold can stop it at. The node the frame looks for is no row, so the first step is held
+// as graph_nodes in exclusive mode, the one level that waits on that table lock; the run's row is
+// held `for update`; the node write and the tuple append are held as their tables, since their
+// rows are new, and so is the frame's row. The asker is a person no write has recorded, so both
+// nodes the frame writes are new.
+func (r *storeWriterRig) goingFrameOfARunWithNoNode() storeWriter {
+	return storeWriter{
+		name: "appendGoingEvent of a run with no node",
+		steps: []storeStep{
+			{
+				name: "the run's interaction node, which it finds missing", order: nodeStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+					if _, err := holder.Exec(ctx, "lock table graph_nodes in exclusive mode"); err != nil {
+						t.Fatalf("hold graph_nodes in exclusive mode: %v", err)
+					}
+				},
+				at:    graphstore.NodeRowLockSQL,
+				takes: []tableLock{{"graph_nodes", rowShareMode}},
+			},
+			{
+				name: "the run's row", order: projectionStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from going_requests where id = $1::uuid for update`, run.made.ID)
+				},
+				at:    runRowReadStatement,
+				takes: []tableLock{{"going_requests", rowShareMode}},
+			},
+			{
+				name: "the run's interaction node and its author's", order: nodeStep,
+				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			{
+				name: "the run's tuples", order: tupleStep,
+				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
+			{
+				name: "the frame's row", order: projectionStep, names: "the run's interaction node and its author's",
+				hold: holdTableWrites("going_events"), at: goingEventInsertStatement,
+				takes: []tableLock{{"going_events", rowExclusiveMode}},
+			},
+		},
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			var id string
+			if err := r.database.Pool.QueryRow(ctx, `
+				insert into going_requests (author, project, words, ends_at)
+				values (jsonb_build_object('kind', 'user', 'id', $1::text), 'LOCK', 'Which node does the older pod''s run hold?',
+				        now() + interval '1 hour')
+				returning id::text
+			`, r.fresh("lock-steps-older-pod-asker")).Scan(&id); err != nil {
+				t.Fatalf("record a run as a pod of the release before: %v", err)
+			}
+			if _, err := r.database.Pool.Exec(ctx, `
+				insert into going_events (request_id, sequence, name, data) values ($1::uuid, 1, 'text', '{"text":"First "}'::jsonb)
+			`, id); err != nil {
+				t.Fatalf("store the older pod's frame of run %s: %v", id, err)
+			}
+			return storeWriterRun{
+				made: graphstore.Node{Kind: graphstore.KindInteraction, ID: id},
+				write: func() error {
+					sequence, err := appendGoingEvent(ctx, r.callStore.Pool, id, going.Text("A frame of the older pod's run."))
+					if err == nil && sequence != 2 {
+						return fmt.Errorf("the frame took sequence %d, want 2, after the older pod's", sequence)
+					}
 					return err
 				},
 			}

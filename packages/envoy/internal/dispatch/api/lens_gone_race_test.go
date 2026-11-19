@@ -9,9 +9,80 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
+// holdGone takes the node target names to gone in a transaction it holds open - writeNodeState,
+// which takes the issue's row first and then moves the node, and a lens's findings and risks with
+// it - sends post meanwhile, waits until post waits on that transaction or answers, commits it,
+// and answers what post answered. name names the post in a failure.
+func holdGone(t *testing.T, rig reasoningRig, name string, target stateTarget, post func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the gone of %s: %v", target.address, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	held, found, err := graphstore.ReadNode(ctx, tx, target.end.kind, target.end.id)
+	if err != nil || !found {
+		t.Fatalf("read the %s %s: found %t, %v", target.kind, target.address, found, err)
+	}
+	at, err := transactionNow(ctx, tx)
+	if err != nil {
+		t.Fatalf("read the gone's time: %v", err)
+	}
+	if _, _, err := writeNodeState(ctx, tx, nodeStateWrite{
+		issue: rig.issue, target: target,
+		state: graphstore.StateGone, who: held.MadeBy, at: at,
+		allowed: func(graphstore.Node) error { return nil },
+	}); err != nil {
+		t.Fatalf("take %s to gone: %v", target.address, err)
+	}
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- post() }()
+	var answer *httptest.ResponseRecorder
+	waitUntil(t, 30*time.Second, name+" waiting on the gone of "+target.address+", or answering", func() bool {
+		select {
+		case answer = <-answered:
+			return true
+		default:
+		}
+		// The post waits at the issue's row (lockIssueRow), the lock the gone holds: only
+		// then has it found what it names live and not yet written. It may wait there behind a
+		// pass of the server's own that queued at that row first, so it is found by its statement
+		// and not by the transaction it waits on.
+		var waiting bool
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select exists (select 1 from pg_stat_activity
+				where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0
+				  and query like '%project_key from issues where key = $1 for no key update%')
+		`).Scan(&waiting); err != nil {
+			t.Fatalf("read what waits on the gone: %v", err)
+		}
+		return waiting
+	})
+	if answer != nil {
+		t.Errorf("%s answered %d %s while the gone of %s was still open, want it held at the issue's row",
+			name, answer.Code, answer.Body.String(), target.address)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the gone of %s: %v", target.address, err)
+	}
+	if answer == nil {
+		select {
+		case answer = <-answered:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s did not answer within 30 s of the gone's commit", name)
+		}
+	}
+	return answer
+}
+
+// lensTarget is the lens invoked answers as the state route names it.
+func lensTarget(lens lensInvoked) stateTarget {
+	return stateTarget{kind: graphstore.KindLens, address: lens.Address, end: storedEnd{kind: graphstore.KindLens, id: lens.ID}}
+}
+
 // TestAFindingOrARiskWrittenWhileItsLensIsTakenGoneIsRefused holds open, in a transaction, the
-// gone of a lens - writeNodeState, which takes the issue's row first and then moves the lens and
-// what stands under it - posts a finding to that lens through POST .../nodes/{id}/findings
+// gone of a lens (holdGone), posts a finding to that lens through POST .../nodes/{id}/findings
 // meanwhile, and then commits the gone; and the same for a risk under a pre-mortem lens through
 // POST .../risks. Each post finds its lens live before the gone commits and then waits at the
 // issue's row, so it reads the lens again once the gone has committed (refuseGoneParents) and is
@@ -22,70 +93,6 @@ import (
 func TestAFindingOrARiskWrittenWhileItsLensIsTakenGoneIsRefused(t *testing.T) {
 	rig := newReasoningRig(t)
 	ctx := context.Background()
-	// heldGone takes lens to gone in a transaction it holds open, sends post meanwhile, waits
-	// until post waits on that transaction or answers, commits it, and answers what post answered.
-	heldGone := func(name string, lens lensInvoked, post func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
-		t.Helper()
-		tx, err := rig.database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin the gone of %s: %v", lens.Address, err)
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		held, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, lens.ID)
-		if err != nil || !found {
-			t.Fatalf("read the lens %s: found %t, %v", lens.Address, found, err)
-		}
-		at, err := transactionNow(ctx, tx)
-		if err != nil {
-			t.Fatalf("read the gone's time: %v", err)
-		}
-		if _, _, err := writeNodeState(ctx, tx, nodeStateWrite{
-			issue:  rig.issue,
-			target: stateTarget{kind: graphstore.KindLens, address: lens.Address, end: storedEnd{kind: graphstore.KindLens, id: lens.ID}},
-			state:  graphstore.StateGone, who: held.MadeBy, at: at,
-			allowed: func(graphstore.Node) error { return nil },
-		}); err != nil {
-			t.Fatalf("take %s to gone: %v", lens.Address, err)
-		}
-		answered := make(chan *httptest.ResponseRecorder, 1)
-		go func() { answered <- post() }()
-		var answer *httptest.ResponseRecorder
-		waitUntil(t, 30*time.Second, name+" waiting on the gone of "+lens.Address+", or answering", func() bool {
-			select {
-			case answer = <-answered:
-				return true
-			default:
-			}
-			// The post waits at the issue's row (lockIssueRow), the lock the gone holds: only
-			// then has it found its lens live and not yet written. It may wait there behind a pass
-			// of the server's own that queued at that row first, so it is found by its statement
-			// and not by the transaction it waits on.
-			var waiting bool
-			if err := rig.database.Pool.QueryRow(ctx, `
-				select exists (select 1 from pg_stat_activity
-					where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0
-					  and query like '%project_key from issues where key = $1 for no key update%')
-			`).Scan(&waiting); err != nil {
-				t.Fatalf("read what waits on the gone: %v", err)
-			}
-			return waiting
-		})
-		if answer != nil {
-			t.Errorf("%s answered %d %s while the gone of %s was still open, want it held at the issue's row",
-				name, answer.Code, answer.Body.String(), lens.Address)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit the gone of %s: %v", lens.Address, err)
-		}
-		if answer == nil {
-			select {
-			case answer = <-answered:
-			case <-time.After(30 * time.Second):
-				t.Fatalf("%s did not answer within 30 s of the gone's commit", name)
-			}
-		}
-		return answer
-	}
 	// requireNothingUnder holds the lens to gone, with no node standing under it by a part_of tuple.
 	requireNothingUnder := func(lens lensInvoked) {
 		t.Helper()
@@ -99,14 +106,14 @@ func TestAFindingOrARiskWrittenWhileItsLensIsTakenGoneIsRefused(t *testing.T) {
 	}
 
 	lens := rig.invoke(rig.spec, "trade-off", "alice", nil)
-	finding := heldGone("the finding added to "+lens.Address, lens, func() *httptest.ResponseRecorder {
+	finding := holdGone(t, rig, "the finding added to "+lens.Address, lensTarget(lens), func() *httptest.ResponseRecorder {
 		return rig.post(nodePath(lens.Address, "findings"), map[string]any{"text": "A finding written as its lens is taken out."}, "alice")
 	})
 	requireGoneRefused(t, "the finding added to "+lens.Address+" as it is taken gone", finding, lens.ID)
 	requireNothingUnder(lens)
 
 	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", nil)
-	risk := heldGone("the risk written under "+premortem.Address, premortem, func() *httptest.ResponseRecorder {
+	risk := holdGone(t, rig, "the risk written under "+premortem.Address, lensTarget(premortem), func() *httptest.ResponseRecorder {
 		return rig.post("/risks", map[string]any{
 			"lens": premortem.Address, "heading": "A risk written as its lens is taken out",
 			"early_warning": "The lens reads gone", "prevention": "The write reads its lens again",

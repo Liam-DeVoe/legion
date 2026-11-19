@@ -478,41 +478,63 @@ func storedKindOf(kind string) string {
 // through that one tuple, so this one rule holds every route that places one, and a move to a new
 // parent, which asserts a new part_of. An end the write states is read as the write leaves its
 // row, since Write and Caused call this once the write's nodes are written; an end the store holds
-// no row of is visible to every reader, as every read answers one (refs.VisibleKind). Both ends of
-// every such tuple are read in one statement, and a write that asserts none - every write of a
-// block, a comment or any node no reasoning route writes - sends none. It takes no lock: no writer
-// of these kinds writes a node again at another visibility (a write of a node's state keeps the
-// row's own), so the visibility it reads is the one each end keeps.
-func checkPlacedVisibility(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
+// no row of is visible to every reader, as every read answers one (refs.VisibleKind).
+//
+// An end the write's own insert made (made, by the position of nodes) holds the visibility the
+// write gave it, so it is decided here and never read: a child made reserved for its author passes
+// whatever its parent is, and a tuple both of whose ends the write made is decided off the two.
+// Every other end of such a tuple is read in one statement, and a write that asserts none - every
+// write of a block, a comment or any node no reasoning route writes - or whose every such tuple is
+// decided off what it made sends none. Where made is nil (Caused) every end is read. It takes no
+// lock: no writer of these kinds writes a node again at another visibility (a write of a node's
+// state keeps the row's own), so the visibility it reads is the one each end keeps.
+func checkPlacedVisibility(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tuples []Tuple) error {
 	var placed []int
-	var kinds, ids []string
 	for index := range tuples {
-		tuple := &tuples[index]
-		if !tuple.Asserted || tuple.ToKind == KindValue || !placesUnderAuthorOnly(tuple.Kind, tuple.ToKind, tuple.ToID) {
-			continue
+		if tuple := &tuples[index]; tuple.Asserted && tuple.ToKind != KindValue && placesUnderAuthorOnly(tuple.Kind, tuple.ToKind, tuple.ToID) {
+			placed = append(placed, index)
 		}
-		placed = append(placed, index)
-		kinds = append(kinds, storedKindOf(tuple.FromKind), storedKindOf(tuple.ToKind))
-		ids = append(ids, tuple.FromID, tuple.ToID)
 	}
 	if len(placed) == 0 {
 		return nil
 	}
-	rows, err := tx.Query(ctx, `
-		select distinct held.kind, held.id from graph_nodes held
-		join unnest($1::text[], $2::text[]) as named(kind, id) on named.kind = held.kind and named.id = held.id
-		where held.visibility = $3
-	`, kinds, ids, VisibilityAuthor)
-	if err != nil {
-		return fmt.Errorf("read the visibility of the nodes a part_of places and its parents: %w", err)
-	}
+	// reserved holds whether each end the write's insert made is reserved for its author, and then
+	// each end read from the store that is.
 	reserved := map[pointerTarget]bool{}
-	var end pointerTarget
-	if _, err := pgx.ForEachRow(rows, []any{&end.kind, &end.id}, func() error {
-		reserved[end] = true
-		return nil
-	}); err != nil {
-		return fmt.Errorf("read the visibility of the nodes a part_of places and its parents: %w", err)
+	for index := range made {
+		if made[index] {
+			reserved[pointerTarget{kind: storedKindOf(nodes[index].Kind), id: nodes[index].ID}] = nodes[index].Visibility == VisibilityAuthor
+		}
+	}
+	var kinds, ids []string
+	for _, index := range placed {
+		tuple := &tuples[index]
+		child := pointerTarget{kind: storedKindOf(tuple.FromKind), id: tuple.FromID}
+		if reserved[child] {
+			continue
+		}
+		for _, end := range [...]pointerTarget{child, {kind: storedKindOf(tuple.ToKind), id: tuple.ToID}} {
+			if _, decided := reserved[end]; !decided {
+				kinds, ids = append(kinds, end.kind), append(ids, end.id)
+			}
+		}
+	}
+	if len(kinds) > 0 {
+		rows, err := tx.Query(ctx, `
+			select distinct held.kind, held.id from graph_nodes held
+			join unnest($1::text[], $2::text[]) as named(kind, id) on named.kind = held.kind and named.id = held.id
+			where held.visibility = $3
+		`, kinds, ids, VisibilityAuthor)
+		if err != nil {
+			return fmt.Errorf("read the visibility of the nodes a part_of places and its parents: %w", err)
+		}
+		var end pointerTarget
+		if _, err := pgx.ForEachRow(rows, []any{&end.kind, &end.id}, func() error {
+			reserved[end] = true
+			return nil
+		}); err != nil {
+			return fmt.Errorf("read the visibility of the nodes a part_of places and its parents: %w", err)
+		}
 	}
 	for _, index := range placed {
 		tuple := &tuples[index]
@@ -611,7 +633,7 @@ func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tu
 			return err
 		}
 	}
-	return checkPlacedVisibility(ctx, tx, tuples)
+	return checkPlacedVisibility(ctx, tx, nodes, made, tuples)
 }
 
 // readPointerEnds reads what the ruled tuples' rules ask of their ends: one statement for the

@@ -57,8 +57,8 @@ const (
 	// node it names: settled anywhere, gone on a node of a document, and any value on a node the
 	// store holds no row of.
 	codeStateNotWritable = "NODE_STATE_NOT_WRITABLE"
-	// codeNodeGone is a write on a node the store holds gone: gone is final, so no write moves
-	// such a node again, settles it, or writes a lens, a finding, a risk or a pointer on it.
+	// codeNodeGone is a write on a node the store holds gone: no write moves such a node, settles
+	// it, or writes a lens, a finding, a risk or a pointer on it while it is gone.
 	codeNodeGone = "NODE_GONE"
 	// codeNotProposed is a settle of a node that is not at proposed.
 	codeNotProposed = "NODE_NOT_PROPOSED"
@@ -72,37 +72,42 @@ const (
 )
 
 // nodeGone is the 409 NODE_GONE of a write on the node of kind kind that address names, which
-// the store holds gone.
+// the store holds gone, in words that hold for every node it answers: no write writes on it, and
+// for a lens, a finding, a risk or a constraint (refs.StandingKinds), whose gone no write undoes,
+// gone is final. A block of a document a version dropped is gone too, and a later version that
+// holds the block again restores it, so its refusal says nothing of finality.
 func nodeGone(kind, address string) error {
-	return errorf(http.StatusConflict, codeNodeGone,
-		"the %s %s is gone, and gone is final: no write moves it or writes on it again", kind, address)
+	if slices.Contains(refs.StandingKinds(), kind) {
+		return errorf(http.StatusConflict, codeNodeGone, "the %s %s is gone, and gone is final: no write writes on it", kind, address)
+	}
+	return errorf(http.StatusConflict, codeNodeGone, "the %s %s is gone: no write writes on it", kind, address)
 }
 
 // lensGoneNotPermitted is the 403 STATE_NOT_PERMITTED of a move of the lens target into gone by a
-// caller who is no person (spec requirement r-proposed). That move takes everything under the lens
-// to gone with it, findings and risks the caller may not see among them, so it is a person's
+// caller who is no person (spec requirement r-proposed). That move takes the lens's findings and
+// its risks to gone with it, those the caller may not see among them, so it is a person's
 // alone: a rule that read what the lens holds would tell the caller what stands under it. So the
 // refusal reads nothing under the lens and names the lens alone, in the same words whatever the
 // lens holds, and the lens's own author is refused it as every other caller is; an agent marks a
 // lens it wrote overtaken instead.
 func lensGoneNotPermitted(target stateTarget) error {
 	return errorf(http.StatusForbidden, codeStateNotPermitted,
-		"this credential may not move the %s %s to gone: a person alone takes a lens to gone, with everything under it, and its author marks it overtaken instead",
+		"this credential may not move the %s %s to gone: a person alone takes a lens to gone, with its findings and its risks, and its author marks it overtaken instead",
 		target.kind, target.address)
 }
 
-// itemBlockRefusal is the 409 NODE_STATE_NOT_WRITABLE of a write of asked on target, held at held,
-// where target is a block of an ask, a comment or a message, which a tuple names by its item's
-// block kind (refs.ItemKind.BlockKind, farEndOf) and the store holds no row of; nil for any other
-// node. With no row there is nothing for the write to move.
-func itemBlockRefusal(target stateTarget, held, asked string) error {
+// itemBlockRefusal is the 409 NODE_STATE_NOT_WRITABLE of a write of asked on target, where target
+// is a block of an ask, a comment or a message, which a tuple names by its item's block kind
+// (refs.ItemKind.BlockKind, farEndOf) and the store holds no row of, so every read answers it
+// live; nil for any other node. With no row there is nothing for the write to move.
+func itemBlockRefusal(target stateTarget, asked string) error {
 	item, _, _, isItemBlock := refs.ParseItemBlockNode(target.end.id)
 	if !isItemBlock || item.BlockKind() != target.end.kind {
 		return nil
 	}
 	return errorf(http.StatusConflict, codeStateNotWritable,
 		"the %s %s is %s and takes no %s: the store keeps no node of a block of an ask, a comment or a message, so every read answers such a block live and no write stores its state",
-		target.kind, target.address, held, asked)
+		target.kind, target.address, graphstore.StateLive, asked)
 }
 
 // stateTarget is the node a write of its state names: its kind as the graph addresses it, the
@@ -321,7 +326,7 @@ func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 			if err := stateRefusal(target, graphstore.StateLive, input.State); err != nil {
 				return err
 			}
-			if err := itemBlockRefusal(target, graphstore.StateLive, input.State); err != nil {
+			if err := itemBlockRefusal(target, input.State); err != nil {
 				return err
 			}
 			return errorf(http.StatusConflict, codeStateNotWritable,

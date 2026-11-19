@@ -134,7 +134,7 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 // the document artifactID, stored at refKey (spec requirement r-constraint-risk): nobody runs a
 // retired document's checks, so no risk stays prevented by one, as the index pass retracts each
 // prevented_by at a block a version drops (refs' retractGonePointers), through the same read
-// (refs.CurrentPreventionsSQL). The blocks are those the document's document_blocks rows name,
+// (refs.PreventionRetractions). The blocks are those the document's document_blocks rows name,
 // which a retirement keeps; a block a version dropped took its pointers with it then. A
 // constrained_by out of a requirement of the document stays: what the requirement was held to is
 // the record of the document, which stays readable. Each retraction is dated at and signed by
@@ -146,24 +146,9 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 // the risk a check covered may be one only its author may see, and a count served beside the
 // document would tell another reader it is there.
 func retiredPreventions(ctx context.Context, tx pgx.Tx, artifactID, refKey string, at time.Time, actor model.Actor) ([]graphstore.Tuple, error) {
-	rows, err := tx.Query(ctx, `
-		`+refs.CurrentPreventionsSQL(`checked.from_kind, checked.from_id, checked.to_id`,
-		`array(select held.node_id from document_blocks held where held.artifact_id = $1::uuid)`)+`
-		order by checked.to_id, checked.from_kind, checked.from_id
-	`, artifactID)
+	retracted, err := refs.PreventionRetractions(ctx, tx, `array(select held.node_id from document_blocks held where held.artifact_id = $1::uuid)`,
+		[]any{artifactID}, at, actor, graphstore.NoEvent)
 	if err != nil {
-		return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)
-	}
-	defer rows.Close()
-	var retracted []graphstore.Tuple
-	for rows.Next() {
-		tuple := graphstore.Tuple{Kind: graphstore.TuplePreventedBy, ToKind: refs.BlockNodeKind, At: at, Who: actor, Asserted: false}
-		if err := rows.Scan(&tuple.FromKind, &tuple.FromID, &tuple.ToID); err != nil {
-			return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)
-		}
-		retracted = append(retracted, tuple)
-	}
-	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)
 	}
 	if len(retracted) > 0 {
