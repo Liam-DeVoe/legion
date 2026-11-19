@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -71,10 +72,14 @@ func TestAStandbyThatReplacesALapsedHoldEndsThePreviousHoldersSessionsAlone(t *t
 	if err := tx.QueryRow(ctx, `select 1`).Scan(&one); !store.SessionEnded(err) {
 		t.Errorf("the stopped process's transaction answered %v after the take, want SQLSTATE 57P01", err)
 	}
-	var free bool
-	if err := standbyStore.Pool.QueryRow(ctx, `select pg_try_advisory_xact_lock($1)`, key).Scan(&free); err != nil || !free {
-		t.Errorf("the stopped process's lock after the take: free = %v, %v; want free", free, err)
-	}
+	// The backend gives its locks up as it exits, a moment after pg_terminate_backend signalled it.
+	waitFor(t, 10*time.Second, "the stopped process's lock free after the take", func() bool {
+		var free bool
+		if err := standbyStore.Pool.QueryRow(ctx, `select pg_try_advisory_xact_lock($1)`, key).Scan(&free); err != nil {
+			t.Fatalf("try the stopped process's lock: %v", err)
+		}
+		return free
+	})
 	if !strings.Contains(logged.String(), fmt.Sprintf("previous=%s pid=%d ", identity, holderPID)) {
 		t.Errorf("the standby logged no end of the stopped process's transaction (backend %d):\n%s", holderPID, logged.String())
 	}

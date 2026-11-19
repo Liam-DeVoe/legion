@@ -200,12 +200,20 @@ func TestEndSessionsOfEndsTheSessionsOfOneIdentityAlone(t *testing.T) {
 		t.Errorf("EndSessionsOf(%s) did not end the session of no store that names it: it ended %+v", identity, sessions)
 	}
 
-	// The lock is free: the ending store takes it at once.
-	var taken bool
-	if err := ending.Pool.QueryRow(ctx, `select pg_try_advisory_lock($1)`, key).Scan(&taken); err != nil || !taken {
-		t.Errorf("the ended transaction's lock: try = %v, %v; want it free", taken, err)
-	} else if _, err := ending.Pool.Exec(ctx, `select pg_advisory_unlock_all()`); err != nil {
-		t.Fatal(err)
+	// pg_terminate_backend answers once the backend is signalled, and the backend gives its locks
+	// up as it exits, so the lock is tried until it is free, which it must be within 10 s. Each try
+	// is a transaction-level lock, given back as its own statement ends.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var taken bool
+		if err := ending.Pool.QueryRow(ctx, `select pg_try_advisory_xact_lock($1)`, key).Scan(&taken); err != nil {
+			t.Fatalf("try the ended transaction's lock: %v", err)
+		}
+		if taken {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the ended transaction's lock is still held 10 s after its session was ended")
+		}
 	}
 	var one int
 	err = tx.QueryRow(ctx, `select 1`).Scan(&one)
