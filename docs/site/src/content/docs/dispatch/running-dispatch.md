@@ -360,8 +360,13 @@ so the reset ends each there: a sign-in and a machine login with the calls Dispa
 page makes, and a page session with the broker's own `envoy-broker end-sessions`. A service's
 machine login, the Legion daemon's, is not a person's and is left. The calls take the broker's
 URL and a token of Dispatch's own ServiceAccount, kept off every command line as the machine-login
-block below keeps it. Each call that fails prints `NOT REVOKED <id>` or `NOT ENDED <login>`, and
-the last step reads the broker's database again:
+block below keeps it. The subcommand writes the broker's database as the serving broker does, so
+it runs wherever your deployment runs a one-off process of the broker's image, with the serving
+broker's settings: its database URL and whatever it signs in to the database with,
+`BROKER_PUBLIC_URL`, and its secret store's settings, with `BROKER_SIGNIN=off` in place of every
+`BROKER_SIGNIN_*` setting where the image has that setting. `broker_run` below is the command
+that runs its arguments there. Each call that fails prints `NOT REVOKED <id>` or
+`NOT ENDED <login>`, and the last step reads the broker's database again:
 
 ```sh
 (
@@ -370,6 +375,7 @@ set -o pipefail
 header=$(mktemp) || exit 1
 trap 'rm -f "$header"' EXIT
 broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
+broker_run() { '<the command that runs its arguments where your deployment runs a broker subcommand>' "$@"; }
 token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
 printf 'Authorization: Bearer %s\n' "$token" >"$header"
 signins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select id, person from person_signins where revoked_at is null order by id"; }
@@ -382,7 +388,7 @@ logins | while read -r id approver; do
   curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"approver\":\"$approver\"}" "$broker_url/v1/launcher-credentials/$id/revoke-by-approver" || echo "NOT REVOKED $id"
 done
 pages | while read -r login; do
-  kubectl -n '<the namespace the broker runs in>' exec deploy/broker -- envoy-broker end-sessions "$login" || echo "NOT ENDED $login"
+  broker_run envoy-broker end-sessions "$login" || echo "NOT ENDED $login"
 done
 if left=$( { signins && logins && pages; } ); then
   if [ -z "$left" ]; then echo 'no person credential is live at the broker'; else printf 'STILL LIVE:\n%s\n' "$left"; false; fi

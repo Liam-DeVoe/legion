@@ -687,10 +687,14 @@ extended, so a person whose Workspace account is suspended can still approve unt
 When Google gives an address to another account, nothing here is needed for the account it
 replaced: the revoke Dispatch sends ends that account's sessions and refuses its sign-in, and
 leaves the new holder's sessions alone. To end every browser session one login holds, wherever
-and whenever it was made and whichever account made it, run the subcommand in a broker pod:
+and whenever it was made and whichever account made it, run the subcommand `end-sessions` with
+that login wherever your deployment runs a one-off process of the broker's image, with the
+serving broker's settings (its database URL and whatever it signs in to the database with,
+`BROKER_PUBLIC_URL` and its secret store's settings) and `BROKER_SIGNIN=off` in place of every
+`BROKER_SIGNIN_*` setting where the image has that setting:
 
 ```sh
-kubectl exec deploy/broker -- envoy-broker end-sessions ada@example.com
+envoy-broker end-sessions ada@example.com
 end-sessions: ended 2 sessions of ada@example.com
 ```
 
