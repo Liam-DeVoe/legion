@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // goingReadRoutes is the rows of the route table each read tool reads through. A caller is
@@ -497,8 +498,8 @@ func (g *goingReadRun) projectProgress(ctx context.Context, project string) (goi
 // and open is passed its "match everything" value; keep this list in step with listIssues, since a
 // column added to the query shifts these positions.
 func (s *server) goingIssuePage(ctx context.Context, project, parent string, open bool) ([]model.IssueSummary, int, error) {
-	arguments := []any{project, []string{}, parent, microsecondCeiling(nil), []string{}, open, []int16{}, false,
-		microsecondCeiling(nil), microsecondCeiling(nil), []string{}, false, false, false, goingReadIssueMax, 0}
+	arguments := []any{project, []string{}, parent, store.MicrosecondCeiling(nil), []string{}, open, []int16{}, false,
+		store.MicrosecondCeiling(nil), store.MicrosecondCeiling(nil), []string{}, false, false, false, goingReadIssueMax, 0}
 	return s.scanIssuePage(ctx, listIssuesPageQuery, arguments)
 }
 
