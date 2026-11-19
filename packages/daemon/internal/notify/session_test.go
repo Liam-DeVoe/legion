@@ -3,12 +3,14 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -239,5 +241,73 @@ func TestReadSessionRegistrationTellsARefusalFromAnEntry(t *testing.T) {
 				t.Fatalf("ReadSessionRegistration = %+v, %v, want a failure naming %q", registration, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// heldListener answers each request hold after it arrived, with a 200 and body, or ends it the
+// moment the request's own context ends first: a listener that takes hold to answer the clean
+// stop's read or delete. It stands in for the connection itself, so in a synctest bubble the hold
+// is the bubble's clock and the run waits for nothing.
+type heldListener struct {
+	hold time.Duration
+	body string
+}
+
+func (l heldListener) RoundTrip(r *http.Request) (*http.Response, error) {
+	select {
+	case <-time.After(l.hold):
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(l.body)), Request: r}, nil
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+}
+
+// The clean stop's read and delete have one bound, the context the daemon's stop gives them (its
+// budget, sessionStop.send in packages/daemon/internal/daemon/daemon.go), and none of the client's
+// own: requestTimeout bounds a publish and a role lookup alone. So a listener that answers past
+// requestTimeout but inside the budget is waited for, and one that answers after the budget is
+// given up at the budget. Each row runs in a synctest bubble, whose clock moves only while every
+// goroutine in it waits, so the holds and the budget are times on that clock, not on the run's.
+func TestTheCleanStopsReadAndDeleteEndAtTheirContextAlone(t *testing.T) {
+	const budget = 30 * time.Second
+	for _, request := range []struct {
+		name string
+		body string
+		send func(ctx context.Context, p *HTTPPublisher) error
+	}{
+		{name: "the registry read", body: `{"session_id":"ses_dead","client_instance_id":"inst_dead","last_seen":1762560000000}`,
+			send: func(ctx context.Context, p *HTTPPublisher) error {
+				_, err := p.ReadSessionRegistration(ctx, "ses_dead")
+				return err
+			}},
+		{name: "the session delete", body: `{"deleted":true}`,
+			send: func(ctx context.Context, p *HTTPPublisher) error {
+				_, err := p.DeleteSession(ctx, "ses_dead", DeleteConditions{ClientInstanceID: "inst_dead", NotRegisteredAfter: time.Now()})
+				return err
+			}},
+	} {
+		for _, hold := range []time.Duration{requestTimeout + time.Second, budget + time.Minute} {
+			t.Run(fmt.Sprintf("%s, answered after %s", request.name, hold), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					p := New("http://listener.invalid", "envoy-bearer")
+					p.stops.Transport = heldListener{hold: hold, body: request.body}
+					ctx, cancel := context.WithTimeout(context.Background(), budget)
+					defer cancel()
+					began := time.Now()
+					err := request.send(ctx, p)
+					took := time.Since(began)
+					if hold < budget {
+						if err != nil || took != hold {
+							t.Fatalf("%s answered %s into a budget of %s ended after %s with %v, want the answer it waited for", request.name, hold, budget, took, err)
+						}
+						return
+					}
+					if !errors.Is(err, context.DeadlineExceeded) || took != budget {
+						t.Fatalf("%s the listener would answer after %s ended after %s with %v, want it given up at its budget of %s", request.name, hold, took, err, budget)
+					}
+				})
+			})
+		}
 	}
 }
