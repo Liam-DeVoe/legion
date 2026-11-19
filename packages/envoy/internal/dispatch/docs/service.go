@@ -1918,8 +1918,9 @@ const (
 	settlePastDeadline
 	// settleOverloaded is a settlement the database did not serve (store.Unserved: the
 	// settlements pool's or the rooms pool's acquire bound ran out, or the database stopped
-	// answering inside it, the statement it may still have run included). The pending-settlement row
-	// leaves it to resume, so overload fails no room (maxSettleFailures).
+	// answering inside it, the statement it may still have run included), or whose warm-up's load
+	// ran out the bound on its reads before the database answered them (errLoadReadsBound). The
+	// pending-settlement row leaves it to resume, so overload fails no room (maxSettleFailures).
 	settleOverloaded
 	// settleRefusedInShutdown is a settlement that had to write into a room Shutdown has begun
 	// closing, which refused the write (allowInject, ErrServiceUnavailable). The pending-settlement

@@ -221,8 +221,9 @@ func skipUnreadableSettlement(room string, err error) bool {
 // pending-settlement row leaves it to resume (onLoadDocument, RunSettlementResumption). That is how
 // a shutdown that cannot settle every room within its budget leaves the rest to the next process. A
 // settlement the database did not serve (store.Unserved: the settlements pool's or the rooms
-// pool's acquire bound ran out, or the database stopped answering inside it) is left to resume
-// the same way, so overload fails
+// pool's acquire bound ran out, or the database stopped answering inside it), or whose warm-up's
+// load ran out the bound on its reads before the database answered them (errLoadReadsBound), is
+// left to resume the same way, so overload fails
 // no room (maxSettleFailures). It is one outcome for all three shapes that bound names, the
 // statement the database may still have run included: a settlement pass reads the document
 // again and writes what it reads, so running it again costs nothing whatever the statement did,
@@ -269,11 +270,11 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	settle := &settlement{service: s, room: room, generation: generation}
 	// stopShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room: a retry, unless its deadline or parent has ended, the pools refused it
-	// a connection, the document has been removed or Shutdown refused the write. The generation it
-	// counts that retry's failure against is the one the settlement stands at now, which its
-	// passes move as they read the room again. An err that is the append gate's refusal of an
-	// update the room took after its issue closed is no fault to retry: it ends the settlement
-	// (endOnRefusedUpdate).
+	// a connection or its warm-up's load ran out its reads' bound (settleOverloaded), the document
+	// has been removed or Shutdown refused the write. The generation it counts that retry's
+	// failure against is the one the settlement stands at now, which its passes move as they read
+	// the room again. An err that is the append gate's refusal of an update the room took after its
+	// issue closed is no fault to retry: it ends the settlement (endOnRefusedUpdate).
 	settle.stopShort = func(removed Queryer, err error) settleOutcome {
 		if errors.Is(err, ErrIssueClosed) {
 			return settle.endOnRefusedUpdate()
@@ -284,7 +285,7 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 			next = settlePastDeadline
 		case parent.Err() != nil:
 			next = settleOutOfBudget
-		case store.Unserved(parent, err):
+		case store.Unserved(parent, err) || errors.Is(err, errLoadReadsBound):
 			next = settleOverloaded
 		case settle.documentRemoved(parent, removed):
 			return settleOutcome{}

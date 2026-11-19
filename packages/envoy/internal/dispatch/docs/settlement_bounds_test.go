@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -269,7 +270,10 @@ func TestAnOwedSettlementLoadsTheRoomTheIdleSweepUnloadedAndSettles(t *testing.T
 	// the room, the deadline the first ran under, and the connections each pool handed out from the
 	// first settlement's start to the end of its warm-up. A retry after it, were the sweep to take
 	// the room again mid-settlement, changes none of the first's figures.
+	// The connection counts are the pools' own, process-wide, so the test reads nothing of the
+	// request pool while they run: it waits for the warm-up (warmed) before it polls the version.
 	var measuring atomic.Bool
+	warmed := make(chan struct{})
 	var seen struct {
 		sync.Mutex
 		loads                      int
@@ -310,6 +314,7 @@ func TestAnOwedSettlementLoadsTheRoomTheIdleSweepUnloadedAndSettles(t *testing.T
 				seen.roomsTook = poolAcquires(service, store.RoomsPool) - seen.roomsAt
 				seen.requestsTook = poolAcquires(service, store.RequestsPool) - seen.requestsAt
 				seen.settlementsAt = settlements.Stat().AcquireCount()
+				close(warmed)
 			}
 			seen.Unlock()
 		}
@@ -342,6 +347,11 @@ func TestAnOwedSettlementLoadsTheRoomTheIdleSweepUnloadedAndSettles(t *testing.T
 
 	measuring.Store(true)
 	service.SettleNow(artifactID)
+	select {
+	case <-warmed:
+	case <-time.After(roomWait(t)):
+		t.Fatalf("the owed settlement did not warm the room within %v", roomWait(t))
+	}
 	waitForDocumentVersion(t, service.store, artifactID, versions+1)
 	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
 
@@ -368,6 +378,156 @@ func TestAnOwedSettlementLoadsTheRoomTheIdleSweepUnloadedAndSettles(t *testing.T
 	// read the clock.
 	if latest := seen.started.Add(service.settleTimeout); !seen.bounded || seen.deadline.After(latest) || seen.deadline.Before(latest.Add(-time.Second)) {
 		t.Errorf("the room's load for the settlement was handed deadline %v (bounded %v), want the settlement's own, within a second before %v (its start plus settleTimeout, %v)", seen.deadline, seen.bounded, latest, service.settleTimeout)
+	}
+}
+
+// An owed settlement whose room is not resident warms it first (settleRoomWithin), and the load
+// that warm-up runs reads the rooms pool under its reads' own bound, a cold read's
+// (coldReadTimeout, onLoadDocument), not under the settlement's deadline. A load that runs that
+// bound out before the database answers (errLoadReadsBound) has met a bound of this server's own,
+// which says nothing of the document, so the settlement stops short as one the database did not
+// serve does (settleOverloaded): it wrote nothing into the room, starts no retry and counts no
+// failure, and the document stays owed, unsettled, for the resumption, which settles it once the
+// rooms pool answers again. Counted as a failure, three such stops in a row would fail the room
+// (maxSettleFailures). Here the room is closed with the settlement owed and every rooms-pool
+// connection is taken as the warm-up's load decodes the history, with the pool's acquire bound a
+// minute, so the reads' bound, shortened to a second, is what ends the load's read
+// (TestASocketWhoseRoomLoadRunsPastItsReadsBoundIsRefused503). The settlement runs as its timer
+// runs it (SettleNow), in place of the edit's own arming an hour away, and the resumption runs as
+// the server runs it (RunSettlementResumption), every second here: a pass arms a document's
+// settlement once its pending-settlement row is a minute old (settlementResumeAge), which this
+// row's marked_at is moved back to rather than waited out.
+func TestAnOwedSettlementWhoseWarmUpLoadRunsOutItsReadsBoundStaysOwedForTheResumption(t *testing.T) {
+	logs := captureWarnings(t)
+	database := storetest.Open(t)
+	database.Pool.SetAcquireBoundForTest(store.RoomsPool, time.Minute)
+	previous := coldReadTimeout
+	coldReadTimeout = time.Second
+	t.Cleanup(func() { coldReadTimeout = previous })
+	artifactID := createDocument(t, database, "# First")
+	deps := testServiceDeps(database)
+	deps.Settle = time.Hour
+	deps.SettlementResume = time.Second
+	service := New(deps)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	leases := excerptLeases(t, database)
+	resumption, stop := context.WithCancel(context.Background())
+	resumed := make(chan struct{})
+	go func() {
+		defer close(resumed)
+		service.RunSettlementResumption(resumption, leases)
+	}()
+	t.Cleanup(func() {
+		stop()
+		<-resumed
+	})
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	// The edit, once stored, owes the document a settlement, which the settle delay of an hour
+	// leaves armed and not run.
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
+	versions := latestVersionNumber(t, service, artifactID)
+	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+		t.Fatalf("close the document's room: %v", err)
+	}
+	waitForNoLiveDocument(t, service, artifactID)
+	ctx := context.Background()
+	owes, err := settlementPending(ctx, service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
+	}
+	if !owes {
+		t.Fatal("the document's pending-settlement row is gone once its room closed, want it kept: nothing has settled the edit")
+	}
+
+	holds := make(chan heldRoomsPool, 1)
+	t.Cleanup(func() { releaseHeldRoomsPool(holds) })
+	var decodes atomic.Int32
+	service.bootstrapping = func(room string, _ []byte) {
+		if room == artifactID && decodes.Add(1) == 1 {
+			holds <- takeTheRoomsPool(t, service)
+		}
+	}
+	// The record the settlement and its room's load run on, taken while the edit's arming holds
+	// it: once no settlement is armed or running, the service may let it go.
+	state := service.room(artifactID)
+	service.SettleNow(artifactID)
+	waitFor(t, roomWait(t), "the settlement whose warm-up load is held to log how it stopped short", func() bool {
+		return logs.Lines("was not served by the database") != "" || logs.Lines("dispatch: settle document") != ""
+	})
+	if decodes.Load() == 0 {
+		t.Fatal("the settlement's warm-up never decoded the room, so its load read nothing under its reads' bound")
+	}
+
+	// (1) The settlement stopped short on its load's reads' bound, as one the database did not serve.
+	var loadErr error
+	if failure := state.latestLoadFailure(); failure != nil {
+		loadErr = failure.err
+	}
+	if !errors.Is(loadErr, errLoadReadsBound) {
+		t.Fatalf("the warm-up's load ended with %v, want its reads' bound (errLoadReadsBound): something else ended the read the held rooms pool kept waiting", loadErr)
+	}
+	line := logs.Lines("dispatch: document settlement was not served by the database; the resumption settles it")
+	for _, want := range []string{"room=" + artifactID, "warm document for settlement", errLoadReadsBound.Error()} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the settlement whose warm-up load ran out its reads' bound logged %q, which lacks %q: want the line of a settlement the database did not serve, left to the resumption; the log was:\n%s", line, want, logs.String())
+			break
+		}
+	}
+	// (2) It counted no failure, failed no room and armed no retry, and the document is still
+	// owed and unsettled.
+	state.mu.Lock()
+	failures, failed := state.settleFailures, state.failed
+	state.mu.Unlock()
+	if failures != 0 || failed != nil {
+		t.Errorf("settlement failures = %d, room failure = %v; want none for a bound of this server's own", failures, failed)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+	waitFor(t, roomWait(t), "no settlement of the document to be armed or running once it stopped short, where a retry would be", func() bool {
+		return !settlementUnderway(service, artifactID)
+	})
+	owes, err = settlementPending(ctx, service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
+	}
+	if !owes {
+		t.Fatal("the document's pending-settlement row is gone once its settlement stopped short, want it kept for the resumption: nothing settled the edit")
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions {
+		t.Fatalf("latest version = %d, want %d: no settlement whose warm-up load failed commits", latest, versions)
+	}
+	t.Logf("the settlement stopped short: %s", strings.TrimSpace(line))
+
+	// (3) With the rooms pool given back and the row a minute old, the resumption's next pass arms
+	// the settlement, whose warm-up loads the room, and it settles the document.
+	held := <-holds
+	held.release()
+	service.settle = 10 * time.Millisecond
+	if _, err := service.store.Pool.Exec(ctx, `
+		update doc_settlements_pending set marked_at = now() - interval '2 minutes' where artifact_id = $1
+	`, artifactID); err != nil {
+		t.Fatalf("make the document's pending-settlement row a minute old: %v", err)
+	}
+	waitFor(t, roomWait(t), "the resumption to settle the document", func() bool {
+		return latestVersionNumber(t, service, artifactID) > versions
+	})
+	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
+	if loads := decodes.Load(); loads < 2 {
+		t.Fatalf("the room was decoded %d time(s), want the resumed settlement's warm-up to have loaded it again", loads)
+	}
+	owes, err = settlementPending(ctx, service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
+	}
+	if owes {
+		t.Fatal("the document's pending-settlement row stands once the resumption versioned the document, want it gone")
 	}
 }
 
