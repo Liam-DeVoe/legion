@@ -142,7 +142,7 @@ end the turn with a WAITING line naming the hold, and subscribe to nothing for i
 of the document the daemon sends you a `merge-holds-changed` notice, which wakes you also when
 the daemon released your pod. On it, read the document again: wait again while a line holds the
 sign-off, and go on once none does. Read the document again before you sign off on any other
-wake too (`skill://legion-architect/references/acceptance.md#a-merge-hold`).
+wake too.
 Then accept with `sign_off`, which moves the child to retro, or
 send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
 The gate is the `before_merge` checks of the issue's own Verification document, read at the

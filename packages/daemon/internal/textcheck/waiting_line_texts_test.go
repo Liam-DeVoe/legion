@@ -115,13 +115,12 @@ var waitingLineContractTexts = []string{
 // since the product half reads the sections and no longer the files. It is also what the ban
 // below reads, over the whole of each file.
 var waitingLineBandTexts = []string{
-	"AGENTS.md",
 	runningLegionGuide,
 	"docs/site/src/content/docs/legion/troubleshooting.md",
 	"packages/contracts/src/legion-api.ts",
 	"skills/legion-controller/references/admission.md",
 	"docs/site/src/content/docs/legion/concepts.md",
-	"skills/legion-architect/references/acceptance.md",
+	"skills/legion-controller/references/wakes.md",
 }
 
 // quotedText is one section of a committed copy: the repository-relative path it was taken from

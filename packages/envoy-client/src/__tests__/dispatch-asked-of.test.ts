@@ -205,61 +205,36 @@ test("the two shared sentences stand in both ask descriptions and in the dispatc
 // "the ask ... hand it to". The scan reads every file under skills/, every packages/*/AGENTS.md
 // and every dispatch_* tool description, which is every text that tells an agent how asks work.
 //
-// A hit is not a defect by itself: a line can say "by hand", hand a turn back inside one ask's
-// thread, or state for whoever edits the code who an ask waits on. So the scan fails on a hit the
-// allowlist below does not hold, each entry its source and the half-line that matched, so a later
-// reader judges the line rather than a count. An entry that matches nothing fails too: a line that
-// moved or changed its wording is re-read rather than left allowed. The shape follows the
-// retired-phrase scan in `packages/pi-legion/src/skills-guard.test.ts`.
+// A hit is not a defect by itself: most of these lines say "hand the work over" or name an anchor
+// called `finding-asks.md#hand-over-a-clear-defect`. So the scan fails on a hit the allowlist
+// below does not hold, each entry its source and the half-line that matched, so a later reader
+// judges the line rather than a count. An entry that matches nothing fails too: a line that moved
+// or changed its wording is re-read rather than left allowed. The shape follows the retired-phrase
+// scan in `packages/pi-legion/src/skills-guard.test.ts`.
 const NEAR = 40;
 const MOVING_WORDS = /\b(?:hand|handed|hands|address|addressed|redirect|redirects)\b/gi;
 const AN_ASK = /\basks?\b/gi;
 
 /** Every `[source, excerpt]` the scan may see, with why the line says nothing about who an ask
- *  goes to. The comment above each group of entries gives that group's reason. */
+ *  goes to. The last two are this change's own sentences, which say it and say it right. */
 const ALLOWED: readonly (readonly [string, string])[] = [
-  // "by hand", the adverb: a human resolving a review thread themselves.
+  // Handing over the *work*, never the ask.
   [
-    "skills/legion-worker/references/review-threads.md",
-    "which opens a `dispatch ask` for a human to resolve it by hand; never skip it",
+    "skills/legion-worker/references/findings.md",
+    "## Fix it where you are, else hand it over, and ask only for a",
   ],
   // Handing a turn back inside one ask's thread, which moves nobody's list.
   [
     "skills/legion-architect/references/wake-routing.md",
     "request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`,",
   ],
+  // A link to a section of a reference file, whose anchor holds the word.
+  ["skills/legion-controller/SKILL.md", "finding-asks.md#hand-over-a-clear-defect`"],
   [
-    "skills/legion-controller/references/parked-decisions.md",
-    "ask hands the turn to the person. For",
+    "skills/legion-controller/references/consolidation.md",
+    "finding-asks.md#hand-over-a-clear-defect`",
   ],
-  [
-    "skills/legion-controller/references/parked-decisions.md",
-    "same ask, and a session's reply there hands the turn to the person, as",
-  ],
-  [
-    "packages/pi-envoy/AGENTS.md",
-    "version moved, which no reply hands back: the client then reads the ask and adds a line naming the",
-  ],
-  ["packages/envoy/AGENTS.md", "agent replying to a deferred ask hands the turn back without"],
-  // The web app's own behaviour, written for whoever edits it, never for an agent.
-  [
-    "packages/dispatch/AGENTS.md",
-    "its thread's replies, and an ask link focuses its Conversation turn or redirects to the document whose margin",
-  ],
-  [
-    "packages/dispatch/AGENTS.md",
-    "below its document version; a hand-back (`ask.handed_back`, which",
-  ],
-  [
-    "packages/dispatch/AGENTS.md",
-    "or resolved elsewhere) or hands its turn the other way (their own ask-back, an agent's progress",
-  ],
-  // The block-id repair in the server, which hands rows around, not asks.
-  [
-    "packages/envoy/AGENTS.md",
-    "(an id holding a NUL, which a hand-built client can set and no ask row or anchor can store,",
-  ],
-  ["packages/envoy/AGENTS.md", "since the id repair would hand the held ask's row and answer to"],
+  // Tool descriptions that state who an ask waits on and what a hand-on moves.
   [
     "dispatch_issue_update description",
     "this issue's asks, and every ask on it waits on them until a person hands that ask on",
@@ -267,45 +242,6 @@ const ALLOWED: readonly (readonly [string, string])[] = [
   [
     "dispatch_claim description",
     "to it, except in an ask you follow: anyone else's answer, hand-back, resolution or edit of",
-  ],
-  // The guides of this repository, which state the rule for whoever edits the code rather than
-  // telling an agent to use it: who an ask waits on, and what a hand-on moves.
-  [
-    "packages/contracts/AGENTS.md",
-    "Every ask on the issue waits on the person it was handed to, else the assignee, else the project's default assignee",
-  ],
-  [
-    "packages/contracts/AGENTS.md",
-    "on an `ask.asked_of` the two people the hand-on moved the ask between",
-  ],
-  ["packages/dispatch/AGENTS.md", "A hand-on is there for the reason a reassignment is"],
-  [
-    "packages/dispatch/AGENTS.md",
-    "the lowercase email of who an ask on it waits on until somebody hands that ask to another person",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "email of the person every ask on it waits on until somebody hands that ask to another person",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "the person an ask on the issue waits on until somebody hands it on, or, while the issue holds nobody, its project's default assignee",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "`ask.asked_of` names two people instead, the person the ask waited on and the person it waits on now",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "the asks handed to them, the asks on the issues assigned to them that nobody has handed on",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "the person the ask was handed to, the assignee of its issue until somebody hands it on",
   ],
 ];
 
