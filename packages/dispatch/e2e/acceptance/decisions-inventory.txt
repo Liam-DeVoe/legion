@@ -1741,6 +1741,7 @@ docs/superpowers/specs/assets/2026-09-09-dispatch-native-issue-phone.png	no
 docs/testing.md	no
 packages/claude-envoy/AGENTS.md	no
 packages/claude-envoy/README.md	no
+packages/claude-envoy/codex/README.md	no
 packages/contracts/AGENTS.md	no
 packages/contracts/README.md	no
 packages/contracts/fixtures/classification/README.md	no
