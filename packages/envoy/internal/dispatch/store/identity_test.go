@@ -2,227 +2,109 @@ package store
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
-	"unicode/utf8"
+	"testing/fstest"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 )
 
-// An application_name is the base, one space and the identity, with the base cut on a rune
-// boundary so the whole fits the 63 bytes Postgres keeps and the identity is whole at its end.
-func TestAnApplicationNameEndsWithTheWholeIdentity(t *testing.T) {
-	identity := uuid.New()
-	for _, row := range []struct{ name, base, want string }{
-		{"a short base is kept", "dispatch-rooms", "dispatch-rooms " + identity.String()},
-		{"a long base is cut to 26 bytes", strings.Repeat("b", 40), strings.Repeat("b", 26) + " " + identity.String()},
-		{"a base cut inside a rune loses the rune", strings.Repeat("b", 25) + "é" + "tail", strings.Repeat("b", 25) + " " + identity.String()},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			got := applicationName(row.base, identity)
-			if got != row.want || len(got) > maxApplicationName || !utf8.ValidString(got) {
-				t.Fatalf("applicationName(%q) = %q (%d bytes), want %q", row.base, got, len(got), row.want)
-			}
-		})
-	}
-	if got := applicationName("dispatch-rooms", uuid.Nil); got != "dispatch-rooms" {
-		t.Fatalf("applicationName with no identity = %q, want the base alone", got)
-	}
+// Dispatch's runner judges what schema_migrations records of each version against the set's file
+// of that version before it applies anything, by the rule pgmigratetest.RunIdentityChecks holds it
+// to.
+func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
+	pgmigratetest.RunIdentityChecks(t, versionTable, func(t *testing.T) (pgmigratetest.Database, pgmigratetest.Migrate) {
+		store := openEmptyTestStore(t)
+		return store.Pool, store.migrate
+	})
 }
 
-// Every connection a store opens names its identity at the end of its application_name: the
-// shared pool's, under the connection string's name or "dispatch", and each separate pool's,
-// under its own name or the shared pool's. A connection string's own name is kept before it.
-func TestEveryConnectionOfAStoreNamesItsIdentity(t *testing.T) {
-	ctx := context.Background()
-	for _, row := range []struct{ name, url, base string }{
-		{"no name in the connection string", testDatabaseURL(t), defaultApplicationName},
-		{"a name in the connection string", withParam(testDatabaseURL(t), "application_name", "dispatch-previous-build"), "dispatch-previous-build"},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			database, err := Open(ctx, row.url)
-			if err != nil {
-				t.Fatalf("open the store: %v", err)
-			}
-			t.Cleanup(database.Pool.Close)
-			identity := database.Pool.Identity()
-			if identity == uuid.Nil {
-				t.Fatal("the store has no identity")
-			}
-			suffix := " " + identity.String()
-			nameOf := func(q interface {
-				QueryRow(context.Context, string, ...any) pgx.Row
-			}) string {
-				t.Helper()
-				var name string
-				if err := q.QueryRow(ctx, `select current_setting('application_name')`).Scan(&name); err != nil {
-					t.Fatalf("read the application_name: %v", err)
-				}
-				return name
-			}
-			rooms, err := database.Pool.Rooms()
-			if err != nil {
-				t.Fatal(err)
-			}
-			appends, err := database.Pool.RoomAppends()
-			if err != nil {
-				t.Fatal(err)
-			}
-			compaction, err := database.Pool.Compaction()
-			if err != nil {
-				t.Fatal(err)
-			}
-			outbox, err := database.Pool.Outbox()
-			if err != nil {
-				t.Fatal(err)
-			}
-			textTrees, err := database.Pool.TextTrees()
-			if err != nil {
-				t.Fatal(err)
-			}
-			horizon, err := database.Pool.Horizon()
-			if err != nil {
-				t.Fatal(err)
-			}
-			listener, err := database.Pool.Listener(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer listener.Close(ctx)
-			dedicated, err := database.Pool.Dedicated(ctx, "dispatch-listener "+identity.String())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer dedicated.Close(ctx)
-			for _, named := range []struct{ what, got, want string }{
-				{"shared", nameOf(database.Pool), row.base + suffix},
-				{"rooms", nameOf(rooms), roomsApplicationName + suffix},
-				{"room appends", nameOf(appends), roomAppendsApplicationName + suffix},
-				{"compaction", nameOf(compaction), compactionApplicationName + suffix},
-				{"outbox", nameOf(outbox), row.base + suffix},
-				{"display tree fill", nameOf(textTrees), row.base + suffix},
-				{"event horizon", nameOf(horizon), row.base + suffix},
-				{"listener", nameOf(listener), row.base + suffix},
-				{"dedicated", nameOf(dedicated), "dispatch-listener" + suffix},
-			} {
-				if named.got != named.want {
-					t.Errorf("the %s pool's connection is named %q, want %q", named.what, named.got, named.want)
-				}
-			}
-			if outbox.Identity() != identity || textTrees.Identity() != identity {
-				t.Errorf("the outbox and display tree pools name %s and %s, want the store's %s", outbox.Identity(), textTrees.Identity(), identity)
-			}
-			if again, err := Open(ctx, row.url); err != nil {
-				t.Fatal(err)
-			} else {
-				defer again.Pool.Close()
-				if again.Pool.Identity() == identity {
-					t.Errorf("a second Open minted the identity %s again", identity)
-				}
-			}
-		})
-	}
-}
-
-// withParam is url with one more query parameter.
-func withParam(url, key, value string) string {
-	if strings.Contains(url, "?") {
-		return url + "&" + key + "=" + value
-	}
-	return url + "?" + key + "=" + value
-}
-
-// EndSessionsOf ends every session of one identity and nothing else: a store's own sessions,
-// a transaction among them holding an advisory lock, which it frees, and a session of no store
-// that names the identity; never a session of another store, nor two that differ from the
-// identity's name only at its end - one with a character more, one with a character less. The
-// ended transaction's next statement answers SQLSTATE 57P01, which SessionEnded reads.
-func TestEndSessionsOfEndsTheSessionsOfOneIdentityAlone(t *testing.T) {
-	ctx := context.Background()
-	ending := openTestStore(t)
-	ended := openTestStore(t)
-	identity := ended.Pool.Identity().String()
-
-	tx, err := ended.Pool.Begin(ctx)
+// The table main's runner from before identities leaves, as every production row is today,
+// records a version for every file of the shipped set and no name: the first boot of this runner
+// fills every row and refuses none (pgmigratetest.CheckVersionsOfAnEarlierRunner, which simulates
+// that table's shape with this runner and does not run main's). The check is the one
+// `envoy-dispatch versions` runs.
+func TestTheShippedSetMatchesADatabaseAnEarlierRunnerMigrated(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
 	if err != nil {
-		t.Fatalf("begin the ended store's transaction: %v", err)
+		t.Fatalf("load the shipped set: %v", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	const key = int64(91827364)
-	var holderPID int32
-	if err := tx.QueryRow(ctx, `select pg_backend_pid() from (select pg_advisory_xact_lock($1)) locked`, key).Scan(&holderPID); err != nil {
-		t.Fatalf("take the lock in the ended store's transaction: %v", err)
-	}
-	planted := map[string]*pgx.Conn{}
-	for _, name := range []string{
-		"psql " + identity,                // a session of no store naming the identity: ended
-		"dispatch " + identity + "0",      // one character more: kept
-		"dispatch " + identity[:35],       // one character less: kept
-		"dispatch " + uuid.NewString(),    // another identity: kept
-		"dispatch-planted" + identity[1:], // no space before a 35-byte tail of it: kept
+	databaseURL := store.Pool.Config().ConnString()
+	pgmigratetest.CheckVersionsOfAnEarlierRunner(t, versionTable, store.Pool, store.Migrate,
+		func(ctx context.Context) (*pgmigrate.VersionCheck, error) { return CheckVersions(ctx, databaseURL) }, len(migrations))
+}
+
+// Dispatch's runner gives its advisory key back between its first judgment of schema_migrations
+// (prepareVersionTable) and each migration, so another boot can record any version in between.
+// Before it applies a migration, the runner judges every row again against its whole set, so it
+// applies nothing while the table records a version under an identity the set refuses: here a
+// boot carrying 0001, 0002 and 0003 prepares, another boot then records version 3 under another
+// file, and the first boot's application of the pending 0002 is refused and leaves nothing, in
+// either apply mode. The control is the same sequence without the other boot's row, which applies
+// 0002.
+//
+// Control of the check itself: make pgmigrate.RecheckRecorded answer "not applied" without the
+// whole-table judgment when the version has no row, as it did when it read that version alone,
+// and the refused rows fail: 0002 is applied beside a version 3 the set refuses.
+func TestMigrateAppliesNothingWhileAnotherBootRecordsAConflictingVersion(t *testing.T) {
+	ctx := context.Background()
+	for name, second := range map[string]struct {
+		text, applied string
+	}{
+		"transactional":     {"create table race_second (id integer)", "select to_regclass('race_second') is not null"},
+		"non-transactional": {"-- pgmigrate:non-transactional\ncreate index concurrently if not exists race_first_id on race_first (id);", "select to_regclass('race_first_id') is not null"},
 	} {
-		config, err := pgx.ParseConfig(testDatabaseURL(t))
-		if err != nil {
-			t.Fatal(err)
+		for _, conflicting := range []bool{true, false} {
+			label := name + ", control: no other boot"
+			if conflicting {
+				label = name + ", another boot records version 3 under another file"
+			}
+			t.Run(label, func(t *testing.T) {
+				store := openEmptyTestStore(t)
+				first := fstest.MapFS{"migrations/0001_first.up.sql": {Data: []byte("create table race_first (id integer)")}}
+				if err := store.migrate(ctx, first); err != nil {
+					t.Fatalf("migrate 0001: %v", err)
+				}
+				set := fstest.MapFS{
+					"migrations/0001_first.up.sql":  first["migrations/0001_first.up.sql"],
+					"migrations/0002_second.up.sql": {Data: []byte(second.text)},
+					"migrations/0003_third.up.sql":  {Data: []byte("create table race_third (id integer)")},
+				}
+				migrations, err := pgmigrate.Load(set, "migrations")
+				if err != nil {
+					t.Fatalf("load the set: %v", err)
+				}
+				if err := store.prepareVersionTable(ctx, migrations); err != nil {
+					t.Fatalf("prepare: %v", err)
+				}
+				if conflicting {
+					if _, err := store.Pool.Exec(ctx, "insert into schema_migrations (version, name, checksum) values (3, '0003_other.up.sql', $1)", strings.Repeat("0", 64)); err != nil {
+						t.Fatalf("record version 3 as the other boot: %v", err)
+					}
+				}
+				err = store.applyMigration(ctx, migrations, migrations[1])
+				var applied, recorded bool
+				if err := store.Pool.QueryRow(ctx, second.applied).Scan(&applied); err != nil {
+					t.Fatalf("look for what 0002 makes: %v", err)
+				}
+				if err := store.Pool.QueryRow(ctx, "select exists(select 1 from schema_migrations where version = 2)").Scan(&recorded); err != nil {
+					t.Fatalf("look for version 2: %v", err)
+				}
+				if !conflicting {
+					if err != nil || !applied || !recorded {
+						t.Fatalf("control: applyMigration = %v, applied %v, recorded %v; want 0002 applied and recorded", err, applied, recorded)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), "version 3 is recorded as 0003_other.up.sql") {
+					t.Errorf("applyMigration = %v; want a refusal naming version 3 and 0003_other.up.sql", err)
+				}
+				if applied || recorded {
+					t.Errorf("0002 applied %v, recorded %v, beside a version 3 the set refuses; want neither", applied, recorded)
+				}
+			})
 		}
-		config.RuntimeParams["application_name"] = name
-		conn, err := pgx.ConnectConfig(ctx, config)
-		if err != nil {
-			t.Fatalf("open the session %q: %v", name, err)
-		}
-		t.Cleanup(func() { _ = conn.Close(context.Background()) })
-		planted[name] = conn
-	}
-
-	if _, err := ending.Pool.EndSessionsOf(ctx, uuid.Nil); err == nil {
-		t.Fatal("EndSessionsOf the nil identity ended something, want a refusal")
-	}
-	sessions, err := ending.Pool.EndSessionsOf(ctx, ended.Pool.Identity())
-	if err != nil {
-		t.Fatalf("end the sessions of %s: %v", identity, err)
-	}
-	names := map[string]bool{}
-	pids := map[int32]bool{}
-	for _, session := range sessions {
-		if !strings.HasSuffix(session.ApplicationName, " "+identity) {
-			t.Errorf("EndSessionsOf(%s) ended %d, named %q", identity, session.PID, session.ApplicationName)
-		}
-		names[session.ApplicationName], pids[session.PID] = true, true
-	}
-	if !pids[holderPID] {
-		t.Errorf("EndSessionsOf(%s) did not end the transaction's backend %d: it ended %+v", identity, holderPID, sessions)
-	}
-	if !names["psql "+identity] {
-		t.Errorf("EndSessionsOf(%s) did not end the session of no store that names it: it ended %+v", identity, sessions)
-	}
-
-	// The lock is free: the ending store takes it at once.
-	var taken bool
-	if err := ending.Pool.QueryRow(ctx, `select pg_try_advisory_lock($1)`, key).Scan(&taken); err != nil || !taken {
-		t.Errorf("the ended transaction's lock: try = %v, %v; want it free", taken, err)
-	} else if _, err := ending.Pool.Exec(ctx, `select pg_advisory_unlock_all()`); err != nil {
-		t.Fatal(err)
-	}
-	var one int
-	err = tx.QueryRow(ctx, `select 1`).Scan(&one)
-	if !SessionEnded(err) {
-		t.Errorf("the ended transaction's next statement answered %v, want SQLSTATE 57P01", err)
-	}
-	for name, conn := range planted {
-		if name == "psql "+identity {
-			continue
-		}
-		if err := conn.QueryRow(ctx, `select 1`).Scan(&one); err != nil {
-			t.Errorf("the session %q no longer answers: %v", name, err)
-		}
-	}
-	// A pool whose connection was ended dials a fresh one for its next caller.
-	if err := ended.Pool.QueryRow(ctx, `select 1`).Scan(&one); err != nil && !SessionEnded(err) {
-		t.Errorf("the ended store's next read answered %v", err)
-	}
-	if SessionEnded(errors.New("57P01")) || SessionEnded(nil) {
-		t.Error("SessionEnded reads an error that is no Postgres error as an ended session")
 	}
 }

@@ -157,9 +157,9 @@ func logRefusal() {
 // so no caller can reach past the refusal.
 type Pool struct {
 	pool *pgxpool.Pool
-	// identity is the server process's identity (identity.go), which every connection of this
-	// pool and of the separate pools opened from it names at the end of its application_name;
-	// uuid.Nil for a pool NewPool wrapped.
+	// identity is the server process's identity (process_identity.go), which every connection of
+	// this pool and of the separate pools opened from it names at the end of its
+	// application_name; uuid.Nil for a pool NewPool wrapped.
 	identity uuid.UUID
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
 	// caller that loses the race is told the pool is closed rather than opening one nothing
