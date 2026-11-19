@@ -178,7 +178,14 @@
  * and where the character stands in it (daemon-pane.ts's `NUL_REFUSAL`, `nulRefusal` here): an
  * agent's own text, a completion's summary or a move's reason, can carry one, and the `legion` tool
  * sends it as the agent gave it. Where the source holds no such refusal, main `ff2a10ef`'s, whose
- * decoder reads no string of a body, the body is taken to its route as any other is.
+ * decoder reads no string of a body, the body is taken to its route, and the route answers it as
+ * that daemon's store does (daemon-pane.ts's `STORES_NUL`): a completion the engine takes writes
+ * its summary and its commit into the role's row, a text column, and a backward move it takes
+ * writes its reason into the task of the role it starts, a jsonb payload; PostgreSQL refuses
+ * U+0000 in both, the fact's apply fails, and the route answers 500 FACT_APPLY_FAILED in its own
+ * words, writing nothing and leaving the fact unspent (`storeFails`). A completion or a move the
+ * engine refuses writes nothing and is answered its refusal, and a ready keeps no character of
+ * the kind (capabilities' `cleanDetail`), so each is taken as any other.
  *
  * The session holding each live role of the issue is published to the run's own Dispatch as the
  * daemon publishes it (`PUT /api/v1/issues/{key}/role-holders`: packages/daemon/internal/daemon/
@@ -255,6 +262,7 @@ import {
 import { z } from "zod";
 import { COMPLETE_PATH } from "./completion-answers";
 import {
+  FACT_APPLY_FAILED,
   ISSUE_SLOT,
   labelCheckout,
   NUL_REFUSAL,
@@ -466,6 +474,13 @@ const RATING_REFUSED = SHAPES.refusesRating;
  * daemon-pane.ts's `NUL_REFUSAL` restates (main's since #4488, held to the label's source by
  * `labelShapes`). */
 const NUL_REFUSED = SHAPES.refusesNul;
+/** Whether the label's store fails the apply of a taken request that writes `texts`, the agent's
+ * own, where one holds U+0000: the store of a label whose decoder takes such a body, main
+ * `ff2a10ef`'s (daemon-pane.ts's `STORES_NUL`, whose evidence it names), and no store of a label
+ * that refuses the body before it. */
+function storeFails(...texts: readonly (string | undefined)[]): boolean {
+  return !NUL_REFUSED && texts.some((text) => text?.includes("\0") === true);
+}
 /** The count of fix attempts the record's pull request carries: the world's, 0, where the label's
  * daemon serves the count (main `ff2a10ef`'s), and none where it serves none, main's since
  * contract 59 (daemon-pane.ts's `servesFixAttempts`, standin-record.ts's `WORLD_FIX_ATTEMPTS`). */
@@ -2293,6 +2308,16 @@ async function handle(
           ),
         };
       }
+      // The store of a label that takes a body holding U+0000 fails such a completion where the
+      // engine writes its row (`storeFails`): its route answers the failed apply, and nothing of
+      // it is recorded, so its fact is unspent.
+      if (storeFails(parsed.data.summary, commit, handoffId)) {
+        FACTS.delete(fact);
+        return {
+          phase,
+          response: failure(500, FACT_APPLY_FAILED.code, FACT_APPLY_FAILED.completion),
+        };
+      }
       // A taken completion is written on the role's row, its commit as the row's handoff commit
       // and its record as the row's handoff record (engine.go's `handoff` writes both from the
       // completion, a commit or a record it does not name included), either of which completes
@@ -2359,6 +2384,11 @@ async function handle(
           response: failure(409, refusal.code, filled(refusal.format, over.sentence)),
         };
       }
+      // The store of a label that takes a body holding U+0000 fails a move whose reason holds one,
+      // since the task of the role the move starts carries the reason (`storeFails`): nothing
+      // moves.
+      if (storeFails(reason))
+        return { response: failure(500, FACT_APPLY_FAILED.code, FACT_APPLY_FAILED.fact) };
       enter(to, "move", posted);
       return { response: json(200, {}) };
     }

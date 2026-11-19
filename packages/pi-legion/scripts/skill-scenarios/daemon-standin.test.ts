@@ -3162,37 +3162,29 @@ test.skipIf(skip)(
   600_000
 );
 
-/** A copy of this checkout's daemon module whose decoder reads no string of a body, as main
- * `ff2a10ef`'s does (daemon-pane.ts's `DECODER_WITHOUT_WALK`), and is this checkout's in all
- * else. Made once for the file. */
-let walkless: string | undefined;
-function walklessCheckout(): string {
-  if (walkless !== undefined) return walkless;
-  const checkout = path.join(work, "walkless-checkout");
-  const daemon = path.join(checkout, "packages", "daemon");
-  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
-  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
-  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
-  const claims = path.join(daemon, "internal", "api", "claims.go");
-  const walking = readFileSync(claims, "utf8");
-  const reading = walking.replace(
-    "\treturn body, unstorableJSON(body)\n}",
-    "\treturn body, nil\n}"
-  );
-  expect(reading).not.toBe(walking);
-  writeFileSync(claims, reading);
-  walkless = checkout;
-  return checkout;
-}
-
-// Catches: a stand-in that refuses a body holding U+0000 for a label whose daemon's decoder reads
-// no string of a body, main `ff2a10ef`'s shape (`labelShapes`' `refusesNul` false): that decoder
-// takes the body, and each route answers it as the stand-in answers any other, a claim's ready
-// and a phase's completion among them.
-test.skipIf(skip)(
-  "a label whose decoder reads no string of a body takes one holding U+0000 to its route",
+// What main `ff2a10ef`'s daemon answers a body holding U+0000, derived from three reads and not
+// from a booted daemon (the architect's ruling of 2026-11-19T22:19Z): PostgreSQL on this pod
+// refuses U+0000 in text (`invalid byte sequence for encoding "UTF8": 0x00`) and in jsonb
+// (`unsupported Unicode escape sequence`), read with psql at 22:1xZ that day; that daemon's
+// decoder takes the body (api/claims.go's `decodeJSON`, no walk of its strings), its engine writes
+// a taken completion's summary and commit onto the role's row (workflow/engine.go:580) through
+// `insert into phases (… summary …)`, text columns (record/store.go:504-512), and a taken backward
+// move's reason into the task of the role it starts (workflow/engine.go:923, effects.go:449-450),
+// an outbox payload in a jsonb column (store/migrations/0004_record.up.sql:76); and its routes
+// answer a failed apply 500 FACT_APPLY_FAILED, "could not apply handoff fact" for a completion
+// (api/handoff.go:336-337) and "could not apply fact" for a move (api/architect.go:262-263). A
+// ready's capability detail is cleaned of every control character before it is kept
+// (capabilities/capabilities.go:288-296), so a ready writes none. Each row boots the stand-in on
+// that checkout (SKILL_SCENARIOS_OLDER_CHECKOUT), whose source the stand-in reads the shape of.
+//
+// Catches: a stand-in that answers a completion whose summary holds U+0000 with a success that
+// daemon's store never gives, or with main's refusal, which that daemon's decoder does not make;
+// one that records a completion whose apply failed, whose fact is then unspent; and one that
+// fails a ready, which writes no such text.
+test.skipIf(skip || olderHost === undefined)(
+  "an older daemon takes a body holding U+0000, and its store fails the completion that writes it",
   async () => {
-    const daemon = await standin("reviewer", "", undefined, { checkout: walklessCheckout() });
+    const daemon = await standin("reviewer", "", undefined, { checkout: olderHost ?? "" });
     try {
       const ready = await daemon.post("/legion/v1/claims/ready", {
         secret: SECRET,
@@ -3202,9 +3194,39 @@ test.skipIf(skip)(
         },
       });
       expect(ready.status).toBe(204);
-      const summary = await daemon.complete(true, { summary: "the 🦀 round\u0000 is in" });
-      expect([summary.status, await summary.json()]).toEqual([200, {}]);
+      const stored = await daemon.complete(true, { summary: "the 🦀 round\u0000 is in" });
+      expect([stored.status, await stored.json()]).toEqual([
+        500,
+        { code: "FACT_APPLY_FAILED", error: "could not apply handoff fact" },
+      ]);
+      expect((await served(daemon.body)).issue.workers.reviewer).not.toHaveProperty(
+        "handoffRecord"
+      );
+      expect((await daemon.complete(true)).status).toBe(200);
       expect(daemon.logged().filter((line) => line.status === 400)).toEqual([]);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that moves the issue on a backward move whose reason holds U+0000, which
+// main `ff2a10ef`'s store fails where the task of the role the move starts carries the reason
+// (the reads above), answered 500 FACT_APPLY_FAILED with nothing moved; and one that keeps that
+// failure for a move the same reason without the character then makes.
+test.skipIf(skip || olderHost === undefined)(
+  "an older daemon's store fails a backward move whose reason holds U+0000, and nothing moves",
+  async () => {
+    const daemon = await standin("reviewer", "", undefined, { checkout: olderHost ?? "" });
+    try {
+      expect(await askedBack(daemon.post, "implementing", "the fix needs\u0000 code")).toEqual([
+        500,
+        { code: "FACT_APPLY_FAILED", error: "could not apply fact" },
+      ]);
+      expect(await daemon.phase()).toBe("reviewing");
+      expect(await askedBack(daemon.post, "implementing", "the fix needs code")).toEqual([200, {}]);
+      expect(await daemon.phase()).toBe("implementing");
     } finally {
       daemon.stop();
     }

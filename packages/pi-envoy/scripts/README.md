@@ -1051,7 +1051,11 @@ its words in `intake/facts.go`; `ff2a10ef` is read by its completion request, wh
 `wakeAt`. The refusal of a request body a string of which holds U+0000 is main's since #4488 too,
 read by `decodeJSON`'s last return and `refuseBadBody`'s words in `api/claims.go` and the walk and
 its words in `api/storable_text.go`; `ff2a10ef` is read by its decoder, which ends at the one
-value a body holds. The count of fix attempts on the state's pull request is `ff2a10ef`'s, read by
+value a body holds, by its engine's write of a completion's summary into the role's row and the
+`phases` columns its store binds, by the move's reason in the task its transition starts with and
+the JSON its outbox stores, and by its two `FACT_APPLY_FAILED` answers, the completion's in
+`api/handoff.go` and every other fact's in `api/architect.go`. The count of fix attempts on the
+state's pull request is `ff2a10ef`'s, read by
 its `PullRequestView`'s `FixAttempts` in `api/state.go`, whose label's contract requires it; main's
 since contract 59 (#2780) is read by that view ending at `reviewDecision`. `standin-record.ts
 contract` hands a label's contract the bodies the stand-in serves that label, the count among
@@ -1486,9 +1490,15 @@ unspent, so the same completion without the rating is taken: only the completion
 retro rates the plan, and no run stands in `retro`. A request body a string of which holds U+0000
 is refused 400 before any route reads it, naming the first such string's place and where the
 character stands in it in code points, in the daemon's words. Both refusals are main's since
-#4488, read off the label's source (`labelShapes`' `refusesRating` and `refusesNul`); where the
-source holds no refusal of such a body, main `ff2a10ef`'s, the body is taken to its route as any
-other is. Each move
+#4488, read off the label's source (`labelShapes`' `refusesRating` and `refusesNul`). Where the
+source holds no refusal of such a body, main `ff2a10ef`'s, the body is taken to its route, and a
+completion or a backward move the engine takes is answered 500 `FACT_APPLY_FAILED` in that route's
+words, nothing written: that daemon writes a completion's summary and commit into text columns
+and a move's reason into the jsonb task of the role it starts, and PostgreSQL refuses U+0000 in
+both (`daemon-pane.ts`'s `STORES_NUL` reads those writes and answers by marker; the answer is
+derived from that source and PostgreSQL's refusals, read on 2026-11-19, and from no booted
+daemon). A ready, whose capability detail that daemon cleans of control characters, and a
+request the engine refuses are taken as any other. Each move
 into a phase that shows another status writes that status to the run's own Dispatch before the
 request that made the move is answered, as the daemon's outbox runs a `dispatch_status` row:
 under the daemon's own session, `legion-daemon:<PROJECT>` (the session the seeds write each

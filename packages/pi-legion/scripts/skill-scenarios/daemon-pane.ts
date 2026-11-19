@@ -786,7 +786,9 @@ export interface LabelShapes {
    * before its route reads it, naming the first such string's place and where the character stands
    * in it (`NUL_REFUSAL`, claims.go's `decodeJSON` and `refuseBadBody`, storable_text.go's
    * `unstorableJSON`, main's since #4488). False for main `ff2a10ef`'s daemon, whose decoder reads
-   * no string of a body. */
+   * no string of a body and whose apply of a completion or a backward move it takes fails on such
+   * text where it writes it into a text or jsonb column, answered 500 `FACT_APPLY_FAILED`
+   * (`STORES_NUL`). */
   readonly refusesNul: boolean;
   /** The state's pull request carries `fixAttempts`, the count of heads pushed onto a red check
    * verdict (api's `PullRequestView.FixAttempts`, main `ff2a10ef`'s), which that label's contract
@@ -1133,12 +1135,65 @@ const REFUSES_NUL: readonly Marker[] = [
     text: `writeJSON(w, http.StatusBadRequest, errorBody("${NUL_REFUSAL.prefix}"+err.Error()))`,
   },
 ];
-/** The decoder as main `ff2a10ef`'s daemon has it, ending at the one value a body holds with no
- * walk of its strings: what that older daemon has in the place of the refusal. */
-const DECODER_WITHOUT_WALK: Marker = {
-  file: "daemon/internal/api/claims.go",
-  text: '\t\treturn body, errors.New("more than one JSON value")\n\t}\n\treturn body, nil\n}',
-};
+/** What main `ff2a10ef`'s daemon answers a request whose apply fails, by route: a completion's and
+ * any other fact's (its api's handoff.go and architect.go `applyFact`). */
+export const FACT_APPLY_FAILED = {
+  code: "FACT_APPLY_FAILED",
+  completion: "could not apply handoff fact",
+  fact: "could not apply fact",
+} as const;
+/** What main `ff2a10ef`'s daemon has in the place of the refusal: a decoder that ends at the one
+ * value a body holds with no walk of its strings, and writes that put a taken request's agent text
+ * into a column PostgreSQL refuses U+0000 in, each failing the fact's apply, which its routes
+ * answer 500 `FACT_APPLY_FAILED`:
+ *   - a completion the engine takes writes its summary and its commit onto the role's row
+ *     (engine.go's `handoff`), whose columns are text (store.go's `PutPhase`), and its route
+ *     answers a failed apply in `FACT_APPLY_FAILED.completion`'s words (handoff.go);
+ *   - a backward move the engine takes starts the role of the phase it enters with a task holding
+ *     the move's reason (effects.go's `task`, through engine.go's `transition` and `start`), which
+ *     the outbox keeps as a JSON payload in its jsonb column (record's `NewOutboxRow`), and
+ *     `applyFact` answers a failed apply in `FACT_APPLY_FAILED.fact`'s words (architect.go).
+ * PostgreSQL refuses U+0000 in text (`invalid byte sequence for encoding "UTF8": 0x00`) and in
+ * jsonb (`unsupported Unicode escape sequence`), as read on this pod's test Postgres on
+ * 2026-11-19 and as main's own storable_text.go says of both. A completion or a move the engine
+ * refuses writes nothing and is answered its refusal; a ready's capability report is cleaned of
+ * every control character before it is kept (capabilities' `cleanDetail`), and no other route a
+ * phase worker's tool calls writes the agent's own text. */
+const STORES_NUL: readonly Marker[] = [
+  {
+    file: "daemon/internal/api/claims.go",
+    text: '\t\treturn body, errors.New("more than one JSON value")\n\t}\n\treturn body, nil\n}',
+  },
+  {
+    file: "daemon/internal/workflow/engine.go",
+    text: "row.Claim, row.HandoffCommit, row.Verdict, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Verdict, fact.Summary, e.now()",
+  },
+  {
+    file: "daemon/internal/record/store.go",
+    text: "phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.Verdict, phase.Summary, phase.LastHandoff,",
+  },
+  {
+    file: "daemon/internal/api/handoff.go",
+    text: `if err != nil {\n\t\twriteFailure(w, http.StatusInternalServerError, "${FACT_APPLY_FAILED.code}", "${FACT_APPLY_FAILED.completion}")`,
+  },
+  {
+    file: "daemon/internal/api/architect.go",
+    text: "intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})",
+  },
+  {
+    file: "daemon/internal/workflow/engine.go",
+    text: "if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason)); err != nil {",
+  },
+  { file: "daemon/internal/workflow/effects.go", text: 'text += " Reason: " + reason + "."' },
+  {
+    file: "daemon/internal/record/outbox.go",
+    text: 'encoded, err := json.Marshal(payload)\n\tif err != nil {\n\t\treturn OutboxRow{}, fmt.Errorf("encode outbox payload: %w", err)',
+  },
+  {
+    file: "daemon/internal/api/architect.go",
+    text: `if err != nil {\n\t\twriteFailure(w, http.StatusInternalServerError, "${FACT_APPLY_FAILED.code}", "${FACT_APPLY_FAILED.fact}")`,
+  },
+];
 
 /** The file the daemon builds its state answer's views in. */
 const STATE_GO = "daemon/internal/api/state.go";
@@ -1278,8 +1333,8 @@ export function labelShapes(checkout: string): LabelShapes {
     refusesNul: sourceShape(checkout, "the refusal of a body holding U+0000", [
       { name: "main's daemon since #4488", markers: REFUSES_NUL, value: true },
       {
-        name: "main ff2a10ef's daemon, whose decoder reads no string of a body",
-        markers: [DECODER_WITHOUT_WALK],
+        name: "main ff2a10ef's daemon, whose decoder reads no string of a body and whose store fails on U+0000",
+        markers: STORES_NUL,
         value: false,
       },
     ]),

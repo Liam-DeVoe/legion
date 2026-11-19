@@ -1665,6 +1665,8 @@ describe("the shapes of a label's daemon source", () => {
     "daemon/internal/api/claims.go",
     "daemon/internal/api/storable_text.go",
     "daemon/internal/api/state.go",
+    "daemon/internal/api/architect.go",
+    "daemon/internal/record/store.go",
     "daemon/internal/workflow/engine.go",
     "daemon/internal/workflow/effects.go",
     "daemon/internal/workflow/review_round.go",
@@ -1734,7 +1736,7 @@ describe("the shapes of a label's daemon source", () => {
   // no publication, a reviewer's task with no sentence of its round, a review of the review App
   // taken from any session and one taken on its `commit_id`, no step record, a rating taken where
   // the daemon refuses it, a body holding U+0000 taken, and a pull request counting fix attempts
-  // main's daemon keeps no count of; and a reader that needs a file the seventeen are not.
+  // main's daemon keeps no count of; and a reader that needs a file the nineteen are not.
   test("this checkout's daemon source posts a backward move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone, holds a review to its footer's head, records each step, refuses an unasked rating and a body holding U+0000, and counts no fix attempt", () => {
     expect(labelShapes(CHECKOUT)).toEqual(MAIN);
     expect(labelShapes(copyOf(CHECKOUT))).toEqual(MAIN);
@@ -2025,6 +2027,23 @@ describe("the shapes of a label's daemon source", () => {
     '\t\treturn body, errors.New("more than one JSON value")\n\t}\n\treturn body, nil\n}';
   const COUNTED =
     'ReviewDecision string `json:"reviewDecision,omitempty"`\n\tFixAttempts    int    `json:"fixAttempts"`\n}';
+  // What main `ff2a10ef`'s store writes a taken request's agent text into, and how its routes
+  // answer the failed apply (daemon-pane.ts's `STORES_NUL`).
+  const ROW_TEXT =
+    "row.Claim, row.HandoffCommit, row.Verdict, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Verdict, fact.Summary, e.now()";
+  const PHASE_COLUMNS =
+    "phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.Verdict, phase.Summary, phase.LastHandoff,";
+  const COMPLETION_FAILED =
+    'if err != nil {\n\t\twriteFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")';
+  const MOVE_FACT =
+    "intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})";
+  const STARTED_WITH_REASON =
+    "if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason)); err != nil {";
+  const REASON_IN_TASK = 'text += " Reason: " + reason + "."';
+  const PAYLOAD_JSON =
+    'encoded, err := json.Marshal(payload)\n\tif err != nil {\n\t\treturn OutboxRow{}, fmt.Errorf("encode outbox payload: %w", err)';
+  const FACT_FAILED =
+    'if err != nil {\n\t\twriteFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")';
   for (const [file, marker, renamed] of [
     [EFFECTS, STATUS, STATUS.replace("status string", "state string")],
     [
@@ -2055,6 +2074,38 @@ describe("the shapes of a label's daemon source", () => {
       "daemon/internal/api/state.go",
       COUNTED,
       COUNTED.replace('`json:"fixAttempts"`', '`json:"fixAttempts,omitempty"`'),
+    ],
+    ["daemon/internal/workflow/engine.go", ROW_TEXT, ROW_TEXT.replace(", fact.Summary,", ', "",')],
+    [
+      "daemon/internal/record/store.go",
+      PHASE_COLUMNS,
+      PHASE_COLUMNS.replace("phase.Summary, ", "cleanText(phase.Summary), "),
+    ],
+    [
+      "daemon/internal/api/handoff.go",
+      COMPLETION_FAILED,
+      COMPLETION_FAILED.replace("could not apply handoff fact", "could not apply the completion"),
+    ],
+    [
+      "daemon/internal/api/architect.go",
+      MOVE_FACT,
+      MOVE_FACT.replace("Reason: req.Reason", 'Reason: ""'),
+    ],
+    [
+      "daemon/internal/workflow/engine.go",
+      STARTED_WITH_REASON,
+      STARTED_WITH_REASON.replace(", reason)", ', "")'),
+    ],
+    [EFFECTS, REASON_IN_TASK, REASON_IN_TASK.replace("reason", "cleanText(reason)")],
+    [
+      "daemon/internal/record/outbox.go",
+      PAYLOAD_JSON,
+      PAYLOAD_JSON.replace("json.Marshal(payload)", "storableJSON(payload)"),
+    ],
+    [
+      "daemon/internal/api/architect.go",
+      FACT_FAILED,
+      FACT_FAILED.replace("could not apply fact", "could not apply the fact"),
     ],
   ] as const)
     test.skipIf(olderHost === undefined)(
