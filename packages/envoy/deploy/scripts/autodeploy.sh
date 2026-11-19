@@ -639,6 +639,10 @@ if [[ "$once" == true ]]; then
   run_once
   exit 0
 fi
+# An expansion error (an arithmetic one, say) aborts the whole top-level command it is in, the `if`
+# above included, and bash goes on with the next command. A --once run must never reach the loop
+# below, which starts a --once run of its own: each would start the next. So it ends here.
+[[ "$once" != true ]] || exit 1
 
 # The continuous loop runs each pass as a process of its own, a --once run, so a pass ends under
 # set -e as one run does, and a failed pass ends that process alone: it has logged its one named

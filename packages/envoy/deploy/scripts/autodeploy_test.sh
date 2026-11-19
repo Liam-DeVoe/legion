@@ -54,6 +54,7 @@ EOF
   : >"$manifest_log"
   : >"$bounds_log"
   printf '0\n' >"$clock"
+  rm -f "$clock.calls"
 }
 # deployed_tag_is <tag>: the tag compose/.env says is deployed.
 deployed_tag_is() {
@@ -90,10 +91,19 @@ esac
 EOF
 # date answers `date +%s`, the pass's clock, as the real clock plus the seconds
 # $AUTODEPLOY_TEST_CLOCK holds, which a stand-in below moves on to stand for time a call took
-# without the case waiting it out; every other date it answers as the real one does.
+# without the case waiting it out, and records each such call in $AUTODEPLOY_TEST_CLOCK.calls.
+# A clock file holding `garbled-once` makes the first answer `300s`, which bash's arithmetic reads
+# as a syntax error, and every later one the real clock. Every other date it answers as the real
+# one does.
 cat >"$bin/date" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$*" == "+%s" ]]; then
+  printf 'clock\n' >>"$AUTODEPLOY_TEST_CLOCK.calls"
+  if [[ $(<"$AUTODEPLOY_TEST_CLOCK") == garbled-once ]]; then
+    printf '0\n' >"$AUTODEPLOY_TEST_CLOCK"
+    printf '300s\n'
+    exit 0
+  fi
   printf '%s\n' "$(($("$AUTODEPLOY_TEST_REAL_DATE" +%s) + $(cat "$AUTODEPLOY_TEST_CLOCK")))"
   exit 0
 fi
@@ -481,7 +491,9 @@ EOF
 chmod +x "$bin/jj" "$bin/date" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$tools/timeout" "$tools/psql" "$tools/pg_dump"
 
 # deployer runs the deployer with the stand-ins first on PATH and its arguments: deploy_once is one
-# pass, as `--once`, and the continuous loop is the deployer with none.
+# pass, as `--once`, and the continuous loop is the deployer with none. A case puts a command such
+# as a timeout in front of it with deployer_prefix.
+deployer_prefix=()
 deployer() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
     AUTODEPLOY_TEST_TOOLS="$tools" AUTODEPLOY_TEST_PASSWORD="${test_password-$password}" REPO="$repo" COMPOSE_DIR="$compose" \
@@ -489,7 +501,7 @@ deployer() {
     AUTODEPLOY_TEST_REAL_TIMEOUT="$real_timeout" AUTODEPLOY_TEST_REAL_DATE="$real_date" \
     AUTODEPLOY_TEST_BOUNDS="$bounds_log" AUTODEPLOY_TEST_CLOCK="$clock" \
     BACKUPS="$backups" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
-    "$(dirname "$0")/autodeploy.sh" "$@" 2>&1
+    "${deployer_prefix[@]}" "$(dirname "$0")/autodeploy.sh" "$@" 2>&1
 }
 deploy_once() {
   deployer --once
@@ -1194,4 +1206,20 @@ fi
 if [[ "$output" != *"rolling back to old-image"* ]]; then
   fail 'deployer refused the least pass deadline it takes'
 fi
-printf '%s\n' 'autodeploy rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential, pull-retry, registry-read, pass-deadline, commit-order, continuous-loop and settings cases: PASS'
+
+# A --once run ends whatever ends its pass. An arithmetic syntax error (here a clock that answers
+# `300s`) aborts the whole top-level command it is in, the `--once` branch included, and bash then
+# goes on with the next one; a run that fell through would reach the continuous loop, which starts
+# a --once run of its own after every pass. So the run must end by itself, failed, having read the
+# clock once. It runs under the real timeout, so a run that fell through ends at 30 s and fails
+# this case rather than run on.
+fresh_env
+printf 'garbled-once\n' >"$clock"
+status=0
+output=$(deployer_prefix=("$real_timeout" 30) && deploy_once) || status=$?
+if ((status != 1)) || [[ $(wc -l <"$clock.calls") -ne 1 ]] || [[ "$output" == *"autodeploy started"* ]] ||
+  [[ -s "$manifest_log" ]]; then
+  fail "a --once run whose pass met an arithmetic error ended with status $status after $(wc -l <"$clock.calls") reads of the clock, where it must end at once, status 1, having read it once"
+fi
+
+printf '%s\n' 'autodeploy rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential, pull-retry, registry-read, pass-deadline, commit-order, continuous-loop, settings and once-ends cases: PASS'
