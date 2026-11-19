@@ -25,6 +25,27 @@ import (
 // nodes a node write made or moved, which the node rows themselves carry until the statement that
 // states those facts reads them (nodeMark).
 
+// writeFunctions are the functions a write of graph_nodes and graph_tuples from outside this
+// package goes through: Write, WriteUncaused and Caused in a caller's transaction, and QueueWrite,
+// QueueNodes and QueueCaused, the same writes queued on a write phase's batch; WriteArms and
+// WriteArmsUncaused spliced into a caller's statement; Authored, Reached and SessionRecorded,
+// which run those arms for the writers that record an author, a reached session and a session an
+// ask names, and QueueAuthored, QueueReached and QueueSessionRecorded, which queue them;
+// EraseNode, the erase's delete of a node and its tuples; and FillScopes, the backfill's fill of
+// the project of a node stored with none. Each is a function of the package, never a method, so a
+// call of one is named by the package wherever it is made.
+var writeFunctions = [...]string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
+	"QueueWrite", "QueueNodes", "QueueCaused",
+	"Authored", "Reached", "SessionRecorded", "QueueAuthored", "QueueReached", "QueueSessionRecorded",
+	"EraseNode", "FillScopes"}
+
+// WriteFunctions is the name of every function of this package a write of the store from outside
+// it goes through (writeFunctions), a fresh slice for each caller. It is the one list the source
+// scans that hold the store's writers read: this package's register of their call sites
+// (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
+// (TestNoProjectionRowIsWrittenWithoutTheStore).
+func WriteFunctions() []string { return slices.Clone(writeFunctions[:]) }
+
 // LatestEvent is the cause of a write whose event its write phase appends right before the
 // write's own statements: no Go code reads that event's id before the batch is sent, so the
 // statements name it as the events id sequence left it (store.LatestEventID), and nothing between
