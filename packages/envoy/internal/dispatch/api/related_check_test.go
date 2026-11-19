@@ -111,7 +111,7 @@ func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) 
 	}
 	suggestions := issueSuggestions(t, "the new issue", response)
 	if len(suggestions.Related) != 1 || relatedIndex(suggestions.Related, target) != 0 {
-		t.Fatalf("suggestions = %s, want %s alone, none of the issues sharing only \"dashboard\" (%v)", mustJSON(t, suggestions), target, common[:3])
+		t.Fatalf("suggestions = %s, want %s alone, none of the issues sharing only \"dashboard\" (%v)", asJSON(t, suggestions), target, common[:3])
 	}
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" || suggestions.SearchNote != "meaning search is off on this server" {
 		t.Fatalf("suggestions = %+v, want found, keywords only, because meaning search is off", suggestions)
@@ -992,7 +992,7 @@ func relatedAsk(t *testing.T, suggestions testSuggestions, askID string) testSug
 			return item
 		}
 	}
-	t.Fatalf("suggestions = %s, want the ask %s", mustJSON(t, suggestions), askID)
+	t.Fatalf("suggestions = %s, want the ask %s", asJSON(t, suggestions), askID)
 	return testSuggestionItem{}
 }
 
@@ -1151,7 +1151,7 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 	t.Run("answers read", func(t *testing.T) {
 		suggestions, wire := fill(context.Background())
 		if _, ok := wire[fixture.asks["closed"]]["ask"]; !ok {
-			t.Fatalf("related = %v, want the retracted ask's state; suggestions = %s", wire, mustJSON(t, suggestions))
+			t.Fatalf("related = %v, want the retracted ask's state; suggestions = %s", wire, asJSON(t, suggestions))
 		}
 		for _, item := range suggestions.Related {
 			if item.ID != fixture.asks["closed"] {
@@ -1202,7 +1202,7 @@ func TestRelatedCheckListsOneItemPerOwner(t *testing.T) {
 
 	suggestions := directServer(deps).relatedCheck(context.Background(), relatedInput{project: "OWNER", text: "zymurgy ledger drift"})
 	if keys := relatedOwnerKeys(suggestions.Related); !slices.Equal(keys, []string{key}) {
-		t.Fatalf("suggestions = %s, want %s once, though its title and its spec both match", mustJSON(t, suggestions), key)
+		t.Fatalf("suggestions = %s, want %s once, though its title and its spec both match", asJSON(t, suggestions), key)
 	}
 }
 
@@ -1225,7 +1225,7 @@ func TestRelatedCheckRecordsEachCheck(t *testing.T) {
 	noneKey, none := createRecorded("Quokka kiosk flickers")
 	if found.Outcome != "found" || none.Outcome != "none" {
 		t.Fatalf("outcomes = %q and %q, want found and none; the two checks answered %s and %s",
-			found.Outcome, none.Outcome, mustJSON(t, found), mustJSON(t, none))
+			found.Outcome, none.Outcome, asJSON(t, found), asJSON(t, none))
 	}
 
 	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+existing+"/asks", map[string]any{"question": "Is it to be or not to be?"}, "alice")

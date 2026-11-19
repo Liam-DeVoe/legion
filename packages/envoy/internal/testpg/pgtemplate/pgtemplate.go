@@ -9,11 +9,16 @@
 // fingerprint), built under an advisory lock and under a name of its own until it is whole, and
 // never dropped: the test processes of one run start minutes apart, and a process that dropped it
 // would take it from the ones still cloning. A set that gains, loses or edits a migration is a
-// template of its own, so a stale one is never cloned - it is only left on the server. Every
-// Postgres service a .github/workflows/ci-job-<job>.yaml declares, each a job
+// template of its own, and so is a set whose runner records other facts of each migration it
+// applies (pgmigrate.Fingerprint), so a stale one is never cloned - it is only left on the
+// server. Every Postgres service a .github/workflows/ci-job-<job>.yaml declares, each a job
 // .github/workflows/ci.yaml runs, is a container deleted with the job; a server that outlives
 // a run, the one packages/envoy/scripts/dev-postgres.sh runs, keeps one template per migration set
 // a run there has tested, which `drop database` by hand reclaims (docs/testing.md).
+//
+// A test whose schema no fingerprint names, such as a database two builds migrated in turn, takes
+// a clone of a template of a key's own instead (Harness.CloneOf), which its process makes once and
+// drops once its tests end.
 //
 // A clone copies the template's files (strategy file_copy). Postgres's default from 15, strategy
 // wal_log, writes every page of the template into the write-ahead log instead: 7.1 MB per clone
@@ -96,9 +101,20 @@ type Harness struct {
 	templateErr  error
 	name         string // the template's, once prepare has found or built it
 
+	keyedMu sync.Mutex
+	keyed   map[string]*keyedTemplate // CloneOf's, by key
+
 	drops     sync.WaitGroup
 	dropMu    sync.Mutex
 	dropFails []string
+}
+
+// keyedTemplate is one template CloneOf makes: once makes it, name is its database once it has
+// been created, and err is why it could not be made.
+type keyedTemplate struct {
+	once sync.Once
+	name string
+	err  error
 }
 
 // New returns a harness of template. fingerprint names the migration set a build carries
@@ -109,22 +125,23 @@ func New(template Template, fingerprint func() (string, error), migrate func(ctx
 	return &Harness{template: template, fingerprint: fingerprint, migrate: migrate}
 }
 
-// Main runs the package's tests and waits for their databases to drop. A package whose tests take
-// a database from h uses it as its TestMain: func TestMain(m *testing.M) { os.Exit(h.Main(m)) }.
-// A drop that failed fails the run, naming the database.
+// Main runs the package's tests and waits for their databases to drop, then drops the templates
+// CloneOf made. A package whose tests take a database from h uses it as its TestMain:
+// func TestMain(m *testing.M) { os.Exit(h.Main(m)) }. A drop that failed fails the run, naming
+// the database.
 //
-// The template stays: it is named after the migration set and shared by every test process on the
-// server (prepare), so a process that dropped it would take it from the processes still cloning
-// it.
+// The migration set's template stays: it is named after the migration set and shared by every
+// test process on the server (prepare), so a process that dropped it would take it from the
+// processes still cloning it.
 func (h *Harness) Main(m *testing.M) int {
 	return h.MainWith(m, func(m *testing.M) int { return m.Run() })
 }
 
 // MainWith is Main for a package whose tests need another harness's Main as well: it runs the
 // package's tests through run - another harness's Main, which owns m.Run - and waits for this
-// harness's drops once run returns. Only one harness can own m.Run, and both harnesses' cleanups
-// must run after it; this is how a package whose tests take a database from each gets both
-// (internal/dispatch/api, which drives a real broker).
+// harness's drops once run returns, then drops CloneOf's templates. Only one harness can own
+// m.Run, and both harnesses' cleanups must run after it; this is how a package whose tests take a
+// database from each gets both (internal/dispatch/api, which drives a real broker).
 func (h *Harness) MainWith(m *testing.M, run func(*testing.M) int) int {
 	h.main = true
 	code := run(m)
@@ -139,11 +156,20 @@ func (h *Harness) MainWith(m *testing.M, run func(*testing.M) int) int {
 			code = 1
 		}
 	}
+	// Every clone of them is dropped by now, so nothing copies one any more.
+	for _, name := range h.keyedNames() {
+		if _, err := h.admin.Exec(context.Background(), "drop database "+name); err != nil {
+			fmt.Fprintf(os.Stderr, "pgtemplate: drop the template database %s: %v\n", name, err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}
 	return code
 }
 
-// InMain reports whether Main or MainWith runs this process's tests. Clone and Unmigrated fail a
-// test without one, since only they wait for the drops those calls start.
+// InMain reports whether Main or MainWith runs this process's tests. Clone, CloneOf and Unmigrated
+// fail a test without one, since only they wait for the drops those calls start.
 func (h *Harness) InMain() bool { return h.main }
 
 // Clone returns the URL of a new database of t's own on the server raw names, a file copy of the
@@ -176,6 +202,77 @@ func (h *Harness) Unmigrated(t testing.TB, raw, prefix string) string {
 	t.Helper()
 	h.open(t, raw)
 	return h.copyOf(t, "template1", prefix)
+}
+
+// CloneOf is Clone of a template of key's own rather than of the migration set's: a database whose
+// schema migrate gives it, such as one two builds migrated in turn, which no fingerprint names. The
+// first call for key makes the template, a new empty database whose URL migrate is given, which
+// migrate brings to its schema and leaves with no connection open; every call, that one
+// included, gets a file copy of it of t's own, dropped once t ends. A key's template is this
+// process's alone: it is named keyedPrefix and random hex, so no other process looks for it, and
+// MainWith drops it once the package's tests and their drops have ended. A key whose migrate
+// failed, or ended its test, fails every test that asks for it again.
+func (h *Harness) CloneOf(t testing.TB, raw, key, prefix string, migrate func(url string) error) string {
+	t.Helper()
+	h.open(t, raw)
+	h.keyedMu.Lock()
+	entry := h.keyed[key]
+	if entry == nil {
+		if h.keyed == nil {
+			h.keyed = map[string]*keyedTemplate{}
+		}
+		entry = &keyedTemplate{}
+		h.keyed[key] = entry
+	}
+	h.keyedMu.Unlock()
+	entry.once.Do(func() {
+		// Set first, and cleared only once migrate returns, so a migrate that ends its test
+		// (t.Fatal) leaves a template no later test clones.
+		entry.err = errors.New("the test that made it ended before its migrate returned")
+		name := randomName(h.keyedPrefix())
+		ctx := context.Background()
+		// A file copy of template1, for the reason each clone of it is one.
+		if _, err := h.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+			entry.err = fmt.Errorf("create the template database: %w", err)
+			return
+		}
+		// Named once it exists, so MainWith drops exactly the templates that were made.
+		h.keyedMu.Lock()
+		entry.name = name
+		h.keyedMu.Unlock()
+		if err := migrate(h.url(name)); err != nil {
+			entry.err = fmt.Errorf("migrate the template database: %w", err)
+			return
+		}
+		// Postgres refuses to clone a database another session is connected to. Refusing
+		// connections to the template keeps any stray session from making a clone wait or fail.
+		if _, err := h.admin.Exec(ctx, "alter database "+name+" with allow_connections false"); err != nil {
+			entry.err = fmt.Errorf("close the template database to connections: %w", err)
+			return
+		}
+		entry.err = nil
+	})
+	if entry.err != nil {
+		t.Fatalf("prepare the template database of %q: %v", key, entry.err)
+	}
+	return h.copyOf(t, entry.name, prefix)
+}
+
+// keyedPrefix opens the name of each template CloneOf makes. It is never the name prepare looks
+// for, the prefix and a fingerprint's hex, nor one dropStaleBuilds drops (buildingPrefix).
+func (h *Harness) keyedPrefix() string { return h.template.Prefix + "keyed_" }
+
+// keyedNames are the databases of the templates CloneOf made.
+func (h *Harness) keyedNames() []string {
+	h.keyedMu.Lock()
+	defer h.keyedMu.Unlock()
+	names := make([]string, 0, len(h.keyed))
+	for _, entry := range h.keyed {
+		if entry.name != "" {
+			names = append(names, entry.name)
+		}
+	}
+	return names
 }
 
 // open opens the admin pool on the server raw names. Only the first call reads raw: a harness

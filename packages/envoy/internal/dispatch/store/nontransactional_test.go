@@ -738,7 +738,7 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 // so both runners finish.
 //
 // The two runners call applyMigration rather than migrate because migrate's first wait for the
-// key is createVersionTable's: with a third session holding the key both boots would queue
+// key is prepareVersionTable's: with a third session holding the key both boots would queue
 // there instead, and the winner would then hold the key from that wait right through its build,
 // so the loser could never be waiting at the site this test is about.
 func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testing.T) {
@@ -794,7 +794,7 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	t.Cleanup(second.Pool.Close)
 	applied := make(chan error, 2)
 	for _, booting := range []*Store{first, second} {
-		go func(booting *Store) { applied <- booting.applyMigration(ctx, pending) }(booting)
+		go func(booting *Store) { applied <- booting.applyMigration(ctx, migrations, pending) }(booting)
 	}
 	// A runner says it is waiting on its first refused try, which takes no sleep at all, so
 	// eventWait is a ceiling on a runner that never arrives rather than a wait the test sits out.

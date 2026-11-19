@@ -2,7 +2,12 @@ package pgtemplate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -234,4 +239,179 @@ func backendWALBytes(t *testing.T, conn *pgxpool.Conn) int64 {
 		t.Fatalf("read the backend's write-ahead log: %v", err)
 	}
 	return written
+}
+
+// A server that outlives a run (dev-postgres.sh's, a pod's test Postgres) keeps the template an
+// earlier build left, under the name that build's fingerprint gave it. A build whose runner
+// recorded each version alone, as every runner before pgmigrate's identity check did, left a
+// schema_migrations with no name, checksum or applied_checksum, and its fingerprint digested the
+// set's versions, names and texts alone (earlierFingerprint), the same for a set this build
+// embeds unchanged. A clone of that template hands this build's tests a version table this
+// runner never leaves. This test leaves such a template under the name the earlier fingerprint
+// gives this build's set, with a prefix and lock key of its own so that no other process clones
+// it, and reads what the harness then clones: a version table whose every row records what this
+// runner records of its file (pgmigrate.Migration.RecordedIdentity, and the file's own checksum
+// as the text applied). Broken, the fingerprint does not cover what the runner records, the
+// harness finds the earlier template under its own name, and the clone records no identity.
+func TestATemplateAnEarlierRunnerLeftForTheSameSetIsNotCloned(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	raw := serverURL(t)
+	migrations, err := pgmigrate.Load(os.DirFS("../../dispatch/store"), "migrations")
+	if err != nil {
+		t.Fatalf("load the migration set: %v", err)
+	}
+	// A prefix of its own, short enough that it and a fingerprint's 32 hex digits fit in the 63
+	// bytes a Postgres name holds, and a lock key no other harness takes.
+	template := Template{Prefix: "pgt_stale_" + randomName("")[:8] + "_", LockKey: 8150102}
+	harness := New(template, store.MigrationsFingerprint, store.MigrateTemplate)
+	code := harness.MainWith(nil, func(*testing.M) int {
+		t.Run("a clone on a server that holds an earlier runner's template", func(t *testing.T) {
+			harness.open(t, raw)
+			earlier := template.Prefix + earlierFingerprint(migrations)
+			// Both templates are this test's own, under a prefix no other process names, and
+			// neither is a test's clone, so this test drops them itself.
+			t.Cleanup(func() {
+				fingerprint, _ := store.MigrationsFingerprint()
+				for _, name := range []string{earlier, template.Prefix + fingerprint} {
+					if _, err := harness.admin.Exec(context.Background(), "drop database if exists "+name); err != nil {
+						t.Errorf("drop the template %s: %v", name, err)
+					}
+				}
+			})
+			leaveAnEarlierRunnersTemplate(t, harness, earlier)
+
+			clone := connect(t, harness.Clone(t, raw, "dispatch_test_"))
+			if harness.name == earlier {
+				t.Errorf("the harness clones %s, the template an earlier runner left for this set", earlier)
+			}
+			check, err := pgmigrate.CheckVersions(ctx, clone, migrations, "schema_migrations")
+			if err != nil {
+				t.Fatalf("read the clone's schema_migrations: %v", err)
+			}
+			var report strings.Builder
+			check.Write(&report)
+			if check.Matching != len(migrations) || len(check.Backfills) != 0 || !check.OK() {
+				t.Errorf("the clone's schema_migrations records what this runner records of %d of the set's %d files, and no name for %d; want every file's:\n%s",
+					check.Matching, len(migrations), len(check.Backfills), report.String())
+			}
+			var columns []string
+			if err := clone.QueryRow(ctx, `select coalesce(array_agg(column_name::text order by column_name), '{}') from information_schema.columns
+				where table_schema = current_schema() and table_name = 'schema_migrations'`).Scan(&columns); err != nil {
+				t.Fatalf("read the clone's version table columns: %v", err)
+			}
+			for _, column := range pgmigrate.IdentityColumnNames {
+				if !slices.Contains(columns, column) {
+					t.Errorf("the clone's schema_migrations has the columns %v, without %s", columns, column)
+				}
+			}
+		})
+		return 0
+	})
+	if code != 0 {
+		t.Errorf("Main failed the run: %q", harness.dropFails)
+	}
+}
+
+// CloneOf makes a template of a key's own once, for the first test that asks for the key, and
+// hands every test that asks a copy of its own; the template is the process's alone, so Main
+// drops it once the tests and their drops have ended. This is what the two-build suite's databases
+// come from (storetest.OpenFrom). Broken, either each test migrates the key's template again, or a
+// run leaves its templates behind on a server the next run shares.
+func TestATemplateOfAKeysOwnIsMadeOnceAndDroppedByMain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	raw := serverURL(t)
+	// A harness of its own, so that its Main runs here, as the package's would at its end.
+	harness := New(Dispatch, store.MigrationsFingerprint, store.MigrateTemplate)
+	migrated := 0
+	migrate := func(url string) error {
+		migrated++
+		conn, err := pgx.Connect(ctx, url)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx)
+		_, err = conn.Exec(ctx, "create table made_by_the_key (id integer)")
+		return err
+	}
+	var made []string
+	code := harness.MainWith(nil, func(*testing.M) int {
+		var names []string
+		for test := range 2 {
+			t.Run(fmt.Sprintf("test %d of the key", test+1), func(t *testing.T) {
+				conn := connect(t, harness.CloneOf(t, raw, "a key", "dispatch_test_", migrate))
+				var name string
+				var holds bool
+				if err := conn.QueryRow(ctx, "select current_database(), to_regclass('made_by_the_key') is not null").Scan(&name, &holds); err != nil {
+					t.Fatalf("read the test's database: %v", err)
+				}
+				if !holds {
+					t.Errorf("the test's database %s does not hold what the key's migrate made", name)
+				}
+				names = append(names, name)
+			})
+		}
+		if len(names) == 2 && names[0] == names[1] {
+			t.Errorf("two tests of the key were handed the same database %s", names[0])
+		}
+		made = harness.keyedNames()
+		return 0
+	})
+	if code != 0 {
+		t.Errorf("Main failed the run: %q", harness.dropFails)
+	}
+	if migrated != 1 {
+		t.Errorf("the key's template was migrated %d times for two tests, want once", migrated)
+	}
+	if len(made) != 1 || !strings.HasPrefix(made[0], Dispatch.Prefix+"keyed_") {
+		t.Fatalf("the harness made the templates %v for one key, want one named %skeyed_…", made, Dispatch.Prefix)
+	}
+	dispatch.open(t, raw)
+	held, err := dispatch.exists(ctx, made[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Errorf("%s, the key's template, is still on the server after Main returned", made[0])
+	}
+}
+
+// earlierFingerprint is pgmigrate.Fingerprint as every build before the runners recorded
+// identities computed it: a digest of each migration's version, name and text alone.
+func earlierFingerprint(migrations []pgmigrate.Migration) string {
+	digest := sha256.New()
+	for _, migration := range migrations {
+		fmt.Fprintf(digest, "%d\x00%d\x00%s\x00%d\x00%s\x00", migration.Version, len(migration.Name), migration.Name, len(migration.SQL), migration.SQL)
+	}
+	return hex.EncodeToString(digest.Sum(nil)[:16])
+}
+
+// leaveAnEarlierRunnersTemplate makes name the template a runner from before the identity check
+// left: every migration applied, each recorded by its version alone, closed to connections.
+func leaveAnEarlierRunnersTemplate(t *testing.T, h *Harness, name string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := h.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+		t.Fatalf("create the earlier runner's template: %v", err)
+	}
+	if err := store.MigrateTemplate(ctx, h.url(name)); err != nil {
+		t.Fatalf("migrate the earlier runner's template: %v", err)
+	}
+	conn, err := pgx.Connect(ctx, h.url(name))
+	if err != nil {
+		t.Fatalf("connect to the earlier runner's template: %v", err)
+	}
+	drops := make([]string, len(pgmigrate.IdentityColumnNames))
+	for i, column := range pgmigrate.IdentityColumnNames {
+		drops[i] = "drop column " + column
+	}
+	_, err = conn.Exec(ctx, "alter table schema_migrations "+strings.Join(drops, ", "))
+	conn.Close(ctx)
+	if err != nil {
+		t.Fatalf("take the identity columns off the earlier runner's schema_migrations: %v", err)
+	}
+	if _, err := h.admin.Exec(ctx, "alter database "+name+" with allow_connections false"); err != nil {
+		t.Fatalf("close the earlier runner's template to connections: %v", err)
+	}
 }

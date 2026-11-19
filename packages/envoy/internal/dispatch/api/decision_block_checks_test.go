@@ -401,7 +401,7 @@ func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 			}
 		}
 		if !listed {
-			t.Fatalf("block %s: suggestions = %s, want the ask %s listed with its answered state", block.id, mustJSON(t, check.Suggestions), asks[block.id])
+			t.Fatalf("block %s: suggestions = %s, want the ask %s listed with its answered state", block.id, asJSON(t, check.Suggestions), asks[block.id])
 		}
 	}
 	rows := readDecisionBlockRows(t, database)

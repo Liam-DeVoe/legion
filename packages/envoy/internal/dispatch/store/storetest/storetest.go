@@ -11,6 +11,11 @@
 // its test count times the speed of the Postgres it runs against; a clone costs one create
 // database. Nothing is handed from one test to the next: a test's database is dropped when that
 // test ends, so no test can be given a database another test wrote in.
+//
+// OpenFrom clones a database from a template of a key's own instead, which the test process makes
+// once with the function its first caller gives and drops once its tests end
+// (pgtemplate.Harness.CloneOf): the two-build suite's, which two builds migrate in production's
+// order. Empty hands a test a database that holds nothing.
 package storetest
 
 import (
@@ -57,6 +62,33 @@ var harness = pgtemplate.New(pgtemplate.Dispatch, store.MigrationsFingerprint, s
 // t when DISPATCH_TEST_DATABASE_URL is unset.
 func Open(t testing.TB) *store.Store {
 	t.Helper()
+	return open(t, harness.Clone(t, serverURL(t), "dispatch_test_"))
+}
+
+// OpenFrom is Open for a database migrate brings to its schema instead of this tree's runner
+// alone: it returns a store on a new database cloned from the template of key, dropped after t
+// ends. The template is made once per key in the test binary, by the first test that asks: a new
+// empty database whose connection string migrate is given, which migrate migrates and leaves
+// with no connection open. A template whose migrate failed, or ended its test, fails every test
+// that asks for it again. No other process clones it, and Main drops it (pgtemplate.Harness.CloneOf).
+func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) *store.Store {
+	t.Helper()
+	return open(t, harness.CloneOf(t, serverURL(t), key, "dispatch_test_", migrate))
+}
+
+// Empty returns the connection string of a new database that holds nothing, not even the
+// version table, dropped after t ends: for a test that migrates it itself, as the two-build
+// suite has the builds it runs migrate theirs, in production's order. It makes no template.
+func Empty(t testing.TB) string {
+	t.Helper()
+	return harness.Unmigrated(t, serverURL(t), "dispatch_test_")
+}
+
+// serverURL is the DISPATCH_TEST_DATABASE_URL server every database here is made on. It fails t
+// unless the package's TestMain runs Main or Run, which wait for the databases' drops, and skips t
+// when the variable is unset.
+func serverURL(t testing.TB) string {
+	t.Helper()
 	if !harness.InMain() {
 		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
 	}
@@ -64,7 +96,13 @@ func Open(t testing.TB) *store.Store {
 	if raw == "" {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
-	database, err := store.Open(context.Background(), harness.Clone(t, raw, "dispatch_test_"), store.WithMaxConns(testPoolSize))
+	return raw
+}
+
+// open returns a store on the database databaseURL names, closed after t ends.
+func open(t testing.TB, databaseURL string) *store.Store {
+	t.Helper()
+	database, err := store.Open(context.Background(), databaseURL, store.WithMaxConns(testPoolSize))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -74,8 +112,8 @@ func Open(t testing.TB) *store.Store {
 	return database
 }
 
-// Main runs the package's tests and waits for their databases to drop (pgtemplate.Harness.Main).
-// A package whose tests call Open uses it as its TestMain:
+// Main runs the package's tests, waits for their databases to drop, then drops the templates
+// OpenFrom made (pgtemplate.Harness.Main). A package whose tests call Open uses it as its TestMain:
 // func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
 func Main(m *testing.M) int { return harness.Main(m) }
 

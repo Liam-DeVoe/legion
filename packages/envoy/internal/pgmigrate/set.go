@@ -1,13 +1,15 @@
 // Package pgmigrate holds what Envoy's two Postgres migration runners share: Dispatch's
 // (internal/dispatch/store) and the secrets broker's (internal/broker/store). Both record an
-// applied migration by its version alone and apply every version they have not recorded, so both
-// trust the set they embed to give each version one file, and both run a migration's statements
-// under locks that production's reads and writes queue behind. Load refuses a set either runner
-// would apply other than as written, before the runner opens a transaction; Exec applies each
-// migration with its lock waits bounded by LockTimeout, and names the lock a migration gave up on
-// and the sessions that held it; Census reads, before a deployment applies the migrations a
-// database has not, what they would lock and the rows their own censuses count, and writes
-// nothing.
+// applied migration by its version and its file's identity, its name and the sha256 of its text
+// (Identity), and apply every version they have not recorded, so both trust the set they embed to
+// give each version one file, and both run a migration's statements under locks that production's
+// reads and writes queue behind. Load refuses a set either runner would apply other than as
+// written, before the runner opens a transaction; Reconcile refuses, before the runner applies
+// anything, a database whose version table records a version under an identity other than the
+// file's own and other than one the file replaces; Exec applies each migration with its lock waits
+// bounded by LockTimeout, and names the lock a migration gave up on and the sessions that held
+// it; Census reads, before a deployment applies the migrations a database has not, what they
+// would lock and the rows their own censuses count, and writes nothing.
 package pgmigrate
 
 import (
@@ -30,6 +32,14 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
+	// Checksum is the sha256 of the file's whole text in lower-case hex. With Name it is the
+	// identity a runner records of the file (Identity), and judges what its version table records
+	// of the version against (Reconcile).
+	Checksum string
+	// Replaces is each identity the file declares, in a -- replaces: <name> sha256:<hex> line, as
+	// one an earlier text or name of this version had: a database that records one of them is
+	// accepted, and its row left as it is, so the release that recorded it still boots (Reconcile).
+	Replaces []Identity
 	// NonTransactional selects a single idempotent, non-unique CREATE INDEX CONCURRENTLY outside
 	// a transaction, declared by -- pgmigrate:non-transactional on the file's first line.
 	// Runners without that execution mode must refuse it before applying anything.
@@ -58,11 +68,15 @@ type Migration struct {
 //   - an entry is named any other way: a runner reading only *.up.sql would never see it, while
 //     whoever wrote it believes it runs;
 //   - a -- pgmigrate:non-transactional first-line marker does not hold exactly one
-//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex);
+//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex), or the
+//     marker stands, as a comment of its own, on any other line (misplacedMarker);
 //   - a rollback script or a census has no forward migration of its name;
 //   - a census is not one select, holds a Unicode escape, or names pg_terminate_backend,
 //     pg_cancel_backend, pg_sleep, an advisory-lock function or a function that runs a query
 //     given as text (checkCensus);
+//   - a -- replaces: line is not written as `-- replaces: <version>_<name>.up.sql sha256:<hex>`,
+//     alone on its line with 64 lower-case hex digits, names a file of another version, or stands
+//     where Postgres reads it as part of a literal rather than as a comment (readReplaces);
 //   - a forward migration or a census cannot be read.
 //
 // It reports every problem it finds and returns no migration when it finds one, so a runner that
@@ -132,7 +146,15 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 			problems = append(problems, fmt.Errorf("read migration %s: %w", name, err))
 			continue
 		}
-		migration := Migration{Version: version, Name: name, SQL: string(sql)}
+		migration := Migration{Version: version, Name: name, SQL: string(sql), Checksum: Checksum(sql)}
+		if migration.Replaces, err = readReplaces(name, version, migration.SQL); err != nil {
+			problems = append(problems, err)
+			continue
+		}
+		if err := misplacedMarker(name, migration.SQL); err != nil {
+			problems = append(problems, err)
+			continue
+		}
 		migration.NonTransactional = nonTransactionalHeader(migration.SQL)
 		if migration.NonTransactional {
 			if _, err := concurrentIndex(migration.SQL); err != nil {
@@ -174,26 +196,46 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 }
 
 // Fingerprint names what a loaded set would leave in a database: a hex digest over every
-// migration's version, name and SQL, in the order Load returns them. Two processes embedding the
-// same set agree on it, and a set that gains, loses or edits a migration gets a digest of its
-// own; what no runner runs — a rollback script, a census — is left out, since it changes no
-// database.
+// migration's version, name and SQL, in the order Load returns them, and over what a runner
+// records of each beside its version (Record): the version table's identity columns
+// (IdentityColumnNames), the identity it records of the file (Migration.RecordedIdentity) and the
+// checksum of the text it applies. Two processes embedding the same set agree on it, and a set
+// that gains, loses or edits a migration gets a digest of its own; so does the same set under a
+// runner that records other facts of each migration, as every runner before the identity check
+// recorded its version alone. What no runner runs — a rollback script, a census — is left out,
+// since it changes no database.
 //
-// Its caller is the Postgres test harness of each runner (internal/dispatch/store/storetest,
-// internal/broker/store/storetest), which names the migrated template database every test clones
-// after it, so the test processes of one run share the one template rather than each migrating a
-// template of its own, and a run whose set differs builds a template of its own rather than
-// cloning a stale one (dispatch://INFRA-1075). The digest is 32 hex characters, the first half of
-// the SHA-256, so that a prefix and it together stay inside the 63 bytes a Postgres identifier
-// holds — a longer name is silently cut, and a harness looking for a name the server cut would
-// find no template and build one every time. 128 bits is far more than the handful of sets a
-// server ever holds.
+// Its caller is the Postgres test harness of each runner (internal/testpg/pgtemplate, through
+// internal/dispatch/store/storetest and internal/broker/store/storetest), which names the migrated
+// template database every test clones after it, so the test processes of one run share the one
+// template rather than each migrating a template of its own, and a run whose set differs builds a
+// template of its own rather than cloning a stale one (dispatch://INFRA-1075). A template an
+// earlier runner left on a server that outlives a run holds that runner's version table, which
+// another runner reads differently, so its name must differ too: a template built before the
+// identity check has a schema_migrations with no identity columns, and a clone of it under this
+// runner's name would hand every test a version table this runner never leaves
+// (TestATemplateAnEarlierRunnerLeftForTheSameSetIsNotCloned, internal/testpg/pgtemplate). The
+// digest is 32 hex characters, the first half of the SHA-256, so that a prefix and it together
+// stay inside the 63 bytes a Postgres identifier holds — a longer name is silently cut, and a
+// harness looking for a name the server cut would find no template and build one every time. 128
+// bits is far more than the handful of sets a server ever holds.
 func Fingerprint(migrations []Migration) string {
 	digest := sha256.New()
+	// Each field is written with its length, so no two sets differing only in where one field
+	// ends and the next begins hash alike.
+	field := func(value string) { fmt.Fprintf(digest, "%d\x00%s\x00", len(value), value) }
+	fmt.Fprintf(digest, "%d\x00", len(IdentityColumnNames))
+	for _, column := range IdentityColumnNames {
+		field(column)
+	}
 	for _, migration := range migrations {
-		// Each field is written with its length, so no two sets differing only in where one
-		// field ends and the next begins hash alike.
-		fmt.Fprintf(digest, "%d\x00%d\x00%s\x00%d\x00%s\x00", migration.Version, len(migration.Name), migration.Name, len(migration.SQL), migration.SQL)
+		recorded := migration.RecordedIdentity()
+		fmt.Fprintf(digest, "%d\x00", migration.Version)
+		field(migration.Name)
+		field(migration.SQL)
+		field(recorded.Name)
+		field(recorded.Checksum)
+		field(migration.Checksum)
 	}
 	return hex.EncodeToString(digest.Sum(nil)[:16])
 }

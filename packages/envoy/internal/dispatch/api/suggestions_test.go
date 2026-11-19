@@ -212,7 +212,7 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 		"title": {question}, "exclude_issues": open,
 	})
 	if relatedAsk(t, withoutTheThree, settled).ID != settled {
-		t.Fatalf("suggestions = %s, want the ask %s, which the search does find", mustJSON(t, withoutTheThree), settled)
+		t.Fatalf("suggestions = %s, want the ask %s, which the search does find", asJSON(t, withoutTheThree), settled)
 	}
 
 	target := createSearchIssue(t, handler, "NOOFFER", "Pick an API transport for the checkout service", "")
@@ -228,7 +228,7 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 	}
 	if owners := relatedOwners(*created.Advice.Suggestions); len(owners) != suggestionRelatedCount {
 		t.Fatalf("related owners = %v, want the %d open issues %v; suggestions = %s",
-			owners, suggestionRelatedCount, open, mustJSON(t, created.Advice.Suggestions))
+			owners, suggestionRelatedCount, open, asJSON(t, created.Advice.Suggestions))
 	}
 	for _, item := range created.Advice.Suggestions.Related {
 		if !slices.Contains(open, item.Owner.Key) {
@@ -519,7 +519,7 @@ func TestCreateIssueSuggestsTheOpenSurvivorAboveAClosedDuplicate(t *testing.T) {
 	related := created.Advice.Suggestions.Related
 	open, done := relatedIndex(related, survivor), relatedIndex(related, closed)
 	if open < 0 || (done >= 0 && done < open) {
-		t.Fatalf("suggestions = %s, want the open %s ahead of the closed %s", mustJSON(t, created.Advice.Suggestions), survivor, closed)
+		t.Fatalf("suggestions = %s, want the open %s ahead of the closed %s", asJSON(t, created.Advice.Suggestions), survivor, closed)
 	}
 }
 
@@ -552,11 +552,11 @@ func TestCreateAskExcludesItsOwnIssue(t *testing.T) {
 	}
 	for _, item := range created.Advice.Suggestions.Related {
 		if item.ID == own || item.Owner.Key == own {
-			t.Fatalf("suggestions = %s, want nothing owned by the ask's own issue %s", mustJSON(t, created.Advice.Suggestions), own)
+			t.Fatalf("suggestions = %s, want nothing owned by the ask's own issue %s", asJSON(t, created.Advice.Suggestions), own)
 		}
 	}
 	if relatedIndex(created.Advice.Suggestions.Related, other) < 0 {
-		t.Fatalf("suggestions = %s, want %s, which shares a word with the question", mustJSON(t, created.Advice.Suggestions), other)
+		t.Fatalf("suggestions = %s, want %s, which shares a word with the question", asJSON(t, created.Advice.Suggestions), other)
 	}
 }
 
@@ -591,7 +591,7 @@ func TestCreateAskOnProjectDocumentSuggests(t *testing.T) {
 		t.Fatalf("advice.suggestions missing on a project-document ask: %s", response.Body.String())
 	}
 	if relatedIndex(created.Advice.Suggestions.Related, match) < 0 {
-		t.Fatalf("suggestions = %s, want %s from the document's project", mustJSON(t, created.Advice.Suggestions), match)
+		t.Fatalf("suggestions = %s, want %s from the document's project", asJSON(t, created.Advice.Suggestions), match)
 	}
 }
 

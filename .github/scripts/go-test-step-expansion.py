@@ -396,7 +396,7 @@ AUDITED_SCRIPTS = {
             "--keep \"$RUNNER_TEMP/go-test-json/race-api.json\" ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 32m ./internal/dispatch/api/",
         },
-        sha256="b69cfb188325fdc9f5f13d356463e52efcc87b09654a57c613633b61333d16da",
+        sha256="078fcffcfae5ff8641539bb830f000ad335cdc79c2be23919a1e4fc80927636c",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

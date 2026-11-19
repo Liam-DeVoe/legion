@@ -151,17 +151,17 @@ func TestRelatedRouteExcludeIssueLeavesItsOwnItemsOut(t *testing.T) {
 	params := url.Values{"title": {"Zymurgy ledger"}}
 	if unfiltered := getRelated(t, handler, "REXCL", params); !slices.Contains(relatedOwners(unfiltered), excluded) {
 		t.Fatalf("related owners without exclude_issue = %v, want %s among them; suggestions = %s",
-			relatedOwners(unfiltered), excluded, mustJSON(t, unfiltered))
+			relatedOwners(unfiltered), excluded, asJSON(t, unfiltered))
 	}
 	params.Set("exclude_issue", excluded)
 	suggestions := getRelated(t, handler, "REXCL", params)
 	for _, item := range suggestions.Related {
 		if item.Owner.Key == excluded || item.ID == excluded {
-			t.Fatalf("suggestions = %s, want nothing of %s", mustJSON(t, suggestions), excluded)
+			t.Fatalf("suggestions = %s, want nothing of %s", asJSON(t, suggestions), excluded)
 		}
 	}
 	if !slices.Contains(relatedOwners(suggestions), other) {
-		t.Fatalf("related owners = %v, want %s; suggestions = %s", relatedOwners(suggestions), other, mustJSON(t, suggestions))
+		t.Fatalf("related owners = %v, want %s; suggestions = %s", relatedOwners(suggestions), other, asJSON(t, suggestions))
 	}
 	expectNothingWritten(t, database, before)
 
