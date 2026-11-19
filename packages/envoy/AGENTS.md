@@ -6054,7 +6054,9 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   It reads the registry only for the events this rule takes, and only their owners wait for the read: the batch reads the destinations of every event of such an owner, and plans and sends them, once the read answered (`threadHearing.plan`), while it plans and sends every other owner at once (`sendChains`).
   So a registry that does not answer costs those owners its wait and holds no other event of the batch, an `issue.released` on another issue included.
   The read is the one an issue claim makes of its holder (`GET /v1/registry/<id>?include=unresponsive`, `Deps.Registry`), and the client's own timeout bounds it.
-  A read that fails for any reason but a missing record is the registry not answering: no read starts after it, and the sessions not read yet do not count, so a hung registry costs one timeout however many sessions the threads hold.
+  A read the registry does not answer stops the read: no connection, the client's timeout, or a 502, 503 or 504 (`envoy.ErrUnreachable`, `registryUnanswered`).
+  No read starts after it, and the sessions not read yet do not count, so a hung registry costs one timeout however many sessions the threads hold.
+  A read the registry refuses for one session, such as the 500 for an interest record it cannot read, counts nothing for that session alone, and the other sessions are read as before.
   Where one of the thread's sessions reads `live` or `unresponsive` (`routing.threadHeard`), the reply reaches the thread and no session that only a document credits: not the primary document's (`addPrimaryDocumentAuthors`) and not the thread's document's (`addAuthorRoutes`).
   A session that reads `gone`, a stopped one, one the registry holds no record of, and one whose read failed do not count.
   Where none counts, or where the outbox has no registry client (`Deps.Registry` nil), the reply reaches the credits as before.

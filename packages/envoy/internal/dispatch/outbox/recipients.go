@@ -275,8 +275,10 @@ func threadSessions(event model.Event, routing routing, look lookup) []string {
 
 // RegistryReader reads one session's record from Envoy's registry, unresponsive sessions
 // included, as envoy.Client.Session does: a record's State is live, unresponsive or gone,
-// envoy.ErrNotFound is a session the registry holds no record of or one that stopped, and any
-// other error is the registry not answering.
+// envoy.ErrNotFound is a session the registry holds no record of or one that stopped, an error
+// that is envoy.ErrUnreachable or a deadline (registryUnanswered) is the registry not answering,
+// and any other error is the registry's answer that it cannot read that one session's record,
+// such as the 500 the listener gives for an interest record it cannot read.
 type RegistryReader interface {
 	Session(ctx context.Context, sessionID string) (envoy.Session, error)
 }
@@ -428,11 +430,13 @@ func (h *threadHearing) plan(ctx context.Context, deps Deps, resolved map[string
 
 // countedSessions reads each of sessionIDs from registry, at most registryReadsAtOnce at once, and
 // answers the ones it reads live or unresponsive. A session the registry holds no record of is no
-// failure. Any other error is the registry not answering (RegistryReader): that read counts
-// nothing and is logged unless ctx ended, and no read starts after it, so the sessions not yet read
-// count nothing either, as a registry that does not answer sends the credit copy. A registry that
-// hangs then costs one read's wait, which the reader's own timeout bounds (envoy.Client's window),
-// rather than that wait for every registryReadsAtOnce sessions of the batch's threads.
+// failure. A read the registry refuses for that one session (RegistryReader) counts nothing for
+// that session alone, and is logged: the registry answers, so the other sessions are read as
+// before. A read the registry does not answer (registryUnanswered) counts nothing either, is
+// logged unless ctx ended, and no read starts after it, so the sessions not yet read count nothing
+// either, as a registry that does not answer sends the credit copy. A registry that hangs then
+// costs one read's wait, which the reader's own timeout bounds (envoy.Client's window), rather
+// than that wait for every registryReadsAtOnce sessions of the batch's threads.
 func countedSessions(ctx context.Context, registry RegistryReader, sessionIDs []string) map[string]struct{} {
 	counted := map[string]struct{}{}
 	var mu sync.Mutex
@@ -458,9 +462,11 @@ func countedSessions(ctx context.Context, registry RegistryReader, sessionIDs []
 				if errors.Is(err, envoy.ErrNotFound) {
 					return
 				}
-				mu.Lock()
-				unanswered = true
-				mu.Unlock()
+				if registryUnanswered(err) {
+					mu.Lock()
+					unanswered = true
+					mu.Unlock()
+				}
 				if ctx.Err() == nil {
 					slog.Warn("dispatch outbox: a thread session's state could not be read from Envoy's registry, so it does not count",
 						"session_id", sessionID, "error", err)
@@ -477,6 +483,16 @@ func countedSessions(ctx context.Context, registry RegistryReader, sessionIDs []
 	}
 	wg.Wait()
 	return counted
+}
+
+// registryUnanswered reports whether err, a failed read of Envoy's registry, is the registry not
+// answering rather than its answer about one session: envoy.ErrUnreachable (no connection, a
+// connection lost, the client's timeout, or a 502, 503 or 504 from in front of a listener that is
+// gone or starting), or a deadline that ended the read. Any other failure is a status the listener
+// chose for that session's record, or a body that does not decode, which says nothing about the
+// other sessions.
+func registryUnanswered(err error) bool {
+	return errors.Is(err, envoy.ErrUnreachable) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // creditFilter is the rule a session that only a document credits is asked by, on a person's
