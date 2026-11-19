@@ -1,6 +1,9 @@
 package workflow
 
 import (
+	"context"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +21,86 @@ func dropPlanRows(t *testing.T, pool *pgxpool.Pool, key string) {
 		if _, err := pool.Exec(t.Context(), "delete from "+table+" where issue = $1", key); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// stepRunsOf is each row of starts of key, `<task> <kind> <place> <starts> <run>`, in the store's order.
+func stepRunsOf(t *testing.T, pool *pgxpool.Pool, key string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select task || ' ' || kind || ' ' || place || ' ' || starts || ' ' || run
+		from step_starts where issue = $1 order by task, kind, place`, key)
+	if err != nil {
+		t.Fatalf("read the runs of %s: %v", key, err)
+	}
+	defer rows.Close()
+	var runs []string
+	for rows.Next() {
+		var run string
+		if err := rows.Scan(&run); err != nil {
+			t.Fatalf("read a run of %s: %v", key, err)
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the runs of %s: %v", key, err)
+	}
+	return runs
+}
+
+// A run whose place no step of the walk of its run holds ends at the next settle of its issue,
+// stopped, and the daemon logs why. The way back of a rollback dropped the plan rows of task a
+// while the implementer ran task a's step 1, so after the roll forward the issue walks today's
+// line, where no step is task a's: no start and no end of that line names the place, and the
+// settle, which reads every open run of the issue a fact touched, is where it ends. Its end is the
+// record its start wrote, ended, under the id of that start. The runs of today's line go on as any
+// run does: the boot opens implementing's, the move to testing ends it and starts testing's, which
+// stays open. The control is the same issue with its plan rows kept: task a's step 1 ends passed
+// with the move, and nothing is logged.
+func TestARunOnNoStepOfItsWalkEndsAtTheNextSettle(t *testing.T) {
+	const offWalk = "workflow: a run on no step of the walk of its run is ended"
+	for _, dropped := range []bool{true, false} {
+		name := "the plan rows dropped by the way back"
+		if !dropped {
+			name = "control: the plan rows kept"
+		}
+		t.Run(name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine, logged := loggedEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
+			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+			if dropped {
+				dropPlanRows(t, pool, root.Key)
+				// The roll forward's boot over the store the way back left.
+				rebooted(t, pool)
+			}
+			move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+
+			taskA := record.StepPlace{Task: "a", Kind: "step", Place: 1}
+			var ends []string
+			for _, w := range stepWrites(t, pool, root.Key) {
+				if w.Task == taskA.Task && w.Kind == taskA.Kind && w.Step == taskA.Place && isEnd(w) {
+					if w.ID != StepID(root.Key, 1, taskA, 1) || w.Role != "implementer" || w.Type != "implementation" || w.StartedAt == nil {
+						t.Fatalf("the end of task a's step 1 = %+v, want the record its start wrote", w)
+					}
+					ends = append(ends, resultOf(w))
+				}
+			}
+			wantRuns, wantEnds := []string{"a step 1 1 ended", "default step 2 0 ended", "default step 3 1 open"}, []string{"stopped"}
+			if !dropped {
+				wantRuns, wantEnds = []string{"a step 1 1 ended", "a step 2 1 open"}, []string{"passed"}
+			}
+			if runs := stepRunsOf(t, pool, root.Key); !reflect.DeepEqual(runs, wantRuns) {
+				t.Fatalf("the runs of %s after the move = %v, want %v", root.Key, runs, wantRuns)
+			}
+			if !reflect.DeepEqual(ends, wantEnds) {
+				t.Fatalf("the ends of task a's step 1 = %v, want %v", ends, wantEnds)
+			}
+			if said := strings.Contains(logged.String(), offWalk); said != dropped ||
+				dropped && !strings.Contains(logged.String(), "the plan rows that named its step are gone") {
+				t.Fatalf("the log =\n%s\nwant the line %q naming why only where the plan rows are gone", logged.String(), offWalk)
+			}
+		})
 	}
 }
 

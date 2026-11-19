@@ -209,14 +209,16 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 
 // endStep writes the end of the run of the step before stands in (record.StandsAt, so a held issue
 // ends the step of the phase its hold is from) on w, the walk of that run, before being the issue
-// as it stood in that run. It is the one writer of an end, and the fact's settle its one caller
-// (settleRuns), which decides that an open run is over and reads w at the run's own generation, so
-// the end of a run the fact left names the step of that run's plan. The record is the one its
-// start wrote: the same generation and the count of starts unchanged, and the agent and the moment
-// that start wrote, so the two writes agree whichever reaches Dispatch first. A run no start of
-// this release counted has an open row from the daemon's boot (OpenUncountedRuns), which wrote the
-// count and the agent its start would have named, so its end is written the same way. One run gets
-// one end: the end marks the run ended in the store, in its own transaction
+// as it stood in that run. It writes the end of each run a step of its walk holds, and the fact's
+// settle is its one caller (settleRuns), which decides that an open run is over and reads w at the
+// run's own generation, so the end of a run the fact left names the step of that run's plan; a
+// run no step of that walk holds is ended from its kept start instead (endOffWalk). The record is
+// the one its start wrote: the same generation and the count of starts unchanged, and the agent
+// and the moment that start wrote, so the two writes agree whichever reaches Dispatch first. A
+// run no start of this release counted has an open row from the daemon's boot
+// (OpenUncountedRuns), which wrote the count and the agent its start would have named, so its end
+// is written the same way. One run gets one end: the end marks the run ended in the store, in its
+// own transaction
 // (record.Store.EndStepStart), and an end of a run already marked writes nothing. The end carries
 // the moment now, end's fields, and the session and the model of one read of the agent now, the
 // only write that names either (startStep). A phase that runs no step writes nothing, and neither
