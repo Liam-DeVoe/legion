@@ -407,20 +407,21 @@ func changeFailureRateStatistics(parts []measures.DayPart, _ Range, names []stri
 }
 
 // changeFailureRateOf is change-fail-rate's three shares' statistics of a folded failure rate, by
-// series, every figure nil where folded is (no part: no failure source).
-func changeFailureRateOf(folded *measures.ChangeFailureRate) map[string]Statistics {
+// series, every figure nil where folded is the zero ChangeFailureRate (no part was folded: no
+// failure source), whose counts of 0 counted nothing.
+func changeFailureRateOf(folded measures.ChangeFailureRate) map[string]Statistics {
 	perDeploy := blank("rate", "confirmed", "pending", "rejected", "total")
 	perPR := blank("rate", "confirmed", "pending", "rejected", "reverts", "total")
 	upperBound := blank("rate", "confirmed_or_pending")
-	if folded != nil {
+	if folded != (measures.ChangeFailureRate{}) {
 		flagged := func(stats Statistics, flags measures.FlagCounts) {
-			stats["rate"], stats["confirmed"], stats["pending"] = new(flags.Rate), new(float64(flags.Confirmed)), new(float64(flags.Pending))
+			stats["rate"], stats["confirmed"], stats["pending"] = flags.Rate, new(float64(flags.Confirmed)), new(float64(flags.Pending))
 			stats["rejected"], stats["total"] = new(float64(flags.Rejected)), new(float64(flags.Total))
 		}
 		flagged(perDeploy, folded.PerDeploy.FlagCounts)
 		flagged(perPR, folded.PerPR)
 		perPR["reverts"] = new(float64(folded.PerPR.Reverts))
-		upperBound["rate"], upperBound["confirmed_or_pending"] = new(folded.PerDeploy.UpperBoundRate), new(float64(folded.PerDeploy.ConfirmedOrPending))
+		upperBound["rate"], upperBound["confirmed_or_pending"] = folded.PerDeploy.UpperBoundRate, new(float64(folded.PerDeploy.ConfirmedOrPending))
 	}
 	return map[string]Statistics{measures.SeriesPerDeploy: perDeploy, measures.SeriesPerPR: perPR, measures.SeriesUpperBound: upperBound}
 }
@@ -588,7 +589,11 @@ func readsSamples(definition Definition, series Series) bool {
 //   - quantile: n, sum, median, p90 and max, over the merge of the days' samples
 //     (measures.Quantile);
 //   - max: max, n;
-//   - last: value, the last value of the part measured last, n.
+//   - last: value, the last value of the part measured last, n. Of parts whose last values were
+//     measured at one moment (two repositories' rows of one day, in a read of repositories) it is
+//     the one written later (lastBefore: the write that began later, then the later reading of
+//     one write), the order a logged eval's row of the whole project breaks the same tie by
+//     (addParts), whatever order the parts come in.
 func aggStatistics(agg string, parts []measures.DayPart, series string) Statistics {
 	var stats Statistics
 	switch agg {
@@ -610,8 +615,10 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 		return stats
 	}
 	var n int
-	var largest, last *float64
-	var lastAt *time.Time
+	var largest *float64
+	// last is the part of the reading that holds the last value, held once a part holds one.
+	var last dayPart
+	held := false
 	for _, part := range parts {
 		if part.Series != series {
 			continue
@@ -620,8 +627,8 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 		if part.Max != nil && (largest == nil || *part.Max > *largest) {
 			largest = part.Max
 		}
-		if part.LastValue != nil && part.LastAt != nil && (lastAt == nil || !part.LastAt.Before(*lastAt)) {
-			last, lastAt = part.LastValue, part.LastAt
+		if candidate, ok := lastOf(part); ok && (!held || last.lastBefore(candidate)) {
+			last, held = candidate, true
 		}
 	}
 	stats["n"] = new(float64(n))
@@ -644,7 +651,9 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 	case AggMax:
 		stats["max"] = largest
 	default:
-		stats["value"] = last
+		if held {
+			stats["value"] = new(last.value)
+		}
 	}
 	return stats
 }

@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -429,4 +431,212 @@ func TestAFirstReadingAndTheSeedNeverDeadlock(t *testing.T) {
 	if !hasBlock(blocks, restored.DocBlock) || restored.DocBlock == definition.DocBlock || headings(text, "deploy-wait") != 1 {
 		t.Errorf("deploy-frequency's doc_block %s is no block of evals-md, or is the deleted one, or deploy-wait has no one section:\n%s", restored.DocBlock, text)
 	}
+}
+
+// TestFirstRegistrationsBesideAnEditOfEvalsMdNeitherDeadlockNorLoseASection: five first
+// registrations of one project, three by a reading and two by a register write, and a person's
+// edit of the project's evals-md, at once. A registration takes its eval's lock, then the
+// document's owner lock (lockDocument, store.LockOwner), does the section's document work and
+// stores its rows, and its commit sends the document's queued writes; the edit takes the owner
+// lock first, as the edit route does (requireOpenOwnerStatus), then the document's other locks in
+// the docs package's order (the writer slot, the advisory lock). The first registration is paused
+// in its commit, at the insert of the document's version, holding all of them; the edit then
+// waits on the owner lock; and the four other registrations each wait on it too, holding their
+// eval's lock and no transaction id, so none of them holds back the event horizon while it waits
+// (requireQueuedWithNoTransactionID). Each writer runs on a context marked as a route marks its
+// request (store.WithTransactionTracking), so a second connection of the pool asked for inside
+// its transaction is refused, as the server refuses it. Let on, every write lands: evals-md holds
+// the edit's paragraph and one section of each eval, which its doc_block names.
+func TestFirstRegistrationsBesideAnEditOfEvalsMdNeitherDeadlockNorLoseASection(t *testing.T) {
+	r := newRig(t)
+	r.write(t, "deploy-wait", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 1, "measured_at": at(4, 9, 0)}))
+	documentID := r.documentID(t, r.project)
+	firstRegistrations{r: r, documentID: documentID}.run(t, "review-time", "build-minutes", "merge-wait", "flaky-reruns")
+}
+
+// TestAFirstRegistrationBesideAnEarlierBuildNeitherDeadlocksNorLosesASection is the race above in
+// the owner lock's rollout mode: a process of a build before the owner lock is in the fleet (a
+// server_processes row at owner lock protocol 0, registerEarlierBuildProcess), which serialises
+// the document's writers on its row alone, so every owner lock of this build takes the document's
+// row too, right after the advisory lock (store.LockOwner). The paused registration holds the
+// document's row from its read phase, which an earlier build's writer of the document waits on;
+// the edit and two other first registrations, a register write and a reading, wait on the
+// advisory lock before they take the row, still holding no transaction id. Let on, every write
+// lands, none deadlocked, and evals-md holds the edit's paragraph and one section of each eval.
+func TestAFirstRegistrationBesideAnEarlierBuildNeitherDeadlocksNorLosesASection(t *testing.T) {
+	r := newRig(t)
+	r.write(t, "deploy-wait", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 1, "measured_at": at(4, 9, 0)}))
+	documentID := r.documentID(t, r.project)
+	registerEarlierBuildProcess(t, r)
+	firstRegistrations{r: r, documentID: documentID, earlierBuild: true}.run(t, "review-time", "build-minutes")
+}
+
+// registerEarlierBuildProcess writes a server_processes row as a process of a build before the
+// owner lock protocol leaves it, as the api package's rollout tests do: no owner_lock_protocol, so
+// the column's default 0, which keeps that build in the fleet for store.OwnerLockLegacyWindow.
+func registerEarlierBuildProcess(t *testing.T, r rig) {
+	t.Helper()
+	if _, err := r.database.Pool.Exec(t.Context(), `
+		insert into server_processes (instance, commit, signing_keys)
+		values (gen_random_uuid(), 'earlier0build', '{fingerprint}')`); err != nil {
+		t.Fatalf("register a process of an earlier build: %v", err)
+	}
+}
+
+// firstRegistrations is the race of first registrations beside an edit of the project's
+// evals-md, documentID, which already holds deploy-wait's section: cache-hits' reading, paused at
+// the insert of the document's version, the edit, and a first registration of each slug run is
+// given, queued behind the two, alternately a register write and a reading. earlierBuild says a
+// process of an earlier build is in the fleet, so the paused registration holds the document's row.
+type firstRegistrations struct {
+	r            rig
+	documentID   string
+	earlierBuild bool
+}
+
+func (f firstRegistrations) run(t *testing.T, queuedSlugs ...string) {
+	t.Helper()
+	r := f.r
+	reading := func(slug string) func(ctx context.Context) error {
+		return func(ctx context.Context) error {
+			written, err := r.registry.WriteReadings(store.WithTransactionTracking(ctx), Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
+				Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 3, "measured_at": at(5, 9, 0)})}})
+			if err == nil && !written.Registered {
+				err = fmt.Errorf("the first reading under %s registered no eval", slug)
+			}
+			return err
+		}
+	}
+	register := func(slug string) func(ctx context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := r.registry.Register(store.WithTransactionTracking(ctx), Registration{Project: r.project, Slug: slug, Caller: alice, Name: Set("Registered " + slug)})
+			return err
+		}
+	}
+	documentID := f.documentID
+	const note = "Alice's note: every eval of this project is measured on the main branch."
+	edit := func(ctx context.Context) error {
+		ctx = store.WithTransactionTracking(ctx)
+		tx, err := r.database.Pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(context.Background())
+		// The document's owner lock, then a read of its row in the next statement, as the edit
+		// route takes them (requireOpenOwnerStatus, store.LockOwnerAndRead).
+		if err := store.LockOwnerAndRead(ctx, tx, store.ArtifactOwner(documentID), `
+			select true from artifacts where id = $1 and issue_key is null
+		`, []any{documentID}, new(bool)); err != nil {
+			return fmt.Errorf("lock the document's owner: %w", err)
+		}
+		joined, ledger := r.documents.Join(ctx, tx)
+		defer ledger.Discard()
+		applied, err := r.documents.ApplyOps(joined, documentID, []model.EditOp{{Op: "insert", After: "end", Markdown: note}}, alice, nil)
+		if err != nil {
+			return err
+		}
+		if !applied.Changed {
+			return errors.New("the edit changed nothing")
+		}
+		if _, err := r.documents.SnapshotVersion(joined, documentID, alice); err != nil {
+			return err
+		}
+		return ledger.Commit(ctx)
+	}
+	type queuedRegistration struct {
+		slug  string
+		write func(ctx context.Context) error
+	}
+	queued := make([]queuedRegistration, len(queuedSlugs))
+	for index, slug := range queuedSlugs {
+		queued[index] = queuedRegistration{slug, register(slug)}
+		if index%2 == 1 {
+			queued[index].write = reading(slug)
+		}
+	}
+	answers := make(chan error, len(queued))
+	holder := pauseInserts(t, r, "artifact_versions", "true")
+	firstErr, editErr := race(t, holder, reading("cache-hits"), edit, func() {
+		ctx, cancel := context.WithTimeout(t.Context(), lockOrderBound)
+		t.Cleanup(cancel)
+		for _, registration := range queued {
+			go func() { answers <- registration.write(ctx) }()
+		}
+		if waiting := storetest.WaitForLockWaiters(t, holder, 2+len(queued), lockOrderBound); waiting < 2+len(queued) {
+			t.Errorf("%d writers wait, want %d: the paused registration, the edit and the %d queued registrations", waiting, 2+len(queued), len(queued))
+		}
+		requireQueuedWithNoTransactionID(t, holder, documentID, len(queued))
+		if held := documentRowHeld(t, holder, documentID); held != f.earlierBuild {
+			t.Errorf("the paused registration holds evals-md's row: %t; want %t, which an earlier build in the fleet makes every owner lock take (store.LockOwner)", held, f.earlierBuild)
+		}
+	})
+	requireNoDeadlock(t, "the paused registration", firstErr)
+	requireNoDeadlock(t, "the edit", editErr)
+	for range queued {
+		requireNoDeadlock(t, "a queued registration", <-answers)
+	}
+	if t.Failed() {
+		return
+	}
+	text, blocks := r.document(t)
+	if !strings.Contains(text, note) {
+		t.Errorf("evals-md lost the edit's paragraph:\n%s", text)
+	}
+	for _, slug := range append([]string{"deploy-wait", "cache-hits"}, queuedSlugs...) {
+		definition, _ := r.currentOf(t, slug)
+		if headings(text, slug) != 1 || !hasBlock(blocks, definition.DocBlock) {
+			t.Errorf("evals-md holds %d sections of %s, and its doc_block %q names a block of it: %t; want one, naming one",
+				headings(text, slug), slug, definition.DocBlock, hasBlock(blocks, definition.DocBlock))
+		}
+	}
+}
+
+// requireQueuedWithNoTransactionID fails the test unless want backends that each hold an eval's
+// lock (lockEval, a single-key advisory lock, which pg_locks shows with objsubid 1) wait, not
+// granted, on the owner lock of the document documentID (store.LockOwner: the two-key advisory
+// lock store.OwnerLockNamespace and the hashtext of the owner's lock key, which pg_locks shows as
+// classid, objid and objsubid 2), and no backend waiting on it holds a transaction id: a backend
+// that has one holds the lock on it, which pg_locks shows as a granted transactionid lock. The
+// edit waits on the same lock holding no eval lock, and is not counted. It reads pg_locks through
+// holder's own connection, as storetest.WaitForLockWaiters does, and only the test database's.
+func requireQueuedWithNoTransactionID(t *testing.T, holder pgx.Tx, documentID string, want int) {
+	t.Helper()
+	var queued, withID int
+	if err := holder.QueryRow(context.Background(), `
+		select
+			count(*) filter (where exists (
+				select 1 from pg_locks own
+				where own.pid = waiter.pid and own.locktype = 'advisory' and own.granted and own.objsubid = 1)),
+			count(*) filter (where exists (
+				select 1 from pg_locks own where own.pid = waiter.pid and own.locktype = 'transactionid' and own.granted))
+		from pg_locks waiter
+		where waiter.locktype = 'advisory' and not waiter.granted
+		  and waiter.database = (select oid from pg_database where datname = current_database())
+		  and waiter.classid = ($1::bigint & 4294967295)::oid
+		  and waiter.objid = (hashtext($2)::bigint & 4294967295)::oid
+		  and waiter.objsubid = 2
+	`, int64(store.OwnerLockNamespace), store.ArtifactOwner(documentID).LockKey()).Scan(&queued, &withID); err != nil {
+		t.Fatalf("read the waits on the owner lock of evals-md %s: %v", documentID, err)
+	}
+	if queued != want || withID != 0 {
+		t.Errorf("%d writes holding an eval's lock wait on the owner lock of evals-md, and %d waiters on it hold a transaction id; want %d and none",
+			queued, withID, want)
+	}
+}
+
+// documentRowHeld reports whether another transaction holds the row of the document documentID
+// locked: a `for no key update skip locked` of it from holder's own connection, which answers no
+// row then, and does not wait.
+func documentRowHeld(t *testing.T, holder pgx.Tx, documentID string) bool {
+	t.Helper()
+	rows, err := holder.Query(context.Background(), `select 1 from artifacts where id = $1 for no key update skip locked`, documentID)
+	if err != nil {
+		t.Fatalf("probe the row of evals-md %s: %v", documentID, err)
+	}
+	defer rows.Close()
+	found := rows.Next()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("probe the row of evals-md %s: %v", documentID, err)
+	}
+	return !found
 }

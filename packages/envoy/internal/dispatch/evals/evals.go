@@ -263,47 +263,18 @@ type Reading struct {
 }
 
 // DayRow is one stored day row, every column of eval_days but its writer, which each write of a
-// row knows and each read names (Definition.writer). Day is the day's UTC midnight. Sum, Num,
-// Den, Max and LastValue are nil where the row holds no such part.
+// row knows and each read names (Definition.writer): its key's project, eval and repository, its
+// listing and its bookkeeping (built_by, updated_at) beside its part, the columns the folds read
+// (measures.DayPart: its series, its day, the day's UTC midnight, and its values), so a builder's
+// part is written as the row that holds it and a stored row is folded as its part.
 type DayRow struct {
-	ProjectKey    string             `json:"project_key"`
-	EvalID        string             `json:"eval_id"`
-	Series        string             `json:"series"`
-	Repo          string             `json:"repo"`
-	Day           time.Time          `json:"day"`
-	Listed        bool               `json:"listed"`
-	N             int                `json:"n"`
-	Sum           *float64           `json:"sum"`
-	Num           *float64           `json:"num"`
-	Den           *float64           `json:"den"`
-	Max           *float64           `json:"max"`
-	Samples       []float64          `json:"samples"`
-	LastValue     *float64           `json:"last_value"`
-	LastAt        *time.Time         `json:"last_at"`
-	Counts        map[string]float64 `json:"counts"`
-	ViaRepository int                `json:"via_repository"`
-	BuiltBy       string             `json:"built_by"`
-	UpdatedAt     time.Time          `json:"updated_at"`
-}
-
-// Part is the row as the folds read it (measures.DayPart): every column but its key's project,
-// eval and repository, its listing and its bookkeeping (built_by, updated_at), which WithPart
-// keeps.
-func (d DayRow) Part() measures.DayPart {
-	return measures.DayPart{
-		Series: d.Series, Day: d.Day, N: d.N, Sum: d.Sum, Num: d.Num, Den: d.Den, Max: d.Max,
-		Samples: d.Samples, Counts: d.Counts, LastValue: d.LastValue, LastAt: d.LastAt,
-		ViaRepository: d.ViaRepository,
-	}
-}
-
-// WithPart is the row holding part's columns in place of its own, and its own project, eval,
-// repository, listing and bookkeeping: the row a builder's part is written as, so
-// row.WithPart(row.Part()) is row.
-func (d DayRow) WithPart(part measures.DayPart) DayRow {
-	d.Series, d.Day, d.N, d.Sum, d.Num, d.Den, d.Max = part.Series, part.Day, part.N, part.Sum, part.Num, part.Den, part.Max
-	d.Samples, d.Counts, d.LastValue, d.LastAt, d.ViaRepository = part.Samples, part.Counts, part.LastValue, part.LastAt, part.ViaRepository
-	return d
+	ProjectKey string `json:"project_key"`
+	EvalID     string `json:"eval_id"`
+	Repo       string `json:"repo"`
+	Listed     bool   `json:"listed"`
+	measures.DayPart
+	BuiltBy   string    `json:"built_by"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // WindowRow is one day row as a DayWindow read answers it: the range it answers for

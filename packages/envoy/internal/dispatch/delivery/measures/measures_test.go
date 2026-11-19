@@ -204,14 +204,14 @@ func TestComputeMatchesThePrototypeOnItsFixture(t *testing.T) {
 	if perPR.Confirmed != 2 || perPR.Pending != 1 || perPR.Rejected != 1 || perPR.Reverts != 1 || perPR.Total != 14 {
 		t.Errorf("per_pr = %+v, want {confirmed 2, pending 1, rejected 1, reverts 1, total 14}", perPR)
 	}
-	assertFloat(t, "per_pr.rate", perPR.Rate, 2.0/14)
+	assertOptional(t, "per_pr.rate", perPR.Rate, new(2.0/14))
 	perDeploy := result.ChangeFailureRate.PerDeploy
 	if perDeploy.Confirmed != 2 || perDeploy.Pending != 0 || perDeploy.Rejected != 1 || perDeploy.Reverts != 1 ||
 		perDeploy.Total != 5 || perDeploy.ConfirmedOrPending != 2 {
 		t.Errorf("per_deploy = %+v, want {confirmed 2, pending 0, rejected 1, reverts 1, total 5, confirmed_or_pending 2}", perDeploy)
 	}
-	assertFloat(t, "per_deploy.rate", perDeploy.Rate, 0.4)
-	assertFloat(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, 0.4)
+	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.4))
+	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.4))
 
 	assertOptional(t, "time_to_restore.median_minutes", result.TimeToRestore.MedianMinutes, new(750.0))
 	assertFloat(t, "rework_share", result.ReworkShare, 4.0/14)
@@ -269,28 +269,49 @@ func TestComputeOnStoredContainment(t *testing.T) {
 }
 
 // TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime: with no failure source (nil
-// flags) the change failure rate is no value and time to restore holds no median, which no target
-// can judge; with a source that holds no flag (an empty list) the rate is a measured 0 over the
-// window's pull requests and deploys.
+// flags) the change failure rate is still the object a page of an earlier build reads, every
+// count 0 and every rate nil, which no target can judge, and time to restore holds no median;
+// with a source that holds no flag (an empty list) the rate is a measured 0 over the window's pull
+// requests and deploys, and over a window with neither, where each denominator is 0, still a
+// measured 0 rather than no value.
 func TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime(t *testing.T) {
 	prs, runs, window := loadFixture(t)
 	result := Compute(prs, runs, nil, window)
-	if result.ChangeFailureRate != nil {
-		t.Errorf("change_failure_rate = %+v with no failure source, want no value", *result.ChangeFailureRate)
+	if result.ChangeFailureRate != (ChangeFailureRate{}) {
+		t.Errorf("change_failure_rate = %+v with no failure source, want every count 0 and every rate nil", result.ChangeFailureRate)
+	}
+	encoded, err := json.Marshal(result.ChangeFailureRate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const unmeasured = `{"per_pr":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null},` +
+		`"per_deploy":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null,"confirmed_or_pending":0,"upper_bound_rate":null}}`
+	if string(encoded) != unmeasured {
+		t.Errorf("change_failure_rate encodes %s with no failure source, want %s", encoded, unmeasured)
 	}
 	if result.TimeToRestore.MedianMinutes != nil {
 		t.Errorf("time_to_restore.median_minutes = %v, want nil", *result.TimeToRestore.MedianMinutes)
 	}
 
-	sourced := Compute(prs, runs, []Flag{}, window)
-	if sourced.ChangeFailureRate == nil {
-		t.Fatal("change_failure_rate = nil from a failure source with no flag, want a rate of 0")
-	}
-	if got, want := sourced.ChangeFailureRate.PerPR, (FlagCounts{Total: 14}); got != want {
-		t.Errorf("per_pr = %+v, want %+v", got, want)
-	}
-	if got, want := sourced.ChangeFailureRate.PerDeploy, (DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}); got != want {
-		t.Errorf("per_deploy = %+v, want %+v", got, want)
+	for _, measured := range []struct {
+		name       string
+		got        ChangeFailureRate
+		wantCounts ChangeFailureRate
+	}{
+		{"a source with no flag", Compute(prs, runs, []Flag{}, window).ChangeFailureRate,
+			ChangeFailureRate{PerPR: FlagCounts{Total: 14}, PerDeploy: DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}}},
+		// Neither a pull request nor a run: every day's parts hold a zero denominator, which the
+		// source measured, so each rate is 0.
+		{"a source with no flag, pull request or run", Compute(nil, nil, []Flag{}, window).ChangeFailureRate, ChangeFailureRate{}},
+	} {
+		counts := measured.got
+		counts.PerPR.Rate, counts.PerDeploy.Rate, counts.PerDeploy.UpperBoundRate = nil, nil, nil
+		if counts != measured.wantCounts {
+			t.Errorf("%s: counts = %+v, want %+v", measured.name, counts, measured.wantCounts)
+		}
+		assertOptional(t, measured.name+": per_pr.rate", measured.got.PerPR.Rate, new(0.0))
+		assertOptional(t, measured.name+": per_deploy.rate", measured.got.PerDeploy.Rate, new(0.0))
+		assertOptional(t, measured.name+": per_deploy.upper_bound_rate", measured.got.PerDeploy.UpperBoundRate, new(0.0))
 	}
 }
 
@@ -304,11 +325,11 @@ func TestUpperBoundCountsEachDeployOnce(t *testing.T) {
 		Flag{Broken: "acme/widgets#105", Fix: "acme/widgets#107", Kind: "fix", State: "pending"},
 	)
 	perDeploy := Compute(prs, runs, flags, window).ChangeFailureRate.PerDeploy
-	assertFloat(t, "per_deploy.rate", perDeploy.Rate, 0.4)
+	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.4))
 	if perDeploy.Pending != 2 || perDeploy.ConfirmedOrPending != 3 {
 		t.Errorf("per_deploy = {pending %d, confirmed_or_pending %d}, want {2, 3}", perDeploy.Pending, perDeploy.ConfirmedOrPending)
 	}
-	assertFloat(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, 0.6)
+	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.6))
 }
 
 // TestACancelledRunWhoseProductionJobSucceededIsADeployButNotARunSuccess is dora.test.ts:122-137.
@@ -410,4 +431,47 @@ func TestQuantileIsLinearBetweenRanks(t *testing.T) {
 	assertFloat(t, "Quantile(0.9)", Quantile(values, 0.9), 52)
 	assertFloat(t, "Quantile(0.5)", Quantile(values, 0.5), 30)
 	assertFloat(t, "Quantile of one", Quantile([]float64{7}, 0.9), 7)
+}
+
+// TestQuantileRoundsEachStepOnEveryArchitecture: Quantile rounds its rank and the step it adds
+// to a float64 each, as the prototype's Python and d3's JavaScript do, so a build that fuses a
+// product with the subtraction or the sum it feeds into one instruction that rounds once (arm64's
+// FNMSUBD and FMADDD, which the Go spec allows) answers what an amd64 build answers. Each case is
+// a day of the Pipeline oracle's history (api/testdata/golden_delivery) whose p90 an arm64 build
+// moved across the one-decimal boundary the Pipeline rounds to. Eleven production deploys: the
+// rank 10 × 0.9 rounds to 9, so the p90 is the tenth value, 453 s (7.55 minutes, a float just
+// below it), where the rank's unrounded fraction 2⁻⁵² lifts a fused p90 to the float above 7.55,
+// 7.6. Fifty-four PR-check runs: the rank 53 × 0.9 rounds to 47.700000000000003, and the
+// unrounded fraction falls short of it, so a fused p90 falls short of 22.35, 22.3.
+func TestQuantileRoundsEachStepOnEveryArchitecture(t *testing.T) {
+	minutes := func(seconds ...int) []float64 {
+		values := make([]float64, len(seconds))
+		for i, s := range seconds {
+			values[i] = minutesBetween(time.Time{}, time.Time{}.Add(time.Duration(s)*time.Second))
+		}
+		return values
+	}
+	var checks []int
+	for i := range 47 {
+		checks = append(checks, 600+10*i)
+	}
+	checks = append(checks, 1334, 1344, 1400, 1450, 1500, 1550, 1600)
+	cases := []struct {
+		name   string
+		sorted []float64
+		p90    float64
+		cell   float64
+	}{
+		{"eleven deploys", minutes(300, 310, 320, 330, 340, 350, 360, 370, 380, 453, 590), 7.55, 7.5},
+		{"fifty-four runs", minutes(checks...), 22.35, 22.4},
+	}
+	for _, c := range cases {
+		if got := Quantile(c.sorted, 0.9); got != c.p90 {
+			t.Errorf("%s: Quantile(0.9) = %.17g, want %.17g", c.name, got, c.p90)
+		}
+		cell := FoldTiming([]DayPart{SamplesPart(time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC), SeriesMinutes, c.sorted, nil)})
+		if cell.P90Minutes == nil || *cell.P90Minutes != c.cell {
+			t.Errorf("%s: FoldTiming's p90_minutes = %v, want %v", c.name, show(cell.P90Minutes), c.cell)
+		}
+	}
 }

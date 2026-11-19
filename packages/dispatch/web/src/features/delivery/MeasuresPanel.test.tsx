@@ -79,7 +79,8 @@ const catalogueTargets: { [K in keyof Targets]: NonNullable<Targets[K]> } = {
 
 /** GET /api/v1/delivery/measures for the fixture window, as the server answers it with no flags
  *  stored (the reference request recorded on the slice 2 pull request): no failure source exists,
- *  so the change failure rate is null and neither of its verdicts is reached. */
+ *  so the change failure rate's counts are 0 and its rates null, and neither of its verdicts is
+ *  reached. */
 const fixtureMeasures: DeliveryMeasuresResponse = {
   window: { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" },
   computed_at: "2026-10-09T04:33:22Z",
@@ -96,7 +97,19 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: 1260, p90_minutes: 2874, max_minutes: 4320 },
       opened_to_merge: { median_minutes: 330, p90_minutes: 462.00000000000006, max_minutes: 1080 },
     },
-    change_failure_rate: null,
+    change_failure_rate: {
+      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 0, rate: null },
+      per_deploy: {
+        confirmed: 0,
+        pending: 0,
+        rejected: 0,
+        reverts: 0,
+        total: 0,
+        rate: null,
+        confirmed_or_pending: 0,
+        upper_bound_rate: null,
+      },
+    },
     time_to_restore: { median_minutes: null },
     rework_share: 0.2857142857142857,
     deploy_run_success: {
@@ -311,6 +324,138 @@ test("a lead-time card names the statistics its target judges and tones those fi
   expect(merge.getByText("target p90 < 45m")).toBeDefined();
   expect(merge.getByText("2.7d").className).toContain(textPrimaryOnSurface);
   expect(merge.getByText("2.7d").className).not.toContain(dangerText);
+});
+
+// R5, and review v2's R2-3: a figure takes a verdict's tone only where the card's caption names the
+// statistic that verdict is of. The answer also carries a verdict of the merge median and one of
+// the failure rate's upper bound, each judged against the target whatever the person's judges
+// (api/delivery_measures.go measuresStatus); where the judges leave that figure out, the caption
+// does not name it, and the figure reads plain (dispatch://INFRA-2916, the testing round of
+// 2026-11-18 at 0ea9989f, which drove the same answer from the server: judges-median-W.r10.out).
+test("a figure the caption does not name is toned by no verdict: the merge median judged by its longest change, the upper bound judged by the per-PR rate", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...catalogueTargets,
+      merge_to_production_minutes: {
+        value: 1000,
+        inclusive: false,
+        direction: "lower_better",
+        judges: ["minutes.max"],
+      },
+    },
+    status: {
+      ...fixtureMeasures.status,
+      merge_to_production: false,
+      merge_to_production_median: true,
+    },
+  });
+  const merge = within(card("Merge \u2192 production"));
+  expect(merge.getByText(/^target /).textContent ?? "").not.toContain("median");
+  expect(merge.getByText("2.7d").className).toContain(dangerText);
+  expect(merge.getByText("8.5h").className).toContain(textPrimaryOnSurface);
+  expect(merge.getByText("8.5h").className).not.toContain(successText);
+  cleanup();
+
+  renderPanel({
+    ...fixtureMeasures,
+    flags_source: "flags",
+    measures: {
+      ...fixtureMeasures.measures,
+      change_failure_rate: {
+        per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 5, rate: 0 },
+        per_deploy: {
+          confirmed: 0,
+          pending: 2,
+          rejected: 0,
+          reverts: 0,
+          total: 5,
+          rate: 0,
+          confirmed_or_pending: 2,
+          upper_bound_rate: 0.4,
+        },
+      },
+    },
+    targets: {
+      ...catalogueTargets,
+      change_failure_rate: {
+        value: 0.05,
+        inclusive: false,
+        direction: "lower_better",
+        judges: ["per_pr.rate"],
+      },
+    },
+    status: {
+      ...fixtureMeasures.status,
+      change_failure_rate: true,
+      change_failure_rate_upper_bound: false,
+    },
+  });
+  const failures = within(card("Change failure rate"));
+  expect(failures.getByText(/^target /).textContent ?? "").not.toContain("upper");
+  expect(failures.getByText("40.00%").className).not.toContain(dangerText);
+  expect(failures.getByText("40.00%").className).not.toContain(successText);
+});
+
+// R5: every figure a card tones by a verdict takes that verdict's tone only where the card's target
+// judges the statistic the figure shows, as the lead-time figures and the upper bound above do. A
+// card's headline figure is one statistic of its eval and its badge the verdict of every statistic
+// the target judges: where a person judges another statistic, the badge follows that verdict and
+// the headline figure reads plain. Under the catalogue's judges each headline figure is the
+// statistic judged, and takes its verdict's tone as before.
+test("a headline figure its target does not judge is toned by no verdict: the per-deploy rate judged by the per-PR rate, deploys a day judged by the deploys with a PR", () => {
+  const failureRate: DeliveryMeasuresResponse["measures"]["change_failure_rate"] = {
+    per_pr: { confirmed: 2, pending: 0, rejected: 0, reverts: 0, total: 5, rate: 0.4 },
+    per_deploy: {
+      confirmed: 1,
+      pending: 1,
+      rejected: 0,
+      reverts: 0,
+      total: 50,
+      rate: 0.02,
+      confirmed_or_pending: 2,
+      upper_bound_rate: 0.04,
+    },
+  };
+  renderPanel({
+    ...fixtureMeasures,
+    flags_source: "stored",
+    measures: { ...fixtureMeasures.measures, change_failure_rate: failureRate },
+    targets: {
+      ...catalogueTargets,
+      change_failure_rate: { ...catalogueTargets.change_failure_rate, judges: ["per_pr.rate"] },
+      deploys_per_day: {
+        ...catalogueTargets.deploys_per_day,
+        judges: ["deploys.with_prs_per_day"],
+      },
+    },
+    // The per-PR rate, 40%, misses under 5%, and 0.17 deploys with a PR a day miss at least 20.
+    status: { ...fixtureMeasures.status, change_failure_rate: false, deploys_per_day: false },
+  });
+  const failures = within(card("Change failure rate"));
+  expect(failures.getByText("\u2717 missed")).toBeDefined();
+  expect(failures.getByText("2.00%").className).toContain(textPrimaryOnSurface);
+  expect(failures.getByText("2.00%").className).not.toContain(dangerText);
+  const deploys = within(card("Deploys a day"));
+  expect(deploys.getByText("\u2717 missed")).toBeDefined();
+  expect(deploys.getByText("0.2/day").className).toContain(textPrimaryOnSurface);
+  expect(deploys.getByText("0.2/day").className).not.toContain(dangerText);
+  cleanup();
+
+  // The catalogue's judges: the per-deploy rate, 2%, meets under 5%, and each headline figure
+  // takes its card's verdict's tone.
+  renderPanel({
+    ...fixtureMeasures,
+    flags_source: "stored",
+    measures: { ...fixtureMeasures.measures, change_failure_rate: failureRate },
+    status: { ...fixtureMeasures.status, change_failure_rate: true },
+  });
+  expect(within(card("Change failure rate")).getByText("2.00%").className).toContain(successText);
+  expect(within(card("Deploys a day")).getByText("0.2/day").className).toContain(dangerText);
+  expect(within(card("Deploy runs reaching production")).getByText("71.4%").className).toContain(
+    dangerText
+  );
+  expect(within(card("P0 issues with no owner")).getByText("1").className).toContain(dangerText);
 });
 
 test("a target is phrased and its days are judged in the direction it carries: the same value reads and colours the other way under lower_better", () => {

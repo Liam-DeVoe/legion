@@ -22,28 +22,35 @@ import (
 
 // DayPart is one series' part of one UTC day: what one eval_days row holds except its key's
 // project, eval and repository and its bookkeeping (listed, built_by, updated_at), so a fold
-// reads a stored row and a part built on request alike, and evals.DayRow converts to and from it
-// with nothing lost. Sum, Num, Den, Max and LastValue are nil where the part holds no such value.
+// reads a stored row and a part built on request alike; evals.DayRow is a DayPart with that key
+// and bookkeeping beside it, and its JSON keys are the part's. Sum, Num, Den, Max and LastValue
+// are nil where the part holds no such value.
 // A builder fills the columns its series' fold reads: a sum N and Sum; a share N (the rows its
 // denominator counts), Num and Den; a quantile N, Sum, Max and Samples, every value of the day.
 // Counts are the named sub-counts a fold sums beside the value (CountWithPRs and the rest).
+// LastValue is the value measured last and LastAt its moment, nil where LastValue is.
+// LastRecordedAt and LastReading say which write stored it, a logged eval's reading by its
+// recorded_at and id, which breaks a tie of two parts' LastAt for the `last` fold (evals); they
+// are nil and "" where the part records no write.
 // ViaRepository is how many of the day's rows reached the part's project through a repository
 // rather than an issue (dispatch://INFRA-2916, D1); the builders here read no project, and leave it
 // to the caller that attributes their rows.
 type DayPart struct {
-	Series string
+	Series string `json:"series"`
 	// Day is the UTC midnight the day starts at.
-	Day           time.Time
-	N             int
-	Sum           *float64
-	Num           *float64
-	Den           *float64
-	Max           *float64
-	Samples       []float64
-	Counts        map[string]float64
-	LastValue     *float64
-	LastAt        *time.Time
-	ViaRepository int
+	Day            time.Time          `json:"day"`
+	N              int                `json:"n"`
+	Sum            *float64           `json:"sum"`
+	Num            *float64           `json:"num"`
+	Den            *float64           `json:"den"`
+	Max            *float64           `json:"max"`
+	Samples        []float64          `json:"samples"`
+	Counts         map[string]float64 `json:"counts"`
+	LastValue      *float64           `json:"last_value"`
+	LastAt         *time.Time         `json:"last_at"`
+	LastRecordedAt *time.Time         `json:"last_recorded_at"`
+	LastReading    string             `json:"last_reading"`
+	ViaRepository  int                `json:"via_repository"`
 }
 
 // The series the delivery and CI evals' parts are stored under (the seeded catalogue's).

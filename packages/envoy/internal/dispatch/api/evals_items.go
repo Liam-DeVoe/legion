@@ -389,9 +389,10 @@ func readingItemRow(reading evals.Reading, label string) evalItemRow {
 }
 
 // dayItemRow is a stored day row as an items row: keyed `<series>@<day>`, and `@<repo>` after
-// that for a repository's row; its columns the row's parts but its sample list; measured on its
-// day, the day its parts are of; and as its address the items of that day of that series, of that
-// repository for a repository's row.
+// that for a repository's row; its columns the row's repository, listing and build and its parts
+// but its sample list and the write that stored its last value (last_recorded_at, last_reading);
+// measured on its day, the day its parts are of; and as its address the items of that day of that
+// series, of that repository for a repository's row.
 func dayItemRow(project, slug string, day evals.DayRow, label string) evalItemRow {
 	date := day.Day.Format(time.DateOnly)
 	key := day.Series + "@" + date
@@ -770,7 +771,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 		if !job {
 			continue
 		}
-		parts = append(parts, day.Part())
+		parts = append(parts, day.DayPart)
 		if day.Day.After(newest[name]) {
 			newest[name] = day.Day
 		}

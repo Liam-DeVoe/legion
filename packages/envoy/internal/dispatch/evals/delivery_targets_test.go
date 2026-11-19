@@ -80,19 +80,18 @@ func TestTheTargetsJudgesEnumIsEveryDeliveryJudge(t *testing.T) {
 // delivery answer could judge it: a judge the eval route judged while a delivery answer left it
 // null would be a target written and then ignored there.
 func TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers(t *testing.T) {
-	failures := measures.ChangeFailureRate{
-		PerPR: measures.FlagCounts{Confirmed: 1, Pending: 1, Rejected: 1, Reverts: 1, Total: 9, Rate: 0.1},
-		PerDeploy: measures.DeployFlagCounts{
-			FlagCounts:         measures.FlagCounts{Confirmed: 1, Pending: 1, Rejected: 1, Reverts: 1, Total: 8, Rate: 0.125},
-			ConfirmedOrPending: 2, UpperBoundRate: 0.25,
-		},
-	}
 	spread := measures.Spread{MedianMinutes: new(30.0), P90Minutes: new(50.0), MaxMinutes: new(70.0)}
 	result := measures.Result{
-		DeployFrequency:   measures.DeployFrequency{SuccessfulDeploys: 14, DeploysWithPRs: 7, PerDay: 2, WithPRsPerDay: 1},
-		LeadTime:          measures.LeadTime{MergeToProduction: spread, OpenedToMerge: spread},
-		ChangeFailureRate: &failures,
-		DeployRunSuccess:  measures.DeployRunSuccess{Concluded: 10, ReachedProduction: 9, Cancelled: 1, Rate: new(0.9)},
+		DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: 14, DeploysWithPRs: 7, PerDay: 2, WithPRsPerDay: 1},
+		LeadTime:        measures.LeadTime{MergeToProduction: spread, OpenedToMerge: spread},
+		ChangeFailureRate: measures.ChangeFailureRate{
+			PerPR: measures.FlagCounts{Confirmed: 1, Pending: 1, Rejected: 1, Reverts: 1, Total: 9, Rate: new(0.1)},
+			PerDeploy: measures.DeployFlagCounts{
+				FlagCounts:         measures.FlagCounts{Confirmed: 1, Pending: 1, Rejected: 1, Reverts: 1, Total: 8, Rate: new(0.125)},
+				ConfirmedOrPending: 2, UpperBoundRate: new(0.25),
+			},
+		},
+		DeployRunSuccess: measures.DeployRunSuccess{Concluded: 10, ReachedProduction: 9, Cancelled: 1, Rate: new(0.9)},
 	}
 	result.LeadTime.MergeToProduction.N, result.LeadTime.OpenedToMerge.N = 5, 5
 	answer := ResultStatistics(result, 2)

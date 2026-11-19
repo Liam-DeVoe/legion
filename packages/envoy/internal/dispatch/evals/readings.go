@@ -51,22 +51,24 @@ type Written struct {
 // source logged, no target, state active, the caller as owner), with its section in the
 // project's `evals-md` document, the document created first where the project has none. Every
 // write takes the eval's lock (lockEval) before it reads the eval's definition and series, so two
-// first writes of one slug register it once: each writes version 1 with `on conflict do nothing`,
-// and only the write that stored it writes the section. A series no version holds registers too
-// (firstSeries), listed where the eval is logged and unlisted where it is computed, since a
-// reading under a computed eval's slug is stored and answered by its items alone: no day row of a
-// computed eval is written here, and nothing here folds such a reading into the eval's value. A
-// register write that lists or unlists a series of the eval takes the same lock, so it relists the
-// series' rows before this write reads the listing or after it commits, and the day rows the write
-// keeps carry the listing that stands at its commit.
+// first writes of one slug register it once: the second finds the first's version 1 once it
+// commits. A write that registers its eval takes the document's owner lock before it stores
+// anything (lockDocument) and does the section's document work there, in its read phase, queued
+// for the commit after its readings and day rows (writeMethod), so the section commits with the
+// eval and the write holds a transaction id only for its database statements. A series no
+// version holds registers too (firstSeries), listed where the eval is logged and unlisted where it
+// is computed, since a reading under a computed eval's slug is stored and answered by its items
+// alone: no day row of a computed eval is written here, and nothing here folds such a reading
+// into the eval's value. A register write that lists or unlists a series of the eval takes the
+// same lock, so it relists the series' rows before this write reads the listing or after it
+// commits, and the day rows the write keeps carry the listing that stands at its commit.
 //
 // A correction (replaces) supersedes the reading it names in the same transaction. A logged
 // eval's day rows of every day the batch touches are kept in the same transaction (writeDays):
 // appended to where the batch replaces no reading of their day, and folded again from the
-// readings that stand where it does or where a reading of the batch is measured at the moment of
-// the row's last value, so the write reads no stored reading but the readings it replaces and the
-// standing readings of the days it corrects or ties. A batch that would leave a day row holding a
-// value past what a float holds is refused (CodeReadingDayOverflow).
+// readings that stand where it does, so the write reads no stored reading but the readings it
+// replaces and the standing readings of the days it corrects. A batch that would leave a day row
+// holding a value past what a float holds is refused (CodeReadingDayOverflow).
 func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error) {
 	if !slugPattern.MatchString(batch.Slug) {
 		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
@@ -165,7 +167,10 @@ func foldedReadings(ctx context.Context, tx pgx.Tx, evalID string, replaced []Re
 // or unlists a series of it until this write commits, the listing writeDays writes into the day
 // rows among what it waits for (relistDays). It answers whether it registered the eval, the
 // series it registered, in the batch's order, and the newest version of every series of the eval
-// by name, those it registered among them.
+// by name, those it registered among them. An eval it registers gets its section first, before
+// its version's insert: the write takes the document's owner lock (lockDocument) and queues the
+// section's writes for the commit (writeMethod), so that document work runs before the write's
+// first statement that writes.
 func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, rows []Reading) (Definition, bool, []Series, map[string]Series, error) {
 	evalID := EvalID(batch.Project, batch.Slug)
 	if err := lockEval(ctx, w.Tx, evalID); err != nil {
@@ -177,22 +182,22 @@ func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, ro
 	}
 	registered := false
 	if !found {
-		first := firstDefinition(batch.Project, batch.Slug, batch.Caller)
-		first.Version, first.WrittenVia, first.WrittenBy = 1, ViaReading, batch.Caller.Recorded()
-		first.DocBlock = uuid.NewString()
-		stored, inserted, err := insertDefinition(ctx, w.Tx, first, true)
+		document, documentFound, err := lockDocument(ctx, w)
 		if err != nil {
 			return Definition{}, false, nil, nil, err
 		}
-		if inserted {
-			sentence := registrationSentence(ViaReading, batch.Caller, w.now)
-			if err := s.writeMethod(ctx, w, first.Slug, "", first.DocBlock, sentence, RegistryActor); err != nil {
-				return Definition{}, false, nil, nil, err
-			}
-			definition, registered = stored, true
-		} else if definition, _, err = newestDefinition(ctx, w.Tx, evalID); err != nil {
+		first := firstDefinition(batch.Project, batch.Slug, batch.Caller)
+		first.Version, first.WrittenVia, first.WrittenBy = 1, ViaReading, batch.Caller.Recorded()
+		first.DocBlock = uuid.NewString()
+		sentence := registrationSentence(ViaReading, batch.Caller, w.now)
+		if err := s.writeMethod(ctx, w, document, documentFound, first.Slug, "", first.DocBlock, sentence, RegistryActor); err != nil {
 			return Definition{}, false, nil, nil, err
 		}
+		stored, err := insertDefinition(ctx, w.Tx, first)
+		if err != nil {
+			return Definition{}, false, nil, nil, err
+		}
+		definition, registered = stored, true
 	}
 	series, err := currentSeries(ctx, w.Tx, evalID)
 	if err != nil {

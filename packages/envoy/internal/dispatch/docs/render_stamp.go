@@ -66,12 +66,12 @@ func renderStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
 	return RenderStamp{Token: &token, Renderer: &renderer}
 }
 
-// RenderStampOf is the render stamp of a version row storing markdown, for a caller that writes
-// its version row itself rather than through writeVersionTx: a document's text written whole
-// (WriteDocumentText, which an upload and CreateDocument call) and an issue's first spec
-// (api/issue_create.go). It stamps the tree this transaction's write of artifactID left, and only
-// where that tree is what markdown was rendered from, as IndexDocumentReferences shares the
-// write's rendering only where it is the version's markdown.
+// RenderStampOf is the render stamp of a version row storing markdown, for a version a caller
+// queues itself rather than through writeVersionTx (QueueVersion, which stamps its row with it):
+// a document's text written whole (WriteDocumentText, which an upload and CreateDocument call)
+// and an issue's first spec (api/issue_create.go). It stamps the tree this transaction's write of
+// artifactID left, and only where that tree is what markdown was rendered from, as
+// IndexDocumentReferences shares the write's rendering only where it is the version's markdown.
 // Any other markdown takes the empty stamp.
 func (l *Ledger) RenderStampOf(artifactID, markdown string) RenderStamp {
 	rendered := l.writtenRendering(artifactID)
@@ -105,7 +105,7 @@ const storedVersionSQL = `
 //
 //   - No transaction of this process holds a fork of the document. A read joined to a
 //     transaction reads as it always has: the fork is the document for that transaction, and a
-//     joined read holding no fork still takes the document's owner row and waits for an open
+//     joined read holding no fork still takes the document's owner lock and waits for an open
 //     writer (joinRead), neither of which this read does.
 //   - The document's stamp now is the head and the row the version was written at
 //     (DocumentStamp): every writer of doc_updates either moves the head or rewrites the row

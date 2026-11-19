@@ -525,8 +525,8 @@ func TestARunsJobsWriteTakesTheChangeLogLockLast(t *testing.T) {
 
 // TestTheDeployedWriteTakesTheChangeLogLockLastAndNeverDeadlocksWithAPullRequestWrite: the
 // issue.deployed write of a pull request (recordDeployedEvent), sent while the change log's lock
-// is held elsewhere, locks the pull request's row and appends its event before it waits for the
-// lock in the marker's statement, its last; a one-statement write of the same pull request
+// is held elsewhere, appends its event and locks the pull request's row in the marker's statement,
+// its last, before it waits there for the lock; a one-statement write of the same pull request
 // (UpsertPullRequest, its row's lock and then the change log's) waits behind it. Let go, both land,
 // neither a deadlock; the time from the release to the deployed write's answer, which bounds its
 // hold from above, is logged. Taking the lock first, it would wait for the pull request's row the
@@ -769,10 +769,11 @@ func TestASessionGroupEditThatChangesNothingWritesNothing(t *testing.T) {
 	})(); err != nil {
 		t.Fatalf("create the group: %v", err)
 	}
-	seq, err := LatestChangeSeq(ctx, pool)
+	head, err := ChangesHead(ctx, pool)
 	if err != nil {
 		t.Fatalf("read the change log's head: %v", err)
 	}
+	seq := head.Seq
 
 	gate := takeChangeLock(t, ctx, pool)
 	name := crew.Name

@@ -32,6 +32,12 @@ body: |-
   repository's mapping, the delivery fixtures included, takes the mapping routes' locks. So each
   table has one position for that lock: every path takes it before the table's row locks or in
   the statement that ends its transaction.
+  A write that registers an eval writes its section of `evals-md` in the same transaction as its
+  versions, readings and day rows, so no eval exists without its section: it renders the section
+  before it stores anything and the section's writes go to Postgres in one batch after the eval's
+  rows, so it holds a transaction id only for its database statements, never while it renders the
+  document. Concurrent registrations of one project queue on the document's owner lock, a lock
+  that assigns no transaction id, so a queued one holds back no live event reader.
   The per-issue Legion facts also store parked, queued and slot-wait hours, the role bars with
   their segments, idle hours by role, the hours after the first review, the children and the
   started and merged times, and the filings a Legion session made are stored in `issue_filings`.

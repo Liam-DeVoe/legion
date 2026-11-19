@@ -208,11 +208,11 @@ func TestARegisterWriteThatChangesASeriesAloneWritesAVersion(t *testing.T) {
 	evalID := EvalID(r.project, "review-time")
 	head := func() int64 {
 		t.Helper()
-		seq, err := delivery.LatestChangeSeq(t.Context(), r.database.Pool)
+		cursor, err := delivery.ChangesHead(t.Context(), r.database.Pool)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return seq
+		return cursor.Seq
 	}
 	versionChanges := func(after int64) int {
 		return r.count(t, `select count(*) from delivery_changes where seq > $1 and kind = 'eval_versions' and repo = $2 and ref = $3`, after, r.project, evalID)
