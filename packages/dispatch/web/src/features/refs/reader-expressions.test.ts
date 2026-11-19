@@ -1,15 +1,9 @@
 import { expect, test } from "bun:test";
-import { controlCharacterPattern, PROJECT_KEY_PATTERN } from "@legion/contracts";
 import { checkSync } from "recheck/lib/browser";
 
-import { referencePattern } from "./reference-spans";
-import {
-  dispatchReferencePattern,
-  issueArtifactReferencePattern,
-  issueKeyOnlyPattern,
-  issuePathPattern,
-} from "./routes";
-import { githubIssuePath, trailingRun, whitespaceOnly } from "./Unfurl";
+import { expectOnePass } from "../../__tests__/one-pass";
+import { expressionsRunBy, readerExpressions } from "../../__tests__/reader-expressions";
+import { readerStep } from "./reader-steps";
 
 /**
  * Whether `expression` can take more than one pass over a text, decided from the expression as
@@ -24,23 +18,12 @@ function verdict(expression: RegExp) {
   return checkSync(expression.source, expression.flags, { checker: "automaton", timeout: null });
 }
 
-// Every expression the one-pass rows' bodies reach (`composer-references.test.ts`,
-// `Unfurl.test.tsx`, `text-references.test.ts`): the reference grammar runs over a whole body, a
-// `dispatch://` reference read from it is parsed with the next five, a dashboard address with the
-// seventh, and a GitHub URL's path is read with the eighth. The last two are what the unfurl cards
-// read a body with between its references and after each one.
-test.each([
-  ["the reference grammar", referencePattern],
-  ["a control character", controlCharacterPattern],
-  ["a `dispatch://` reference", dispatchReferencePattern],
-  ["an issue key", issueKeyOnlyPattern],
-  ["a project key", PROJECT_KEY_PATTERN],
-  ["an issue reference's document target", issueArtifactReferencePattern],
-  ["a dashboard issue address", issuePathPattern],
-  ["a GitHub issue's path", githubIssuePath],
-  ["the whitespace between references", whitespaceOnly],
-  ["the run after a reference", trailingRun],
-])("the expression of %s reads a text in one pass", (_name, expression) => {
+// Every expression the text readers run over a body (`__tests__/reader-expressions.ts`), which
+// `expectOnePass` holds each one-pass row's reader to (`composer-references.test.ts`,
+// `Unfurl.test.tsx`, `text-references.test.ts`).
+test.each(
+  readerExpressions
+)("the expression of %s reads a text in one pass", (_name, expression) => {
   expect(verdict(expression)).toMatchObject({ checker: "automaton", status: "safe" });
 });
 
@@ -59,4 +42,29 @@ test.each([
     complexity,
     status: "vulnerable",
   });
+});
+
+// What holds a reader to the list sees every way a string or an expression runs a match, so a
+// reader cannot run an expression past it by calling another method.
+test.each([
+  ["exec", (text: string) => /b+$/.exec(text)],
+  ["test", (text: string) => /b+$/.test(text)],
+  ["match", (text: string) => text.match(/b+$/)],
+  ["matchAll", (text: string) => [...text.matchAll(/b+$/g)]],
+  ["replace", (text: string) => text.replace(/b+$/, "")],
+  ["replaceAll", (text: string) => text.replaceAll(/b+$/g, "")],
+  ["search", (text: string) => text.search(/b+$/)],
+  ["split", (text: string) => text.split(/b+$/)],
+] as const)("an expression run by %s is recorded", (_name, run) => {
+  expect([...expressionsRunBy(() => run("abb"))]).toEqual(["/b+$/"]);
+});
+
+// The control of the one-pass rows' list: a reader that counts its steps in one pass but trims
+// with the old mention expression, which no step count sees, fails the row and names it.
+test("a reader that runs an expression the list does not hold fails its one-pass row", () => {
+  const trimmed = (n: number) => {
+    for (let index = 0; index < n; index += 1) readerStep();
+    return `mention${"_".repeat(n)}`.replace(/[_-]+$/, "");
+  };
+  expect(() => expectOnePass(trimmed, 1 << 10)).toThrow("/[_-]+$/");
 });

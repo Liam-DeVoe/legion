@@ -1,6 +1,7 @@
 import { expect } from "bun:test";
 
 import { countReaderSteps } from "../features/refs/reader-steps";
+import { expressionKey, expressionsRunBy, readerExpressions } from "./reader-expressions";
 
 /**
  * How many steps past four times its steps on a text a reader may take on a text four times as
@@ -11,25 +12,40 @@ import { countReaderSteps } from "../features/refs/reader-steps";
  */
 export const ONE_PASS_SLACK = 16;
 
+/** The expressions `features/refs/reader-expressions.test.ts` proves read a text in one pass, as
+ *  `expressionKey` writes them. */
+const checkedExpressions = new Set(
+  readerExpressions.map(([, expression]) => expressionKey(expression))
+);
+
 /** The steps of this folder's text readers (`features/refs/reader-steps.ts`) that `read` takes
- *  on a text of `n` and on one of four times `n`, and what `read` answered on the longer one. */
+ *  on a text of `n` and on one of four times `n`, what `read` answered on the longer one, and the
+ *  regular expressions it ran there (`expressionsRunBy`). */
 export function stepsAtNAndFourN<Answer>(
   read: (n: number) => Answer,
   n: number
-): { atN: number; atFourN: number; answerAtFourN: Answer } {
+): { atN: number; atFourN: number; answerAtFourN: Answer; expressions: Set<string> } {
   let answerAtFourN!: Answer;
+  let expressions!: Set<string>;
   const atFourN = countReaderSteps(() => {
-    answerAtFourN = read(4 * n);
+    expressions = expressionsRunBy(() => {
+      answerAtFourN = read(4 * n);
+    });
   });
-  return { answerAtFourN, atFourN, atN: countReaderSteps(() => read(n)) };
+  return { answerAtFourN, atFourN, atN: countReaderSteps(() => read(n)), expressions };
 }
 
 /** Asserts that `read` reads its text in one pass: more steps on a text of `4n` than on one of
- *  `n`, and no more than four times as many and `ONE_PASS_SLACK`. Answers what `read` answered
- *  on the text of `4n`, so a row asserts on the counted read rather than reading it again. */
+ *  `n`, no more than four times as many and `ONE_PASS_SLACK`, and no regular expression run that
+ *  `readerExpressions` does not hold. A step count cannot see an expression that backtracks,
+ *  which does all its work inside one call, so each expression a reader runs is proved safe on
+ *  its own, from the expression, and this holds the reader to that list. Answers what `read`
+ *  answered on the text of `4n`, so a row asserts on the counted read rather than reading it
+ *  again. */
 export function expectOnePass<Answer>(read: (n: number) => Answer, n: number): Answer {
-  const { answerAtFourN, atN, atFourN } = stepsAtNAndFourN(read, n);
+  const { answerAtFourN, atN, atFourN, expressions } = stepsAtNAndFourN(read, n);
   expect(atFourN).toBeGreaterThan(atN);
   expect(atFourN).toBeLessThanOrEqual(4 * atN + ONE_PASS_SLACK);
+  expect([...expressions].filter((key) => !checkedExpressions.has(key))).toEqual([]);
   return answerAtFourN;
 }
