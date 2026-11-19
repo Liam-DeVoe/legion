@@ -11,6 +11,9 @@
 // (graphstore's TestEveryStoreWriteCallSiteIsListed, docs' requireEveryPassReadsItsSource) read
 // every Go file but the tests, so a fixture that writes one - a seed, a hold written through the
 // store's writer - stays in the _test.go files of the package that uses it.
+//
+// It also holds the register of the store's writers, each beside the test that drives its lock
+// steps (StoreWriteCallSites), which graphstore's and graphcensus's tests both read.
 package lockstep
 
 import (
