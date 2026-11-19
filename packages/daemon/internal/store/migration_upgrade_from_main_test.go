@@ -62,6 +62,10 @@ import (
 // sent again as written (20261114061900) are named here too: an upgrade of a database main
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
+// dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
+// that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
+// so an upgrade of a database main migrated applies it just before that one, which adds
+// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
@@ -73,17 +77,17 @@ import (
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
-// the reviewer's reviewed commit, and it is the last of them to rewrite outbox_kind_check: it is
-// now that constraint's last word, and it names every kind the merge-queue list names, the two
-// reach notice kinds of the unreachable claims' 20261116082000 and its own. That list of
-// 20261116082000 names the role-holders publication too, so a database that recorded
-// 20261116165926 before it keeps its pending publications when it applies it. The reviewer's
-// reviewed commit (20261116234034) and the cutover of the update ask's mark (20261117200337) are
-// applied after it and touch no outbox_kind_check: the first adds a column to phases and one to
-// pending_task_deliveries, and the second clears a claim's ask mark where that claim's ask is
-// still queued. The fleet alert lines (20261118133133) and the activity report's sent time
-// (20261118134019) are applied last and touch no outbox_kind_check either: the first creates a
-// table of its own and the second adds a column to claims.
+// the reviewer's reviewed commit, dispatch://INFRA-1997's 20261117112334 and dispatch://INFRA-4109's
+// cutover of the update ask's mark (20261117200337), and it is the last of them to rewrite
+// outbox_kind_check: it is now that constraint's last word, and it names every kind the
+// merge-queue list names, the two reach notice kinds of the unreachable claims' 20261116082000 and
+// its own. That list of 20261116082000 names the role-holders publication too, so a database that
+// recorded 20261116165926 before it keeps its pending publications when it applies it. The three
+// after it touch no outbox_kind_check: the first two each add a column at its default, and the
+// cutover clears a claim's ask mark where that claim's ask is still queued. The fleet alert lines
+// (20261118133133) and the activity report's sent time (20261118134019) are applied last and touch
+// no outbox_kind_check either: the first creates a table of its own and the second adds a column
+// to claims.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -92,7 +96,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116012459, 20261116082000, 20261116092312, 20261116164153, 20261116165926,
-	20261116234034, 20261117200337, 20261118133133, 20261118134019,
+	20261116234034, 20261117112334, 20261117200337, 20261118133133, 20261118134019,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -104,9 +108,10 @@ var thisBranchsMigrations = []int{
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the unreachable claims'
 // 20261116012459, 20261116082000, 20261116092312 and 20261116164153, the role-holders
-// publication's 20261116165926, the reviewer's reviewed commit, 20261116234034, and the update
-// ask's mark cutover's 20261117200337, which is why the loop below holds the list rather than
-// counting it, so that a version added above any of them is named here rather than read as main's.
+// publication's 20261116165926, the reviewer's reviewed commit, 20261116234034,
+// dispatch://INFRA-1997's 20261117112334 and dispatch://INFRA-4109's 20261117200337, which is why
+// the loop below holds the list rather than counting it, so that a version added above any of them
+// is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
