@@ -1683,6 +1683,8 @@ function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
     "pulls_query_program",
     "run_list_program",
     "runs_query_program",
+    "check_runs_program",
+    "jobs_program",
     "run_view_program",
     "rerun_flags",
     "rerun_help",
@@ -1762,18 +1764,25 @@ function ghCalls(run: string): { argv: string[]; route: string | null; exit: num
     .map((line) => JSON.parse(line) as { argv: string[]; route: string | null; exit: number });
 }
 
-/** The query the page gives for the counted set at a named head, as a role sends it. */
-const RED_ROLLUP_QUERY =
-  'query($oid:GitObjectID!){repository(owner:"example",name:"widgets"){object(oid:$oid){' +
-  "... on Commit{statusCheckRollup{state contexts(first:100){totalCount pageInfo{hasNextPage} " +
-  "nodes{__typename ... on CheckRun{name databaseId status conclusion " +
-  "checkSuite{app{databaseId} workflowRun{event databaseId}}} " +
-  "... on StatusContext{context state}}}}}}}}";
-/** One GraphQL read of the counted set at the head, with `jq` over the answer. */
+/** The query the page gives for the counted set at a named head (red-at-the-head.md), read from
+ * the page as a role copies it, with the world's owner and repository, so an edit of the page
+ * reaches every row that sends it. */
+const RED_ROLLUP_QUERY = (() => {
+  const page = readFileSync(
+    path.join(root, "skills/legion-worker/references/red-at-the-head.md"),
+    "utf8"
+  );
+  const call = /^gh api graphql --paginate -F oid=<head> -f query='([^']*)'$/m.exec(page);
+  if (call === null) throw new Error("red-at-the-head.md gives no query for the counted set");
+  return (call[1] as string).replace('"<owner>"', '"example"').replace('"<repo>"', '"widgets"');
+})();
+/** One GraphQL read of the counted set at the head, as the page sends it, with `jq` over the
+ * answer. */
 const rollupRead = (run: string, filter: string) =>
   gh(run, [
     "api",
     "graphql",
+    "--paginate",
     "-F",
     `oid=${RED_HEAD}`,
     "-f",
@@ -2462,9 +2471,10 @@ describe("red_fixture", () => {
   });
 
   // Catches: a counted set in a shape of the rig's own, which a role that reads it as GitHub
-  // answers one — the state, the one page of contexts, and a CheckRun node per check — would
-  // read as nothing at all; a node that names no run, which leaves the role nothing to re-run;
-  // and fields the page's query does not ask (each node's detailsUrl) answered all the same.
+  // answers one — the state, the one page of contexts with the cursor of its last node, and a
+  // CheckRun node per check — would read as nothing at all; a node that names no run, which
+  // leaves the role nothing to re-run; and fields the page's query does not ask (each node's
+  // detailsUrl) answered all the same.
   test("the GraphQL rollup answers the counted set in the shape GitHub answers", async () => {
     const run = redFixture("a");
     const answer = await rollupRead(run, ".data.repository.object.statusCheckRollup");
@@ -2477,7 +2487,8 @@ describe("red_fixture", () => {
       state: "FAILURE",
       contexts: {
         totalCount: 3,
-        pageInfo: { hasNextPage: false },
+        // GitHub's cursor of the third and last node (gh-graphql.ts), base64 of "3".
+        pageInfo: { hasNextPage: false, endCursor: "Mw" },
         nodes: [
           {
             __typename: "CheckRun",
@@ -2636,6 +2647,10 @@ describe("red_fixture", () => {
   // thread list, a check-runs read whose `filter=all` query misses the head's own route and takes
   // the generic one, a jobs read answered by the route for the head's runs, and an aggregate
   // world whose jobs name no failed lane.
+  // The row builds the twelve worlds and makes six calls in each, so it has a bound of its own:
+  // measured alone, 70.74 s with the pod's own git first on PATH and 47.08 s with plain git first
+  // (the tester, 2026-11-18, at a201b17c), and 60.82 s with the pod's own git on the fold of the
+  // review of 76cc2379 (2026-11-18), over the suite's 60 s default.
   test("every call the page names is answered by its own route, in every world", async () => {
     const seen: unknown[] = [];
     for (const world of RED_WORLDS) {
@@ -2714,7 +2729,7 @@ describe("red_fixture", () => {
           (["g", "i", "j"].includes(world) ? `${RED_JOB_ID + 3}\tci\tfailure\n` : ""),
       }))
     );
-  });
+  }, 240_000);
 
   // Catches: a `--required` read answered by the route for every check, which hands a role every
   // lane where GitHub hands it the required set alone (the review of red-at-the-head.md:86), a
@@ -3796,16 +3811,36 @@ describe("the reads of the repository and the pull request", () => {
 // without the run's id, and a re-run gh refuses with its usage press nothing (red_fixture answers
 // each with gh's own text and publishes nothing), so a rerun_pressed that took one for the press
 // would start the role's second turn on a settlement that never came. rerun_pressed waits for the
-// record of a call whose route published the head's settlement (gh-standin.ts, `published`).
+// record of a call whose route published the head's settlement and whose listener took it
+// (gh-standin.ts, `published` with a 2xx status). Catches too (F1's nuance, the review of
+// 76cc2379): a press whose publish no listener took (`published: {error}`) or the listener
+// refused, which woke the second turn on a settlement that never came.
 test("rerun_pressed takes the call that published the head's settlement, and no other re-run", async () => {
-  const run = redFixture("a");
-  const pressed = () => bash(`${fn("rerun_pressed")}\nR=$1\nrerun_pressed 0`, [run]).code;
-  await gh(run, ["run", "rerun", "--help"]);
-  await gh(run, ["run", "rerun", String(RED_RUN_ID), "--help"]);
-  await gh(run, ["run", "rerun", "--failed"]);
-  const before = pressed();
-  await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
-  expect([before, pressed()]).toEqual([1, 0]);
+  let status = 503;
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => Response.json({ ok: status === 200 }, { status }),
+  });
+  try {
+    const run = redFixture("a");
+    const pressed = () => bash(`${fn("rerun_pressed")}\nR=$1\nrerun_pressed 0`, [run]).code;
+    const press = () => gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    await gh(run, ["run", "rerun", "--help"]);
+    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--help"]);
+    await gh(run, ["run", "rerun", "--failed"]);
+    const before = pressed();
+    await press();
+    const unheard = pressed();
+    paneListener(run, `http://127.0.0.1:${server.port}`);
+    await press();
+    const refused = pressed();
+    status = 200;
+    await press();
+    expect([before, unheard, refused, pressed()]).toEqual([1, 1, 1, 0]);
+  } finally {
+    server.stop(true);
+  }
 });
 
 // run_red_at_the_head with every process it starts stood in for: the run's Dispatch, the seeds,
@@ -4660,6 +4695,309 @@ describe("a request the routes do not name is answered as GitHub answers it, or 
   });
 });
 
+// The rule the review of 76cc2379 holds the routes to: a route reads every parameter, field, flag
+// and variable a call hands it, or refuses the call. Each row below is a finding of that review,
+// its probes as the reviewer made them.
+describe("a route reads every parameter, field, flag and variable it is handed, or refuses", () => {
+  /** A call's output lines where it exits 0, else its stderr and exit. */
+  const lines = async (run: string, args: string[]) => {
+    const read = await gh(run, args);
+    return read.exit === 0 ? outputLines(read.stdout) : [read.stderr, read.exit];
+  };
+  const unmodeled = (args: string[]) => [`rig: request not modeled: gh ${args.join(" ")}\n`, 1];
+  const checkRunsJq = '.total_count, (.check_runs[] | "\\(.id) \\(.name) \\(.conclusion)")';
+  const checkRuns = (run: string, query = "", flags: string[] = []) =>
+    lines(run, [
+      "api",
+      ...flags,
+      `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs${query}`,
+      "--jq",
+      checkRunsJq,
+    ]);
+  const lint = `${RED_ID.lint} lint success`;
+  const typecheck = `${RED_ID.typecheck} typecheck success`;
+  const red = `${RED_RED_ID} test (notify) failure`;
+
+  // Catches (C1): the commit's check runs answered GitHub's `filter=all` list to every read: after
+  // a green re-run the default read still held the failed attempt of `test (notify)`, world e's
+  // held both e2e attempts before any press, and `check_name`, `status` and a GET's fields
+  // filtered nothing, where GitHub's default is the latest check run of each name (measured on
+  // cybermonklabs/legion 05e64382, github-answers/README.txt); a parameter the route does not read
+  // was answered as if absent.
+  test("the head's check runs answer the latest of each name, or every one with filter=all", async () => {
+    const a = redFixture("a");
+    const before = await checkRuns(a);
+    await gh(a, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const appId = [
+      "api",
+      `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?app_id=1`,
+      "--jq",
+      checkRunsJq,
+    ];
+    const e = redFixture("e");
+    expect({
+      before,
+      after: await checkRuns(a),
+      afterAll: await checkRuns(a, "?filter=all"),
+      lintOnly: await checkRuns(a, "?check_name=lint"),
+      inProgress: await checkRuns(a, "?status=in_progress"),
+      lintField: await checkRuns(a, "", ["-X", "GET", "-f", "check_name=lint"]),
+      appId: await lines(a, appId),
+      e: await checkRuns(e),
+      eAll: await checkRuns(e, "?filter=all&per_page=100"),
+    }).toEqual({
+      before: ["3", lint, typecheck, red],
+      after: ["3", lint, typecheck, `${RED_RED_ID + 1} test (notify) success`],
+      afterAll: ["4", lint, typecheck, red, `${RED_RED_ID + 1} test (notify) success`],
+      lintOnly: ["1", lint],
+      inProgress: ["0"],
+      lintField: ["1", lint],
+      appId: unmodeled(appId),
+      e: ["4", lint, typecheck, `${RED_RED_ID - 3} e2e success`, red],
+      eAll: [
+        "5",
+        lint,
+        typecheck,
+        `${RED_RED_ID - 4} e2e failure`,
+        `${RED_RED_ID - 3} e2e success`,
+        red,
+      ],
+    });
+  });
+
+  // Catches (C2): a GET's `-f`/`-F` fields dropped from the query the programs read, so the base's
+  // runs and main's answered the head's failing run, and closed pulls the open one, where gh sends
+  // the fields as the query (measured: `GET .../actions/runs?event=pull_request&head_sha=...`).
+  test("a GET's fields are its query, as gh sends them", async () => {
+    const run = redFixture("a");
+    const runs = (fields: string[], jq: string) =>
+      lines(run, ["api", "-X", "GET", `repos/${RED_REPO}/actions/runs`, ...fields, "--jq", jq]);
+    const byCommit = ".workflow_runs[] | [.id, .conclusion] | @tsv";
+    expect({
+      base: await runs(["-f", `head_sha=${RED_BASE}`, "-f", "event=pull_request"], byCommit),
+      head: await runs(["-f", `head_sha=${RED_HEAD}`, "-f", "event=pull_request"], byCommit),
+      main: await runs(["-f", "branch=main"], ".total_count"),
+      closed: await lines(run, [
+        ...["api", "-X", "GET", `repos/${RED_REPO}/pulls`, "-f", "state=closed"],
+        ...["--jq", "length"],
+      ]),
+      open: await lines(run, [
+        ...["api", "-X", "GET", `repos/${RED_REPO}/pulls`, "-f", "state=open"],
+        ...["--jq", ".[].number"],
+      ]),
+    }).toEqual({
+      base: [],
+      head: [`${RED_RUN_ID}\tfailure`],
+      main: ["0"],
+      closed: ["0"],
+      open: [String(RED_PR)],
+    });
+  });
+
+  // Catches (C3): an attached short flag (`-bmain`, `-c<sha>`, `-sclosed`), which the stand-in
+  // reads as gh does, filtering nothing in the program that answers it, so the base's runs and
+  // main's answered the head's failing run and closed pulls the open one; and `-v`, gh run view's
+  // short `--verbose`, together with the plain view itself, which a program that reads the flags
+  // must answer (replay 1 of the fold of 76cc2379 met a plain view refused).
+  test("an attached short flag filters as its long form does", async () => {
+    const run = redFixture("a");
+    const out = async (args: string[]) => (await gh(run, args)).stdout;
+    const view = ["run", "view", String(RED_RUN_ID)];
+    const plain = await gh(run, view);
+    const verbose = await out([...view, "--verbose"]);
+    expect({
+      main: await out(["run", "list", "-bmain", "--json", "conclusion,headBranch"]),
+      branch: await out(["run", "list", `-blegion/${RED_KEY}`, "--json", "conclusion,headBranch"]),
+      base: await out(["run", "list", `-c${RED_BASE}`, "--json", "databaseId"]),
+      head: await out(["run", "list", `-c${RED_HEAD}`, "--json", "databaseId"]),
+      closed: await out(["pr", "list", "-sclosed", "--json", "number"]),
+      open: await out(["pr", "list", "-sopen", "--json", "number"]),
+      plain: [plain.exit, plain.stdout.includes("✓ Set up job"), plain.stdout === verbose],
+      short: await out([...view, "-v"]),
+    }).toEqual({
+      main: "[]\n",
+      branch: `[{"conclusion":"failure","headBranch":"legion/${RED_KEY}"}]\n`,
+      base: "[]\n",
+      head: `[{"databaseId":${RED_RUN_ID}}]\n`,
+      closed: "[]\n",
+      open: `[{"number":${RED_PR}}]\n`,
+      // The plain view lists the steps of the failed job alone; --verbose those of every job.
+      plain: [0, true, false],
+      short: verbose,
+    });
+  });
+
+  // Catches (C4): a variable of type `Int!` given no value read as null, and a String given for an
+  // Int, in a variable or written in the query, answered as no such pull request, where GitHub
+  // refuses each request before it reads anything; a declared variable the query does not use
+  // answered. Each is the request GitHub answered, byte for byte (github-answers/graphql-*).
+  test("a GraphQL variable or argument GitHub cannot take answers GitHub's measured refusal", async () => {
+    const run = redFixture("a");
+    const answer = async (args: string[]) => {
+      const read = await gh(run, ["api", "graphql", ...args]);
+      return [read.stdout, read.stderr, read.exit];
+    };
+    const pull = (number: string) =>
+      `{repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:${number}){number}}}`;
+    expect({
+      none: await answer(["-f", `query=query($n:Int!)${pull("$n")}`]),
+      string: await answer(["-f", "n=1003", "-f", `query=query($n:Int!)${pull("$n")}`]),
+      literal: await answer(["-f", `query=query${pull('"1003"')}`]),
+      unused: await answer(["-F", "n=1003", "-f", `query=query($n:Int!,$u:String)${pull("$n")}`]),
+      // A variable the query does not declare is ignored, as GitHub ignores it (measured).
+      extra: await answer([
+        ...["-F", `n=${RED_PR}`, "-f", "extra=1"],
+        "-f",
+        `query=query($n:Int!){repository(owner:"example",name:"widgets"){pullRequest(number:$n){number}}}`,
+      ]),
+    }).toEqual({
+      none: githubAnswer("graphql-variable-null"),
+      string: githubAnswer("graphql-variable-coerce"),
+      literal: githubAnswer("graphql-literal-type"),
+      unused: githubAnswer("graphql-variable-unused"),
+      extra: [`{"data":{"repository":{"pullRequest":{"number":${RED_PR}}}}}`, "", 0],
+    });
+  });
+
+  // Catches (the page's counted-set query): red-at-the-head.md's own query, with `$endCursor` and
+  // `endCursor`, refused as unmodeled because the rollup held no cursor. GitHub's page holds the
+  // cursor of its last node, base64 of its index, and the page after it no node and no cursor
+  // (measured on cybermonklabs/legion 05e64382: "NjQ" for the 64th of 64, null after it).
+  test("the page's counted-set query answers GitHub's cursor, and the page after it none", async () => {
+    const run = redFixture("a");
+    const page = (args: string[]) =>
+      lines(run, [
+        ...["api", "graphql", ...args, "-F", `oid=${RED_HEAD}`, "-f", `query=${RED_ROLLUP_QUERY}`],
+        "--jq",
+        ".data.repository.object.statusCheckRollup.contexts | [.totalCount, .pageInfo.hasNextPage, .pageInfo.endCursor, (.nodes | length)] | @json",
+      ]);
+    const other = [
+      ...["api", "graphql", "-f", "endCursor=MQ", "-F", `oid=${RED_HEAD}`],
+      ...["-f", `query=${RED_ROLLUP_QUERY}`, "--jq", ".data"],
+    ];
+    expect({
+      first: await page(["--paginate"]),
+      after: await page(["-f", "endCursor=Mw"]),
+      other: await lines(run, other),
+    }).toEqual({
+      first: ['[3,false,"Mw",3]'],
+      after: ["[3,false,null,0]"],
+      other: unmodeled(other),
+    });
+  });
+
+  // Catches (the minors): a page past the first answering page 1 again; `jobs?filter=all` after a
+  // press listing attempt 2 alone; `actor`, `created` and `exclude_pull_requests` ignored; a
+  // revision expression (`<branch>~1`) answered null where GitHub answers the base; a mutation
+  // answered as a query; and the repository's owner and name matched with regard to case, where
+  // GitHub matches them without (measured).
+  test("a page, a filter, a parameter, an expression, a mutation and a name in another case", async () => {
+    const run = redFixture("a");
+    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const actor = ["api", `repos/${RED_REPO}/actions/runs?actor=rig`, "--jq", ".total_count"];
+    const created = ["api", `repos/${RED_REPO}/actions/runs?created=>2026-01-01`];
+    const expression = [
+      ...["api", "graphql", "-f"],
+      `query={repository(owner:"example",name:"widgets"){object(expression:"legion/${RED_KEY}~1"){oid}}}`,
+    ];
+    const mutation = [
+      ...["api", "graphql", "-f"],
+      'query=mutation{repository(owner:"example",name:"widgets"){name}}',
+    ];
+    expect({
+      pulls: await lines(run, ["api", `repos/${RED_REPO}/pulls?page=2`, "--jq", "length"]),
+      runs: await lines(run, [
+        ...["api", `repos/${RED_REPO}/actions/runs?page=2`],
+        ...["--jq", "[.total_count, (.workflow_runs | length)] | @json"],
+      ]),
+      jobs: await lines(run, [
+        ...["api", `repos/${RED_REPO}/actions/runs/${RED_RUN_ID}/jobs?filter=all`],
+        ...["--jq", '.total_count, (.jobs[] | "\\(.id) \\(.run_attempt) \\(.conclusion)")'],
+      ]),
+      actor: await lines(run, actor),
+      created: await lines(run, created),
+      excluded: await lines(run, [
+        ...["api", `repos/${RED_REPO}/actions/runs?exclude_pull_requests=true`],
+        ...["--jq", "[.workflow_runs[].pull_requests | length] | @json"],
+      ]),
+      expression: await lines(run, expression),
+      mutation: await lines(run, mutation),
+      graphqlCase: await lines(run, [
+        ...["api", "graphql", "-f"],
+        `query={repository(owner:"Example",name:"Widgets"){pullRequest(number:${RED_PR}){number}}}`,
+      ]),
+      restCase: await lines(run, [
+        "api",
+        `repos/Example/Widgets/pulls/${RED_PR}`,
+        "--jq",
+        ".number",
+      ]),
+      repoCase: await lines(run, [
+        "pr",
+        "view",
+        String(RED_PR),
+        "--repo",
+        "EXAMPLE/widgets",
+        "--json",
+        "number",
+      ]),
+    }).toEqual({
+      pulls: ["0"],
+      runs: ["[1,0]"],
+      jobs: [
+        "4",
+        `${RED_JOB_ID} 1 failure`,
+        `${RED_JOB_ID + 1} 1 success`,
+        `${RED_JOB_ID + 2} 1 success`,
+        `${RED_JOB_ID + 4} 2 success`,
+      ],
+      actor: unmodeled(actor),
+      created: unmodeled(created),
+      excluded: ["[0]"],
+      expression: unmodeled(expression),
+      mutation: unmodeled(mutation),
+      graphqlCase: [`{"data":{"repository":{"pullRequest":{"number":${RED_PR}}}}}`],
+      restCase: [String(RED_PR)],
+      repoCase: [`{"number":${RED_PR}}`],
+    });
+  });
+
+  // Catches (the REST objects): a `--jq` read of a field GitHub's object holds answered null: a
+  // check run's `head_sha`, `check_suite` and `pull_requests`, a run's `workflow_id` and
+  // `previous_attempt_url`, the pull's `head.repo`. Each is the world's own: the head, the run's
+  // check suite and pull request, the run's workflow, the attempt before it, the repository.
+  test("a check run, a run and the pull carry the fields GitHub's objects hold", async () => {
+    const run = redFixture("a");
+    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const runs = `repos/${RED_REPO}/actions/runs/${RED_RUN_ID}`;
+    expect({
+      checkRuns: await lines(run, [
+        ...["api", `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs`, "--jq"],
+        ".check_runs[] | [.id, .head_sha, .check_suite.id, (.pull_requests | map(.number))] | @json",
+      ]),
+      run: await lines(run, [
+        ...["api", runs, "--jq"],
+        "[.run_attempt, .workflow_id, .previous_attempt_url] | @json",
+      ]),
+      attempt1: await lines(run, [
+        ...["api", `${runs}/attempts/1`, "--jq"],
+        "[.run_attempt, .previous_attempt_url] | @json",
+      ]),
+      pull: await lines(run, [
+        ...["api", `repos/${RED_REPO}/pulls/${RED_PR}`, "--jq"],
+        "[.head.repo.full_name, .base.repo.full_name] | @json",
+      ]),
+    }).toEqual({
+      checkRuns: [RED_ID.lint, RED_ID.typecheck, RED_RED_ID + 1].map(
+        (id) => `[${id},"${RED_HEAD}",${RED_RUN_ID - 1_000_000},[${RED_PR}]]`
+      ),
+      run: [`[2,1,"https://api.github.com/${runs}/attempts/1"]`],
+      attempt1: ["[1,null]"],
+      pull: [`["${RED_REPO}","${RED_REPO}"]`],
+    });
+  });
+});
+
 /** GitHub's answer `name` as gh 2.98.0 printed it, read from the files the stand-in reads it
  * from (github-answers/README.txt names each request): [stdout, stderr, exit], with the probe's
  * commit put back as `commit` where the answer names one. */
@@ -4701,7 +5039,9 @@ describe("GitHub's answers, as measured", () => {
 
   // Catches: an error the rig answers in other bytes than GitHub's, or with no body where gh prints
   // the one GitHub sent (the round-5 rig printed `gh: Not Found (HTTP 404)` alone for every one),
-  // and a commit the call named left out of the answer that names it.
+  // and a commit the call named left out of the answer that names it. It runs under the file's
+  // minute: measured alone on 2026-11-19, 8.4 s and 17.2 s with a Legion pod's own git first on
+  // PATH and 14.9 s with plain git first.
   test("every REST error the rig answers is GitHub's measured answer", async () => {
     const run = redFixture("a");
     const repo = `repos/${RED_REPO}`;
@@ -4757,12 +5097,13 @@ describe("GitHub's answers, as measured", () => {
       githubAnswer("joblog-410")
     );
     expect(ghCalls(run).some((call) => "unmodeled" in call)).toBe(false);
-  }, 180_000);
+  });
 
   // Catches: a request of another repository than the world's (runs of rounds 6 and 9 read and
   // wrote skills-rig/project) refused as unmodeled where GitHub answers its 404, answered with
   // another endpoint's 404 (the protection of a branch with the branch's), or one the rig has not
-  // measured answered rather than refused.
+  // measured answered rather than refused. It runs under the file's minute: measured alone on
+  // 2026-11-19, 9.2 s with a Legion pod's own git first on PATH and 6.9 s with plain git first.
   test("each request of another repository the archived runs make is GitHub's measured 404", async () => {
     const run = redFixture("a");
     const repo = "repos/skills-rig/project";
@@ -4796,7 +5137,7 @@ describe("GitHub's answers, as measured", () => {
       unmeasured.stderr.startsWith("rig: request not modeled: gh "),
       unmeasured.exit,
     ]).toEqual([true, 1]);
-  }, 180_000);
+  });
 
   // Catches: the combined status of a full commit sha the repository does not hold refused as an
   // unknown commit, where GitHub answers it pending with no status (measured, status-422 of the

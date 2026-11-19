@@ -194,7 +194,9 @@ test("a route that follows another advances on that route's calls, never on its 
 });
 
 /** How many times each row below runs its calls at once: the lost update they pin was measured
- * at 6 of 20 trials of one re-run beside three reads of the head. */
+ * at 6 of 20 trials of one re-run beside three reads of the head. Each row's bound is its own,
+ * sized to its time alone in a Legion pod on 2026-11-19: 16.6 s and 17.7 s for the first row,
+ * 23.8 s and 24.4 s for the second. */
 const TRIALS = 20;
 
 test("reads of the head made beside the re-run never lose the re-run's count", async () => {
@@ -235,7 +237,7 @@ test("calls of one route made at once each take a reply of their own and each co
   }
   // One call takes the first reply and every other one the last, as one call after another would.
   expect(seen).toEqual(Array.from({ length: TRIALS }, () => ({ red: 1, answered: calls })));
-}, 60_000);
+}, 90_000);
 
 test("a follows that names no route's match is refused, naming it, and answers no call", async () => {
   const typo = world([
@@ -314,22 +316,47 @@ test("a route that counts as another advances every route that follows that one"
   expect((await typo.check()).exit).toBe(2);
 });
 
-// Catches: a list answered whole whatever the call's flags asked of it, and --json fields picked
-// from an object but not from each object of a list, as gh picks them.
-test("a route's program filters its answer by the call's own arguments, and --json picks from a list", async () => {
-  const { gh } = world([
+// Catches: a list answered whole whatever the call's flags asked of it; a program handed the raw
+// argv, so an attached short flag (`-ssuccess`) or a GET's `-f` fields filter nothing, where gh
+// sends them (the review of 76cc2379, C2 and C3); and --json fields picked from an object but not
+// from each object of a list, as gh picks them.
+test("a route's program reads the call's flags and query as gh sends them, and --json picks from a list", async () => {
+  const base = "b".repeat(40);
+  const { gh, calls } = world([
     {
       match: "^gh run list",
       stdout: [
         { databaseId: 1, status: "completed", conclusion: "failure" },
         { databaseId: 2, status: "completed", conclusion: "success" },
       ],
+      program: '$flags["--status"] as $s | map(select($s == null or .conclusion == $s))',
+    },
+    {
+      match: "^gh api GET repos/example/widgets/actions/runs\\?",
+      stdout: {
+        workflow_runs: [
+          { id: 1, head_sha: "a".repeat(40) },
+          { id: 2, head_sha: base },
+        ],
+      },
       program:
-        '([range(0; ($argv|length) - 1) as $i | select($argv[$i] == "--status") | $argv[$i + 1]] | first) as $s | map(select($s == null or .conclusion == $s))',
+        ".workflow_runs |= map(select(.head_sha == $query.head_sha and $query.event != null))",
     },
   ]);
-  expect((await gh("run", "list", "--status", "success", "--json", "databaseId")).stdout).toBe(
-    '[{"databaseId":2}]\n'
+  const long = await gh("run", "list", "--status", "success", "--json", "databaseId");
+  const attached = await gh("run", "list", "-ssuccess", "--json", "databaseId");
+  const fields = await gh(
+    ...["api", "-X", "GET", "repos/example/widgets/actions/runs"],
+    ...["-f", `head_sha=${base}`, "-f", "event=pull_request", "--jq", ".workflow_runs[].id"]
+  );
+  expect([long.stdout, attached.stdout, fields.stdout]).toEqual([
+    '[{"databaseId":2}]\n',
+    '[{"databaseId":2}]\n',
+    "2\n",
+  ]);
+  // gh sends a GET's fields as its query, by name: `event` before `head_sha` (measured).
+  expect(calls().at(-1)?.request?.split(" ")[3]).toBe(
+    `repos/example/widgets/actions/runs?event=pull_request&head_sha=${base}`
   );
 });
 
@@ -440,7 +467,8 @@ test("the reviews a role sends are kept across calls, read back by every read, a
   expect((await check()).exit).toBe(0);
   const typo = world([{ match: "^gh pr view", reviews: "pr", comments: "^gh api nothing" }]);
   expect((await typo.check()).exit).toBe(2);
-  // Fourteen stand-in processes one after another: past bun's 5 s default on a loaded machine.
+  // Fourteen stand-in processes one after another: past bun's 5 s default on a loaded machine
+  // (measured alone in a Legion pod on 2026-11-19: 2.6 s and 4.8 s).
 }, 30_000);
 
 test("the re-run and the failed-log read are each recorded with the route that answered them", async () => {
@@ -561,14 +589,18 @@ test("a run whose pane.env names no listener publishes nowhere, whatever Envoy t
 // Catches: a route that reads the call as the agent typed it rather than as gh resolves it, so
 // `-R x` and `--repo=x` are two requests, text inside a body reads as a flag of its own (`--body
 // "a -R other/repo b"` taken for another repository), `{owner}/{repo}` reads as another
-// repository, a write sent with fields and no -X reads as a GET, and a flag the rig does not model
-// is answered as if it were absent.
+// repository, a write sent with fields and no -X reads as a GET, a GET's fields read as anything
+// but the query gh sends them as, and a flag the rig does not model is answered as if it were
+// absent.
 test("a call is read as gh resolves it: long flags, one argument after another, gh api's method and endpoint", async () => {
   const { env, gh, calls } = world([
     { match: "^gh pr view 1000(?:\\s|$)", stdout: { title: "t", number: 1000 } },
     { match: "^gh pr comment 1000 ", stdout: "https://github.com/example/widgets/pull/1000" },
     { match: "^gh api POST repos/example/widgets/pulls/1000/reviews(?:\\s|$)", stdout: { id: 1 } },
-    { match: "^gh api GET repos/example/widgets/pulls(?:\\s|$)", stdout: [{ number: 1000 }] },
+    {
+      match: "^gh api GET repos/example/widgets/pulls(?:\\?\\S*)?(?:\\s|$)",
+      stdout: [{ number: 1000 }],
+    },
   ]);
   env.GH_REPO = "example/widgets";
   await gh("pr", "view", "1000", "-R", "example/widgets", "--json", "title");
@@ -590,7 +622,7 @@ test("a call is read as gh resolves it: long flags, one argument after another, 
     "gh pr view 1000 --repo example/widgets --json title",
     "gh pr comment 1000 --body a\u001f-R\u001fother/repo\u001fb",
     "gh api POST repos/example/widgets/pulls/1000/reviews --raw-field event=APPROVE",
-    "gh api GET repos/example/widgets/pulls --raw-field state=open",
+    "gh api GET repos/example/widgets/pulls?state=open",
     null,
   ]);
   expect(calls().map((call) => call.route)).toEqual([
@@ -598,7 +630,7 @@ test("a call is read as gh resolves it: long flags, one argument after another, 
     "^gh pr view 1000(?:\\s|$)",
     "^gh pr comment 1000 ",
     "^gh api POST repos/example/widgets/pulls/1000/reviews(?:\\s|$)",
-    "^gh api GET repos/example/widgets/pulls(?:\\s|$)",
+    "^gh api GET repos/example/widgets/pulls(?:\\?\\S*)?(?:\\s|$)",
     null,
   ]);
   expect([web.stderr, web.exit, calls()[5]?.unmodeled]).toEqual([

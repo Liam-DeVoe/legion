@@ -1594,7 +1594,8 @@ cmd_judge() {
 # abbreviation of it, by BASE as a branch, or by `HEAD`, which GitHub resolves to the default
 # branch. GraphQL's `object(oid:)` takes a full sha alone. The REST routes, in the order they are
 # matched:
-#   the base's check runs: none, since the rig runs nothing on the base
+#   the base's check runs: none, since the rig runs nothing on the base, under any query the
+#     check runs of a commit read (check_runs_program), and refused under any other
 #   the base's combined status: GitHub's answer for a commit nothing posted a status to, `pending`
 #     with no status
 #   the base's statuses: none, for the same reason
@@ -1606,7 +1607,7 @@ cmd_judge() {
 #     call named in place of the measured answer's commit, and of `$<commit>` (gh-standin.ts)
 other_commit_routes() {
   jq -nc --arg head "$1" --arg branch "$2" --arg pr "$3" --arg base "$4" --arg base_sha "$5" \
-    --arg repo "$worker_repo" "$(route_defs)"'
+    --arg repo "$worker_repo" --arg check_runs "$(check_runs_program)" "$(route_defs)"'
     ("(?:" + ($head | abbreviations) + "|" + ($branch | branch)
      + "|(?:refs/)?pull/" + $pr + "/head)") as $heads
     | ("(?:" + ($base_sha | abbreviations) + "|" + ($base | branch) + "|HEAD)") as $bases
@@ -1621,7 +1622,8 @@ other_commit_routes() {
             status:api("commits/" + $heads + "/status"),
             statuses:api("commits/" + $heads + "/statuses")},
      rest:[
-       {match:api("commits/" + $bases + "/check-runs"), stdout:{total_count:0, check_runs:[]}},
+       {match:api("commits/" + $bases + "/check-runs"), stdout:{total_count:0, check_runs:[]},
+        program:$check_runs},
        {match:api("commits/" + $bases + "/status"), stdout:combined_status($base_sha)},
        {match:api("commits/" + $bases + "/statuses"), stdout:[]},
        ({match:api("commits/(?!" + $heads + "/)(?<commit>[^\\s?]*)/check-runs")}
@@ -1663,7 +1665,10 @@ route_defs() {
       | reduce .[] as $digit (""; "(?:" + $digit + . + ")?"));
     def branch: "(?:(?:refs/)?heads/)?" + (literal | gsub("/"; "(?:/|%2[Ff])"));
     def json_only: "(?!.*\\s--header\\s[Aa]ccept:(?!\\u001f*application/(?:vnd\\.github(?:\\.v3)?\\+)?json(?:\\s|$)))";
-    def rest($method; $path; $headers): "^gh api " + $method + " repos/" + ($repo | literal)
+    # The repository as a route names it: GitHub matches its owner and name without regard to
+    # case (measured, github-answers/README.txt), so each letter is either case.
+    def any_case: literal | gsub("(?<c>[A-Za-z])"; "[" + (.c | ascii_upcase) + (.c | ascii_downcase) + "]");
+    def rest($method; $path; $headers): "^gh api " + $method + " repos/" + ($repo | any_case)
       + (if $path == "" then "" else "/" + $path end) + "(?:\\?\\S*)?(?=\\s|$)" + $headers;
     def api($path): rest("GET"; $path; json_only);
     def api_post($path): rest("POST"; $path; json_only);
@@ -1695,14 +1700,23 @@ route_defs() {
 }
 
 # The programs routes run over their answers, each printed whole by a function of its own, as
-# plain jq: gh-standin.ts runs a route's `program` with the call's arguments as $argv, whether the
-# call carried --json as $json, and the moment of the call as $now. program_defs prints what they
-# share: opt, the value a flag of the call names, by its short or its long name, as gh reads it.
+# plain jq: gh-standin.ts runs a route's `program` with the call's flags as gh read them as $flags
+# (by long name), its request's query as $query (decoded, a GET's fields among them), whether the
+# call carried --json as $json, and the moment of the call as $now. A program reads every flag
+# and parameter it is handed or fails, which the stand-in refuses as unmodeled. program_defs
+# prints what they share: opt, the value of a flag of the call by its long name; reads, which
+# fails on a query parameter the program does not read; and paged, the page of a REST list the
+# query asks for, `per_page` long (30 unless it says) and the `page`-th (the first unless it
+# says), so a page past the end is empty, as GitHub answers one (measured on cybermonklabs/legion,
+# 2026-11-18: `pulls?state=all&per_page=100&page=99999` answers `[]`, and `actions/runs?…&page=2`
+# past its runs answers `{"total_count":3,"workflow_runs":[]}`, the count of the whole list).
 program_defs() {
   cat <<'EOF'
-def opt($short; $long): ([range(0; ($argv|length) - 1) as $i
-    | select($argv[$i] == $short or $argv[$i] == $long) | $argv[$i + 1]]
-  + [$argv[] | select(startswith($long + "=")) | ltrimstr($long + "=")]) | first;
+def opt($long): $flags[$long];
+def reads($names): ($query | keys - $names) as $other
+  | if $other == [] then . else error("a parameter the rig does not read: " + ($other | join(","))) end;
+def paged: (($query.per_page // "30") | tonumber) as $per | (($query.page // "1") | tonumber) as $page
+  | .[($page - 1) * $per:$page * $per];
 EOF
 }
 
@@ -1712,8 +1726,8 @@ EOF
 pr_list_program() {
   program_defs
   cat <<'EOF'
-(opt("-s"; "--state") // "open") as $state | opt("-H"; "--head") as $head
-| opt("-B"; "--base") as $base | (opt("-L"; "--limit") // "30" | tonumber) as $limit
+(opt("--state") // "open") as $state | opt("--head") as $head
+| opt("--base") as $base | (opt("--limit") // "30" | tonumber) as $limit
 | [.] | map(select(($state == "open" or $state == "all")
     and ($head == null or .headRefName == $head) and ($base == null or .baseRefName == $base)))
 | .[:$limit]
@@ -1738,17 +1752,15 @@ EOF
 }
 
 # The REST list of the pull requests, filtered by its query as GitHub filters it: `state` (open
-# unless it says), `head` (owner:branch), `base`, and `per_page`.
+# unless it says), `head` (owner:branch), `base`, and its page; any other parameter is not read.
 pulls_query_program() {
+  program_defs
   cat <<'EOF'
-([$argv[] | select(test("(^|/)pulls\\?"))] | first // "" | split("?")[1:] | join("?")) as $query
-| ($query | split("&") | map(select(. != "") | split("=")
-    | {key:.[0], value:(.[1:] | join("=") | gsub("%3[Aa]"; ":") | gsub("%2[Ff]"; "/"))})
-    | from_entries) as $p
-| map(select((($p.state // "open") == "open" or $p.state == "all")
-    and ($p.head == null or .head.label == $p.head)
-    and ($p.base == null or .base.ref == $p.base)))
-| .[:(($p.per_page // "30") | tonumber)]
+reads(["state", "head", "base", "per_page", "page"])
+| map(select((($query.state // "open") == "open" or $query.state == "all")
+    and ($query.head == null or .head.label == $query.head)
+    and ($query.base == null or .base.ref == $query.base)))
+| paged
 EOF
 }
 
@@ -1764,9 +1776,9 @@ def elapsed: ((.updatedAt | seconds) - (.startedAt | seconds)) as $s
   | (($s / 3600) | floor) as $h | ((($s % 3600) / 60) | floor) as $m
   | (if $h > 0 then "\($h)h" else "" end)
     + (if $h > 0 or $m > 0 then "\($m)m" else "" end) + "\($s % 60)s";
-opt("-s"; "--status") as $status | opt("-w"; "--workflow") as $workflow
-| opt("-c"; "--commit") as $commit | opt("-b"; "--branch") as $branch
-| opt("-e"; "--event") as $event | (opt("-L"; "--limit") // "20" | tonumber) as $limit
+opt("--status") as $status | opt("--workflow") as $workflow
+| opt("--commit") as $commit | opt("--branch") as $branch
+| opt("--event") as $event | (opt("--limit") // "20" | tonumber) as $limit
 | [.[] | select(($status == null or .status == $status or .conclusion == $status)
     and ($workflow == null or .workflowName == $workflow
          or ($workflow | test("(^|/)" + .workflowName + "\\.ya?ml$")))
@@ -1779,19 +1791,61 @@ opt("-s"; "--status") as $status | opt("-w"; "--workflow") as $workflow
 EOF
 }
 
-# The REST list of the runs of the repository, filtered by its query as GitHub filters it.
+# The REST list of the runs of the repository, filtered by its query as GitHub filters it
+# (`head_sha`, `branch`, `event`, `status`), with no pull request in any run where it asks
+# `exclude_pull_requests=true` (measured on cybermonklabs/legion, 2026-11-18: a pull_request run
+# that lists 1 lists 0 then), and its page, the count of the whole list beside it. Any other
+# parameter (`actor`, `created`, `check_suite_id`, …) is not read.
 runs_query_program() {
+  program_defs
   cat <<'EOF'
-([$argv[] | select(test("actions/runs\\?"))] | first // "" | split("?")[1:] | join("?"))
-  as $query
-| ($query | split("&") | map(select(. != "") | split("=")
-    | {key:.[0], value:(.[1:] | join("=") | gsub("%2[Ff]"; "/"))}) | from_entries) as $p
-| .workflow_runs |= map(select(($p.head_sha == null or .head_sha == $p.head_sha)
-    and ($p.branch == null or .head_branch == $p.branch)
-    and ($p.event == null or .event == $p.event)
-    and ($p.status == null or .status == $p.status or .conclusion == $p.status)))
+reads(["head_sha", "branch", "event", "status", "exclude_pull_requests", "per_page", "page"])
+| .workflow_runs |= map(select(($query.head_sha == null or .head_sha == $query.head_sha)
+    and ($query.branch == null or .head_branch == $query.branch)
+    and ($query.event == null or .event == $query.event)
+    and ($query.status == null or .status == $query.status or .conclusion == $query.status))
+  | if $query.exclude_pull_requests == "true" then .pull_requests = [] else . end)
 | .total_count = (.workflow_runs | length)
-| .workflow_runs |= .[:(($p.per_page // "30") | tonumber)]
+| .workflow_runs |= paged
+EOF
+}
+
+# The check runs of a commit, as GitHub answers its check-runs endpoint (measured on
+# cybermonklabs/legion 05e64382, whose CI run has two attempts, 2026-11-18, github-answers/
+# README.txt): with no `filter`, or any value but `all`, the latest check run of each name, by its
+# completion (GitHub's default, `latest`: 64 check runs, one per name, `ci-ok` its attempt-2
+# success alone), and with `filter=all` every check run the commit holds (122, `ci-ok` its success
+# and its attempt-1 failure); `check_name` and `status` keep the check runs of that name or
+# status, and the page the query asks. The program runs over every check run the world holds at
+# the commit, in their order; any other parameter (`app_id`, …) is not read.
+check_runs_program() {
+  program_defs
+  cat <<'EOF'
+reads(["filter", "check_name", "status", "per_page", "page"])
+| (.check_runs | to_entries) as $all
+| (if $query.filter == "all" then $all
+   else [$all | group_by(.value.name)[] | max_by([.value.completed_at, .value.id])] | sort_by(.key)
+   end | map(.value))
+| map(select(($query.check_name == null or .name == $query.check_name)
+    and ($query.status == null or .status == $query.status)))
+| {total_count:length, check_runs:paged}
+EOF
+}
+
+# The jobs of a run or of one of its attempts, as GitHub answers them: of the run, with no
+# `filter` or `filter=latest`, the jobs of its latest attempt, and with `filter=all` those of
+# every attempt (measured on cybermonklabs/legion run 44406867953, two attempts, 2026-11-18: 58
+# jobs, all of attempt 2, and 116 with `filter=all`); the page the query asks, the count of the
+# whole list beside it. The program runs over {jobs, all}, the latest jobs and every job of every
+# attempt as the world holds them; another `filter` or parameter is not read.
+jobs_program() {
+  program_defs
+  cat <<'EOF'
+reads(["filter", "per_page", "page"])
+| (if ($query.filter // "latest") == "latest" then .jobs
+   elif $query.filter == "all" then .all
+   else error("a filter the rig does not read") end)
+| {total_count:length, jobs:paged}
 EOF
 }
 
@@ -1801,6 +1855,7 @@ EOF
 # id, and where to look next. The program runs over {run, jobs} or {run, job}; how long ago is
 # gh's own rounding of $now less the run's creation.
 run_view_program() {
+  program_defs
   cat <<'EOF'
 def ago($t): ($now - ($t | fromdate)) as $s | (($s / 3600) | floor) as $h
   | def about($n; $unit): "about \($n) \($unit)\(if $n == 1 then "" else "s" end) ago";
@@ -1827,7 +1882,7 @@ if has("job") then
      else "To see the full job log, try: gh run view --log --job=\(.job.id)" end)
   + "\nView this run on GitHub: " + .run.html_url
 else
-  ($argv | any(. == "--verbose" or . == "-v")) as $verbose
+  (opt("--verbose") == true) as $verbose
   | (.run | heading) + "JOBS\n" + (.jobs | map(line($verbose or .conclusion == "failure")) | join("\n"))
   + "\n\n"
   + (if .run.conclusion == "failure"
@@ -2070,7 +2125,8 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
     --arg base_sha "$C0" --arg date "$date" --argjson snapshot "$snapshot" \
     --argjson others "$(other_commit_routes "$C1" "legion/$worker_key" "$worker_pr" main "$C0")" \
     --arg pr_list "$(pr_list_program)" --arg pr_view_text "$(pr_view_program)" \
-    --arg pulls_query "$(pulls_query_program)" "$(route_defs)"'
+    --arg pulls_query "$(pulls_query_program)" --arg check_runs "$(check_runs_program)" \
+    "$(route_defs)"'
     $snapshot as {$diff, $files, $commits, $trees}
     | ($number|tostring) as $n
     | ($repo | split("/")) as [$owner, $name]
@@ -2104,14 +2160,16 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
                                          detailsUrl:.link, name, startedAt:$date, status:"COMPLETED",
                                          workflowName:"ci"}))} as $pr
     # The same pull request as the REST API answers it, the fields it holds at every moment of the
-    # run (no count of comments, which the stand-in does not keep).
+    # run (no count of comments, which the stand-in does not keep); its head and its base are of
+    # the one repository of the world, which each names as the pull requests of GitHub do.
     | {url:("https://api.github.com/repos/" + $repo + "/pulls/" + $n), id:$number, node_id:("PR_" + $n),
        html_url:$url, diff_url:($url + ".diff"), patch_url:($url + ".patch"), number:$number,
        state:"open", locked:false, title:$title, user:{login:"rig[bot]", type:"Bot"}, body:$body,
        labels:[], milestone:null, draft:false, created_at:$date, closed_at:null, merged_at:null,
        merge_commit_sha:null, assignee:null, assignees:[], requested_reviewers:[], requested_teams:[],
-       head:{label:($owner + ":" + $ref), ref:$ref, sha:$head, user:{login:$owner}},
-       base:{label:($owner + ":main"), ref:"main", sha:$base_sha, user:{login:$owner}},
+       head:{label:($owner + ":" + $ref), ref:$ref, sha:$head, user:{login:$owner}, repo:repository},
+       base:{label:($owner + ":main"), ref:"main", sha:$base_sha, user:{login:$owner},
+             repo:repository},
        author_association:"NONE", auto_merge:null, merged:false, mergeable:true,
        mergeable_state:"clean", merged_by:null, maintainer_can_modify:false, commits:1,
        additions:$pr.additions, deletions:$pr.deletions, changed_files:$pr.changedFiles} as $pull
@@ -2154,10 +2212,12 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
       as $review
     | api_post("pulls/" + $n + "/comments(?:/\\d+/replies)?") as $line_comment
     | api_post("issues/" + $n + "/comments") as $issue_comment
-    # The world GraphQL reads (gh-graphql.ts): the repository, its pull request, the head and
-    # the base under every name GraphQL resolves them by, and the viewer.
+    # The world GraphQL reads (gh-graphql.ts): the repository (its owner and name in lower case,
+    # as gh-graphql.ts matches them), its pull request, the head and the base under every name
+    # GraphQL resolves them by, and the viewer. The page info of the rollup ends in the cursor
+    # GitHub gives its last node (gh-graphql.ts), and in none where it holds no node.
     | {graphql:{
-         ("repository(name:" + ($name|tojson) + ",owner:" + ($owner|tojson) + ")"):
+         ("repository(name:" + ($name|ascii_downcase|tojson) + ",owner:" + ($owner|ascii_downcase|tojson) + ")"):
            ({("pullRequest(number:" + $n + ")"):{"$ref":"pr"},
              "pullRequest(*)":{"$error":{type:"NOT_FOUND",
                message:"Could not resolve to a PullRequest with the number of {number}."}},
@@ -2169,7 +2229,9 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
        "$refs":{
          head:{__typename:"Commit", oid:$head,
                statusCheckRollup:{state:"SUCCESS",
-                 contexts:{totalCount:($checks|length), pageInfo:{hasNextPage:false},
+                 contexts:{totalCount:($checks|length),
+                           pageInfo:{hasNextPage:false, endCursor:(if $checks == [] then null
+                             else $checks | length | tostring | @base64 | sub("=+$"; "") end)},
                            nodes:($checks | map({__typename:"CheckRun", name, status:"COMPLETED",
                                                  conclusion:"SUCCESS", detailsUrl:.link}))}}},
          base:{__typename:"Commit", oid:$base_sha, statusCheckRollup:null},
@@ -2188,7 +2250,7 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
       # the 404 of the endpoint asked, which names the documentation of that endpoint); any other
       # request of another repository is not modeled. The read of a branch takes no path below
       # the branch, whose protection reads answer their own 404.
-      ("repos/(?!" + ($repo | literal) + "(?:[/?\\s]|$))[^/\\s]+/[^/\\s]+") as $other
+      ("repos/(?!" + ($repo | any_case) + "(?:[/?\\s]|$))[^/\\s]+/[^/\\s]+") as $other
       | def other($method; $path; $answer):
           {match:("^gh api " + $method + " " + $other + $path + "(?:\\?\\S*)?(?=\\s|$)"),
            repo_refusal:true} + github($answer);
@@ -2207,21 +2269,21 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
       other("GET"; "/branches/[^\\s?]+/protection"; "repo-404-protection"),
       other("GET"; "/branches/[^\\s?]+/protection/required_status_checks"; "repo-404-required-checks"),
       other("GET"; "/branches/(?![^\\s?]*/protection(?:/|[?\\s]|$))[^\\s?]+"; "repo-404-branch"),
-      {match:("^gh api [A-Z]+ repos/(?!" + ($repo | literal) + "(?:[/?\\s]|$))[^/\\s]+/[^/\\s]+"),
+      {match:("^gh api [A-Z]+ repos/(?!" + ($repo | any_case) + "(?:[/?\\s]|$))[^/\\s]+/[^/\\s]+"),
        repo_refusal:true, unmodeled:true},
-      ({match:("^gh (?:pr|repo|issue) .*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | literal)
+      ({match:("^gh (?:pr|repo|issue) .*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | any_case)
                + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$)"), repo_refusal:true}
        + no_repo("$<other>")),
-      ({match:("^gh repo view (?!(?:[^/\\s]+/)?" + ($repo | literal)
+      ({match:("^gh repo view (?!(?:[^/\\s]+/)?" + ($repo | any_case)
                + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$)"), repo_refusal:true}
        + no_repo("$<other>")),
-      ({match:("^gh run (?:view|rerun)(?=.*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | literal)
+      ({match:("^gh run (?:view|rerun)(?=.*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | any_case)
                + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$))(?=.*\\s--job\\s(?<job>\\d+)(?:\\s|$))"),
         repo_refusal:true} + no_job("$<other>"; "$<job>")),
-      ({match:("^gh run (?:view|rerun) (?<run>\\d+)(?=.*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | literal)
+      ({match:("^gh run (?:view|rerun) (?<run>\\d+)(?=.*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | any_case)
                + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$))"), repo_refusal:true}
        + no_run("$<other>"; "$<run>")),
-      ({match:("^gh run list(?=.*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | literal)
+      ({match:("^gh run list(?=.*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | any_case)
                + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$))"), repo_refusal:true}
        + no_runs("$<other>")),
       {match:"^gh (?:--version|version)$",
@@ -2252,7 +2314,9 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
        + until_posted($line_comment)),
       ({match:api("pulls/" + $n + "/comments"), reviews:"comments"} + until_posted($line_comment)),
       $others.rest[],
-      {match:$others.heads["check-runs"], head_read:"check-runs",
+      # The check runs of the head read their query (check_runs_program): this world holds one
+      # check run of each name, so every filter answers both.
+      {match:$others.heads["check-runs"], head_read:"check-runs", program:$check_runs,
        stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
       # The check suites of the head, one per workflow run, which red_fixture writes from the runs
       # of its world; this world holds no run.
@@ -2261,7 +2325,7 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
       {match:$others.heads.statuses, stdout:[]},
       # The repository, its commits, trees, refs and root contents, and its one pull request.
       {match:api(""), stdout:(repository + {default_branch:"main"})},
-      {match:("^gh repo view(?: (?:[^/\\s]+/)?" + ($repo | literal) + ")?(?=.*\\s--json\\s)"),
+      {match:("^gh repo view(?: (?:[^/\\s]+/)?" + ($repo | any_case) + ")?(?=.*\\s--json\\s)"),
        stdout:{name:$name, nameWithOwner:$repo, owner:{login:$owner},
                url:("https://github.com/" + $repo), defaultBranchRef:{name:"main"}, isPrivate:false,
                visibility:"PUBLIC"}},
@@ -2714,6 +2778,15 @@ red_defs() {
             map(. as $j | ([$later[] | select(.name == $j.name)] | first) // $j));
       # The check suite of a run: a rig id made as the run ids are, the run id less a million.
       def check_suite_id($run): $run - 1000000;
+      # The workflow of a run, one of the three of the world, each with a rig id of its own (`ci`,
+      # also for the run by hand; `title` in `f`; `e2e` in `e`), and the URL of the attempt before
+      # an attempt after the first, as the runs of GitHub name it (measured on cybermonklabs/legion run
+      # 44406867953, 2026-11-18: `previous_attempt_url` null on attempt 1, and
+      # `…/actions/runs/<id>/attempts/1` on attempt 2).
+      def workflow_id($name): {ci:1, title:2, e2e:3}[$name];
+      def previous_attempt($id; $attempt): if $attempt > 1
+        then $api + "/actions/runs/" + ($id|tostring) + "/attempts/" + ($attempt - 1 | tostring)
+        else null end;
     # One state of the counted set as its reads answer it: the `gh pr view` rollup, the rows of
     # `gh pr checks`, and the GraphQL rollup of the head (below), all over the latest counted run
     # of each name. The link each carries is the details_url of the check run, the page of the job
@@ -2762,7 +2835,7 @@ red_defs() {
     def gh_run($jobs): {attempt:.run_attempt, conclusion, createdAt:.created_at, databaseId:.id,
       displayTitle:.display_title, event, headBranch:.head_branch, headSha:.head_sha,
       jobs:($jobs | map(gh_job)), name, number:.run_number, startedAt:.run_started_at, status,
-      updatedAt:.updated_at, url:.html_url, workflowDatabaseId:1, workflowName:.name};
+      updatedAt:.updated_at, url:.html_url, workflowDatabaseId:.workflow_id, workflowName:.name};
 '
 }
 
@@ -2904,7 +2977,8 @@ red_model() {
        + (if $paired then [job($job_id + 5; $run_id; 2; $required; $after; "Check the lanes"; $t1;
                               $aggregate_check + 1)] else [] end)) as $rerun_jobs
     # Each run is one check suite of GitHub Actions, as GitHub gives a workflow run one: its id is a
-    # rig id made as the run ids are (the run id less a million), its node id in the CS_ shape.
+    # rig id made as the run ids are (the run id less a million), its node id in the CS_ shape. It
+    # names its workflow and the attempt before it (red_defs).
     | def run($id; $name; $event; $attempt; $conclusion; $at):
         {id:$id, name:$name, display_title:$title, event:$event, status:"completed",
          conclusion:$conclusion, check_suite_id:check_suite_id($id),
@@ -2915,7 +2989,8 @@ red_model() {
          jobs_url:($api + "/actions/runs/" + ($id|tostring) + "/jobs"),
          created_at:$at, updated_at:$at, run_started_at:$at,
          pull_requests:(if $event == "pull_request"
-                        then [{number:$pr, head:{sha:$head, ref:$branch}}] else [] end)};
+                        then [{number:$pr, head:{sha:$head, ref:$branch}}] else [] end),
+         workflow_id:workflow_id($name), previous_attempt_url:previous_attempt($id; $attempt)};
       # The runs of the head, each in the two states of the head, before the re-run and after it:
       # only the run of the red moves, to its attempt 2.
       ([{id:$run_id, states:[
@@ -2943,7 +3018,13 @@ red_model() {
     | ([$runs[].states[1].attempts[][]] | unique_by(.id)) as $all_jobs
     | ($all_jobs | map({key:(.check_run_url | split("/") | last), value:.}) | from_entries)
       as $job_of
-    | def linked: . + {details_url:$job_of[(.id|tostring)].html_url};
+    # A check run carries the head it ran at, the check suite of the run its job belongs to, and
+    # the pull requests of that run, as the check runs of GitHub do.
+    | ($runs | map({key:(.id|tostring), value:.states[0].run.pull_requests}) | from_entries)
+      as $pull_requests_of
+    | def linked: ($job_of[(.id|tostring)].run_id) as $run
+        | . + {details_url:$job_of[(.id|tostring)].html_url, head_sha:$head,
+               check_suite:{id:check_suite_id($run)}, pull_requests:$pull_requests_of[($run|tostring)]};
       ($runs | map({key:(.id|tostring), value:.states[0].run.name}) | from_entries) as $workflow_of
     # The superseded runs the commit endpoint carries in a world where the one re-run of the head
     # is spent (`spent`, world `e`): the e2e check of attempt 1 that failed and the one of attempt
@@ -3030,7 +3111,10 @@ red_model_defs() {
         status:"COMPLETED", workflowName:workflow});
       def graphql_rollup($checks): {
         state:(if (failing($checks)|length) > 0 then "FAILURE" else "SUCCESS" end),
-        contexts:{totalCount:($checks|length), pageInfo:{hasNextPage:false},
+        contexts:{totalCount:($checks|length),
+          # The cursor GitHub gives the last node (gh-graphql.ts), none where the page holds none.
+          pageInfo:{hasNextPage:false, endCursor:(if $checks == [] then null
+            else $checks | length | tostring | @base64 | sub("=+$"; "") end)},
           nodes:($checks | map({__typename:"CheckRun", name:.name, databaseId:.id,
             status:"COMPLETED", conclusion:verdict, detailsUrl:.details_url,
             startedAt:.started_at, completedAt:.completed_at,
@@ -3120,7 +3204,8 @@ run_routes() {
   jq -n --slurpfile model "$1" \
     --arg rerun_help "$(rerun_help)" --arg rerun_usage "$(rerun_usage)" --arg view_usage "$(view_usage)" \
     --arg run_view_program "$(run_view_program)" --arg run_list "$(run_list_program)" \
-    --arg runs_query "$(runs_query_program)" "$(red_model_defs)$(route_defs)"'
+    --arg runs_query "$(runs_query_program)" --arg jobs_query "$(jobs_program)" \
+    "$(red_model_defs)$(route_defs)"'
       ($runs[0]) as $red_run
     | ([$runs[].id]) as $run_ids
     | ([$settled_checks[], $uncounted[] | .id] | unique) as $check_ids
@@ -3178,18 +3263,18 @@ run_routes() {
         + {program:$run_list}),
        ($runs[] | . as $w | ($w.id|tostring) as $id
         | run_route(api("actions/runs/" + $id); $w; {stdout:.run}),
-          run_route(api("actions/runs/" + $id + "/jobs"); $w;
-                    latest as $jobs | {stdout:{total_count:($jobs|length), jobs:$jobs}}),
+          (run_route(api("actions/runs/" + $id + "/jobs"); $w;
+                     latest as $jobs | {stdout:{jobs:$jobs, all:[.attempts[][]]}}) + {program:$jobs_query}),
           (range(1; ($w.states[1].attempts|length) + 1) as $n
            | run_route(api("actions/runs/" + $id + "/attempts/" + ($n|tostring)); $w;
                        if .attempts[$n - 1] == null then github("attempt-404")
                        elif $n == (.attempts|length) then {stdout:.run}
                        else {stdout:(.run + {run_attempt:$n, conclusion:"failure",
-                                             updated_at:.run.created_at})} end),
-             run_route(api("actions/runs/" + $id + "/attempts/" + ($n|tostring) + "/jobs"); $w;
-                       if .attempts[$n - 1] == null then github("attempt-jobs-404")
-                       else {stdout:{total_count:(.attempts[$n - 1]|length),
-                                     jobs:.attempts[$n - 1]}} end)),
+                                             updated_at:.run.created_at,
+                                             previous_attempt_url:previous_attempt($w.id; $n)})} end),
+             (run_route(api("actions/runs/" + $id + "/attempts/" + ($n|tostring) + "/jobs"); $w;
+                        if .attempts[$n - 1] == null then github("attempt-jobs-404")
+                        else {stdout:{jobs:.attempts[$n - 1]}} end) + {program:$jobs_query})),
           ([range(1; ($w.states[1].attempts|length) + 1)] as $attempts
            | ({match:api("actions/runs/" + $id + "/attempts/(?!" + ids($attempts) + "(?:[/?\\s]|$))\\d+")}
               + github("attempt-404")),
@@ -3350,17 +3435,21 @@ red_report() {
 
 # rerun_pressed SECONDS waits up to SECONDS for the role's press of the re-run to reach the run's
 # calls.jsonl, which the gh stand-in appends to as it answers each call: the record of a call
-# whose route published the head's settlement (gh-standin.ts, `published`), which only the two
-# press routes of red_fixture do. A call that pressed nothing (`gh run rerun --help`, a re-run of
-# a run or a job the head has none of, a call naming neither) published nothing, so it wakes
-# nothing: the second turn starts on a settlement that came. The scorer counts presses its own
-# way (score.ts, RERUN_PRESS): the role's decision to re-run, whatever it named. The wait is
-# bounded and its answer is not a requirement: a role that re-ran nothing is a run the scorer
-# fails, never a rig failure, so this answers 1 and the run ends on its one turn's result.
+# whose route published the head's settlement and whose listener took it (gh-standin.ts,
+# `published` with a 2xx `status`), which only the two press routes of red_fixture publish. A call
+# that pressed nothing (`gh run rerun --help`, a re-run of a run or a job the head has none of, a
+# call naming neither) published nothing, and a press whose publish reached no listener or was
+# refused (`published` with an `error`, or a status the listener refused it with) delivered no
+# settlement, so neither wakes anything: the second turn starts on a settlement that came. The
+# scorer counts presses its own way (score.ts, RERUN_PRESS): the role's decision to re-run,
+# whatever it named. The wait is bounded and its answer is not a requirement: a role that re-ran
+# nothing is a run the scorer fails, never a rig failure, so this answers 1 and the run ends on
+# its one turn's result.
 rerun_pressed() {
   local deadline=$((SECONDS + $1))
   while :; do
-    if jq -e -s 'any(.[]; .as == "gh" and .published != null)' "$R/calls.jsonl" >/dev/null 2>&1; then
+    if jq -e -s 'any(.[]; .as == "gh" and ((.published.status // 0) | . >= 200 and . < 300))' \
+      "$R/calls.jsonl" >/dev/null 2>&1; then
       return 0
     fi
     [ "$SECONDS" -lt "$deadline" ] || return 1

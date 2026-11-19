@@ -49,3 +49,31 @@ repo-404-pulls-list        gh api repos/cybermonklabs/no-such-repo-infra-1303/pu
 (repo-404-rules was answered byte for byte the same with --paginate, and repo-404-pulls-list with a ?state=all&head= query.)
 repo-404-pull-patch   gh api -X PATCH repos/cybermonklabs/no-such-repo-infra-1303/pulls/1 -f title=x
 repo-404-review-post  gh api -X POST repos/cybermonklabs/no-such-repo-infra-1303/pulls/1/reviews -f event=COMMENT -f body=x
+GraphQL requests GitHub refuses before it reads anything (gh prints the body and its message, exit 1;
+gh-graphql.ts writes these errors for the call's own query, in this shape):
+graphql-variable-null     gh api graphql -f query='query($n:Int!){repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:$n){number}}}'   (no n given)
+graphql-variable-coerce   the same query with -f n=1003 (a String for Int!)
+graphql-literal-type      gh api graphql -f query='query{repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:"1003"){number}}}'
+graphql-variable-unused   gh api graphql -F n=1003 -f query='query($n:Int!,$u:String){repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:$n){number}}}'
+
+What GitHub answered to the reads below, measured the same way on 2026-11-18, which the rig's
+answers follow (no file: each is stated here and in the comment of the code that follows it):
+- Check runs of a commit (05e64382b833c8dfdfbd8584261a2e2f3b7deaa5, whose CI run 44406867953 has
+  two attempts): `commits/<sha>/check-runs` with no filter, and with `filter=latest`, 64 check
+  runs, one per name (`ci-ok` its attempt-2 success alone); `filter=all` 122 (`ci-ok` its success
+  and its attempt-1 failure); `filter=bogus` the same 64 as no filter, exit 0; `check_name=ci-ok`
+  1, with `filter=all` 2; `status=completed` 64, `status=in_progress` 0.
+- Jobs of that run: `actions/runs/44406867953/jobs` 58, all of attempt 2; with `filter=all` 116.
+- A page past the end: `pulls?state=all&per_page=100&page=99999` answers `[]`;
+  `actions/runs?...&page=2` past its runs answers `{"total_count":3,"workflow_runs":[]}`.
+- `actions/runs?exclude_pull_requests=true`: a pull_request run that lists 1 pull request lists 0.
+- A run's `previous_attempt_url`: null on attempt 1, `.../actions/runs/<id>/attempts/1` on attempt 2.
+- The GraphQL rollup of 05e64382 (`statusCheckRollup{contexts(first:100, after:$endCursor){...}}`):
+  64 contexts, `pageInfo` `{"endCursor":"NjQ","hasNextPage":false}` with no endCursor given;
+  `first:10` gives `{"endCursor":"MTA","hasNextPage":true}` (a cursor is base64 of the 1-based
+  index of the page's last node, unpadded); `after:"NjQ"` gives no node and
+  `{"endCursor":null,"hasNextPage":false}`, totalCount still 64.
+- GraphQL: a variable given that the query does not declare (`-f extra=1`) is ignored, the query
+  answered; `repository(owner:"CyberMonkLabs",name:"Legion")` answers the repository, as does the
+  REST `repos/CyberMonkLabs/Legion`: owner and name match without regard to case;
+  `object(expression:"main~1")` answers a commit (a revision expression the rig does not model).

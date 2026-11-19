@@ -71,10 +71,13 @@
 // `$<name>` that names no group of the match, or a group the match did not reach, is printed as
 // it stands.
 // A route's `program` is jq the stand-in runs over its answer before `--json` and `--jq`, with the
-// call's arguments as `$argv`, whether the call carried `--json` as `$json` (the stand-in has read
-// its flags already), and the moment of the call as `$now` (seconds since the epoch): a route
-// answers a list filtered by the call's own flags with it, or gh's own text for what it answers.
-// A program that fails is the rig's trouble: the call is refused as unmodeled.
+// call's flags as gh read them as `$flags` (each by its long name: `-bmain` is `"--branch":
+// "main"`), the query of its request as `$query` (each parameter by its name, decoded, a GET's
+// fields among them), whether the call carried `--json` as `$json`, and the moment of the call as
+// `$now` (seconds since the epoch): a route answers a list filtered by the call's own flags and
+// query with it, or gh's own text for what it answers. A program reads every flag and parameter
+// it is handed or fails, and a program that fails is the rig's trouble: the call is refused as
+// unmodeled.
 // The stand-in is a fresh process per call, so the count of calls a route has answered outlives it
 // in fixtures.json, as the route's `answered`, written back with the body keep's own
 // read-modify-write on every call a route answers. Each call holds an exclusive flock(2) on
@@ -649,6 +652,11 @@ for (const [{ long }, value] of given) {
 const input = flagValue("--input");
 /** The request text of an argument: its whitespace written as \u001f (the header). */
 const spaced = (arg: string) => arg.replace(/\s/g, "\u001f");
+/** A field escaped as Go's url.QueryEscape escapes it, which is how gh writes a GET's fields. */
+const queryEscape = (text: string) =>
+  encodeURIComponent(text)
+    .replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/%20/g, "+");
 const flagText = (skip: (long: string) => boolean) =>
   given
     .filter(([f]) => !skip(f.long))
@@ -689,18 +697,55 @@ if (command === "api") {
       spaced(canonical(document)),
       ...flagText((long) => long === "--method" || long === "--raw-field" || long === "--field"),
     ].join(" ");
-  } else
+  } else {
+    // A GET sends its fields as the query, as gh 2.98.0 does (measured in the review of
+    // 76cc2379: `-X GET …/actions/runs -f head_sha=… -f event=pull_request` sends
+    // `GET …/actions/runs?event=pull_request&head_sha=…`): after any query the endpoint names,
+    // each field escaped as Go's url.QueryEscape escapes it, in the order Go's url.Values encodes
+    // them, by name. A GET that also hands over a body (--input) is not modeled.
+    const queried = method === "GET" && Object.keys(apiFields).length > 0;
+    if (queried) {
+      if (input !== undefined) refuse();
+      endpoint += `${endpoint.includes("?") ? "&" : "?"}${Object.keys(apiFields)
+        .sort()
+        .map((key) => `${queryEscape(key)}=${queryEscape(String(apiFields[key]))}`)
+        .join("&")}`;
+    }
     request = [
       "gh",
       "api",
       method,
       spaced(endpoint),
-      ...flagText((long) => long === "--method"),
+      ...flagText(
+        (long) => long === "--method" || (queried && (long === "--raw-field" || long === "--field"))
+      ),
     ].join(" ");
+  }
 } else
   request = ["gh", ...command.split(" "), ...positional.map(spaced), ...flagText(() => false)].join(
     " "
   );
+/** The query of the call's request, each parameter by its name, decoded as GitHub reads it (a `+`
+ * a space, `%XX` its byte); a name given twice keeps its last value. A route program reads it. */
+const query: Record<string, string> = {};
+for (const pair of endpoint?.includes("?")
+  ? endpoint.slice(endpoint.indexOf("?") + 1).split("&")
+  : []) {
+  if (pair === "") continue;
+  const [name = "", ...value] = pair.split("=");
+  try {
+    query[decodeURIComponent(name.replace(/\+/g, " "))] = decodeURIComponent(
+      value.join("=").replace(/\+/g, " ")
+    );
+  } catch {
+    refuse();
+  }
+}
+/** The call's flags as gh read them, each by its long name: its value, or true for a flag that
+ * takes none (`-bmain` is `--branch: "main"`). A route program reads them, never the raw argv. */
+const flags: Record<string, string | true> = Object.fromEntries(
+  given.map(([f, value]) => [f.long, value ?? true])
+);
 if (has("--slurp") && (!has("--paginate") || filter !== undefined)) refuse();
 
 // The call holds the run's fixtures lock from its read of fixtures.json to its write of what it
@@ -859,36 +904,47 @@ if (matched.graphql === true) {
   )
     refuse();
   const graphqlDocument = document;
-  let projected: ReturnType<typeof project>;
-  try {
-    projected = project(graphqlDocument, world.graphql, world.$refs ?? {}, (marker) => {
-      if (marker.$keep !== "threads") throw new Unmodeled(`no keep named ${String(marker.$keep)}`);
-      if (answeredBy(String(marker.until)) > 0)
-        throw new Unmodeled("a line comment the stand-in does not keep");
-      return threads(keptReviews.comments);
-    });
-  } catch (error) {
-    if (error instanceof Unmodeled) refuse();
-    throw error;
-  }
-  output =
-    projected.errors.length > 0
+  // A request GitHub refuses before it reads anything (gh-graphql.ts) answers its errors alone,
+  // whatever the world holds (measured, github-answers/graphql-*).
+  const refused = graphqlDocument.errors.length > 0;
+  let projected: { data?: unknown; errors: unknown[] } = { errors: graphqlDocument.errors };
+  if (!refused)
+    try {
+      projected = project(graphqlDocument, world.graphql, world.$refs ?? {}, (marker) => {
+        if (marker.$keep !== "threads")
+          throw new Unmodeled(`no keep named ${String(marker.$keep)}`);
+        if (answeredBy(String(marker.until)) > 0)
+          throw new Unmodeled("a line comment the stand-in does not keep");
+        return threads(keptReviews.comments);
+      });
+    } catch (error) {
+      if (error instanceof Unmodeled) refuse();
+      throw error;
+    }
+  output = refused
+    ? { errors: projected.errors }
+    : projected.errors.length > 0
       ? { data: projected.data, errors: projected.errors }
       : { data: projected.data };
   if (projected.errors.length > 0) {
     if (filter !== undefined) refuse();
-    stderr = `gh: ${projected.errors[0]?.message}\n`;
+    stderr = `gh: ${(projected.errors[0] as { message?: unknown }).message}\n`;
     status = 1;
   }
 }
-if (matched.program !== undefined) {
+// A program reads the world's own answer; GitHub's measured error for a state the world does not
+// hold yet (an attempt before the re-run) is answered as it stands.
+if (matched.program !== undefined && answer.github === undefined) {
   const program = Bun.spawnSync(
     [
       "jq",
       "-c",
       "--argjson",
-      "argv",
-      JSON.stringify(args),
+      "flags",
+      JSON.stringify(flags),
+      "--argjson",
+      "query",
+      JSON.stringify(query),
       "--argjson",
       "json",
       String(fields !== undefined),
