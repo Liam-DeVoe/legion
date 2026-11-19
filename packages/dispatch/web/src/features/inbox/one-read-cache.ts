@@ -102,6 +102,12 @@ export function patchMeInbox(
   );
 }
 
+/** The entry of the one read's Inbox answer that lists `ask`, as Dispatch lists an open ask: what
+ *  a write that makes an ask wait on the reader adds to that answer before it reads again. */
+export function meInboxAskEntry(ask: InboxRow): MeInboxEntry {
+  return { ask, moment: ask.created_at, node: { id: ask.id, kind: "ask" }, relations: [] };
+}
+
 /**
  * Edits the ask rows of every cached read of the one read: `edit` leaves each ask, or takes its
  * entry out with undefined. Each ask of `joined` - a row the write makes wait on the reader, whom
@@ -127,16 +133,7 @@ export function patchMeInboxAsks(
     const listed = new Set(
       (answer.entries ?? []).flatMap((entry) => (entry.ask ? [entry.ask.id] : []))
     );
-    const added = joined
-      .filter((ask) => !listed.has(ask.id))
-      .map(
-        (ask): MeInboxEntry => ({
-          ask,
-          moment: ask.created_at,
-          node: { id: ask.id, kind: "ask" },
-          relations: [],
-        })
-      );
+    const added = joined.filter((ask) => !listed.has(ask.id)).map(meInboxAskEntry);
     if (added.length === 0) return answer;
     return {
       ...answer,

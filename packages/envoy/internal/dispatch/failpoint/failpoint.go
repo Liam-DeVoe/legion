@@ -16,6 +16,10 @@ import (
 	"errors"
 	"slices"
 	"sync"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The writers a failure can be injected into, by the name the route arms them under: each writer
@@ -116,4 +120,24 @@ func Between(ctx context.Context, writer string) error {
 		return nil
 	}
 	return ErrInjected
+}
+
+// Planned is Between for a writer whose two writes are statements of one write phase, which runs
+// no Go between them: it decides, as the writer plans its write, whether the write fails - true
+// where the set ctx carries armed writer, which this disarms - and the writer then queues Queue
+// between the two statements, so the failure falls where Between would have answered it.
+func Planned(ctx context.Context, writer string) bool {
+	return Between(ctx, writer) != nil
+}
+
+// Queue queues on b, between a writer's store write and its projection write, the statement a
+// write that Planned armed fails at: it changes nothing, and its result answers ErrInjected, which
+// stops the write phase and is what it returns, so the transaction rolls back with both writes.
+// It queues nothing for a write that is not to fail, so a deployment's write phase is the one it
+// would be without the seam.
+func Queue(b *store.WriteBatch, fails bool) {
+	if !fails {
+		return
+	}
+	b.Queue("", `select 1`).Exec(func(pgconn.CommandTag) error { return ErrInjected })
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// A Keep acts on the decision's own node (dispatch://INFRA-1150 R2): it is two appends on the
+// A Keep acts on the decision's own node: it is two appends on the
 // decision, in one write - a kept_by tuple to the person who kept it and a kept_text_sum value
 // holding the decision's text sum at the Keep - and decision_keeps is their projection, written in
 // the same transaction. The text sum covers the decision's own words and leaves the readings it

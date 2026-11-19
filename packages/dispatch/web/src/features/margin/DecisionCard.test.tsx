@@ -5,9 +5,10 @@ import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
+import type { DecisionEntry } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionCard } from "./DecisionCard";
-import type { DecisionEntry, DecisionMarginItem } from "./useMarginItems";
+import type { DecisionMarginItem } from "./useMarginItems";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -88,6 +89,22 @@ test("a decision card names the decision, who made it, and opens the node that h
     expect(await screen.findByText(/A table keeps them through a restart\./)).toBeDefined();
     const link = screen.getByRole("link", { name: "Store notices in a table." });
     expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/choices-md#b-d-1");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A decision's name is the words of its first block, as the server's read of a decision and the
+// Decisions tab name it: a heading is named by its words, and the `###` that marks it a heading
+// in the decision's markdown is none of them.
+test("a decision that opens with a heading is named by the heading's words", () => {
+  const view = renderCard({ text: ":::decision{#d1}\n### H\n\nWhy.\n:::\n" });
+  try {
+    expect(screen.getByRole("article", { name: "Decision: H" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "H" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/artifacts/choices-md#b-d-1"
+    );
   } finally {
     view.unmount();
   }

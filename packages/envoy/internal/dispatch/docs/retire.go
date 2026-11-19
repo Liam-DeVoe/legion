@@ -36,8 +36,8 @@ var errRetirementReason = errors.New("docs: a retirement needs a reason")
 // its own broker after its commit.
 var retirementEvents = events.NewBroker()
 
-// RetireDocument retires the document artifactID, any document, inside tx (dispatch://INFRA-1150
-// R11): it sets artifacts.retired_at and clears the document's role, states the document's
+// RetireDocument retires the document artifactID, any document, inside tx: it sets
+// artifacts.retired_at and clears the document's role, states the document's
 // artifact node gone, appends one document.retired event naming the reason, and supersedes the
 // approval the document holds, which it reports. The document keeps its row, its versions, its
 // reviews, its comments, its block texts and its slug, so its versions stay readable and a
@@ -152,21 +152,19 @@ func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, se
 }
 
 // standingApproval is the approval of artifactID that stands, the newest review where it approves
-// the document's latest version, as the approval read answers one approved (api's
+// the document's latest version (newestApproval), as the approval read answers one approved (api's
 // applyApprovals), or nil.
 func standingApproval(ctx context.Context, tx pgx.Tx, artifactID string) (*model.SupersededApproval, error) {
-	review, err := NewestReview(ctx, tx, artifactID)
-	if err != nil || review == nil || review.State != "approved" {
+	approval, err := newestApproval(ctx, tx, artifactID)
+	if err != nil || approval == nil {
 		return nil, err
 	}
 	var latest int
 	if err := tx.QueryRow(ctx, `select coalesce(max(number), 0) from artifact_versions where artifact_id = $1`, artifactID).Scan(&latest); err != nil {
 		return nil, fmt.Errorf("read the latest version of the document to retire: %w", err)
 	}
-	if review.Version != latest {
+	if approval.ApprovedVersion != latest {
 		return nil, nil
 	}
-	return &model.SupersededApproval{
-		ReviewID: review.ID, ApprovedVersion: review.Version, ApprovedBy: review.Actor, Kind: review.Kind,
-	}, nil
+	return approval, nil
 }

@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { graphNode } from "../../__tests__/graph-fixture";
-import type { ArtifactBlock, DecisionLink, GraphReferences, IssueDecisions } from "../../api/types";
+import type {
+  ArtifactBlock,
+  DecisionEntry,
+  DecisionLink,
+  GraphReferences,
+  IssueDecisions,
+} from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import {
   changedSinceRead,
@@ -11,8 +17,6 @@ import {
   specBlockParts,
   staleSpecBlocks,
 } from "./spec-marks";
-
-type DecisionEntry = NonNullable<IssueDecisions["entries"]>[number];
 
 function block(id: string, type: string, from: number): ArtifactBlock {
   return {

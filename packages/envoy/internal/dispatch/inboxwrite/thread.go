@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // thread is the root of the thread a write is in, as the store addresses its node: an ask, a
@@ -31,12 +31,20 @@ const maxThreadDepth = 64
 // user_threads_message walks it. A message on the way whose row names no node - an older build's,
 // which states no tuple - is climbed by its in_reply_to, which is the old arm answering a row the
 // marker test passes until the backfill gives it its tuples.
+//
+// A write that plans its record before its own write phase has run (PlanRecord) has queued its
+// head pointer tuples and not written them, so no read finds them: it names the node they point
+// at instead (Write.RepliesTo), which is read as that tuple would be - a comment's thread is that
+// node, and a message's walk starts there, every step above it stored.
 func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
 	root := thread{kind: w.NodeKind, id: w.NodeID}
 	switch w.NodeKind {
 	case graphstore.KindAsk:
 		return root, nil
 	case graphstore.KindComment:
+		if w.parent != nil {
+			return *w.parent, nil
+		}
 		err := tx.QueryRow(ctx, `
 			select t.to_kind, t.to_id
 			from graph_tuples t
@@ -53,9 +61,13 @@ func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
 		}
 		return root, nil
 	}
+	start, depth := w.NodeID, 0
+	if w.parent != nil {
+		start, depth = w.parent.id, 1
+	}
 	if err := tx.QueryRow(ctx, `
 		with recursive walk(id, depth) as (
-			select $1::text, 0
+			select $1::text, $5::int
 			union all
 			select up.id, walk.depth + 1
 			from walk
@@ -78,7 +90,7 @@ func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
 			where walk.depth < $4 and up.id is not null
 		)
 		select id from walk order by depth desc limit 1
-	`, w.NodeID, graphstore.KindMessage, graphstore.TupleRepliesTo, maxThreadDepth).Scan(&root.id); err != nil {
+	`, start, graphstore.KindMessage, graphstore.TupleRepliesTo, maxThreadDepth, depth).Scan(&root.id); err != nil {
 		return thread{}, fmt.Errorf("read the thread message %s is written in: %w", w.NodeID, err)
 	}
 	return root, nil
@@ -92,7 +104,7 @@ func ThreadRoot(ctx context.Context, tx pgx.Tx, kind, id string) (string, string
 	return root.kind, root.id, err
 }
 
-// member is one person a thread holds: a row of user_threads it locked, a participant, or a
+// member is one person a thread holds: a row of user_threads it read, a participant, or a
 // person whose dismissal of it stands, or several of those.
 type member struct {
 	login string
@@ -105,30 +117,31 @@ type member struct {
 	dismissed bool
 }
 
-// lockThread is step 2 of Record, in one statement: every user_threads row of the thread, locked
-// `for no key update` in ascending login order in one pass, the one order every writer of a
-// thread's rows and the backfill take them in, and, beside them, the people whose participates_in
-// and whose dismissed into the thread's root stand now, each read the way CurrentOut reads a
-// relation (CurrentTupleRead), so a retraction takes a person out. A write into the thread by
-// anyone else waits at the owner row its writer took first, so nothing moves the thread between
-// the statement's snapshot and its locks. The pass takes every row of the thread, which holds the
-// row of each person the write's catch-up delivers to (owedBy) as well as every participant's,
+// readMembers is step 2 of Record's plan, in one statement: every user_threads row of the thread,
+// and, beside them, the people whose participates_in and whose dismissed into the thread's root
+// stand now, each read the way CurrentIn reads a relation (CurrentTupleRead), so a retraction
+// takes a person out. It locks nothing and runs in the write's read phase, under the owner lock
+// every writer of a thread's rows and the backfill take first (store.LockOwner), so nothing that
+// moves the thread's rows, their markers or its participation moves them between this read and
+// the write phase; the rows themselves are taken `for no key update` by the write phase's first
+// statement of the step (queueThreadLock), before the deliveries this read decides are appended,
+// and the dismissals the write ends are read again where they are ended (graphstore.QueueMarksEnded),
+// since the dismiss route takes no owner lock. The read takes every row of the thread, which holds
+// the row of each person the write's catch-up delivers to (owedBy) as well as every participant's,
 // since each of those is a row of the thread. A session or nobody keys no row, and neither does a
-// thread whose owner resolves to no project, so such a thread locks nothing and still answers its
+// thread whose owner resolves to no project, so such a thread holds no row and still answers its
 // participants. A row's marker is read to tell a marked row from one the marker test passes, and
 // no other column of a marked row is read.
-func lockThread(ctx context.Context, tx pgx.Tx, thread thread) ([]member, error) {
+func readMembers(ctx context.Context, tx pgx.Tx, thread thread) ([]member, error) {
 	current := func(kind string) string {
 		return graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
 			`t.to_kind = $2 and t.to_id = $3 and t.kind = `+kind+` and t.from_kind = $6`)
 	}
 	rows, err := tx.Query(ctx, `
-		with held as materialized (
+		with held as (
 			select u.login, u.marked_seq is not null as marked
 			from user_threads u
 			where u.thread_id = $1::uuid
-			order by u.login
-			for no key update
 		), taking_part as (
 			select current.from_id as login from (`+current("$4")+`) current where current.asserted
 		), standing_dismissals as (
@@ -146,7 +159,7 @@ func lockThread(ctx context.Context, tx pgx.Tx, thread thread) ([]member, error)
 		order by login
 	`, thread.id, thread.kind, thread.id, graphstore.TupleParticipatesIn, graphstore.TupleDismissed, graphstore.KindPerson)
 	if err != nil {
-		return nil, fmt.Errorf("lock the rows of thread %s/%s: %w", thread.kind, thread.id, err)
+		return nil, fmt.Errorf("read the members of thread %s/%s: %w", thread.kind, thread.id, err)
 	}
 	defer rows.Close()
 	var members []member
@@ -158,87 +171,107 @@ func lockThread(ctx context.Context, tx pgx.Tx, thread thread) ([]member, error)
 		members = append(members, held)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("lock the rows of thread %s/%s: %w", thread.kind, thread.id, err)
+		return nil, fmt.Errorf("read the members of thread %s/%s: %w", thread.kind, thread.id, err)
 	}
 	return members, nil
 }
 
-// moveRows is step 4 of Record over the rows logins name, every one of which lockThread took: a
-// write by somebody else, so each row is replied to - replied_at and last_reply_id name the newer
-// of the write and what the row named - its dismissal ends, and its version counts the write. The
-// statement is user_threads_record's own (20261105093501), so a row moves alike whichever of the
-// two writers moved it.
-func moveRows(ctx context.Context, tx pgx.Tx, thread thread, w Write, logins []string) error {
+// queueThreadLock is the write phase's lock of step 2: every user_threads row of the thread,
+// `for no key update` in ascending login order in one pass, the one order every writer of a
+// thread's rows and the backfill take them in, queued before the deliveries to the people holding
+// them, so the backfill, which marks a row under the same lock, marks it above each of them (D4's
+// lock rule), and the dismiss route, which takes the caller's rows first, ends no dismissal this
+// write does not see.
+func queueThreadLock(b *store.WriteBatch, thread thread) {
+	b.Queue(fmt.Sprintf("lock the rows of thread %s/%s", thread.kind, thread.id), `
+		select 1 from user_threads u
+		where u.thread_id = $1::uuid
+		order by u.login
+		for no key update
+	`, thread.id)
+}
+
+// queueMoveRows is step 4 of Record over the rows logins name, every one of which the thread's
+// lock took: a write by somebody else, so each row is replied to - replied_at and last_reply_id
+// name the newer of the write and what the row named - its dismissal ends, and its version counts
+// the write. The statement is user_threads_record's own (20261105093501), so a row moves alike
+// whichever of the two writers moved it.
+func queueMoveRows(b *store.WriteBatch, thread thread, w Write, logins []string) {
 	if len(logins) == 0 {
-		return nil
+		return
 	}
-	if _, err := tx.Exec(ctx, `
+	b.Queue(fmt.Sprintf("move the rows of thread %s/%s", thread.kind, thread.id), `
 		update user_threads
 		set replied_at = greatest(replied_at, $3),
 		    last_reply_id = case when replied_at is null or $3 >= replied_at then $4::uuid else last_reply_id end,
 		    dismissed_at = null,
 		    version = version + 1
 		where thread_id = $1::uuid and login = any($2::text[])
-	`, thread.id, logins, w.At, w.NodeID); err != nil {
-		return fmt.Errorf("move the rows of thread %s/%s: %w", thread.kind, thread.id, err)
+	`, thread.id, logins, w.At, w.NodeID)
+}
+
+// queueKeepRow is step 5 of Record: the row of login, w's writer, on the thread, its read mark
+// moved to the write's moment where it stood earlier, and, in the same statement, the
+// read_through tuple that mark stands for (graphstore.MarkArm), stated where the upsert moved the
+// mark - a row it began, or a mark that stood earlier - at the read mark the row stands at once
+// the upsert ran: a write at or before the mark its writer's row holds leaves the row's mark, and
+// its tuple, as they were. One statement reads the upsert's answer in SQL, so nothing is read
+// back in Go between the two. A row this write begins is marked from its insert: marked_version
+// 0, since no write by somebody else has reached it, and marked_seq the newest position of the log
+// this statement sees, which is above every tuple an earlier write into the thread appended - each
+// of those committed before this write took the owner lock - and below every one a later write
+// appends. A row that was there keeps the marker it holds, or holds none, which is a row the
+// backfill takes; as the trigger's own insert, it touches neither version nor the dismissal. The
+// conflict arm that moves no mark still locks the row, as the trigger's upsert did. The writer's
+// node is written earlier in the write phase, with their participation (step 1).
+func queueKeepRow(b *store.WriteBatch, thread thread, w Write, login string, event int64) error {
+	mark, params, err := graphstore.MarkArm(8, "kept", graphstore.TupleReadThrough, thread.kind, thread.id, w.Who, event)
+	if err != nil {
+		return fmt.Errorf("record %s's read mark on %s/%s: %w", login, thread.kind, thread.id, err)
 	}
+	b.Queue(fmt.Sprintf("keep the row of %s on thread %s/%s", login, thread.kind, thread.id), `
+		with kept as (
+			insert into user_threads (login, thread_id, kind, project_key, issue_key, artifact_id, read_through, marked_version, marked_seq)
+			values ($1, $2::uuid, $3, $4, $5, case when $5::text is null then $6::uuid end, $7, 0,
+			        (select coalesce(max(seq), 0) from graph_tuples))
+			on conflict (login, thread_id) do update
+				set read_through = excluded.read_through
+				where user_threads.read_through < excluded.read_through
+			returning login, read_through as at
+		),
+		`+mark+`
+		select 1
+	`, append([]any{login, thread.id, thread.kind, w.Project, w.IssueKey, w.ArtifactID, w.At}, params...)...)
 	return nil
 }
 
-// keepRow is step 5 of Record: the row of login, w's writer, on the thread, its read mark moved to
-// the write's moment where it stood earlier. It answers the read mark the row stands at once the
-// upsert ran, which is the moment Record's read_through tuple states, and whether the upsert moved
-// it - a row it began, or a mark that stood earlier - since a read mark is stated only where it
-// moved: a write at or before the mark its writer's row holds leaves the row's mark, and its
-// tuple, as they were. A row this write begins is marked from its insert: marked_version 0,
-// since no write by somebody else has reached it, and marked_seq the newest position of the log
-// this transaction sees, which is above every tuple an earlier write into the thread appended -
-// each of those committed before this write took the owner row - and below every one a later
-// write appends. A row that was there keeps the marker it holds, or holds none, which is a row
-// the backfill takes; as the trigger's own insert, it touches neither version nor the dismissal.
-// The conflict arm that moves no mark still locks the row, as the trigger's upsert did.
-func keepRow(ctx context.Context, tx pgx.Tx, thread thread, w Write, login string) (time.Time, bool, error) {
-	var readThrough time.Time
-	err := tx.QueryRow(ctx, `
-		insert into user_threads (login, thread_id, kind, project_key, issue_key, artifact_id, read_through, marked_version, marked_seq)
-		values ($1, $2::uuid, $3, $4, $5, case when $5::text is null then $6::uuid end, $7, 0,
-		        (select coalesce(max(seq), 0) from graph_tuples))
-		on conflict (login, thread_id) do update
-			set read_through = excluded.read_through
-			where user_threads.read_through < excluded.read_through
-		returning read_through
-	`, login, thread.id, thread.kind, w.Project, w.IssueKey, w.ArtifactID, w.At).Scan(&readThrough)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return time.Time{}, false, nil
-	}
+// readAgentDismissals is the logins whose Agent dismissal of root, the message a session's reply
+// climbed to, stands, read in the write's read phase: the dismissals the clear of that reply ends
+// (queueAgentDismissalsClear).
+func readAgentDismissals(ctx context.Context, tx pgx.Tx, root string) ([]string, error) {
+	rows, err := tx.Query(ctx, `select login from user_agent_thread_dismissed where message_id = $1::uuid order by login`, root)
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("keep the row of %s on thread %s/%s: %w", login, thread.kind, thread.id, err)
+		return nil, fmt.Errorf("read the dismissals of message %s: %w", root, err)
 	}
-	return readThrough, true, nil
+	cleared, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the dismissals of message %s: %w", root, err)
+	}
+	return cleared, nil
 }
 
-// clearAgentDismissals takes the Agent dismissals of root, the message a session's reply climbed
-// to, and answers the login of each person whose dismissal it ended. It is the clear of migration
-// 20261105093507 in two statements, as that trigger takes it: the root `for key share`, which
-// orders the clear against the dismiss route's `for update` of the same root
-// (inboxDismissLockAgentRoots, api/inbox_dismiss.go) whichever takes it first, then the delete,
-// whose statement starts once the lock is held and so sees a mark that route committed.
-func clearAgentDismissals(ctx context.Context, tx pgx.Tx, root string) ([]string, error) {
-	if _, err := tx.Exec(ctx, `select 1 from messages where id = $1::uuid for key share`, root); err != nil {
-		return nil, fmt.Errorf("take the root message %s: %w", root, err)
+// queueAgentDismissalsClear queues the clear of migration 20261105093507 for the dismissals of
+// root the write's read phase found (readAgentDismissals), in two statements, as that trigger takes
+// it: the root `for key share`, which orders the clear against the dismiss route's `for update` of
+// the same root (inboxDismissLockAgentRoots, api/inbox_dismiss.go) whichever takes it first, then
+// the delete of those logins' rows. A dismissal that route commits once the read phase has read is
+// a later act than this reply, and stands: the delete names the logins whose dismissal ends, each
+// of whose dismissed tuple the write retracts (Record).
+func queueAgentDismissalsClear(b *store.WriteBatch, root string, logins []string) {
+	b.Queue(fmt.Sprintf("take the root message %s", root), `select 1 from messages where id = $1::uuid for key share`, root)
+	if len(logins) == 0 {
+		return
 	}
-	rows, err := tx.Query(ctx, `delete from user_agent_thread_dismissed where message_id = $1::uuid returning login`, root)
-	if err != nil {
-		return nil, fmt.Errorf("clear the dismissals of message %s: %w", root, err)
-	}
-	defer rows.Close()
-	var cleared []string
-	for rows.Next() {
-		var login string
-		if err := rows.Scan(&login); err != nil {
-			return nil, fmt.Errorf("read a dismissal of message %s: %w", root, err)
-		}
-		cleared = append(cleared, login)
-	}
-	return cleared, rows.Err()
+	b.Queue(fmt.Sprintf("clear the dismissals of message %s", root),
+		`delete from user_agent_thread_dismissed where message_id = $1::uuid and login = any($2::text[])`, root, logins)
 }

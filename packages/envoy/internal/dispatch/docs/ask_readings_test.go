@@ -122,9 +122,10 @@ func TestAReadingInACopyOfAnAnsweredAskIsKept(t *testing.T) {
 }
 
 // requireCopyKeptWithReading holds document, a copy, to its settlement having kept its ask block
-// ship as a copy of source: no ask of its own, the block showing the source's answer and naming
-// it as an agent reads it (TextWithAnswers) while no attribute of the block in the document holds
-// either (dispatch://INFRA-1150 R3), its reading r1 still in it, and no block.invalid written.
+// ship as a copy of source: no ask of its own, the block's entry in the asks member an agent reads
+// beside the text (TextWithAsks) showing the source's answer and naming it, while no attribute of
+// the block in the document holds either, its reading r1 still in it,
+// and no block.invalid written.
 func requireCopyKeptWithReading(t *testing.T, service *Service, document, source, what string) {
 	t.Helper()
 	if count := asksOn(t, service, document); count != 0 {
@@ -137,12 +138,13 @@ func requireCopyKeptWithReading(t *testing.T, service *Service, document, source
 	if state, copied := ask.Attrs["state"], ask.Attrs["copied_from"]; state != nil || copied != nil {
 		t.Errorf("%s holds state %v copied from %v in the document, want neither: the copy's source's ask holds them", what, state, copied)
 	}
-	shown, err := pmdoc.Parse(copyAsAgentReadsIt(t, service, document))
+	text, err := service.TextWithAsks(context.Background(), document, false)
 	if err != nil {
-		t.Fatalf("parse %s as an agent reads it: %v", what, err)
+		t.Fatalf("read %s as an agent reads it: %v", what, err)
 	}
-	if shownAsk := firstAsk(shown); shownAsk.Attrs["state"] != asks.StateAnswered || shownAsk.Attrs["copied_from"] != source {
-		t.Errorf("%s shows an agent state %v copied from %v, want the answer of its source %s", what, shownAsk.Attrs["state"], shownAsk.Attrs["copied_from"], source)
+	requireNoAskServerAttributes(t, document, text.Markdown)
+	if len(text.Asks) != 1 || text.Asks[0].BlockID != "ship" || text.Asks[0].State != asks.StateAnswered || text.Asks[0].CopiedFrom != source {
+		t.Errorf("%s shows an agent the asks %s, want ship answered as its source %s is, naming it", what, askLines(text.Asks), source)
 	}
 	if readings := closingReadings(ask); !slices.Equal(readings, []askReading{{ask: "ship", reading: "r1", kind: "reading"}}) {
 		t.Errorf("%s closes with %+v, want its reading r1 kept", what, readings)

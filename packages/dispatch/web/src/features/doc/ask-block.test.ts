@@ -10,7 +10,7 @@ import {
   readingsInOpenAsks,
   readingsInOpenAsksPlugin,
 } from "./ask-block";
-import { askBlockFacts, renderTypedBlock } from "./typed-block-drawing";
+import { askBlockFacts, recordsAnswerState, renderTypedBlock } from "./typed-block-drawing";
 
 const schema = new Schema({
   nodes: {
@@ -412,4 +412,25 @@ test("the editor refuses a reading in an ask the server reads open, and takes on
     withReadingIn(0).setMeta("y-sync$", { isChangeOrigin: true })
   );
   expect(synced.state.doc.child(0).childCount).toBe(2);
+});
+
+test("a version records an ask block's answer state on its opening line, whichever way it writes the id", () => {
+  // `q1` fits the `#id` shortcut; `q 1` does not, so its opener writes `id="q 1"`, as the renderer
+  // writes such an id (`typedBlockIdAttribute`).
+  const version = [
+    ':::ask{#q1 state="answered"}',
+    "Ship it?",
+    ":::",
+    "",
+    ':::ask{id="q 1" state="answered"}',
+    "Ship it now?",
+    ":::",
+    "",
+    ":::ask{#q2}",
+    "Ship it later?",
+    ":::",
+  ].join("\n");
+  expect(recordsAnswerState(version, "q1")).toBe(true);
+  expect(recordsAnswerState(version, "q 1")).toBe(true);
+  expect(recordsAnswerState(version, "q2")).toBe(false);
 });

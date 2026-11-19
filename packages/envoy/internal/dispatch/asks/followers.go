@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Queryer is the pgx surface shared by *pgxpool.Pool and pgx.Tx for reads.
@@ -22,43 +23,92 @@ type Queryer interface {
 }
 
 // Followed is what one follow wrote: whether the follower row is new, and what the follow holds
-// for the event its caller appends after it (graphstore.Uncaused): the session's node where this
-// follow made it, with that node's two base attributes, and the ask node's followed_by to the
-// session where this follow marked the follower row. A caller that follows before its event exists
-// passes graphstore.NoEvent to Follow and hands Uncaused to graphstore.Caused once it holds the
-// event, in the same transaction, as a comment's node learns the event that stored it. Only a node
-// this follow made at the sentinel moves, so a session another write recorded keeps that write's
-// cause. A caller that appends no event hands Uncaused to graphstore.Caused with
-// graphstore.NoEvent all the same, which appends them at the sentinel, where the node row stands:
-// dropping it would leave a node row and a marked follower row no appended fact describes.
+// for the event its caller appends after it (graphstore.Uncaused): the session's node, and the
+// ask node's followed_by to the session where this follow marked the follower row. A caller that
+// follows before its event exists passes graphstore.NoEvent and hands Uncaused to
+// graphstore.QueueCaused once it has queued the event, in the same transaction, as a comment's
+// node learns the event that stored it. Only a node this follow made moves, so a session another
+// write recorded keeps that write's cause. A caller that appends no event hands Uncaused to
+// graphstore.QueueCaused with graphstore.NoEvent all the same, which appends its facts at the
+// sentinel, where the node row stands: dropping it would leave a node row and a marked follower
+// row no appended fact describes.
 type Followed struct {
 	// Added is whether the session did not follow the ask before; following twice changes
 	// nothing.
 	Added bool
-	// Uncaused holds the session's node, made by this follow at the cause it was given, the
-	// base attributes the follow's own statement did not state, and the followed_by the follow
-	// stated. It holds none where the store held the node already and the row was marked
-	// already, and graphstore.Caused moves nothing then.
+	// Uncaused holds the session's node, which this follow makes at the sentinel where the store
+	// does not hold it, and whose base attributes the follow's own statement does not state, and
+	// the followed_by the follow stated. It is the zero write for a follow given its cause, whose
+	// statements state them, and for one that found the node there and the row marked already.
 	Uncaused graphstore.Uncaused
 }
 
-// Follow records that sessionID follows askID, in the caller's transaction, and writes the
-// session's node there. An ask a session opened or follows is one of the writes R14 records a
-// session from, so a follower that never wrote a comment and was never reached by a delivery is
-// still a node of the store, and the ask's followed_by edge to it has a far end every read
+// Follow records that sessionID follows askID, in the caller's transaction, at once, and writes
+// the session's node there. An ask a session opened or follows is one of the writes R14 records
+// a session from, so a follower that never wrote a comment and was never reached by a delivery
+// is still a node of the store, and the ask's followed_by edge to it has a far end every read
 // resolves: refs' loadStoreNodes answers a session from graph_nodes alone. Every server path that
-// adds a follower reaches this insert: FollowAuthor at each site that writes an ask or a reply to
-// one, and PUT /api/v1/asks/{id}/followers/{session_id}.
+// adds a follower reaches this insert: FollowAuthor, PlanFollowAuthor and PlanFollowNewAsk at each
+// site that writes an ask or a reply to one, and PUT /api/v1/asks/{id}/followers/{session_id}.
 //
 // The node is made by who, the actor of the write, at at, and caused by event. A caller whose
 // event is appended after the follow passes graphstore.NoEvent and moves the node onto that event
-// once it is appended (graphstore.Caused over Followed.Uncaused). The node is written whether or
-// not the follower row is new, because a row written before the store existed carries no node,
-// and the first follow of this build that names the session is then the first write that
-// records it in the store.
+// once it is appended (graphstore.QueueCaused over Followed.Uncaused). The node is written whether
+// or not the follower row is new, because a row written before the store existed carries no node,
+// and the first follow of this build that names the session is then the first write that records
+// it in the store.
+//
+// The follower row's marker and the followed_by it records are queueFollow's: Follow runs that
+// statement as a batch of its own and states the relation from what the statement answers, the
+// row it marked and its `since` - held in Followed for a caller whose event comes later, and
+// otherwise appended at once, in a batch of its own that runs only when the row was marked. A
+// transaction that queues its writes plans the follow in its read phase instead
+// (PlanFollowAuthor, or PlanFollowNewAsk for an ask it creates), whose plan decides the same
+// from the row it reads, or for a new ask from what its caller knows.
+func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.Actor, at time.Time, event int64) (Followed, error) {
+	var followed Followed
+	var result followResult
+	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		var err error
+		followed.Uncaused, err = queueFollow(b, askID, sessionID, who, at, nil, event, func(got followResult) error {
+			result = got
+			return nil
+		})
+		return err
+	})
+	if err != nil {
+		return Followed{}, err
+	}
+	followed.Added = result.added
+	if !result.marked {
+		return followed, nil
+	}
+	relation := followedBy(askID, sessionID, true, who, result.since, event)
+	if event == graphstore.NoEvent {
+		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
+		return followed, nil
+	}
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{relation}); err != nil {
+		return Followed{}, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
+	}
+	return followed, nil
+}
+
+// followResult is what the follow's statement answers once it has run: whether the follower row
+// is new, whether the statement marked it, and the row's since where it did.
+type followResult struct {
+	added, marked bool
+	since         time.Time
+}
+
+// queueFollow queues the follow's statement on b and answers the node it holds for the follow's
+// cause; read is handed what the statement answers (followResult) once it has run, and its error
+// stops the batch there. since is the since the statement writes on a new follower row, where
+// its caller dates the row itself (PlanFollowNewAsk), and nil where the column's default, the
+// transaction's now(), gives it; a row that stands keeps its own either way.
 //
 // The follower row and the node are one statement: the store's node arm (graphstore.WriteArms)
-// spliced into the follower insert, so a follow costs the round trip it cost before the store
+// spliced into the follower insert, so a follow costs the statement it cost before the store
 // existed. The node arm upserts `do nothing`, which locks no row that is already there, and
 // which of the two arms Postgres runs first moves no lock of the store's order. A session id past
 // the store's address bound is no node the store can key, and the follow then writes the follower
@@ -73,71 +123,63 @@ type Followed struct {
 // - and the session is a node the store can key. A follow that marks the row states followed_by,
 // dated by the row's own `since`, as the old arm dates the edge; one that finds the row marked
 // already states nothing, so a session replying on an ask it follows appends no relation at all.
-// That relation is stated after the row: its time is the row's, which the insert gives it. A
-// follow given its cause appends it at once, in a statement of its own that runs only when the row
-// was marked; one whose cause comes later holds it in Uncaused with the node's base attributes.
+// That relation is stated after the row: its time is the row's, which the insert gives it.
 //
-// A follow whose cause comes later states no base attribute in that statement and answers the
-// node's two for the caller to append under its event (graphstore.WriteArmsUncaused,
-// graphstore.BaseAttributeFacts): no tuple may be updated to learn its cause, and
-// graphstore.Caused moves the node row onto that event, so stating them here would leave the
-// row naming one event and its own base tuples naming another.
-func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.Actor, at time.Time, event int64) (Followed, error) {
+// A follow whose cause comes later states no base attribute in that statement and holds the
+// node for the caller to cause under its event (graphstore.WriteArmsUncaused): no tuple may be
+// updated to learn its cause, and graphstore.QueueCaused moves the node row onto that event, so
+// stating them here would leave the row naming one event and its own base tuples naming another.
+func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, at time.Time, since *time.Time, event int64, read func(followResult) error) (graphstore.Uncaused, error) {
 	var nodes []graphstore.Node
 	fits := sessionID != "" && graphstore.AddressFits(sessionID)
 	if fits {
 		nodes = []graphstore.Node{graphstore.SessionNode(sessionID, who, at, event)}
 	}
-	writeArms := graphstore.WriteArms
+	var (
+		arms   string
+		params []any
+		held   graphstore.Uncaused
+		err    error
+	)
 	if event == graphstore.NoEvent {
-		writeArms = graphstore.WriteArmsUncaused
+		arms, params, held, err = graphstore.WriteArmsUncaused(6, nodes, nil, nil)
+	} else {
+		arms, params, err = graphstore.WriteArms(6, nodes, nil, nil)
 	}
-	arms, params, err := writeArms(5, nodes, nil, nil)
 	if err != nil {
-		return Followed{}, fmt.Errorf("follow ask %q as %q: %w", askID, sessionID, err)
+		return graphstore.Uncaused{}, fmt.Errorf("follow ask %q as %q: %w", askID, sessionID, err)
 	}
-	written := `0`
 	if arms != "" {
-		arms, written = ",\n"+arms, `(select count(*) from graph_nodes_written)`
+		arms = ",\n" + arms
 	}
-	var added, marked bool
-	var since *time.Time
-	var made int
-	if err := tx.QueryRow(ctx, `
+	b.Queue(fmt.Sprintf("follow ask %q as %q", askID, sessionID), `
 		with followed as (
-			insert into ask_followers (ask_id, session_id, node_kind, node_address)
+			insert into ask_followers (ask_id, session_id, node_kind, node_address, since)
 			values ($1, $2,
 				(select node.kind from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text),
-				(select node.id from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text))
+				(select node.id from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text),
+				coalesce($5::timestamptz, now()))
 			on conflict (ask_id, session_id) do update
 				set node_kind = excluded.node_kind, node_address = excluded.node_address
 				where ask_followers.node_kind is null and excluded.node_kind is not null
 			returning xmax = 0 as added, node_kind is not null as marked, since
 		)`+arms+`
 		select coalesce((select added from followed), false), coalesce((select marked from followed), false),
-			(select since from followed), `+written,
-		append([]any{askID, sessionID, graphstore.KindAsk, fits}, params...)...).Scan(&added, &marked, &since, &made); err != nil {
-		return Followed{}, fmt.Errorf("follow ask %q as %q: %w", askID, sessionID, err)
-	}
-	followed := Followed{Added: added}
-	if made == 1 {
-		followed.Uncaused.Nodes = nodes
-		if event == graphstore.NoEvent {
-			followed.Uncaused.Tuples = graphstore.BaseAttributeFacts(nodes)
+			(select since from followed)`,
+		append([]any{askID, sessionID, graphstore.KindAsk, fits, since}, params...)...).QueryRow(func(row pgx.Row) error {
+		var result followResult
+		var stored *time.Time
+		if err := row.Scan(&result.added, &result.marked, &stored); err != nil {
+			return err
 		}
-	}
-	if !marked || since == nil {
-		return followed, nil
-	}
-	relation := followedBy(askID, sessionID, true, who, *since, event)
-	if event == graphstore.NoEvent {
-		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
-		return followed, nil
-	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{relation}); err != nil {
-		return Followed{}, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
-	}
-	return followed, nil
+		if stored != nil {
+			result.since = *stored
+		} else {
+			result.marked = false
+		}
+		return read(result)
+	})
+	return held, nil
 }
 
 // followedBy is the ask node's followed_by to a session, asserted or retracted.
@@ -149,9 +191,9 @@ func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time
 	}
 }
 
-// FollowAuthor follows askID for a session author and does nothing for a human, so every insert
-// site can call it with the actor it already has. The session's node is made by the author at at
-// and caused by event, as Follow makes it.
+// FollowAuthor follows askID for a session author, at once, and does nothing for a human, so
+// every insert site can call it with the actor it already has. The session's node is made by the
+// author at at and caused by event, as Follow makes it.
 func FollowAuthor(ctx context.Context, tx pgx.Tx, askID string, author model.Actor, at time.Time, event int64) (Followed, error) {
 	if author.Kind != "session" || author.ID == "" {
 		return Followed{}, nil
@@ -159,9 +201,127 @@ func FollowAuthor(ctx context.Context, tx pgx.Tx, askID string, author model.Act
 	return Follow(ctx, tx, askID, author.ID, author, at, event)
 }
 
+// PlannedFollow is the follow of an ask by a session author as PlanFollowAuthor or
+// PlanFollowNewAsk planned it in the read phase of a write that queues its statements, decided
+// before anything is written, which Queue queues in that write's write phase. The zero
+// PlannedFollow, a human author's, queues nothing.
+type PlannedFollow struct {
+	askID, sessionID string
+	who              model.Actor
+	at               time.Time
+	// Added is whether the session did not follow the ask before.
+	Added bool
+	// marks says the follow's statement marks the follower row, and since is the row's since
+	// then: the row's own for a row the release before wrote with no marker, the transaction's
+	// now() for a new row of an ask that stood before, which its column's default gives it, and
+	// for an ask this transaction creates the time its caller passed, which the statement writes.
+	marks bool
+	since time.Time
+	// dated says the follow's statement writes since on the new row itself rather than leave it
+	// to the column's default: the follow of an ask this transaction creates (PlanFollowNewAsk).
+	dated bool
+}
+
+// PlanFollowNewAsk plans the follow of askID, an ask this transaction creates, by a session
+// author, and plans nothing for a human. It reads nothing: an ask this transaction creates has no
+// follower row yet, so the follow adds one, and the row is marked exactly where the session is a
+// node the store can key, since every writer of an ask queues the ask's node before its row
+// (graphstore.AskFacts, written first) and the caller queues the follow after both, so the
+// follow's statement finds that node. The one value a read would supply is the new row's since,
+// which dates the followed_by the follow states: the follow's statement writes it as at, the time
+// the caller passes - each caller's ask's created_at, the transaction's now(), which is what the
+// column's default would give it - so the relation's date is known here. Queue holds the
+// statement to this plan as it holds PlanFollowAuthor's: a row it did not mark, or marked at
+// another since, stops the write phase.
+func PlanFollowNewAsk(askID string, author model.Actor, at time.Time) PlannedFollow {
+	if author.Kind != "session" || author.ID == "" {
+		return PlannedFollow{}
+	}
+	return PlannedFollow{
+		askID: askID, sessionID: author.ID, who: author, at: at, Added: true,
+		marks: graphstore.AddressFits(author.ID), since: at, dated: true,
+	}
+}
+
+// PlanFollowAuthor plans the follow of askID, an ask that stood before this transaction, by a
+// session author, as Follow writes it, for a transaction that queues its writes, and plans nothing
+// for a human. It reads, through q, under the owner lock the caller holds over the ask
+// (store.LockOwner), under which no other transaction writes its followers, whether the ask's node
+// stands, the session's follower row - whether it is there, whether it is marked, and its since -
+// and the transaction's now(). It decides from them what queueFollow's statement will do to the
+// row: a new row, or one the release before wrote with no marker, is marked where the ask's node
+// is there to name and the session is a node the store can key, and the follow then states
+// followed_by dated by the row's since; a row marked already is left as it stands, and the follow
+// states nothing of it. Queue holds the statement to the plan: a row it did not mark as the plan
+// read, or marked at another since, stops the write phase, since the fact the plan states would
+// not be that row's. An ask this transaction creates is planned by PlanFollowNewAsk, with no read.
+func PlanFollowAuthor(ctx context.Context, q RowQueryer, askID string, author model.Actor, at time.Time) (PlannedFollow, error) {
+	if author.Kind != "session" || author.ID == "" {
+		return PlannedFollow{}, nil
+	}
+	plan := PlannedFollow{askID: askID, sessionID: author.ID, who: author, at: at}
+	var named, held, marked bool
+	var since *time.Time
+	var now time.Time
+	if err := q.QueryRow(ctx, `
+		select exists (select 1 from graph_nodes node where node.kind = $3 and node.id = $1::uuid::text),
+		       f.ask_id is not null, coalesce(f.node_kind is not null, false), f.since, now()
+		from (select 1) one
+		left join ask_followers f on f.ask_id = $1::uuid and f.session_id = $2
+	`, askID, author.ID, graphstore.KindAsk).Scan(&named, &held, &marked, &since, &now); err != nil {
+		return PlannedFollow{}, fmt.Errorf("read the follow of ask %q by %q: %w", askID, author.ID, err)
+	}
+	plan.Added = !held
+	if !graphstore.AddressFits(author.ID) || !named {
+		return plan, nil
+	}
+	switch {
+	case !held:
+		plan.marks, plan.since = true, now
+	case !marked && since != nil:
+		plan.marks, plan.since = true, *since
+	}
+	return plan, nil
+}
+
+// Queue queues the planned follow on b where its write makes it: the follower row, marked as the
+// plan decided, with the session's node in the same statement (queueFollow), and the ask node's
+// followed_by to the session where the statement marks the row, dated by the row's since - held
+// in the answer for the caller's graphstore.QueueCaused where event is graphstore.NoEvent, and
+// otherwise queued right after the statement under event, graphstore.LatestEvent for an event the
+// write phase appended just before it. It answers what it holds for that cause.
+func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncaused, error) {
+	if p.sessionID == "" {
+		return graphstore.Uncaused{}, nil
+	}
+	var since *time.Time
+	if p.dated {
+		since = &p.since
+	}
+	held, err := queueFollow(b, p.askID, p.sessionID, p.who, p.at, since, event, func(got followResult) error {
+		if got.marked != p.marks || got.marked && !got.since.Equal(p.since) {
+			return fmt.Errorf("follow ask %q as %q: the statement marked the follower row %t at %s, the plan read %t at %s",
+				p.askID, p.sessionID, got.marked, got.since, p.marks, p.since)
+		}
+		return nil
+	})
+	if err != nil || !p.marks {
+		return held, err
+	}
+	relation := followedBy(p.askID, p.sessionID, true, p.who, p.since, event)
+	if event == graphstore.NoEvent {
+		held.Tuples = append(held.Tuples, graphstore.UncausedTuple{Tuple: relation})
+		return held, nil
+	}
+	if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation}); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("state that %q follows ask %q: %w", p.sessionID, p.askID, err)
+	}
+	return held, nil
+}
+
 // Unfollowed is what one unfollow wrote: whether a follower row went, and the ask node's
 // retraction of followed_by to the session, held for the event its caller appends after it
-// (graphstore.Caused), where the row that went was marked.
+// (graphstore.QueueCaused), where the row that went was marked.
 type Unfollowed struct {
 	Removed  bool
 	Uncaused graphstore.Uncaused

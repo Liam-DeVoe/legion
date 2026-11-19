@@ -1,5 +1,6 @@
 import type {
   AskThread,
+  CredentialPendingRow,
   InboxRow,
   IssueAskRow,
   MeInboxAgent,
@@ -84,6 +85,16 @@ export function inboxEntryRow(entry: MeInboxEntry): InboxEntryRow {
     return { kind: "thread", thread: entry.thread as MyReplyThreadRow };
   if (entry.agent !== undefined) return { kind: "agent", agent: entry.agent as MeInboxAgentRow };
   return { kind: "none" };
+}
+
+/** Whether a row of `GET /api/v1/credential-requests?approver=me` still waits on somebody's
+ *  decision: a pending row, which a broker older than the expired rows sends with no `state` at
+ *  all. An expired row - its deadline passed before anybody decided it, so the broker refuses
+ *  every decision of it - stays listed until somebody dismisses it, but nothing waits on the
+ *  viewer there: no `Needs you` count holds it, on the page or in `dispatch inbox`, and it does
+ *  not keep the Inbox from saying that nothing needs them. */
+export function awaitsDecision(row: Pick<CredentialPendingRow, "state">): boolean {
+  return row.state !== "expired";
 }
 
 /** The states `GET /api/v1/me/replies`'s `?state=` reads the caller's threads in: `unread`, the

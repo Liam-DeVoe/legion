@@ -30,7 +30,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, 'v1', '[]')`, document); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	if _, _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1 and dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1 and dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -124,7 +124,7 @@ func owedDocument(t *testing.T, database *store.Store, slug string) string {
 	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, 'v1', '[]')`, document); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	if _, _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1", "https://dispatch.example"), nil); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -308,7 +308,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 		}
 	}
 	for name, clear := range map[string]func() error{
-		"ClearExcerpts": func() error { return ClearExcerpts(ctx, database.Pool, document) },
+		"ClearExcerpts": func() error { return clearExcerptsOnPool(ctx, database.Pool, document) },
 		"a direct update": func() error {
 			_, err := database.Pool.Exec(ctx, `update refs set excerpt_version = null where from_id = $1`, document)
 			return err
@@ -326,7 +326,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 	}
 }
 
-// A version write names the targets whose excerpt it moved (ReplaceDocumentCounted): a version
+// A version write names the targets whose excerpt it moved (RecordExcerpts): a version
 // that rewrites the block a kept mention sits in moves that mention's excerpt and no other's, and
 // one that writes the same excerpts again moves nothing.
 func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
@@ -338,7 +338,7 @@ func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
 	}
 	createReferenceProject(t, tx, "CORE")
 	document, _ := createReferenceArtifact(t, tx, "", "CORE", "design")
-	if _, _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1, later dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1, later dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -378,4 +378,22 @@ func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
 	if moved := record(4, reblocked); !slices.Equal(moved, []Target{core2}) {
 		t.Fatalf("moved by a mention's new block = %#v, want CORE-2 alone", moved)
 	}
+}
+
+// clearExcerptsOnPool marks fromID's excerpts owed from a transaction of its own, as a caller
+// holding no write phase would: ClearExcerpts puts its statement on a batch, which a transaction
+// sends.
+func clearExcerptsOnPool(ctx context.Context, pool *store.Pool, fromID string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		ClearExcerpts(b, fromID)
+		return nil
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

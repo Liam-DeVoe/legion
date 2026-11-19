@@ -102,7 +102,9 @@ func CommentPointerFacts(tuples []Tuple, id string, pointers CommentPointers, au
 // (api.commentStored), the seed and the backfill of the comments written before the store
 // existed all write. None of them states the node's base attributes: Write states them for a
 // node its insert makes, at the node's own time, writer and cause, its project and parties
-// among them.
+// among them. None of them owns the comment's state or visibility either, so the node restates
+// the comment (Node.Restates): written again, it keeps the state and the visibility the store
+// holds, unless the comment was gone, when it comes back live.
 //
 // The tuples are appended rather than answered on their own, so a writer stating a batch of
 // comments grows one slice rather than making one per comment.
@@ -110,7 +112,7 @@ func CommentFacts(tuples []Tuple, id string, author model.Actor, at time.Time, e
 	node := Node{
 		Kind: KindComment, ID: id, Supertag: KindComment,
 		Visibility: VisibilityProject, State: StateLive, Project: project, Parties: parties,
-		MadeAt: at, MadeBy: author, SourceEvent: event,
+		MadeAt: at, MadeBy: author, SourceEvent: event, Restates: true,
 	}
 	for _, relation := range [...]struct{ kind, address string }{{TupleAnchoredTo, anchor}, {TupleOwnedBy, owner}} {
 		if relation.address == "" {

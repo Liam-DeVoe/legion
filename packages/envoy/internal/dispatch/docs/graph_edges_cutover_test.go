@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // graphEdgesArm is one arm of graph_edges as this test reads it back: the relation the arm reads
@@ -51,25 +52,25 @@ type graphEdgesArm struct {
 	text     string
 }
 
-// movedArmsDeletedBy is the child that deletes the four arms over the kinds dispatch://INFRA-1149
-// moved, once the store answers those kinds everywhere.
-const movedArmsDeletedBy = "dispatch://INFRA-1253"
+// movedArmsDeletedBy is the child that deletes the four arms over the kinds the child that built
+// the node store moved, once the store answers those kinds everywhere.
+const movedArmsDeletedBy = "the child that moves issues and their documents"
 
-// askArmsDeletedBy is the child whose own pull request deletes the three arms over the kinds
-// dispatch://INFRA-1150 moved - an ask's anchored_to and owned_by over asks, and followed_by over
-// ask_followers - with the tuple arm's joins to those two tables, and the thirteen arms over the
-// kinds dispatch://INFRA-1152 moved: the root, dispatch://INFRA-1098.
-const askArmsDeletedBy = "dispatch://INFRA-1098"
+// askArmsDeletedBy is the pull request that deletes the three arms over the kinds the child that
+// moves the asks and their followers moved - an ask's anchored_to and owned_by over asks, and
+// followed_by over ask_followers - with the tuple arm's joins to those two tables, and the thirteen
+// arms over the kinds the child that moves the inbox, the messages and the read state moved.
+const askArmsDeletedBy = "the root's own pull request"
 
 // The children that moved the arms the root deletes, as each such arm's fate names its mover, which
 // is what tells the root's two sets apart.
 const (
-	askArmsMovedBy   = "dispatch://INFRA-1150"
-	inboxArmsMovedBy = "dispatch://INFRA-1152"
+	askArmsMovedBy   = "the child that moves the asks and their followers"
+	inboxArmsMovedBy = "the child that moves the inbox, the messages and the read state"
 )
 
-// inboxArmFate is the fate of an arm over a kind dispatch://INFRA-1152 moved: what the store
-// answers, the backfill of that child that marks the rest, and the root that deletes the arm.
+// inboxArmFate is the fate of an arm over a kind inboxArmsMovedBy moved: what the store answers,
+// the backfill of that child that marks the rest, and the root that deletes the arm.
 func inboxArmFate(what string) string {
 	return what + ", " + inboxArmsMovedBy + "'s backfill marks the rest, and " + askArmsDeletedBy + " deletes this arm"
 }
@@ -80,13 +81,13 @@ func inboxArmFate(what string) string {
 // twice. The fate of each is printed with the list, so a reader sees which arms are left and who
 // takes each.
 var graphEdgesArms = []graphEdgesArm{
-	{relation: "refs", stated: "citation", fate: "a mention of any node; the store answers an item's citation for a row that holds tuples_stored, dispatch://INFRA-1152 backfills an item's other rows, and a document's row is dispatch://INFRA-1253's"},
-	{relation: "issues", fate: "child_of; dispatch://INFRA-1156 makes an issue's relations typed edges"},
-	{relation: "issue_links", fate: "blocked_by; dispatch://INFRA-1156 makes an issue's relations typed edges"},
+	{relation: "refs", stated: "citation", fate: "a mention of any node; the store answers an item's citation for a row that holds tuples_stored, " + inboxArmsMovedBy + " backfills an item's other rows, and a document's row is " + movedArmsDeletedBy + "'s"},
+	{relation: "issues", fate: "child_of; the change that makes an issue's relations typed edges takes it"},
+	{relation: "issue_links", fate: "blocked_by; the change that makes an issue's relations typed edges takes it"},
 	{relation: "artifacts", fate: "attached_to; no child has moved it"},
-	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node (" + askArmsMovedBy + "), and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment", renders: "anchored_to", fate: "a comment's anchored_to; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node (" + askArmsMovedBy + "), and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment", renders: "owned_by", fate: "a comment's owned_by; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment_pointer", renders: "replies_to", to: "comment",
 		fate: inboxArmFate("a reply's replies_to its thread; the store answers it for a comments row that holds tuples_stored")},
@@ -96,7 +97,7 @@ var graphEdgesArms = []graphEdgesArm{
 		fate: inboxArmFate("a reply's replies_to an ask; the store answers it for a comments row that holds tuples_stored")},
 	{relation: "messages", projects: "message", renders: "replies_to", to: "message",
 		fate: inboxArmFate("a message's replies_to; the store answers it for a messages row that carries its node")},
-	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node (" + askArmsMovedBy + "), and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "components", fate: "a component's part_of; no child has moved it"},
 	{relation: "component_depends", fate: "depends_on; no child has moved it"},
 	{relation: "issue_component_members", fate: "affects; no child has moved it"},
@@ -170,9 +171,9 @@ const previousGraphEdges = "previous_graph_edges"
 // previousGraphEdgesMigration is the migration that last stated graph_edges before the store's
 // children moved any arm: every arm it states reads its own table, the three over an ask's
 // relations, the two over messages, the five over what a comment answers and the seven over an
-// item's blocks and citations among them, which dispatch://INFRA-1150 and dispatch://INFRA-1152
-// moved since (migrations 20261116094101, 20261116114517, 20261116124448 and 20261116140008), so
-// the whole view is held to it over every row the store and the tables hold between them.
+// item's blocks and citations among them, which askArmsMovedBy and inboxArmsMovedBy moved since
+// (migrations 20261116094101, 20261116114517, 20261116124448 and 20261116140008), so the whole
+// view is held to it over every row the store and the tables hold between them.
 const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments_answers.up.sql"
 
 // The view answers each row exactly once, from the arm the row itself decides, and reads what the
@@ -182,10 +183,10 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // The arm list is read back out of the catalogue, split on its top-level UNION ALL and compared
 // with the one declared above, so no arm over a source column can be added anywhere in this branch
 // without this test naming it, and the list is printed with the child that deletes each arm that
-// remains. Each of the seventeen arms over a moved kind - the four over the kinds
-// dispatch://INFRA-1149 moved and the thirteen over the kinds dispatch://INFRA-1152 moved - is held
-// to its per-row test - `node_kind is null`, or `not tuples_stored` over a comment's pointers - and
-// to the child that deletes it, the refs arm, which the store has begun to answer (stated), to its
+// remains. Each of the seventeen arms over a moved kind - the four over the kinds the child that
+// built the node store moved and the thirteen over the kinds inboxArmsMovedBy moved - is held to
+// its per-row test - `node_kind is null`, or `not tuples_stored` over a comment's pointers - and to
+// the child that deletes it, the refs arm, which the store has begun to answer (stated), to its
 // `not tuples_stored`, and each arm over the tuples to its join to each projection table it
 // declares; no arm may read a table that decides the switch by kind.
 //
@@ -201,18 +202,18 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // a tuple or a block reference points at and at one id nothing points at.
 //
 // The readings, in order. Before the backfill, one document's rows, the comments written before
-// the store and the comments, the message and the ask written before dispatch://INFRA-1152 with
-// their blocks, links and citations name no marker, beside documents the index wrote and the
-// messages, comments and ask this build wrote, which the store's arms answer throughout, and each
-// of the seventeen arms answers rows of its own. After the backfill every row is marked, the
-// seventeen arms answer nothing and the tuple arm answers every row of their kinds, and the whole
-// view is the reading before it. A comment and a block reference then written as the previous
-// release writes them, naming no node, come from their old arms. Then the rollback: a stamped block
-// row, a stamped block reference and a stamped comment deleted with no retraction, as a build of
-// the previous release deletes them, answer from no arm; a second stamped block row and block
-// reference deleted and written again naming no node answer once each, from the old arm. The store
-// census then reports a difference for each of the three deleted rows, which is what the release
-// that deletes an old arm reads first.
+// the store and the comments, the message and the ask written before inboxArmsMovedBy with their
+// blocks, links and citations name no marker, beside documents the index wrote and the messages,
+// comments and ask this build wrote, which the store's arms answer throughout, and each of the
+// seventeen arms answers rows of its own. After the backfill every row is marked, the seventeen
+// arms answer nothing and the tuple arm answers every row of their kinds, and the whole view is the
+// reading before it. A comment and a block reference then written as the previous release writes
+// them, naming no node, come from their old arms. Then the rollback: a stamped block row, a stamped
+// block reference and a stamped comment deleted with no retraction, as a build of the previous
+// release deletes them, answer from no arm; a second stamped block row and block reference deleted
+// and written again naming no node answer once each, from the old arm. The store census then
+// reports a difference for each of the three deleted rows, which is what the release that deletes
+// an old arm reads first.
 //
 // Last, the announcement: a build of the previous release announced itself naming only its
 // commit, and once every live process serves this build its announcement lists the kinds the
@@ -246,8 +247,8 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	}
 	projected := before.view
 	projectedCounts := before.counts
-	// Each of the arms over a moved kind answers rows of its own before the backfill, so finding it empty after
-	// it is the per-row test at work and not an arm with nothing to say.
+	// Each of the arms over a moved kind answers rows of its own before the backfill, so finding
+	// it empty after it is the per-row test at work and not an arm with nothing to say.
 	for index, arm := range moved {
 		t.Logf("arm %d (%s) answers %d rows before the backfill", arm.place, arm.relation, len(before.arms[index]))
 		if len(before.arms[index]) == 0 {
@@ -341,11 +342,11 @@ var switchedByKind = regexp.MustCompile(`graph_store_cutover`)
 // movedArms holds each arm over a moved kind to the per-row test over its own table and to the
 // child that deletes it, and answers, with their text for reading on their own, the want arms
 // deletedBy deletes that movedBy moved, or that deletedBy deletes alone where movedBy is empty:
-// the four over the kinds dispatch://INFRA-1149 moved (movedArmsDeletedBy), the three over the
-// kinds dispatch://INFRA-1150 moved (askArmsMovedBy) and the thirteen over the kinds
-// dispatch://INFRA-1152 moved (inboxArmsMovedBy), the root deleting both of the last two sets. An
-// arm's per-row test is `node_kind is null`, or for an arm whose projection marks its rows another
-// way the test of that marker (statedRowTests): a comments row's tuples_stored.
+// the four over the kinds the child that built the node store moved (movedArmsDeletedBy), the
+// three over the kinds askArmsMovedBy moved and the thirteen over the kinds inboxArmsMovedBy
+// moved, the root deleting both of the last two sets. An arm's per-row test is `node_kind is
+// null`, or for an arm whose projection marks its rows another way the test of that marker
+// (statedRowTests): a comments row's tuples_stored.
 func movedArms(t *testing.T, read []graphEdgesArm, deletedBy, movedBy string, want int) []movedArm {
 	t.Helper()
 	for index, arm := range read {
@@ -1467,7 +1468,7 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	writeCommentAsThisBuild(t, database, graphstore.CommentPointers{AskID: ask}, "a comment on the ask")
 	writeCommentAsThisBuild(t, database, graphstore.CommentPointers{AskID: ask, RepliesToBlock: "ask/" + ask + "#b1"},
 		"a comment on the ask's question")
-	// The same kinds as a build before dispatch://INFRA-1152 writes them, one row per arm of that
+	// The same kinds as a build before inboxArmsMovedBy writes them, one row per arm of that
 	// child's thirteen, which name no marker of its own until its backfill marks them.
 	writeItemsAsAnOlderBuild(t, database, thread, reply, ask, root)
 	var blocks, links, citations int
@@ -1489,15 +1490,15 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	return graphEdgeFixture{target: target, plan: plan, anchored: anchored}
 }
 
-// writeItemsAsAnOlderBuild writes, as a build before dispatch://INFRA-1152 writes them, a comment
-// that replies to thread, answers reply and names reply's first block, a comment on ask naming its
+// writeItemsAsAnOlderBuild writes, as a build before inboxArmsMovedBy writes them, a comment that
+// replies to thread, answers reply and names reply's first block, a comment on ask naming its
 // question, a message replying to root and naming its first block, and an ask, each on CORE-1 with
 // one body block that links to CORE-2 and, but the second comment, its citation of CORE-2: rows
 // that name no node and hold no tuples_stored, a comment naming no node as one written before the
-// store does, which dispatch://INFRA-1149's backfill gives it. Each item's block index is settled
-// as that build's index settles it, so this build's tick reads nothing owed and leaves the rows as
-// they were written. Between them the rows give each of that child's thirteen arms a row of its own
-// and the refs arm a row out of each item sort.
+// store does, which the backfill of the child that built the node store gives it. Each item's
+// block index is settled as that build's index settles it, so this build's tick reads nothing
+// owed and leaves the rows as they were written. Between them the rows give each of that child's
+// thirteen arms a row of its own and the refs arm a row out of each item sort.
 func writeItemsAsAnOlderBuild(t *testing.T, database *store.Store, thread, reply, ask, root string) {
 	t.Helper()
 	ctx := context.Background()
@@ -1579,28 +1580,41 @@ const graphEdgeItemCitation = ", after dispatch://CORE-2"
 const graphEdgeServer = "https://dispatch.example"
 
 // indexItemAsThisBuild indexes the body of a comment or a message in its write's transaction, as
-// this build's writers do (api's commentStored, indexMessage): its blocks, their links and the
-// item's citations (refs.ReplaceCountedItem), then what that states in the store under the
-// write's event, the sentinel here.
+// this build's writers do, from one reading of the body: its blocks and their links
+// (refs.IndexItem) and the item's citations (planReplacement, refs.PlanItemReplace), both dated
+// by the item's own moment, then what that states in the store under the write's event, the
+// sentinel here.
 func indexItemAsThisBuild(t *testing.T, tx pgx.Tx, kind refs.ItemKind, id, body string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	_, indexed, err := refs.ReplaceCountedItem(ctx, tx, kind, id, body, graphEdgeServer, at)
+	located := refs.NewReader(ctx, tx, string(kind), id, graphEdgeServer).Mentions(body)
+	_, indexed, err := refs.IndexItem(ctx, tx, kind, id, body, at, located, nil)
 	if err != nil {
-		t.Fatalf("index the %s %q: %v", kind, body, err)
+		t.Fatalf("index the blocks of the %s %q: %v", kind, body, err)
 	}
+	replacement, err := planReplacement(ctx, tx, string(kind), id, text.Refs(located), &at, nil)
+	if err != nil {
+		t.Fatalf("plan the references of the %s %q: %v", kind, body, err)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		return nil
+	}); err != nil {
+		t.Fatalf("write the references of the %s %q: %v", kind, body, err)
+	}
+	indexed.Tuples = append(indexed.Tuples, replacement.Cited().Tuples...)
 	if err := graphstore.Caused(ctx, tx, indexed, graphstore.NoEvent); err != nil {
 		t.Fatalf("state the index of the %s %q: %v", kind, body, err)
 	}
 }
 
 // writeMessageAsThisBuild writes a message on CORE-1, answering inReplyTo and the block node
-// repliesToBlock where those name one, as this build's message writer writes it (api's
-// writeMessageNode): the message's node and what it states of its pointers and of who wrote it
-// (graphstore.MessageFacts, graphstore.AuthorFacts), then the row naming that node in its own
-// insert, all dated by the transaction's one time, which is what the row's created_at defaults
-// to. No event of this fixture records the write, so its facts carry the sentinel, as the seed's
-// do. It answers the message's id.
+// repliesToBlock where those name one, as this build's message writer writes it: the message's
+// node and what it states of its pointers and of who wrote it (graphstore.MessageFacts,
+// graphstore.AuthorFacts), then the row naming that node in its own insert, all dated by the
+// transaction's one time, which is what the row's created_at defaults to. No event of this
+// fixture records the write, so its facts carry the sentinel, as the seed's do. It answers the
+// message's id.
 func writeMessageAsThisBuild(t *testing.T, database *store.Store, inReplyTo, repliesToBlock, body string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -1651,12 +1665,12 @@ func writeMessageAsThisBuild(t *testing.T, database *store.Store, inReplyTo, rep
 }
 
 // writeCommentAsThisBuild writes a comment on CORE-1 holding pointers, as this build's comment
-// writer writes it (api's commentStoreWrite): the comment's node, and what it states of the
-// artifacts it names, of what it answers and of who wrote it (graphstore.CommentFacts,
-// graphstore.CommentPointerFacts, graphstore.AuthorFacts), then the row naming that node and
-// holding tuples_stored in its own insert, all dated by the one clock read the row's created_at
-// takes. No event of this fixture records the write, so its facts carry the sentinel, as the
-// seed's do. It answers the comment's id.
+// writer writes it: the comment's node, and what it states of the artifacts it names, of what it
+// answers and of who wrote it (graphstore.CommentFacts, graphstore.CommentPointerFacts,
+// graphstore.AuthorFacts), then the row naming that node and holding tuples_stored in its own
+// insert, all dated by the one clock read the row's created_at takes. No event of this fixture
+// records the write, so its facts carry the sentinel, as the seed's do. It answers the comment's
+// id.
 func writeCommentAsThisBuild(t *testing.T, database *store.Store, pointers graphstore.CommentPointers, body string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -1710,8 +1724,8 @@ func writeCommentAsThisBuild(t *testing.T, database *store.Store, pointers graph
 // first, in the issue's project, with what it states of who asked it (graphstore.AskFacts; an ask
 // on an issue with no anchor relates to no document), then its row, naming that node and holding
 // tuples_stored_at at its created_at, dated by the transaction's one time, and then its question's
-// citations and its parts, through one reader (refs.ReplaceCounted, refs.IndexAskPartsCounted),
-// stated in the store under the sentinel. It answers the ask's id.
+// citations and its parts, through one reader (planAskReferences, planAskPartsCounted), stated in
+// the store under the sentinel. It answers the ask's id.
 func writeAskAsThisBuild(t *testing.T, database *store.Store, question string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -1743,13 +1757,19 @@ func writeAskAsThisBuild(t *testing.T, database *store.Store, question string) s
 		t.Fatalf("write the ask %q: %v", question, err)
 	}
 	reader := refs.NewReader(ctx, tx, "ask", id, graphEdgeServer)
-	changes, cited, err := refs.ReplaceCounted(ctx, tx, reader, question)
+	changes, writeRefs, cited, err := planAskReferences(ctx, tx, reader, id, question, nil)
 	if err != nil {
 		t.Fatalf("index the question of the ask %q: %v", question, err)
 	}
-	_, indexed, err := refs.IndexAskPartsCounted(ctx, tx, reader, model.Ask{ID: id, Question: question}, at, changes)
+	if err := store.RunWrite(ctx, tx, writeRefs); err != nil {
+		t.Fatalf("write the question's references of the ask %q: %v", question, err)
+	}
+	_, writeParts, indexed, err := planAskPartsCounted(ctx, tx, reader, model.Ask{ID: id, Question: question}, at, changes, nil)
 	if err != nil {
 		t.Fatalf("index the parts of the ask %q: %v", question, err)
+	}
+	if err := store.RunWrite(ctx, tx, writeParts); err != nil {
+		t.Fatalf("write the parts of the ask %q: %v", question, err)
 	}
 	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
 	if err := graphstore.Caused(ctx, tx, indexed, graphstore.NoEvent); err != nil {
@@ -1813,57 +1833,8 @@ func scanGraphEdgeFixture(t *testing.T, database *store.Store, what, statement s
 	return id
 }
 
-// requireTheRestoredBlockIsLive fails unless the block blockID of the document refKey, which a
-// version dropped and a later one brought back, is live now with gone before it in its state's
-// history, and unless its document_blocks row names that node.
-func requireTheRestoredBlockIsLive(t *testing.T, database *store.Store, refKey, blockID string) {
-	t.Helper()
-	ctx := context.Background()
-	address := refKey + "#" + blockID
-	node, held, err := graphstore.ReadNode(ctx, database.Pool, refs.BlockNodeKind, address)
-	if err != nil || !held {
-		t.Fatalf("read the node of the restored block %s: held %t, %v", address, held, err)
-	}
-	if node.State != graphstore.StateLive {
-		t.Errorf("the restored block %s is %s, want %s", address, node.State, graphstore.StateLive)
-	}
-	history, err := graphstore.History(ctx, database.Pool, refs.BlockNodeKind, address, graphstore.AttributeState)
-	if err != nil {
-		t.Fatalf("read the state history of %s: %v", address, err)
-	}
-	states := make([]string, 0, len(history))
-	for _, stated := range history {
-		states = append(states, stated.ToID)
-	}
-	gone := slices.Index(states, graphstore.StateGone)
-	if gone < 0 || states[len(states)-1] != graphstore.StateLive {
-		t.Errorf("the restored block %s states %v, want gone once a version dropped it and live last, once one brought it back",
-			address, states)
-	}
-	var nodeKind, nodeAddress *string
-	if err := database.Pool.QueryRow(ctx, `
-		select d.node_kind, d.node_address from document_blocks d join artifacts a on a.id = d.artifact_id
-		where a.ref_key = $1 and d.block_id = $2
-	`, refKey, blockID).Scan(&nodeKind, &nodeAddress); err != nil {
-		t.Fatalf("read the row of the restored block %s: %v", address, err)
-	}
-	if nodeKind == nil || nodeAddress == nil || *nodeKind != refs.BlockNodeKind || *nodeAddress != address {
-		t.Errorf("the row of the restored block %s names node %s/%s, want %s/%s", address,
-			deref(nodeKind), deref(nodeAddress), refs.BlockNodeKind, address)
-	}
-	t.Logf("the restored block %s is %s, its state history %v, and its row names it", address, node.State, states)
-}
-
-// deref is the text a nullable column holds, or null where it holds none.
-func deref(text *string) string {
-	if text == nil {
-		return "null"
-	}
-	return *text
-}
-
 // The three arms over an ask's relations answer each row once, from the arm the row itself
-// decides (dispatch://INFRA-1150 R3): the asks arms of anchored_to and owned_by and the
+// decides: the asks arms of anchored_to and owned_by and the
 // ask_followers arm of followed_by answer only the rows whose node_kind is null, and the tuple arm
 // answers those relations from an ask's node only while the asks row, or the ask_followers row of
 // that ask and that session, carries the node.
@@ -1872,8 +1843,8 @@ func deref(text *string) string {
 // every reading reads the whole view, the view of the release before the store (the same
 // previousGraphEdges) over the same rows, each of the seven moved arms and the store's arms on
 // their own, and holds the whole view to the previous one row for row, each row of a moved kind to
-// exactly one arm, decided by its own projection row, and refs.BacklinkCounts to what the previous
-// release's count statement answers over that release's view
+// exactly one arm, decided by its own projection row, and refs.BacklinkCounts, for every node
+// kind, to what the previous release's count statement answers over that release's view
 // (requireBacklinkCountsAsThePreviousRelease).
 //
 // The readings, in order. Before the backfill, three asks and two followers written as a build
@@ -1881,12 +1852,11 @@ func deref(text *string) string {
 // answers rows of its own, while an ask block this release's writer opens (createAskBlock), whose
 // row and whose author's follower row it marks, comes from the tuple arm alone. After the backfill
 // (`backfill-graph-store`) every row is marked: the three old arms answer nothing, the tuple arm
-// answers every row, and the whole view and refs.BacklinkCounts are what they were before it. An
-// ask and a follower then written as the previous release writes them, naming no node, come from
-// their old arms alone. Then the rollback, as a build of the previous release does it, retracting
-// nothing in the store: a marked follower row and a marked ask (with its follower row) deleted
-// answer from no arm, and a marked follower row deleted and written again naming no node answers
-// once, from the old arm.
+// answers every row, and the whole view is what it was before it. An ask and a follower then
+// written as the previous release writes them, naming no node, come from their old arms alone.
+// Then the rollback, as a build of the previous release does it, retracting nothing in the store:
+// a marked follower row and a marked ask (with its follower row) deleted answer from no arm, and a
+// marked follower row deleted and written again naming no node answers once, from the old arm.
 //
 // Each case fails when its arm's marker test is taken out of the view: an old arm without its
 // `node_kind is null` answers a marked row beside the tuple arm, and a tuple arm without its join
@@ -2053,10 +2023,10 @@ func seedAskArmsFixture(t *testing.T, database *store.Store, service *Service) a
 	if err != nil {
 		t.Fatalf("open the ask block: %v", err)
 	}
-	if err := graphstore.Caused(ctx, tx, opened.node, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, tx, *opened.node, graphstore.NoEvent); err != nil {
 		t.Fatalf("cause the ask block's node: %v", err)
 	}
-	if err := graphstore.Caused(ctx, tx, opened.followed.Uncaused, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, tx, *opened.followed, graphstore.NoEvent); err != nil {
 		t.Fatalf("cause the ask block's follow: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -2122,4 +2092,53 @@ func rollBackAsksAsThePreviousRelease(t *testing.T, database *store.Store, fixtu
 		{graphstore.KindAsk, fixture.created, graphstore.TupleFollowedBy, graphstore.KindSession, createdAskSession},
 	}
 	return deleted, rewritten
+}
+
+// requireTheRestoredBlockIsLive fails unless the block blockID of the document refKey, which a
+// version dropped and a later one brought back, is live now with gone before it in its state's
+// history, and unless its document_blocks row names that node.
+func requireTheRestoredBlockIsLive(t *testing.T, database *store.Store, refKey, blockID string) {
+	t.Helper()
+	ctx := context.Background()
+	address := refKey + "#" + blockID
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, refs.BlockNodeKind, address)
+	if err != nil || !held {
+		t.Fatalf("read the node of the restored block %s: held %t, %v", address, held, err)
+	}
+	if node.State != graphstore.StateLive {
+		t.Errorf("the restored block %s is %s, want %s", address, node.State, graphstore.StateLive)
+	}
+	history, err := graphstore.History(ctx, database.Pool, refs.BlockNodeKind, address, graphstore.AttributeState)
+	if err != nil {
+		t.Fatalf("read the state history of %s: %v", address, err)
+	}
+	states := make([]string, 0, len(history))
+	for _, stated := range history {
+		states = append(states, stated.ToID)
+	}
+	gone := slices.Index(states, graphstore.StateGone)
+	if gone < 0 || states[len(states)-1] != graphstore.StateLive {
+		t.Errorf("the restored block %s states %v, want gone once a version dropped it and live last, once one brought it back",
+			address, states)
+	}
+	var nodeKind, nodeAddress *string
+	if err := database.Pool.QueryRow(ctx, `
+		select d.node_kind, d.node_address from document_blocks d join artifacts a on a.id = d.artifact_id
+		where a.ref_key = $1 and d.block_id = $2
+	`, refKey, blockID).Scan(&nodeKind, &nodeAddress); err != nil {
+		t.Fatalf("read the row of the restored block %s: %v", address, err)
+	}
+	if nodeKind == nil || nodeAddress == nil || *nodeKind != refs.BlockNodeKind || *nodeAddress != address {
+		t.Errorf("the row of the restored block %s names node %s/%s, want %s/%s", address,
+			deref(nodeKind), deref(nodeAddress), refs.BlockNodeKind, address)
+	}
+	t.Logf("the restored block %s is %s, its state history %v, and its row names it", address, node.State, states)
+}
+
+// deref is the text a nullable column holds, or null where it holds none.
+func deref(text *string) string {
+	if text == nil {
+		return "null"
+	}
+	return *text
 }

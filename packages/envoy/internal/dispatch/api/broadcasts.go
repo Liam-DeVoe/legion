@@ -18,11 +18,13 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -445,6 +447,11 @@ func excludedSummary(excluded []broadcastExclusion) string {
 // events its messages owe the stream. Nothing is delivered here: a listener call never runs with a
 // transaction open (envoy_resolve.go). excluded is what the send left out, which the recovery point
 // keeps for a repeat's answer.
+//
+// The transaction runs in two phases (INFRA-636). The read phase holds no transaction id: it draws
+// the broadcast's id and its created_at, the transaction's now() its column defaults to, and plans
+// every recipient's page (planBroadcastPages) and every copy (planBroadcastCopy). The write phase
+// is one batch: the broadcast's row, its recovery point, the pages, and then each copy in turn.
 func (s *server) writeBroadcast(
 	ctx context.Context,
 	actor model.Actor,
@@ -462,139 +469,62 @@ func (s *server) writeBroadcast(
 	}
 	defer tx.Rollback(ctx)
 	sent := broadcastRead{broadcast: broadcast{Author: actor, Body: body, Delivery: delivery}}
-	if err := tx.QueryRow(ctx, `
-		insert into broadcasts (author, body, delivery)
-		values ($1, $2, $3)
-		returning id::text, created_at
-	`, author, body, delivery).Scan(&sent.ID, &sent.CreatedAt); err != nil {
-		return broadcastRead{}, nil, err
-	}
-	// The recovery point right after its broadcast: a repeat that took the key over meanwhile
-	// refuses it here, and this transaction rolls back before it writes a message.
-	if err := bindRequestKeyRecovery(ctx, tx, broadcastRecovery{BroadcastID: sent.ID, Excluded: excluded}); err != nil {
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&sent.ID, &sent.CreatedAt); err != nil {
 		return broadcastRead{}, nil, err
 	}
 	// Every copy hangs from its recipient's page (graphstore.MessageFacts), and a node write locks
 	// a page the store holds already and waits on one another transaction is making: two
 	// broadcasts to [A, B] and [B, A] that each took their recipients' pages copy by copy would
 	// each hold one page the other waits for, and Postgres would end one of them. So every
-	// recipient's page is resolved here and written in one node write, which takes the pages in
-	// ascending (kind, id) as every node write does (graphstore.WriteUncaused), before any copy's
-	// node; each copy then hangs from its page without writing it again (writeMessageNode). A
-	// page that write makes is caused by the event of the first copy that hangs from it, as it was
-	// when that copy's own write made it.
-	pages, pageNodes, err := resolveRecipientPages(ctx, tx, recipients, actor, sent.CreatedAt)
+	// recipient's page is resolved here and written in ascending id, before any copy's node; each
+	// copy then hangs from its page without writing it again (planMessageNode). A page that write
+	// makes is caused by the event of the first copy that hangs from it, as it was when that copy's
+	// own write made it.
+	pages, planned, err := planBroadcastPages(ctx, tx, recipients, actor, sent.CreatedAt)
 	if err != nil {
 		return broadcastRead{}, nil, err
 	}
-	pagesWritten, err := graphstore.WriteUncaused(ctx, tx, pageNodes, nil)
-	if err != nil {
-		return broadcastRead{}, nil, fmt.Errorf("write the pages of broadcast %s's recipients: %w", sent.ID, err)
-	}
-	owedPages := writesByPage(pagesWritten)
-	events := make([]model.Event, 0, len(recipients))
-	sent.Recipients = make([]broadcastRecipient, 0, len(recipients))
+	copies := make([]broadcastCopy, len(recipients))
 	for position, recipient := range recipients {
-		target := "session:" + recipient.sessionID
-		// Each copy's node goes in before its row, between the sender and the recipient, the
-		// parties of the thread the copy opens, on the recipient's page and with its target and
-		// its broadcast stated as facts that wait for its event; the row names the node in its
-		// insert.
-		messageID := uuid.NewString()
-		stored, err := writeMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, Target: target, BroadcastID: sent.ID}, actor, pages)
-		if err != nil {
+		if copies[position], err = s.planBroadcastCopy(ctx, tx, sent, actor, body, recipient, pages); err != nil {
 			return broadcastRead{}, nil, err
 		}
-		nodeKind, nodeAddress := stored.rowNode()
-		message, err := scanMessage(tx.QueryRow(ctx, `
-			insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position, created_at, node_kind, node_address)
-			values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9)
-			returning `+messageColumns+`
-		`, messageID, author, body, target, sent.ID, position, stored.at, nodeKind, nodeAddress))
-		if err != nil {
-			return broadcastRead{}, nil, err
+	}
+	events := make([]model.Event, len(copies))
+	attempts := make([]model.MessageDelivery, len(copies))
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("", `
+			insert into broadcasts (id, author, body, delivery, created_at)
+			values ($1::uuid, $2, $3, $4, $5)
+		`, sent.ID, author, body, delivery, sent.CreatedAt)
+		// The recovery point right after its broadcast: a repeat that took the key over meanwhile
+		// refuses it here, and this transaction rolls back before it writes a message.
+		if err := queueRequestKeyRecovery(ctx, b, broadcastRecovery{BroadcastID: sent.ID, Excluded: excluded}); err != nil {
+			return err
 		}
-		// Each copy is a direct message: its blocks are indexed, and it writes no mention.
-		_, indexed, err := s.indexMessage(ctx, tx, message)
-		if err != nil {
-			return broadcastRead{}, nil, err
+		if err := planned.queue(b); err != nil {
+			return err
 		}
-		// A broadcast message is a thread root that answers nothing, so its event says what
-		// every other root's does; the broadcast it belongs to is read from the message row.
-		// thread_logins is the copy's author - the sender, the one person whose Inbox an Agent
-		// row of this conversation can sit in once the session replies (api/thread_logins.go,
-		// directThreadLogins) - as every other direct message's names its root author: a reader
-		// that refetches an Inbox only for the logins an event names would otherwise refetch
-		// every viewer's on every broadcast.
-		payload := messageReplyThread{}.payload(message, model.ReferenceChanges{})
-		payload.ThreadLogins, err = messageThreadLogins(ctx, tx, message)
-		if err != nil {
-			return broadcastRead{}, nil, err
-		}
-		event, err := s.appendEvent(ctx, tx, messageEvent(message, "message.created", actor, payload))
-		if err != nil {
-			return broadcastRead{}, nil, err
-		}
-		if err := graphstore.Caused(ctx, tx, stored.written, event.ID); err != nil {
-			return broadcastRead{}, nil, err
-		}
-		if held, owed := owedPages[pages[target]]; owed {
-			if err := graphstore.Caused(ctx, tx, held, event.ID); err != nil {
-				return broadcastRead{}, nil, err
-			}
-			delete(owedPages, pages[target])
-		}
-		// What the copy's body is in the store, under the same event (indexMessage).
-		if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
-			return broadcastRead{}, nil, err
-		}
-		if stored.projected {
-			if err := graphstore.Authored(ctx, tx, graphstore.KindMessage, message.ID, actor, message.CreatedAt, event.ID); err != nil {
-				return broadcastRead{}, nil, err
-			}
-			// The sender takes part in the thread the copy opens (inboxwrite.Record): a copy is
-			// on no issue, so its thread keeps no user_threads row and names no one more.
-			if err := inboxwrite.Record(ctx, tx, stored.inbox(message, actor), event.ID); err != nil {
-				return broadcastRead{}, nil, err
+		for position := range copies {
+			if err := s.queueBroadcastCopy(b, copies[position], position, sent, author, delivery, actor, planned,
+				&events[position], &attempts[position]); err != nil {
+				return err
 			}
 		}
-		events = append(events, event)
-		// The recipient's first delivery attempt is opened here, unclaimed, rather than by the
-		// worker that will send it. A recipient then always has an attempt to show - "Sending"
-		// while a worker holds it, and, if the process dies before the send, a lapsed pending
-		// row the delivery sweep (delivery_sweep.go) and the ordinary same-mode retry both resume
-		// under its own idempotency key. Opening it later left a stranded recipient with no
-		// attempt at all, which only a delivery in a DIFFERENT mode could move, and that is a
-		// genuine second frame where the first landed. claimed_at stays null, so
-		// recordPendingMessageDelivery reads the row as free and resumes it instead of opening a
-		// second attempt beside it. The author asked for it, and the resume keeps that.
-		// The attempt's node goes in before its row, and it and what the row holds are caused by
-		// the copy's message.created event, appended above, as the copy's own node is.
-		key := graphstore.MessageAttempt(message.ID, 1)
-		nodeKind, nodeAddress, opened, err := graphstore.AttemptOpened(ctx, tx, key, actor)
-		if err != nil {
-			return broadcastRead{}, nil, err
-		}
-		attempt, err := scanMessageDelivery(tx.QueryRow(ctx, `
-			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by, node_kind, node_address)
-			values ($1, 1, $2, $3, 'pending', $4, $5, $6)
-			returning `+messageDeliveryColumns, message.ID, delivery, recipient.sessionID, author, nodeKind, nodeAddress))
-		if err != nil {
-			return broadcastRead{}, nil, err
-		}
-		if opened, err = graphstore.AttemptStated(ctx, tx, opened, actor, key); err != nil {
-			return broadcastRead{}, nil, err
-		}
-		if err := graphstore.Caused(ctx, tx, opened, event.ID); err != nil {
-			return broadcastRead{}, nil, err
-		}
-		message.Deliveries = []model.MessageDelivery{attempt}
-		sent.Recipients = append(sent.Recipients, broadcastRecipient{
-			SessionID: recipient.sessionID, Message: newShapedMessage(message, false), Replies: []shapedMessage{},
-		})
+		return nil
+	}); err != nil {
+		return broadcastRead{}, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return broadcastRead{}, nil, err
+	}
+	sent.Recipients = make([]broadcastRecipient, 0, len(copies))
+	for position, copied := range copies {
+		message := copied.message
+		message.Deliveries = []model.MessageDelivery{attempts[position]}
+		sent.Recipients = append(sent.Recipients, broadcastRecipient{
+			SessionID: copied.sessionID, Message: newShapedMessage(message, false), Replies: []shapedMessage{},
+		})
 	}
 	// One text, however many recipients: every copy holds the body the broadcast was sent with,
 	// and all of them share the one row keying on the text alone gives them.
@@ -602,52 +532,208 @@ func (s *server) writeBroadcast(
 	return sent, events, nil
 }
 
-// resolveRecipientPages is the page each recipient's copy hangs from, by the copy's target: the
-// page the store gives the agent its session is (graphstore.AgentPage), or "" where it gives none.
-// Beside it is the node of each such page once, as a copy's own write would make it
-// (graphstore.PageNode): made by the sender at the broadcast's own time, the transaction's, which
-// every copy and its node carry too. Two sessions that claimed one role hang from that role's page,
-// which is one node, and one node write names a node once.
-func resolveRecipientPages(ctx context.Context, tx pgx.Tx, recipients []broadcastTarget, actor model.Actor, at time.Time) (map[string]string, []graphstore.Node, error) {
-	pages := make(map[string]string, len(recipients))
-	nodes := make([]graphstore.Node, 0, len(recipients))
+// broadcastCopy is one recipient's copy of a broadcast as the read phase planned it, for the write
+// phase to queue (queueBroadcastCopy): the message as its insert will store it, its target's page,
+// its node and facts (planMessageNode), its block index and what that states (planPendingItem),
+// its record in the thread it opens (inboxwrite.PlanRecord), the logins its event names, and its
+// first delivery attempt's node (graphstore.AttemptOpened).
+type broadcastCopy struct {
+	sessionID, page string
+	message         model.Message
+	stored          messageStoreWrite
+	indexed         graphstore.Uncaused
+	index           docs.WriteStep
+	recording       inboxwrite.Recording
+	logins          []string
+	attemptKey      graphstore.AttemptKey
+	attemptKind     *string
+	attemptAddress  *string
+	attemptOpened   graphstore.Uncaused
+}
+
+// planBroadcastCopy plans recipient's copy of the broadcast sent, written at the broadcast's own
+// time. Each copy's node goes in before its row, between the sender and the recipient, the parties
+// of the thread the copy opens, on the recipient's page and with its target and its broadcast
+// stated as facts that wait for its event; the row names the node in its insert. Each copy is a
+// direct message: its blocks are indexed, and it writes no mention, so its blocks hold none either
+// and the write moves nothing. Its insert is queued, so its body is planned before it, as every
+// other message write plans it (planPendingItem).
+func (s *server) planBroadcastCopy(
+	ctx context.Context, tx pgx.Tx, sent broadcastRead, actor model.Actor, body string, recipient broadcastTarget, pages map[string]string,
+) (broadcastCopy, error) {
+	target := "session:" + recipient.sessionID
+	messageID := uuid.NewString()
+	planned := broadcastCopy{
+		sessionID: recipient.sessionID, page: pages[target],
+		message: model.Message{
+			ID: messageID, Author: actor, Body: body, Target: &target, BroadcastID: &sent.ID,
+			CreatedAt: sent.CreatedAt, Deliveries: []model.MessageDelivery{},
+		},
+	}
+	var err error
+	if planned.stored, err = planMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, Target: target, BroadcastID: sent.ID}, actor, sent.CreatedAt, pages); err != nil {
+		return broadcastCopy{}, err
+	}
+	if _, planned.index, planned.indexed, err = s.planPendingItem(ctx, tx, refs.ItemMessage, messageID, body, refs.PendingSource{},
+		refs.WrittenItem(planned.stored.node), sent.CreatedAt, false); err != nil {
+		return broadcastCopy{}, err
+	}
+	// The sender takes part in the thread the copy opens (inboxwrite.PlanRecord): a copy is on no
+	// issue, so its thread keeps no user_threads row and names no one more.
+	if planned.stored.projected {
+		if planned.recording, err = inboxwrite.PlanRecord(ctx, tx, planned.stored.inbox(planned.message, actor)); err != nil {
+			return broadcastCopy{}, err
+		}
+	}
+	// thread_logins is the copy's author - the sender, the one person whose Inbox an Agent row of
+	// this conversation can sit in once the session replies (api/thread_logins.go,
+	// directThreadLogins) - as every other direct message's names its root author: a reader that
+	// refetches an Inbox only for the logins an event names would otherwise refetch every viewer's
+	// on every broadcast. A copy answers nothing, so this reads nothing.
+	if planned.logins, err = directThreadLogins(ctx, tx, planned.message); err != nil {
+		return broadcastCopy{}, err
+	}
+	planned.attemptKey = graphstore.MessageAttempt(messageID, 1)
+	planned.attemptKind, planned.attemptAddress, planned.attemptOpened = graphstore.AttemptOpened(planned.attemptKey, actor, sent.CreatedAt)
+	return planned, nil
+}
+
+// queueBroadcastCopy queues copied, the copy at position of the broadcast sent, on the broadcast's
+// write phase: its node, its row, its block index, its message.created, and under that event what
+// its node write stated, the page it is the first copy to hang from, what its index stated, who
+// wrote it and its record in its thread, then its first delivery attempt. event and attempt receive
+// the appended event and the attempt row once the batch has run.
+//
+// The recipient's first delivery attempt is opened here, unclaimed, rather than by the worker that
+// will send it. A recipient then always has an attempt to show - "Sending" while a worker holds
+// it, and, if the process dies before the send, a lapsed pending row the delivery sweep
+// (delivery_sweep.go) and the ordinary same-mode retry both resume under its own idempotency key.
+// Opening it later left a stranded recipient with no attempt at all, which only a delivery in a
+// DIFFERENT mode could move, and that is a genuine second frame where the first landed.
+// claimed_at stays null, so recordPendingMessageDelivery reads the row as free and resumes it
+// instead of opening a second attempt beside it. The author asked for it, and the resume keeps
+// that. The attempt's node goes in before its row, and it and what the row holds are caused by the
+// copy's message.created, as the copy's own node is.
+func (s *server) queueBroadcastCopy(
+	b *store.WriteBatch, copied broadcastCopy, position int, sent broadcastRead, author []byte, delivery string, actor model.Actor,
+	pages broadcastPages, event *model.Event, attempt *model.MessageDelivery,
+) error {
+	if err := graphstore.QueueNodes(b, copied.stored.written); err != nil {
+		return err
+	}
+	nodeKind, nodeAddress := copied.stored.rowNode()
+	b.Queue("", `
+		insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position, created_at, node_kind, node_address)
+		values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, copied.message.ID, author, copied.message.Body, *copied.message.Target, sent.ID, position, sent.CreatedAt, nodeKind, nodeAddress)
+	if err := copied.index(b); err != nil {
+		return err
+	}
+	// A broadcast message is a thread root that answers nothing, so its event says what every
+	// other root's does; the broadcast it belongs to is read from the message row.
+	payload := messageReplyThread{}.payload(copied.message, model.ReferenceChanges{})
+	payload.ThreadLogins = copied.logins
+	if err := s.deps.Events.QueueAppend(b, messageEvent(copied.message, "message.created", actor, payload), func(appended model.Event) {
+		*event = appended
+	}); err != nil {
+		return err
+	}
+	if err := graphstore.QueueCaused(b, copied.stored.written, graphstore.LatestEvent); err != nil {
+		return err
+	}
+	if err := pages.queueCause(b, copied.page); err != nil {
+		return err
+	}
+	// What the copy's body is in the store, under the same event (planPendingItem).
+	if err := graphstore.QueueCaused(b, copied.indexed, graphstore.LatestEvent); err != nil {
+		return err
+	}
+	if copied.stored.projected {
+		if err := graphstore.QueueAuthored(b, graphstore.KindMessage, copied.message.ID, actor, sent.CreatedAt, graphstore.LatestEvent); err != nil {
+			return err
+		}
+		if err := copied.recording.Queue(b, graphstore.LatestEvent); err != nil {
+			return err
+		}
+	}
+	if err := graphstore.QueueNodes(b, copied.attemptOpened); err != nil {
+		return err
+	}
+	b.Queue("", `
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by, node_kind, node_address)
+		values ($1, 1, $2, $3, 'pending', $4, $5, $6)
+		returning `+messageDeliveryColumns, copied.message.ID, delivery, copied.sessionID, author, copied.attemptKind, copied.attemptAddress,
+	).QueryRow(func(row pgx.Row) error {
+		written, err := scanMessageDelivery(row)
+		*attempt = written
+		return err
+	})
+	if err := graphstore.QueueCaused(b, copied.attemptOpened, graphstore.LatestEvent); err != nil {
+		return err
+	}
+	return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, copied.attemptKey)
+}
+
+// broadcastPages is the pages of a broadcast's recipients as its read phase planned them: each
+// page's own node write (graphstore.PlanUncaused), made by the sender at the broadcast's own time,
+// queued in ascending id before any copy's node (queue), and caused by the event of the first copy
+// that hangs from it (queueCause).
+type broadcastPages struct {
+	order   []string
+	written map[string]graphstore.Uncaused
+}
+
+// planBroadcastPages is the page each recipient's copy hangs from, by the copy's target: the page
+// the store gives the agent its session is (graphstore.AgentPage), or "" where it gives none; and
+// beside it the write of each such page once, as a copy's own write would make it
+// (graphstore.PageNode). Two sessions that claimed one role hang from that role's page, which is
+// one node, written once.
+func planBroadcastPages(ctx context.Context, tx pgx.Tx, recipients []broadcastTarget, actor model.Actor, at time.Time) (map[string]string, broadcastPages, error) {
+	byTarget := make(map[string]string, len(recipients))
+	pages := broadcastPages{written: make(map[string]graphstore.Uncaused, len(recipients))}
 	for _, recipient := range recipients {
 		target := "session:" + recipient.sessionID
-		if _, resolved := pages[target]; resolved {
+		if _, resolved := byTarget[target]; resolved {
 			continue
 		}
 		page, ok, err := graphstore.AgentPage(ctx, tx, target)
 		if err != nil {
-			return nil, nil, err
+			return nil, broadcastPages{}, err
 		}
 		if !ok {
-			pages[target] = ""
+			byTarget[target] = ""
 			continue
 		}
-		pages[target] = page
-		if !slices.ContainsFunc(nodes, func(node graphstore.Node) bool { return node.ID == page }) {
-			nodes = append(nodes, graphstore.PageNode(page, actor, at, graphstore.NoEvent))
+		byTarget[target] = page
+		if _, held := pages.written[page]; !held {
+			pages.order = append(pages.order, page)
+			pages.written[page] = graphstore.PlanUncaused([]graphstore.Node{graphstore.PageNode(page, actor, at, graphstore.NoEvent)}, nil)
 		}
 	}
-	return pages, nodes, nil
+	slices.Sort(pages.order)
+	return byTarget, pages, nil
 }
 
-// writesByPage parts the broadcast's write of its recipients' pages into each page's own: its
-// node, and the base attributes the write stated of it, which the first copy that hangs from the
-// page causes (writeBroadcast).
-func writesByPage(written graphstore.Uncaused) map[string]graphstore.Uncaused {
-	byPage := make(map[string]graphstore.Uncaused, len(written.Nodes))
-	for _, node := range written.Nodes {
-		held := byPage[node.ID]
-		held.Nodes = append(held.Nodes, node)
-		byPage[node.ID] = held
+// queue queues the write of every page's node, in ascending id.
+func (p broadcastPages) queue(b *store.WriteBatch) error {
+	for _, page := range p.order {
+		if err := graphstore.QueueNodes(b, p.written[page]); err != nil {
+			return fmt.Errorf("write page %s of a broadcast's recipient: %w", page, err)
+		}
 	}
-	for _, tuple := range written.Tuples {
-		held := byPage[tuple.FromID]
-		held.Tuples = append(held.Tuples, tuple)
-		byPage[tuple.FromID] = held
+	return nil
+}
+
+// queueCause queues the cause of page's write under the event the batch appended last, the
+// event of the first copy that hangs from it, and nothing for a page an earlier copy caused
+// already or for no page.
+func (p broadcastPages) queueCause(b *store.WriteBatch, page string) error {
+	held, owed := p.written[page]
+	if !owed {
+		return nil
 	}
-	return byPage
+	delete(p.written, page)
+	return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
 }
 
 // deliverBroadcast sends each recipient's owed attempt, broadcastDeliveryWorkers at a time, and

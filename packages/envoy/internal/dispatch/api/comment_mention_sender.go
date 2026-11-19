@@ -438,7 +438,9 @@ func mentionClaimArrays(claims []mentionClaim) (comments, targets []string, atte
 // it over, or another sender has, or it has settled - so refreshHeldClaims leaves that send's
 // recorded claim as it was, and every later statement of this sender's, the drain's release
 // included, passes over the row too, since each is scoped to the claim it holds. The claims it
-// wrote are stated in the store in the same transaction (graphstore.Attempted).
+// wrote are stated in the store in the same batch as the update, which names every attempt it was
+// handed (graphstore.QueueAttempted): the statement states what each row holds against its node,
+// so a row the update left alone moves nothing that its own writer did not already state.
 func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
 	comments, targets, attempts, claimed := mentionClaimArrays(queued)
 	tx, err := s.begin(ctx)
@@ -446,26 +448,26 @@ func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `
-		update comment_deliveries d set claimed_at = now()
-		from unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
-			as queued(comment_id, target, attempt, claimed_at)
-		where d.comment_id = queued.comment_id and d.target = queued.target and d.attempt = queued.attempt
-		  and d.state = 'pending' and d.claimed_at = queued.claimed_at
-		returning d.comment_id::text, d.target, d.attempt, d.claimed_at
-	`, comments, targets, attempts, claimed)
-	if err != nil {
-		return nil, err
-	}
-	refreshed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (mentionClaim, error) {
-		var claim mentionClaim
-		err := row.Scan(&claim.key.comment, &claim.key.target, &claim.key.attempt, &claim.claimedAt)
-		return claim, err
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := graphstore.Attempted(ctx, tx, mentionAttemptKeys(refreshed)...); err != nil {
+	var refreshed []mentionClaim
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("refresh the mention claims", `
+			update comment_deliveries d set claimed_at = now()
+			from unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
+				as queued(comment_id, target, attempt, claimed_at)
+			where d.comment_id = queued.comment_id and d.target = queued.target and d.attempt = queued.attempt
+			  and d.state = 'pending' and d.claimed_at = queued.claimed_at
+			returning d.comment_id::text, d.target, d.attempt, d.claimed_at
+		`, comments, targets, attempts, claimed).Query(func(rows pgx.Rows) error {
+			var err error
+			refreshed, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (mentionClaim, error) {
+				var claim mentionClaim
+				err := row.Scan(&claim.key.comment, &claim.key.target, &claim.key.attempt, &claim.claimedAt)
+				return claim, err
+			})
+			return err
+		})
+		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, mentionAttemptKeys(queued)...)
+	}); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -478,7 +480,7 @@ func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim
 // attempts were committed with, so an attempt no lane took, or none started, is pending and
 // unclaimed. Each is scoped to the claim this sender wrote, so an attempt another sender has
 // since taken keeps that sender's claim. The attempts it released are stated in the store in the
-// same transaction.
+// same batch, as the refresh states its claims (refreshMentionClaims).
 func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) error {
 	comments, targets, attempts, claimed := mentionClaimArrays(held)
 	tx, err := s.begin(ctx)
@@ -486,26 +488,16 @@ func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) 
 		return err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `
-		update comment_deliveries d set claimed_at = null
-		from unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
-			as held(comment_id, target, attempt, claimed_at)
-		where d.comment_id = held.comment_id and d.target = held.target and d.attempt = held.attempt
-		  and d.state = 'pending' and d.claimed_at = held.claimed_at
-		returning d.comment_id::text, d.target, d.attempt
-	`, comments, targets, attempts, claimed)
-	if err != nil {
-		return err
-	}
-	released, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (mentionClaim, error) {
-		var claim mentionClaim
-		err := row.Scan(&claim.key.comment, &claim.key.target, &claim.key.attempt)
-		return claim, err
-	})
-	if err != nil {
-		return err
-	}
-	if err := graphstore.Attempted(ctx, tx, mentionAttemptKeys(released)...); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("release the mention claims", `
+			update comment_deliveries d set claimed_at = null
+			from unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
+				as held(comment_id, target, attempt, claimed_at)
+			where d.comment_id = held.comment_id and d.target = held.target and d.attempt = held.attempt
+			  and d.state = 'pending' and d.claimed_at = held.claimed_at
+		`, comments, targets, attempts, claimed)
+		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, mentionAttemptKeys(held)...)
+	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -523,26 +515,33 @@ func mentionAttemptKeys(claims []mentionClaim) []graphstore.AttemptKey {
 // claimQueuedMention takes the claim on an owed attempt a keyed repeat is about to put back on a
 // lane (replayComment), so the delivery sweep leaves it to this process exactly as it leaves the
 // attempt a comment of this process's own queued. ok is false when another sender holds it: that
-// sender owns the send, and nothing is queued for it here.
+// sender owns the send, and nothing is queued for it here. The claim and its statement in the
+// store go in one batch; a claim another sender holds is rolled back, so it writes nothing.
 func (s *server) claimQueuedMention(ctx context.Context, key mentionKey) (claimed time.Time, ok bool, err error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return time.Time{}, false, err
 	}
 	defer tx.Rollback(ctx)
-	err = tx.QueryRow(ctx, `
-		update comment_deliveries set claimed_at = now()
-		where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending' and `+model.DeliveryClaimFreeSQL+`
-		returning claimed_at
-	`, key.comment, key.target, key.attempt).Scan(&claimed)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("claim the queued mention", `
+			update comment_deliveries set claimed_at = now()
+			where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending' and `+model.DeliveryClaimFreeSQL+`
+			returning claimed_at
+		`, key.comment, key.target, key.attempt).QueryRow(func(row pgx.Row) error {
+			err := row.Scan(&claimed)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			ok = err == nil
+			return err
+		})
+		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, graphstore.CommentAttempt(key.comment, key.target, key.attempt))
+	}); err != nil {
+		return time.Time{}, false, err
+	}
+	if !ok {
 		return time.Time{}, false, nil
-	}
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	if err := graphstore.Attempted(ctx, tx, graphstore.CommentAttempt(key.comment, key.target, key.attempt)); err != nil {
-		return time.Time{}, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return time.Time{}, false, err

@@ -27,7 +27,7 @@ URL from `DISPATCH_URL`, else `dispatch.serverUrl` with `dispatch.enabled`; the 
 `DISPATCH_TOKEN_FILE`, else `DISPATCH_TOKEN`, else `dispatch.token`. A checkout's
 `.opencode/envoy.json`, which is not read, is named on stderr with its rename while the checkout
 has no `.envoy/envoy.json`. With Dispatch off it stops with `Dispatch is not configured: <notice>`,
-the notice saying which file and why, or `dispatch config: <error>`. It prints total asks, decision
+the notice saying which file and why, or `dispatch config: <error>`. It prints total asks, ask
 blocks, standalone question asks, approval requests, per-issue counts, approval rounds, every
 standalone question with a blank `code` column, and a per-session table.
 
@@ -58,7 +58,7 @@ summary) and never arrives; a hand-back with a new summary is an `ask.edited` fo
 `ask.handed_back`, one arrival. Before #1671, when an approval request began following its
 document's versions, a request made again opened a new row, so there each arrival is an
 `ask.opened`. A human turn is an answer to the request or a reply in its thread,
-and, from the round's first request on, an answer or reply on a decision block in the document
+and, from the round's first request on, an answer or reply on an ask block in the document
 the request names: a choice the human raises while the request is open becomes such a block, and
 the hand-back after its answer responds to that turn. A round with more arrivals than human turns
 plus one is flagged. `scripts/e2e/lib/design-gate-approval-requests.jq` reads the same arrivals
@@ -141,14 +141,14 @@ session, and why (sjawhar/legion#2366). The run has three steps. Every step only
    wrote in the window, one row for each session or role that the comment was owed or sent to (a
    pair). `trace.sql` writes Dispatch's whole record of one comment. Both are in
    `packages/envoy/internal/dispatch/deliveryaudit/`. Its `README.md` gives their columns.
-2. `tq receipts` (in theorem-labs/agent-infra `transcript-store/`) reads
+2. `tq receipts` (in example-org/deployment `transcript-store/`) reads
    `comments.csv` and the transcript store. It writes `receipts.tsv`, one status for each pair,
    and `receipts-counts.txt`, its counts. It owns the transcript rules: which transcript row is a
    receipt of a comment, which sessions count as the pair's session, and each pair's status.
 3. `report.ts` reads the three files and writes one markdown document and one TSV file of the
    document's pairs.
 
-theorem-labs/agent-infra's `transcript-store/comment-delivery/run.sh` does steps 1 and 2 on a dev box, which
+example-org/deployment's `transcript-store/comment-delivery/run.sh` does steps 1 and 2 on a dev box, which
 reaches both Dispatch's database and the transcript store.
 
 ### The run
@@ -173,7 +173,7 @@ psql "$DATABASE_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
   -v comment=03207432-749f-4211-9607-e378dc636807 \
   -f packages/envoy/internal/dispatch/deliveryaudit/trace.sql > trace-03207432.csv
 
-# 2. The transcript store (theorem-labs/agent-infra transcript-store/): receipts.tsv on stdout, the counts on stderr.
+# 2. The transcript store (example-org/deployment transcript-store/): receipts.tsv on stdout, the counts on stderr.
 tq receipts --comments comments.csv --from "$FROM" > receipts.tsv 2> receipts-counts.txt
 
 # 3. The document, and the TSV file of its pairs.

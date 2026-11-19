@@ -9,14 +9,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// restoreFixture is an issue whose answers left its spec in both shapes of the restore
-// (dispatch://INFRA-1150 R6): the spec, its decisions document and a third document that cites,
+// restoreFixture is an issue whose answers left its spec in both shapes of the restore: the
+// spec, its decisions document and a third document that cites,
 // and the asks.
 type restoreFixture struct {
 	spec, decisions, notes testDocument
@@ -68,7 +67,8 @@ func seedRestoreFixture(t *testing.T, database *store.Store) restoreFixture {
 		exec("stand the block index of "+name, `update document_block_versions set version = 1 where artifact_id = $1::uuid`, written.id)
 		return written
 	}
-	decisionsRole := model.ArtifactRoleDecisions
+	// The role a decisions document an earlier release stored carries.
+	decisionsRole := "decisions"
 	fixture := restoreFixture{
 		spec:      document("spec", "spec.md", true, nil),
 		decisions: document("decisions-md", "decisions.md", false, &decisionsRole),
@@ -191,7 +191,7 @@ func danglingOf(t *testing.T, database *store.Store) (moved, returning []string)
 	return moved, returning
 }
 
-// The dangling-citation counter of dispatch://INFRA-1150 R8 reads its two sets over the restore's
+// The dangling-citation counter reads its two sets over the restore's
 // work (ReadRestoreWork), before and after the move, and counts a node that cites one target from
 // its text and its block once.
 //
@@ -203,9 +203,10 @@ func danglingOf(t *testing.T, database *store.Store) (moved, returning []string)
 // print both.
 //
 // The move of the second shape, written without its moved_to tuple, leaves both citations of the
-// old address dangling in the decisions document, and the moved set counts them (the control);
-// with the tuple, they resolve and it reads zero, and once the returning ask's block is back in
-// the spec, the returning set reads zero too.
+// old address dangling in the decisions document, and the moved set counts them (the control),
+// and goes on counting them once the document is retired, as the step retires it in the
+// transaction that empties it; with the tuple, they resolve and it reads zero, and once the
+// returning ask's block is back in the spec, the returning set reads zero too.
 func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -270,6 +271,15 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 	wantMoved := []string{"artifact:" + fixture.notes.id + " -> " + oldAddress, "comment:" + firstComment + " -> " + oldAddress}
 	if !reflect.DeepEqual(moved, wantMoved) {
 		t.Fatalf("a move that wrote no moved_to reads the moved set %v, want its two citations %v", moved, wantMoved)
+	}
+
+	// The document retired, as docs.RetireDocument retires it - retired_at set and its role
+	// cleared - in the transaction that emptied it: the citations of its address still dangle.
+	if _, err := database.Pool.Exec(ctx, `update artifacts set retired_at = now(), role = null where id = $1::uuid`, fixture.decisions.id); err != nil {
+		t.Fatalf("retire the decisions document: %v", err)
+	}
+	if moved, _ = danglingOf(t, database); !reflect.DeepEqual(moved, wantMoved) {
+		t.Fatalf("once the decisions document is retired the moved set reads %v, want the move's two citations %v still", moved, wantMoved)
 	}
 
 	writeTestTuples(t, database, nil, []graphstore.Tuple{{

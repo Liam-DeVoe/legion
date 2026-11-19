@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's gated steps are the design-gate steps the Legion deployment that serves it gates,
@@ -34,20 +35,45 @@ type projectGatedSteps struct {
 // unchanged list touches no row and appends no event, which is what keeps a restarting daemon
 // out of the project's event log. A body that names no list is refused (400 INVALID_PROJECT)
 // rather than read as the empty list, so a malformed publish cannot clear a gate, and a list
-// naming anything but the three steps is refused there too, before the database's own check
+// naming anything but the known steps is refused there too, before the database's own check
 // would raise. A step named twice is refused as well, as the deployment's own loader refuses it:
 // the deployment keeps one gate record per step, so a second naming is either a mistake or an
 // order it cannot keep, and the database's check admits it (it holds the shape, not the route's
 // input rules).
+//
+// The `decisions` step is gone, and a page of the release
+// before still sends it, so the write admits it and stores the list without it; a list of that
+// step alone is stored as [spec], so the publish gates the design still (gatedStepsWithout).
 
 // projectGatedStepsInput is the body PUT /api/v1/projects/{key}/gated-steps takes. Steps is
 // required: a body without it is refused (400 INVALID_PROJECT, putProjectGatedSteps below)
 // rather than read as the empty list, so a malformed publish cannot clear a gate. It is a
-// pointer so that an absent list and an explicit `[]` are told apart, and the enum is the three
-// steps model.GatedStepsKnown names, which the handler refuses anything outside.
+// pointer so that an absent list and an explicit `[]` are told apart, and the enum is the steps
+// model.GatedStepsKnown names with the retired `decisions`, which the write admits and drops.
 type projectGatedStepsInput struct {
 	Steps *[]string    `json:"steps" required:"true" enum:"decisions,criteria,spec"`
 	Actor *model.Actor `json:"actor"`
+}
+
+// retiredDecisionsStep is the design-gate step the release before gated, a root issue's
+// decisions document. This build stores it nowhere.
+const retiredDecisionsStep = "decisions"
+
+// gatedStepsWithout is a list of gated steps without retiredDecisionsStep: the list the write
+// stores, and the list a read answers for a stored one, since a daemon of the release before
+// may publish that step until the decisions step rewrites the stored lists. A list of that step
+// alone is [spec], never the empty list, which would gate nothing.
+//
+// kept for one release: steps-write-admits
+func gatedStepsWithout(steps []string) []string {
+	if !slices.Contains(steps, retiredDecisionsStep) {
+		return steps
+	}
+	kept := slices.DeleteFunc(slices.Clone(steps), func(step string) bool { return step == retiredDecisionsStep })
+	if len(kept) == 0 {
+		return []string{model.GatedStepSpec}
+	}
+	return kept
 }
 
 func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +99,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		steps = []string{}
 	}
 	for index, step := range steps {
-		if !slices.Contains(model.GatedStepsKnown, step) {
+		if step != retiredDecisionsStep && !slices.Contains(model.GatedStepsKnown, step) {
 			writeError(w, "INVALID_PROJECT", http.StatusBadRequest, fmt.Sprintf(
 				"%q is not a design-gate step: steps names %s", step, strings.Join(model.GatedStepsKnown, ", ")))
 			return
@@ -84,6 +110,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	steps = gatedStepsWithout(steps)
 
 	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
@@ -97,6 +124,18 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The project's owner lock before its row's update, as every projects writer takes them
+	// (createIssue, putProjectDefaultAssignee, lockEventOwner). Taking the row first and the lock
+	// at the append below waited, holding the row, on an issue create that holds the lock in its
+	// read phase and waits for the row to number the issue: the daemon publishes this list at
+	// every boot, beside the creates of the project's sessions, and Postgres broke that cycle by
+	// failing one of the two (`deadlock detected`, 500). The lock assigns no transaction id; the
+	// update is the first statement that writes, and one that finds the list unchanged writes
+	// nothing.
+	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(project.Key)); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.QueryRow(r.Context(), `
 		update projects set gated_steps = $2
 		where key = $1 and gated_steps is distinct from $2

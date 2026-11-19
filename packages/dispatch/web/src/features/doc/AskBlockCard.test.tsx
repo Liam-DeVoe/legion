@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
 import type { Ask, AskRead, Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskBlockCard } from "./AskBlockCard";
 import { type AskBlockHost, type ServedAsk, servedAskOf } from "./typed-block-drawing";
 
@@ -90,6 +91,13 @@ const ask: Ask = {
   state: "open",
   urgency: "high",
 };
+
+/** `ask` with `overrides`, asked three minutes before this moment. A row that reads the card's
+ *  `3 minutes ago` builds its ask here as it runs: the card reads the clock as it draws, and
+ *  `ask` is dated as the file loaded, which random order can put a minute before the row. */
+function askedThreeMinutesAgo(overrides: Partial<Ask> = {}): Ask {
+  return { ...ask, created_at: new Date(Date.now() - 3 * 60_000).toISOString(), ...overrides };
+}
 
 const answeredAsk: Ask = {
   ...ask,
@@ -245,7 +253,7 @@ test.each([
   ["med", "Medium"],
   ["low", "Low"],
 ] as const)("an open %s decision names its urgency in the block header and hosts the shared ask card, which names who asked", async (urgency, label) => {
-  const card = renderCard({ ask: { ...ask, urgency }, node: askNode({ urgency }) });
+  const card = renderCard({ ask: askedThreeMinutesAgo({ urgency }), node: askNode({ urgency }) });
   try {
     const pill = card.section.querySelector("[data-dispatch-ask-pill]");
     expect(pill?.textContent).toBe(label);
@@ -508,7 +516,7 @@ test("without the server's read the frame stamps the state the block records", (
 test("a block that records no state reads as open where no server read is given", () => {
   // Settlement takes the state off a live block once the answer is held on the ask's node alone,
   // and the editor gives the attribute no default: a block with no ask row and no read of one
-  // shows the open decision it was written as.
+  // shows the open ask it was written as.
   const card = renderCard({ indexed: false, node: askNode({}), readOnly: true });
   try {
     expect(card.section.getAttribute("data-dispatch-ask-state")).toBe("open");
@@ -775,6 +783,9 @@ test("an existing exchange shows its newest replies under an open decision", asy
 });
 
 test("an answered decision hosts the shared record: who answered and when, the chosen option, the note, and its exchange", async () => {
+  // The record's rows are read before its exchange arrives, which holds only where the engine
+  // draws the rows in the commit that mounts the card (`MarkdownBody`).
+  await warmMarkdownRenderer();
   const card = renderCard({
     ask: answeredAsk,
     node: askNode({ answered_by: "bob", selected: ["Ship"], state: "answered", urgency: "low" }),
@@ -804,7 +815,7 @@ test("an answered decision hosts the shared record: who answered and when, the c
 
 test("a hosted block whose ask has no recorded author says when it was asked, without a dangling separator", async () => {
   const card = renderCard({
-    ask: { ...ask, author: { id: "", kind: "user" } },
+    ask: askedThreeMinutesAgo({ author: { id: "", kind: "user" } }),
     node: askNode({ urgency: "high" }),
   });
   try {
@@ -838,7 +849,10 @@ test("a reply written in Markdown keeps its paragraphs and list inside the block
   }
 });
 
-test("a resolved decision hosts the shared resolution record and no composer", () => {
+// A live document's resolved decision keeps its thread's reply behind Write a reply, as every
+// collapsed thread under a settled ask does; there is no answer form, and the reply's own form
+// waits for the control.
+test("a resolved decision hosts the shared resolution record, with Write a reply and no form", () => {
   const resolved: Ask = {
     ...ask,
     resolution: {
@@ -853,6 +867,7 @@ test("a resolved decision hosts the shared resolution record and no composer", (
   try {
     expect(card.section.querySelector("form")).toBeNull();
     expect(card.footer.getByTestId("ask-resolution-badge").textContent).toBe("Resolved");
+    expect(card.footer.getByRole("button", { name: "Write a reply" })).toBeInTheDocument();
   } finally {
     card.unmount();
   }
@@ -862,7 +877,11 @@ test("a resolved decision hosts the shared resolution record and no composer", (
 // card, so nothing to answer or ask back, and the header carries what the card would have said.
 
 test("a read-only surface shows an open decision's options with nothing to answer or ask back, and names who asked", () => {
-  const card = renderCard({ node: askNode({ urgency: "med" }), readOnly: true });
+  const card = renderCard({
+    ask: askedThreeMinutesAgo(),
+    node: askNode({ urgency: "med" }),
+    readOnly: true,
+  });
   try {
     expect(card.section.querySelector("form")).toBeNull();
     expect(card.footer.queryByRole("button", { name: "Ask back" })).not.toBeInTheDocument();
@@ -879,7 +898,7 @@ test("a read-only surface shows an open decision's options with nothing to answe
 
 test("a read-only block whose ask has no recorded author still says when it was asked", () => {
   const card = renderCard({
-    ask: { ...ask, author: { id: "", kind: "user" } },
+    ask: askedThreeMinutesAgo({ author: { id: "", kind: "user" } }),
     node: askNode({ urgency: "med" }),
     readOnly: true,
   });

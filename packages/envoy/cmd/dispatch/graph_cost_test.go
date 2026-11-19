@@ -4,7 +4,7 @@
 
 package main
 
-// The two cost measurements of dispatch://INFRA-1149 share this file. c-write-cost is
+// The two cost measurements of this change share this file. c-write-cost is
 // TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go) and c-read-cost is
 // TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go). What they
 // share is the pair of arms they compare, the corpus writer that seeds each arm through that
@@ -12,11 +12,11 @@ package main
 //
 // # The two arms, and why each has a database of its own
 //
-// One arm is this working copy's build, the other the build of the commit this branch forked
-// from (`git merge-base origin/main HEAD`, baseBuild). Each serves a database of its own and
-// migrates it at boot, so each arm runs its own code over its own schema: the older build has
-// no graph_nodes and no graph_tuples, and this build's graph_edges reads the tuple arm over
-// them. One database cannot be both schemas at once, and an
+// One arm is this working copy's build, the other the build of the commit BASELINE_SHA names
+// (baseBuild, testbaseline.Commit), which is the fork point with main for this branch. Each
+// serves a database of its own and migrates it at boot, so each arm runs its own code over its
+// own schema: the older build has no graph_nodes and no graph_tuples, and this build's
+// graph_edges reads the tuple arm over them. One database cannot be both schemas at once, and an
 // older build serving this schema would be measured reading this child's view, which is neither
 // arm. The corpus is therefore written twice, by one seeding pass issuing the same requests to
 // each arm, and both arms are measured in one run, reading by reading, so the pod's load falls
@@ -337,11 +337,22 @@ func costShapeName(shape string) string {
 // store_census_test.go's waitForTheBlockIndex takes: a document is owed while its version is
 // null, and on this child's arm also while it holds the backfill's own mark (store_owed_at),
 // which only this child's schema has and only its reconciliation clears.
+//
+// On this child's arm the wait also holds until the tick has read every event the log holds:
+// until its build's row of block_index_event_cursors exists and its event_id has reached the
+// newest event. Every tick reads the events after its build's cursor, and a process's first one
+// starts that cursor no later than the horizon the backfill recorded, so a tick after the
+// documents drain can still mark the corpus's own documents owed and index them again, which would
+// write a node inside a measured window, or after the run has taken the store off the corpus.
 func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	t.Helper()
 	owedRead := `select count(*) from document_block_versions where version is null`
 	if arm.head {
-		owedRead += ` or store_owed_at is not null`
+		owedRead = `select (select count(*) from document_block_versions where version is null or store_owed_at is not null)
+			+ (select case when exists (select 1 from block_index_event_cursors)
+			               and not exists (select 1 from block_index_event_cursors
+			                               where event_id < (select coalesce(max(id), 0) from events))
+			          then 0 else 1 end)`
 	}
 	deadline := time.Now().Add(within)
 	for {

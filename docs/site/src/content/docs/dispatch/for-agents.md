@@ -84,6 +84,7 @@ tells the agent who Dispatch takes it for.
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
 | Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
 | Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
+| Steps | `dispatch steps --issue <KEY>` prints each step that ran on an issue, as the Legion daemon recorded it at the step's start and at its end: a line `<KEY>: <n> steps in <m> tasks`, then one line per run, task by task, naming its task, step, kind, role, type, attempt, agent, model, start, end and result. A field with no value prints `-`, and a run that has not ended prints `running` for its end and its result. An issue that no step ran on prints `<KEY>: 0 steps in 0 tasks`, and a key Dispatch does not hold fails as `dispatch read` fails for it: `NOT_FOUND: not found`, exit 1. |
 | Architecture | `dispatch architecture-sync` imports a project's architecture model now, from every source repository with a line for each, or from one with `--repo <owner/name>`. |
 
 The dashboard's List is a live table over a project's issues, not a separate search index.
@@ -145,7 +146,7 @@ Each kind of write reaches people differently. Pick by what you need from them.
 
 | You need | Use | Where it lands |
 | --- | --- | --- |
-| A decision only a person can make | An ask (`dispatch ask`, or a decision block in the spec) | The Inbox of the person it waits on: the person it was handed to, else the issue's assignee, else the project's default assignee |
+| A decision only a person can make | An ask (`dispatch ask`, or an ask block in the spec) | The Inbox of the person it waits on: the person it was handed to, else the issue's assignee, else the project's default assignee |
 | To point at a passage in a document | A comment with a quote (`dispatch comment`) | The document's margin and the issue's Conversation |
 | To change specific text | A suggestion (`dispatch suggest`) | The margin, where a person accepts or rejects it |
 | To tell people a deliverable landed, or answer a person's message | A message (`dispatch message`) | The issue's Conversation |
@@ -170,10 +171,10 @@ a bound of its own:
   options;
 - a comment or message body is bounded block by block: each block — a paragraph, list, quote,
   table or code block — is at most 32,000 characters, and one body holds at most 32,768 blocks.
-  A body holding a decision block (`:::ask`) is refused whatever its length, `400
+  A body holding an ask block (`:::ask`) is refused whatever its length, `400
   DECISION_BLOCK_IN_BODY`: nobody can answer a question there, so it belongs in the issue's own
-  document, as a decision block, or in an ask opened with `dispatch ask`. To show one as an
-  example, put it in a fenced code block;
+  document, as an ask block, or in an ask opened with `dispatch ask`. To show one as an example,
+  put it in a fenced code block;
 - a comment anchored to a document is also projected into that document's margin, which is bounded
   in bytes and not by that character limit: 256 KiB per thread, and 1 MiB per document margin. A
   few long anchored comments therefore fill a thread or a margin where many short ones used to
@@ -206,8 +207,8 @@ place with `dispatch doc-edit`. Do not upload a file named `spec.md` to change i
 whole spec with your text. Use `dispatch artifact` for real files, such as a report, an image, or a
 draft to send as-is.
 
-A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end
-of the section that discusses it.
+A question the spec needs a person to decide is an **ask block**: an `:::ask` block at the end of
+the section that discusses it.
 
 ```md
 :::ask{urgency="high" multiple="false"}
@@ -220,14 +221,23 @@ Should we ship the migration this week?
 
 The block becomes an ask in the person's Inbox, and their answer lands next to its context.
 
-When every decision block is settled and the spec proposes something the person has not already
+A choice you made yourself is a `decision` block in the spec's `## Decisions` part: the choice
+first, then its reason. It asks nothing, and the person reviews it on the issue's Decisions tab.
+A person's answered ask is their decision: it stays in the spec, and your reading of it goes inside
+it as a `:::reading` block.
+
+When every ask block is settled and the spec proposes something the person has not already
 agreed to, run `dispatch request-approval` with a short `--summary` of what is new. The person
-approves that version, or requests changes with a reason. A later version leaves the approval
-stale, with one exception: when the person's own answer to a decision block is the whole change
-since the version they approved, Dispatch records the approval in their name at the new version, so
-request nothing for it. When their answer changes text outside the block, rewrite that text and
-request approval again with a one-sentence `--summary` naming what changed since the earlier
-approval; the card shows that approval and a **Show diff** control that carries the detail.
+approves that version, or requests changes with a reason. Their answer to an ask block writes no
+version and carries no approval: the answer stays on the ask, and an approval stands as it was. A
+later version leaves the approval stale, unless Dispatch carries the approval to it. Dispatch
+carries it when that version's text is the approved text, or when every change in it is a reading
+inside a decision or an answered ask, an ask block attribute the server owns, or the write of
+Dispatch's decisions step. Dispatch then records the approval in the person's name at the new
+version, so request nothing for it. When an answer means text outside the block must change,
+rewrite that text and request approval again with a one-sentence `--summary` naming what changed
+since the earlier approval; the card shows that approval and a **Show diff** control that carries
+the detail.
 
 ## Whose turn it is
 
@@ -386,15 +396,21 @@ the whole command within 60. Once an attempt got no answer for 20 seconds or was
 command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
 `Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
 upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
-It asks again only of a Dispatch that judges the key: one whose answer
-carried the key back, or whose `/healthz` said `idempotency_keys: true` in the last five minutes,
-whatever its status; any other would make a repeated write twice. Dispatch makes the write once per
-key and answers a repeat with the first answer, so the command never makes a write twice. When the
-write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too
-large to keep), the command exits 0 and says it was made: read it back to see it. When no attempt
-got an answer, the command says the write may or may not have taken effect: read it back before
-you run the command again, since a new command is a new key. Reads, and the `PUT` and `DELETE` of
-`dispatch follow` and `dispatch claim --release`, carry no key and go once. A script that calls
+Once an attempt may have reached Dispatch, it asks again only of a Dispatch that judges the key:
+one whose answer carried the key back, or whose `/healthz` said `idempotency_keys: true` in the
+last five minutes, whatever its status; any other would make a repeated write twice. An attempt
+that reached nothing (a refused connection, a credential whose trade goes on) is asked again
+without that check, since its repeat is no second write. Dispatch makes the write once per key and
+answers a repeat with the first answer, so the command never makes a write twice. When the write
+landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too large
+to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
+have reached Dispatch and the command got no answer Dispatch's keyed layer gave (no attempt
+answered, a page something in Dispatch's place wrote, a 2xx that is empty, not typed JSON or not
+JSON, but a bodiless 204 or 205), the command says the write may or may not have taken effect:
+read it back before you run the command again, since a new command is a new key. Reads, and the
+`PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, carry no key. Each goes
+once, and again only where Dispatch did nothing with it: once more after Dispatch calls the token
+it presented dead, and on an old build's "no route" during a rolling release. A script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused

@@ -33,18 +33,27 @@
 -- That relation has an arm of its own, the last, and the tuple arm leaves it out (its `projects`
 -- case for a message is a reply to a message alone). Each of the two then renders its far end's
 -- kind as a column of the tuple or as a constant, never as an expression over the tuple's kind,
--- so a read keyed on the far end binds graph_tuples_inbound's leading columns in both: the tuple
--- arm binds (to_kind, to_id) as before, and the reply arm binds the fixed (block, the far end's
--- id, replies_to, message) and answers its rows under `message_block`. Its `distinct on` keys the
--- two columns its predicate leaves free, the far end's id and the reply's, so the arm walks that
--- index range and sorts nothing. Measured on this pod's PostgreSQL 18.6 over 640,000 tuples across
--- 11 far-end kinds, 20,000 of them replies to a block: a read of the edges into one issue reads
--- graph_tuples in 5 buffers and one index search in the tuple arm, as the view before this one
--- does, and in 3 buffers and one search in the reply arm, which answers nothing; a read of the
--- edges into one message block reads 3 buffers and one search in the tuple arm, which answers
--- nothing, and 7 buffers and one search in the reply arm for its four replies. Computing the kind
--- inside the tuple arm instead cost every keyed read that leading column: 88 buffers in 23 index
--- searches against 5 in one, a skip scan over every far-end kind.
+-- so a read keyed on the far end binds the leading columns of graph_tuples_as_of_in, the store's
+-- one read index led by the far end (20261109013400), in both: the tuple arm binds (to_kind,
+-- to_id) as before, and the reply arm binds the fixed (block, the far end's id, replies_to),
+-- filters the reply's kind, message, out of the rows that range holds, and answers its rows under
+-- `message_block`. Its `distinct on` keys the two columns its predicate leaves free, the far end's
+-- id and the reply's, which that index holds by time and not by the reply, so the arm sorts the
+-- replies it read of the one far end: four replies to a block are a quicksort of 25 kB.
+--
+-- Measured on this pod's PostgreSQL 18.6 over 640,000 tuples across 11 far-end kinds, 20,000 of
+-- them replies to a block, on an earlier set of read indexes that also held graph_tuples_inbound
+-- (to_kind, to_id, kind, from_kind, from_id, seq desc), under which the reply arm bound the reply's
+-- kind as well and sorted nothing: a read of the edges into one issue reads graph_tuples in 5
+-- buffers and one index search in the tuple arm, as the view before this one does, and in 3
+-- buffers and one search in the reply arm, which answers nothing; a read of the edges into one
+-- message block reads 3 buffers and one search in the tuple arm, which answers nothing, and 7
+-- buffers and one search in the reply arm for its four replies. Under the four read indexes, over
+-- 700,000 synthetic tuples across 15 far-end kinds with the same 20,000 replies, the reply arm
+-- reads those four replies in the same 7 buffers and one search, and sorts them. Computing the
+-- kind inside the tuple arm instead cost every keyed read that leading column: 88 buffers in 23
+-- index searches against 5 in one, a skip scan over every far-end kind, measured on that earlier
+-- set; graph_tuples_as_of_in is led by the same two columns.
 --
 -- The two arms render `replies_to` and nothing else of a message. A message's `part_of`, its
 -- `addressed_to`, its `broadcast_id` (a value, which no arm reads) and its `authored_by` are no

@@ -11,9 +11,9 @@ import type {
   Ask,
   Comment,
   CommentWithTrees,
+  DecisionEntry,
   DispatchEvent,
   DisplayTree,
-  IssueDecisions,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
@@ -68,8 +68,6 @@ export function useMarginOwner(): MarginOwner | undefined {
   }, [artifactId, issueKey, project, slug]);
 }
 export type MarginItemAction = CommentAction;
-/** One entry of the Decisions read beside its document's spec. */
-export type DecisionEntry = NonNullable<IssueDecisions["entries"]>[number];
 /** One entry of the Decisions read beside one node of the spec it shaped: an entry that shaped
  *  several nodes is one item at each. */
 export interface DecisionMarginItem {

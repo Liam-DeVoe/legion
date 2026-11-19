@@ -15,6 +15,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
+// A change to blocks.json ships with a store migration that writes the node of each type or
+// attribute it adds or alters, moves every block type's supertag node to the file's new version,
+// and appends each value it states as a value tuple at the source_event sentinel 0, as
+// 20261113230000_graph_supertags_check_ci_check does: the server installs the store's types and
+// not this file's, so without one TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt fails and a
+// build made for the new version installs the old one. A new type migration also joins
+// typeMigrations in cmd/dispatch/supertag_nodes_test.go, which runs each a second time.
+//
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte
 
@@ -468,10 +476,27 @@ func defaultAttributes(typ BlockTypeSchema) Attrs {
 // rollWindowAskAttributes) - is read, taken at an agent's boundary (StripServerOwnedAttrs) and
 // rendered without it.
 func writtenDefault(typ BlockTypeSchema, attr BlockAttribute) (any, bool) {
-	if attr.Default == nil || attr.Server || !creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name}) {
+	if !hasWrittenDefault(typ, attr) {
 		return nil, false
 	}
 	return cloneSchemaValue(attr.Default), true
+}
+
+// hasWrittenDefault reports whether typ's attribute attr has a written default (writtenDefault).
+func hasWrittenDefault(typ BlockTypeSchema, attr BlockAttribute) bool {
+	return attr.Default != nil && !attr.Server && creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name})
+}
+
+// nullReadsAbsent reports whether value, what a block of typ holds for its attribute attr, is a
+// null that reads as the block not holding attr: a null where attr has no written default
+// (writtenDefault). The browser editor gives such an attribute no default either - a server
+// attribute, which the server writes into a block or nobody does, and one it may not create yet -
+// so its node holds it as undefined, which y-prosemirror writes into the live document whenever it
+// makes the node, as a paste does, and a read of the live document reads as null (readElement).
+// So an ask block a browser pasted holds `state` null, although the attribute's default is
+// `open`. A null where attr has a written default is no value of it, and is refused.
+func nullReadsAbsent(typ BlockTypeSchema, attr BlockAttribute, value any) bool {
+	return value == nil && !hasWrittenDefault(typ, attr)
 }
 
 // withWrittenDefaults is attrs, a typed block's attributes as a stored tree holds them, with the
@@ -529,7 +554,7 @@ func typedAttributeValues(n *Node, typ BlockTypeSchema) ([]model.BlockAttributeV
 		if !present {
 			value, present = writtenDefault(typ, attribute)
 		}
-		if !present || (value == nil && definition.Default == nil) {
+		if !present || nullReadsAbsent(typ, attribute, value) {
 			continue
 		}
 		encoded, err := encodeTypedAttribute(n.Type, name, definition, value)

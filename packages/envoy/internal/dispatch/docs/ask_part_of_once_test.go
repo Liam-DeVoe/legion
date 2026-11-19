@@ -13,7 +13,7 @@ import (
 // places parts the store has not placed - the ask's parts as no block-aware build indexed them,
 // whose ids are drawn past the block nodes the store already holds - and the rewording keeps its
 // options, so it reads where the store places them while the restoration's part_of is still held
-// for its event. Each part's part_of is asserted once (causeIndexedAsks).
+// for its event. Each part's part_of is asserted once (causedByEvent).
 func TestASettlementThatRestoresAndRewordsAnAskStatesEachPartOfOnce(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour

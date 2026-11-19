@@ -1142,7 +1142,7 @@ func topicOfNode(t *testing.T, node string) string {
 	kind, id, _ := strings.Cut(node, "/")
 	switch kind {
 	case graphstore.KindSession:
-		return contracts.AgentSubject(id)
+		return contracts.LegacyAgentSubject(id)
 	case graphstore.KindRole:
 		return contracts.RoleTopicPrefix + id
 	}

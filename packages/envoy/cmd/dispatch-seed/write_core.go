@@ -130,8 +130,8 @@ func (r *seedRun) writeArchitecture(ctx context.Context) error {
 // each row as it lands. The search vector, the title lexemes and the embedding queue row are the
 // triggers' work, as they are on every other write. Each batch writes its issues' nodes first, in
 // the transaction that copies their rows and in each issue's project, as the server's issue create
-// does (api's writeObjectNodes); the seed records no event of an issue, so what the node write
-// states carries the sentinel.
+// does (api's createIssue); the seed records no event of an issue, so what the node write states
+// carries the sentinel.
 func (r *seedRun) writeIssues(ctx context.Context) error {
 	issues := r.plan.issues
 	return r.inBatches(ctx, "issues", len(issues), batchRows, func(ctx context.Context, tx pgx.Tx, from, to int) error {

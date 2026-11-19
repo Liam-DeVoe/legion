@@ -323,18 +323,18 @@ func blockRefCarries(fromKind, alias string) string {
 // TupleKinds is every relation kind this build writes as tuples and graph_edges answers from
 // them, sorted: a block's in_document and mentions, the pointer kinds the installed block schema
 // declares (pmdoc.LinkKinds), a comment's and an ask's anchored_to and owned_by, an ask's
-// followed_by, a decision block's from_ask and decided_by (dispatch://INFRA-1150), which the arm
-// renders through the block_refs row of the pair as it renders a block's every other link, a
-// message's and a comment's replies_to, a comment's answers, and an item block's part_of. It is
-// the list the view's tuple arms render (migrations 20261109215947, 20261116094101,
-// 20261116114517, 20261116124448 and 20261116140008) and the list the announcer writes into
+// followed_by, a decision block's from_ask and decided_by, which the arm renders through the
+// block_refs row of the pair as it renders a block's every other link, a message's and a
+// comment's replies_to, a comment's answers, and an item block's part_of. It is the list the
+// view's tuple arms render (migrations 20261109215947, 20261116094101, 20261116114517,
+// 20261116124448 and 20261116140008) and the list the announcer writes into
 // server_build_announcements.tuple_kinds (startup.Deps), which is how the release that deletes an
 // old arm of the view reads whether the release a rollback would reach writes that arm's kinds as
 // tuples too. A child that moves another relation into the store adds its kinds here, so the arm
 // and the announcement read one list.
 func TupleKinds() []string {
 	kinds := append([]string{TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy,
-		graphstore.TupleRepliesTo, graphstore.TupleAnswers, graphstore.TuplePartOf, graphstore.TupleFollowedBy, "from_ask",
+		graphstore.TupleRepliesTo, graphstore.TupleAnswers, graphstore.TuplePartOf, graphstore.TupleFollowedBy, TupleFromAsk,
 		graphstore.TupleDecidedBy}, pmdoc.LinkKinds()...)
 	slices.Sort(kinds)
 	return slices.Compact(kinds)
@@ -343,10 +343,10 @@ func TupleKinds() []string {
 // currentTuple is the test that the row alias names is the fact the store holds now: the newest
 // tuple of its (from, kind, to), kept only while that newest one asserts, which is how the store
 // reads a current relation (graphstore.CurrentTupleRead) and how the view's own tuple arm reads
-// one. The read of the newest binds all five columns of the relation, so it is one range of
-// graph_tuples_current, whose columns are exactly those five and then the sequence; the row is
-// a relation, never a value, and the read says so, which is the predicate that index is partial
-// on.
+// one. The read of the newest binds all five columns of the relation from the row, and reads
+// them through graph_tuples_as_of_in, which leads with the far end and the kind: the row's kind
+// proves nothing of graph_tuples_current's predicate, which leaves delivered_to out. The row is a
+// relation, never a value, and the read says so, which is the predicate as_of_in is partial on.
 func currentTuple(alias string) string {
 	return alias + `.asserted and ` + alias + `.seq = (select newest.seq from (` +
 		graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, `t.seq`,
@@ -468,13 +468,12 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 }
 
 // tupleSQL is the arm's reading of the store: the current tuples of this arm's kind pointing at
-// the addresses bound as $1, read through graph_tuples_inbound, whose columns are the to side,
-// the kind and then the from side. Its last tests are the view's own three rules over the node
-// the tuple comes from: an edge is the newest tuple of its own while that one asserts, it counts
-// only while the projection row that names the node carries it (projectionCarries), and a node
-// whose state is gone holds none, the last taken with the registry's predicate for that node
-// kind out of one read of its row (liveVisibleNode), so a node the acting person may not see
-// raises no count.
+// the addresses bound as $1, read through graph_tuples_as_of_in, which leads with the to side
+// and the kind. Its last tests are the view's own three rules over the node the tuple comes
+// from: an edge is the newest tuple of its own while that one asserts, it counts only while the
+// projection row that names the node carries it (projectionCarries), and a node whose state is
+// gone holds none, the last taken with the registry's predicate for that node kind out of one
+// read of its row (liveVisibleNode), so a node the acting person may not see raises no count.
 func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 	counted, join, keyed, address := target.read(`tuple.to_id`)
 	toKind := target.kind
@@ -545,14 +544,14 @@ var backlinkArms = map[string][]backlinkArm{
 		// asks_anchor_artifact, on the same coalesce the join makes; the store states the same
 		// fact as an ask's anchored_to, answered while the ask's row carries its node.
 		{kind: "anchored_to", from: `artifacts a join asks k on coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = a.id`, toID: `a.ref_key`,
-			fromKind: "ask", fromID: `k.id::text`, projected: rowNamesNoNode(`k.node_kind`), tupleKind: "anchored_to", projectedIn: "asks"},
+			fromKind: "ask", fromID: `k.id::text`, projected: rowNamesNoNode(`k.node_kind`), tupleKind: graphstore.TupleAnchoredTo, projectedIn: "asks"},
 		// comments_anchor_artifact, on the same cast the join makes; the store states the same
 		// fact as a comment's anchored_to, answered while the comment's row carries its node.
 		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`,
 			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: rowNamesNoNode(`c.node_kind`), tupleKind: graphstore.TupleAnchoredTo, projectedIn: "comments"},
 		// asks_artifact_id, and the ask's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`,
-			fromKind: "ask", fromID: `k.id::text`, projected: rowNamesNoNode(`k.node_kind`), tupleKind: "owned_by", projectedIn: "asks"},
+			fromKind: "ask", fromID: `k.id::text`, projected: rowNamesNoNode(`k.node_kind`), tupleKind: graphstore.TupleOwnedBy, projectedIn: "asks"},
 		// comments_artifact_id, and the comment's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join comments c on c.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: rowNamesNoNode(`c.node_kind`), tupleKind: graphstore.TupleOwnedBy, projectedIn: "comments"},
@@ -623,7 +622,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// store states the same fact as an ask's followed_by, answered while the follower row of
 		// that ask and that session carries the ask's node (projectionCarries' session test).
 		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`,
-			fromKind: "ask", fromID: `f.ask_id::text`, projected: rowNamesNoNode(`f.node_kind`), tupleKind: "followed_by", projectedIn: "ask_followers"},
+			fromKind: "ask", fromID: `f.ask_id::text`, projected: rowNamesNoNode(`f.node_kind`), tupleKind: graphstore.TupleFollowedBy, projectedIn: "ask_followers"},
 	},
 	// A person, a role and a page are pointed at by mentions alone. The tuples the store holds
 	// of them - authored_by, delivered_to, held_by and part_of - are no arm of graph_edges, so
@@ -728,7 +727,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
 			and `+rowNamesNoNode(`r.node_kind`),
 			VisibleKind("block", `r.from_node`, backlinkSeen)),
-		// The same links in the store, read through graph_tuples_inbound: every current
+		// The same links in the store, read through graph_tuples_as_of_in: every current
 		// relation a document's block states but its membership of its document, which is the
 		// artifact's own part_of arm, and its placement under the block holding it, which is no
 		// edge of the view, each counted only while the block_refs row of its pair carries the
@@ -747,11 +746,11 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 			liveVisibleNode("block", `r.from_id`)),
 		// The links of every item's blocks in the store, in one arm as the view's item block arm
 		// reads them (migration 20261116140008): the current tuples out of a `block` node whose
-		// address an item kind's prefix names, read through an index led by the far end
-		// (graph_tuples_inbound or graph_tuples_as_of_in) once whichever item the block is of, each
-		// counted only while its link row in that item kind's table names the block's node and that
-		// block stands (itemLinkCarries), and its citing block tested by the view's state rule over
-		// its node and the predicate of the address form the view renders it under
+		// address an item kind's prefix names, read through graph_tuples_as_of_in, which leads
+		// with the far end and the kind, once whichever item the block is of, each counted only
+		// while its link row in that item kind's table names the block's node and that block
+		// stands (itemLinkCarries), and its citing block tested by the view's state rule over its
+		// node and the predicate of the address form the view renders it under
 		// (blockNodeVisibleAs), each chosen by the same prefix.
 		arm(`graph_tuples r`, ` and r.from_kind = '`+BlockNodeKind+`' and `+ItemBlockAddress(`r.from_id`)+`
 			and r.kind <> '`+graphstore.TuplePartOf+`' and `+currentTuple("r")+` and `+itemLinkCarried,
@@ -762,7 +761,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	// that node, stands (migration 20261116094101). An ask's shaped declares no targets, so it
 	// carries no types test.
 	if target.kind == BlockNodeKind {
-		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = 'shaped'
+		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'
 			and `+currentTuple("r")+` and `+blockRefCarries(graphstore.KindAsk, "r"),
 			liveVisibleNode(graphstore.KindAsk, `r.from_id`)))
 	}
@@ -770,12 +769,12 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		tables, _ := item.tables()
 		arms = append(arms,
 			// An item's citations in the store: the current `mentions` tuples out of the item's
-			// node, through an index led by the far end and the kind (graph_tuples_inbound or
-			// graph_tuples_as_of_in), each counted only while the refs row of its pair stands
-			// holding tuples_stored (citationCarries), as the view's tuple arm joins it, and held by
-			// no block of the item as its refs row would be (heldByABlock over the tuple's own
-			// columns). Its test of the citing item is the view's state rule and the item kind's
-			// predicate out of one read of its node row (liveVisibleNode).
+			// node, read through graph_tuples_as_of_in, which leads with the far end and the kind,
+			// each counted only while the refs row of its pair stands holding tuples_stored
+			// (citationCarries), as the view's tuple arm joins it, and held by no block of the item
+			// as its refs row would be (heldByABlock over the tuple's own columns). Its test of the
+			// citing item is the view's state rule and the item kind's predicate out of one read of
+			// its node row (liveVisibleNode).
 			arm(`graph_tuples r`, ` and r.from_kind = '`+string(item)+`' and r.kind = 'mentions' and `+currentTuple("r")+`
 				and `+citationCarries("r")+` and not `+heldByABlock("r"),
 				liveVisibleNode(string(item), `r.from_id`)),

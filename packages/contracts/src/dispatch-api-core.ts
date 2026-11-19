@@ -53,22 +53,33 @@ export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
  *
  *  `scopes` is the set that credential held at the act, recorded with it and never read back
  *  from the token: a person who narrows a token afterwards narrows what it may do next, and
- *  does not un-approve what it approved while it held `approve`. */
+ *  does not un-approve what it approved while it held `approve`.
+ *
+ *  `session_proven` is `true` only when the credential itself proved `session` (a broker-issued
+ *  token's own session); a session a personal token's request named is recorded without it. */
 export const ActorActSchema = z
   .strictObject({
     session: z.string().optional(),
+    session_proven: z.literal(true).optional(),
     token_id: z.string().optional(),
     token_name: z.string().optional(),
     scopes: z.array(z.enum(DISPATCH_SCOPES)).optional(),
   })
   .readonly();
 
+/** `proven` is `true` only when the write's credential itself proved the actor's `id`: a
+ *  browser's person, a person a credential acts for, or a broker-issued token's session. The
+ *  server sets it and never reads it from a body; an actor whose `id` the request only named (the
+ *  shared agent token, a personal token or a service token naming a session) and every row
+ *  written before the mark carry none, so a reader that trusts only proven writers trusts no
+ *  claimed one. */
 export const ActorSchema = z.union([
   z
     .strictObject({
       kind: z.literal("user"),
       id: z.string(),
       act: ActorActSchema.optional(),
+      proven: z.literal(true).optional(),
     })
     .readonly(),
   z
@@ -86,6 +97,7 @@ export const ActorSchema = z.union([
        *  none, a browser cookie, a personal token and a broker token scoped to its person
        *  included. */
       project: z.string().optional(),
+      proven: z.literal(true).optional(),
     })
     .readonly(),
   /** A server-owned writer, such as the architecture importer
@@ -225,9 +237,10 @@ export const ExternalLinkSchema = z
 
 export type ExternalLink = z.output<typeof ExternalLinkSchema>;
 
-/** A design-gate step a Legion deployment gates, as Dispatch stores it: `decisions` names the
- *  root issue's decisions document, `criteria` its Verification document, `spec` its primary
- *  document. */
+/** A design-gate step a Legion deployment gates, as Dispatch stores it: `criteria` names the root
+ *  issue's Verification document, `spec` its primary document. `decisions`, the step that named
+ *  its decisions document, is still read from a Dispatch of the release before; this build
+ *  writes it nowhere. */
 export type GatedStep = (typeof GATED_STEPS)[number];
 
 /** `project.created` and `project.updated` carry the project row itself. */
@@ -239,7 +252,8 @@ export const ProjectSchema = z
     /** The design-gate steps the Legion deployment that serves this project gates, in the order
      *  it gates them, as its daemon last published them. The empty list is a deployment that
      *  gates nothing and one that has not published yet alike: neither holds a step waiting for
-     *  a person. */
+     *  a person. A Dispatch of the release before may still answer `decisions`. */
+    // kept for one release: contract-read-side
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
     created_at: z.string(),
   })

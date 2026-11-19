@@ -3,10 +3,13 @@ package api
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's default assignee is the last step of the chain that decides who a question
@@ -119,18 +122,22 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The default this write moves from, read under the project row's own lock in the
-	// transaction that replaces it: two of these at once then name the pair each really moved,
-	// and the update below takes no lock this read has not already taken. The level is `for no
-	// key update`, which serialises this write against the other writers of the row and still
-	// lets a foreign key take its key share, as the room lock's rule requires of every lock on
-	// projects (TestNoForUpdateOnOwnerTables, docs/persistence.go's lockDocumentRoom). An
-	// unknown project is 404 NOT_FOUND here (pgx.ErrNoRows, writeHandlerError), before anything
-	// is written.
+	// The project's owner lock before its row's update, as every projects writer takes them
+	// (createIssue, lockEventOwner): taking the row first and the lock at the append below would
+	// wait, holding the row, on a create that holds the lock and waits for the row. The default
+	// this write moves from is read under that lock, in the statement after it
+	// (store.LockOwnerAndRead), in the transaction that replaces it: every writer of the default
+	// takes this lock first, so two of these at once name the pair each really moved, and no row
+	// lock is taken for it - the lock assigns no transaction id, and the update below is the
+	// first statement that writes. An unknown project is 404 NOT_FOUND here (pgx.ErrNoRows,
+	// writeHandlerError), before anything is written. Beside the default the read answers the
+	// transaction's now(), the moment the event below is appended at, which the move's tuples
+	// are dated at.
 	var previous string
-	if err := tx.QueryRow(r.Context(), `
-		select default_assignee from projects where key = $1 for no key update
-	`, key).Scan(&previous); err != nil {
+	var at time.Time
+	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(key), `
+		select default_assignee, now() from projects where key = $1
+	`, []any{key}, &previous, &at); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -139,28 +146,27 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	stored := projectDefaultAssignee{Project: key, Assignee: assignee}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
+	// Every open ask that falls through to the default now reaches the new default, who takes
+	// part in its thread, and whoever its delivery stood to loses it - and their part in the
+	// thread, where nothing of their own holds them there - under this write's event, queued in
+	// that event's batch right after it, in the same statements however many asks it moves
+	// (inboxwrite.QueueMoveWaiting). The project's owner lock is held exclusively since the first
+	// read above, so a create that falls through to the default, which takes that lock shared
+	// (inboxwrite.HoldDefault), committed before this write read anything or waits for it.
+	event, err := s.appendEventThen(r.Context(), tx, projectOwner(key).event(
 		"settings.project_default_assignee.updated", actor, projectDefaultAssigneeUpdated{
 			projectDefaultAssignee: stored,
 			ThreadLogins:           movedLogins(nil, previous, assignee),
 		},
-	))
+	), func(b *store.WriteBatch) error {
+		if previous == assignee {
+			return nil
+		}
+		return inboxwrite.QueueMoveWaiting(b, inboxwrite.DefaultMoved(key, at, actor), graphstore.LatestEvent)
+	})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
-	}
-	// Every open ask that falls through to the default now reaches the new default, who takes
-	// part in its thread, and whoever its delivery stood to loses it - and their part in the
-	// thread, where nothing of their own holds them there - under this write's event, in the same
-	// four statements however many asks it moves (dispatch://INFRA-1152 R2's move). The project's
-	// row is held `for no key update` since the first read above, so a create that falls through
-	// to the default, which holds that row `for share` (inboxwrite.HoldDefault), committed before
-	// this write read anything or waits for it.
-	if previous != assignee {
-		if err := inboxwrite.MoveWaiting(r.Context(), tx, inboxwrite.DefaultMoved(key, event)); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

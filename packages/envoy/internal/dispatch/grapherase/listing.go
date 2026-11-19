@@ -198,6 +198,7 @@ var derivedTables = map[string][]derivedRows{
 	"graph_nodes":  {{where: `held.kind = bound.kind and held.id = bound.id`}},
 	"graph_tuples": {{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`}},
 	"comments":     {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
+	"messages":     {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
 	"document_blocks": {
 		{where: `held.node_kind = bound.kind and held.node_address = bound.id`},
 		{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = any(bound.ancestors)`},
@@ -359,12 +360,14 @@ func (e *Erasure) readKeptMargins(ctx context.Context, tx pgx.Tx, read *erasedRe
 }
 
 // rowNames names a row of the tables a reader knows the rows of by an address, beside the key the
-// listing gives every row: a version by its document and its number, a comment and a block by
-// their node, a block's text and a document's history by the document, an event by its type.
+// listing gives every row: a version by its document and its number, a comment, a message and a
+// block by their node, a block's text and a document's history by the document, an event by its
+// type.
 var rowNames = map[string]string{
 	"artifact_versions": `select a.ref_key || ' version ' || held.number || coalesce(' of ' || a.issue_key, '')
 		from artifacts a where a.id = held.artifact_id`,
 	"comments":             `'comment:' || held.id::text`,
+	"messages":             `'message:' || held.id::text`,
 	"document_blocks":      `'block:' || held.node_id`,
 	"document_block_texts": `select a.ref_key || '#' || held.block_id || ' version ' || held.version from artifacts a where a.id = held.artifact_id`,
 	"doc_updates":          `select a.ref_key from artifacts a where a.id = held.artifact_id`,

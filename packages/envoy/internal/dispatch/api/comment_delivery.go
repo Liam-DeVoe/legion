@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // ResolvedMention binds a canonical mention to the session that owned it when the comment was
@@ -97,7 +98,7 @@ func (s *server) resolveMentionTarget(
 	// whose requested id is kept on the attempt row, from a capability refusal. A read that
 	// did not answer gives no session id here, so it sets no pin; an existing attempt keeps
 	// the one it holds only through the coalesce(session_id, ...) update further down.
-	if sessionID != "" && !strings.HasPrefix(resolveError, "no live session ") {
+	if sessionID != "" && !strings.HasPrefix(resolveError, noLiveSessionPrefix+" ") {
 		item.SessionID = new(sessionID)
 	}
 	return item
@@ -139,30 +140,11 @@ func (s *server) sendResolvedDelivery(
 		return sendOutcome{failure: target.ResolveError}
 	}
 	if target.SessionID == nil {
-		return sendOutcome{failure: "no live session"}
+		return sendOutcome{failure: noLiveSessionPrefix}
 	}
-	// What the delivered thing wants back, except in btw mode, which interrupts the session it
-	// reaches to ask something of it and so always waits on an answer, whatever the thing
-	// delivered says. The mode is read here, on every try, because a try after a listener
-	// take-over resolves the target again and sends in the mode that resolution names
-	// (mentionResolutionFor).
-	expectsReply := wanted
-	if target.Delivery == "btw" {
-		expectsReply = contracts.ExpectsReplyRequired
-	}
-	// Message is the body a second time, beside the frame, and the listener puts it on the
-	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
-	// does, so one send never carries a body twice at two lengths.
-	carried, _ := model.EventBody(body)
-	send, err := s.deps.Envoy.Send(ctx, dispatchenvoy.SendInput{
-		TargetSession:  *target.SessionID,
-		Message:        carried,
-		Payload:        frame,
-		IdempotencyKey: idempotencyKey,
-		Urgency:        deref(urgency),
-		ExpectsReply:   expectsReply,
-		ConnectedOnly:  connectedOnly,
-	})
+	send, err := s.deps.Envoy.Send(ctx, listenerSendInput(
+		*target.SessionID, target.Delivery, body, idempotencyKey, urgency, wanted, frame, connectedOnly,
+	))
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
 		return sendOutcome{failure: receiptTimeoutText}
 	}
@@ -178,6 +160,37 @@ func (s *server) sendResolvedDelivery(
 		return sendOutcome{duplicate: true, queued: queued}
 	}
 	return sendOutcome{envelopeID: &send.EnvelopeID, queued: queued}
+}
+
+// listenerSendInput is the listener send of one delivery to sessionID in mode delivery, carrying
+// frame. A targeted message Dispatch queues itself, for a session no store of the listener's
+// holds, is the envelope this send would have stored (queuedEnvelope), so both are built here.
+func listenerSendInput(
+	sessionID, delivery, body, idempotencyKey string, urgency *string,
+	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
+) dispatchenvoy.SendInput {
+	// What the delivered thing wants back, except in btw mode, which interrupts the session it
+	// reaches to ask something of it and so always waits on an answer, whatever the thing
+	// delivered says. The mode is read here, on every try, because a try after a listener
+	// take-over resolves the target again and sends in the mode that resolution names
+	// (mentionResolutionFor).
+	expectsReply := wanted
+	if delivery == "btw" {
+		expectsReply = contracts.ExpectsReplyRequired
+	}
+	// Message is the body a second time, beside the frame, and the listener puts it on the
+	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
+	// does, so one send never carries a body twice at two lengths.
+	carried, _ := model.EventBody(body)
+	return dispatchenvoy.SendInput{
+		TargetSession:  sessionID,
+		Message:        carried,
+		Payload:        frame,
+		IdempotencyKey: idempotencyKey,
+		Urgency:        deref(urgency),
+		ExpectsReply:   expectsReply,
+		ConnectedOnly:  connectedOnly,
+	}
 }
 
 // commentExpectsReply is what a mention of one comment wants back. A comment that joins no ask
@@ -234,37 +247,33 @@ type claimedCommentDelivery struct {
 // openCommentDeliveryAttempt records a fresh attempt as pending and claimed, before anything
 // is resolved or sent. The row is what makes the attempt durable: a process that dies before
 // the send leaves it pending rather than losing the attempt entirely. The comment's mention is
-// locked, so the highest attempt cannot move between reading it and inserting beside it: the
-// number is read first, because the attempt's node is addressed by it and goes in before the row
-// that names it (graphstore.AttemptOpened).
+// locked, so the highest attempt cannot move between its caller's read of it and the insert
+// beside it: attempt is that read's next number, and at the transaction's now() read beside it,
+// because the attempt's node is addressed by the number and goes in before the row that names it
+// (graphstore.AttemptOpened). The node, the row and what the row holds go in one batch.
 func openCommentDeliveryAttempt(
-	ctx context.Context, tx pgx.Tx, comment model.Comment, target ResolvedMention,
+	ctx context.Context, tx pgx.Tx, comment model.Comment, target ResolvedMention, attempt int, at time.Time,
 ) (attemptClaim, error) {
-	var claim attemptClaim
-	if err := tx.QueryRow(ctx, `
-		select coalesce(max(attempt), 0) + 1 from comment_deliveries where comment_id = $1 and target = $2
-	`, comment.ID, target.Target).Scan(&claim.attempt); err != nil {
-		return attemptClaim{}, err
-	}
+	claim := attemptClaim{attempt: attempt}
 	// A Retry's claim opens the attempt and records no event, so the node and what its row holds
 	// are the delivery machinery's, at the sentinel (graphstore.AttemptWriter).
-	key := graphstore.CommentAttempt(comment.ID, target.Target, claim.attempt)
-	nodeKind, nodeAddress, opened, err := graphstore.AttemptOpened(ctx, tx, key, graphstore.AttemptWriter)
-	if err != nil {
-		return attemptClaim{}, err
-	}
-	if err := tx.QueryRow(ctx, `
-		insert into comment_deliveries (comment_id, target, attempt, delivery, state, claimed_at, node_kind, node_address)
-		values ($1, $2, $3, $4, 'pending', now(), $5, $6)
-		returning claimed_at
-	`, comment.ID, target.Target, claim.attempt, target.Delivery, nodeKind, nodeAddress).Scan(&claim.claimedAt); err != nil {
-		return attemptClaim{}, err
-	}
-	opened, err = graphstore.AttemptStated(ctx, tx, opened, graphstore.AttemptWriter, key)
-	if err != nil {
-		return attemptClaim{}, err
-	}
-	if err := graphstore.Caused(ctx, tx, opened, graphstore.NoEvent); err != nil {
+	key := graphstore.CommentAttempt(comment.ID, target.Target, attempt)
+	nodeKind, nodeAddress, opened := graphstore.AttemptOpened(key, graphstore.AttemptWriter, at)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := graphstore.QueueNodes(b, opened); err != nil {
+			return err
+		}
+		b.Queue("", `
+			insert into comment_deliveries (comment_id, target, attempt, delivery, state, claimed_at, node_kind, node_address)
+			values ($1, $2, $3, $4, 'pending', now(), $5, $6)
+			returning claimed_at
+		`, comment.ID, target.Target, attempt, target.Delivery, nodeKind, nodeAddress,
+		).QueryRow(func(row pgx.Row) error { return row.Scan(&claim.claimedAt) })
+		if err := graphstore.QueueCaused(b, opened, graphstore.NoEvent); err != nil {
+			return err
+		}
+		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
+	}); err != nil {
 		return attemptClaim{}, err
 	}
 	return claim, nil
@@ -370,15 +379,32 @@ func (s *server) claimCommentDeliveryAttempt(
 		}
 		return claimed, nil
 	}
-	pending, err := scanCommentDelivery(tx.QueryRow(ctx, `
+	// The lowest pending attempt, locked, and, in the same round trip, the number an attempt this
+	// call opens would take with the transaction's now(), read under the mention's lock taken above
+	// (openCommentDeliveryAttempt).
+	var pending model.CommentDelivery
+	var pendingErr error
+	var next int
+	var at time.Time
+	reads := &pgx.Batch{}
+	reads.Queue(`
 		select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+`
 		from comment_deliveries
 		where comment_id = $1 and target = $2 and state = 'pending'
 		order by attempt
 		limit 1
 		for update
-	`, stored.ID, target.Target), &takeable)
-	switch {
+	`, stored.ID, target.Target).QueryRow(func(row pgx.Row) error {
+		pending, pendingErr = scanCommentDelivery(row, &takeable)
+		return nil
+	})
+	reads.Queue(`
+		select coalesce(max(attempt), 0) + 1, now() from comment_deliveries where comment_id = $1 and target = $2
+	`, stored.ID, target.Target).QueryRow(func(row pgx.Row) error { return row.Scan(&next, &at) })
+	if err := tx.SendBatch(ctx, reads).Close(); err != nil {
+		return claimedCommentDelivery{}, err
+	}
+	switch err := pendingErr; {
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		return claimedCommentDelivery{}, err
 	case err == nil && takeable:
@@ -394,7 +420,7 @@ func (s *server) claimCommentDeliveryAttempt(
 	default:
 		// No attempt is pending, or a live sender holds the one that is, so this retry gets one of
 		// its own rather than two senders driving the same attempt.
-		if claimed.attemptClaim, err = openCommentDeliveryAttempt(ctx, tx, stored, target); err != nil {
+		if claimed.attemptClaim, err = openCommentDeliveryAttempt(ctx, tx, stored, target, next, at); err != nil {
 			return claimedCommentDelivery{}, err
 		}
 	}
@@ -407,16 +433,18 @@ func (s *server) claimCommentDeliveryAttempt(
 // take claims pending, an attempt nobody else holds - never claimed, claimed by a sender that
 // never came back, or claimed by this caller while the send waited on its lane - under its
 // original number, so the listener deduplicates a send that did land. The claim it writes is this
-// send's own: every statement of the settle is scoped to it.
+// send's own: every statement of the settle is scoped to it. What the row then holds is stated in
+// the same batch, at the sentinel (graphstore.QueueAttempted).
 func (claimed *claimedCommentDelivery) take(ctx context.Context, tx pgx.Tx, pending *model.CommentDelivery) error {
-	if err := tx.QueryRow(ctx, `
-		update comment_deliveries set claimed_at = now()
-		where comment_id = $1 and target = $2 and attempt = $3
-		returning claimed_at
-	`, pending.CommentID, pending.Target, pending.Attempt).Scan(&claimed.claimedAt); err != nil {
-		return err
-	}
-	if err := graphstore.Attempted(ctx, tx, graphstore.CommentAttempt(pending.CommentID, pending.Target, pending.Attempt)); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("", `
+			update comment_deliveries set claimed_at = now()
+			where comment_id = $1 and target = $2 and attempt = $3
+			returning claimed_at
+		`, pending.CommentID, pending.Target, pending.Attempt).QueryRow(func(row pgx.Row) error { return row.Scan(&claimed.claimedAt) })
+		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent,
+			graphstore.CommentAttempt(pending.CommentID, pending.Target, pending.Attempt))
+	}); err != nil {
 		return err
 	}
 	claimed.attempt = pending.Attempt
@@ -436,14 +464,15 @@ func (claimed *claimedCommentDelivery) take(ctx context.Context, tx pgx.Tx, pend
 func (claimed *claimedCommentDelivery) standDown(
 	ctx context.Context, tx pgx.Tx, pending *model.CommentDelivery, resume attemptClaim,
 ) error {
-	if _, err := tx.Exec(ctx, `
-		update comment_deliveries set claimed_at = null
-		where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
-		  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`)
-	`, pending.CommentID, pending.Target, pending.Attempt, resume.claimedAt); err != nil {
-		return err
-	}
-	return graphstore.Attempted(ctx, tx, graphstore.CommentAttempt(pending.CommentID, pending.Target, pending.Attempt))
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("", `
+			update comment_deliveries set claimed_at = null
+			where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
+			  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`)
+		`, pending.CommentID, pending.Target, pending.Attempt, resume.claimedAt)
+		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent,
+			graphstore.CommentAttempt(pending.CommentID, pending.Target, pending.Attempt))
+	})
 }
 
 // commentDeliveryReceipt is the comment.delivery receipt an attempt row owes, read off that
@@ -483,12 +512,6 @@ func (s *server) completeCommentDelivery(
 	sent := recorded
 	sent.State, sent.Error = deliveryOutcome(outcome.failure, outcome.queued)
 	sent.Duplicate, sent.EnvelopeID = outcome.duplicate, outcome.envelopeID
-	// The session the settle records, where this settle made its node: the node is made before
-	// the receipt exists and moves onto it once it is appended (caused below).
-	var reached graphstore.Uncaused
-	// What the settle makes of the attempt, held for the receipt it appends, as the receipt's
-	// actor writes it.
-	var stated graphstore.Uncaused
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
 			settled, err := scanCommentDelivery(tx.QueryRow(ctx, `
@@ -499,26 +522,6 @@ func (s *server) completeCommentDelivery(
 				comment.ID, sent.Target, claim.attempt, claim.claimedAt,
 				sent.EnvelopeID, sent.State, sent.Error, sent.Duplicate,
 			))
-			if err != nil {
-				return settled, err
-			}
-			if stated, err = graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, actor, graphstore.CommentAttempt(comment.ID, settled.Target, settled.Attempt)); err != nil {
-				return settled, err
-			}
-			// The session this attempt reached, in the transaction that records that it did
-			// (graphstore.Reached): an attempt the listener took, sent or queued
-			// (model.DeliveryTaken), is a delivery and its session is a node from this moment,
-			// a pending or failed one reached nobody and writes nothing. A row
-			// whose resolution named no session carries a null, which records nothing either.
-			// The rest of what the delivery states - its delivered_to tuple, the session's page
-			// and that page's part_of - is the publisher's, recorded under the receipt this
-			// settle appends (outbox.deliveredGraph), so it is stated whether the attempt
-			// settles before its comment's event is published or after.
-			session := ""
-			if settled.SessionID != nil {
-				session = *settled.SessionID
-			}
-			reached, err = graphstore.Reached(ctx, tx, settled.State, session, actor, settled.CreatedAt)
 			return settled, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
@@ -533,11 +536,26 @@ func (s *server) completeCommentDelivery(
 		func(answered model.CommentDelivery) model.Event {
 			return commentDeliveryReceipt(comment, actor, answered)
 		},
-		func(ctx context.Context, tx pgx.Tx, receipt int64) error {
-			if err := graphstore.Caused(ctx, tx, reached, receipt); err != nil {
+		// The session this attempt reached, in the transaction that records that it did and
+		// under the receipt that records it (graphstore.QueueReached): an attempt the listener
+		// took, sent or queued (model.DeliveryTaken), is a delivery and its session is a node
+		// from this moment, a pending or failed one reached nobody and writes nothing. A row
+		// whose resolution named no session carries a null, which records nothing either.
+		// The rest of what the delivery states - its delivered_to tuple, the session's page
+		// and that page's part_of - is the publisher's, recorded under the receipt this
+		// settle appends (outbox.deliveredGraph), so it is stated whether the attempt
+		// settles before its comment's event is published or after. Then what the settle made
+		// of the attempt, under the same receipt, as the receipt's actor writes it
+		// (graphstore.QueueAttempted).
+		func(b *store.WriteBatch, settled model.CommentDelivery) error {
+			session := ""
+			if settled.SessionID != nil {
+				session = *settled.SessionID
+			}
+			if _, err := graphstore.QueueReached(b, settled.State, session, actor, settled.CreatedAt, graphstore.LatestEvent); err != nil {
 				return err
 			}
-			return graphstore.Caused(ctx, tx, stated, receipt)
+			return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.CommentAttempt(comment.ID, settled.Target, settled.Attempt))
 		},
 	)
 }
@@ -566,11 +584,9 @@ func (s *server) supersedeCommentDelivery(
 ) (model.CommentDelivery, error) {
 	failed := bound
 	failed.State, failed.Error = deliveryOutcome(mentionSupersededError, false)
-	// What the supersede makes of the attempt, held for the receipt it appends.
-	var stated graphstore.Uncaused
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, failed),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			superseded, err := scanCommentDelivery(tx.QueryRow(ctx, `
+			return scanCommentDelivery(tx.QueryRow(ctx, `
 				update comment_deliveries set state = 'failed', error = $5, claimed_at = null
 				where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
 				  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`)
@@ -578,11 +594,6 @@ func (s *server) supersedeCommentDelivery(
 				returning `+commentDeliveryColumns,
 				comment.ID, bound.Target, claim.attempt, claim.claimedAt, mentionSupersededError,
 			))
-			if err != nil {
-				return superseded, err
-			}
-			stated, err = graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, actor, graphstore.CommentAttempt(comment.ID, superseded.Target, superseded.Attempt))
-			return superseded, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
@@ -596,8 +607,9 @@ func (s *server) supersedeCommentDelivery(
 		func(answered model.CommentDelivery) model.Event {
 			return commentDeliveryReceipt(comment, actor, answered)
 		},
-		func(ctx context.Context, tx pgx.Tx, receipt int64) error {
-			return graphstore.Caused(ctx, tx, stated, receipt)
+		// What the supersede made of the attempt, under its receipt (graphstore.QueueAttempted).
+		func(b *store.WriteBatch, superseded model.CommentDelivery) error {
+			return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.CommentAttempt(comment.ID, superseded.Target, superseded.Attempt))
 		},
 	)
 }
@@ -683,14 +695,25 @@ func (s *server) recordCommentDeliveryResolution(
 		return model.CommentDelivery{}, claim, false, err
 	}
 	defer tx.Rollback(ctx)
-	recorded, err := scanCommentDelivery(tx.QueryRow(ctx, `
-		update comment_deliveries
-		set claimed_at = now(), delivery = $5, session_id = coalesce(session_id, $6), resolve_error = $7
-		where comment_id = $1 and target = $2 and attempt = $3
-		  and state = 'pending' and claimed_at = $4
-		returning `+commentDeliveryColumns+`, claimed_at`,
-		comment.ID, target.Target, claim.attempt, claim.claimedAt, target.Delivery, target.SessionID, resolveError,
-	), &renewed.claimedAt)
+	// The record and what the row then holds, in one batch, at the sentinel
+	// (graphstore.QueueAttempted): an attempt another sender resumed meanwhile is written by
+	// neither.
+	var recorded model.CommentDelivery
+	err = store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("", `
+			update comment_deliveries
+			set claimed_at = now(), delivery = $5, session_id = coalesce(session_id, $6), resolve_error = $7
+			where comment_id = $1 and target = $2 and attempt = $3
+			  and state = 'pending' and claimed_at = $4
+			returning `+commentDeliveryColumns+`, claimed_at`,
+			comment.ID, target.Target, claim.attempt, claim.claimedAt, target.Delivery, target.SessionID, resolveError,
+		).QueryRow(func(row pgx.Row) error {
+			var err error
+			recorded, err = scanCommentDelivery(row, &renewed.claimedAt)
+			return err
+		})
+		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, graphstore.CommentAttempt(comment.ID, target.Target, claim.attempt))
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.CommentDelivery{
 			CommentID: comment.ID, Target: target.Target, Attempt: claim.attempt,
@@ -698,9 +721,6 @@ func (s *server) recordCommentDeliveryResolution(
 		}, claim, false, nil
 	}
 	if err != nil {
-		return model.CommentDelivery{}, claim, false, err
-	}
-	if err := graphstore.Attempted(ctx, tx, graphstore.CommentAttempt(comment.ID, target.Target, claim.attempt)); err != nil {
 		return model.CommentDelivery{}, claim, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1075,6 +1095,91 @@ type commentReplyInput struct {
 	ReplyToBlock *string `json:"reply_to_block"`
 }
 
+// commentReplyPlan is everything a delivery callback's reply is decided on, read and planned
+// before the route takes its first row lock (replyRowPlan), with the thread that reply joins.
+type commentReplyPlan struct {
+	replyRowPlan
+	// thread is the head of the thread the reply joins, with ReplyBlock set to the block of
+	// the answered comment the reply names (nil when it names none).
+	thread commentThreadTarget
+	// stored is what the reply is in the node and tuple store (commentStoreWrite): its node,
+	// written in the batch that inserts its row, and its facts, what it answers among them,
+	// written after its event.
+	stored commentStoreWrite
+	// inbox is the reply's write in its thread and recording its record there, queued after its
+	// event (inboxwrite.PlanRecord), for a reply whose pointers are stated.
+	inbox     inboxwrite.Write
+	recording inboxwrite.Recording
+}
+
+// planCommentReply plans one delivery callback's reply under the comment's owner lock and above
+// every row lock: the thread climb, the block the reply names with the index its comment owes,
+// the reply's own index and references, and what it is in the node and tuple store, for an id
+// and a created_at reserved here. Nothing it reads is read again below, and nothing it plans is
+// written here. who is the session replying, which a block it may not see is refused to.
+//
+// The reply row is not inserted yet, so what no read of that row can answer is handed over: the
+// document its `#id`s resolve against, named by the fields that row will hold (planPendingItem,
+// refs.PendingSource), exactly as the comments route hands it over for a row it has only
+// queued. The named block is addressed under the reply's owner here for the same reason: the
+// read that gives a stored reply its block would find no row yet, and addressing a document's
+// comment is itself a read (ownerAddress).
+func (s *server) planCommentReply(
+	ctx context.Context, tx pgx.Tx, who model.Actor, comment model.Comment, body string, replyToBlock *string,
+) (commentReplyPlan, error) {
+	var plan commentReplyPlan
+	var err error
+	owner := ownerOf(comment.IssueKey, comment.ArtifactID)
+	if plan.thread, err = s.threadHeadOf(ctx, tx, owner, comment); err != nil {
+		plan.refusal, err = deferredRefusal(err)
+		return plan, err
+	}
+	if replyToBlock != nil {
+		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT")
+		if err != nil {
+			plan.refusal, err = deferredRefusal(err)
+			return plan, err
+		}
+		plan.parentIndex, plan.thread.ReplyBlock = repair, block
+		issueKey, project, slug, err := s.ownerAddress(ctx, tx, owner)
+		if err != nil {
+			return plan, err
+		}
+		plan.replyBlock = block.replyBlock(issueKey, project, slug)
+	}
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, clock_timestamp()`).Scan(&plan.id, &plan.createdAt); err != nil {
+		return plan, err
+	}
+	// The reply carries no anchor - a callback reply names none - and belongs to whatever the
+	// comment it answers belongs to, in that one's project.
+	replyProject, replyParties, err := graphstore.ScopeOf(ctx, tx, comment.IssueKey, comment.ArtifactID)
+	if err != nil {
+		return plan, err
+	}
+	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
+		return plan, err
+	}
+	// What the reply answers is stated beside its node, as the comment route states a reply's
+	// (statePointers), and its row says so in its own insert (tuples_stored).
+	plan.stored.statePointers(graphstore.CommentPointers{
+		ReplyTo: deref(plan.thread.ReplyTo), AskID: deref(plan.thread.AskID),
+		Answers: deref(plan.thread.Answers), RepliesToBlock: deref(plan.thread.ReplyBlock.nodeID()),
+	})
+	plan.changes, plan.write, plan.indexed, err = s.planPendingItem(ctx, tx, refs.ItemComment, plan.id, body, refs.PendingSource{
+		IssueKey: comment.IssueKey, ArtifactID: comment.ArtifactID, ReplyTo: plan.thread.ReplyTo, AskID: plan.thread.AskID,
+	}, plan.stored.scope(), plan.createdAt, true)
+	if err != nil || !plan.stored.pointersStored {
+		return plan, err
+	}
+	// The reply's thread in the Inbox, recorded once its event is in, as a comment's is
+	// (createCommentFor): its record names the node its head pointer names, whose tuple is queued
+	// and not written (commentRepliesTo).
+	plan.inbox = commentRepliesTo(inboxwrite.Comment(plan.id, who, plan.createdAt, comment.IssueKey, comment.ArtifactID, replyProject),
+		plan.thread.AskID, plan.thread.ReplyTo)
+	plan.recording, err = inboxwrite.PlanRecord(ctx, tx, plan.inbox)
+	return plan, err
+}
+
 func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires an agent bearer token")
@@ -1124,8 +1229,26 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// Everything this reply is decided on, its own body included, is read here, before the
+	// first statement that takes a row lock, so no document work runs while the transaction
+	// holds a transaction id (INFRA-636). It is all decided under the comment's owner lock,
+	// which lockedCommentForDelivery took and which assigns no transaction id
+	// (store.LockOwner), so it reads what it read below it. A refusal it raises is raised where
+	// it was raised, after the mention and the attempt have been checked, so no answer of this
+	// route moves; every statement it plans is written with the reply's own writes.
+	var plan commentReplyPlan
+	if input.Body != nil {
+		if plan, err = s.planCommentReply(r.Context(), tx, actor, comment, *input.Body, input.ReplyToBlock); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// The mention rows are read, not locked: nothing updates or deletes one, their only writer
+	// inserts them under the comment's owner lock (createCommentFor), and this read holds that
+	// lock, so a FOR UPDATE here would guard nothing the advisory lock does not and would open
+	// the transaction id window a statement earlier.
 	rows, err := tx.Query(r.Context(), `
-		select target from comment_mentions where comment_id = $1 order by target for update
+		select target from comment_mentions where comment_id = $1 order by target
 	`, comment.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1222,17 +1345,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		attempt = updated
-		stated, err := graphstore.AttemptStated(r.Context(), tx, graphstore.Uncaused{}, actor, graphstore.CommentAttempt(comment.ID, attempt.Target, attempt.Attempt))
+		// The receipt, and under it what the attempt's row now holds (graphstore.QueueAttempted).
+		event, err := s.appendEventThen(r.Context(), tx, commentDeliveryReceipt(comment, actor, attempt), func(b *store.WriteBatch) error {
+			return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.CommentAttempt(comment.ID, attempt.Target, attempt.Attempt))
+		})
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		event, err := s.appendEvent(r.Context(), tx, commentDeliveryReceipt(comment, actor, attempt))
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if err := graphstore.Caused(r.Context(), tx, stated, event.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1253,72 +1370,71 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// walks `reply_to` up to the head of the thread, so a reply anywhere under an ask stores
 	// that ask's `ask_id` - the column every ask read, the Inbox row and the ask card select
 	// on - instead of a bare `reply_to` none of them can see. The comment it answers is
-	// already loaded and locked, so the climb starts there rather than re-reading it.
-	thread, err := s.threadHeadOf(r.Context(), tx, ownerOf(comment.IssueKey, comment.ArtifactID), comment)
-	if err != nil {
-		s.writeHandlerError(w, err)
+	// already loaded under its owner's lock, so the climb starts there rather than re-reading
+	// it. `reply_to_block` names a block of that same comment, the only item the request names
+	// — never a part of the ask the thread hangs under, which a reply naming `ask_id` on the
+	// comments route names. Both are read above the locks (planCommentReply), and the refusal
+	// either raises is raised here, where it was raised.
+	if plan.refusal != nil {
+		s.writeHandlerError(w, plan.refusal)
 		return
 	}
-	// `reply_to_block` names a block of the comment this callback answers, the only item the
-	// request names, which lockedCommentForDelivery holds after its owner — never a part of the
-	// ask the thread hangs under, which a reply naming `ask_id` on the comments route names.
-	var block *namedBlock
-	if input.ReplyToBlock != nil {
-		block, err = s.namedReplyBlock(r.Context(), tx, actor, refs.ItemComment, comment.ID, *input.ReplyToBlock)
-		if err != nil {
+	// A session replying in an ask's thread follows the ask: the follow is planned here, under
+	// the owner lock the reply's write already holds and before any of its writes
+	// (asks.PlanFollowAuthor), and queued with what the reply states, after its event.
+	var follow asks.PlannedFollow
+	if plan.thread.AskID != nil {
+		var err error
+		if follow, err = asks.PlanFollowAuthor(r.Context(), tx, *plan.thread.AskID, actor, plan.createdAt); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
+	// The index the named block's comment was found to owe is written here, before the reply's
+	// own writes, as refs.IndexItemIfOwed writes one.
+	if err := plan.parentIndex.Write(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
 	// with no `turn` does.
-	turn := thread.replyTurn(actor, nil)
-	// The reply's own id and time, read before the row so its node can be written first. The
-	// time is a clock read, as a comment's created_at defaults to clock_timestamp() (migration
-	// 0065), and the insert writes it rather than taking the default, so the row, its node and
-	// the facts it projects all carry one time (comment_create.go says what reads both).
-	var rowID string
-	var createdAt time.Time
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, clock_timestamp()`).Scan(&rowID, &createdAt); err != nil {
+	turn := plan.thread.replyTurn(actor, nil)
+	// The row's id and created_at were taken above, so the reply's own index and references
+	// could be planned for them with nothing held; both are written explicitly here, as the
+	// comments route writes them (comment_create.go). The reply's node goes in before the row,
+	// whose foreign key names it, in the one batch that writes the row (commentStoreWrite), and
+	// the row says in its own insert whether its pointers are stated (tuples_stored).
+	var reply model.Comment
+	nodeKind, nodeAddress := plan.stored.rowNode()
+	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+		if err := plan.stored.writeNode(b); err != nil {
+			return err
+		}
+		b.Queue("", `
+			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, tuples_stored, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			returning `+commentColumns+`
+		`, plan.id, comment.IssueKey, comment.ArtifactID, author, *input.Body, plan.thread.ReplyTo, plan.thread.AskID, turn,
+			plan.thread.ReplyBlock.nodeID(), plan.thread.Answers, nodeKind, nodeAddress, plan.stored.pointersStored, plan.createdAt).QueryRow(func(row pgx.Row) error {
+			var err error
+			reply, err = scanComment(row)
+			return err
+		})
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// What the reply is in the node and tuple store. It carries no anchor - a callback reply
-	// names none - and belongs to whatever the comment it answers belongs to, in that one's
-	// project. What it answers is stated beside its node, as the comment route states a reply's
-	// (statePointers), and its row says so in its own insert (tuples_stored).
-	project, parties, err := graphstore.ScopeOf(r.Context(), tx, comment.IssueKey, comment.ArtifactID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, nil, comment.ArtifactID, project, parties)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	stored.statePointers(graphstore.CommentPointers{
-		ReplyTo: deref(thread.ReplyTo), AskID: deref(thread.AskID),
-		Answers: deref(thread.Answers), RepliesToBlock: deref(block.nodeID()),
-	})
-	if err := stored.writeNode(r.Context(), tx); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	nodeKind, nodeAddress := stored.rowNode()
-	reply, err := scanComment(tx.QueryRow(r.Context(), `
-		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, tuples_stored, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-		returning `+commentColumns+`
-	`, rowID, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn,
-		block.nodeID(), thread.Answers, nodeKind, nodeAddress, stored.pointersStored, createdAt))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	waitingOn := thread.waitingOnAfter(turn)
-	referenceChanges, indexed, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, reply.ID, reply.Body, s.deps.ServerURL, reply.CreatedAt)
-	if err != nil {
+	// The block the reply names was read above its locks, where its row did not exist yet, so
+	// the reply carries it from the plan rather than reading it back: the read that gives a
+	// stored reply its block is one statement of the transaction id's window, and the comments
+	// route carries the same block for the same reason (comment_create.go).
+	reply.ReplyBlock = plan.replyBlock
+	waitingOn := plan.thread.waitingOnAfter(turn)
+	// The reply's blocks, the mentions each holds and its own references were planned above;
+	// their statements run here as one batch of their own, where the index of a reply this
+	// route wrote has always run.
+	if err := store.RunWrite(r.Context(), tx, plan.write); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1329,19 +1445,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The attempt is sent and answered by the reply, whose node the write above stated.
-	answeredAttempt, err := graphstore.AttemptStated(r.Context(), tx, graphstore.Uncaused{}, actor, graphstore.CommentAttempt(comment.ID, attempt.Target, input.Attempt))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, reply)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	payload, err := s.commentEventPayload(
-		r.Context(), tx, &reply, artifactName, thread.eventThread(waitingOn), referenceChanges,
+		r.Context(), tx, &reply, artifactName, plan.thread.eventThread(waitingOn), plan.changes,
 	)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1352,11 +1462,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The reply's thread in the Inbox, recorded once its event is in, as a comment's is
-	// (createCommentFor).
-	inbox := inboxwrite.Comment(reply.ID, actor, reply.CreatedAt, reply.IssueKey, reply.ArtifactID, project)
-	if stored.pointersStored {
-		payload.ThreadLogins = inbox.ThreadLogins(payload.ThreadLogins)
+	// A reply whose pointers are stated is passed by the trigger user_threads_comment, so the
+	// event names the row its writer's record is about to keep beside the rows already there
+	// (planCommentReply).
+	if plan.stored.pointersStored {
+		payload.ThreadLogins = plan.inbox.ThreadLogins(payload.ThreadLogins)
 	}
 	event, err := s.appendEvent(r.Context(), tx, ownerOf(reply.IssueKey, reply.ArtifactID).event(
 		"comment.answered", actor, payload,
@@ -1365,64 +1475,54 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// What the answer made of the attempt, under the comment.answered event that records it.
-	if err := graphstore.Caused(r.Context(), tx, answeredAttempt, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := refs.Stamp(r.Context(), tx, graphstore.KindComment, reply.ID, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// What the reply states, under the event that stored it: its node's cause, its two base
-	// attributes, the artifact it is owned by, and what it answers.
-	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// What the reply's body is in the store, under the same event: its blocks' nodes, their
-	// part_of and the links they hold, and its citations (refs.ReplaceCountedItem).
-	if err := graphstore.Caused(r.Context(), tx, indexed, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// Who wrote the reply, as the node and tuple store holds it: a session answering a mention
-	// is the first write that records that session, so its node is made here (graphstore.Authored).
-	// A reply left out of the store has no node to author, so this is skipped with the rest.
-	if !stored.unprojected {
-		if err := graphstore.Authored(r.Context(), tx, graphstore.KindComment, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	// A session replying in an ask's thread follows the ask, and is a node of the store from
-	// this write on, caused by the comment.answered event appended above. It comes after the
-	// author's own write for the reason the comment path takes them in that order: that write
-	// takes the author's person node and their session node in one statement in ascending
-	// (kind, id), and a follow before it would take the pair in the other order (R17).
-	if thread.AskID != nil {
-		if _, err := asks.FollowAuthor(r.Context(), tx, *thread.AskID, actor, createdAt, event.ID); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	// What the answer makes of the attempt it answers: the flip above records it sent, and an
-	// attempt that reads sent is one the store owes its session a node for.
+	// The stamp of the reply's references and everything the reply states in the node and tuple
+	// store, in one batch right after its event: the reply's node's cause, its two base
+	// attributes, the artifact it is owned by and what it answers; what its body is in the store -
+	// its blocks' nodes, their part_of and the links they hold, and its citations; who wrote it,
+	// which for a session answering a mention is the first write that records that session
+	// (graphstore.QueueAuthored), skipped with the rest for a reply left out of the store; the
+	// follow of the ask a session replies in the thread of, which comes after the author's own
+	// write for the reason the comment path takes them in that order - that write takes the
+	// author's person node and their session node in one statement in ascending (kind, id), and a
+	// follow before it would take the pair in the other order (R17); what the answer makes of the
+	// attempt it answers, which the flip above records sent, an attempt the store owes its session
+	// a node for, and what the attempt's row then holds (graphstore.QueueAttempted); and last who
+	// took part and whom the reply reached, as a comment's write records it (createCommentFor).
 	answered := answeredDelivery{was: attempt.State, itemKind: graphstore.KindComment, itemID: comment.ID}
 	if attempt.SessionID != nil {
 		answered.session = *attempt.SessionID
 	}
-	if err := recordAnsweredDelivery(r.Context(), tx, answered, actor, event.CreatedAt, event.ID); err != nil {
+	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+		refs.QueueStamp(b, graphstore.KindComment, reply.ID)
+		if err := plan.stored.caused(b, event.ID); err != nil {
+			return err
+		}
+		if err := graphstore.QueueCaused(b, plan.indexed, event.ID); err != nil {
+			return err
+		}
+		if !plan.stored.unprojected {
+			if err := graphstore.QueueAuthored(b, graphstore.KindComment, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
+				return err
+			}
+		}
+		if plan.thread.AskID != nil {
+			if _, err := follow.Queue(b, event.ID); err != nil {
+				return err
+			}
+		}
+		if err := queueAnsweredDelivery(b, answered, actor, event.CreatedAt, event.ID); err != nil {
+			return err
+		}
+		if err := graphstore.QueueAttempted(b, actor, event.ID, graphstore.CommentAttempt(comment.ID, attempt.Target, input.Attempt)); err != nil {
+			return err
+		}
+		if plan.stored.pointersStored {
+			return plan.recording.Queue(b, event.ID)
+		}
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
-	}
-	// Who took part and whom the reply reached, as a comment's write records it (createCommentFor),
-	// after the record of the attempt it answered.
-	if stored.pointersStored {
-		if err := inboxwrite.Record(r.Context(), tx, inbox, event.ID); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
@@ -1435,8 +1535,9 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 
 // answeredDelivery is what one answer makes of the attempt it answers: the session that attempt
 // names, the state the row recorded before the answer, and the thing the attempt carried as the
-// store addresses it. itemID is empty for a thing this child gives no node, which a message is
-// (dispatch://INFRA-1152 owns messages and their deliveries).
+// store addresses it. itemID is empty for a thing whose delivery this store records no tuple of
+// yet, which a message is: a message is a node of its project, but the change that records its
+// deliveries is a later one.
 type answeredDelivery struct {
 	session  string
 	was      string
@@ -1444,7 +1545,7 @@ type answeredDelivery struct {
 	itemID   string
 }
 
-// recordAnsweredDelivery records, in the answering transaction and under the event that records
+// queueAnsweredDelivery queues, in the answering transaction and under the event that records
 // the answer, what that answer makes of the attempt it answers. An answer flips its attempt to
 // `sent` whatever the row recorded before: a failed attempt - a stale receipt, an error the
 // session itself reported, a reply callback that failed a frame the session plainly received -
@@ -1461,27 +1562,28 @@ type answeredDelivery struct {
 // The delivered_to tuple is stated only where this flip is what makes the attempt a delivery.
 // An attempt the listener had already taken carries its own comment.delivery receipt, and the
 // outbox's record of that receipt states the tuple (outbox's mentionReached); stating it again
-// under this event would write one delivery as two. A thing this child gives no node carries no
-// tuple at all, and a session past the bound is no far end the store can key.
+// under this event would write one delivery as two. A thing whose delivery this store records no
+// tuple of yet carries no tuple at all, and a session past the bound is no far end the store can
+// key.
 //
-// It runs after the write that records who answered (graphstore.Authored), which takes the
-// author's person node and their session node in one statement in ascending (kind, id). The
+// It is queued after the write that records who answered (graphstore.QueueAuthored), which takes
+// the author's person node and their session node in one statement in ascending (kind, id). The
 // session recorded here is that same session, so taking it first would be the pair in the other
 // order, which is the cycle R17's node order exists to keep out.
-func recordAnsweredDelivery(
-	ctx context.Context, tx pgx.Tx, answered answeredDelivery, actor model.Actor, at time.Time, event int64,
+func queueAnsweredDelivery(
+	b *store.WriteBatch, answered answeredDelivery, actor model.Actor, at time.Time, event int64,
 ) error {
 	session := strings.TrimSpace(answered.session)
 	if session == "" {
 		return nil
 	}
-	if _, err := graphstore.SessionRecorded(ctx, tx, session, actor, at, event); err != nil {
+	if _, err := graphstore.QueueSessionRecorded(b, session, actor, at, event); err != nil {
 		return fmt.Errorf("record the session the answered attempt reached: %w", err)
 	}
 	if answered.itemID == "" || model.DeliveryTaken(answered.was) || !graphstore.AddressFits(session) {
 		return nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
+	if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{{
 		FromKind: answered.itemKind, FromID: answered.itemID, Kind: graphstore.TupleDeliveredTo,
 		ToKind: graphstore.KindSession, ToID: session,
 		At: at, Who: actor, SourceEvent: event, Asserted: true,

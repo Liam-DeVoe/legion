@@ -1918,7 +1918,7 @@ func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *te
 		})
 		settleCurrentGeneration(t, service, artifactID)
 		before := liveTree(t, service, artifactID)
-		// The holder is decided on its ask, which holds its answer state (dispatch://INFRA-1150 R3);
+		// The holder is decided on its ask, which holds its answer state;
 		// no attribute of its block in the document does.
 		if state := blockAskOn(t, service, artifactID, "ask-lists").State; state != "answered" {
 			t.Fatalf("the decision holding it is %v, want it answered", state)
@@ -2316,7 +2316,7 @@ func followEmptyQuestionStep(
 // build, so the decision and its ask row are read for them afterwards.
 const askRepairQuestion = "Which way now?"
 
-// emptyQuestionStep is why an ask edit of the decision blockID is refused while no paragraph of
+// emptyQuestionStep is why an ask edit of the ask blockID is refused while no paragraph of
 // it holds text: the one step that repairs it, this same ask edit again carrying a question,
 // which the route writes into the block whatever its content rule says.
 func emptyQuestionStep(blockID string) string {
@@ -2324,7 +2324,7 @@ func emptyQuestionStep(blockID string) string {
 		"which writes it into the block", blockID)
 }
 
-// askEditRefusal is err, the refusal of an ask edit of the decision blockID, as the caller reads
+// askEditRefusal is err, the refusal of an ask edit of the ask blockID, as the caller reads
 // it, held to what no refusal may do: send the caller to edit something else before this decision
 // (sendsTheCallerOn), or name a decision of before that already reads as one, which would send a
 // caller nowhere. A decision it names that is not the one being edited must break the content
@@ -3411,7 +3411,7 @@ func answerIndexedAsk(t *testing.T, service *Service, artifactID, blockID string
 
 // A decided ask given a second list is marked invalid and keeps its decided row; once the second
 // list is gone, settlement clears invalid and the block carries its decided wording again. Its
-// decided state is its ask's, on its node and its row (dispatch://INFRA-1150 R3), and no attribute
+// decided state is its ask's, on its node and its row, and no attribute
 // of the block holds it.
 func TestSettlementMarksADecidedAskWithASecondBulletListInvalid(t *testing.T) {
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
@@ -4939,15 +4939,85 @@ func snapshotAndCommitVersion(t *testing.T, service *Service, artifactID string,
 // settlement after a quiet settle delay does; settleNow settles the room as it stands.
 func settleCurrentGeneration(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to become durable: %v", err)
-	}
+	awaitRoomAppends(t, service, artifactID, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
 	settleNow(service, artifactID)
+}
+
+// appendStall is how long awaitRoomAppends lets the service land no append at all, while the room
+// it waits for still counts one, before it fails: three times the longest such stall measured, as
+// docs/testing.md asks of a bound. With this bound lifted to 10 min, the package as CI runs it, on
+// a 288-CPU machine at a load of 230 when it began (2026-11-16), had 927 of these waits go more
+// than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 5 s
+// or more; the longest went 5.363 s.
+const appendStall = 16 * time.Second
+
+// awaitRoomAppends waits until room's live updates have reached its persistence or landed, by
+// wait - the service's waitForPendingUpdates or waitForDurableAppends, which the room's idle
+// signal wakes - and fails the test if they do not. It puts no span on the wait: a room's appends
+// queue behind every other room's on the service's room-appends pool, so how long they take grows
+// with how many rooms the test drives at once, one per CPU for a test whose subtests run in
+// parallel, and with the machine's load. It fails on appends that have stopped instead: no append
+// landed anywhere in the service and the room's own counts unchanged for appendStall, or the run's
+// deadline 30 s away, so that the failure names this wait rather than the binary's timeout.
+func awaitRoomAppends(t *testing.T, service *Service, room, what string, wait func(context.Context, string) error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waited := make(chan error, 1)
+	go func() { waited <- wait(ctx, room) }()
+	type progress struct {
+		landed  uint64
+		pending int
+		durable int64
+	}
+	read := func() progress {
+		pending, durable := roomAppendCounts(service, room)
+		return progress{landed: service.appendFigures.batches.Load(), pending: pending, durable: durable}
+	}
+	last, movedAt := read(), time.Now()
+	deadline, bounded := t.Deadline()
+	check := time.NewTicker(100 * time.Millisecond)
+	defer check.Stop()
+	for {
+		select {
+		case err := <-waited:
+			if err != nil {
+				t.Fatalf("wait for live updates to %s: %v", what, err)
+			}
+			return
+		case now := <-check.C:
+			if current := read(); current != last {
+				last, movedAt = current, now
+			}
+			var why string
+			switch {
+			case now.Sub(movedAt) >= appendStall:
+				why = fmt.Sprintf("no append landed in the service for %s", appendStall)
+			case bounded && deadline.Sub(now) < 30*time.Second:
+				why = "the run's deadline is 30 s away"
+			default:
+				continue
+			}
+			cancel()
+			<-waited
+			t.Fatalf("wait for live updates to %s: %s, and the room counts %d updates its persistence has not taken and %d appends that have not landed",
+				what, why, last.pending, last.durable)
+		}
+	}
+}
+
+// roomAppendCounts is what room's record counts: updates its persistence has not taken, and
+// durable appends that have not landed. A room with no record counts neither.
+func roomAppendCounts(service *Service, room string) (pending int, durable int64) {
+	value, ok := service.rooms.Load(room)
+	if !ok {
+		return 0, 0
+	}
+	state := value.(*roomState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.pendingUpdates, state.durableAppends.Load()
 }
 
 // settleNow runs the room's settlement at its current generation at once, whatever the room has not
@@ -5333,9 +5403,7 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 		t.Fatalf("begin blocker transaction: %v", err)
 	}
 	defer blocker.Rollback(context.Background())
-	if _, err := blocker.Exec(context.Background(), `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
+	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -5523,9 +5591,7 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin blocker transaction: %v", err)
 	}
-	if _, err := blocker.Exec(context.Background(), `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
+	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	settled := make(chan struct{})
@@ -6091,14 +6157,15 @@ func waitForDocumentText(t *testing.T, service *Service, artifactID, want string
 	t.Fatalf("document text = %q (%v), want %q", got, err, want)
 }
 
-// waitForAnswersText waits for the document as an agent reads it (TextWithAnswers), each ask block
-// carrying its ask's answer state and answer rendered on read from the ask, to be want.
-func waitForAnswersText(t *testing.T, service *Service, artifactID, want string) {
+// waitForAgentText waits for the document as an agent reads it (TextWithAsks) to be markdown, with
+// asks the lines of its asks member (askLines).
+func waitForAgentText(t *testing.T, service *Service, artifactID, markdown, asks string) {
 	t.Helper()
 	read := func() (string, error) {
-		text, _, _, err := service.TextWithAnswers(context.Background(), artifactID, false)
-		return text, err
+		text, err := service.TextWithAsks(context.Background(), artifactID, false)
+		return text.Markdown + "\nasks:\n" + askLines(text.Asks), err
 	}
+	want := markdown + "\nasks:\n" + asks
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if got, err := read(); err == nil && got == want {
@@ -6107,7 +6174,7 @@ func waitForAnswersText(t *testing.T, service *Service, artifactID, want string)
 		time.Sleep(5 * time.Millisecond)
 	}
 	got, err := read()
-	t.Fatalf("document text with its asks' answers = %q (%v), want %q", got, err, want)
+	t.Fatalf("document text with its asks = %q (%v), want %q", got, err, want)
 }
 
 func waitForDocumentVersion(t *testing.T, database *store.Store, artifactID string, number int) model.Version {
@@ -6272,8 +6339,12 @@ func TestAWarmedReadSurvivesItsRoomsEviction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("name a version of a room evicted once warm: %v", err)
 			}
+			// The version's insert is a write, which the transaction's write phase runs at Commit.
+			if err := ledger.Commit(ctx); err != nil {
+				t.Fatalf("commit the named version: %v", err)
+			}
 			var markdown string
-			if err := tx.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, result.Version.Number).Scan(&markdown); err != nil {
+			if err := service.store.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, result.Version.Number).Scan(&markdown); err != nil {
 				t.Fatal(err)
 			}
 			if markdown != "The quick brown fox\n" {

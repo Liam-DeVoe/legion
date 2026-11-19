@@ -100,7 +100,7 @@ select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.
 // own state and answer, so this leg reads no ask state a second time (attachAskStates).
 //
 // reader is the display tree reader each answer's text is registered with, which is the leg's
-// own and never the request's: this runs on a goroutine the stage may abandon at its grace, and
+// own and never the request's: this runs on a goroutine the check may abandon at its grace, and
 // the goroutine that made the reader resolves it before it hands these results over
 // (relatedMeaningStage). It is nil where the caller asked for no tree, which leaves every
 // answer's text_tree out, as a nil reader does on every other route.
@@ -169,7 +169,7 @@ func (s *server) relatedOtherProjects(
 			// The answer carries the shape a read gives it, with the display tree of its text
 			// where the request asked for the trees and without one where it did not. Which of
 			// them it is does not follow from the path. This leg runs for a write that asks a
-			// person a question - an ask create, a new decision block - and for the POST form
+			// person a question - an ask create, a new ask block - and for the POST form
 			// of the related route, which writes nothing and is the read `dispatch related`
 			// makes; the GET form of that route, which the dashboard reads under
 			// `Dispatch-Trees: 1`, runs the one-project leg of the same check. So the header

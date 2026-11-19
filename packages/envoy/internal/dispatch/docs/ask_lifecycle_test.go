@@ -55,11 +55,24 @@ func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing
 	if count := asksOn(t, service, copied); count != 1 {
 		t.Fatalf("the copy opened %d asks, want one, its own transport question", count)
 	}
-	regionCopy := `:::ask{#region urgency="med" multiple="false" state="%s" ` + copiedFrom(t, service, region.ID, original) + `}`
+	// As an agent reads the copy, its asks member answers each block's state and a copy's source
+	// (requireCopiedStates). While another build serves, settlement keeps the same in each block's
+	// opening line of the live document (rollWindowAskAttributes), which the writes below change.
 	requireCopiedStates(t, service, copied,
+		`#region state="open" `+copiedFrom(t, service, region.ID, original)+"\n",
+		`#ship state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected=["Yes"] `+copiedFrom(t, service, ship.ID, original)+"\n",
+		`#transport state="open"`+"\n")
+	regionCopy := `:::ask{#region urgency="med" multiple="false" state="%s" ` + copiedFrom(t, service, region.ID, original) + `}`
+	live := documentText(t, service, copied)
+	for _, opener := range []string{
 		fmt.Sprintf(regionCopy, "open"),
-		`:::ask{#ship urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected="[&#x22;Yes&#x22;]" `+copiedFrom(t, service, ship.ID, original)+`}`,
-		`:::ask{#transport urgency="med" multiple="false" state="open"}`)
+		`:::ask{#ship urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected="[&#x22;Yes&#x22;]" ` + copiedFrom(t, service, ship.ID, original) + `}`,
+		`:::ask{#transport urgency="med" multiple="false" state="open"}`,
+	} {
+		if !strings.Contains(live, opener) {
+			t.Fatalf("the copy's live document lacks %q:\n%s", opener, live)
+		}
+	}
 	asker := model.Actor{Kind: "session", ID: "fresh-asking-session"}
 	writeThroughLedger(t, service, copied, asker, freshBlock, withoutVersion)
 
@@ -222,7 +235,7 @@ func TestWritingIssueAskStatesLeavesTheLatestEditSourceAlone(t *testing.T) {
 			var marked []BlockRef
 			err := joinedWrite(service, func(ctx context.Context) (err error) {
 				tx, _ := txFromContext(ctx)
-				if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+				if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 					return fmt.Errorf("lock the issue: %w", err)
 				}
 				if test.edit {
@@ -423,8 +436,8 @@ func requireLatestEditSource(t *testing.T, service *Service, artifactID string, 
 }
 
 // A closed issue's documents refuse every ordinary write, and the close's own, made while another
-// build serves, still reaches them, since its caller holds the issue's row: a room flagged closed
-// that a reader loaded again, and a document no room holds, whose write the store keeps.
+// build serves, still reaches them, since its caller holds the issue's owner lock: a room flagged
+// closed that a reader loaded again, and a document no room holds, whose write the store keeps.
 func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 	for _, resident := range []bool{true, false} {
 		name := "no resident room"
@@ -611,8 +624,8 @@ func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor
 	var marked []BlockRef
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
 		tx, _ := txFromContext(ctx)
-		// The issue route holds the issue's row before it writes any document.
-		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+		// The issue route holds the issue's owner lock before it writes any document.
+		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
 		marked, err = service.WriteIssueAskStates(ctx, "DOC-1", asks, actor, markUnindexed)
@@ -627,8 +640,8 @@ func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor
 // documentText is the document's own markdown (Text), which the writes of an ask's state while
 // another build serves change (WriteIssueAskStates) and which holds no ask's state once the fleet
 // is one build: every caller compares it with stored bytes, a latest version or a document the
-// same write changed, never with the text an agent reads with each ask's state rendered on read
-// (TextWithAnswers).
+// same write changed, never with the text an agent reads, which holds no ask's state at all and
+// answers each in its asks member (TextWithAsks).
 func documentText(t *testing.T, service *Service, artifactID string) string {
 	t.Helper()
 	text, err := service.Text(context.Background(), artifactID)
@@ -710,7 +723,7 @@ func serveTwoBuilds(t *testing.T, database *store.Store) {
 }
 
 // baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
-// before registers: legion/INFRA-1149's pmdoc/schema/blocks.json is version 4, and creates nothing
+// before registers: the base release's pmdoc/schema/blocks.json is version 4, and creates nothing
 // past it.
 const (
 	baseSchemaVersion   = 4

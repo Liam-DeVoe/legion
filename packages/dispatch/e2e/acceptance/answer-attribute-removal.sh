@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dispatch://INFRA-1150's c-attribute-removal-count: the three measurements this child takes
+# The check c-attribute-removal-count: the three measurements this child takes
 # before it writes a migration, read over a seeded corpus the release before this branch wrote,
 # and the pull request body that must hold them.
 #
@@ -10,9 +10,13 @@
 # default $TMPDIR/base-dispatch, the stamped build of BASELINE_SHA the Verification preamble
 # makes; the harness boots it with the dev sign-in on (DISPATCH_DEV_SIGNIN=1, which lib-baseline.sh
 # sets for every server it boots) and with the pinned agent bearer e2e-token as
-# DISPATCH_AGENT_TOKEN, which it takes from DISPATCH_TOKEN. It then stops that server and runs the
-# three statements of the spec's section "What this child measures before it writes a migration",
-# verbatim, over the database, each in a read-only transaction, and prints
+# DISPATCH_AGENT_TOKEN, which it takes from DISPATCH_TOKEN. Beside the seed's corpus, where each
+# document holds one review, it has the person review two documents again through that server:
+# spec B approved a second time at its newest version, and spec C approved and then sent back for
+# changes, so its newest review is no approval. Neither moves the count the corpus holds. It then
+# stops that server and runs the three statements of the spec's section "What this child measures
+# before it writes a migration", verbatim, over the database, each in a read-only transaction, and
+# prints
 #     documents_holding_an_ask=<n> at=<UTC>
 #     standing_approvals_over_those_documents=<n> at=<UTC>
 #     colliding_block_ids=<n> at=<UTC>
@@ -20,7 +24,17 @@
 # the last once for each row the third statement reads; each time is `date -u +%FT%TZ` taken as
 # its statement answered. It fails when either of the first two counts differs from the count
 # the corpus holds (seed-decisions.sh's corpus_* lines), printing both. The third count may be
-# anything, zero included; the corpus's own is printed beside it.
+# anything, zero included; the corpus's own is printed beside it. It also reads the approval
+# reviews over those documents at each one's newest version, and the documents holding one, and
+# fails unless each reads apart from the standing approvals: a statement that counted reviews
+# rather than documents, or any approval rather than the newest review, reads another count here.
+#
+# BASELINE_SHA, the commit of the release this branch lands after, is required and has no
+# default: only the caller knows which release that is. Once the base server has booted, and
+# before the seed writes a row, the commit it is stamped with (the `commit` of its /healthz, the
+# one it registers in server_processes) must be the commit BASELINE_SHA names in this checkout, or
+# the run fails naming both, so that a binary built from another commit never stands in for that
+# release.
 #
 # It then runs TestTheTablesThisChildsMigrationsTouch in packages/envoy, requires its
 # `--- PASS:` line, and prints the tables it names (`touched: <table>` each, or `touched: none`)
@@ -31,7 +45,7 @@
 # A reading at or above the limit fails the run.
 #
 # Then the pull request body, from the file PR_BODY_FILE names or, without it,
-# `gh pr list --repo cybermonklabs/legion --head legion/INFRA-1150 --json body --jq '.[0].body'`.
+# `gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body`, this branch's pull request.
 # An empty body fails. It must hold exactly one line of each of these forms, a carriage return
 # before the line's end aside, and leading and trailing spaces allowed:
 #     - measurement documents_holding_an_ask=<n> at=<YYYY-MM-DDTHH:MM:SSZ>
@@ -60,11 +74,14 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_answer_attribute_removal?sslmode=disable \
+         BASELINE_SHA=<the commit of the release this branch lands after> \
          [BASELINE_BINARY=$TMPDIR/base-dispatch] [PR_BODY_FILE=<file holding the body>] \
          [MEASURE_ONLY=1] bash e2e/acceptance/answer-attribute-removal.sh
        (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
        begins infra_1150_, which this run drops and creates again; without PR_BODY_FILE the
-       body is read with gh; MEASURE_ONLY=1 prints the body's lines and reads no body)
+       body is read with gh; MEASURE_ONLY=1 prints the body's lines and reads no body.
+       BASELINE_SHA is required and has no default; BASELINE_BINARY must be the server built
+       from it and stamped with it)
 USAGE
 }
 
@@ -75,8 +92,8 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=seed-decisions.sh
 . "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
 
-require_env DATABASE_URL
-require_commands date go grep jq psql sed tr
+require_env DATABASE_URL BASELINE_SHA
+require_commands curl date git go grep jq psql sed tr
 # Not readonly until baseline_start has booted: lib-baseline.sh's baseline_boot holds a local of
 # this name.
 # shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell in
@@ -98,6 +115,12 @@ if [[ -z "${BASELINE_BINARY:-}" ]]; then
 fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
+# The commit BASELINE_SHA names, in full: the one the base server booted below must be stamped with.
+base_sha="$(git -C "$script_dir" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" || {
+  printf 'BASELINE_SHA %s names no commit of this checkout\n' "$BASELINE_SHA" >&2
+  exit 2
+}
+readonly base_sha
 readonly envoy_dir="$script_dir/../../../envoy"
 readonly test_name=TestTheTablesThisChildsMigrationsTouch
 # A time as `date -u +%FT%TZ` writes it.
@@ -122,7 +145,23 @@ DISPATCH_TOKEN=e2e-token
 baseline_start
 unset DISPATCH_TOKEN DATABASE_URL
 readonly database_url
+# The base server is the release BASELINE_SHA names, as the commit it is stamped with says, before
+# it writes a row.
+base_status="$(curl -sS -o "$work/body" -w '%{http_code}' "$baseline_url/healthz" 2>"$work/curl")" ||
+  base_status="curl failed: $(<"$work/curl")"
+[[ "$base_status" == 200 ]] || fail base "read the base release's /healthz" "HTTP $base_status: $(body)"
+base_commit="$(jq -r '.commit // ""' "$work/body")"
+readonly base_commit
+[[ "$base_commit" == "$base_sha" ]] ||
+  fail base "the base release is stamped with the commit BASELINE_SHA names" \
+    "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
+pass base "the base release serves $base_commit, the commit BASELINE_SHA names"
 seed_decisions
+# A second review on two documents, so the standing approvals read apart from the approval reviews
+# and from the documents holding one; the corpus count seed_decisions printed stands.
+seed_review review_spec_b_again "${seed_ids[spec_b]}" approved
+seed_review review_spec_c_approved "${seed_ids[spec_c]}" approved
+seed_review review_spec_c_again "${seed_ids[spec_c]}" changes_requested "Name the fourth issue before asking again."
 # Nothing writes while the statements read.
 baseline_stop_server
 
@@ -206,6 +245,31 @@ printf 'corpus colliding_block_ids=%s\n' "${seed_ids[corpus_colliding_block_ids]
 against_corpus documents_holding_an_ask "$documents"
 against_corpus standing_approvals_over_those_documents "$approvals"
 
+# The corpus tells the standing approvals apart from the approval reviews at a document's newest
+# version and from the documents holding one: spec B holds two approvals, and spec C an approval
+# its newest review, a request for changes, overrides.
+read -r -d '' approval_reviews_sql <<'SQL' || true
+select count(*), count(distinct r.artifact_id)
+from artifact_reviews r
+where r.state = 'approved'
+  and r.version = (select max(number) from artifact_versions v where v.artifact_id = r.artifact_id)
+  and r.artifact_id in (
+    select distinct block_artifact_id
+    from asks
+    where block_id is not null
+      and block_artifact_id is not null
+      and state in ('open', 'answered', 'resolved'))
+SQL
+measure "$approval_reviews_sql" || fail corpus "read the approval reviews over the documents holding an ask" "psql: $(<"$work/psql")"
+IFS='|' read -r approval_reviews approved_documents <"$work/rows"
+printf 'corpus approval_reviews_at_the_newest_version=%s documents_holding_one=%s standing_approvals=%s\n' \
+  "$approval_reviews" "$approved_documents" "$approvals"
+[[ "$approval_reviews" =~ ^[0-9]+$ && "$approved_documents" =~ ^[0-9]+$ &&
+  "$approval_reviews" != "$approvals" && "$approved_documents" != "$approvals" ]] ||
+  fail corpus "the standing approvals read apart from the approval reviews and from the documents holding one" \
+    "approval reviews $approval_reviews, documents holding one $approved_documents, standing approvals $approvals"
+pass corpus "the standing approvals ($approvals) read apart from the approval reviews ($approval_reviews) and the documents holding one ($approved_documents)"
+
 # The tables this child's migrations touch, as the Go test names them, and the limit each is held
 # to. `go -C` runs it from packages/envoy, as `(cd ../envoy && go test …)` from packages/dispatch.
 go -C "$envoy_dir" test ./internal/dispatch/store -run "^$test_name\$" -count=1 -v \
@@ -271,18 +335,19 @@ if [[ -n "${PR_BODY_FILE:-}" ]]; then
   body_source="the file $PR_BODY_FILE"
 else
   require_commands gh
-  gh pr list --repo cybermonklabs/legion --head legion/INFRA-1150 --json body --jq '.[0].body' \
+  gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body \
     >"$work/body.raw" 2>"$work/gh" || fail body "read the pull request body" "gh: $(<"$work/gh")"
   tr -d '\r' <"$work/body.raw" >"$work/body.md"
-  body_source="the pull request of legion/INFRA-1150"
+  body_source="pull request #4173"
 fi
 body_text="$(tr -d '[:space:]' <"$work/body.md")"
 [[ -n "$body_text" && "$body_text" != null ]] ||
   fail body "read the pull request body" "$body_source holds no body: a reading nobody recorded is not a reading that passed"
 pass body "read the body from $body_source"
 
-# body_line SECTION WHAT LEAD SHAPE: the one line of the body that begins LEAD, which must match
-# the extended regular expression SHAPE; its groups are left in BASH_REMATCH.
+# body_line SECTION WHAT LEAD FORM SHAPE: the one line of the body that begins LEAD, which must
+# match the extended regular expression SHAPE; FORM is the line's form as a failure names it. The
+# groups of SHAPE are left in BASH_REMATCH.
 body_line() {
   local -a lines
   mapfile -t lines < <(grep -E -- "^[[:space:]]*$3" "$work/body.md" || true)

@@ -77,10 +77,10 @@ mention made then gets no reply, so ask again once it runs.
 
 Shortly after admission the architect claims the issue (the issue shows **Claimed by** Legion's
 session), then grows your spec into a design: how the work splits, how each outcome is proven, and
-the decisions it needs from you. Each open question is a **decision block** in the spec, with
+the decisions it needs from you. Each open question is an **ask block** in the spec, with
 options and a recommendation, and it reaches your Inbox.
 
-1. Answer each decision block. The architect reads every answer and revises the spec.
+1. Answer each ask block. The architect reads every answer and revises the spec.
 2. When nothing is open, the architect asks you to approve the spec, with a short summary of what
    the work will do that you have not already agreed to. Approve it from the approval question in
    your Inbox or with **Approve** in the document's header.
@@ -89,8 +89,8 @@ options and a recommendation, and it reaches your Inbox.
 
 No code is written until you approve. The approval is for that version of the spec: if the spec
 changes afterwards, you are asked again. (`gates.design` says which documents of the root issue a
-person approves: by default the spec alone, and a deployment can add the issue's decisions
-document or its Verification document, each approved the same way. A deployment that sets
+person approves: by default the spec alone, and a deployment can add the issue's Verification
+document, approved the same way. A deployment that sets
 `gates.design: []` turns the design gate off; then the work starts as soon as the spec is written,
 and nobody is asked.)
 
@@ -176,7 +176,7 @@ resumes.
 
 A status written by an agent session on a running issue is set back by the daemon, and the
 architect is told who wrote it; only a person's move in the dashboard, the controller's
-`set_status`, or an operator's `legion status`, takes a running tree out. A move of your own
+`set_status`, or an operator's `legion issue status`, takes a running tree out. A move of your own
 between the workflow's own statuses — `in_progress`, `testing`, `needs_review`, `retro`, and
 `todo` on a root (on a child, `todo` reruns it) — on a running issue does not stay either: the
 daemon's status repair writes back the status of the phase the issue stands in, at each boot and

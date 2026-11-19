@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Ask is an ask as its answer writer reads it before the update that writes the answer: what the
@@ -48,9 +49,10 @@ const askEventTypes = `'ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited
 // ask's own row, which passes the test while the marker is null; the person an open ask waits on,
 // over the issue, document and project rows that rule reads, which carry no marker of this
 // child's; the ask's node; and the event each owed write was recorded under. It is one statement,
-// which takes the ask's row `for no key update`, the level the answer's own update takes it at
-// (asks.Settle), so nothing it reads moves before the answer is written: every answer writer but
-// the approval carry holds that row already, and the carry takes it here, where Settle would.
+// made in the answer's read phase and taking no row lock: every answer writer holds the owner lock
+// every writer of the ask takes first (store.LockOwner), the approval carry's included, under which
+// nothing it reads moves before the answer is written, and the answer's own update takes the row
+// in the write phase (asks.Settled.Queue).
 func ReadAsk(ctx context.Context, tx pgx.Tx, askID string) (Ask, error) {
 	ask := Ask{id: askID}
 	var author, answer, nodeMadeBy []byte
@@ -76,7 +78,6 @@ func ReadAsk(ctx context.Context, tx pgx.Tx, askID string) (Ask, error) {
 		from asks a`+asks.AskedOfPersonJoins+`
 		left join graph_nodes n on n.kind = $2 and n.id = a.id::text
 		where a.id = $1::uuid
-		for no key update of a
 	`, askID, graphstore.KindAsk).Scan(&ask.issueKey, &ask.artifactID, &ask.project,
 		&author, &ask.createdAt, &ask.state, &answer, &ask.createOwed, &ask.answerOwed, &ask.waitingOn,
 		&nodeMadeBy, &opened, &answered); err != nil {
@@ -108,9 +109,11 @@ func ReadAsk(ctx context.Context, tx pgx.Tx, askID string) (Ask, error) {
 
 // owed is what an answer's catch-up appends (owedBy): the participation and the citations that
 // name a person, which go through graphstore.ToPerson, those that name none, and the deliveries,
-// which Record appends once it holds the thread's rows.
+// which Record appends once it holds the thread's rows; cites is whether the ask's refs rows are
+// marked beside its citations (queueMarkCitations).
 type owed struct {
 	people, others, deliveries []graphstore.Tuple
+	cites                      bool
 }
 
 // owedBy is every tuple of ask that the marker test still owes (decision 16, P11), which the
@@ -124,7 +127,7 @@ type owed struct {
 // which reaches no asker by their own ask); and the ask's citations, taken from the ask's own refs
 // rows as they are stored rather than by indexing the question again - a fresh index resolves
 // bare keys against the database as it stands (refs' Reader), and an answer rewrites no question
-// - each row marked tuples_stored as its mentions tuple is stated (markCitations). An ask whose
+// - each row marked tuples_stored as its mentions tuple is stated (readCitations). An ask whose
 // log holds no ask.opened still owes them: its row is the record that it was created, by whom and
 // when, and the answer's update marks it, so a create left unstated here would be stated by
 // nothing. Those tuples go under the store's sentinel (graphstore.NoEvent), the event the
@@ -174,7 +177,8 @@ func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
 			}
 		}
 		if ask.node != nil {
-			cited, err := markCitations(ctx, tx, ask.id, *ask.node, ask.opened)
+			tuples.cites = true
+			cited, err := readCitations(ctx, tx, ask.id, *ask.node, ask.opened)
 			if err != nil {
 				return owed{}, err
 			}
@@ -202,22 +206,21 @@ func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
 	return tuples, nil
 }
 
-// markCitations states the citations of ask askID that its refs rows hold and the store does not:
+// readCitations is the citations of ask askID that its refs rows hold and the store does not:
 // each row whose tuples_stored is false - one an older build wrote - and whose far end fits the
 // store's address bound, as the mentions tuple of its own kind out of the ask's node to its far
 // end, dated by the row's created_at, carrying the row's source_seq, made by who made the ask's
-// node, and caused by event, the ask's create (refs' replaceRefsOf states a citation the same
-// way). Each row says so from this same statement, so graph_edges answers it from the tuple
-// rather than from the refs arm, which reads only the rows that hold false. The tuples are the
-// caller's to append, in this transaction.
-func markCitations(ctx context.Context, tx pgx.Tx, askID string, maker model.Actor, event int64) ([]graphstore.Tuple, error) {
+// node, and caused by event, the ask's create (refs.PlanItemReplace states a citation the same
+// way). It is read in the answer's read phase, under the owner lock every writer of the ask's refs
+// rows takes first, so the rows it reads are the ones the write phase marks (queueMarkCitations).
+// The tuples are the caller's to append, in this transaction.
+func readCitations(ctx context.Context, tx pgx.Tx, askID string, maker model.Actor, event int64) ([]graphstore.Tuple, error) {
 	rows, err := tx.Query(ctx, `
-		update refs set tuples_stored = true
+		select kind, to_kind, to_id, created_at, source_seq from refs
 		where from_kind = $1 and from_id = $2 and not tuples_stored and octet_length(to_id) <= $3
-		returning kind, to_kind, to_id, created_at, source_seq
 	`, graphstore.KindAsk, askID, graphstore.MaxAddressBytes)
 	if err != nil {
-		return nil, fmt.Errorf("state the citations of ask %s: %w", askID, err)
+		return nil, fmt.Errorf("read the citations of ask %s: %w", askID, err)
 	}
 	defer rows.Close()
 	var cited []graphstore.Tuple
@@ -229,4 +232,14 @@ func markCitations(ctx context.Context, tx pgx.Tx, askID string, maker model.Act
 		cited = append(cited, tuple)
 	}
 	return cited, rows.Err()
+}
+
+// queueMarkCitations queues the mark of each row readCitations read: tuples_stored true, so
+// graph_edges answers it from the tuple the write states beside it, rather than from the refs arm,
+// which reads only the rows that hold false.
+func queueMarkCitations(b *store.WriteBatch, askID string) {
+	b.Queue(fmt.Sprintf("state the citations of ask %s", askID), `
+		update refs set tuples_stored = true
+		where from_kind = $1 and from_id = $2 and not tuples_stored and octet_length(to_id) <= $3
+	`, graphstore.KindAsk, askID, graphstore.MaxAddressBytes)
 }

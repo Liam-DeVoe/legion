@@ -22,7 +22,7 @@ import (
 )
 
 // DecisionStep is the step of this release's boot and of a tick of its own that brings what the
-// release before wrote onto the store (dispatch://INFRA-1150, "The step"). Its phases run in
+// release before wrote onto the store. Its phases run in
 // order:
 //
 //  1. The backfill (graphcensus.BackfillAsks): the object nodes of every row written before its
@@ -32,6 +32,14 @@ import (
 //     (catchUp): its ask.answered, ask.resolved, ask.opened, ask.follower_added and
 //     ask.follower_removed, each stated on the ask's node under its own event, from its payload,
 //     and never from the row.
+//  3. The restore and the conversion (RestoreAndConvert): the gated steps rewritten without
+//     `decisions`, then, for each issue that still holds a decisions document or an answered ask
+//     whose block left its spec, oldest first and in one transaction each, the restore of those
+//     asks into the spec, the conversion of every section of the decisions document, and the
+//     document's retirement once it holds none (restoreIssueDecisions). It does nothing while
+//     processes.Live lists a process of a commit other than this one's (anotherBuildLive), since
+//     any other build can write a row without its node, and it needs the document service
+//     (UseDocuments), which writes the documents.
 //
 // It runs at boot, before the server serves, where only phase 1 runs and a failure stops the boot
 // (Boot), as FillDocumentSearch does: the readers of this release that take an ask's answer from
@@ -60,15 +68,27 @@ import (
 // count of what the restore and the conversion owe reads whole tables too, so where it read zero it
 // is read again only when something can have made it non-zero (recountOwed).
 //
-// The runner takes a session advisory lock of its own (decisionStepLock), so two processes that
-// boot together do not run it both at once: a booting process waits for it, so every process has
-// phase 1 behind it before it serves, and a tick that finds it held skips, since the holder is
-// doing the work. A failure on one batch of phase 1 rolls back that batch, and one on one ask of
-// phase 2 that ask; either is logged with its reason and tried again at the next tick.
+// The runner takes a session advisory lock of its own (decisionStepLock) for phases 1 and 2, so
+// two processes do not run them both at once. A booting process waits for it only while phase 1
+// owes a row, so every process has phase 1 behind it before it serves. Where phase 1 owes
+// nothing, a booting process takes no lock, so a tick that holds the lock for phase 2, or a
+// process stalled while it holds it, keeps no boot waiting. A tick that finds the lock held skips,
+// since the holder is doing the work. Phase 3 takes a second key of its own
+// (decisionRestoreLock) once phases 1 and 2 are behind it and the first key is released, so a
+// process that boots while a pass of phase 3 runs - every owed issue, one transaction each - or
+// while someone runs it by hand waits for no part of that pass; a tick that finds the second key
+// held skips phase 3. A tick runs no phase 3 after a catch-up that failed: the restore's finder
+// reads an answer from its ask's node, and an answer the catch-up did not state there would read
+// as none. A failure on one batch of phase 1 rolls back that batch, and one on one ask of phase 2
+// that ask; either is logged with its reason and tried again at the next tick.
+// kept for one release: decisions-step
 type DecisionStep struct {
 	database *store.Store
 	commit   string
 	logger   *slog.Logger
+	// documents is the document service phase 3 writes the documents through (UseDocuments); nil
+	// until a caller gives it one, and phase 3 does not run while it is.
+	documents *Service
 	// interval is the wait between two ticks of Run: BlockIndexReconcileInterval.
 	interval time.Duration
 	// catchUpOwed is whether phase 2 owes a pass on a tick that finds the fleet one build: true
@@ -132,38 +152,35 @@ func (s *DecisionStep) OwedTotal() *int64 {
 	return &total
 }
 
-// countDecisionStepOwed reads what the restore and the conversion owe, in one statement. It is
-// the one reading of those three counts, which the finders of the restore and the conversion
-// replace part by part:
+// countDecisionStepOwed reads what the restore and the conversion owe, through the finders the
+// third phase itself reads (DecisionStep.RestoreAndConvert), so the count and the step read one
+// finder each:
 //
-//   - a decisions document is an artifact whose role is `decisions` or whose slug is
-//     `decisions-md`;
-//   - an answer whose block left its spec is an answered `question` ask, as its node's
-//     answer_state holds it, whose row's block_artifact_id is its issue's primary document and
-//     whose block id no `document_blocks` row of type `ask` holds in that document, leaving out a
-//     spec whose block index is owed (document_block_versions.version null), whose blocks are not
-//     known yet;
+//   - a decisions document is one decisions_documents() answers: an issue's unretired document
+//     whose role is decisions, or, stored before the role existed, whose slug is that document's;
+//   - an answer whose block left its spec is the main shape of the restore's work
+//     (graphcensus.ReadRestoreWork, graphcensus.RestoreReturns): an answered `question` ask, as
+//     its node holds it, whose row names its issue's spec and whose block id no `document_blocks`
+//     row of type `ask` holds in that spec and that no person removed from it (removed_by),
+//     leaving out a spec whose block index is owed, whose blocks are not known yet - the second
+//     shape's asks stand in a decisions document, which the first part counts;
 //   - a list of gated steps that holds `decisions` is a projects row whose gated_steps does.
 func countDecisionStepOwed(ctx context.Context, q graphstore.Queryer) (DecisionStepOwed, error) {
 	var owed DecisionStepOwed
 	if err := q.QueryRow(ctx, `
-		select
-			(select count(*) from artifacts a where a.role = 'decisions' or a.slug = 'decisions-md'),
-			(select count(*) from asks k
-			 join artifacts spec on spec.id = k.block_artifact_id and spec.is_primary
-			 join document_block_versions indexed on indexed.artifact_id = spec.id and indexed.version is not null
-			 where k.kind = 'question' and k.block_id is not null
-			   and (select t.to_id from graph_tuples t
-			        where t.from_kind = $1 and t.from_id = k.id::text and t.kind = $2 and t.to_kind = $3 and t.asserted
-			          and t.seq = (select max(n.seq) from graph_tuples n
-			                       where n.from_kind = t.from_kind and n.from_id = t.from_id
-			                         and n.kind = t.kind and n.to_kind = t.to_kind)) = $4
-			   and not exists (select 1 from document_blocks d
-			                   where d.artifact_id = spec.id and d.block_id = k.block_id and d.type = 'ask')),
-			(select count(*) from projects p where 'decisions' = any(p.gated_steps))
-	`, graphstore.KindAsk, graphstore.TupleAnswerState, graphstore.KindValue, asks.StateAnswered).Scan(
-		&owed.DecisionsDocuments, &owed.AnswersLeftSpec, &owed.GatedStepsLists); err != nil {
+		select (select count(*) from decisions_documents()),
+		       (select count(*) from projects p where 'decisions' = any(p.gated_steps))
+	`).Scan(&owed.DecisionsDocuments, &owed.GatedStepsLists); err != nil {
 		return DecisionStepOwed{}, fmt.Errorf("count what the decisions step owes: %w", err)
+	}
+	work, err := graphcensus.ReadRestoreWork(ctx, q)
+	if err != nil {
+		return DecisionStepOwed{}, fmt.Errorf("count what the decisions step owes: %w", err)
+	}
+	for _, ask := range work {
+		if ask.Shape == graphcensus.RestoreReturns {
+			owed.AnswersLeftSpec++
+		}
 	}
 	owed.Total = owed.DecisionsDocuments + owed.AnswersLeftSpec + owed.GatedStepsLists
 	return owed, nil
@@ -181,20 +198,36 @@ func NewDecisionStep(database *store.Store, commit string, logger *slog.Logger) 
 	}
 }
 
-// decisionStepLock is the session advisory lock the step's passes take ("DDECISNS"), a single
-// 64-bit key apart from every other single-key advisory lock of the server.
+// decisionStepLock is the session advisory lock the step's first two phases take ("DDECISNS"), a
+// single 64-bit key apart from every other single-key advisory lock of the server.
 const decisionStepLock int64 = 0x4444454349534E53
+
+// decisionRestoreLock is the session advisory lock the step's third phase takes ("DRESTORE"), a
+// single 64-bit key apart from decisionStepLock and every other single-key advisory lock of the
+// server: a pass of the third phase holds it, and never the step's own lock, which a booting
+// process waits for while phase 1 owes a row (Boot).
+const decisionRestoreLock int64 = 0x44524553544F5245
 
 // decisionStepApplication is what pg_stat_activity names the connection the step holds its lock
 // on.
 const decisionStepApplication = "dispatch-decision-step"
 
-// Boot is the step's pass at boot: it waits for the step's lock, reads whether phase 1 owes a row
-// (graphcensus.AsksOwed), and runs phase 1 where one stands unmarked. It answers a failure of
-// either, which stops the boot. It reads nothing else - not whether another build is live, which
+// Boot is the step's pass at boot: it runs phase 1 where a row stands unmarked, and waits for the
+// step's lock only then. It first reads whether phase 1 owes a row (graphcensus.AsksOwed) on the
+// shared pool, holding no lock. Where nothing is owed it answers at once, having opened no
+// connection of its own and taken no lock, so a tick that holds the lock for phase 2, or a process
+// stalled while it holds it, keeps no boot waiting. A row the release before writes after that
+// read is a tick's work, as a row written after a read under the lock would be. Where a row is
+// owed, it waits for the step's lock and reads AsksOwed again, since the holder may have stated
+// the row meanwhile, and runs phase 1 where one still stands. It answers a failure of any of
+// these, which stops the boot. It reads nothing else - not whether another build is live, which
 // phase 1 does not wait on, and not what the restore and the conversion owe, which the process's
 // first tick counts (probe) - so the boot waits on no table phase 1 does not read.
 func (s *DecisionStep) Boot(ctx context.Context) error {
+	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
+	if err != nil || !owed {
+		return err
+	}
 	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
 	if err != nil {
 		return fmt.Errorf("open the decision step's connection: %w", err)
@@ -203,8 +236,7 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, decisionStepLock); err != nil {
 		return fmt.Errorf("take the decision step's lock: %w", err)
 	}
-	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
-	if err != nil || !owed {
+	if owed, err = graphcensus.AsksOwed(ctx, s.database.Pool); err != nil || !owed {
 		return err
 	}
 	return s.backfill(ctx)
@@ -214,15 +246,21 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 // shared pool, so a tick with no work - every tick once the fleet is one build and every row is
 // stated - costs those probes and dials no connection. Otherwise it takes the step's lock on a
 // connection of its own, skips where another process holds it, since the holder is doing the
-// work, and runs each phase with work. A failure of a phase is logged and tried again at the next
-// tick; it answers a failure of the probes or of the lock.
+// work, and runs each of phases 1 and 2 with work; then, where phase 3 has work and no catch-up
+// of this tick failed, it releases the step's lock and takes phase 3's (takeRestoreLock), and
+// runs phase 3, or skips it where another process holds that lock. A failure of a phase is logged
+// and tried again at the next tick; it answers a failure of the probes or of a lock.
 func (s *DecisionStep) Tick(ctx context.Context) error {
 	work, err := s.probe(ctx)
 	if err != nil {
 		return err
 	}
 	catchUp := work.other || s.catchUpOwed
-	if !work.backfill && !catchUp {
+	// Phase 3 has work while the last count found something owed, and runs only on a fleet of
+	// this one build.
+	owed := s.Owed()
+	restore := s.documents != nil && !work.other && owed != nil && owed.Total > 0
+	if !work.backfill && !catchUp && !restore {
 		return nil
 	}
 	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
@@ -251,8 +289,53 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 			s.logger.Error("dispatch: decisions step catch-up; the next tick tries again", "error", err)
 		}
 		s.catchUpOwed = work.other || failed || err != nil
+		// The restore's finder reads an ask's answer from its node, which an answer the catch-up
+		// did not state leaves unanswered, so phase 3 waits for a tick whose catch-up went through,
+		// as RunByHand refuses it.
+		restore = restore && !failed && err == nil
+	}
+	if !restore {
+		return nil
+	}
+	if restoring, err := takeRestoreLock(ctx, conn, false); err != nil || !restoring {
+		return err
+	}
+	if _, failures, err := s.RestoreAndConvert(ctx, "", true, false); err != nil {
+		s.logger.Error("dispatch: decisions step restore and conversion; the next tick tries again", "error", err)
+	} else {
+		for _, failure := range failures {
+			s.logger.Error("dispatch: decisions step restore and conversion of an issue; the next tick tries again",
+				"issue", failure.Issue, "error", failure.Err)
+		}
 	}
 	return nil
+}
+
+// takeRestoreLock releases the step's lock (decisionStepLock), which conn holds, and takes phase
+// 3's (decisionRestoreLock) on conn, so the pass of phase 3 it is taken for holds no lock a
+// booting process waits for: it waits for the lock where wait, as a command run by hand does, and
+// otherwise tries once, reporting whether it took it, as a tick does.
+func takeRestoreLock(ctx context.Context, conn *pgx.Conn, wait bool) (bool, error) {
+	if _, err := conn.Exec(ctx, `select pg_advisory_unlock($1)`, decisionStepLock); err != nil {
+		return false, fmt.Errorf("release the decision step's lock: %w", err)
+	}
+	if wait {
+		if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, decisionRestoreLock); err != nil {
+			return false, fmt.Errorf("take the lock of the decision step's third phase: %w", err)
+		}
+		return true, nil
+	}
+	var locked bool
+	if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, decisionRestoreLock).Scan(&locked); err != nil {
+		return false, fmt.Errorf("take the lock of the decision step's third phase: %w", err)
+	}
+	return locked, nil
+}
+
+// UseDocuments gives the step the document service its third phase writes the documents through.
+// A process calls it before the step's first tick; until it does, phase 3 does not run.
+func (s *DecisionStep) UseDocuments(documents *Service) {
+	s.documents = documents
 }
 
 // Run ticks at once and then every interval (BlockIndexReconcileInterval) until ctx ends. It never
@@ -486,6 +569,7 @@ const decisionStepMarksKept = 8
 // events again, with whatever else needed nothing. The mark is the process's own: a process that
 // takes the step over reads its window again from where it opens, and an event already stated is
 // left out of its read as it is of every read.
+// kept for one release: catch-up
 func (s *DecisionStep) catchUp(ctx context.Context) (bool, error) {
 	var start int64
 	if err := s.database.Pool.QueryRow(ctx, `

@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -24,22 +25,27 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// indexAskParts is refs.IndexAskPartsCounted for a write that holds the ask's parts alone: the
-// parts of the ask this write just wrote - its question, its options and its answer - indexed in
-// the same transaction through a reader of their own (refs.NewReader), written at `at`, with
-// what they moved merged into beside, the counted changes the same write already holds, so the
-// event it appends names them all. A write that reconciles the ask's question as well builds the
-// one reader itself and passes it to both (refs.ReplaceCounted, refs.IndexAskPartsCounted). What
-// the parts state in the store is held for that event, which the caller appends and hands it to
-// graphstore.Caused under.
-func (s *server) indexAskParts(
+// queueAskParts is docs.Ledger.QueueAskParts bound to this server's URL: the parts of the ask
+// this write just wrote - its question, its options and its answer - planned in the read phase
+// and queued in the transaction's write phase, written at `at`, with what they moved merged
+// into beside, the counted changes the same write already holds, so the event it appends names
+// them all. The parts are read with the whole grammar, through a reader of their own
+// (refs.NewReaderInScope), which the ledger builds. document is the one the parts' `#id`s
+// resolve against for an ask whose insert this transaction has queued
+// (refs.PendingAskDocument), nil for an ask already stored, whose row ScopeOf reads; scope is
+// likewise the ask's node as that write queued it (refs.WrittenItem), nil for one the store holds.
+// What the parts state in the store - their block nodes, part_of and links - is answered for the
+// caller to queue under the event it appends (graphstore.QueueCaused).
+func (s *server) queueAskParts(
 	ctx context.Context,
-	tx pgx.Tx,
+	ledger *docs.Ledger,
 	ask model.Ask,
+	document *refs.PendingDocument,
+	scope *refs.ItemScope,
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, graphstore.Uncaused, error) {
-	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, beside)
+	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, scope, at, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
@@ -400,13 +406,16 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	return node, nil
 }
 
-// movedBlockNode is the block an address no current version holds moved to (dispatch://INFRA-1150
-// R8): the block the address's moved_to tuples reach (graphstore.MovedTo), named by its own
+// movedBlockNode is the block an address no current version holds moved to: the block the
+// address's moved_to tuples reach (graphstore.MovedTo), named by its own
 // address and carrying its whole current text, so a citation written before the block moved reads
-// the block where it stands now. Where no move reaches a block, and where who may not see the
-// block one reaches, it answers the 404 of a block no current version holds, naming the address
-// asked, so a move says nothing of a block the reader may not see. The edges the read lists beside
-// it are those at the address asked: the citations of that address.
+// the block where it stands now. A chain that ends at an ask - the heading of a decisions
+// document's section that cites an answered ask a person removed from its spec - answers that
+// ask's own node, as a reference of the ask's address reads it, which holds its question and the
+// person's answer. Where no move reaches a block or an ask, and where who may not see the one it
+// reaches, it answers the 404 of a block no current version holds, naming the address asked, so a
+// move says nothing of a node the reader may not see. The edges the read lists beside it are
+// those at the address asked: the citations of that address.
 func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	noBlock := errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
@@ -417,7 +426,17 @@ func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address st
 	if !moved {
 		return model.GraphNode{}, noBlock
 	}
-	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached, true)
+	if reached.Ask != "" {
+		node, found, err := refs.Node(ctx, pool, who, graphstore.KindAsk, reached.Ask, true)
+		if err != nil {
+			return model.GraphNode{}, err
+		}
+		if !found {
+			return model.GraphNode{}, noBlock
+		}
+		return node, nil
+	}
+	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached.Address, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -535,13 +554,28 @@ func pinsAMessageBlock(raw, serverURL string) bool {
 	return ok && ref.Kind == "block" && ref.Item == "message"
 }
 
+// parseRequestRef reads one reference a request names - a ?to= or ?from=, or one ?ref= of the
+// batched read - by text.ParseRef, so a node is read whatever the length of its name: the target
+// bound decides only what text indexes, and a node no index holds an edge to simply has fewer
+// edges. Anything else is 400 INVALID_REFERENCE naming the value, with its own sentence for a
+// pinned block of a message, which the grammar reads as no reference at all.
+func parseRequestRef(raw, serverURL string) (text.Ref, error) {
+	ref, ok := text.ParseRef(raw, serverURL)
+	if ok {
+		return ref, nil
+	}
+	if pinsAMessageBlock(raw, serverURL) {
+		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+	}
+	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+}
+
 // parseReferencesQuery turns ?to=|?from=, ?kind=, and ?since= into an edge query addressed the
 // way graph_edges stores the node (refs.TargetOf): text.TargetID for the to side (ref_key for
 // artifacts; an ask's part and a comment's or message's block under its storage kind), the
 // item id for the from side (the caller swaps an artifact's ref_key for its uuid). The reference
-// is read by text.ParseRef, so a node is read whatever the length of its name: the target bound
-// decides only what text indexes, and a node no index holds an edge to simply has fewer edges.
-// It returns apart the ?kind= values that are no edge kind of this build.
+// itself is read by parseRequestRef, as the batched read reads each of its own. It returns apart
+// the ?kind= values that are no edge kind of this build.
 func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, []string, error) {
 	values := r.URL.Query()
 	to, from := strings.TrimSpace(values.Get("to")), strings.TrimSpace(values.Get("from"))
@@ -552,12 +586,9 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	if from != "" {
 		raw, direction = from, "out"
 	}
-	ref, ok := text.ParseRef(raw, serverURL)
-	if !ok {
-		if pinsAMessageBlock(raw, serverURL) {
-			return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
-		}
-		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+	ref, err := parseRequestRef(raw, serverURL)
+	if err != nil {
+		return refs.Query{}, text.Ref{}, nil, err
 	}
 	// The node as graph_edges stores it: an ask's part and a comment's or message's block under
 	// its storage kind.

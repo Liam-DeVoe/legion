@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -31,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -243,6 +245,34 @@ func approvalOf(t *testing.T, p *dispatchProcess, artifactID string) documentApp
 	return artifact.Approval
 }
 
+// approvalState is what an approval reads as, the state at the version it names against the
+// document's latest version, for two reads to be compared and a failure to print.
+func approvalState(a documentApproval) string {
+	version := "none"
+	if a.Version != nil {
+		version = strconv.Itoa(*a.Version)
+	}
+	return fmt.Sprintf("%s at version %s of %d", a.State, version, a.LatestVersion)
+}
+
+// standingReview is the newest review GET /api/v1/artifacts/{id}/reviews lists: which review it
+// is, its state and the version it names.
+type standingReview struct {
+	ID      string `json:"id"`
+	State   string `json:"state"`
+	Version int    `json:"version"`
+}
+
+func standingReviewOf(t *testing.T, p *dispatchProcess, artifactID string) standingReview {
+	t.Helper()
+	var reviews []standingReview
+	readJSON(t, p, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
+	if len(reviews) == 0 {
+		t.Fatalf("document %s lists no review", artifactID)
+	}
+	return reviews[0]
+}
+
 // answerAsk answers the ask as the test's person through the answer route and answers the body.
 func answerAsk(t *testing.T, p *dispatchProcess, askID, selected, text string) []byte {
 	t.Helper()
@@ -307,10 +337,11 @@ const oneAnswerSpec = "# One answer\n\nThe service ships behind a flag.\n\n" +
 // through the answer route, and the answer is on the ask's node, each fact under the ask.answered
 // that caused it, and on the asks row; the document's stored bytes and its newest version do not
 // move; the block holds no answer, no answerer, no time and no selection, in its stored bytes and
-// in the live tree; and an approval recorded before the answer still stands after it: the answer's
-// reply carries no superseded_approval in its advice, the member a document write reports the
-// approval it superseded through, and GET /api/v1/artifacts/{id} reads the approval at the
-// document's latest version, which did not move.
+// in the live tree; and an approval recorded before the answer still stands after it: GET
+// /api/v1/artifacts/{id} reads the same approval at the same version, the document's latest, and
+// the newest review is the same review of the same version. The answer route's reply is the ask
+// alone and carries no write advice, so the approval is read itself rather than through a member
+// the route never sets.
 func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess, database *pgx.Conn, artifactID, askID, blockID, what string) {
 	t.Helper()
 	settledDocument(t, ctx, p, database, artifactID)
@@ -318,21 +349,14 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 	if approval := approvalOf(t, p, artifactID); !approval.approvedLatest() {
 		p.call(t, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/reviews", `{"state":"approved"}`, http.StatusCreated)
 	}
-	if approval := approvalOf(t, p, artifactID); !approval.approvedLatest() {
-		t.Fatalf("%s: the document reads %+v before the answer, want it approved at its latest version", what, approval)
+	approvedBefore := approvalOf(t, p, artifactID)
+	if !approvedBefore.approvedLatest() {
+		t.Fatalf("%s: the document reads %s before the answer, want it approved at its latest version", what, approvalState(approvedBefore))
 	}
+	reviewBefore := standingReviewOf(t, p, artifactID)
 
 	const text = "Ship it once the flag is on."
-	answered := answerAsk(t, p, askID, "Ship", text)
-	var reply struct {
-		Advice map[string]json.RawMessage `json:"advice"`
-	}
-	if err := json.Unmarshal(answered, &reply); err != nil {
-		t.Fatalf("%s: decode the answer's reply: %v: %s", what, err, answered)
-	}
-	if superseded, reported := reply.Advice["superseded_approval"]; reported {
-		t.Errorf("%s: the answer reports the superseded approval %s, want none: %s", what, superseded, answered)
-	}
+	answerAsk(t, p, askID, "Ship", text)
 	event := answeredEvent(t, ctx, database, askID)
 	var state string
 	var row []byte
@@ -384,12 +408,16 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 			t.Errorf("%s: the live tree's block holds %s=%v, want no answer, answerer, time or selection", what, name, value)
 		}
 	}
-	if approval := approvalOf(t, p, artifactID); !approval.approvedLatest() || afterNumber != approval.LatestVersion {
-		t.Errorf("%s: after the answer the document reads %+v, want the approval recorded before it standing at version %d", what, approval, afterNumber)
+	approvedAfter, reviewAfter := approvalOf(t, p, artifactID), standingReviewOf(t, p, artifactID)
+	if !approvedAfter.approvedLatest() || approvalState(approvedAfter) != approvalState(approvedBefore) || afterNumber != approvedAfter.LatestVersion ||
+		reviewAfter != reviewBefore {
+		t.Errorf("%s: the approval moved across the answer: the document read %s before it and %s after, and its newest review %+v before and %+v after; want both unchanged, approved at version %d",
+			what, approvalState(approvedBefore), approvalState(approvedAfter), reviewBefore, reviewAfter, beforeNumber)
 	}
+	t.Logf("%s: the document reads %s before and after the answer, its newest review %+v", what, approvalState(approvedAfter), reviewAfter)
 }
 
-// A person's answer is held once, on the ask's node (dispatch://INFRA-1150 R3, c-one-answer). Over
+// A person's answer is held once, on the ask's node (c-one-answer). Over
 // a fleet of this build alone the answer route appends the answer to the node, the asks row is
 // its projection, and the document's bytes do not move, so an approval stands through it. While
 // a process of the base release is registered, the roll window keeps the block in step for that
@@ -656,8 +684,9 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 	}
 
 	// The source is answered: the copy's document owes a settlement, and once it has settled again
-	// the copy reads the source's answer in the text an agent reads, naming the source and its
-	// document.
+	// the copy's entry in the asks member of the text an agent reads holds the source's answer,
+	// naming the source and its document, while the copy's opening line in that text holds none
+	// of the server-owned attributes.
 	answerAsk(t, current, c.source, "East", "East first.")
 	var owed bool
 	if err := database.QueryRow(ctx, `select exists (select 1 from doc_settlements_pending where artifact_id = $1::uuid)`, copyDocument).Scan(&owed); err != nil || !owed {
@@ -678,7 +707,8 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 		t.Errorf("%s: the copy settled again reads its source %q %q, want the source's answer", c.what, copiedState, copiedAnswer)
 	}
 	var text struct {
-		Markdown string `json:"markdown"`
+		Markdown string          `json:"markdown"`
+		Asks     []model.TextAsk `json:"asks"`
 	}
 	readJSON(t, current, "/api/v1/artifacts/"+copyDocument+"/text", &text)
 	opener := ""
@@ -687,13 +717,21 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 			opener = line
 		}
 	}
-	for _, want := range []string{
-		`state="answered"`, `answered_by="` + dispatchTestLogin + `"`, `answer="East first."`,
-		`copied_from="` + c.source + `"`, `copied_from_document="dispatch://` + c.issue + `/spec"`,
-	} {
-		if !strings.Contains(opener, want) {
-			t.Errorf("%s: the copy's text, settled again, opens its block %q, want it holding %s:\n%s", c.what, opener, want, text.Markdown)
+	for _, name := range storedAskAttributes {
+		if strings.Contains(opener, " "+name+`="`) {
+			t.Errorf("%s: the copy's text, settled again, opens its block %q, holding the server-owned attribute %s:\n%s", c.what, opener, name, text.Markdown)
 		}
+	}
+	var entry *model.TextAsk
+	for index := range text.Asks {
+		if text.Asks[index].BlockID == c.sourceBlock {
+			entry = &text.Asks[index]
+		}
+	}
+	if entry == nil || entry.State != asks.StateAnswered || entry.AnsweredBy != dispatchTestLogin || entry.Answer == nil || *entry.Answer != "East first." ||
+		entry.CopiedFrom != c.source || entry.CopiedFromDocument != "dispatch://"+c.issue+"/spec" {
+		t.Errorf("%s: the copy's text, settled again, answers its block %s in its asks as %s, want it answered by %s with East first., naming %s on dispatch://%s/spec",
+			c.what, c.sourceBlock, mustJSON(t, entry), dispatchTestLogin, c.source, c.issue)
 	}
 }
 

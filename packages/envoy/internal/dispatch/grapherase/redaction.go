@@ -40,6 +40,12 @@ type redactedEvent struct {
 // nothing else of anybody's, so every one of those bytes goes wherever it stands in what a person
 // wrote.
 //
+// A reply to a message quotes it: the event of a message that replies to the erased one
+// (`in_reply_to`) or to one of its blocks (`reply_block`'s node) carries the head of its body or
+// of that block's text as `reply_body`, and the block's text in `reply_block`. Those two values are
+// the erased message's words and nothing else, so they go whole (redactReplyQuote), cut short as
+// they may be; the rest of that event is the reply's own words, and stays.
+//
 // An event about the node whose payload holds an erased text in its structural values alone
 // (structuralKey) is not redacted, so it is none of these: the run leaves it whole, and the
 // search for the rows it leaves lists it (readLeft), so the listing says what the run does.
@@ -47,35 +53,45 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	if len(read.texts) == 0 {
 		return nil
 	}
-	var about, subject string
+	var about, own, subject string
 	switch {
 	case refs.ItemKind(e.Kind) == refs.ItemComment:
-		about, subject = `payload->>'id' = $1 or payload->>'comment_id' = $1`, e.ID
+		about, own, subject = `payload->>'id' = $1 or payload->>'comment_id' = $1`, `true`, e.ID
 	case refs.ItemKind(e.Kind) == refs.ItemMessage:
-		about, subject = `type like 'message.%' and (payload->>'id' = $1 or payload->>'message_id' = $1)`, e.ID
+		own = `coalesce(payload->>'id' = $1 or payload->>'message_id' = $1, false)`
+		about, subject = `type like 'message.%' and (`+own+` or payload->>'in_reply_to' = $1
+			or split_part(payload->'reply_block'->>'node', '#', 1) = 'message/' || $1)`, e.ID
 	case read.document != nil:
-		about, subject = `payload->>'artifact_id' = $1 and (type like 'artifact.%' or type like 'block.%')`, read.document.artifact
+		about, own, subject = `payload->>'artifact_id' = $1 and (type like 'artifact.%' or type like 'block.%')`, `true`, read.document.artifact
 	default:
 		return nil
 	}
-	rows, err := tx.Query(ctx, `select id, type, payload::text from events where `+about+` order by id`, subject)
+	rows, err := tx.Query(ctx, `select id, type, payload::text, `+own+` from events where `+about+` order by id`, subject)
 	if err != nil {
 		return fmt.Errorf("read the events about %s:%s: %w", e.Kind, e.ID, err)
 	}
 	type stored struct {
 		id            int64
 		kind, payload string
+		own           bool
 	}
 	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (stored, error) {
 		var event stored
-		err := row.Scan(&event.id, &event.kind, &event.payload)
+		err := row.Scan(&event.id, &event.kind, &event.payload, &event.own)
 		return event, err
 	})
 	if err != nil {
 		return fmt.Errorf("read the events about %s:%s: %w", e.Kind, e.ID, err)
 	}
 	for _, event := range found {
-		payload, originals, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil)
+		var payload []byte
+		var originals []string
+		var err error
+		if event.own {
+			payload, originals, err = redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil)
+		} else {
+			payload, originals, err = redactReplyQuote([]byte(event.payload), e.marker())
+		}
 		if err != nil {
 			return fmt.Errorf("redact the payload of event %d: %w", event.id, err)
 		}
@@ -86,6 +102,40 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		read.listing.events = append(read.listing.events, fmt.Sprintf("events %d %s", event.id, event.kind))
 	}
 	return nil
+}
+
+// redactReplyQuote replaces with the marker what a reply's event quotes of the message it replies
+// to (readEvents): its `reply_body` and its `reply_block`'s `text`, each whole, and answers the
+// payload so redacted and each value it rewrote as it stood before. A payload that quotes nothing
+// is answered as it is.
+func redactReplyQuote(payload []byte, marker string) ([]byte, []string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	var value map[string]any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, nil, err
+	}
+	var originals []string
+	mark := func(held map[string]any, key string) {
+		if quoted, ok := held[key].(string); ok && quoted != "" && quoted != marker {
+			originals = append(originals, quoted)
+			held[key] = marker
+		}
+	}
+	mark(value, "reply_body")
+	if block, ok := value["reply_block"].(map[string]any); ok {
+		mark(block, "text")
+	}
+	if len(originals) == 0 {
+		return payload, nil, nil
+	}
+	var written bytes.Buffer
+	encoder := json.NewEncoder(&written)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, nil, err
+	}
+	return bytes.TrimSpace(written.Bytes()), originals, nil
 }
 
 // redactPayload replaces each erased text with the marker inside every string value of a JSON

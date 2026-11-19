@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The three relations that tie a thing to a person by what reached them (dispatch://INFRA-1152 R2
@@ -52,11 +55,21 @@ var ErrPersonTupleOutsideToPerson = errors.New("a delivered_to, mentions or part
 // predicate has it (refs.VisibleKind). An end past the store's address bound is no tuple, and the
 // rest of the call is appended.
 //
-// It runs in the caller's transaction, in two statements: the read of the nodes reserved for their
-// author among the tuples' other ends, which locks nothing, and one write of the person nodes and
-// the tuples, the nodes first in ascending (kind, id), as every write of this store takes them
-// (WriteArms). The tuples take the relation repeat key, so one event states each relation once.
+// It is QueueToPerson run at once, as a batch of its own, for a writer with no write phase.
 func ToPerson(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueToPerson(b, tuples) })
+}
+
+// QueueToPerson queues ToPerson on a write phase's batch, in two statements: the read of the nodes
+// reserved for their author among the tuples' other ends, which locks nothing and whose callback
+// refuses a tuple one of them forbids (ErrReservedForAuthor), and one write of the person nodes and
+// the tuples, the nodes first in ascending (kind, id), as every write of this store takes them
+// (WriteArms). The tuples take the relation repeat key, so one event states each relation once. The
+// read runs where the batch reaches it, so it sees every node the statements queued before it
+// wrote, as the read ToPerson ran after those writes saw them; a refusal stops the batch's reading,
+// and the transaction it ends commits nothing of the call. A tuple's SourceEvent may be
+// LatestEvent, for a write whose event the batch appends right before it.
+func QueueToPerson(b *store.WriteBatch, tuples []Tuple) error {
 	if len(tuples) == 0 {
 		return nil
 	}
@@ -85,31 +98,137 @@ func ToPerson(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
 	if len(stated) == 0 {
 		return nil
 	}
-	reserved, err := reservedForAuthor(ctx, tx, ends)
+	queueReservedForAuthor(b, ends, func(reserved map[[2]string]model.Actor) error {
+		for index, reach := range reaches {
+			author, held := reserved[reach.end]
+			if !held {
+				continue
+			}
+			if kind, id, named := AuthorOf(author); named && kind == KindPerson && id == reach.person {
+				continue
+			}
+			tuple := stated[index]
+			return fmt.Errorf("%s %s/%s -> %s/%s names person %s, and %s/%s is visible to its author alone (visibility %s): %w",
+				tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, reach.person, reach.end[0], reach.end[1],
+				VisibilityAuthor, ErrReservedForAuthor)
+		}
+		return nil
+	})
+	arms, params, _, err := writeArms(1, persons, stated, nil, true)
 	if err != nil {
 		return err
 	}
-	for index, reach := range reaches {
-		author, held := reserved[reach.end]
-		if !held {
-			continue
-		}
-		if kind, id, named := AuthorOf(author); named && kind == KindPerson && id == reach.person {
-			continue
-		}
-		tuple := stated[index]
-		return fmt.Errorf("%s %s/%s -> %s/%s names person %s, and %s/%s is visible to its author alone (visibility %s): %w",
-			tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, reach.person, reach.end[0], reach.end[1],
-			VisibilityAuthor, ErrReservedForAuthor)
-	}
-	arms, params, err := writeArms(1, persons, stated, nil, true)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
-		return fmt.Errorf("append %d tuple naming a person: %w", len(stated), err)
-	}
+	b.Queue(fmt.Sprintf("append %d tuple naming a person", len(stated)), "with "+arms+"\nselect 1", params...)
 	return nil
+}
+
+// ToPersonRows is the select list a caller's common-table expression answers for ToPersonArms and
+// ReservedForAuthorRead, one row per tuple, in the order the tuples are appended: position, and the
+// tuple's from_kind, from_id, kind, to_kind, to_id and asserted, each a delivered_to or a mentions
+// to a person or a participates_in from one, the person's end a canonical login
+// (user_threads_login, model.CanonicalLogin in SQL).
+const ToPersonRows = `position, from_kind, from_id, kind, to_kind, to_id, asserted`
+
+// ToPersonArms is the arms of a caller's statement that appends the tuples ToPerson appends whose
+// rows that statement derives itself, read off rows, a common-table expression of it answering
+// ToPersonRows: for a writer whose tuples hang on what its own write phase's earlier statements
+// leave, which no read in Go can answer before the batch is sent (inboxwrite's move of who an ask
+// waits on, after the asks rows it moves are locked). Every tuple is dated at, made by who and
+// caused by event (LatestEvent for the event the batch appends right before). The person each
+// asserted tuple names gets their node, as ToPerson writes it - project-visible, live, made by who
+// at at under event, `do nothing` where the store holds it already, with its base attributes for a
+// node it makes - before any tuple is appended, in ascending (kind, id), as every write of this
+// store takes them (WriteArms). A row whose person or other end is past the store's address bound
+// is no tuple, as ToPerson has it. The rule of ErrReservedForAuthor is the caller's to hold, by a
+// statement of its own before this one over the same rows (ReservedForAuthorRead). Its parameters
+// are bound from $first on, after the caller's own, and the arms end with no comma.
+func ToPersonArms(first int, rows string, at time.Time, who model.Actor, event int64) (string, []any, error) {
+	writer, err := json.Marshal(who.Recorded())
+	if err != nil {
+		return "", nil, fmt.Errorf("encode the writer of the tuples naming a person: %w", err)
+	}
+	param := func(offset int) string { return "$" + strconv.Itoa(first+offset) }
+	at0, who1, event2 := param(0)+`::timestamptz`, param(1)+`::jsonb`, param(2)+`::bigint`
+	person := `(case when stated.kind = '` + TupleParticipatesIn + `' then stated.from_id else stated.to_id end)`
+	fits := `octet_length(stated.from_id) <= ` + strconv.Itoa(MaxAddressBytes) + ` and octet_length(stated.to_id) <= ` + strconv.Itoa(MaxAddressBytes)
+	return `graph_people_stated as (
+	select ` + ToPersonRows + `, ` + person + ` as person
+	from ` + rows + ` stated
+	where ` + fits + `
+),
+graph_nodes_written as (
+	insert into graph_nodes (` + nodeColumns + `)
+	select distinct '` + KindPerson + `', people.person, '` + KindPerson + `', '` + VisibilityProject + `', '` + StateLive + `', '{}'::jsonb,
+	       ` + at0 + `, ` + who1 + `, ` + causeOf(event2) + `, null::text, null::text[]
+	from graph_people_stated people
+	where people.asserted
+	order by 2
+	on conflict (kind, id) do nothing
+	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
+),
+graph_node_attributes as (
+	insert into graph_tuples (` + tupleWriteColumns + `)
+	select written.kind, written.id, attribute.kind, '` + KindValue + `', attribute.value,
+	       written.made_at, written.made_by, written.source_event, null, true
+	from graph_nodes_written written
+	cross join lateral (values
+		('` + AttributeVisibility + `', written.visibility), ('` + AttributeState + `', written.state),
+		('` + AttributeProject + `', written.project_key), ('` + AttributeParties + `', array_to_string(written.parties, ' ')))
+		as attribute(kind, value)
+	where attribute.value is not null
+	order by written.kind, written.id, attribute.kind` + valueRepeatKey + `
+),
+graph_relations_appended as (
+	insert into graph_tuples (` + tupleWriteColumns + `)
+	select people.from_kind, people.from_id, people.kind, people.to_kind, people.to_id,
+	       ` + at0 + `, ` + who1 + `, ` + causeOf(event2) + `, null, people.asserted
+	from graph_people_stated people
+	where ` + nodesWrittenFirst + `
+	order by people.position` + relationRepeatKey + `
+)`, []any{at, writer, event}, nil
+}
+
+// ReservedForAuthorRead is a read over rows, a common-table expression of the caller's statement
+// answering ToPersonRows, of the first tuple ToPerson would refuse (ErrReservedForAuthor): one
+// whose other end is a node the store holds at VisibilityAuthor and whose person is not who made
+// that node (AuthorOf of its made_by, user_threads_login in SQL). It answers (kind, from_kind,
+// from_id, to_kind, to_id, person), no row where none would be refused, for the caller's
+// callback to refuse with RefuseReservedForAuthor; the caller queues it before the statement
+// whose arms append the same rows (ToPersonArms).
+func ReservedForAuthorRead(rows string) string {
+	return `
+		select stated.kind, stated.from_kind, stated.from_id, stated.to_kind, stated.to_id, person.login
+		from ` + rows + ` stated
+		cross join lateral (select case when stated.kind = '` + TupleParticipatesIn + `' then stated.from_id else stated.to_id end as login) person
+		cross join lateral (select case when stated.kind = '` + TupleParticipatesIn + `' then stated.to_kind else stated.from_kind end as kind,
+		                           case when stated.kind = '` + TupleParticipatesIn + `' then stated.to_id else stated.from_id end as id) other
+		join graph_nodes n on n.kind = other.kind and n.id = other.id
+		where n.visibility = '` + VisibilityAuthor + `'
+		  and person.login is distinct from (case
+		      when n.made_by->>'kind' = 'user' and coalesce(n.made_by->>'id', '') <> '' then user_threads_login(n.made_by->>'id')
+		      when n.made_by->>'kind' = 'session' and coalesce(n.made_by->>'id', '') <> '' then null
+		      when coalesce(n.made_by->>'owner', '') <> '' then user_threads_login(n.made_by->>'owner')
+		  end)
+		limit 1`
+}
+
+// RefuseReservedForAuthor is the callback of ReservedForAuthorRead: the refusal ToPerson answers
+// for the row it read, naming the tuple, its person and the node visible to its author alone, and
+// nil where it read none.
+func RefuseReservedForAuthor(row pgx.Row) error {
+	var kind, fromKind, fromID, toKind, toID, person string
+	switch err := row.Scan(&kind, &fromKind, &fromID, &toKind, &toID, &person); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	end := [2]string{fromKind, fromID}
+	if kind == TupleParticipatesIn {
+		end = [2]string{toKind, toID}
+	}
+	return fmt.Errorf("%s %s/%s -> %s/%s names person %s, and %s/%s is visible to its author alone (visibility %s): %w",
+		kind, fromKind, fromID, toKind, toID, person, end[0], end[1], VisibilityAuthor, ErrReservedForAuthor)
 }
 
 // personReach is what one tuple ToPerson appends ties: the person, by their canonical login, and
@@ -140,38 +259,39 @@ func personEnds(tuple *Tuple) (string, [2]string, error) {
 		TupleDeliveredTo+" and "+TupleMentions, TupleParticipatesIn, tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID)
 }
 
-// reservedForAuthor answers, of the nodes ends names, each the store holds at VisibilityAuthor,
-// with who made it, in one read of graph_nodes by its key.
-func reservedForAuthor(ctx context.Context, tx pgx.Tx, ends map[[2]string]struct{}) (map[[2]string]model.Actor, error) {
+// queueReservedForAuthor queues the read that answers, of the nodes ends names, each the store
+// holds at VisibilityAuthor, with who made it, in one read of graph_nodes by its key, and hands
+// that answer to check once the statement has run; check's error stops the batch.
+func queueReservedForAuthor(b *store.WriteBatch, ends map[[2]string]struct{}, check func(map[[2]string]model.Actor) error) {
 	kinds := make([]string, 0, len(ends))
 	ids := make([]string, 0, len(ends))
 	for end := range ends {
 		kinds, ids = append(kinds, end[0]), append(ids, end[1])
 	}
-	rows, err := tx.Query(ctx, `
+	b.Queue(fmt.Sprintf("read which of %d node is reserved for its author", len(ends)), `
 		select n.kind, n.id, n.made_by
 		from unnest($1::text[], $2::text[]) as named(kind, id)
 		join graph_nodes n on n.kind = named.kind and n.id = named.id
 		where n.visibility = $3
-	`, kinds, ids, VisibilityAuthor)
-	if err != nil {
-		return nil, fmt.Errorf("read which of %d node is reserved for its author: %w", len(ends), err)
-	}
-	defer rows.Close()
-	reserved := map[[2]string]model.Actor{}
-	for rows.Next() {
-		var kind, id string
-		var madeBy []byte
-		if err := rows.Scan(&kind, &id, &madeBy); err != nil {
-			return nil, fmt.Errorf("read a node reserved for its author: %w", err)
+	`, kinds, ids, VisibilityAuthor).Query(func(rows pgx.Rows) error {
+		reserved := map[[2]string]model.Actor{}
+		for rows.Next() {
+			var kind, id string
+			var madeBy []byte
+			if err := rows.Scan(&kind, &id, &madeBy); err != nil {
+				return fmt.Errorf("read a node reserved for its author: %w", err)
+			}
+			var author model.Actor
+			if err := json.Unmarshal(madeBy, &author); err != nil {
+				return fmt.Errorf("decode the author of %s/%s: %w", kind, id, err)
+			}
+			reserved[[2]string{kind, id}] = author
 		}
-		var author model.Actor
-		if err := json.Unmarshal(madeBy, &author); err != nil {
-			return nil, fmt.Errorf("decode the author of %s/%s: %w", kind, id, err)
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read which of %d node is reserved for its author: %w", len(ends), err)
 		}
-		reserved[[2]string{kind, id}] = author
-	}
-	return reserved, rows.Err()
+		return check(reserved)
+	})
 }
 
 // namesPerson is whether tuple is one of the three kinds ToPerson alone appends, naming a person

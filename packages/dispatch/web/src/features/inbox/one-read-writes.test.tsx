@@ -22,6 +22,7 @@ import {
 import { ApiError, api } from "../../api/client";
 import { inboxQuery, meInboxCountQuery, meInboxQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MeInboxEntry, MeInboxResponse, MyReplyRow } from "../../api/types";
+import { issuePriority } from "../issue/issue-priority";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { useIssuePriority } from "../issue/useIssuePriority";
 import { replyRow } from "../threads/replies-fixture";
@@ -187,7 +188,9 @@ test("taking an unassigned ask adds it to the one read, and a refusal takes it o
   const client = seeded([ask], oneRead([]));
   const answer = deferred<never>();
   answerIssuePatches().mockReturnValue(answer.promise);
-  const hook = renderHook(() => useIssueAssignee("CORE-1"), { wrapper: wrapper(client) });
+  const hook = renderHook(() => useIssueAssignee("CORE-1", ask.issue?.assignee ?? null), {
+    wrapper: wrapper(client),
+  });
 
   act(() => hook.result.current.submit("alice"));
   await waitFor(() => expect(cachedAsk(client, "ask-c")?.waiting_on_person).toBe("alice"));
@@ -203,7 +206,9 @@ test("a priority lands on the one read's ask, and a refusal takes it back", asyn
   const client = seeded([ask], oneRead([ask]));
   const answer = deferred<never>();
   answerIssuePatches().mockReturnValue(answer.promise);
-  const hook = renderHook(() => useIssuePriority("CORE-1"), { wrapper: wrapper(client) });
+  const hook = renderHook(() => useIssuePriority("CORE-1", issuePriority(ask.priority)), {
+    wrapper: wrapper(client),
+  });
 
   act(() => hook.result.current.submit(1));
   await waitFor(() => expect(cachedAsk(client, "ask-a")?.priority).toBe(1));

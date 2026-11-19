@@ -1035,7 +1035,7 @@ var issueRowStatement = `
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedPlanRole + `), ''),
-		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedDecisionsRole + `), ''),
+		       coalesce((select min(d.id::text) from decisions_documents() d where d.issue_key = i.key), ''), -- kept for one release: compat-objects
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
 		       ` + issueComponentsColumns + `,
@@ -1146,6 +1146,16 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 // statement's 8,097 buffers on the measurement database. The two columns are functionally
 // determined by the key the walk already carries, so `union` removes exactly the rows it
 // removed before.
+//
+// A child's `needs`, the keys of the issues it waits on, are one lateral over issue_links keyed
+// by the child's own key, which the table's primary key (issue_key, kind, target_key) leads
+// with, so the statement makes one keyed read per child and no read of the table by anything
+// else: this is the single-issue read, where issueProgressLateral counts one issue's children
+// the same way and the listing counts its whole page's in one grouped read instead
+// (issueSummaryJoins). Written as that grouped read, over the direct children the rollup
+// already names, the planner dropped the child keys from the condition and read issue_links by
+// kind alone. The claim is two columns of the child's own row, which this statement already
+// reads, so it costs no join at all.
 var issueChildrenStatement = `
 		with recursive subtree as (
 			select key as root, key, 1 as depth, status, updated_at from issues where parent_key = $1
@@ -1161,27 +1171,41 @@ var issueChildrenStatement = `
 			from subtree s
 			group by s.root
 		)
-		select c.key, c.title, c.status, r.done, r.total, r.active_at,
+		select i.key, i.title, i.status, r.done, r.total, r.active_at,
 		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
-		                 from issue_external_links l where l.issue_key = c.key), '[]')
-		from issues c join rollup r on r.root = c.key
-		where c.parent_key = $1 order by c.key
+		                 from issue_external_links l where l.issue_key = i.key), '[]'),
+		       blockers.keys,
+		       ` + issueClaimColumns + `
+		from issues i join rollup r on r.root = i.key
+		left join lateral (
+			select array_agg(l.target_key order by l.target_key) as keys
+			from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'
+		) blockers on true
+		where i.parent_key = $1 order by i.key
 	`
 
 // scanIssueChildren reads the rows issueChildrenStatement returns. An issue with no child keeps
-// a non-nil empty list, which the response carries as [].
+// a non-nil empty list, which the response carries as []. A child waiting on nothing scans a null
+// array, so its Needs stays nil and the answer leaves it out, as it does a claim nobody holds.
 func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 	children := []model.IssueChild{}
 	for rows.Next() {
 		var child model.IssueChild
 		var links []byte
-		if err := rows.Scan(&child.Key, &child.Title, &child.Status,
-			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links); err != nil {
+		var claim claimScan
+		targets := []any{&child.Key, &child.Title, &child.Status,
+			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links, &child.Needs}
+		if err := rows.Scan(append(targets, claim.targets()...)...); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(links, &child.ExternalLinks); err != nil {
 			return nil, err
 		}
+		claimed, err := claim.resolve(child.Key)
+		if err != nil {
+			return nil, err
+		}
+		child.Claim = claimed
 		children = append(children, child)
 	}
 	return children, rows.Err()
@@ -1191,11 +1215,14 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 // issue's key and $2 the steps in the order a gate runs them, which is the order the read
 // answers them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
 // (issue_design_gates.go). The order is a parameter rather than a case expression built into
-// the text, so model.GatedStepsKnown stays the one place that order is written. A key no issue
-// carries returns no row, which is what the issue read's first batch requires of every
-// statement beside the issue row's.
+// the text, so model.GatedStepsKnown stays the one place that order is written. A row of a step
+// outside it, the retired `decisions` step a daemon of the release before wrote, is left out.
+// A key no issue carries returns no row, which is what the issue
+// read's first batch requires of every statement beside the issue row's.
+//
+// kept for one release: design-gate-rows
 const issueDesignGatesStatement = `
-		select step, artifact_id from design_gates where issue = $1
+		select step, artifact_id from design_gates where issue = $1 and step = any($2::text[])
 		order by array_position($2::text[], step)
 	`
 

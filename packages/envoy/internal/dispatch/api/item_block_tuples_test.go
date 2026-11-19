@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // itemBlockServer is the server the test's own re-index reads mentions with; a dispatch://
@@ -95,22 +96,31 @@ func TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations(t *testing.T) {
 	// A re-index of the unchanged text, as an owed pass or a rebuild reads it, appends nothing.
 	before := countTuples(t, database)
 	reindexItem(t, database, "the comment", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		_, written, err := refs.ReplaceCountedItem(ctx, tx, refs.ItemComment, comment.ID, citing, itemBlockServer, time.Now())
-		return written, err
+		return reindexItemBody(ctx, tx, refs.ItemComment, comment.ID, citing)
 	})
 	reindexItem(t, database, "the message", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		_, written, err := refs.ReplaceCountedItem(ctx, tx, refs.ItemMessage, message.ID, citing, itemBlockServer, time.Now())
-		return written, err
+		return reindexItemBody(ctx, tx, refs.ItemMessage, message.ID, citing)
 	})
 	reindexItem(t, database, "the ask", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		reader := refs.NewReader(ctx, tx, "ask", ask.ID, itemBlockServer)
-		changes, cited, err := refs.ReplaceCounted(ctx, tx, reader, question)
+		cited, err := reindexReferences(ctx, tx, refs.ItemAsk, ask.ID, question)
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, written, err := refs.IndexAskPartsCounted(ctx, tx, reader, model.Ask{ID: ask.ID, Question: question}, time.Now(), changes)
+		index, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		indexing, err := refs.PlanAskParts(index, refs.NewReader(ctx, tx, "ask", ask.ID, itemBlockServer),
+			model.Ask{ID: ask.ID, Question: question}, time.Now())
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		if err := store.RunWrite(ctx, tx, indexing.Queue); err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		written := indexing.Stated()
 		written.Tuples = append(written.Tuples, cited.Tuples...)
-		return written, err
+		return written, nil
 	})
 	if after := countTuples(t, database); after != before {
 		t.Errorf("a re-index of unchanged text appended %d tuples, want none", after-before)
@@ -329,6 +339,39 @@ func countTuples(t *testing.T, database *store.Store) int {
 		t.Fatalf("count the tuples: %v", err)
 	}
 	return tuples
+}
+
+// reindexReferences reconciles the references of item kind/itemID with body, as an owed pass
+// reads them, and answers the citations that states.
+func reindexReferences(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string) (graphstore.Uncaused, error) {
+	found := text.Refs(refs.NewReader(ctx, tx, string(kind), itemID, itemBlockServer).Mentions(body))
+	replacement, _, err := planFoundReferences(ctx, tx, string(kind), itemID, found, nil, nil, time.Now().UTC())
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		return nil
+	}); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	return replacement.Cited(), nil
+}
+
+// reindexItemBody re-indexes a comment's or a message's body: its references and its blocks with
+// their links, and answers what both state.
+func reindexItemBody(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string) (graphstore.Uncaused, error) {
+	cited, err := reindexReferences(ctx, tx, kind, itemID, body)
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	located := refs.NewReader(ctx, tx, string(kind), itemID, itemBlockServer).Mentions(body)
+	_, written, err := refs.IndexItem(ctx, tx, kind, itemID, body, time.Now().UTC(), located, nil)
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	written.Tuples = append(written.Tuples, cited.Tuples...)
+	return written, nil
 }
 
 // reindexItem runs index in a transaction of its own and appends what it states at the sentinel,

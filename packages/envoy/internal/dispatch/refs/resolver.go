@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"slices"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -18,11 +16,10 @@ import (
 // with. It is one write's object, not a cache: a caller builds it, reads every text of that
 // source through it - a comment's body, an ask's question and each of its parts - and drops it,
 // so the database answers once per kind for a write however many texts it holds, and what it
-// answered is the one transaction's view. It is the text.Resolver every write of a text passes
-// to the function that indexes it (ReplaceCounted, ReplaceCountedEdit, IndexAskParts,
-// IndexAskPartsCounted), so a write that holds two texts of one source - an ask's question and
-// its parts - reads both through one. A write that made its source's node holds that node on
-// the reader too (Wrote), so neither pass reads back the row the write has just inserted.
+// answered is the one transaction's view. It is the text.Resolver every write of a text reads
+// that text through (Mentions) before it plans what to index (PlanReplace, PlanItemIndex,
+// PlanAskParts), so a write that holds two texts of one source - an ask's question and its
+// parts - reads both through one.
 //
 // Every failure it meets reaching the database is logged here and answered as nothing resolved
 // for that kind, and no call site handles one: the swallow lives in this one place because the
@@ -47,13 +44,16 @@ type Reader struct {
 	// nil for a source that belongs to no document or whose map could not be read.
 	questions map[string]text.Ref
 	asked     bool
+	// pending is the document the source's text belongs to for a source whose row this
+	// transaction has queued, which the caller hands over because no read of that row answers
+	// it (NewReaderInScope); nil for a source whose row is stored, whose document this reader
+	// reads with ScopeOf. Either way the read is made at most once, by Questions, and not at
+	// all for a text that names no question block.
+	pending *PendingDocument
 	// items is the whole id each (kind, scope, prefix) this reader resolved names, "" for one
 	// that names nothing or two items or more, so a body writing the same short id twice is one
 	// query.
 	items map[prefixKey]string
-	// wrote is the node of the source as the write holding this reader made it (Wrote), nil
-	// where it did not make it.
-	wrote *graphstore.Node
 }
 
 // prefixKey is one short id as ResolvePrefix is asked it: the kind of item it names, the owner it
@@ -70,34 +70,20 @@ func NewReader(ctx context.Context, q Queryer, fromKind, fromID, serverURL strin
 	return &Reader{ctx: ctx, q: q, kind: fromKind, id: fromID, serverURL: serverURL}
 }
 
-// Wrote tells the reader that its write made node, the node of the reader's source, in the
-// transaction the reader reads through: a create that drew the source's id in that transaction
-// and wrote its node there before the source's row (graphstore.WriteUncaused, an ask's create).
-// Every pass that indexes the source through the reader then takes node as the item's scope,
-// which is the row the store holds of it, rather than read that row back (readItemScope): no
-// other transaction can name an id this one drew until it commits, so nothing else has written
-// the node.
-func (r *Reader) Wrote(node graphstore.Node) {
-	r.wrote = &node
-}
-
-// sourceScope is the scope of the reader's source where it is an item - a comment, a message or
-// an ask - and none for a document's (replaceRefs).
-func (r *Reader) sourceScope(ctx context.Context, q Queryer) (itemScope, error) {
-	if kind := ItemKind(r.kind); slices.Contains(itemKinds, kind) {
-		return r.itemScope(ctx, q, kind, r.id)
-	}
-	return itemScope{}, nil
-}
-
-// itemScope is the scope of item itemID of kind: the node the reader's write made, where the
-// item is the reader's source and the write made it (Wrote), and otherwise the store's row of it,
-// read now (readItemScope).
-func (r *Reader) itemScope(ctx context.Context, q Queryer, kind ItemKind, itemID string) (itemScope, error) {
-	if r.wrote != nil && r.kind == string(kind) && r.id == itemID {
-		return itemScope{held: true, node: *r.wrote}, nil
-	}
-	return readItemScope(ctx, q, kind, itemID)
+// NewReaderInScope is NewReader for a source whose row the write's own transaction may have
+// queued and not run yet (INFRA-636), so no read of that row answers the document its `#id`s
+// resolve against: the writer hands that document over, as PendingDocument answers it from the
+// fields the queued row will hold, and this reader reads it from there instead of from
+// ScopeOf. A nil document is a source whose row is stored, whose scope this reader reads for
+// itself as NewReader's does.
+//
+// The document is no more read here than ScopeOf is: both are read by Questions, for a body
+// that holds a `#` candidate and for no other, so a create whose text names no question block
+// sends neither query (PendingDocument).
+func NewReaderInScope(ctx context.Context, q Queryer, fromKind, fromID, serverURL string, document *PendingDocument) *Reader {
+	reader := NewReader(ctx, q, fromKind, fromID, serverURL)
+	reader.pending = document
+	return reader
 }
 
 // Mentions is the references body writes, read with the whole grammar (text.Mentions): the
@@ -159,19 +145,23 @@ func (r *Reader) Issues(keys []string) (map[string]bool, error) {
 	return answer, nil
 }
 
-// Questions is the question map of the document the source's text belongs to (ScopeOf, then
+// Questions is the question map of the document the source's text belongs to (the scope, then
 // QuestionMap), loaded at most once per reader and not at all unless a body holds a `#`
 // candidate, which is when text.Mentions asks. A source that belongs to no document - a direct
 // message, a reply whose thread names none - has no question, and a text on an issue but on no
-// document resolves against the issue's spec, which ScopeOf answers with. Both are read for no
+// document resolves against the issue's spec, which the scope answers with. Both are read for no
 // person (scopeOf, questionMap): the index answers no reader, and the edge a `#id` makes is one
 // of its own source, which every read of the graph holds to the predicates of both its ends.
+//
+// Both reads the scope costs are paid here and nowhere earlier: a body with no `#` candidate
+// never asks, so a create whose text names no question block sends neither the query a queued
+// row's scope takes nor the one a stored row's does.
 func (r *Reader) Questions() (map[string]text.Ref, error) {
 	if r.asked {
 		return r.questions, nil
 	}
 	r.asked = true
-	document, err := scopeOf(r.ctx, r.q, nil, r.kind, r.id)
+	document, err := r.scope()
 	if err != nil {
 		r.failed("read the document a text belongs to", err)
 		return nil, nil
@@ -186,6 +176,16 @@ func (r *Reader) Questions() (map[string]text.Ref, error) {
 	}
 	r.questions = questions
 	return r.questions, nil
+}
+
+// scope is the document the source's text belongs to: the one the writer handed over for a row
+// this transaction has only queued (NewReaderInScope), which no read of that row can answer
+// yet, else the one the source's stored row answers for no person (scopeOf).
+func (r *Reader) scope() (string, error) {
+	if r.pending != nil {
+		return r.pending.Scope(r.ctx, r.q)
+	}
+	return scopeOf(r.ctx, r.q, nil, r.kind, r.id)
 }
 
 // Items is the whole id of each short id the text writes, resolved within the owner the reference
@@ -239,8 +239,11 @@ func (r *Reader) resolveItem(key prefixKey) (string, error) {
 // document the block is of, at the version the reference pins; an item's within the owner its
 // reference names, the issue or the project document it is written on
 // (`dispatch://<PROJECT>/artifact/<slug>/ask/<id>`, whose slug the parsed reference carries in
-// Document). Both callers of a short id ask it: the reader that rewrites a body's short ids as
-// it is indexed, and the `?to=` route that answers a node under its whole id.
+// Document). Both callers that resolve one short id at a time ask it: the reader that rewrites a
+// body's short ids as it is indexed, and the `?to=` route that answers a node under its whole
+// id. GET /api/v1/reference-targets asks it too, for each reference of a set, and gives the
+// answers to ResolvePrefixes, the batched second copy of the queries of ResolvePrefix, which
+// shares its selection rule (choosePrefixCandidate).
 //
 // ok is false for a reference whose owner no Scope holds, which is then left as the text wrote
 // it: an item of no owner at all, and a block of an ask, a comment or a message, whose blocks

@@ -14,7 +14,7 @@ import (
 // whole (askRepairKeepsNothingOfItsOwn), which the plan names in place of its children.
 //
 // Where the edit deletes a decision, it carries what the client refuses: a document edit may not
-// take a decision block out of the document while its ask is open
+// take an ask block out of the document while its ask is open
 // (refuseRemovingOpenDecisionBlocks), and that ask is answered, resolved, or the decision
 // repaired by hand, before the delete. A decision that never held a question never had a row
 // (addedAskBlocks, readableAskBlockIDs), so the common case passes that guard untouched.
@@ -148,7 +148,7 @@ func askRepairKeepsNothingOfItsOwn(ask *pmdoc.Node) bool {
 }
 
 // dropsADecision reports whether a node of dropped is a decision or holds one, so that the
-// document edit the plan names takes a decision block out of the document. The client refuses
+// document edit the plan names takes an ask block out of the document. The client refuses
 // such an edit while that decision's ask is open (refuseRemovingOpenDecisionBlocks), so the
 // refusal says what is answered, resolved or repaired first.
 func dropsADecision(dropped map[*pmdoc.Node]struct{}) bool {

@@ -6,7 +6,7 @@ import { refreshQueries } from "./query-refresh";
 import type { DispatchEvent } from "./types";
 
 /**
- * What refreshes the read a document's decision blocks take their answer state, answer, answerer,
+ * What refreshes the read a document's ask blocks take their answer state, answer, answerer,
  * time and a copy's source from: the asks of the document's owner, `["asks", <issue>]` for an
  * issue's documents and `["artifact", <id>, "asks"]` for a project document's, and, for a copy on
  * a project document, whose source no route lists, the document's live text
@@ -45,7 +45,7 @@ test.each([
   "ask.answered",
   "ask.resolved",
   "ask.opened",
-])("%s refreshes the asks an issue document's decision blocks read", (type) => {
+])("%s refreshes the asks an issue document's ask blocks read", (type) => {
   expect(refreshes(askEvent(type, "artifact-1", "CORE-1"), ["asks", "CORE-1"])).toBe(true);
 });
 
@@ -53,7 +53,7 @@ test.each([
   "ask.answered",
   "ask.resolved",
   "ask.opened",
-])("%s refreshes the asks a project document's decision blocks read", (type) => {
+])("%s refreshes the asks a project document's ask blocks read", (type) => {
   expect(refreshes(askEvent(type, "artifact-2", null), ["artifact", "artifact-2", "asks"])).toBe(
     true
   );
@@ -63,7 +63,40 @@ test.each([
   "ask.answered",
   "ask.resolved",
   "ask.opened",
-])("%s refreshes every project document's live text that renders a copy of an ask, and no other", (type) => {
+])("%s refreshes every project document's live text whose asks hold a copy of an ask, and no other", (type) => {
+  const queryClient = new QueryClient();
+  const copy = ["artifact", "artifact-3", "text"];
+  const plain = ["artifact", "artifact-4", "text"];
+  queryClient.setQueryData(copy, {
+    markdown: ":::ask{#q1}\nQ?\n:::\n",
+    token: "sha256:copy",
+    version: 1,
+    asks: [
+      {
+        block_id: "q1",
+        state: "answered",
+        copied_from: "ask-1",
+        copied_from_document: "dispatch://CORE/artifact/plan",
+      },
+    ],
+  });
+  // A text whose own words name the attribute, beside asks that hold no copy, is no copy.
+  queryClient.setQueryData(plain, {
+    markdown: ":::ask{#q2}\nWhat does copied_from= mean?\n:::\n",
+    token: "sha256:plain",
+    version: 1,
+    asks: [{ block_id: "q2", state: "open" }],
+  });
+  refreshQueries(queryClient, eventRefreshTargets(askEvent(type, "artifact-2", null)));
+  expect(queryClient.getQueryState(copy)?.isInvalidated).toBe(true);
+  expect(queryClient.getQueryState(plain)?.isInvalidated).toBe(false);
+});
+
+test.each([
+  "ask.answered",
+  "ask.resolved",
+  "ask.opened",
+])("%s refreshes every live text a Dispatch of the release before renders a copy of an ask in, and no other", (type) => {
   const queryClient = new QueryClient();
   const copy = ["artifact", "artifact-3", "text"];
   const plain = ["artifact", "artifact-4", "text"];

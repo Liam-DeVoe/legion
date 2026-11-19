@@ -1021,8 +1021,8 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 //
 // The relations are read once either way, by the walk: the distinct relation kinds that touch each
 // of the person's nodes, read by a skip over an index led by the far end and the kind
-// (graph_tuples_inbound or graph_tuples_as_of_in) and one over graph_tuples_current (one index probe
-// a kind, kinds_in and kinds_out), then each kind's current tuples through
+// (graph_tuples_as_of_in) and one over graph_tuples_current (one index probe a kind, kinds_in and
+// kinds_out), then each kind's current tuples through
 // graphstore.CurrentTupleRead, one index range a kind, each relation kind and end once a node
 // (tied). With no state the entries are those nodes. Under a state they are the page's own rows
 // in that state, read from the caches the page's lists read (meInboxPageRows). Either way the page's
@@ -1194,8 +1194,8 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 
 // meInboxKindSkip lists the distinct relation kinds that touch each of the person's nodes at one end
 // - to, the tuples into it, read through an index led by the far end and the kind
-// (graph_tuples_inbound or graph_tuples_as_of_in), or from, those out of it, through
-// graph_tuples_current, beside meInboxOutOfPerson - by a recursive skip: each step reads the least
+// (graph_tuples_as_of_in), or from, those out of it, through graph_tuples_current, beside
+// meInboxOutOfPerson - by a recursive skip: each step reads the least
 // kind past the one before off the index, so a kind costs one probe however many tuples it holds,
 // and no kind is named in Go. graphstore.TuplesIntoNode says why a statement naming no kind would
 // otherwise read the log.

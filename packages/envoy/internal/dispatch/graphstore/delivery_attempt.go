@@ -2,14 +2,16 @@ package graphstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // KindDeliveryAttempt is the node kind of one attempt to reach one session or role: one row of
@@ -43,15 +45,34 @@ const (
 	AttemptAcceptedAs   = "accepted_as"
 )
 
-// attemptValueKinds and attemptRelationKinds are every tuple kind Attempted states, the set its
-// read of what the store holds of an attempt is bounded to.
-var (
-	attemptValueKinds = []string{
-		AttemptNumber, AttemptState, AttemptEnvelopeID, AttemptError, AttemptResolveError,
-		AttemptDuplicate, AttemptClaimedAt, AttemptAcceptedAt, AttemptAcceptedAs,
-	}
-	attemptRelationKinds = []string{TupleOwedTo, TupleDeliveredTo, TupleAnsweredBy}
-)
+// attemptValues are the values an attempt row states, in the order its facts are appended, each
+// with the SQL that reads it off the row (attempt_ends r, attemptMoved): the attempt's number as
+// decimal, a flag as `true` or `false`, and a time as RFC 3339 in UTC to the microsecond Postgres
+// keeps (attemptMoment). A value the row holds none of reads null, and is absent; a comment's
+// attempt holds no acceptance and a message's no resolve error.
+var attemptValues = []struct{ kind, value string }{
+	{AttemptNumber, `r.attempt::text`},
+	{AttemptState, `r.state`},
+	{AttemptEnvelopeID, `r.envelope_id`},
+	{AttemptError, `r.error`},
+	{AttemptResolveError, `r.resolve_error`},
+	{AttemptDuplicate, `r.duplicate::text`},
+	{AttemptClaimedAt, attemptMoment(`r.claimed_at`)},
+	{AttemptAcceptedAt, attemptMoment(`r.accepted_at`)},
+	{AttemptAcceptedAs, `r.accepted_as`},
+}
+
+// attemptRelationKinds are the relations an attempt states, the other half of the kinds the read
+// of what the store holds of an attempt is bounded to.
+var attemptRelationKinds = []string{TupleOwedTo, TupleDeliveredTo, TupleAnsweredBy}
+
+// attemptMoment renders a time column as Go's time.RFC3339Nano writes it in UTC: to the
+// microsecond Postgres keeps, its trailing zeros trimmed and the point with them where nothing is
+// left after it, so a value this statement states reads exactly as one an earlier build's Go
+// writer stated, and an unmoved time is never stated again. A null time renders null.
+func attemptMoment(column string) string {
+	return `rtrim(rtrim(to_char(` + column + ` at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), '0'), '.') || 'Z'`
+}
 
 // AttemptKey names one attempt row by its table's primary key: (comment, target, attempt) of
 // comment_deliveries, or (message, attempt) of message_deliveries. Exactly one of Comment and
@@ -89,37 +110,31 @@ func (k AttemptKey) ID() string {
 // is its own (outbox.graphWriter); so does a Retry's or a sender's opening of an attempt. A write
 // that appends an event beside the row - a comment's mentions, a targeted message, a broadcast's
 // copies, a settle and its receipt, a reply, an acceptance - states the facts as that event's
-// actor instead, under that event (AttemptStated, then Caused).
+// actor instead, under that event (QueueAttempted).
 var AttemptWriter = model.Actor{Kind: "system", ID: "dispatch-delivery"}
 
-// AttemptOpened writes the node of the attempt row the caller is about to insert, inside the
-// caller's transaction, and answers the node columns that insert binds: (node_kind,
-// node_address), which the row's foreign key names, so the node goes in first. A target route
-// carries no length bound, so an address past the store's bound (AddressFits) is no node: nothing
-// is written for it and both columns are nil, which leaves the row unmarked, as every other
-// writer leaves a row whose address the store cannot key.
+// AttemptOpened plans, in the read phase of the write that opens an attempt, the node of the
+// attempt row that write is about to insert, and answers the node columns that insert binds:
+// (node_kind, node_address), which the row's foreign key names, so the node goes in first. A
+// target route carries no length bound, so an address past the store's bound (AddressFits) is no
+// node: the plan holds nothing and both columns are nil, which leaves the row unmarked, as every
+// other writer leaves a row whose address the store cannot key. It reads and writes nothing.
 //
-// The node is made by who, the actor of the write that opens the attempt, at the transaction's
-// own time, the now() the row's created_at defaults to, so the row and its node carry one time.
-// It goes in at the sentinel and is answered held for its cause (Uncaused), as a message's node
-// is: the caller states what the row holds once the insert is done (AttemptStated) and hands the
-// write to Caused under the event the opening write appends in the same transaction, or under
-// NoEvent where it appends none - a Retry's claim opens an attempt and records no event.
-func AttemptOpened(ctx context.Context, tx pgx.Tx, key AttemptKey, who model.Actor) (nodeKind, nodeAddress *string, opened Uncaused, err error) {
+// The node is made by who, the actor of the write that opens the attempt, at at: the
+// transaction's own time as the caller's read phase read it (`select now()`, which takes no
+// transaction id), the now() the row's created_at defaults to, so the row and its node carry one
+// time. It goes in at the sentinel and is answered held for its cause (Uncaused), as a message's
+// node is. The caller queues its write before the row's insert (QueueNodes); once the insert and
+// the event the opening write appends are queued, it moves the node onto that event
+// (QueueCaused) and states what the row holds under it (QueueAttempted), both with NoEvent where
+// the opening appends none - a Retry's claim opens an attempt and records no event.
+func AttemptOpened(key AttemptKey, who model.Actor, at time.Time) (nodeKind, nodeAddress *string, opened Uncaused) {
 	id := key.ID()
 	if !AddressFits(id) {
-		return nil, nil, Uncaused{}, nil
-	}
-	var at time.Time
-	if err := tx.QueryRow(ctx, `select now()`).Scan(&at); err != nil {
-		return nil, nil, Uncaused{}, fmt.Errorf("read the time of delivery attempt %s: %w", id, err)
-	}
-	opened, err = WriteUncaused(ctx, tx, []Node{agentNode(KindDeliveryAttempt, id, who, at, NoEvent)}, nil)
-	if err != nil {
-		return nil, nil, Uncaused{}, fmt.Errorf("write the node of delivery attempt %s: %w", id, err)
+		return nil, nil, Uncaused{}
 	}
 	kind := KindDeliveryAttempt
-	return &kind, &id, opened, nil
+	return &kind, &id, PlanUncaused([]Node{agentNode(KindDeliveryAttempt, id, who, at, NoEvent)}, nil)
 }
 
 // AttemptNode is the node of the attempt key names as the write that opened it makes it
@@ -127,15 +142,6 @@ func AttemptOpened(ctx context.Context, tx pgx.Tx, key AttemptKey, who model.Act
 // attempt row an older build inserted, which names none, before it names it on that row.
 func AttemptNode(key AttemptKey, who model.Actor, at time.Time, event int64) Node {
 	return agentNode(KindDeliveryAttempt, key.ID(), who, at, event)
-}
-
-// AttemptFactsAsWritten is what each named attempt holds, as Attempted states it, against what the
-// store holds of its node now, for the backfill of an attempt row an older build wrote, whose node
-// it has just written and named on the row: dated at the row's own created_at rather than the
-// transaction's time, written by who, at the sentinel for the caller to cause. It reads, and
-// appends nothing.
-func AttemptFactsAsWritten(ctx context.Context, tx pgx.Tx, who model.Actor, keys ...AttemptKey) ([]Tuple, error) {
-	return attemptTuples(ctx, tx, who, keys, attemptWritten)
 }
 
 // The moment an attempt's facts are dated by, as the read of its rows spells it: the
@@ -146,68 +152,122 @@ const (
 	attemptWritten = `d.created_at`
 )
 
-// attemptEnd is the far end of one of an attempt's relations.
-type attemptEnd struct{ kind, id string }
-
-// attemptRow is what one attempt row says its node holds: the node it names, the transaction's
-// time, its values by tuple kind (a value the row holds none of is absent), and the far end of
-// each relation it states now.
-type attemptRow struct {
-	id                  string
-	at                  time.Time
-	values              map[string]string
-	owedTo, deliveredTo *attemptEnd
-	answeredBy          *attemptEnd
-}
-
-// AttemptStated is what the attempts the caller has just opened hold, as facts of the write
-// opened is (AttemptOpened): opened with each named row's facts added, held for the cause the
-// caller hands Caused, written by who. It reads and states as Attempted does, and appends nothing.
-func AttemptStated(ctx context.Context, tx pgx.Tx, opened Uncaused, who model.Actor, keys ...AttemptKey) (Uncaused, error) {
-	facts, err := attemptTuples(ctx, tx, who, keys, attemptNow)
-	if err != nil {
-		return Uncaused{}, err
-	}
-	for _, fact := range facts {
-		opened.Tuples = append(opened.Tuples, UncausedTuple{Tuple: fact})
-	}
-	return opened, nil
-}
-
-// Attempted states each named attempt as its row now stands, inside the transaction that has
-// just written that row: its values as value tuples, `owed_to` its target while it is pending,
-// `delivered_to` its session once the listener took it (model.DeliveryTaken), and `answered_by`
-// its reply once one is recorded. It reads the rows the caller's own statements wrote, under the
-// row locks those statements hold, and appends only what moved against what the store holds of
-// each node now: a value the row changed is stated again, a value it cleared is retracted, an
-// `owed_to` is retracted once the attempt leaves pending, and a `delivered_to` or `answered_by`
-// the node already states is not stated twice - a queued attempt answered later appends its
-// `answered_by` and no second delivery. So a write that moved nothing appends nothing.
+// QueueAttempted queues on b the statement that states each named attempt as its row stands where
+// the batch reaches it, after the statements queued before it that wrote that row: its values as
+// value tuples, `owed_to` its target while it is pending, `delivered_to` its session once the
+// listener took it (model.DeliveryTaken), and `answered_by` its reply once one is recorded. The
+// statement reads those rows, under the row locks the statements that wrote them hold, and what
+// the store holds of each node, and appends only what moved against it (attemptMoved): a value
+// the row changed is stated again, a value it cleared is retracted, an `owed_to` is retracted once
+// the attempt leaves pending, and a `delivered_to` or `answered_by` the node already states is not
+// stated twice - a queued attempt answered later appends its `answered_by` and no second delivery.
+// So a write that moved nothing appends nothing. Every fact is dated at the transaction's time,
+// written by who and caused by event: the event the write appends - LatestEvent for one the batch
+// appends right before - or NoEvent for a transition that records none.
+//
+// All of it is derived in that one statement's SQL, so no read of the row runs in Go between the
+// statement that wrote it and the one that states it, and a write phase that queues both holds its
+// transaction id for its statements alone.
 //
 // A row that names no node is passed over: an older build wrote it during a roll, or its address
 // is past the store's bound (AttemptOpened), and its old reading answers it until the backfill
 // takes it once. The node is not written again: its row's foreign key holds it, and appending a
 // tuple locks no row, so this adds no step to its caller's lock order.
-//
-// It is a transition's writer: the facts are the delivery machinery's (AttemptWriter) and carry
-// no cause. A claim, a release and a sweep's reading of a lapsed claim record no event at all, so
-// a transition is stated at the sentinel, and each fact is appended once because this reads what
-// the node already states before it appends.
-func Attempted(ctx context.Context, tx pgx.Tx, keys ...AttemptKey) error {
-	facts, err := attemptTuples(ctx, tx, AttemptWriter, keys, attemptNow)
+func QueueAttempted(b *store.WriteBatch, who model.Actor, event int64, keys ...AttemptKey) error {
+	moved, args := attemptMoved(keys, attemptNow)
+	if moved == "" {
+		return nil
+	}
+	writer, err := json.Marshal(who.Recorded())
 	if err != nil {
-		return err
+		return fmt.Errorf("encode the writer of the delivery attempts: %w", err)
 	}
-	if err := Write(ctx, tx, nil, facts); err != nil {
-		return fmt.Errorf("state the delivery attempts: %w", err)
-	}
+	whoParam, eventParam := "$"+strconv.Itoa(len(args)+1), "$"+strconv.Itoa(len(args)+2)
+	b.Queue("state the delivery attempts", `
+		with `+moved+`
+		insert into graph_tuples (`+tupleWriteColumns+`)
+		select '`+KindDeliveryAttempt+`', moved.id, moved.kind, moved.to_kind, moved.to_id, moved.at,
+		       `+whoParam+`::jsonb, `+causeOf(eventParam+`::bigint`)+`, null::bigint, moved.asserted
+		from attempt_moved moved
+		order by `+attemptMovedOrder+`
+		on conflict do nothing
+	`, append(args, writer, event)...)
 	return nil
 }
 
-// attemptTuples is the tuples that bring what the store holds of each named attempt's node to
-// what its row now says, written by who at moment (attemptNow or attemptWritten) and at the
-// sentinel.
-func attemptTuples(ctx context.Context, tx pgx.Tx, who model.Actor, keys []AttemptKey, moment string) ([]Tuple, error) {
+// Attempted is QueueAttempted run at once, as a batch of its own, for a transition's writer with
+// no write phase: the facts are the delivery machinery's (AttemptWriter) and carry no cause. A
+// claim, a release and a sweep's reading of a lapsed claim record no event at all, so a
+// transition is stated at the sentinel, and each fact is appended once because the statement reads
+// what the node already states before it appends.
+func Attempted(ctx context.Context, tx pgx.Tx, keys ...AttemptKey) error {
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return QueueAttempted(b, AttemptWriter, NoEvent, keys...)
+	})
+}
+
+// AttemptFactsAsWritten is what each named attempt holds against what the store holds of its node
+// now, for the backfill of an attempt row an older build wrote, whose node it has just written and
+// named on the row: the facts QueueAttempted states, read in one statement of the same SQL
+// (attemptMoved) rather than appended, dated at the row's own created_at rather than the
+// transaction's time, written by who, at the sentinel for the caller to cause. It reads, and
+// appends nothing: the backfill is a writer of its own transaction with no write phase, which
+// causes each fact by the event of the attempt it is out of.
+func AttemptFactsAsWritten(ctx context.Context, tx pgx.Tx, who model.Actor, keys ...AttemptKey) ([]Tuple, error) {
+	moved, args := attemptMoved(keys, attemptWritten)
+	if moved == "" {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `
+		with `+moved+`
+		select moved.id, moved.kind, moved.to_kind, moved.to_id, moved.at, moved.asserted
+		from attempt_moved moved
+		order by `+attemptMovedOrder, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read what the delivery attempts hold: %w", err)
+	}
+	tuples, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Tuple, error) {
+		tuple := Tuple{FromKind: KindDeliveryAttempt, Who: who, SourceEvent: NoEvent}
+		err := row.Scan(&tuple.FromID, &tuple.Kind, &tuple.ToKind, &tuple.ToID, &tuple.At, &tuple.Asserted)
+		return tuple, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read what the delivery attempts hold: %w", err)
+	}
+	return tuples, nil
+}
+
+// attemptMovedOrder is the order attemptMoved's facts are appended in: the relations of every
+// attempt before the values of any, as every append of this store takes them (queueAppend), each
+// attempt's in turn, its owed_to retractions first and its values in attemptValues' order.
+const attemptMovedOrder = `moved.major, moved.id, moved.minor, moved.to_kind, moved.to_id`
+
+// attemptMoved is the common-table expressions, for a statement's `with` list, that answer as
+// attempt_moved (id, at, kind, to_kind, to_id, asserted, major, minor) the tuples that bring what
+// the store holds of each named attempt's node to what its row says as the statement reads it,
+// each dated at moment (attemptNow or attemptWritten), and the arguments they bind from $1; ""
+// where keys names no attempt.
+//
+//   - attempt_rows reads the named rows that name their node, each named key once (a key named
+//     twice is one attempt, stated once): a comment's attempt is owed to the route its row targets,
+//     and a message's to the route its message targets (messages.target), the conversation every
+//     attempt of it belongs to, its row naming the session it resolved, or the empty string before
+//     it resolved one.
+//   - attempt_ends reads the far end of each relation the row states now: owed_to the session or
+//     the role its route names, as model.ParseRoute reads it, while the attempt is pending;
+//     delivered_to the session it resolved once the listener took it; answered_by its reply. An
+//     end past the store's address bound is none.
+//   - held_values and held_relations read, in one pass over graph_tuples each, what the store
+//     holds of every node attempt_rows names: the newest tuple of each value kind, which says
+//     whether the node carries that value now and which, and each relation the node currently
+//     asserts (CurrentTupleRead), both bounded to the kinds an attempt states. Each index they
+//     walk is led by the node's own address.
+//   - attempt_moved is what moved: a value the row carries that the node does not hold now
+//     asserted, a value the node holds that the row carries no longer retracted, every owed_to
+//     the node asserts but the row's retracted, and each relation of the row the node does not
+//     assert yet asserted. A delivery that happened and a reply that was drawn stay stated: a
+//     later settle of the row takes neither back.
+func attemptMoved(keys []AttemptKey, moment string) (string, []any) {
 	var comments, targets, messages []string
 	var commentAttempts, messageAttempts []int32
 	for _, key := range keys {
@@ -218,248 +278,107 @@ func attemptTuples(ctx context.Context, tx pgx.Tx, who model.Actor, keys []Attem
 		comments, targets = append(comments, key.Comment), append(targets, key.Target)
 		commentAttempts = append(commentAttempts, int32(key.Attempt))
 	}
-	var rows []attemptRow
+	var args []any
+	param := func(value any, cast string) string {
+		args = append(args, value)
+		return "$" + strconv.Itoa(len(args)) + "::" + cast
+	}
+	var arms []string
 	if len(comments) > 0 {
-		read, err := readCommentAttempts(ctx, tx, comments, targets, commentAttempts, moment)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, read...)
+		arms = append(arms, `
+			select d.node_address, `+moment+`, d.attempt, d.state, d.envelope_id, d.error,
+			       d.resolve_error, d.duplicate, d.claimed_at, null::timestamptz,
+			       null::text, d.target, d.session_id,
+			       '`+KindComment+`'::text, d.reply_id::text
+			from (select distinct * from unnest(`+param(comments, "uuid[]")+`, `+param(targets, "text[]")+`, `+param(commentAttempts, "int[]")+`))
+				as named (comment_id, target, attempt)
+			join comment_deliveries d
+			  on d.comment_id = named.comment_id and d.target = named.target and d.attempt = named.attempt
+			where d.node_kind = '`+KindDeliveryAttempt+`'`)
 	}
 	if len(messages) > 0 {
-		read, err := readMessageAttempts(ctx, tx, messages, messageAttempts, moment)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, read...)
+		arms = append(arms, `
+			select d.node_address, `+moment+`, d.attempt, d.state, d.envelope_id, d.error,
+			       null::text, d.duplicate, d.claimed_at, d.accepted_at,
+			       d.accepted_as, coalesce(m.target, ''), nullif(d.session_id, ''),
+			       '`+KindMessage+`'::text, d.reply_id::text
+			from (select distinct * from unnest(`+param(messages, "uuid[]")+`, `+param(messageAttempts, "int[]")+`))
+				as named (message_id, attempt)
+			join message_deliveries d on d.message_id = named.message_id and d.attempt = named.attempt
+			join messages m on m.id = d.message_id
+			where d.node_kind = '`+KindDeliveryAttempt+`'`)
 	}
-	if len(rows) == 0 {
-		return nil, nil
+	if len(arms) == 0 {
+		return "", nil
 	}
-	held, err := readAttemptFacts(ctx, tx, rows)
-	if err != nil {
-		return nil, err
+	fits := func(expr string) string {
+		return `octet_length(` + expr + `) <= ` + strconv.Itoa(MaxAddressBytes)
 	}
-	var tuples []Tuple
-	stated := map[string]bool{}
-	for _, row := range rows {
-		// A key named twice is one attempt, stated once.
-		if stated[row.id] {
-			continue
-		}
-		stated[row.id] = true
-		tuples = append(tuples, row.moved(held[row.id], who)...)
+	pending := `r.state = '` + model.DeliveryStatePending + `'`
+	carried := make([]string, len(attemptValues))
+	valueKinds := make([]string, len(attemptValues))
+	for index, value := range attemptValues {
+		carried[index] = `(` + strconv.Itoa(index) + `, '` + value.kind + `', ` + value.value + `)`
+		valueKinds[index] = `'` + value.kind + `'`
 	}
-	return tuples, nil
-}
-
-// readCommentAttempts reads the named comment_deliveries rows that name their node, each at
-// moment. A comment's attempt is owed to the route its row targets, a session or a role
-// (model.ParseRoute).
-func readCommentAttempts(ctx context.Context, tx pgx.Tx, comments, targets []string, attempts []int32, moment string) ([]attemptRow, error) {
-	rows, err := tx.Query(ctx, `
-		select d.node_address, `+moment+`, d.attempt, d.state, d.envelope_id, d.error, d.resolve_error,
-		       d.duplicate, d.claimed_at, d.target, d.session_id, d.reply_id::text
-		from unnest($1::uuid[], $2::text[], $3::int[]) as named (comment_id, target, attempt)
-		join comment_deliveries d
-		  on d.comment_id = named.comment_id and d.target = named.target and d.attempt = named.attempt
-		where d.node_kind = $4
-	`, comments, targets, attempts, KindDeliveryAttempt)
-	if err != nil {
-		return nil, fmt.Errorf("read the comment delivery attempts: %w", err)
-	}
-	return pgx.CollectRows(rows, func(scanned pgx.CollectableRow) (attemptRow, error) {
-		var row attemptRow
-		var number int
-		var state, target string
-		var envelope, failure, resolveError, session, reply *string
-		var duplicate bool
-		var claimed *time.Time
-		if err := scanned.Scan(&row.id, &row.at, &number, &state, &envelope, &failure, &resolveError,
-			&duplicate, &claimed, &target, &session, &reply); err != nil {
-			return attemptRow{}, fmt.Errorf("scan a comment delivery attempt: %w", err)
-		}
-		row.fill(number, state, envelope, failure, duplicate, claimed, nil, nil, target, session, reply, KindComment)
-		if resolveError != nil {
-			row.values[AttemptResolveError] = *resolveError
-		}
-		return row, nil
-	})
-}
-
-// readMessageAttempts reads the named message_deliveries rows that name their node, each at
-// moment. A message's attempt is owed to the route its message targets (messages.target), the
-// conversation every attempt of it belongs to, and its row names the session it resolved, or the
-// empty string before it resolved one.
-func readMessageAttempts(ctx context.Context, tx pgx.Tx, messages []string, attempts []int32, moment string) ([]attemptRow, error) {
-	rows, err := tx.Query(ctx, `
-		select d.node_address, `+moment+`, d.attempt, d.state, d.envelope_id, d.error, d.duplicate,
-		       d.claimed_at, d.accepted_at, d.accepted_as, coalesce(m.target, ''), nullif(d.session_id, ''),
-		       d.reply_id::text
-		from unnest($1::uuid[], $2::int[]) as named (message_id, attempt)
-		join message_deliveries d on d.message_id = named.message_id and d.attempt = named.attempt
-		join messages m on m.id = d.message_id
-		where d.node_kind = $3
-	`, messages, attempts, KindDeliveryAttempt)
-	if err != nil {
-		return nil, fmt.Errorf("read the message delivery attempts: %w", err)
-	}
-	return pgx.CollectRows(rows, func(scanned pgx.CollectableRow) (attemptRow, error) {
-		var row attemptRow
-		var number int
-		var state, target string
-		var envelope, failure, acceptedAs, session, reply *string
-		var duplicate bool
-		var claimed, accepted *time.Time
-		if err := scanned.Scan(&row.id, &row.at, &number, &state, &envelope, &failure, &duplicate,
-			&claimed, &accepted, &acceptedAs, &target, &session, &reply); err != nil {
-			return attemptRow{}, fmt.Errorf("scan a message delivery attempt: %w", err)
-		}
-		row.fill(number, state, envelope, failure, duplicate, claimed, accepted, acceptedAs, target, session, reply, KindMessage)
-		return row, nil
-	})
-}
-
-// fill sets what both tables' rows hold alike. A time is stated as RFC 3339 in UTC to the
-// microsecond Postgres keeps, a flag as `true` or `false`, and the attempt's number as decimal.
-func (row *attemptRow) fill(
-	number int, state string, envelope, failure *string, duplicate bool, claimed, accepted *time.Time,
-	acceptedAs *string, target string, session, reply *string, replyKind string,
-) {
-	row.values = map[string]string{
-		AttemptNumber:    strconv.Itoa(number),
-		AttemptState:     state,
-		AttemptDuplicate: strconv.FormatBool(duplicate),
-	}
-	set := func(kind string, value *string) {
-		if value != nil {
-			row.values[kind] = *value
-		}
-	}
-	setTime := func(kind string, value *time.Time) {
-		if value != nil {
-			row.values[kind] = value.UTC().Format(time.RFC3339Nano)
-		}
-	}
-	set(AttemptEnvelopeID, envelope)
-	set(AttemptError, failure)
-	setTime(AttemptClaimedAt, claimed)
-	setTime(AttemptAcceptedAt, accepted)
-	set(AttemptAcceptedAs, acceptedAs)
-	if state == model.DeliveryStatePending {
-		if route, err := model.ParseRoute(target); err == nil && AddressFits(route.ID) {
-			row.owedTo = &attemptEnd{kind: route.Kind, id: route.ID}
-		}
-	}
-	if model.DeliveryTaken(state) && session != nil && *session != "" && AddressFits(*session) {
-		row.deliveredTo = &attemptEnd{kind: KindSession, id: *session}
-	}
-	if reply != nil {
-		row.answeredBy = &attemptEnd{kind: replyKind, id: *reply}
-	}
-}
-
-// attemptFacts is what the store holds of one attempt node now: the newest value tuple of each
-// value kind, asserting or not, and the far ends each relation kind currently asserts.
-type attemptFacts struct {
-	values    map[string]heldValue
-	relations map[string][]attemptEnd
-}
-
-type heldValue struct {
-	value    string
-	asserted bool
-}
-
-// readAttemptFacts reads, in one statement, what the store holds of every node rows names: the
-// newest tuple of each value kind, which says whether the node carries that value now and which,
-// and each relation the node currently asserts (CurrentTupleRead), both bounded to the kinds an
-// attempt states. The value half reads graph_tuples_values; the relation half reads delivered_to
-// among its kinds, so it reads graph_tuples_current only where that index holds that kind, and
-// graph_tuples_as_of_out otherwise. Each index is led by the node's own address.
-func readAttemptFacts(ctx context.Context, tx pgx.Tx, rows []attemptRow) (map[string]attemptFacts, error) {
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		ids = append(ids, row.id)
-	}
-	read, err := tx.Query(ctx, `
-		select newest.from_id, newest.kind, newest.to_kind, newest.to_id, newest.asserted
-		from (
-			`+CurrentTupleRead(`t.from_id, t.kind`, `t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = $1 and t.from_id = any($2) and t.to_kind = '`+KindValue+`' and t.kind = any($3)`)+`
-		) newest
-		union all
-		select current.from_id, current.kind, current.to_kind, current.to_id, current.asserted
-		from (
-			`+CurrentTupleRead(`t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = $1 and t.from_id = any($2) and t.to_kind <> '`+KindValue+`' and t.kind = any($4)`)+`
-		) current
-		where current.asserted
-	`, KindDeliveryAttempt, ids, attemptValueKinds, attemptRelationKinds)
-	if err != nil {
-		return nil, fmt.Errorf("read what the store holds of the delivery attempts: %w", err)
-	}
-	defer read.Close()
-	held := map[string]attemptFacts{}
-	for read.Next() {
-		var id, kind, toKind, toID string
-		var asserted bool
-		if err := read.Scan(&id, &kind, &toKind, &toID, &asserted); err != nil {
-			return nil, fmt.Errorf("scan what the store holds of a delivery attempt: %w", err)
-		}
-		facts, ok := held[id]
-		if !ok {
-			facts = attemptFacts{values: map[string]heldValue{}, relations: map[string][]attemptEnd{}}
-		}
-		if toKind == KindValue {
-			facts.values[kind] = heldValue{value: toID, asserted: asserted}
-		} else {
-			facts.relations[kind] = append(facts.relations[kind], attemptEnd{kind: toKind, id: toID})
-		}
-		held[id] = facts
-	}
-	if err := read.Err(); err != nil {
-		return nil, fmt.Errorf("read what the store holds of the delivery attempts: %w", err)
-	}
-	return held, nil
-}
-
-// moved is the tuples that bring what the store holds of the node to what its row says.
-func (row attemptRow) moved(held attemptFacts, who model.Actor) []Tuple {
-	var tuples []Tuple
-	fact := func(kind, toKind, toID string, asserted bool) {
-		tuples = append(tuples, Tuple{
-			FromKind: KindDeliveryAttempt, FromID: row.id, Kind: kind, ToKind: toKind, ToID: toID,
-			At: row.at, Who: who, SourceEvent: NoEvent, Asserted: asserted,
-		})
-	}
-	for _, kind := range attemptValueKinds {
-		value, carried := row.values[kind]
-		current := held.values[kind]
-		switch {
-		case carried && (!current.asserted || current.value != value):
-			fact(kind, KindValue, value, true)
-		case !carried && current.asserted:
-			fact(kind, KindValue, current.value, false)
-		}
-	}
-	// owed_to stands for the target while the attempt is pending and for nothing after, so every
-	// other end the node asserts is retracted.
-	for _, end := range held.relations[TupleOwedTo] {
-		if row.owedTo == nil || end != *row.owedTo {
-			fact(TupleOwedTo, end.kind, end.id, false)
-		}
-	}
-	if row.owedTo != nil && !slices.Contains(held.relations[TupleOwedTo], *row.owedTo) {
-		fact(TupleOwedTo, row.owedTo.kind, row.owedTo.id, true)
-	}
-	// A delivery that happened and a reply that was drawn stay stated: a later settle of the row
-	// takes neither back.
-	if row.deliveredTo != nil && !slices.Contains(held.relations[TupleDeliveredTo], *row.deliveredTo) {
-		fact(TupleDeliveredTo, row.deliveredTo.kind, row.deliveredTo.id, true)
-	}
-	if row.answeredBy != nil && !slices.Contains(held.relations[TupleAnsweredBy], *row.answeredBy) {
-		fact(TupleAnsweredBy, row.answeredBy.kind, row.answeredBy.id, true)
-	}
-	return tuples
+	relationKinds := `'` + strings.Join(attemptRelationKinds, `', '`) + `'`
+	named := `t.from_kind = '` + KindDeliveryAttempt + `' and t.from_id = any(array(select id from attempt_rows))`
+	return `attempt_rows (id, at, attempt, state, envelope_id, error, resolve_error, duplicate, claimed_at,
+			accepted_at, accepted_as, route, resolved, reply_kind, reply) as (` + strings.Join(arms, `
+			union all`) + `
+		),
+		attempt_ends as (
+			select r.id, r.at, r.attempt, r.state, r.envelope_id, r.error, r.resolve_error, r.duplicate,
+			       r.claimed_at, r.accepted_at, r.accepted_as, r.reply_kind, r.reply,
+			       case when ` + pending + ` and ` + fits(`route.role_id`) + ` then '` + KindRole + `'
+			            when ` + pending + ` and ` + fits(`route.session_id`) + ` then '` + KindSession + `' end as owed_kind,
+			       case when ` + pending + ` and ` + fits(`route.role_id`) + ` then route.role_id
+			            when ` + pending + ` and ` + fits(`route.session_id`) + ` then route.session_id end as owed_id,
+			       case when r.state in ` + model.DeliveryTakenStatesSQL + ` and coalesce(r.resolved, '') <> ''
+			             and ` + fits(`r.resolved`) + ` then r.resolved end as delivered_id
+			from attempt_rows r
+			cross join lateral (
+				select substring(r.route from '^role:([a-z0-9-]+)$') as role_id,
+				       substring(r.route from '^session:([A-Za-z0-9_-]+)$') as session_id
+			) route
+		),
+		held_values as (
+			` + CurrentTupleRead(`t.from_id, t.kind`, `t.from_id, t.kind, t.to_id, t.asserted`,
+		named+` and t.to_kind = '`+KindValue+`' and t.kind in (`+strings.Join(valueKinds, `, `)+`)`) + `
+		),
+		held_relations as (
+			select current.from_id, current.kind, current.to_kind, current.to_id
+			from (
+				` + CurrentTupleRead(`t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
+		named+` and t.to_kind <> '`+KindValue+`' and t.kind in (`+relationKinds+`)`) + `
+			) current
+			where current.asserted
+		),
+		attempt_moved (id, at, kind, to_kind, to_id, asserted, major, minor) as (
+			select r.id, r.at, carried.kind, '` + KindValue + `'::text, coalesce(carried.value, held.to_id),
+			       carried.value is not null, 1, carried.ordinal
+			from attempt_ends r
+			cross join lateral (values ` + strings.Join(carried, `, `) + `) as carried (ordinal, kind, value)
+			left join held_values held on held.from_id = r.id and held.kind = carried.kind
+			where (carried.value is not null and (held.asserted is not true or held.to_id <> carried.value))
+			   or (carried.value is null and held.asserted)
+			union all
+			select r.id, r.at, held.kind, held.to_kind, held.to_id, false, 0, 0
+			from attempt_ends r
+			join held_relations held on held.from_id = r.id and held.kind = '` + TupleOwedTo + `'
+			where (held.to_kind, held.to_id) is distinct from (r.owed_kind, r.owed_id)
+			union all
+			select r.id, r.at, stated.kind, stated.to_kind, stated.to_id, true, 0, stated.ordinal
+			from attempt_ends r
+			cross join lateral (values
+				(1, '` + TupleOwedTo + `', r.owed_kind, r.owed_id),
+				(2, '` + TupleDeliveredTo + `', '` + KindSession + `', r.delivered_id),
+				(3, '` + TupleAnsweredBy + `', r.reply_kind, r.reply)
+			) as stated (ordinal, kind, to_kind, to_id)
+			where stated.to_id is not null and not exists (
+				select 1 from held_relations held
+				where held.from_id = r.id and held.kind = stated.kind
+				  and held.to_kind = stated.to_kind and held.to_id = stated.to_id
+			)
+		)`, args
 }

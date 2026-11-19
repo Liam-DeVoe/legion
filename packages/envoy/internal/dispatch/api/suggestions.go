@@ -58,16 +58,11 @@ const (
 	// whose write is a question offers (Suggestions.OtherProjects). Two: they stand beside the
 	// project's own items, which keep their three places.
 	suggestionOtherProjectCount = 2
-	// crossProjectGrace is how long the meaning stage waits for the cross-project query after
-	// the one-project query has answered. The check's own bound is five seconds
-	// (relatedCheckAllowance) and its recorded median is 1,615 ms, so a grace of this size
-	// cannot push a median check into its allowance.
+	// crossProjectGrace is how long the check waits for the cross-project query once the
+	// meaning stage has answered (awaitCrossProject); the meaning deadline cuts it shorter. The
+	// check's own bound is five seconds (relatedCheckAllowance) and its recorded median is
+	// 1,615 ms, so a grace of this size cannot push a median check into its allowance.
 	crossProjectGrace = 300 * time.Millisecond
-	// crossProjectGraceMargin ends the grace that much before the meaning deadline. It keeps the
-	// stage's own answer ahead of the backstop in runRelatedCheck, which watches the same
-	// deadline. A timer wakes a goroutine in microseconds, so 25 ms is far more than the margin
-	// needs, and it shortens the grace only in the last 25 ms of a three-second allowance.
-	crossProjectGraceMargin = 25 * time.Millisecond
 	// suggestionSearchDepth widens the search past suggestionRelatedCount so that three distinct
 	// owners remain once an issue and its document collapse into one item.
 	suggestionSearchDepth = 10
@@ -75,7 +70,7 @@ const (
 	// for a reader's own dispatch search to find what the check found, few enough that search's
 	// AND of them still matches something.
 	relatedSearchQueryTerms = 3
-	// decisionBlockCheckLimit is how many of one edit's new decision blocks are checked; each past
+	// decisionBlockCheckLimit is how many of one edit's new ask blocks are checked; each past
 	// it answers that its check was not made (decisionBlockChecks).
 	decisionBlockCheckLimit = 5
 )
@@ -133,7 +128,7 @@ func (s *server) relatedAllowance() time.Duration {
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
 // bounded by relatedAllowance, ending with errRelatedAllowanceEnded as its cause so that a check
 // whose context is done can tell its own deadline from the request that ran it going away
-// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a decision block's
+// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so an ask block's
 // per-check context inherits the edit's allowance with that same cause. The caller cancels, and
 // names the allowance in what it answers.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
@@ -171,7 +166,7 @@ func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Sugges
 	return withRawAdvice(payload, suggestionsOnlyAdvice{Suggestions: suggestions})
 }
 
-// decisionBlockChecks runs the related-item check for each decision block a document edit added,
+// decisionBlockChecks runs the related-item check for each ask block a document edit added,
 // once the edit has committed, so a block whose question restates a decision already made or work
 // already filed is answered with it while the writer is still at the document. The first
 // decisionBlockCheckLimit blocks are checked at once, all under one allowance (relatedBounds), so
@@ -213,7 +208,7 @@ func (s *server) decisionBlockChecks(
 		}
 		checks[index] = decisionBlockCheck{BlockID: block.ID, Question: block.Question}
 		if index >= decisionBlockCheckLimit {
-			suggestions := notMadeSuggestions("more than five new decision blocks in one edit")
+			suggestions := notMadeSuggestions("more than five new ask blocks in one edit")
 			checks[index].Suggestions = suggestions
 			overflow = append(overflow, relatedCheckRecord{
 				source: source, suggestions: suggestions,
@@ -242,15 +237,15 @@ func (s *server) decisionBlockChecks(
 }
 
 // suggestionSource identifies what a check was run for: a newly created issue, a newly created
-// ask on an issue or on an unlinked project document, or a decision block a document edit added.
+// ask on an issue or on an unlinked project document, or an ask block a document edit added.
 // At most one of issueKey and artifactID is set: the issue, or the project document the ask or
 // block sits on. A check run for no source (the no-write route) sets neither.
 type suggestionSource struct {
 	kind       string // "issue", "ask" or "decision_block"
 	issueKey   string
-	artifactID string // an ask or decision block on an unlinked project document
+	artifactID string // an ask or ask block on an unlinked project document
 	askID      string // set for an ask source alone
-	blockID    string // set for a decision block source alone
+	blockID    string // set for an ask block source alone
 	actor      model.Actor
 }
 
@@ -258,11 +253,11 @@ type suggestionSource struct {
 type relatedInput struct {
 	// project is the project to search; empty resolves it from source's owner.
 	project string
-	// text is what is checked: a new issue's title and spec, an ask's or decision block's question,
+	// text is what is checked: a new issue's title and spec, an ask's or ask block's question,
 	// or the no-write route's title and text.
 	text string
 	// title is the part of text the chosen terms are written as (relatedTerm.Surface): a new
-	// issue's or the no-write route's title, an ask's or decision block's question.
+	// issue's or the no-write route's title, an ask's or ask block's question.
 	title  string
 	source suggestionSource
 	// excludeIssue leaves that issue and everything it owns out of the results and out of the
@@ -277,7 +272,7 @@ type relatedInput struct {
 	excludeIssues []string
 	// keywordsOnly skips the meaning search.
 	keywordsOnly bool
-	// question says the write is a question to a person: an ask create, a new decision block, or
+	// question says the write is a question to a person: an ask create, a new ask block, or
 	// the POST form of the related route, which `dispatch related` calls. Such a check also
 	// offers the answered questions of the other projects (relatedOtherProjects). An issue
 	// create and the GET form of the related route leave it false, so they offer the items of
@@ -318,10 +313,14 @@ type relatedStage struct {
 	response model.SearchResponse
 	err      error
 	reason   string // stage 2's reason for keywords only when it did not answer
-	// otherProjects is what stage 2's cross-project leg found: the answered questions of the
-	// other projects (relatedOtherProjects), empty for every check whose write is not a
-	// question and for a leg that failed, overran its grace or found nothing. It never decides
-	// whether the stage answered: response stands whatever this holds.
+	// cross is where stage 2's cross-project leg hands over what it found, nil where no leg
+	// runs. The stage answers without waiting for it; the check waits for it, through its grace
+	// (awaitCrossProject).
+	cross <-chan []model.SearchResult
+	// otherProjects is what that wait got: the answered questions of the other projects
+	// (relatedOtherProjects), empty for every check whose write is not a question and for a leg
+	// that failed, overran its grace or found nothing. It never decides whether the stage
+	// answered: response stands whatever this holds.
 	otherProjects []model.SearchResult
 	took          time.Duration
 }
@@ -334,7 +333,7 @@ type relatedPick struct {
 	err   error
 }
 
-// relatedCheck is the related-item check every issue create, ask and new decision block runs
+// relatedCheck is the related-item check every issue create, ask and new ask block runs
 // as a write's, and the no-write related route. It never fails and never returns nil: what it did
 // not do, it says in the result. It waits at most relatedAllowance.
 //
@@ -382,8 +381,8 @@ func (s *server) runRelatedCheck(
 		return suggestions, record
 	}
 	timedOut := "the search behind it did not answer within " + allowance.String()
-	// callerGone reports a check stopped by its request going away, not by the allowance: a
-	// decision block's checks run under the edit's one allowance, which ends theirs with the same
+	// callerGone reports a check stopped by its request going away, not by the allowance: an
+	// ask block's checks run under the edit's one allowance, which ends theirs with the same
 	// cause as their own.
 	callerGone := func() bool {
 		return bounded.Err() != nil && !errors.Is(context.Cause(bounded), errRelatedAllowanceEnded)
@@ -458,11 +457,13 @@ func (s *server) runRelatedCheck(
 	}()
 
 	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
-	// start, so the embedding and the meaning query both stop there and leave the rest of the
-	// allowance to stage 1.
-	meaningAllowance := min(relatedMeaningAllowance, allowance)
+	// start (server.meaningBound in a test), so the embedding and the meaning query both stop
+	// there and leave the rest of the allowance to stage 1. A question's cross-project leg runs
+	// on that context too, so the wait for it below never outlives it either.
+	meaningAllowance := min(cmp.Or(s.meaningBound, relatedMeaningAllowance), allowance)
 	var meaning chan relatedStage
-	var meaningDone <-chan struct{}
+	var meaningCtx context.Context
+	endMeaning := context.CancelFunc(func() {})
 	reason := ""
 	switch {
 	case input.keywordsOnly:
@@ -470,8 +471,8 @@ func (s *server) runRelatedCheck(
 	case s.deps.Embedder == nil:
 		reason = relatedReasonNoEmbedder
 	default:
-		meaningCtx, cancelMeaning := context.WithDeadline(bounded, started.Add(meaningAllowance))
-		defer cancelMeaning()
+		meaningCtx, endMeaning = context.WithDeadline(bounded, started.Add(meaningAllowance))
+		defer endMeaning()
 		meaningRead, err := store.ForConcurrentRead(meaningCtx)
 		if err != nil {
 			reason = relatedReasonMeaningFailed
@@ -505,7 +506,8 @@ func (s *server) runRelatedCheck(
 			// refusal leaves crossRead nil and relatedMeaningStage does not run the leg.
 			crossRead = read
 		}
-		meaningDone = meaningCtx.Done()
+		// relatedMeaningStage hands the leg's answer over on the stage it answers
+		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
 		go func() {
 			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
@@ -538,13 +540,13 @@ func (s *server) runRelatedCheck(
 		select {
 		case stage = <-meaning:
 			got = true
-		case <-meaningDone:
+		case <-meaningCtx.Done():
 			// Both channels can be ready at once, and Go then picks between them at random,
 			// which would have one check answer meaning_and_keywords and the next fall back to
 			// keywords. So read the stage's channel once without blocking first and use an
-			// answer that is already there. The stage keeps its own answer ahead of this
-			// deadline (crossProjectGraceMargin), which makes this a safety net rather than the
-			// rule.
+			// answer that is already there. The stage answers as soon as its own query has,
+			// and the wait for the cross-project leg is the check's own (below), so the leg
+			// never holds the stage's answer back from this deadline.
 			select {
 			case stage = <-meaning:
 				got = true
@@ -562,6 +564,17 @@ func (s *server) runRelatedCheck(
 			}
 		}
 	}
+	// The check holds the stage's answer while it waits for the leg, so a grace that runs to
+	// the meaning deadline costs it nothing (INFRA-2337 D1, R3). meaning_ms holds the whole
+	// meaning stage, that wait with it (D7).
+	if answered && answer.cross != nil {
+		answer.otherProjects = s.awaitCrossProject(meaningCtx, answer.cross)
+		record.meaningMS = milliseconds(time.Since(stagesStarted))
+	}
+	// The check needs nothing more of the meaning context: what still runs on it is a
+	// cross-project leg the grace left behind, or the leg of a stage that did not answer, which
+	// gives its pool connection back now rather than at the meaning deadline (D6).
+	endMeaning()
 	// A meaning stage cut short by the request going away did not time out, and nobody waits on
 	// the keyword stage's answer.
 	if callerGone() {
@@ -615,9 +628,11 @@ func (s *server) runRelatedCheck(
 // and starting it there gives it the most time. It reuses this stage's own embedding, so the
 // check calls the embedding service no more often than it does without it.
 //
-// The one-project response is the stage's answer whenever it has one. A cross-project leg that
-// failed, that overran its grace or that found nothing leaves that response whole, with no
-// reason recorded and no cross-project item.
+// The one-project response is the stage's answer whenever it has one, and the stage answers as
+// soon as it has it: it hands the leg's answer over unread (relatedStage.cross), and the check
+// waits for it (awaitCrossProject). A cross-project leg that failed, that overran its grace or
+// that found nothing leaves that response whole, with no reason recorded and no cross-project
+// item.
 //
 // A meaning search this stage's own context ended, and one the server ended itself at
 // searchMeaningScan's statement bound, are the same thing to the caller: the meaning search did
@@ -630,7 +645,7 @@ func (s *server) runRelatedCheck(
 //
 // trees says the check's caller asked for the display trees (relatedInput.trees). The leg makes
 // a reader of its own from it rather than registering with the caller's: it runs on a goroutine
-// this stage may abandon at the grace, and a reader the caller resolves while an abandoned leg
+// the check may abandon at the grace, and a reader the caller resolves while an abandoned leg
 // still registers with it is a data race. Its own reader is written by that one goroutine
 // alone, and resolved there before the results are handed over, so an answer that reaches the
 // check carries its trees filled and one the grace left behind is read by nobody.
@@ -652,15 +667,13 @@ func (s *server) relatedMeaningStage(
 	}
 	var cross chan []model.SearchResult
 	if crossRead != nil {
-		// The leg runs on a context of its own, cancelled when this function returns, which is
-		// where the grace below ends: an overrunning query then gives its pool connection back
-		// at the grace rather than at the meaning deadline.
-		crossCtx, cancelCross := context.WithCancel(crossRead)
-		defer cancelCross()
+		// The leg runs on crossRead, a mark of the meaning context, which the check ends once
+		// its wait for the leg is over: an overrunning query then gives its pool connection
+		// back at the grace rather than at the meaning deadline.
 		cross = make(chan []model.SearchResult, 1)
 		go func() {
-			reader := s.readDisplayTrees(crossCtx, trees)
-			results, err := s.relatedOtherProjects(crossCtx, vector, project, s.deps.Embedder.Identity(), reader)
+			reader := s.readDisplayTrees(crossRead, trees)
+			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), reader)
 			if err != nil {
 				slog.Warn("dispatch: the related-item check offers no answered question of another project", "error", err)
 			}
@@ -683,30 +696,33 @@ func (s *server) relatedMeaningStage(
 	if err != nil {
 		return failed(relatedReasonMeaningFailed, err)
 	}
-	stage := relatedStage{response: response}
-	if cross == nil {
-		return stage
-	}
-	// The grace ends at the earlier of crossProjectGrace from now and crossProjectGraceMargin
-	// before the meaning deadline. Where that second moment has passed, there is no grace at
-	// all and the stage answers at once with no cross-project item.
-	grace := time.Now().Add(crossProjectGrace)
-	if deadline, ok := ctx.Deadline(); ok {
-		if margin := deadline.Add(-crossProjectGraceMargin); margin.Before(grace) {
-			grace = margin
-		}
-	}
-	left := time.Until(grace)
-	if left <= 0 {
-		return stage
-	}
-	timer := time.NewTimer(left)
-	defer timer.Stop()
+	return relatedStage{response: response, cross: cross}
+}
+
+// awaitCrossProject is the check's wait for its cross-project leg once the meaning stage has
+// answered: what the leg found when it answers within the grace, nothing otherwise. The grace
+// ends at the earlier of crossProjectGrace from now and the meaning deadline (meaningCtx's), so
+// it never holds the check past the meaning allowance (INFRA-2337 D1). The leg runs on the
+// meaning context too, so it ends by that deadline itself, but the wait does not depend on the
+// leg seeing that.
+//
+// The leg's answer and the end of the grace can be ready together, and Go then picks between
+// them at random; an answer that is already there when the grace ends is taken, as
+// runRelatedCheck takes the stage's own.
+func (s *server) awaitCrossProject(meaningCtx context.Context, cross <-chan []model.SearchResult) []model.SearchResult {
+	grace, endGrace := context.WithTimeout(meaningCtx, cmp.Or(s.crossProjectWait, crossProjectGrace))
+	defer endGrace()
 	select {
-	case stage.otherProjects = <-cross:
-	case <-timer.C:
+	case results := <-cross:
+		return results
+	case <-grace.Done():
 	}
-	return stage
+	select {
+	case results := <-cross:
+		return results
+	default:
+		return nil
+	}
 }
 
 // relatedMeaningSearch runs the check's meaning statement in a read transaction of its own
@@ -1037,7 +1053,7 @@ const relatedCheckInsert = `
 // outcome, search mode, reason, the lexemes it searched for, the stages' and the whole check's
 // times and how many items it listed. A check whose project could not be resolved has no row to
 // write, since the row belongs to a project. The rows go in one round trip (store.Pool.SendBatch),
-// so an edit's decision blocks beyond decisionBlockCheckLimit, however many, cost one.
+// so an edit's ask blocks beyond decisionBlockCheckLimit, however many, cost one.
 //
 // related_checks rows the first attempt could not write are tried once more in the background
 // (retryRecord). Each row's id is chosen here and the insert does nothing where it exists, since
@@ -1144,9 +1160,9 @@ func relatedRecordRetryable(err error) bool {
 //
 // recordRelatedChecks calls this for an issue source and an ask source alone, so an ask create's
 // cross-project offers are recorded, on an issue and on a project document alike, and a new
-// decision block's offers reach no row. That is what the table admits: it keys such a row by the
-// ask the offer was made on (source_ask_id, which every row of an ask source holds), and a
-// decision block's check holds the document block's own id and no ask id. So the role is written
+// ask block's offers reach no row. That is what the table admits: it keys such a row by the
+// ask the offer was made on (source_ask_id, which every row of an ask source holds), and an
+// ask block's check holds the document block's own id and no ask id. So the role is written
 // for an ask create alone, which is what lets the records route count the writes that offered
 // one by that column (relatedChecksOffersQuery).
 func (s *server) persistSuggestions(ctx context.Context, source suggestionSource, suggestions *model.Suggestions) {

@@ -112,8 +112,8 @@ func TestACarriedApprovalPinsTheVersionItCarriesTo(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "CARR", "Carry bytes", "Context\n\n"+waveAsk)
 	id := issue.PrimaryArtifactID
 	asks := indexedDecisionBlocks(t, handler, issue.Key, id, map[string]string{"wave": "How many regions take the first wave?"})
-	awaitDocumentText(t, handler, id, "the block written in step with its open ask",
-		contains(`:::ask{#wave urgency="med" multiple="false" state="open"}`), nil)
+	awaitVersionText(t, handler, id, "the block written in step with its open ask",
+		contains(`:::ask{#wave urgency="med" multiple="false" state="open"}`))
 	awaitSettled(t, database, id)
 	approved := latestVersion(t, database, id).Number
 	approveVersion(t, handler, id, "alice", approved)

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // fallbackClaim is how long one fallback pass's claim keeps a comment_fallback_copies row out of
@@ -894,7 +895,7 @@ const (
 // fallback row's, so no copy of the comment goes out under the event's own key while a send of
 // that mention is still owed.
 func (d *destinations) leftToMention(sessionID string) bool {
-	return d.leftTo(d.mentions.holds(), sessionID, contracts.AgentSubject(sessionID), false) != copyGoes
+	return d.leftTo(d.mentions.holds(), sessionID, contracts.LegacyAgentSubject(sessionID), false) != copyGoes
 }
 
 // workingSessionHold is that same rule asked of a session the owner's own work names - the
@@ -902,7 +903,7 @@ func (d *destinations) leftToMention(sessionID string) bool {
 // which reads what the comment's unpinned attempts whose holder this read could not name hold
 // back beside its own key's attempts.
 func (d *destinations) workingSessionHold(sessionID string) copyHold {
-	return d.leftTo(d.mentions.holds(), sessionID, contracts.AgentSubject(sessionID), true)
+	return d.leftTo(d.mentions.holds(), sessionID, contracts.LegacyAgentSubject(sessionID), true)
 }
 
 // leftTo reports what becomes of the copy of the comment at destination, which key's attempts
@@ -1056,7 +1057,7 @@ func routeTopic(route string) string {
 	case "role":
 		return contracts.RoleTopicPrefix + parsed.ID
 	case "session":
-		return contracts.AgentSubject(parsed.ID)
+		return contracts.LegacyAgentSubject(parsed.ID)
 	}
 	return ""
 }
@@ -1176,27 +1177,25 @@ func (c mentionComment) settleAbandoned(kind mentionKind, key string) (state men
 		if err != nil {
 			return err
 		}
-		// What each settled attempt now holds, read before any receipt is appended and stated
-		// under that attempt's own receipt, as the receipt's actor writes it.
-		stated := make([]graphstore.Uncaused, len(settled))
-		for index, payload := range settled {
-			if stated[index], err = graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, event.Actor,
-				graphstore.CommentAttempt(commentID, payload.Target, payload.Attempt)); err != nil {
-				return err
-			}
-		}
+		// What each settled attempt now holds, stated under that attempt's own receipt as the
+		// receipt's actor writes it: each receipt and its attempt's facts right after it, in one
+		// batch (graphstore.QueueAttempted under graphstore.LatestEvent).
 		receipts = make([]model.Event, 0, len(settled))
-		for index, payload := range settled {
-			receipt := owner
-			receipt.Type, receipt.Actor, receipt.Payload = "comment.delivery", event.Actor, payload
-			appended, err := deps.Broker.Append(ctx, tx, receipt)
-			if err != nil {
-				return err
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			for _, payload := range settled {
+				receipt := owner
+				receipt.Type, receipt.Actor, receipt.Payload = "comment.delivery", event.Actor, payload
+				if err := deps.Broker.QueueAppend(b, receipt, func(appended model.Event) { receipts = append(receipts, appended) }); err != nil {
+					return err
+				}
+				if err := graphstore.QueueAttempted(b, event.Actor, graphstore.LatestEvent,
+					graphstore.CommentAttempt(commentID, payload.Target, payload.Attempt)); err != nil {
+					return err
+				}
 			}
-			if err := graphstore.Caused(ctx, tx, stated[index], appended.ID); err != nil {
-				return err
-			}
-			receipts = append(receipts, appended)
+			return nil
+		}); err != nil {
+			return err
 		}
 		var sent, resending, pending bool
 		if err := tx.QueryRow(ctx, `
@@ -1246,7 +1245,7 @@ type fallbackCopy struct {
 // the holder it reaches (suppressesCurrentRoute, holdsTheForwardAsARow,
 // roleCopyWaitsForAMention).
 func (c fallbackCopy) ofASessionsOwnTopic() bool {
-	return c.kind == sessionMentions && c.destination == contracts.AgentSubject(c.key)
+	return c.kind == sessionMentions && c.destination == contracts.LegacyAgentSubject(c.key)
 }
 
 // fallbackEvent is the comment.created event a fallback copy is the envelope of, and the slug of

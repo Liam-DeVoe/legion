@@ -2,10 +2,10 @@ package inboxwrite
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,13 +13,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The assignee arm (dispatch://INFRA-1152 R2 and R4, decision 10, departure P4): an open ask
 // reaches the person it waits on, the person asks.AskedOfPersonExpression names - the person it
 // was handed to, else its issue's assignee, else its project's default assignee - and that person
 // takes part in its thread. The ask's create appends both tuples (Record, for an Opened write),
-// and each write that changes who an ask waits on moves them (MoveWaiting): patchIssue's
+// and each write that changes who an ask waits on moves them (QueueMoveWaiting): patchIssue's
 // assignee, putAskAskedOf, putProjectDefaultAssignee, the restore of the asks an issue's close
 // withdrew and a settlement's restore of an ask it retracted. Neither raises a user_threads
 // version (P13): the old triggers moved no row for either, and the census counts only the
@@ -29,17 +30,18 @@ import (
 // ask onto the person who made it - who hands it to themselves, takes its issue, or makes
 // themselves the default it falls through to - appends their participates_in and no delivered_to
 // (waitingOnTuples). That participation is still the arm's, and no write of theirs in the thread:
-// the next move away retracts it as it retracts anybody's (OwnMove, MoveWaiting).
+// the next move away retracts it as it retracts anybody's (OwnMove, QueueMoveWaiting).
 //
 // The list follows the assignment only if no two of those writes interleave, so each serialises
-// against the others on the rows the rule reads, in the lock order written on api/inbox_read.go's
-// markInboxReadThreads. An issue's assignee and an ask's asked_of are written under the issue's or
-// the document's owner row, which every create and every move of an ask on that owner takes
-// first. A project's default is written under its project row `for no key update`
-// (putProjectDefaultAssignee), so a write that reads the default to decide a delivery holds that
-// row `for share` first (HoldDefault). And a move holds the asks rows it moves (MoveWaiting), so
-// two moves of one ask, and a move and an answer, take turns there, and the move reads who the
-// ask waits on, and who its delivery stands to, only once it holds them.
+// against the others on the locks and rows the rule reads, in the lock order written on
+// api/inbox_read.go's markInboxReadThreads. An issue's assignee and an ask's asked_of are written
+// under the issue's or the document's owner lock, which every create and every move of an ask on
+// that owner takes first. A project's default is written under its project's owner lock, taken
+// exclusive (putProjectDefaultAssignee), so a write that reads the default to decide a delivery
+// takes that lock shared first (HoldDefault). And a move locks the asks rows it moves first in its
+// write phase (QueueMoveWaiting), so two moves of one ask, and a move and an answer, take turns
+// there, and the move reads who the ask waits on, and who its delivery stands to, only once it
+// holds them, in the statements after that lock.
 
 // waitingOnTuples is what an ask reaching the person it waits on appends, made by who at at,
 // under event: participates_in from waiting to askID and delivered_to from askID to waiting. The
@@ -129,16 +131,18 @@ func OwnMove(person, ask, event string) string {
 				  and own_delivery.source_event = ` + event + ` and own_delivery.asserted))`
 }
 
-// HoldDefault takes the row of the project an ask on the owner issueKey or artifactID falls
-// through to `for share`, where it falls through to that project's default assignee: the owner is
-// a project document, or an issue nobody holds. A write that is about to read who such an ask
-// waits on, to deliver it - an ask's create, a change of an issue's assignee to nobody, the
-// restore of an issue's withdrawn asks, a settlement that may restore an ask it retracted - takes
-// it after its owner row and before any asks row or node it writes, so a move of the default
-// (putProjectDefaultAssignee, which holds the row `for no key update`) either commits before the
+// HoldDefault takes the owner lock of the project an ask on the owner issueKey or artifactID falls
+// through to, shared (store.LockOwnersShared), where it falls through to that project's default
+// assignee: the owner is a project document, or an issue nobody holds. A write that is about to
+// read who such an ask waits on, to deliver it - an ask's create, the restore of an issue's
+// withdrawn asks, a settlement that may restore an ask it retracted - takes it in its read phase,
+// after its owner lock and before the read, so a move of the default (putProjectDefaultAssignee,
+// which takes that lock exclusive before it reads the default it moves) either commits before the
 // write reads the default or waits for the write to commit and then finds the ask it delivered.
-// The caller holds the owner row, under which an issue's assignee does not move; an owner that
-// does not fall through is read and nothing is locked, so its write takes no lock on projects.
+// A shared lock conflicts with the exclusive one as `for share` of the project row conflicted with
+// that route's `for no key update`, and not with another shared one, and it assigns no
+// transaction id. The caller holds its owner lock, under which an issue's assignee does not move;
+// an owner that does not fall through is read and nothing is locked.
 func HoldDefault(ctx context.Context, tx pgx.Tx, issueKey, artifactID *string) error {
 	var project string
 	if err := tx.QueryRow(ctx, `
@@ -149,10 +153,17 @@ func HoldDefault(ctx context.Context, tx pgx.Tx, issueKey, artifactID *string) e
 	`, issueKey, artifactID).Scan(&project); err != nil {
 		return fmt.Errorf("read whether an ask falls through to its project's default: %w", err)
 	}
+	return HoldProjectDefault(ctx, tx, project)
+}
+
+// HoldProjectDefault is HoldDefault for a write that knows the project its asks fall through to
+// as its own write phase leaves the owner - a change of an issue's assignee to nobody, whose update
+// is queued and unread - and "" for one that falls through to none.
+func HoldProjectDefault(ctx context.Context, tx pgx.Tx, project string) error {
 	if project == "" {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `select 1 from projects where key = $1 for share`, project); err != nil {
+	if err := store.LockOwnersShared(ctx, tx, store.ProjectOwner(project)); err != nil {
 		return fmt.Errorf("hold the default assignee of project %s: %w", project, err)
 	}
 	return nil
@@ -182,56 +193,43 @@ func waitingOn(ctx context.Context, tx pgx.Tx, askID string) (string, error) {
 	return waiting, nil
 }
 
-// A Move is a write that changes who open asks wait on, as MoveWaiting reads it: a select of the
-// ids of the asks it may move, and the event each move is recorded under. Each writer names its
-// own (HandedOn, Reassigned, DefaultMoved, Restored).
+// A Move is a write that changes who open asks wait on, as QueueMoveWaiting reads it: a select of
+// the ids of the asks it may move, and the moment and the actor of the event the move is recorded
+// under. Each writer names its own (HandedOn, Reassigned, DefaultMoved, Restored).
 type Move struct {
 	// what names the write in an error.
 	what string
 	// candidates selects the id of each ask the write may move; args are its parameters, from $1.
 	candidates string
 	args       []any
-	// event is the write's event, which every tuple of the move carries, and events, for a write
-	// that recorded each ask under an event of its own, that event by ask id.
-	event  model.Event
-	events map[string]model.Event
+	// at and who are the moment and the actor of the write's event, which every tuple of the move
+	// is dated at and made by.
+	at  time.Time
+	who model.Actor
 }
 
-// eventOf is the event the move of ask is recorded under.
-func (m Move) eventOf(ask string) model.Event {
-	if event, recorded := m.events[ask]; recorded {
-		return event
-	}
-	return m.event
+// HandedOn is putAskAskedOf's write, recorded under an event at at by who: ask askID.
+func HandedOn(askID string, at time.Time, who model.Actor) Move {
+	return Move{what: "the hand-on of ask " + askID, candidates: `select $1::uuid`, args: []any{askID}, at: at, who: who}
 }
 
-// HandedOn is putAskAskedOf's write, recorded under event: ask askID.
-func HandedOn(askID string, event model.Event) Move {
-	return Move{
-		what:       "the hand-on of ask " + askID,
-		candidates: `select $1::uuid`,
-		args:       []any{askID},
-		event:      event,
-	}
-}
-
-// Reassigned is patchIssue's change of the assignee of issueKey, recorded under event: every open
-// ask of the issue handed to nobody, which follows its issue.
-func Reassigned(issueKey string, event model.Event) Move {
+// Reassigned is patchIssue's change of the assignee of issueKey, recorded under an event at at by
+// who: every open ask of the issue handed to nobody, which follows its issue.
+func Reassigned(issueKey string, at time.Time, who model.Actor) Move {
 	return Move{
 		what: "the change of " + issueKey + "'s assignee",
 		candidates: `
 			select a.id from asks a
 			where a.issue_key = $1 and a.state = '` + asks.StateOpen + `' and a.asked_of is null`,
-		args:  []any{issueKey},
-		event: event,
+		args: []any{issueKey},
+		at:   at, who: who,
 	}
 }
 
-// DefaultMoved is putProjectDefaultAssignee's move of project's default, recorded under event:
-// every open ask that falls through to that default, handed to nobody and on an issue of the
-// project nobody holds or on a document of the project.
-func DefaultMoved(project string, event model.Event) Move {
+// DefaultMoved is putProjectDefaultAssignee's move of project's default, recorded under an event
+// at at by who: every open ask that falls through to that default, handed to nobody and on an
+// issue of the project nobody holds or on a document of the project.
+func DefaultMoved(project string, at time.Time, who model.Actor) Move {
 	return Move{
 		what: "the move of project " + project + "'s default assignee",
 		candidates: `
@@ -244,27 +242,18 @@ func DefaultMoved(project string, event model.Event) Move {
 			from artifacts ar
 			join asks a on a.artifact_id = ar.id
 			where ar.project_key = $1 and a.issue_key is null and a.state = '` + asks.StateOpen + `' and a.asked_of is null`,
-		args:  []any{project},
-		event: event,
+		args: []any{project},
+		at:   at, who: who,
 	}
 }
 
-// Restored is the restore of asks no move reached while they were closed, each now open again:
-// the asks an issue's close withdrew (api's restoreIssueAsksTx), and the asks a settlement
-// retracted whose blocks came back (docs' moveRestored). Each ask of events is recorded under the
-// ask.opened that records its restore, and now reaches whoever it waits on as it is restored.
-func Restored(events map[string]model.Event) Move {
-	ids := make([]string, 0, len(events))
-	for id := range events {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	return Move{
-		what:       fmt.Sprintf("the restore of %d withdrawn ask", len(ids)),
-		candidates: `select unnest($1::uuid[])`,
-		args:       []any{ids},
-		events:     events,
-	}
+// Restored is the restore of ask askID, which no move reached while it was closed and which is
+// open again: an ask an issue's close withdrew (api's recordRestoredAsksTx), or an ask a
+// settlement retracted whose block came back (docs' moveRestored), recorded under the ask.opened
+// that records its restore, at at by who. It now reaches whoever it waits on as it is restored. A
+// write that restores several asks queues the move of each right after that ask's own event.
+func Restored(askID string, at time.Time, who model.Actor) Move {
+	return Move{what: "the restore of ask " + askID, candidates: `select $1::uuid`, args: []any{askID}, at: at, who: who}
 }
 
 // standing is whether the relation of kind from fromKind/fromID to toKind/toID stands: its newest
@@ -287,32 +276,34 @@ func moveLock(candidates string) string {
 		for no key update of a`
 }
 
-// moveRead is MoveWaiting's second statement, run once the asks are held: of each held ask still
-// open on an open issue or on a project document, who it waits on now, who asked it, and each
-// person the arm stands to, with whether their participates_in stands and whether anything else
-// holds them in the thread.
+// moveHeld is the common-table expressions of a move's statements over candidates, a select of
+// ask ids its parameters bind from $1: held, each candidate ask still open on an open issue or on
+// a project document, with who it waits on now (asks.AskedOfPersonExpression, canonical) and who
+// asked it (actorPerson); and reached, each person the arm of such an ask stands to, with whether
+// their participates_in stands and whether anything else holds them in the thread. Each is read
+// as the statement runs, after the write phase's lock of the asks (moveLock) and after every write
+// the batch queued before it - an ask the write itself reopens is read open - so nothing is read
+// back in Go between the lock and the tuples.
 //
 // The arm stands to a person whose newest arm tuple asserts it and whom no mention in the ask
 // holds. A person's arm tuples are the delivered_to tuples from the ask to them and the
 // participates_in tuples that their own moves of the ask onto themselves stated (OwnMove). A
 // delivered_to asserts the arm where it was appended beside that person's participates_in under
 // one event, as only this arm appends the two; a participation an own move stated asserts it by
-// itself; and the retraction of a delivered_to ends it - for a person whom their own move reached,
-// the retraction of a delivery that never stood, which MoveWaiting appends as the record that the
-// arm left them. What else holds a person in the thread is a participates_in of theirs appended
-// under an event that delivered them nothing from the ask and was no own move of theirs - a
-// write, an answer or a decline of theirs - or a mention of them in the thread (Record).
-var moveRead = `
-		with held as (
-			select a.id::text as ask, ` + asks.AskedOfPersonExpression + ` as waiting, a.author
+// itself; and the retraction of a delivered_to ends it. What else holds a person in the thread is
+// a participates_in of theirs appended under an event that delivered them nothing from the ask and
+// was no own move of theirs, or a mention of them in the thread (Record).
+func moveHeld(candidates string) string {
+	return `
+		held as (
+			select a.id::text as ask, user_threads_login(` + asks.AskedOfPersonExpression + `) as waiting,
+			       ` + actorPerson(`a.author`) + ` as asker
 			from asks a` + asks.AskedOfPersonJoins + `
-			where a.id = any($1::uuid[]) and a.state = '` + asks.StateOpen + `'
+			where a.id in (` + candidates + `) and a.state = '` + asks.StateOpen + `'
 			  and (a.issue_key is null or i.closed_at is null)
-		)
-		select h.ask, h.waiting, h.author, reached.person, reached.takes_part, reached.held
-		from held h
-		left join lateral (
-			select arm.person,
+		),
+		reached as (
+			select h.ask, arm.person,
 			       ` + standing(graphstore.KindPerson, `arm.person`, graphstore.TupleParticipatesIn, graphstore.KindAsk, `h.ask`) + ` as takes_part,
 			       exists (
 			           select 1 from graph_tuples p
@@ -327,7 +318,8 @@ var moveRead = `
 			                   and o.source_event = p.source_event and o.asserted)
 			             and not ` + OwnMove(`arm.person`, `h.ask`, `p.source_event`) + `
 			       ) as held
-			from (
+			from held h
+			cross join lateral (
 				select distinct on (arm_tuple.person) arm_tuple.person, arm_tuple.kind, arm_tuple.asserted, arm_tuple.source_event
 				from (
 					select d.to_id as person, d.kind, d.asserted, d.source_event, d.seq
@@ -351,114 +343,87 @@ var moveRead = `
 			        and p.to_kind = '` + graphstore.KindAsk + `' and p.to_id = h.ask
 			        and p.source_event = arm.source_event and p.asserted))
 			  and not ` + standing(graphstore.KindAsk, `h.ask`, graphstore.TupleMentions, graphstore.KindPerson, `arm.person`) + `
-		) reached on true
-		order by h.ask, reached.person`
-
-// reach is one person the arm of an ask stands to, as moveRead reads them.
-type reach struct {
-	person          string
-	takesPart, held bool
+		)`
 }
 
-// MoveWaiting is the move of R2 for the write move names, in that write's transaction after its
-// event: each ask it moves now reaches the person it waits on, and stops reaching whoever the arm
-// stood to before. Every tuple carries the event the move of its ask is recorded under, dated at
-// that event's moment and made by its actor.
+// moveTuples is the common-table expression moved over moveHeld's two, answering
+// graphstore.ToPersonRows: what the move appends, ask by ask in id order. For each other person
+// the arm stands to, by login, the retraction of their delivered_to - for a person whom their own
+// move reached, this ends a delivery that never stood: it is the record that the arm left them -
+// and of their participates_in where it stands and nothing else holds them in the thread and they
+// did not ask the ask; then, for an ask whose arm does not already stand to the person it waits
+// on, that person's participates_in and, unless they made this write (the writer at writerParam),
+// their delivered_to (waitingOnTuples).
+func moveTuples(writerParam string) string {
+	return `
+		moved as (
+			select row_number() over (order by stated.ask, stated.grp, stated.person, stated.step) as position,
+			       stated.from_kind, stated.from_id, stated.kind, stated.to_kind, stated.to_id, stated.asserted
+			from (
+				select r.ask, 0 as grp, r.person, 0 as step,
+				       '` + graphstore.KindAsk + `' as from_kind, r.ask as from_id, '` + graphstore.TupleDeliveredTo + `' as kind,
+				       '` + graphstore.KindPerson + `' as to_kind, r.person as to_id, false as asserted
+				from reached r join held h on h.ask = r.ask
+				where r.person is distinct from h.waiting
+				union all
+				select r.ask, 0, r.person, 1,
+				       '` + graphstore.KindPerson + `', r.person, '` + graphstore.TupleParticipatesIn + `',
+				       '` + graphstore.KindAsk + `', r.ask, false
+				from reached r join held h on h.ask = r.ask
+				where r.person is distinct from h.waiting and r.takes_part and not r.held and r.person is distinct from h.asker
+				union all
+				select h.ask, 1, '', 0,
+				       '` + graphstore.KindPerson + `', h.waiting, '` + graphstore.TupleParticipatesIn + `',
+				       '` + graphstore.KindAsk + `', h.ask, true
+				from held h
+				where coalesce(h.waiting, '') <> '' and h.waiting is distinct from h.asker
+				  and not exists (select 1 from reached r where r.ask = h.ask and r.person = h.waiting)
+				union all
+				select h.ask, 1, '', 1,
+				       '` + graphstore.KindAsk + `', h.ask, '` + graphstore.TupleDeliveredTo + `',
+				       '` + graphstore.KindPerson + `', h.waiting, true
+				from held h
+				where coalesce(h.waiting, '') <> '' and h.waiting is distinct from h.asker
+				  and not exists (select 1 from reached r where r.ask = h.ask and r.person = h.waiting)
+				  and h.waiting is distinct from nullif(` + writerParam + `::text, '')
+			) stated
+		)`
+}
+
+// QueueMoveWaiting queues the move of R2 for the write move names on a write phase's batch, right
+// after the write's event, whose id every tuple carries as event (graphstore.LatestEvent for the
+// event the batch appends right before, which nothing between them may follow with another): each
+// ask it moves now reaches the person it waits on, and stops reaching whoever the arm stood to
+// before. Every tuple is dated at the write's moment and made by its actor (Move.at, Move.who).
 //
-// It takes three steps. It locks the asks the write may move, `for no key update` in ascending
-// id (moveLock), so a second move of one of them, and an answer, waits for this write to commit,
-// and this write waits for theirs. Once it holds them it reads, in a statement of its own and so
-// as every write it waited for left them (moveRead), who each ask waits on now and whom the arm
-// stands to: the old person is read from the store, not from what the write changed, so a move
-// another write committed in between is found where it left the arm. An ask on a closed issue is
-// not read: a closed issue retracts nothing, and the record stays what the write stored until the
-// issue's reopen restores the ask (Restored). Then one graphstore.ToPerson call appends, for each
-// ask whose arm does not already stand to the person it waits on, that person's participates_in
-// and, unless they made this write, their delivered_to (waitingOnTuples); and for each other
-// person the arm stands to the retraction of their delivered_to, and of their participates_in
-// where it stands and nothing else holds them in the thread and they did not ask the ask. That is
-// at most four tuple rows an ask, and four statements however many asks it moves.
-func MoveWaiting(ctx context.Context, tx pgx.Tx, move Move) error {
-	rows, err := tx.Query(ctx, moveLock(move.candidates), move.args...)
+// It takes three statements and reads nothing back in Go between them: the lock of the asks the
+// write may move, `for no key update` in ascending id (moveLock), so a second move of one of them,
+// and an answer, waits for this write to commit, and this write waits for theirs; then, each in a
+// statement of its own and so as every write it waited for left them (moveHeld), the read that
+// refuses a tuple a node reserved for its author forbids (graphstore.ReservedForAuthorRead), as
+// ToPerson refuses one, and the append of the tuples (moveTuples, graphstore.ToPersonArms). An ask
+// on a closed issue is not read: a closed issue retracts nothing, and the record stays what the
+// write stored until the issue's reopen restores the ask (Restored).
+func QueueMoveWaiting(b *store.WriteBatch, move Move, event int64) error {
+	writer := len(move.args) + 1
+	b.Queue(fmt.Sprintf("lock the asks %s may move", move.what), moveLock(move.candidates), move.args...)
+	with := `with` + moveHeld(move.candidates) + `,` + moveTuples("$"+strconv.Itoa(writer))
+	args := append(slices.Clone(move.args), personOf(move.who))
+	b.Queue(fmt.Sprintf("read whom the move of %s may not reach", move.what),
+		with+graphstore.ReservedForAuthorRead("moved"), args...).QueryRow(graphstore.RefuseReservedForAuthor)
+	arms, params, err := graphstore.ToPersonArms(writer+1, "moved", move.at, move.who, event)
 	if err != nil {
-		return fmt.Errorf("lock the asks %s may move: %w", move.what, err)
-	}
-	locked, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return fmt.Errorf("lock the asks %s may move: %w", move.what, err)
-	}
-	if len(locked) == 0 {
-		return nil
-	}
-	rows, err = tx.Query(ctx, moveRead, locked)
-	if err != nil {
-		return fmt.Errorf("read the asks %s moved: %w", move.what, err)
-	}
-	defer rows.Close()
-	type heldAsk struct {
-		id, waiting, asker string
-		reached            []reach
-	}
-	var held []heldAsk
-	for rows.Next() {
-		var ask string
-		var waiting, person *string
-		var author []byte
-		var takesPart, stillHeld *bool
-		if err := rows.Scan(&ask, &waiting, &author, &person, &takesPart, &stillHeld); err != nil {
-			return fmt.Errorf("read an ask %s moved: %w", move.what, err)
-		}
-		if len(held) == 0 || held[len(held)-1].id != ask {
-			var actor model.Actor
-			if err := json.Unmarshal(author, &actor); err != nil {
-				return fmt.Errorf("decode the author of ask %s: %w", ask, err)
-			}
-			next := heldAsk{id: ask, asker: personOf(actor)}
-			if waiting != nil {
-				next.waiting = model.CanonicalLogin(*waiting)
-			}
-			held = append(held, next)
-		}
-		if person != nil {
-			current := &held[len(held)-1]
-			current.reached = append(current.reached, reach{person: *person, takesPart: *takesPart, held: *stillHeld})
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the asks %s moved: %w", move.what, err)
-	}
-	var tuples []graphstore.Tuple
-	for _, ask := range held {
-		event := move.eventOf(ask.id)
-		ended := func(tuple graphstore.Tuple) {
-			tuple.At, tuple.Who, tuple.SourceEvent, tuple.Asserted = event.CreatedAt, event.Actor, event.ID, false
-			tuples = append(tuples, tuple)
-		}
-		stands := false
-		for _, reached := range ask.reached {
-			if reached.person == ask.waiting {
-				stands = true
-				continue
-			}
-			// For a person whom their own move reached, this ends a delivery that never stood:
-			// it is the record that the arm left them, which the next move reads (moveRead).
-			ended(graphstore.Tuple{
-				FromKind: graphstore.KindAsk, FromID: ask.id, Kind: graphstore.TupleDeliveredTo,
-				ToKind: graphstore.KindPerson, ToID: reached.person,
-			})
-			if reached.takesPart && !reached.held && reached.person != ask.asker {
-				ended(graphstore.Tuple{
-					FromKind: graphstore.KindPerson, FromID: reached.person, Kind: graphstore.TupleParticipatesIn,
-					ToKind: graphstore.KindAsk, ToID: ask.id,
-				})
-			}
-		}
-		if !stands {
-			tuples = append(tuples, waitingOnTuples(ask.id, ask.waiting, ask.asker, event.CreatedAt, event.Actor, event.ID)...)
-		}
-	}
-	if err := graphstore.ToPerson(ctx, tx, tuples); err != nil {
 		return fmt.Errorf("move the person the asks wait on, for %s: %w", move.what, err)
 	}
+	b.Queue(fmt.Sprintf("move the person the asks wait on, for %s", move.what),
+		with+`,
+		`+arms+`
+		select 1`, append(args, params...)...)
 	return nil
+}
+
+// MoveWaiting is QueueMoveWaiting run at once, as a batch of its own, for a writer with no write
+// phase, in that write's transaction after its event, whose id event is.
+func MoveWaiting(ctx context.Context, tx pgx.Tx, move Move, event int64) error {
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueMoveWaiting(b, move, event) })
 }

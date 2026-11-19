@@ -140,8 +140,8 @@ const slowWithdrawal = 4 * time.Second
 // A close's transaction writes closed_at, then withdraws the issue's open asks, writing their blocks
 // into the issue's documents under each document's advisory lock, which it holds until it commits.
 // It writes the blocks only while another build serves, for that build's pages
-// (docs.WriteIssueAskStates; on a fleet of one build the withdrawal changes no byte of a document,
-// dispatch://INFRA-1150 R3), so the test registers a process of each of two builds. A browser's
+// (docs.WriteIssueAskStates; on a fleet of one build the withdrawal changes no byte of a
+// document), so the test registers a process of each of two builds. A browser's
 // keystroke in a room of such a document on another process waits on that lock, so it reaches the
 // append gate only after the close committed. The keystroke was made before the close took effect,
 // so it is stored however long the withdrawal took: the gate measures closeMargin from the close's

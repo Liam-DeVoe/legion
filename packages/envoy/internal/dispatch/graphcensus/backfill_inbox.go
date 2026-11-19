@@ -37,10 +37,10 @@ import (
 // (graphstore.AttemptNode, graphstore.AttemptFactsAsWritten), what each comment, message, ask,
 // answer and decline an older build wrote owed the threads it was written in
 // (inboxwrite.RecordOlder), and what each read-state row says (graphstore.ToPerson,
-// graphstore.FromPerson). Every batch takes the rows it writes under in the writers' lock order -
-// the owner rows, then the project rows an ask's waiting person is read under, then the item
-// rows, then the item's block state, then the user_threads rows in ascending login, then the
-// store - so a live write of this release and a batch over the same thread take turns.
+// graphstore.FromPerson). Every batch takes the order the live writers take - the owner rows, then
+// the project rows an ask's waiting person is read under, then the item rows and its block state,
+// then the item's own store writes, then a thread's user_threads rows in ascending login, then the
+// deliveries to them - so a live write of this release and a batch over one thread take turns.
 //
 // The order of the passes is the order their facts hang on each other: every item's node and
 // author before its pointers (the passes of dispatch://INFRA-1149, dispatch://INFRA-3862 and
@@ -195,6 +195,19 @@ func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, 
 		return nil, err
 	}
 	var done []KindBackfill
+	for _, pass := range inboxPasses() {
+		report, err := runInboxPass(ctx, database, pass, growth)
+		done = append(done, report)
+		if err != nil {
+			return done, err
+		}
+	}
+	return done, nil
+}
+
+// inboxPasses is this child's passes in the order backfillInbox runs them, the order their facts
+// hang on each other.
+func inboxPasses() []inboxPass {
 	passes := []inboxPass{messagesPass(), commentPointersPass()}
 	for _, kind := range inboxItemKinds {
 		passes = append(passes, itemBlocksPass(kind), itemLinksPass(kind), itemCitationsPass(kind))
@@ -204,14 +217,7 @@ func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, 
 	for _, table := range readStateTables {
 		passes = append(passes, readStatePass(table))
 	}
-	for _, pass := range passes {
-		report, err := runInboxPass(ctx, database, pass, growth)
-		done = append(done, report)
-		if err != nil {
-			return done, err
-		}
-	}
-	return done, nil
+	return passes
 }
 
 // inboxTables is every table this child's passes read or write: the rows each pass walks, with its
@@ -259,14 +265,15 @@ func analyzeInboxTables(ctx context.Context, database *store.Store) error {
 // storeGrowth is how far the store has grown since the backfill last took its statistics: the
 // rows graph_tuples held then, and the nodes and tuples the passes have handed the store since.
 // The passes write the store as they read it, and each step of a thread walk and each person a
-// write reaches is a probe of graph_tuples or graph_nodes planned on those statistics. Taken once,
-// while the store held a few thousand tuples, they had the planner skip-scan graph_tuples_inbound
-// over every node's address rather than seek graph_tuples_current by the one a probe names, which
-// reads every tuple of the kind for each probe: over 3,000 messages the backfill read 795 rows out
-// of graph_tuples a message, and over 6,000 messages 3,907, where with its statistics taken again
-// as the store grew it read 23 and 27 (TestTheMessagesPassIsLinearOnATableNoAnalyzeHasRead).
-// Autovacuum takes them again once a table has grown by a tenth, but on its own schedule, which a
-// pass may outrun, so the backfill takes them itself at that same growth.
+// write reaches is a probe of graph_tuples or graph_nodes planned on those statistics, each
+// meant as a seek of one read index by the address it names: graph_tuples_current or
+// graph_tuples_as_of_out out of a node, graph_tuples_as_of_in into a person. Taken once, while the
+// store held a few thousand tuples, the statistics left those probes planned for that small store:
+// over 3,000 messages the backfill read 805 rows out of graph_tuples a message, where with its
+// statistics taken again as the store grew it read 24
+// (TestTheMessagesPassIsLinearOnATableNoAnalyzeHasRead). Autovacuum takes them again once a table
+// has grown by a tenth, but on its own schedule, which a pass may outrun, so the backfill takes
+// them itself at that same growth.
 type storeGrowth struct {
 	rows, grown int64
 }
@@ -989,7 +996,7 @@ func (table attemptTable) keyText() string {
 }
 
 // attemptsPass states each attempt row an older build wrote as the write that opened it states it
-// (graphstore.AttemptOpened, AttemptStated): the attempt's node, made at the row's created_at by
+// (graphstore.AttemptOpened, QueueAttempted): the attempt's node, made at the row's created_at by
 // the item's author for its first attempt, which the item's own write opened, and by the delivery
 // machinery (graphstore.AttemptWriter) for a later one, which a Retry or a sender opened; then
 // what the row holds now (graphstore.AttemptFactsAsWritten), dated at its created_at; the first
@@ -1088,7 +1095,7 @@ func (table attemptTable) writeAttempts(ctx context.Context, tx pgx.Tx, keys [][
 		return inboxWrote{}, fmt.Errorf("name the nodes of a batch of %s on their rows: %w", table.table, err)
 	}
 	// What the rows hold is read once per writer rather than once per row: AttemptFactsAsWritten
-	// states the attempts of one writer in two statements however many it names, and a batch's
+	// states the attempts of one writer in one statement however many it names, and a batch's
 	// attempts have few writers - each item's author for its first attempt and the delivery
 	// machinery for every later one. Each fact then carries the event of the attempt it is out of.
 	var writers []string

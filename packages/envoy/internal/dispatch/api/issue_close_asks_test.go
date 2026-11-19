@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,15 +24,15 @@ import (
 
 // Closing an issue withdraws every open ask it holds, whoever closes it: each is recorded resolved
 // as withdrawn by the close, naming the closer, and stops reading open in the documents' text too,
-// which renders each ask's state from the store (dispatch://INFRA-1150 R3). Reopening the issue
+// which renders each ask's state from the store. Reopening the issue
 // opens exactly those asks again.
 
-// closeDecision is the decision block the closing tests' spec holds, and a copy of it a second
+// closeDecision is the ask block the closing tests' spec holds, and a copy of it a second
 // document of the issue holds.
 const closeDecision = "Context\n\n:::ask{#close-decision urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
 // closeAsksFixture is an issue holding one open ask of every kind - a plain ask waiting on a
-// person, a plain ask waiting on its agent, a decision block in the spec with a copy of it in a
+// person, a plain ask waiting on its agent, an ask block in the spec with a copy of it in a
 // second document, an approval request on the spec - beside an answered and a retracted ask.
 type closeAsksFixture struct {
 	handler   http.Handler
@@ -40,7 +41,7 @@ type closeAsksFixture struct {
 	issue     string
 	spec      string
 	copy      string
-	// open are the open asks: the person's, the agent's, the decision block's, the approval's.
+	// open are the open asks: the person's, the agent's, the ask block's, the approval's.
 	personAsk, agentAsk, blockAsk, approvalAsk string
 	answeredAsk, retractedAsk                  string
 }
@@ -89,7 +90,7 @@ func newCloseAsksFixtureSettlingAfter(t *testing.T, settle time.Duration) closeA
 	}](t, uploaded).Artifact.ID
 	settleDocuments("the copy")
 	awaitTextShows(t, handler, f.copy, "the copy of the open decision", contains(
-		`#close-decision urgency="med" multiple="false" state="open" copied_from="`+f.blockAsk+`"`,
+		`#close-decision state="open" copied_from="`+f.blockAsk+`"`,
 	), nil)
 	awaitSettled(t, database, f.spec, f.copy)
 	f.approvalAsk = requestApproval(t, handler, f.spec).ID
@@ -160,9 +161,9 @@ func sessionCloser(name, id string) closer {
 
 // Closing an issue withdraws its open asks, on each ask's node and its row, and the documents'
 // text, which renders each ask's state from the store, shows their blocks resolved; on a fleet of
-// one build the close changes no byte of any document (dispatch://INFRA-1150 R3: "a close's
-// withdrawal and a reopen's restoration change no byte of any document"), so the settlement
-// after it, on the closed issue, saves no version and changes no ask row, no answer or review, and
+// one build the close changes no byte of any document, nor does a reopen's restoration, so the
+// settlement after it, on the closed issue, saves no version and changes no ask row, no answer or
+// review, and
 // appends no ask event. Reopening restores exactly the withdrawn asks, the text shows their blocks
 // open again, and the settlement after the reopen saves no version either. The settle delay is an
 // hour, so the test runs each settlement itself (SettleIssueDocuments, as the timer, the room's
@@ -176,8 +177,8 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 			ctx := context.Background()
 			documents := []string{f.spec, f.copy}
 			resolved := map[string]string{
-				f.spec: `#close-decision urgency="med" multiple="false" state="resolved"`,
-				f.copy: `#close-decision urgency="med" multiple="false" state="resolved" copied_from="` + f.blockAsk + `"`,
+				f.spec: `#close-decision state="resolved"` + "\n",
+				f.copy: `#close-decision state="resolved" copied_from="` + f.blockAsk + `"`,
 			}
 			preClose := readIssueDetail(t, f.handler, f.issue)
 			if len(preClose.OpenAsks) != 4 {
@@ -320,8 +321,8 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 			if approval := readApproval(t, f.handler, f.spec).Approval; approval == nil || approval.State != "awaiting" {
 				t.Fatalf("the spec's approval after the reopen = %#v, want awaiting", approval)
 			}
-			requireLiveText(t, f.handler, f.spec, `#close-decision urgency="med" multiple="false" state="open"`)
-			requireLiveText(t, f.handler, f.copy, `#close-decision urgency="med" multiple="false" state="open" copied_from="`+f.blockAsk+`"`)
+			requireLiveText(t, f.handler, f.spec, `#close-decision state="open"`)
+			requireLiveText(t, f.handler, f.copy, `#close-decision state="open" copied_from="`+f.blockAsk+`"`)
 			if inbox := inboxAskIDs(t, f.handler); !containsAll(inbox, f.open()) {
 				t.Fatalf("inbox after the reopen = %v, want every restored ask %v", inbox, f.open())
 			}
@@ -352,14 +353,15 @@ func (failingSettlement) SettleIssueDocuments(context.Context, string) error {
 	return errors.New("settlement failed")
 }
 
-// A decision block written a moment before the close, which its settlement (an hour away) has not
+// An ask block written a moment before the close, which its settlement (an hour away) has not
 // indexed, is still withdrawn by the close: the close settles the issue's documents first, so the
 // block is an ask, credited to whoever wrote it. When that settlement fails, the block is no ask
-// to withdraw, and the text an agent reads, which the decision card reads a block with no ask
-// from, still shows it resolved on the closed issue: while another build serves, the close's sweep
-// writes it resolved for that build's pages (docs.WriteIssueAskStates); on a fleet of one build
-// the sweep writes nothing, the block holds no state, and the text renders it resolved from the
-// issue's close (docs.TextWithAnswers). The reopen's settlement opens it as its author's ask.
+// to withdraw, and the asks member of the text an agent reads, which the decision card reads a
+// block with no ask from, still shows it resolved on the closed issue: while another build serves,
+// the close's sweep writes it resolved for that build's pages (docs.WriteIssueAskStates); on a
+// fleet of one build the sweep writes nothing, the block holds no state, and the asks member reads
+// it resolved from the issue's close (docs.TextWithAsks). The reopen's settlement opens it as its
+// author's ask.
 func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 	for _, test := range []struct {
 		name                       string
@@ -392,30 +394,30 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 				}},
 			})
 			if edited.Code != http.StatusOK {
-				t.Fatalf("write the decision block: status=%d body=%s", edited.Code, edited.Body.String())
+				t.Fatalf("write the ask block: status=%d body=%s", edited.Code, edited.Body.String())
 			}
 			if id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision"); id != "" {
-				t.Fatalf("the decision block is ask %s before any settlement", id)
+				t.Fatalf("the ask block is ask %s before any settlement", id)
 			}
 			closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
 			if closed.Code != http.StatusOK {
 				t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 			}
-			requireLiveText(t, handler, issue.PrimaryArtifactID, `#late-decision urgency="high" multiple="false" state="resolved"`)
+			requireLiveText(t, handler, issue.PrimaryArtifactID, `#late-decision state="resolved"`)
 			id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision")
 			if !settlementFails {
 				if id == "" {
-					t.Fatal("the close's settlement never indexed the decision block")
+					t.Fatal("the close's settlement never indexed the ask block")
 				}
 				ask := readBlockAsk(t, handler, id)
 				if ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
 					t.Fatalf("withdrawn decision's author = %#v, want the session that wrote it", ask.Author)
 				}
-				requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice"})
+				requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice", Proven: true})
 				return
 			}
 			if id != "" {
-				t.Fatalf("the decision block is ask %s although its settlement failed", id)
+				t.Fatalf("the ask block is ask %s although its settlement failed", id)
 			}
 			if line := askDirective(t, liveTree(t, documentService, issue.PrimaryArtifactID), "late-decision"); !test.twoBuilds && strings.Contains(line, "state=") {
 				t.Fatalf("on a fleet of one build the closed issue's unindexed block holds %.300s, want no state in the document", line)
@@ -428,13 +430,13 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 			}
 			id = findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision")
 			if id == "" {
-				t.Fatal("the reopen's settlement never indexed the decision block")
+				t.Fatal("the reopen's settlement never indexed the ask block")
 			}
 			ask := readBlockAsk(t, handler, id)
 			if ask.State != "open" || ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
 				t.Fatalf("indexed decision = %s by %#v, want open by the session that wrote it", ask.State, ask.Author)
 			}
-			requireLiveText(t, handler, issue.PrimaryArtifactID, `#late-decision urgency="high" multiple="false" state="open"`)
+			requireLiveText(t, handler, issue.PrimaryArtifactID, `#late-decision state="open"`)
 		})
 	}
 }
@@ -521,11 +523,11 @@ func TestClosingAnIssueWritesAnAnsweredAsksCopiesWithoutItsWordsWhileAnotherBuil
 	}
 }
 
-// pastedCloseDecision is the spec's decision block as a browser's paste copies it, with the id
+// pastedCloseDecision is the spec's ask block as a browser's paste copies it, with the id
 // and the state the block it copies carries.
 const pastedCloseDecision = ":::ask{#close-decision urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
-// A decision block a browser pasted a moment before the close repeats the id of the block it
+// An ask block a browser pasted a moment before the close repeats the id of the block it
 // copies, so it is no ask until a settlement stamps it an id of its own. The close settles the
 // issue's documents first, so the pasted block is an ask under a new id, withdrawn with the block
 // it copies, each with a record naming the closer. When that settlement fails, the pasted block is
@@ -568,7 +570,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.
 				return nil
 			})
 			peer.barrier(t)
-			if live, _ := documentTexts(t, handler, issue.PrimaryArtifactID); strings.Count(live, `#close-decision urgency="med" multiple="false" state="open"`) != 2 {
+			if live := liveTree(t, documentService, issue.PrimaryArtifactID); strings.Count(live, `#close-decision urgency="med" multiple="false" state="open"`) != 2 {
 				t.Fatalf("the document does not hold the pasted copy under the repeated id:\n%s", live)
 			}
 			if asks := documentBlockAsks(t, handler, issue.Key, issue.PrimaryArtifactID); len(asks) != 1 {
@@ -579,22 +581,22 @@ func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.
 			if closed.Code != http.StatusOK {
 				t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 			}
-			closer := model.Actor{Kind: "user", ID: "alice"}
+			closer := model.Actor{Kind: "user", ID: "alice", Proven: true}
 			requireWithdrawn(t, handler, issue.Key, original, closer)
-			live, _ := documentTexts(t, handler, issue.PrimaryArtifactID)
+			live := liveTree(t, documentService, issue.PrimaryArtifactID)
 			if strings.Contains(live, `state="open"`) {
-				t.Fatalf("a block of the closed issue still reads open:\n%s", live)
+				t.Fatalf("a block of the closed issue's live tree still reads open:\n%s", live)
 			}
 			if !settlementFails {
 				pastedAsk := pastedBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID)
 				requireWithdrawn(t, handler, issue.Key, pastedAsk.ID, closer)
 				if strings.Count(live, `state="resolved"`) != 2 || !strings.Contains(live, "#"+*pastedAsk.BlockID+` urgency="med" multiple="false" state="resolved"`) {
-					t.Fatalf("live text:\n%s\nwant the spec's block and the pasted block %s resolved", live, *pastedAsk.BlockID)
+					t.Fatalf("live tree:\n%s\nwant the spec's block and the pasted block %s resolved", live, *pastedAsk.BlockID)
 				}
 				return
 			}
 			if strings.Count(live, `#close-decision urgency="med" multiple="false" state="resolved"`) != 2 {
-				t.Fatalf("live text:\n%s\nwant both blocks under close-decision resolved", live)
+				t.Fatalf("live tree:\n%s\nwant both blocks under close-decision resolved", live)
 			}
 			if asks := documentBlockAsks(t, handler, issue.Key, issue.PrimaryArtifactID); len(asks) != 1 {
 				t.Fatalf("the document holds %d asks although the paste's settlement failed, want the spec's alone", len(asks))
@@ -614,8 +616,8 @@ func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.
 				t.Fatalf("the pasted block's ask after the reopen = %s, want open", pastedAsk.State)
 			}
 			requireLiveText(t, handler, issue.PrimaryArtifactID,
-				`#close-decision urgency="med" multiple="false" state="open"`,
-				"#"+*pastedAsk.BlockID+` urgency="med" multiple="false" state="open"`,
+				`#close-decision state="open"`,
+				"#"+*pastedAsk.BlockID+` state="open"`,
 			)
 		})
 	}
@@ -638,7 +640,7 @@ func documentBlockAsks(t *testing.T, handler http.Handler, issue, document strin
 }
 
 // pastedBlockAsk is the one ask of document indexed for a block other than close-decision: the
-// pasted copy of the spec's decision block, under the id a settlement stamped it.
+// pasted copy of the spec's ask block, under the id a settlement stamped it.
 func pastedBlockAsk(t *testing.T, handler http.Handler, issue, document string) model.Ask {
 	t.Helper()
 	var found []model.Ask
@@ -678,7 +680,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	return mux
 }
 
-// A decision block written a moment before the close is withdrawn by it, with a record naming the
+// An ask block written a moment before the close is withdrawn by it, with a record naming the
 // closer, even when the agent's next edit landed on another envoy-dispatch process and left this
 // process's room behind the document's durable head (no room sync runs here, so the room hears of
 // nothing). A read is never older than the stored head all the same, and the close's settlement
@@ -710,7 +712,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(
 		t.Fatalf("this process's read of the document is older than the other process's stored edit:\n%s", live)
 	}
 	if id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision"); id != "" {
-		t.Fatalf("the decision block is ask %s before any settlement", id)
+		t.Fatalf("the ask block is ask %s before any settlement", id)
 	}
 
 	closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
@@ -719,16 +721,16 @@ func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(
 	}
 	id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision")
 	if id == "" {
-		t.Fatal("the close's settlement never indexed the decision block")
+		t.Fatal("the close's settlement never indexed the ask block")
 	}
 	ask := readBlockAsk(t, handler, id)
 	if ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
 		t.Fatalf("withdrawn decision's author = %#v, want the session that wrote it", ask.Author)
 	}
-	requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	requireLiveText(t, handler, issue.PrimaryArtifactID,
 		"Written on the other process.",
-		`#late-decision urgency="high" multiple="false" state="resolved"`,
+		`#late-decision state="resolved"`,
 	)
 }
 
@@ -749,7 +751,7 @@ func (d *peerInsertDocs) WriteIssueAskStates(ctx context.Context, issueKey strin
 	return written, err
 }
 
-// A browser writing a decision block into a document after the close's transaction forked it and
+// A browser writing an ask block into a document after the close's transaction forked it and
 // before it committed leaves the block in the room, where it gets no ask on the closed issue: the
 // close's sweep, once the rooms are closed, leaves it reading resolved, and the settlement that
 // then runs on the closed issue saves it so, still with no ask (reconcileAskBlocks). The sweep
@@ -778,8 +780,8 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
 	requireLiveText(t, handler, issue.PrimaryArtifactID,
-		`#close-decision urgency="med" multiple="false" state="resolved"`,
-		`#peer-decision urgency="low" multiple="false" state="resolved"`,
+		`#close-decision state="resolved"`,
+		`#peer-decision state="resolved"`,
 	)
 	awaitSettled(t, database, issue.PrimaryArtifactID)
 	if id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "peer-decision"); id != "" {
@@ -789,7 +791,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 		`#close-decision urgency="med" multiple="false" state="resolved"`,
 		`#peer-decision urgency="low" multiple="false" state="resolved"`,
 	)(version) {
-		t.Fatalf("the closed issue's settlement left the newest version reading:\n%s\nwant both decision blocks resolved", version)
+		t.Fatalf("the closed issue's settlement left the newest version reading:\n%s\nwant both ask blocks resolved", version)
 	}
 }
 
@@ -819,7 +821,7 @@ func TestEachCloseAndReopenWithdrawsAndRestoresOnce(t *testing.T) {
 				t.Fatalf("after close %d ask %s has %d ask.resolved events, want %d", cycle, ask, count, cycle)
 			}
 		}
-		requireLiveText(t, handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="resolved"`)
+		requireLiveText(t, handler, issue.PrimaryArtifactID, `#close-decision state="resolved"`)
 		if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "in_progress"}, "alice"); reopened.Code != http.StatusOK {
 			t.Fatalf("reopen %d: status=%d body=%s", cycle, reopened.Code, reopened.Body.String())
 		}
@@ -831,7 +833,7 @@ func TestEachCloseAndReopenWithdrawsAndRestoresOnce(t *testing.T) {
 				t.Fatalf("after reopen %d ask %s has %d ask.opened events, want %d", cycle, ask, count, opened[ask]+cycle)
 			}
 		}
-		requireLiveText(t, handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="open"`)
+		requireLiveText(t, handler, issue.PrimaryArtifactID, `#close-decision state="open"`)
 	}
 }
 
@@ -940,13 +942,12 @@ func inboxAskIDs(t *testing.T, handler http.Handler) []string {
 	return ids
 }
 
-// requireLiveText fails t unless document's live text, as an agent reads it - each ask block
-// carrying its ask's state and answer, rendered from the store (docs.TextWithAnswers) - holds
-// every one of parts.
+// requireLiveText fails t unless document's live text as an agent reads it (agentText: its
+// markdown, which holds no ask's state, and one line per entry of its asks member, which holds
+// each ask block's state and answer, read from the store) holds every one of parts.
 func requireLiveText(t *testing.T, handler http.Handler, document string, parts ...string) {
 	t.Helper()
-	live, _ := documentTexts(t, handler, document)
-	if !contains(parts...)(live) {
+	if live := agentText(t, handler, document); !contains(parts...)(live) {
 		t.Fatalf("document %s live text:\n%s\nwant it to hold %q", document, live, parts)
 	}
 }
@@ -954,8 +955,9 @@ func requireLiveText(t *testing.T, handler http.Handler, document string, parts 
 // liveTree is document's live tree as documents renders it, with each block's attributes as the
 // writes to the tree left them: the attributes the release before's pages read an ask's state
 // from, which settlement and the close's sweep keep in step with the asks rows only while another
-// build serves (docs' rollWindowAskAttributes). The text an agent reads renders the state from the
-// store instead (requireLiveText), so it cannot tell whether a write put it on the block.
+// build serves (docs' rollWindowAskAttributes). The text an agent reads takes them off and answers
+// the state in its asks member instead (requireLiveText), so it cannot tell whether a write put it
+// on the block.
 func liveTree(t *testing.T, documents *docs.Service, document string) string {
 	t.Helper()
 	markdown, _, err := documents.TextWithToken(context.Background(), document)
@@ -1094,4 +1096,67 @@ func scanEventActor(t *testing.T, database *store.Store, query string, args ...a
 		t.Fatalf("decode event actor: %v", err)
 	}
 	return actor
+}
+
+// countedAskStateWrites is the document service with its sweep writes counted: every call of
+// WriteIssueAskStates, which is the one write a close's sweep makes (sweepIssueAskBlocksTx).
+type countedAskStateWrites struct {
+	docs.API
+	writes atomic.Int32
+}
+
+func (c *countedAskStateWrites) WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]docs.BlockRef, error) {
+	c.writes.Add(1)
+	return c.API.WriteIssueAskStates(ctx, issueKey, asks, actor, markUnindexed)
+}
+
+// A close's sweep decides whether the issue is still closed under the issue's owner lock
+// (sweepClosedIssueAsksTx): a reopen committed while the sweep waited for that lock leaves the
+// reopened issue's documents alone. The test holds the lock as the reopen does and commits the
+// reopen while the sweep waits; a sweep that read the issue before the lock would write the
+// closed issue's ask states into the documents of an issue that is open again.
+func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "TEST", "Swept after a reopen", "Context\n")
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = $1`, issue.Key); err != nil {
+		t.Fatalf("close the issue: %v", err)
+	}
+	counted := &countedAskStateWrites{API: served.deps.Docs}
+	served.deps.Docs = counted
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reopen: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("take the issue's owner lock: %v", err)
+	}
+	swept := make(chan error, 1)
+	go func() {
+		swept <- served.sweepClosedIssueAsksTx(ctx, issue.Key, nil, model.Actor{Kind: "user", ID: "alice"})
+	}()
+	if err, early, _ := storetest.AwaitOwnerLockWaiter(t, database, "the close's sweep", swept); early {
+		t.Fatalf("the sweep answered %v while this test held the issue's owner lock: it decided on the issue "+
+			"under no lock", err)
+	}
+	if _, err := holder.Exec(ctx, `update issues set status = 'todo', closed_at = null where key = $1`, issue.Key); err != nil {
+		t.Fatalf("reopen the issue: %v", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the reopen: %v", err)
+	}
+	select {
+	case err := <-swept:
+		if err != nil {
+			t.Fatalf("the sweep: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the sweep never returned once the reopen committed")
+	}
+	if writes := counted.writes.Load(); writes != 0 {
+		t.Fatalf("the sweep wrote the ask states of %s %d time(s) after a reopen committed while it waited: it "+
+			"read the issue as closed before the issue's owner lock", issue.Key, writes)
+	}
 }

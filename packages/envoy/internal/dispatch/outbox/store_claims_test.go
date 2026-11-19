@@ -119,8 +119,8 @@ func TestAFallbackCopyThePassPublishedIsADelivery(t *testing.T) {
 		t.Fatalf("read the backend the record runs on: %v", err)
 	}
 	records := []fallbackRecord{
-		{held: fallbackCopy{commentID: comment, destination: contracts.AgentSubject(reached), eventID: created, claim: at}, settled: true, published: true},
-		{held: fallbackCopy{commentID: comment, destination: contracts.AgentSubject(missed), eventID: created, claim: at}, failed: true},
+		{held: fallbackCopy{commentID: comment, destination: contracts.LegacyAgentSubject(reached), eventID: created, claim: at}, settled: true, published: true},
+		{held: fallbackCopy{commentID: comment, destination: contracts.LegacyAgentSubject(missed), eventID: created, claim: at}, failed: true},
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -184,7 +184,7 @@ func TestAnEventTwoProcessesRecordedKeepsItsArrayTheFarEndsOfItsTuples(t *testin
 	record := func(holder uuid.UUID, session string) {
 		t.Helper()
 		sent := &batchEvent{pendingEvent: pendingEvent{event: event}, outcome: outcome{
-			id: event.ID, state: published, reached: []string{owner, contracts.AgentSubject(session)},
+			id: event.ID, state: published, reached: []string{owner, contracts.LegacyAgentSubject(session)},
 		}}
 		if _, err := recordBatch(ctx, deps, []outcome{sent.outcome}, holder, deliveredGraph([]*batchEvent{sent}, nil, time.Now())); err != nil {
 			t.Fatalf("record the batch that reached %s: %v", session, err)
@@ -208,7 +208,7 @@ func TestAnEventTwoProcessesRecordedKeepsItsArrayTheFarEndsOfItsTuples(t *testin
 	record(uuid.New(), "s3")
 
 	destinations, after := read()
-	if want := []string{owner, contracts.AgentSubject("s2"), contracts.AgentSubject("s3")}; !slices.Equal(destinations, want) {
+	if want := []string{owner, contracts.LegacyAgentSubject("s2"), contracts.LegacyAgentSubject("s3")}; !slices.Equal(destinations, want) {
 		t.Errorf("event %d was published to %v, want %v: the second record reached s3", event.ID, destinations, want)
 	}
 	if after == nil || !after.Equal(*publishedAt) {

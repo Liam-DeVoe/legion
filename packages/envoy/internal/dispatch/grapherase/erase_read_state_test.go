@@ -24,11 +24,14 @@ import (
 // only kind of thread either release's routes write those two rows for: erin's issue-less message
 // to session s1, which she dismisses, and s1's reply to it, which she reads. The rows are written
 // as an older build writes them, beside another person's rows of another comment and another
-// conversation, and the backfill marks them and states their tuples. The erase of each item lists
-// each of its rows - the snoozes through their required reference into asks - deletes them with
-// the item, and leaves the other threads' rows standing; the census reads zero before the erases
-// and after them, the people those rows named held to their nodes by the records of the erases
-// (Erasure.Writers, reachedPerson).
+// conversation, and the backfill marks them and states their tuples. The erase of the comment and
+// of each message lists each of its rows, deletes them with the item, and leaves the other
+// threads' rows standing. The ask's row stands and holds its question, which the erase does not
+// reach, so the erase of the ask refuses with the refusal of a node whose row stands, without
+// --confirm and with a digest, and leaves the ask's rows - its participants' user_threads rows and
+// its snoozes - standing as they were. The census reads zero before the erases and after them, the
+// people those rows named held to their nodes by the records of the erases (Erasure.Writers,
+// reachedPerson).
 func TestTheEraseOfAnItemTakesTheReadStateRowsThatNameIt(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -115,16 +118,6 @@ func TestTheEraseOfAnItemTakesTheReadStateRowsThatNameIt(t *testing.T) {
 			},
 			naming: `select count(*) from user_agent_thread_dismissed where message_id = $1::uuid`,
 		},
-		{
-			kind: graphstore.KindAsk, id: ask,
-			listed: [][]string{
-				{"delete user_threads (login, thread_id)=(alice," + ask + ")"},
-				{"delete user_threads (login, thread_id)=(bob," + ask + ")"},
-				{"delete user_ask_snooze: 2 row(s) through user_ask_snooze.ask_id"},
-			},
-			naming: `select (select count(*) from user_threads where thread_id = $1::uuid)
-			     + (select count(*) from user_ask_snooze where ask_id = $1::uuid)`,
-		},
 	} {
 		listing := dryRun(t, database, item.kind, item.id)
 		for _, line := range item.listed {
@@ -140,6 +133,33 @@ func TestTheEraseOfAnItemTakesTheReadStateRowsThatNameIt(t *testing.T) {
 		if naming != 0 {
 			t.Errorf("after the erase of %s:%s %d read-state row(s) name it, want none", item.kind, item.id, naming)
 		}
+	}
+	// The ask's row stands and holds its question, so the erase refuses it in Erasure.read, before
+	// it lists a row, and its read-state rows stand.
+	askRows := func() int64 {
+		t.Helper()
+		var rows int64
+		if err := database.Pool.QueryRow(ctx, `
+			select (select count(*) from user_threads where thread_id = $1::uuid)
+			     + (select count(*) from user_ask_snooze where ask_id = $1::uuid)`, ask).Scan(&rows); err != nil {
+			t.Fatalf("count the read-state rows of ask:%s: %v", ask, err)
+		}
+		return rows
+	}
+	held := askRows()
+	if held != 4 {
+		t.Fatalf("the ask's threads hold %d read-state rows before its erase, want alice's and bob's rows and their snoozes", held)
+	}
+	const refusal = "its row stands and holds the node's text, which the erase does not reach"
+	for _, confirm := range []string{"", "any digest"} {
+		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), graphstore.KindAsk, ask, confirm, time.Millisecond)
+		if err == nil || !strings.Contains(err.Error(), "refuses "+graphstore.KindAsk+":"+ask+": ") || !strings.Contains(err.Error(), refusal) {
+			t.Errorf("erase --node ask:%s (confirm %q) answered %v (applied %t), want the refusal %q",
+				ask, confirm, err, erasure != nil && erasure.Applied, refusal)
+		}
+	}
+	if after := askRows(); after != held {
+		t.Errorf("after the refused erase of ask:%s %d of its %d read-state rows stand, want all of them", ask, after, held)
 	}
 	var left int64
 	if err := database.Pool.QueryRow(ctx, `

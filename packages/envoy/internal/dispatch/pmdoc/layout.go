@@ -162,7 +162,7 @@ const askBlockType = "ask"
 // creditedBlock reports whether a node of type typeName is a credited block: a block whose author
 // the document service keeps from the write that introduced it until a settlement reads it - an
 // ask, whose row a settlement opens, and a decision and a reading, whose node a version's index
-// writes with that author (dispatch://INFRA-1150 R1 and R2). WalkCreditedBlocks visits these and
+// writes with that author. WalkCreditedBlocks visits these and
 // blockHoldsCredited flags a block for them.
 func creditedBlock(typeName string) bool {
 	switch typeName {
@@ -219,7 +219,7 @@ func WalkAskBlocks(node *Node, visit func(id string)) {
 
 // HoldsAskBlock reports whether node is an ask block or holds one wherever it stands, stopping at
 // the first it finds. It walks as WalkAskBlocks walks (holdsBlocks), so it answers true for a node
-// that walk visits at least once. A caller that only asks whether a block holds a decision block
+// that walk visits at least once. A caller that only asks whether a block holds an ask block
 // reads it rather than walking the whole subtree and setting a flag, since it runs on every body
 // write (itemblocks.Check).
 func HoldsAskBlock(node *Node) bool {

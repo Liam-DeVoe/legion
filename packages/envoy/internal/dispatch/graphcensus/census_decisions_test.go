@@ -15,11 +15,11 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// unmarkedAskKinds are the ask kinds of dispatch://INFRA-1150 whose rows the earlier release
+// unmarkedAskKinds are the ask tie kinds whose rows the earlier release
 // wrote with no node, in the order the census reads them.
 var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_anchor", "ask_answer"}
 
-// The rule that a kind of dispatch://INFRA-1150 holding no row and no node is no refusal is for a
+// The rule that a tie kind holding no row and no node is no refusal is for a
 // store nothing of that kind was written to. An asks table and an ask_followers table whose rows
 // the earlier release wrote, and which no backfill has marked, hold rows all the same: their kinds
 // read no row and no node, since the row side reads marked rows alone, while each counts its own
@@ -27,8 +27,8 @@ var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_a
 // and answered by bob - and one follower row of it, every ask kind counts its unmarked row, none
 // prints that nothing of it is written yet, each prints that it checked no row, and the census
 // refuses with those four kinds as the kinds that checked no row. (The project census refuses the
-// unmarked asks row as well, as a row with no node; that refusal is INFRA-1149's and not this
-// rule's, so the test reads the kinds the census names unpopulated.)
+// unmarked asks row as well, as a row with no node; that refusal is the project census's own and
+// not this rule's, so the test reads the kinds the census names unpopulated.)
 func TestTheCensusRefusesAskRowsNoBackfillMarked(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -73,7 +73,7 @@ func TestTheCensusRefusesAskRowsNoBackfillMarked(t *testing.T) {
 }
 
 // statedMovedTo appends one moved_to tuple from the block address from to the block address to,
-// as the restore and the conversion state one (dispatch://INFRA-1150 R8).
+// as the restore and the conversion state one.
 func statedMovedTo(t *testing.T, database *store.Store, from, to string) {
 	t.Helper()
 	ctx := context.Background()
@@ -105,7 +105,7 @@ func storeOnlyKind(t *testing.T, report *StoreReport, name string) StoreOnlyRepo
 	return StoreOnlyReport{}
 }
 
-// The census leaves out documents that still owe their block index (dispatch://INFRA-1150 R4): a
+// The census leaves out documents that still owe their block index: a
 // moved_to whose far end is a block of such a document, which holds no row yet for a block its
 // latest version holds, is counted apart and is no unresolved far end. The agreeing store's
 // document owes its index, since its version was written with no block index, and a moved_to into
@@ -197,13 +197,15 @@ func requireKeyedTupleReads(t *testing.T, keys *explaintest.IndexKeys, what stri
 
 // The census reads the store's log, its largest table, once per run for who wrote or answered a
 // decision, a reading or an ask (readStoredAuthors), and never whole. That one read's plan reads
-// graph_tuples through keyed index scans alone, its history probes stating graph_tuples_inbound's
+// graph_tuples through keyed index scans alone, its history probes stating graph_tuples_as_of_in's
 // predicate (to_kind <> 'value') beside their joins so that index is one they can take. The person
 // and the session row sides read what it read bound as arrays (censusAuthors), so neither reads
 // the history again: the person side's one read of graph_tuples is the proved owners' alias_of,
 // through graph_tuples_current, and the session side reads it not at all. The store-only kinds
-// read their tuples through graph_tuples_store_only, the partial index of those two kinds
-// (migration 20261116220307), and through no other.
+// and the dangling-citation counter's moved_to sources read their tuples out of the nodes the log
+// holds (currentOutOfNodes) through graph_tuples_current alone, an index of the store's set, in
+// three keyed scans: the walk's first node of each kind, the walk's next node past each one, and
+// the probe of each node's tuples of those kinds.
 func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	keys := explaintest.NewIndexKeys(database.Pool)
@@ -223,22 +225,18 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 		t.Errorf("the session row side reads graph_tuples through %d scan(s), want none: the stored authors are bound", keyed)
 	}
 
-	plan := planWithoutSeqScans(t, database, storeOnlyRead)
-	if explaintest.SeqScansRelation(t, plan, "graph_tuples") {
-		t.Errorf("the store-only read reads graph_tuples whole: %s", plan)
-	}
-	read := 0
-	for _, scan := range explaintest.IndexScans(t, plan) {
-		if !strings.HasPrefix(scan.Index, "graph_tuples") {
-			continue
+	for _, read := range []struct {
+		name      string
+		statement string
+		arguments []any
+	}{
+		{"the store-only read", storeOnlyRead, nil},
+		{"the dangling-citation counter", danglingRead, []any{[]string{}}},
+	} {
+		if keyed := requireKeyedTupleReads(t, keys, read.name,
+			planWithoutSeqScans(t, database, read.statement, read.arguments...), "graph_tuples_current"); keyed != 3 {
+			t.Errorf("%s reads graph_tuples through %d keyed scan(s), want 3: the walk's first node of each kind, its next node and the probe of each node's tuples",
+				read.name, keyed)
 		}
-		if scan.Index != "graph_tuples_store_only" {
-			t.Errorf("the store-only read reads graph_tuples through %s, want graph_tuples_store_only alone: %s", scan, plan)
-			continue
-		}
-		read++
-	}
-	if read == 0 {
-		t.Fatalf("the store-only read never reads graph_tuples_store_only: %s", plan)
 	}
 }

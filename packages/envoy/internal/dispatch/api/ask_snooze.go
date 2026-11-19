@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Snoozing an Inbox row is a human's own view state, like the Agents page's Clear: the ask
@@ -95,6 +96,7 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	var future bool
 	var stored, previous *time.Time
 	var ask *string
+	var at time.Time
 	if err := tx.QueryRow(r.Context(), `
 		with previous as (
 			select snoozed_until from user_ask_snooze where login = $1 and ask_id = $2
@@ -111,8 +113,8 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 			returning snoozed_until, ask_id::text
 		)
 		select $3::timestamptz > now(), (select snoozed_until from snoozed), (select snoozed_until from previous),
-		       (select ask_id from snoozed)
-	`, model.CanonicalLogin(actor.ID), askID, snoozedUntil, markFits(actor)).Scan(&future, &stored, &previous, &ask); err != nil {
+		       (select ask_id from snoozed), now()
+	`, model.CanonicalLogin(actor.ID), askID, snoozedUntil, markFits(actor)).Scan(&future, &stored, &previous, &ask, &at); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -126,7 +128,7 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	}
 	if previous == nil || !previous.Equal(*stored) {
 		mark := personMark(actor, graphstore.TupleSnoozed, graphstore.KindAsk, *ask, *stored, true, graphstore.NoEvent)
-		if !s.announceAskSnooze(w, r, tx, actor, askID, mark) {
+		if !s.announceAskSnooze(w, r, tx, actor, askID, at, mark) {
 			return
 		}
 	} else if err := tx.Commit(r.Context()); err != nil {
@@ -170,28 +172,29 @@ func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !s.announceAskSnooze(w, r, tx, actor, askID, personMark(actor, graphstore.TupleSnoozed, graphstore.KindAsk, ask, at, false, graphstore.NoEvent)) {
+	if !s.announceAskSnooze(w, r, tx, actor, askID, at, personMark(actor, graphstore.TupleSnoozed, graphstore.KindAsk, ask, at, false, graphstore.NoEvent)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// announceAskSnooze appends the snooze's event in tx, then mark, the snoozed tuple or its
-// retraction the write states, under that event (graphstore.FromPerson), commits, and publishes
-// the event. It answers false after writing the error response when any step fails.
+// announceAskSnooze appends the snooze's event in tx, and mark, the snoozed tuple or its
+// retraction the write states, under that event (graphstore.QueueFromPerson), in one batch whose
+// person node is made at at, the transaction's now(); the failure point between the snooze's row
+// and the mark (failpoint.AskSnooze) is decided before the batch is sent and queued between the
+// two. It then commits and publishes the event, and answers false after writing the error
+// response when any step fails.
 func (s *server) announceAskSnooze(
-	w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, askID string, mark graphstore.Tuple,
+	w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, askID string, at time.Time, mark graphstore.Tuple,
 ) bool {
 	event, err := s.askSnoozeEvent(r.Context(), tx, actor, askID)
 	if err == nil {
-		event, err = s.appendEvent(r.Context(), tx, event)
-	}
-	if err == nil {
-		err = failpoint.Between(r.Context(), failpoint.AskSnooze)
-	}
-	if err == nil {
-		mark.SourceEvent = event.ID
-		err = graphstore.FromPerson(r.Context(), tx, event.CreatedAt, []graphstore.Tuple{mark})
+		mark.SourceEvent = graphstore.LatestEvent
+		fails := failpoint.Planned(r.Context(), failpoint.AskSnooze)
+		event, err = s.appendEventThen(r.Context(), tx, event, func(b *store.WriteBatch) error {
+			failpoint.Queue(b, fails)
+			return graphstore.QueueFromPerson(b, at, []graphstore.Tuple{mark})
+		})
 	}
 	if err == nil {
 		err = tx.Commit(r.Context())

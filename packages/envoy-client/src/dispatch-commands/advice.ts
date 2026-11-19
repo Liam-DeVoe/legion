@@ -220,7 +220,7 @@ export function renderAdvice(
   // name the document just written: it names those issues, and it is silent for every other
   // document. Absent (an older Dispatch keeps no such record), empty, and anything that is not a
   // list of gates all print no clause, which is the safe direction - a reader told nothing asks
-  // the tree's architect, a reader told a gate that is not there stops working for no reason.
+  // the issue's architect, a reader told a gate that is not there stops working for no reason.
   //
   // A plan's approval comes back through its plan review, and no request for approval restores
   // it: Dispatch refuses one on every plan with 409 PLAN_APPROVED_BY_REVIEW, whoever approved it,
@@ -232,7 +232,7 @@ export function renderAdvice(
   if (superseded !== undefined && (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")) {
     const gates = Array.isArray(superseded.design_gates) ? superseded.design_gates : [];
     const parts = [
-      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since.`,
+      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no ask block in it decided since.`,
     ];
     if (gates.length > 0) {
       const named = gates.map((gate) => `${gate.issue}, step ${gate.step}`).join("; ");
@@ -243,7 +243,7 @@ export function renderAdvice(
     parts.push(
       opts.isPlan === true
         ? `A plan is approved by its plan review, and Dispatch refuses a request for a person's approval of a plan. Once a plan review approves version ${superseded.version}, record it with \`dispatch plan-approve --issue ${key} --version ${superseded.version}\`.`
-        : "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan."
+        : "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan."
     );
     lines.push(parts.join(" "));
   }

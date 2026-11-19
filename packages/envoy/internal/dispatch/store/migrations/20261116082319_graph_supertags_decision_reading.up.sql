@@ -1,6 +1,6 @@
 -- 20261116082319_graph_supertags_decision_reading.up.sql
 --
--- The block schema moves to version 5 (dispatch://INFRA-1150/spec, R1 and R2).
+-- The block schema moves to version 5, for the decision and reading block types.
 -- `pmdoc/schema/blocks.json` adds two typed blocks and one attribute of `ask`, each read and
 -- created from version 5:
 --

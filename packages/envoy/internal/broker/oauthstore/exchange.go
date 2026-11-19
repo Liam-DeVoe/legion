@@ -22,23 +22,27 @@ var (
 	_ oauth2.DPoPBoundSession = (*ExchangeSession)(nil)
 )
 
-// ErrSessionHeld is a session name another principal holds. It is the one refusal BindSession
-// has, and the text names the session so an operator reading it knows which name is taken without
-// having to find the request again.
+// ErrSessionHeld is a session name another principal holds and the claimant may not take: its
+// holder is no account paired with the claimant (SetSessionPairs; a claim reads the claimant's own
+// pairs, so a pair does not chain), or the configuration fixes the name, which no pair takes. It
+// is the one refusal BindSession has, and the text names the session so an operator reading it
+// knows which name is taken without having to find the request again.
 var ErrSessionHeld = errors.New("oauthstore: another identity holds this session name")
 
 // SessionRetention is how long a session name stays its principal's after the last token minted
-// under it expires: 90 days. Until then the name is refused to every other principal; after it,
-// the sweep deletes the row and the name is anyone's to claim.
+// under it expires: 90 days. Until then the name is refused to every other principal but an
+// account paired with its principal (SetSessionPairs), which takes it unless the configuration
+// fixes it, and a pair does not chain: an account paired only with the principal's pair is
+// refused too. After it, the sweep deletes the row and the name is anyone's to claim.
 //
-// It bounds how many names the table keeps, and it is safe to state because a name moves only
-// once its principal has stopped using it for longer than any credential the exchange accepts can
-// sit unused: the longest, a machine login, lapses at most 30 days after its last refresh
-// (BROKER_LAUNCHER_CREDENTIAL_SECONDS' ceiling), a pod's projected token at most a day after it
-// was minted, a workflow run's within the hour. A principal coming back after 90 days comes back
-// through a new login approved by a person, a new pod or a new run, and nothing it held before
-// is still spendable. It is far past how long a Legion role sits idle between assignments, which
-// is hours or days.
+// It bounds how many names the table keeps, and it is safe to state because a name moves to a
+// principal not paired with its own only once its principal has stopped using it for longer than
+// any credential the exchange accepts can sit unused: the longest, a machine login, lapses at
+// most 30 days after its last refresh (BROKER_LAUNCHER_CREDENTIAL_SECONDS' ceiling), a pod's
+// projected token at most a day after it was minted, a workflow run's within the hour. A
+// principal coming back after 90 days comes back through a new login approved by a person, a new
+// pod or a new run, and nothing it held before is still spendable. It is far past how long a
+// Legion role sits idle between assignments, which is hours or days.
 //
 // It is a constant rather than a setting because the bound follows from those ceilings, not from
 // anything a deployment chooses: shorter would hand a name over while its principal could still
@@ -181,10 +185,11 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 
 // BindSession claims the session name for principal until SessionRetention past expires, the
 // moment the token the claim is made for expires, and reports ErrSessionHeld when another
-// principal holds it. fixed says the configuration of the process making the claim fixes the
-// name for principal; the claim then holds the name with no expiry and takes it from whoever
-// holds it, and BindSession answers the principal it took the name from, one whose claim had not
-// run out; it answers "" for a name that was unheld, run out or already principal's.
+// principal holds it and principal may not take it. fixed says the configuration of the process
+// making the claim fixes the name for principal; the claim then holds the name with no expiry and
+// takes it from whoever holds it. BindSession answers the principal it took the name from, one
+// whose claim had not run out, by a fixed claim or a pair's (below); it answers "" for a name
+// that was unheld, run out or already principal's.
 //
 // The name is the principal's from its first claim: the same principal re-claiming it extends
 // the claim and never shortens it, any other principal is refused for as long as the claim
@@ -194,37 +199,124 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 // any session string, and a token naming another principal's session would be believed by
 // everything downstream that believes the token.
 //
+// Beside a fixed claim, the one claim that takes a live name from its holder is that of an
+// account paired with the holder (SetSessionPairs, PairedWith; with none set, none is paired),
+// so a deployment whose pods move to another account keeps each role's session name, which the
+// role's new pod would otherwise be refused. A pair works both ways: pods moved back take the
+// names back the same way. It does not chain: a claim reads the claimant's own pairs, and every
+// pair works both ways, so with A paired with B and B with C, C takes a name B holds and never one
+// A holds. And it never takes a name the configuration fixes: one held with no expiry
+// (ReserveSessions, a fixed claim), nor one Reserved fixes for anyone, though another principal
+// still holds it as an ordinary claim, since such a name goes to its entry at the entry's own
+// claim and to nobody else. A take holds the name for the taker's own claim, SessionRetention past
+// expires, not for what was left of the holder's; only a principal re-claiming its own name keeps
+// the later of the two expiries.
+//
 // The configuration decides here, at the claim, rather than at ReserveSessions: two replicas
 // started with configurations that disagree, as during a rollout that re-points a fixed name,
 // each give the name to the principal their own configuration fixes it for when that principal
 // asks, so the entry the configuration fixes a name for is never refused its own name, and a
 // re-point takes effect at the new entry's first exchange.
 //
-// It is one statement, and the only one that refuses a claim, so two exchanges racing for one
-// name cannot both win: the loser's insert conflicts with the winner's row and its update is
-// refused by the row's own principal and expiry. The holder it answers is read from the
-// statement's snapshot, so a claim that committed while this one waited on its row is not named.
+// It runs in the transaction ctx carries (WithTx, BeginTX), so an enrollment's claim commits or
+// rolls back with the enrollment and an exchange's with the token it is made for, and in one of
+// its own when ctx carries none. It locks the name's row first (select ... for update), inserting
+// the claim when there is none, and then one update writes the claim; that update's where is the
+// only place a claim is refused. The lock is what makes two claims racing for one name end with
+// one holder: the second waits on the row the first holds, and under read committed then reads
+// and decides on the row the first committed, so a claimant not paired with the new holder is
+// refused and one paired with it takes the name in turn; under repeatable read it fails with a
+// serialization error instead and writes nothing. The holder it answers is the one the lock read,
+// which is the holder the deciding update read, so a claim that committed while this one waited
+// is the one named.
 func (s *Store) BindSession(ctx context.Context, session, principal string, fixed bool, expires time.Time) (string, error) {
-	var taken string
-	err := s.db(ctx).QueryRow(ctx, `with prior as (
-			select principal from oauth_session_bindings where session = $1 and expires_at > now()
-		), bound as (
-			insert into oauth_session_bindings (session, principal, expires_at)
-			values ($1, $2, case when $4 then `+heldByConfiguration+` else $3 end)
-			on conflict (session) do update set principal = excluded.principal,
-				expires_at = greatest(oauth_session_bindings.expires_at, excluded.expires_at)
-			where $4 or oauth_session_bindings.principal = excluded.principal or oauth_session_bindings.expires_at <= now()
-			returning true
-		)
-		select coalesce((select principal from prior where principal <> $2), '') from bound`,
-		session, principal, expires.Add(SessionRetention), fixed).Scan(&taken)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", fmt.Errorf("%w: %s", ErrSessionHeld, session)
-	}
+	ctx, err := s.BeginTX(ctx)
 	if err != nil {
 		return "", fmt.Errorf("bind session name: %w", err)
 	}
+	defer s.Rollback(ctx)
+	taken, err := s.bindSession(ctx, session, principal, fixed, expires)
+	if err != nil {
+		return "", err
+	}
+	if err := s.Commit(ctx); err != nil {
+		return "", fmt.Errorf("bind session name: %w", err)
+	}
 	return taken, nil
+}
+
+// bindSession is BindSession's claim, made in the transaction ctx carries.
+func (s *Store) bindSession(ctx context.Context, session, principal string, fixed bool, expires time.Time) (string, error) {
+	db, until := s.db(ctx), expires.Add(SessionRetention)
+	// holder and live are the name's row as its lock read it: the principal holding it, and
+	// whether that hold had not run out.
+	var holder string
+	var live bool
+	for {
+		err := db.QueryRow(ctx, `select principal, expires_at > now() from oauth_session_bindings where session = $1 for update`,
+			session).Scan(&holder, &live)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("bind session name: %w", err)
+		}
+		// No row: this is the name's first claim, unless another claim inserted the row since
+		// the select read, in which case the insert writes nothing and the next pass locks and
+		// reads that claim's row.
+		inserted, err := db.Exec(ctx, `insert into oauth_session_bindings (session, principal, expires_at)
+			values ($1, $2, case when $4 then `+heldByConfiguration+` else $3 end)
+			on conflict (session) do nothing`, session, principal, until, fixed)
+		if err != nil {
+			return "", fmt.Errorf("bind session name: %w", err)
+		}
+		if inserted.RowsAffected() == 1 {
+			return "", nil
+		}
+	}
+	_, reserved := s.Reserved[session]
+	updated, err := db.Exec(ctx, `update oauth_session_bindings set principal = $2,
+			expires_at = case when $4 then `+heldByConfiguration+` when principal = $2 then greatest(expires_at, $3) else $3 end
+		where session = $1 and ($4 or principal = $2 or expires_at <= now()
+			or (principal = any($5::text[]) and expires_at <> `+heldByConfiguration+` and not $6))`,
+		session, principal, until, fixed, s.PairedWith(principal), reserved)
+	if err != nil {
+		return "", fmt.Errorf("bind session name: %w", err)
+	}
+	if updated.RowsAffected() == 0 {
+		return "", fmt.Errorf("%w: %s", ErrSessionHeld, session)
+	}
+	if live && holder != principal {
+		return holder, nil
+	}
+	return "", nil
+}
+
+// SetSessionPairs pairs the two principals of each of pairs for session names, each principal
+// spelled as exchange.AccountPrincipal spells an account ("account:" and the ServiceAccount
+// subject), and replaces whatever pairs were set before; nil or empty pairs nothing. Either
+// principal of a pair takes a session name the other holds (BindSession), so it writes each pair
+// both ways and the set is symmetric by construction. It is what lets an operator move a
+// deployment's pods to another account without each role's new pod being refused its own session
+// name, as cmd/broker reads BROKER_SESSION_ACCOUNT_PAIRS. It must be called before the store
+// serves an enrollment or a token exchange, since the claims read the pairs with no lock.
+func (s *Store) SetSessionPairs(pairs [][2]string) {
+	paired := make(map[string][]string, 2*len(pairs))
+	for _, pair := range pairs {
+		paired[pair[0]] = append(paired[pair[0]], pair[1])
+		paired[pair[1]] = append(paired[pair[1]], pair[0])
+	}
+	s.sessionPairs = paired
+}
+
+// PairedWith is every principal SetSessionPairs paired principal with, the pairs a claim by
+// principal reads (BindSession): principal takes a session name any of them holds, and, since
+// every pair works both ways, each of them takes one principal holds. A claim reads the
+// claimant's own pairs alone, so a pair does not chain: with A paired with B and B with C, C takes
+// a name B holds and never one A holds. It is nil for a principal in no pair, and the slice is the
+// store's own, which the caller must not write to.
+func (s *Store) PairedWith(principal string) []string {
+	return s.sessionPairs[principal]
 }
 
 // ReserveSessions holds every session name reserved maps to a principal (the names the entries of
@@ -276,41 +368,187 @@ func (s *Store) ReserveSessions(ctx context.Context, reserved map[string]string)
 	return left, nil
 }
 
+// ErrPodSessionBoundToAnotherKey is what PodSessionRegistered's refusal (*PodSessionBoundError)
+// is: a live registration of the pod and session that is bound to a key other than the one the
+// exchange's proof presented.
+var ErrPodSessionBoundToAnotherKey = errors.New("the pod's registration for this session is bound to another key")
+
+// PodSessionBoundError is PodSessionRegistered's refusal of a key other than the one the pod's
+// live registration for the session is bound to. It is ErrPodSessionBoundToAnotherKey
+// (errors.Is), and Bound is the thumbprint of the key the registration is bound to, which the
+// exchange logs beside the one the refused trade proved.
+type PodSessionBoundError struct{ Bound string }
+
+func (e *PodSessionBoundError) Error() string {
+	return ErrPodSessionBoundToAnotherKey.Error() + ": " + e.Bound
+}
+
+// Unwrap is ErrPodSessionBoundToAnotherKey.
+func (e *PodSessionBoundError) Unwrap() error { return ErrPodSessionBoundToAnotherKey }
+
+// PodSessionRegistration is one pod's registration for one session name as the broker holds it
+// after a write (RegisterPodSession), and what that write did to it.
+type PodSessionRegistration struct {
+	// When the broker stops honouring it unless it is written again.
+	ExpiresAt time.Time
+	// The thumbprint of the key it is bound to; empty for one bound to the pod alone.
+	JKT string
+	// The generation of the write that last set it; 0 for a registrar that sends none.
+	Generation int64
+	// Whether the write set it: false for a write of a lower generation than the row's, which
+	// changed nothing.
+	Applied bool
+	// The thumbprint of the key the write replaced with another. Empty when the write created the
+	// row, was not applied, named no key, named the key the row held, or bound a row that was
+	// bound to the pod alone.
+	Replaced string
+}
+
 // RegisterPodSession records that the pod podUID may exchange under the session name session,
-// until PodSessionRetention from now, and answers when that registration runs out. A pod uid
-// already registered for the name has its registration extended rather than duplicated, so a
-// registrar that writes the same row each time a pod starts, or renews it while the pod runs,
-// keeps the pod writing and never shortens what another write left.
+// until PodSessionRetention from now, and answers the registration as it now stands, with whether
+// this write set it and the key it replaced. A pod uid already registered for the name has its
+// registration extended rather than duplicated, so a registrar that writes the same row each time
+// a pod starts, or renews it while the pod runs, keeps the pod writing and never shortens what
+// another write left.
 //
 // It is what separates two pods of one listed account, which the exchange reads as one principal:
 // the name belongs to the account, so nothing in the claim on the name can tell them apart, and
 // without this row either pod could mint a token naming the other's session. A registration says
 // only that this deployment started this pod under this name; who the name belongs to stays the
 // claim's answer (BindSession).
-func (s *Store) RegisterPodSession(ctx context.Context, podUID, session string) (time.Time, error) {
-	var expires time.Time
-	err := s.db(ctx).QueryRow(ctx, `insert into oauth_pod_sessions (pod_uid, session, expires_at)
-		values ($1, $2, $3)
-		on conflict (pod_uid, session) do update set expires_at = greatest(oauth_pod_sessions.expires_at, excluded.expires_at)
-		returning expires_at`, podUID, session, time.Now().Add(PodSessionRetention)).Scan(&expires)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("register the pod's session name: %w", err)
+//
+// jkt, when set, binds the registration to the key the session's own role proves, which is what
+// separates the roles of one pod: they read one exchange token and are registered for one pod
+// uid, so only the key tells a role's trade from a sibling's (PodSessionRegistered). A write that
+// names a key replaces the one the row names, and one that names none keeps it, so a write
+// without a thumbprint never removes a binding while the row lives; once the row lapses and the
+// sweep deletes it, a later write stores what it names. Empty is a registration bound to the pod
+// alone, as a session watch registers a session pod's one session, which runs no sibling role.
+//
+// generation is the registrar's own order of its writes for this pod and session: a write sets
+// the expiry, the key and the generation only when its generation is at least the row's, and a
+// write of a lower one changes nothing and is answered the row as it stands. The Legion daemon
+// sends a role's launch generation, so a write its old incarnation sent, which the broker commits
+// only after the new incarnation's, cannot put the old key back for a renewal interval. A
+// registrar that sends none writes 0, as a session watch does, so its writes apply as before
+// against rows that are 0 too. A registrar's generation for one pod and session must never go
+// down: a lower one is not applied until the row has lapsed and the sweep has deleted it.
+//
+// The write is one transaction that holds the row from its read to its update
+// (writePodSession), so the key it answers it replaced is the key the row held when this write
+// changed it, and a write that waits on another reads the row as that one committed it. One
+// insert ... on conflict do update statement keeps the generation rule as well, but the key it
+// can read beside it is the statement's snapshot's, which a concurrent write's commit postdates:
+// two writes changing one row's key at once name the key both started from. The transaction is
+// its own and names read committed rather than taking default_transaction_isolation: two first
+// writes can both read no row, and the second to insert waits on the first's insert and then
+// reads that row in a statement of its own, which only read committed's snapshot per statement
+// sees. Under repeatable read that insert fails to serialize instead (SQLSTATE 40001), as the one
+// statement's update of a row committed after its snapshot does. So a ctx already carrying a
+// transaction, whose level and lifetime the write would not choose, is refused; no caller passes
+// one.
+func (s *Store) RegisterPodSession(ctx context.Context, podUID, session, jkt string, generation int64) (PodSessionRegistration, error) {
+	if _, joined := TxFrom(ctx); joined {
+		return PodSessionRegistration{}, errors.New("register the pod's session name: the write opens a read-committed transaction of its own, and the context already carries one")
 	}
-	return expires, nil
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return PodSessionRegistration{}, fmt.Errorf("register the pod's session name: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err := s.writePodSession(WithTx(ctx, tx), podUID, session, jkt, generation)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		return PodSessionRegistration{}, fmt.Errorf("register the pod's session name: %w", err)
+	}
+	return stored, nil
+}
+
+// writePodSession is RegisterPodSession's write, in the transaction ctx carries. It locks the row
+// and reads it, inserts it when there is none, and otherwise applies the generation rule to the
+// row it locked and updates it. A row another write inserts after the read began is invisible to
+// that read, but the insert waits for that write to commit and then finds the row, which is read
+// again, locked, as that write left it.
+func (s *Store) writePodSession(ctx context.Context, podUID, session, jkt string, generation int64) (PodSessionRegistration, error) {
+	held, found, err := s.lockPodSession(ctx, podUID, session)
+	if err != nil {
+		return PodSessionRegistration{}, err
+	}
+	expires := time.Now().Add(PodSessionRetention)
+	if !found {
+		stored := PodSessionRegistration{Applied: true}
+		err := s.db(ctx).QueryRow(ctx, `insert into oauth_pod_sessions (pod_uid, session, expires_at, jkt, generation)
+			values ($1, $2, $3, nullif($4, ''), $5)
+			on conflict (pod_uid, session) do nothing
+			returning expires_at, coalesce(jkt, ''), generation`,
+			podUID, session, expires, jkt, generation).Scan(&stored.ExpiresAt, &stored.JKT, &stored.Generation)
+		switch {
+		case err == nil:
+			return stored, nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return PodSessionRegistration{}, err
+		}
+		// Another write inserted the row after the read above began.
+		if held, found, err = s.lockPodSession(ctx, podUID, session); err != nil {
+			return PodSessionRegistration{}, err
+		}
+		if !found {
+			return PodSessionRegistration{}, errors.New("the row another write inserted was deleted before this write read it")
+		}
+	}
+	if generation < held.Generation {
+		// The row's generation is higher, so the write changes nothing: answer the row as it is.
+		return held, nil
+	}
+	stored := PodSessionRegistration{Applied: true}
+	err = s.db(ctx).QueryRow(ctx, `update oauth_pod_sessions
+		set expires_at = greatest(expires_at, $3), jkt = coalesce(nullif($4, ''), jkt), generation = $5
+		where pod_uid = $1 and session = $2
+		returning expires_at, coalesce(jkt, ''), generation`,
+		podUID, session, expires, jkt, generation).Scan(&stored.ExpiresAt, &stored.JKT, &stored.Generation)
+	if err != nil {
+		return PodSessionRegistration{}, err
+	}
+	if held.JKT != "" && stored.JKT != held.JKT {
+		stored.Replaced = held.JKT
+	}
+	return stored, nil
+}
+
+// lockPodSession reads the pod's registration for session and locks it until the transaction ctx
+// carries ends, first waiting for any write that holds it and reading the row as that write
+// committed it; found is false when there is none.
+func (s *Store) lockPodSession(ctx context.Context, podUID, session string) (held PodSessionRegistration, found bool, err error) {
+	err = s.db(ctx).QueryRow(ctx, `select expires_at, coalesce(jkt, ''), generation from oauth_pod_sessions
+		where pod_uid = $1 and session = $2 for update`, podUID, session).Scan(&held.ExpiresAt, &held.JKT, &held.Generation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PodSessionRegistration{}, false, nil
+	}
+	return held, err == nil, err
 }
 
 // PodSessionRegistered reports whether a registration still says the pod podUID may exchange
-// under session. It reads through s.db(ctx), so the exchange's own transaction asks it, and it
-// asks the cluster nothing: a pod that no longer runs goes on being registered until its row
-// runs out, exactly as its own token goes on verifying until its expiry.
-func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session string) (bool, error) {
-	var registered bool
-	err := s.db(ctx).QueryRow(ctx, `select exists (select 1 from oauth_pod_sessions
-		where pod_uid = $1 and session = $2 and expires_at > now())`, podUID, session).Scan(&registered)
-	if err != nil {
+// under session with a DPoP proof of the key whose thumbprint is jkt: true when a live row names
+// no key or names this one, false when no live row exists, and false with a *PodSessionBoundError
+// naming the row's key when the live row names another. It reads through s.db(ctx), so the
+// exchange's own transaction asks it, and it asks the cluster nothing: a pod that no longer runs
+// goes on being registered until its row runs out, exactly as its own token goes on verifying
+// until its expiry.
+func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt string) (bool, error) {
+	var bound string
+	err := s.db(ctx).QueryRow(ctx, `select coalesce(jkt, '') from oauth_pod_sessions
+		where pod_uid = $1 and session = $2 and expires_at > now()`, podUID, session).Scan(&bound)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
 		return false, fmt.Errorf("read the pod's session registration: %w", err)
+	case bound != "" && bound != jkt:
+		return false, &PodSessionBoundError{Bound: bound}
 	}
-	return registered, nil
+	return true, nil
 }
 
 // SetTokenExchangeCustomJWT remembers a subject token's jti until exp plus jtiRetentionMargin and

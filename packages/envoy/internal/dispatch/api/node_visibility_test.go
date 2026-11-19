@@ -32,6 +32,8 @@ const privateNodePhrase = "wolfram tangerine"
 // public block, so a chain of three runs through it; and a public comment answers it, so a walk
 // up from a visible child reaches it. A second private node, a comment its author wrote and
 // keeps to herself, is the comment the person page and a comment's own address are read for.
+// Its id starts with the first characters of the id of her public comment
+// (sharedCommentPrefix), so a short id written as those characters is one both comments carry.
 type privateNodeFixture struct {
 	handler  http.Handler
 	database *store.Store
@@ -49,7 +51,7 @@ type privateNodeFixture struct {
 	comment string
 	// privateComment is the comment its author keeps to herself, absent with the private block;
 	// publicComment is a comment she wrote for everyone, in both fixtures, so her person page
-	// answers in both.
+	// answers in both, and the start of its id is the start of the private comment's too.
 	privateComment, publicComment string
 	// broker is the stub secrets broker the server asks about a DPoP-bound token, so a read can
 	// be made under a session the broker verified as well as under a cookie and a token.
@@ -64,6 +66,17 @@ func privateNodeReader() model.Actor { return model.Actor{Kind: "user", ID: "bob
 // privateBlockID is the private block's own id inside its document, which a search hit names as
 // the block it matched (model.SearchResult.BlockID).
 const privateBlockID = "private"
+
+// sharedCommentLength is how many characters of the public comment's id the private comment's id
+// starts with too: eight hex digits, a hyphen and four more, a short id text.IsIDPrefix reads.
+const sharedCommentLength = len("01234567-89ab")
+
+// sharedCommentPrefix is the short id the public comment's id and the private comment's start
+// with, in the fixture seeded with the private node; in the one seeded without it, the public
+// comment alone carries it.
+func (f privateNodeFixture) sharedCommentPrefix() string {
+	return f.publicComment[:sharedCommentLength]
+}
 
 // TestNoReadAnswersANodeTheActingPersonMayNotSee: a node whose `visibility` is `author` is
 // absent from every read a second person makes, and present in each of them for its author.
@@ -366,6 +379,66 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 		t.Errorf("the author's read of the private block at version 1 does not carry the text that version recorded: %s", pinned.Body.String())
 	}
 
+	// 10. The batched read of what references point at. To the second person a reference to
+	// either private node is gone, as a reference nothing addresses is, and a short id that the
+	// private comment alone carries names nothing. A short id that it shares with the public
+	// comment names the public comment alone, and is not ambiguous: the flag would tell the
+	// second person that a node they may not see carries that prefix, though no name of it is
+	// answered. That answer is the one the second person reads where the private nodes were
+	// never written, byte for byte once the short id asked for is substituted. The author reads
+	// both private nodes named, her private comment's own short id resolved to it, and the
+	// shared short id ambiguous between her two comments.
+	commentRef := func(fixture privateNodeFixture, id string) string {
+		return "dispatch://" + fixture.issue + "/comment/" + id
+	}
+	shared := commentRef(held, held.sharedCommentPrefix())
+	// The private comment's id through its fourth group, which carries ten characters of the
+	// uuid drawn for it past the shared short id, so the public comment's id does not start so.
+	privateOnly := commentRef(held, held.privateComment[:len("01234567-89ab-cdef-0123")])
+	targetsQuery := referenceTargetsOf(blockRef, commentRef(held, held.privateComment), privateOnly, shared)
+	batched := asReader("the batched read of the private nodes' references", targetsQuery)
+	if batched.Code != http.StatusOK {
+		t.Fatalf("read the private nodes' references in one batch: status=%d body=%s", batched.Code, batched.Body.String())
+	}
+	members := decodeBody[model.ReferenceTargets](t, batched).Targets
+	if len(members) != 4 {
+		t.Fatalf("the batched read answers %d member for 4 references: %+v", len(members), members)
+	}
+	for _, member := range members[:3] {
+		if !member.Gone || member.Name != "" || member.Ambiguous {
+			t.Errorf("the batched read answers the second person %s as %+v; want it gone with no name, as a reference nothing addresses", member.Ref, member)
+		}
+	}
+	if public := members[3]; public.Ambiguous {
+		t.Errorf("the batched read answers the second person the short id %s, which the private comment shares with the public one, as ambiguous: the flag tells them a node they may not see carries it", public.Ref)
+	} else if public.Gone || public.Name != "A remark its author wrote for everyone." {
+		t.Errorf("the batched read answers the second person the short id %s as %+v; want the public comment's name alone", public.Ref, public)
+	}
+	alone := asReader("the batched read of the shared short id", referenceTargetsOf(shared))
+	absentShared := commentRef(absent, absent.sharedCommentPrefix())
+	never := dispatchRequest(t, absent.handler, http.MethodGet, referenceTargetsOf(absentShared), nil, "bob")
+	if want := bytes.ReplaceAll(never.Body.Bytes(), []byte(absentShared), []byte(shared)); alone.Code != never.Code || !bytes.Equal(alone.Body.Bytes(), want) {
+		t.Errorf("the batched read answers the second person the shared short id as %d\n%s\nand where the private nodes were never written as %d\n%s",
+			alone.Code, alone.Body.Bytes(), never.Code, want)
+	}
+	authoredTargets := dispatchRequest(t, held.handler, http.MethodGet, targetsQuery, nil, "alice")
+	if authoredTargets.Code != http.StatusOK {
+		t.Fatalf("read the private nodes' references in one batch as their author: status=%d body=%s", authoredTargets.Code, authoredTargets.Body.String())
+	}
+	mine := decodeBody[model.ReferenceTargets](t, authoredTargets).Targets
+	if len(mine) != 4 {
+		t.Fatalf("the batched read answers the author %d member for 4 references: %+v", len(mine), mine)
+	}
+	privateRemark := "A private remark about " + privateNodePhrase + "."
+	for index, want := range []string{"A passage about " + privateNodePhrase + ".", privateRemark, privateRemark} {
+		if member := mine[index]; member.Gone || member.Name != want {
+			t.Errorf("the batched read answers the author %s as %+v; want it named %q", member.Ref, member, want)
+		}
+	}
+	if member := mine[3]; !member.Ambiguous || !member.Gone {
+		t.Errorf("the batched read answers the author the short id %s, which both her comments carry, as %+v; want it ambiguous", member.Ref, member)
+	}
+
 	// The predicate sits in the SQL of each read and not in Go.
 	requirePredicatesInSQL(t, reads)
 	if !strings.Contains(searchQuery, refs.VisibilityMarker) {
@@ -504,8 +577,10 @@ func requireOneAuthorRule(t *testing.T) {
 	if written, err := graphstore.VisibilityFor("", bearer); err != nil || written != graphstore.VisibilityProject {
 		t.Errorf("a node written on the shared bearer = %q, %v; want %q", written, err, graphstore.VisibilityProject)
 	}
-	// The going routes call the one rule. Read from the source, because what is under test is
-	// that no second copy of the rule exists to drift from it.
+	// The going routes call the one rule for the asker, and hold a run's owner to graphstore's
+	// test of whether a record names a credential (goingRunIsTheCallers): a run is read by the
+	// credential that asked it, whatever its record proves under the rule. Read from the source,
+	// because what is under test is that no second copy of either exists to drift from it.
 	source, err := os.ReadFile("going_routes.go")
 	if err != nil {
 		t.Fatalf("read the going routes: %v", err)
@@ -513,8 +588,11 @@ func requireOneAuthorRule(t *testing.T) {
 	if strings.Contains(string(source), "func goingActorNamesSomebody") {
 		t.Error("the going routes keep a copy of the author rule")
 	}
-	if calls := strings.Count(string(source), "graphstore.ProvesAuthor("); calls != 2 {
-		t.Errorf("the going routes call the one author rule %d time, want both the asker's test and the run's author's", calls)
+	if calls := strings.Count(string(source), "graphstore.ProvesAuthor("); calls != 1 {
+		t.Errorf("the going routes call the one author rule %d time(s), want the asker's test alone", calls)
+	}
+	if calls := strings.Count(string(source), "graphstore.NamesCredential("); calls != 1 {
+		t.Errorf("the going routes call graphstore.NamesCredential %d time(s), want the run's owner test alone", calls)
 	}
 }
 
@@ -746,9 +824,13 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	if err != nil {
 		t.Fatalf("reserve the node for its author: %v", err)
 	}
-	if err := database.Pool.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&fixture.privateComment); err != nil {
+	// The private comment's id starts as the public comment's does (sharedCommentPrefix), so the
+	// two comments carry that short id, and goes on as a uuid drawn for it.
+	var drawn string
+	if err := database.Pool.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&drawn); err != nil {
 		t.Fatalf("draw the private comment's id: %v", err)
 	}
+	fixture.privateComment = fixture.sharedCommentPrefix() + drawn[sharedCommentLength:]
 	at := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {

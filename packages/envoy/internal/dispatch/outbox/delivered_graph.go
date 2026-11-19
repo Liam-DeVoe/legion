@@ -60,9 +60,9 @@ type resolvedRole struct {
 // The tuple side is R1's: a tuple's far end is an address and never a foreign key, and a tuple
 // may point at an address a later child writes. So the delivered_to tuple of a destination this
 // batch reached is stated whatever node that session has yet. Its near end is the item the event
-// is about (deliveredItem): a comment, or a message, whose node dispatch://INFRA-1152 writes. So
-// an event about either appends one tuple for each session or role it reached, and an event about
-// anything else - an issue, an ask, a document, a project - appends none here.
+// is about (deliveredItem): a comment, or a message, whose node the message's own writer writes.
+// So an event about either appends one tuple for each session or role it reached, and an event
+// about anything else - an issue, an ask, a document, a project - appends none here.
 //
 // That arm is what events.published_destinations projects (R2's session half). The record that
 // adds an event's reached topics to the array (recordBatch) appends, in the same statement, one

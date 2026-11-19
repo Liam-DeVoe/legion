@@ -32,27 +32,41 @@
 --
 -- Each of the two forms has an arm of its own over the tuples, the last two, as the message block
 -- form has: each renders its far end's kind as a constant, never as an expression over the
--- tuple's kind, so a read keyed on the far end binds the leading columns of an index led by the
--- far end and the kind (graph_tuples_inbound's or graph_tuples_as_of_in's), and a read keyed on the
--- near end binds graph_tuples_current's, whose partial predicate the arm's literal kind proves. The
--- tuple arm renders a comment's `replies_to` to a comment or an ask and its `answers` to a comment
--- under their own kinds, which are the tuple's columns, and leaves out the `replies_to` whose far
--- end is a block (its `projects` case names `comment` and `ask` far ends alone).
+-- tuple's kind, so a read keyed on the far end binds the leading columns of graph_tuples_as_of_in,
+-- the store's one read index led by the far end (20261109013400): (block, the address,
+-- replies_to), the reply's kind, comment, a filter of that range, which a read into a block that
+-- also holds a message's replies therefore walks past as well, and each arm sorts what it keeps by
+-- the reply, which that index does not hold it by. A read keyed on the near end binds
+-- graph_tuples_current's, whose partial predicate the arm's literal kind proves. The tuple arm
+-- renders a comment's `replies_to` to a comment or an ask and its `answers` to a comment under
+-- their own kinds, which are the tuple's columns, and leaves out the `replies_to` whose far end is
+-- a block (its `projects` case names `comment` and `ask` far ends alone).
 --
 -- Measured on this pod's PostgreSQL 18.6 over 708,845 tuples across 16 far-end kinds, 20,555 of
--- them a comment's replies to a block, beside the seed at scale 0.01: every keyed read walks
--- graph_tuples in one index search per arm. A read of the edges into one comment (5 rows) reads 4
--- buffers in the tuple arm, its Index Cond (to_kind, to_id), and 3 in each comment block arm,
--- which answers nothing; into one ask (11 rows), 18 buffers in the tuple arm and 3 in each block
--- arm; into one comment block (1 row), 4 buffers in the comment block arm, its Index Cond
--- (block, the address, replies_to, comment), 4 in the ask part arm, whose `like` keeps none of
--- them, and 3 in the tuple arm, which answers nothing; into one ask part (5 rows), 8 buffers in the
--- ask part arm and 8 in the comment block arm, whose `not like` keeps none; into one issue (86
--- rows), 4 buffers in the tuple arm and 3 in each block arm, as the message block arm reads. A read
--- of the edges out of one comment reads graph_tuples_current in one search per arm, binding
--- (from_kind, from_id) in the tuple arm and (comment, the id, replies_to, block) in each block
--- arm. Computing the block form inside the tuple arm instead costs every keyed read that leading
--- column, which 20261116114517 measured at 88 buffers in 23 index searches against 5 in one.
+-- them a comment's replies to a block, beside the seed at scale 0.01, on an earlier set of read
+-- indexes that also held graph_tuples_inbound (to_kind, to_id, kind, from_kind, from_id, seq desc),
+-- which bound the reply's kind too: every keyed read walks graph_tuples in one index search per
+-- arm. A read of the edges into one comment (5 rows) reads 4 buffers in the tuple arm, its Index
+-- Cond (to_kind, to_id), and 3 in each comment block arm, which answers nothing; into one ask (11
+-- rows), 18 buffers in the tuple arm and 3 in each block arm; into one comment block (1 row), 4
+-- buffers in the comment block arm, its Index Cond then (block, the address, replies_to, comment),
+-- 4 in the ask part arm, whose `like` keeps none of them, and 3 in the tuple arm, which answers
+-- nothing; into one ask part (5 rows), 8 buffers in the ask part arm and 8 in the comment block
+-- arm, whose `not like` keeps none; into one issue (86 rows), 4 buffers in the tuple arm and 3 in
+-- each block arm, as the message block arm reads. A read of the edges out of one comment reads
+-- graph_tuples_current in one search per arm, binding (from_kind, from_id) in the tuple arm and
+-- (comment, the id, replies_to, block) in each block arm. Under the four read indexes, over
+-- 700,000 synthetic tuples with 20,000 of a comment's replies to blocks and 20,000 of a message's,
+-- each read still walks graph_tuples in one index search per arm: the comment block arm and the
+-- ask part arm read the four replies to one comment block or ask part in the 7 buffers each read
+-- before and sort them, and each comment arm of a read into a message block now reads its four
+-- message replies in 7 buffers, against 3, to keep none. A read out of one comment binds
+-- (from_kind, from_id) of graph_tuples_as_of_out in the tuple arm, whose predicate proves nothing
+-- of graph_tuples_current's `kind <> 'delivered_to'`, in 5 buffers, as the earlier set's
+-- graph_tuples_current read the same comment, and (comment, the id, replies_to, block) of
+-- graph_tuples_current in each block arm, in 3. Computing the block form inside the tuple arm
+-- instead costs every keyed read that leading column, which 20261116114517 measured at 88 buffers
+-- in 23 index searches against 5 in one.
 --
 -- The arms render `replies_to` and `answers` and nothing else of a comment's pointers. A comment's
 -- `part_of`, its placement under what it answers, is no arm of this view, as a message's `part_of`

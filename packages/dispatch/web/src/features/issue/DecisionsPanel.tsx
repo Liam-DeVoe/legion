@@ -6,6 +6,7 @@ import { api } from "../../api/client";
 import type {
   Artifact,
   Decision,
+  DecisionEntry,
   DecisionLink,
   DisplayTree,
   IssueDecisions,
@@ -27,6 +28,7 @@ import {
 } from "../../theme/classes";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { markdownClassName } from "../refs/markdown-engine";
 import {
   buildIssuePath,
   buildReferencePath,
@@ -35,9 +37,10 @@ import {
 } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { ownTree, ownWords, wordsOf } from "./decision-text";
 
-/** The word that opens the paragraph the server reads as a decision's doubt
- *  (`api/decisions.go`'s `unsurePrefix`). */
+/** The word that opens a paragraph a decision's words give as its doubt, which the card draws
+ *  with the unsure accent. */
 const UNSURE_PREFIX = "Unsure:";
 
 /** One block of a decision's text below its heading, as a view draws one: the block's own text,
@@ -59,43 +62,15 @@ interface DecisionBlock {
   readonly references: string;
   readonly tree: DisplayTree | undefined;
   readonly unsure: boolean;
+  /** Whether the block is drawn as the plain words it holds rather than as markdown: the one
+   *  block of an answer that chose options and wrote nothing (`entryBlocks`). */
+  readonly plain?: true;
 }
 
-/** The words a node holds, its children's included: what `pmdoc.FindQuote` matches a quote
- *  against, since a quote names the document's text and never its markdown. The server writes
- *  one space wherever two text runs are not adjacent in the document's own positions
- *  (`pmdoc.buildFlattenedText`), which is wherever anything was entered, left or passed between
- *  them: the break inside a wrapped line, or the end of one list item and the start of the
- *  next. Two runs are adjacent only as consecutive children of one parent, so everything else
- *  this walk crosses opens the space the server wrote. */
-function wordsOf(node: DisplayTree): string {
-  let words = "";
-  let apart = false;
-  const read = (current: DisplayTree): void => {
-    if (typeof current.text === "string") {
-      words += apart && words !== "" ? ` ${current.text}` : current.text;
-      apart = false;
-      return;
-    }
-    // The node's own open position, and its close once its children are read; a leaf that is no
-    // text, a hard break among them, takes the one position it is.
-    apart = true;
-    const content = current.content;
-    if (Array.isArray(content)) {
-      for (const child of content as DisplayTree[]) {
-        read(child);
-      }
-      apart = true;
-    }
-  };
-  read(node);
-  return words;
-}
-
-/** Whether a block is the decision's doubt, as the server marks one: a paragraph whose markdown
- *  starts `Unsure:` and nothing else (`api/decisions.go`'s `decisionSections`). In the reading
- *  of such a paragraph the word stands in a first child that is plain text, since a mark over
- *  it - strong, a code span, a link - would have written its own characters first. */
+/** Whether a block is the decision's doubt: a paragraph whose markdown starts `Unsure:` and
+ *  nothing else. In the reading of such a paragraph the word stands in a first child that is
+ *  plain text, since a mark over it - strong, a code span, a link - would have written its own
+ *  characters first. */
 function isUnsureBlock(node: DisplayTree): boolean {
   if (node.type !== "paragraph" || !Array.isArray(node.content)) {
     return false;
@@ -155,33 +130,6 @@ function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
     }));
 }
 
-/** One entry of the Decisions read (`entries`). */
-type DecisionEntry = NonNullable<IssueDecisions["entries"]>[number];
-
-/** A decision's text reads as its one `decision` block; what a card draws is that block's own
- *  content, the blocks a decision section of `decisions.md` held. */
-const DECISION_OPENING = /^:{3,}decision(\{[^\n]*\})?\n/;
-const DECISION_CLOSING = /\n:{3,}\n*$/;
-
-/** The markdown of a decision's own content: its words without the lines that open and close its
- *  block. */
-function ownWords(text: string): string {
-  return DECISION_OPENING.test(text)
-    ? text.replace(DECISION_OPENING, "").replace(DECISION_CLOSING, "\n")
-    : text;
-}
-
-/** The tree of a decision's own content: the content of the one `decision` block its text reads
- *  as, at the top level, where a section's blocks stood. */
-function ownTree(tree: DisplayTree | undefined): DisplayTree | undefined {
-  const content = tree?.content;
-  if (tree === undefined || !Array.isArray(content) || content.length !== 1) return tree;
-  const only = (content as DisplayTree[])[0];
-  return only?.type === "decision" && Array.isArray(only.content)
-    ? { ...tree, content: only.content }
-    : tree;
-}
-
 /** A decision's name: the words of the first heading its content holds, else none. */
 function headingOf(tree: DisplayTree | undefined, text: string): string {
   const content = tree?.content;
@@ -194,10 +142,12 @@ function headingOf(tree: DisplayTree | undefined, text: string): string {
 }
 
 /** An entry as the cards below draw a decision: an ask by its question, with the person's answer
- *  as its text, and an agent's decision by its own content. */
+ *  as its text and the server's reading of that answer as its tree (`answer_tree`), or the
+ *  labels they chose where they wrote no words of their own; an agent's decision by its own
+ *  content. */
 function entryDecision(entry: DecisionEntry): Decision {
   const ask = entry.node.kind === "ask";
-  const tree = ask ? undefined : ownTree(entry.text_tree);
+  const tree = ask ? entry.answer_tree : ownTree(entry.text_tree);
   const text = ask ? (entry.answer ?? (entry.selected ?? []).join(", ")) : ownWords(entry.text);
   return {
     asks: ask ? [entry.node.id] : [],
@@ -216,6 +166,19 @@ function entryDecision(entry: DecisionEntry): Decision {
     unsure: entry.uncertainty === "high",
     waiting_review: entry.waiting_review,
   };
+}
+
+/** The blocks of an entry's text below its heading, from the tree the server read that text into
+ *  (`readDecisionBlocks`). An ask answered by the options chosen alone is the one entry whose
+ *  text no stored text holds - the labels chosen, joined - so no reading of the server's covers
+ *  it, and it is drawn as the plain words it is, as the Answers page draws a chosen label,
+ *  rather than parsed. */
+function entryBlocks(entry: DecisionEntry, decision: Decision): readonly DecisionBlock[] {
+  if (entry.node.kind !== "ask" || entry.answer !== null) return readDecisionBlocks(decision);
+  if (decision.text === "") return [];
+  return [
+    { plain: true, references: decision.text, text: decision.text, tree: undefined, unsure: false },
+  ];
 }
 
 /** The in-app path of the node a dispatch:// address names - the node that holds an entry, which
@@ -313,7 +276,7 @@ function ChangeComposer({
   const send = useKeyedWrite({
     inline: true,
     label: () => `Change to ${decision.heading}`,
-    // The decisions document belongs to an issue, and a comment on an issue's document is the
+    // The decision's document belongs to an issue, and a comment on an issue's document is the
     // issue's own write: the artifact route refuses it, naming the issue route (`send-request.ts`
     // follows the same rule for a thread's replies).
     write: (input: { body: string; quote: string }, bounds) =>
@@ -409,7 +372,13 @@ function DecisionCard({
         )}
       </h3>
       {blocks.map((block, index) =>
-        block.unsure ? (
+        block.plain ? (
+          // The labels an answer chose, drawn as a body's paragraph draws its words.
+          // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
+          <div className={`${markdownClassName} max-w-none`} key={index}>
+            <p>{block.text}</p>
+          </div>
+        ) : block.unsure ? (
           <div
             className={`border-l-2 pl-2 ${decisionUnsureAccent}`}
             data-testid="decision-unsure"
@@ -591,7 +560,7 @@ export function DecisionsPanel({
         .filter((entry) => entry.node.kind !== "ask" || entry.answered_at !== null)
         .map((entry) => {
           const decision = entryDecision(entry);
-          return { blocks: readDecisionBlocks(decision), decision, entry };
+          return { blocks: entryBlocks(entry, decision), decision, entry };
         }),
     [view.data?.entries]
   );

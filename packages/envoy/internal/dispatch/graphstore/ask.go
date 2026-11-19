@@ -8,8 +8,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The relations and values an ask's node holds beside its base attributes (dispatch://INFRA-1150
-// R3). The three relations to artifacts are what the asks row's block_artifact_id, anchor and
+// The relations and values an ask's node holds beside its base attributes. The three relations
+// to artifacts are what the asks row's block_artifact_id, anchor and
 // artifact_id say of the ask: the document holding its block or the document its anchor quotes
 // (anchored_to, TupleAnchoredTo), the document an ask on no issue belongs to (owned_by,
 // TupleOwnedBy), and the document holding its block (part_of, TuplePartOf), which is where a copy
@@ -33,6 +33,11 @@ const (
 	// TupleCopiedFrom points from the block node of a copy of an ask, on another document of its
 	// owner, to the ask it was copied from (docs' copiedAskSources). No table projects it.
 	TupleCopiedFrom = "copied_from"
+	// TupleRemovedBy points from an answered ask's node to the person who took its block out of
+	// the document its row names: that person's removal stays, and the decisions step never
+	// writes the block back. It is retracted once an ask block of that ask stands in that document
+	// again. No table projects it.
+	TupleRemovedBy = "removed_by"
 )
 
 // AskPlaces are the addresses (artifacts.ref_key) of the documents an ask's node relates to, each

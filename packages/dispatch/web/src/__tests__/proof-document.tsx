@@ -124,16 +124,16 @@ export function documentSurfaceHandlers({
   ];
 }
 
-let defaultText = "";
+let defaultText: Pick<ArtifactText, "markdown" | "asks"> = { markdown: "" };
 
 /** Each test of the calling file starts with the server's text read answering the text its render
- * seeded. A test's own `spyOn(api, "getArtifactText")` returns this same mock and replaces what it
- * answers. */
+ * seeded, its asks among it. A test's own `spyOn(api, "getArtifactText")` returns this same mock
+ * and replaces what it answers. */
 export function answerTextReadsWithTheSeededText(): void {
   let restore: (() => void) | undefined;
   beforeEach(() => {
     const getArtifactText = spyOn(api, "getArtifactText").mockImplementation(async () => ({
-      markdown: defaultText,
+      ...defaultText,
       token: "sha256:spec-text",
       version: null,
     }));
@@ -246,7 +246,13 @@ export function renderProofDocument({
     document.id,
     "text",
   ]);
-  defaultText = cachedText?.markdown ?? fake.text;
+  defaultText =
+    cachedText?.markdown === undefined
+      ? { markdown: fake.text }
+      : {
+          markdown: cachedText.markdown,
+          ...(cachedText.asks === undefined ? {} : { asks: cachedText.asks }),
+        };
   const view = render(renderDocument());
   return {
     ...fake,
@@ -263,7 +269,9 @@ export function renderProofDocument({
     // has resolved.
     async sync() {
       await waitFor(() => expect(fake.connections).toHaveLength(1));
-      fake.sync();
+      await act(async () => {
+        fake.sync();
+      });
     },
     toolbar,
     toolbarChanges,

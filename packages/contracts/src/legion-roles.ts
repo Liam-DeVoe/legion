@@ -18,15 +18,18 @@ export const LEGION_ROLES = [
 
 export type LegionRole = (typeof LEGION_ROLES)[number];
 
-/** The design-gate steps a Legion deployment can gate, each naming one document of a root issue
- * a person must approve before the tree's work runs: `decisions` names the issue's decisions
- * document, `criteria` its Verification document, `spec` its primary document.
- *
- * One tuple serves both wire contracts that carry these words — the daemon's own API
- * (`legion-api.ts`) and the list it publishes onto its Dispatch project row
- * (`dispatch-api.ts`) — so a step added here reaches both schemas and every message built from
- * them rather than two lists kept in step by hand. */
-export const GATED_STEPS = ["decisions", "criteria", "spec"] as const;
+/** The design-gate steps a Legion deployment gates, each naming one document of a root issue a
+ * person must approve before the tree's work runs: `criteria` its Verification document, `spec`
+ * its primary document. The daemon's own API (`legion-api.ts`) and pi-legion's `register_gate`
+ * take this list. The `decisions` step is gone: decisions are nodes of the spec. */
+export const DESIGN_GATE_STEPS = ["criteria", "spec"] as const;
+
+/** The steps a Dispatch project row's `gated_steps` may hold as this build reads it: the
+ * design-gate steps and `decisions`, which a Dispatch server of the release before still
+ * answers. This build writes `decisions` nowhere.
+ */
+// kept for one release: contract-read-side
+export const GATED_STEPS = ["decisions", ...DESIGN_GATE_STEPS] as const;
 
 export interface ParsedRoleToken {
   project: string;
@@ -49,7 +52,7 @@ export function isLegionRole(role: string): role is LegionRole {
  * The role that works a phase, the TypeScript mirror of the daemon's own table
  * (`packages/daemon/internal/phase/phase.go`, `RoleFor`). A phase no role works —
  * `awaiting_person`, `done`, `held`, `unrecorded` — has none, and so has any value that is not
- * a phase; `admitted` and `accepting` are the tree architect's, and `retro` is the implementer's
+ * a phase; `admitted` and `accepting` are the architect's, and `retro` is the implementer's
  * second turn on the issue it developed. The one reader here, the phase reminder, runs for a
  * phase worker alone, so the architect's two phases never remind anyone.
  */

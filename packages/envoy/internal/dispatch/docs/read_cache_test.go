@@ -688,11 +688,37 @@ func TestColdReadCacheEvictsTheLeastRecentlyReadDocument(t *testing.T) {
 		artifactIDs[index] = createIssueDocument(t, database, index+1, "body\n")
 		seedServiceText(t, service, artifactIDs[index], "body\n")
 	}
-	if _, err := service.Text(context.Background(), artifactIDs[0]); err != nil {
-		t.Fatalf("measure first cache entry: %v", err)
+	// Every document's own weight, measured under the budget the service starts with, which holds
+	// them all. The documents are alike but need not weigh the same byte for byte: a read's weight
+	// counts its stamp's row, which is the xmin of the row it was folded from as text
+	// (documentStampSQL), so one document recorded as the transaction counter crosses a power of
+	// ten weighs a byte more than the one before it. A budget taken from one document alone is a
+	// budget the next one need not fit.
+	weights := make([]int64, len(artifactIDs))
+	for index, artifactID := range artifactIDs {
+		if _, err := service.Text(context.Background(), artifactID); err != nil {
+			t.Fatalf("measure %s: %v", artifactID, err)
+		}
+		entry := cacheEntry(t, service, artifactID)
+		if entry == nil {
+			t.Fatalf("document %d is not cached after the read that measures it", index)
+		}
+		weights[index] = entry.weight
 	}
-	weight := cacheEntry(t, service, artifactIDs[0]).weight
-	service.reads = newDocumentReads(weight * 8)
+	// The budget is eight of the heaviest document the test reads, since the cache stores no entry
+	// heavier than an eighth of it (documentReads.put): so every one of the nine is storable, and
+	// the eight the fill reads leave less than the ninth's weight free, which is what makes the
+	// ninth read evict.
+	fill := int64(0)
+	for _, documentWeight := range weights[:8] {
+		fill += documentWeight
+	}
+	budget := 8 * slices.Max(weights[:9])
+	if free := budget - fill; free >= weights[8] {
+		t.Fatalf("the eight filling documents weigh %d of a budget of %d, leaving %d free, which the ninth (%d) fits into: weights %v",
+			fill, budget, free, weights[8], weights[:9])
+	}
+	service.reads = newDocumentReads(budget)
 	persistence.loads.Store(0)
 	for _, artifactID := range artifactIDs[:8] {
 		if _, err := service.Text(context.Background(), artifactID); err != nil {
@@ -727,7 +753,7 @@ func TestColdReadCacheEvictsTheLeastRecentlyReadDocument(t *testing.T) {
 	if got := persistence.loads.Load(); got != loadsBefore+1 {
 		t.Fatalf("evicted document did not reload: loads = %d, want %d", got, loadsBefore+1)
 	}
-	service.reads = newDocumentReads(weight * 4)
+	service.reads = newDocumentReads(weights[2] * 4)
 	if _, err := service.Text(context.Background(), artifactIDs[2]); err != nil {
 		t.Fatalf("read oversized-for-budget document: %v", err)
 	}
@@ -753,15 +779,16 @@ func (s *historyDecodeCountingStore) Load(ctx context.Context, room string) (per
 	return s.VersionedStore.Load(ctx, room)
 }
 
-// The text an agent reads renders each ask's answer on the tree of the read that served the text
-// (TextWithAnswers): for a document no room holds, the tree the cold read folded, which the read
-// cache keeps beside its rendering for a document holding an ask block. So the first read of a
-// stored state folds its history once and loads it no other way, every later read of that state,
-// with its blocks or without, decodes nothing, and each read carries the answer. The cached read
-// is the document's text even where its stored history no longer decodes - an update below the
-// head, whose row the stamp does not name, replaced by bytes no load decodes - so the read serves
-// the text and its answer still, and fails no room.
-func TestAnAgentsTextReadOfAColdDocumentRendersItsAnswersOnTheCachedRead(t *testing.T) {
+// The text an agent reads takes the server-owned attributes off each ask block, and reads each
+// ask block's answer from the store, on the tree of the read that served the text (TextWithAsks):
+// for a document no room holds, the tree the cold read folded, which the read cache keeps beside
+// its rendering for a document holding an ask block. So the first read of a stored state folds its
+// history once and loads it no other way, every later read of that state, with its blocks or
+// without, decodes nothing, and each read carries the answer in its asks. The cached read is the
+// document's text even where its stored history no longer decodes - an update below the head,
+// whose row the stamp does not name, replaced by bytes no load decodes - so the read serves the
+// text and its answer still, and fails no room.
+func TestAnAgentsTextReadOfAColdDocumentReadsItsAsksOnTheCachedRead(t *testing.T) {
 	database := storetest.Open(t)
 	persistence := &historyDecodeCountingStore{VersionedStore: NewPgVersioned(database)}
 	artifactID := createDocument(t, database, "before")
@@ -783,15 +810,16 @@ func TestAnAgentsTextReadOfAColdDocumentRendersItsAnswersOnTheCachedRead(t *test
 	persistence.folds.Store(0)
 	persistence.loads.Store(0)
 
-	const answered = `#ask-1 urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-11-17T09:00:00Z" selected="[&#x22;Yes&#x22;]"}`
+	const answered = `#ask-1 state="answered" answered_by="alice" answered_at="2026-11-17T09:00:00Z" selected=["Yes"]` + "\n"
 	read := func(what string, withBlocks bool) {
 		t.Helper()
-		markdown, token, blocks, err := service.TextWithAnswers(context.Background(), artifactID, withBlocks)
+		text, err := service.TextWithAsks(context.Background(), artifactID, withBlocks)
 		if err != nil {
-			t.Fatalf("%s: read the text with its answers: %v", what, err)
+			t.Fatalf("%s: read the text with its asks: %v", what, err)
 		}
-		if !strings.Contains(markdown, "Context, edited") || !strings.Contains(markdown, answered) || token == "" || withBlocks != (len(blocks) > 0) {
-			t.Fatalf("%s: the text reads %q with token %q and %d blocks, want the edit and the answer %s", what, markdown, token, len(blocks), answered)
+		requireNoAskServerAttributes(t, artifactID, text.Markdown)
+		if asks := askLines(text.Asks); !strings.Contains(text.Markdown, "Context, edited") || asks != answered || text.Token == "" || withBlocks != (len(text.Blocks) > 0) {
+			t.Fatalf("%s: the text reads %q with token %q, %d blocks and the asks %q, want the edit and the answer %s", what, text.Markdown, text.Token, len(text.Blocks), asks, answered)
 		}
 	}
 	read("the first cold read", false)

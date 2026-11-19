@@ -1222,15 +1222,14 @@ const unanalyzedConversations = 1500
 
 // messageReadsPerMessage bounds the rows the whole backfill reads out of messages for each message
 // it states: the batch reads, each message's walk up and down its thread, the update that marks
-// it, and the other passes' joins through it. Measured at 23 a message over 3,000 messages and 17
-// over 6,000; a plan that reads every unmarked message for each reply read 9,069 a message here.
+// it, and the other passes' joins through it. Measured at 30 a message over 3,000 messages; a plan
+// that reads every unmarked message for each reply read 9,069 a message here.
 const messageReadsPerMessage = 40
 
 // storeReadsPerMessage bounds the rows the whole backfill reads out of graph_tuples for each
 // message it states: the probes of each message's thread walk, of the persons it reaches and of
-// what it states. Measured at 23 a message over 3,000 messages and 27 over 6,000; probes planned on
-// the store's statistics as they stood before the passes grew it read 795 a message here and
-// 3,907 over 6,000.
+// what it states. Measured at 24 a message over 3,000 messages; probes planned on the store's
+// statistics as they stood before the passes grew it read 805 a message here.
 const storeReadsPerMessage = 60
 
 // The backfill reads each message, and the store for each message, a bounded number of times on a
@@ -1247,8 +1246,8 @@ const storeReadsPerMessage = 60
 // backfill starts. The rows read are Postgres's own counters of each table's scans
 // (pg_stat_user_tables, pg_stat_user_indexes), read once the backfill's connections have closed,
 // which is when a backend's counters are flushed: they count what the plans read whatever else the
-// pod runs, where the backfill's wall time moves with the pod's load (28s over 3,000 messages and
-// 67s over 6,000 when measured, 33s and 113s on the statistics taken once).
+// pod runs, where the backfill's wall time moves with the pod's load (18s over 3,000 messages when
+// measured, and 16s on the statistics taken once).
 func TestTheMessagesPassIsLinearOnATableNoAnalyzeHasRead(t *testing.T) {
 	writes := newAddressingWrites(t)
 	ctx := context.Background()

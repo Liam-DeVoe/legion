@@ -44,7 +44,7 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	requireWithdrawn(t, f.handler, issue.Key, plainAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, plainAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice")
 	if reopened.Code != http.StatusOK {
 		t.Fatalf("reopen beside the unloadable notes: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -69,7 +69,7 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 }
 
 // A document the close of its issue left as it was, because its stored history does not load, is
-// rebuilt from its latest version, saved while the issue was open and showing its decision block
+// rebuilt from its latest version, saved while the issue was open and showing its ask block
 // open. The rebuild writes the close's states into the rebuilt document in its own transaction,
 // so once it commits the block reads resolved, as the withdrawn ask's row does, rather than open
 // on a closed issue until a reopen. The reopen then opens the block again with its ask. A block
@@ -93,7 +93,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	awaitIndexedAskBlock(t, f.handler, notes, "rebuilt-decision", "Ship it?")
 	blockAsk := requireBlockAsk(t, f.handler, issue.Key, notes, "rebuilt-decision")
 	open := `#rebuilt-decision urgency="med" multiple="false" state="open"`
-	awaitDocumentText(t, f.handler, notes, "the open decision in the latest version", contains(open), nil)
+	awaitVersionText(t, f.handler, notes, "the open decision in the latest version", contains(open))
 	awaitSettled(t, f.database, notes)
 
 	makeDocumentUnloadable(t, f, notes)
@@ -101,7 +101,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	rebuilt := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+notes+"/rebuild", map[string]any{}, "alice")
 	if rebuilt.Code != http.StatusOK {
@@ -109,13 +109,13 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	}
 	live := liveTree(t, f.documents, notes)
 	if !strings.Contains(live, `#rebuilt-decision urgency="med" multiple="false" state="resolved"`) {
-		t.Fatalf("the rebuilt notes' live tree:\n%s\nwant the withdrawn decision block resolved", live)
+		t.Fatalf("the rebuilt notes' live tree:\n%s\nwant the withdrawn ask block resolved", live)
 	}
 	if strings.Contains(live, open) {
-		t.Fatalf("the rebuilt notes' live tree:\n%s\nshows the withdrawn decision block open on a closed issue", live)
+		t.Fatalf("the rebuilt notes' live tree:\n%s\nshows the withdrawn ask block open on a closed issue", live)
 	}
-	requireLiveText(t, f.handler, notes, `#rebuilt-decision urgency="med" multiple="false" state="resolved"`)
-	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireLiveText(t, f.handler, notes, `#rebuilt-decision state="resolved"`)
+	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -124,12 +124,12 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 		t.Fatalf("ask %s after the reopen = %s %#v, want open with no record", blockAsk, got.State, got.Resolution)
 	}
 	requireLiveTree(t, f.documents, notes, open)
-	requireLiveText(t, f.handler, notes, open)
+	requireLiveText(t, f.handler, notes, `#rebuilt-decision state="open"`)
 }
 
 // Rebuilding a closed issue's document writes the close's final sweep into the rebuilt document as
 // the fleet stands, as the close itself writes it (docs' readIssueAskStateWrites). The document
-// holds a decision block of its own, which the close withdrew, and a copy of the spec's decision,
+// holds an ask block of its own, which the close withdrew, and a copy of the spec's decision,
 // which alice answered. While another build serves, each block of the rebuilt document carries
 // the attributes that build's pages read an ask's state from, each value as the asks row holds it:
 // the withdrawn block its resolved state, and the copy who answered and when, and the ask and
@@ -137,8 +137,8 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 // (docs' answeredCopyWrite); the settlement the rebuild leaves owed writes them, in step with the
 // row. On a fleet of one build every reader reads them from the store, and the rebuilt document
 // holds none of the seven attributes a version can store, live or in the version its settlement
-// writes (dispatch://INFRA-1150 R3), while the text an agent reads still renders both blocks'
-// states from the store.
+// writes, while the asks member of the text an agent reads still holds
+// both blocks' states from the store.
 func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesOnlyWhileAnotherBuildServes(t *testing.T) {
 	for _, twoBuilds := range []bool{false, true} {
 		name := "a fleet of one build"
@@ -174,7 +174,7 @@ func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesOnlyWhileAnotherBu
 			if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 				t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 			}
-			requireWithdrawn(t, f.handler, issue.Key, own, model.Actor{Kind: "user", ID: "alice"})
+			requireWithdrawn(t, f.handler, issue.Key, own, model.Actor{Kind: "user", ID: "alice", Proven: true})
 			if rebuilt := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+notes+"/rebuild", map[string]any{}, "alice"); rebuilt.Code != http.StatusOK {
 				t.Fatalf("rebuild the notes: status=%d body=%s", rebuilt.Code, rebuilt.Body.String())
 			}
@@ -196,8 +196,8 @@ func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesOnlyWhileAnotherBu
 				requireAskAttributesInStep(t, liveTree(t, f.documents, notes), "close-decision", sourceRow, "dispatch://"+issue.Key+"/spec", true)
 			}
 			requireLiveText(t, f.handler, notes,
-				`#rebuilt-decision urgency="med" multiple="false" state="resolved"`,
-				`#close-decision urgency="med" multiple="false" state="answered" answered_by="alice"`,
+				`#rebuilt-decision state="resolved"`,
+				`#close-decision state="answered" answered_by="alice"`,
 			)
 		})
 	}

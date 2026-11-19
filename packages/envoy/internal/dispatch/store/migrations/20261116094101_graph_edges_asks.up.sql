@@ -28,6 +28,10 @@
 -- targets, so block_pointer_targets finds no attribute of a document block under the ask's id and
 -- the types test lists the tie.
 --
+-- The three arms over asks and ask_followers, and the tuple arm's three joins to those rows, stay
+-- for one release: the root's own pull request deletes them.
+-- kept for one release: asks-arms
+--
 -- Each `exists` the tuple arm makes under its `case` ends in `offset 0`, the fence 20261109215947
 -- gives its three: PostgreSQL plans a correlated `exists` of equalities either as a probe per edge
 -- or as a hashed `= any` that reads the whole table once a statement, by its cost estimate alone,
@@ -36,7 +40,7 @@
 --
 -- The arm list re-stated is 20261109215947's, with the three `node_kind is null` tests and the
 -- tuple arm's three new cases added, and it is the list a later migration re-states from. The
--- root's own pull request (dispatch://INFRA-1098) deletes the three old arms and the tuple arm's
+-- root's own pull request deletes the three old arms and the tuple arm's
 -- joins to asks and ask_followers. Re-stating the view holds graph_edges ACCESS EXCLUSIVE for this
 -- migration's short transaction. Nothing here refuses or rewrites a row.
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as

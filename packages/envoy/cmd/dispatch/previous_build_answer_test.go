@@ -56,8 +56,8 @@ const previousBuildSigningKey = "previous-build-answer-signing-key"
 // carries, so the two processes serve two builds as a roll has them (processes.Process.Commit).
 const headBuildStamp = "1150115011501150115011501150115011501150"
 
-// An answer a process of the release before writes reaches the ask node (dispatch://INFRA-1150,
-// the catch-up of ruling E1). The base release serves a database of the run's own alone, as the
+// An answer a process of the release before writes reaches the ask node (the decisions step's
+// catch-up). The base release serves a database of the run's own alone, as the
 // fleet stands before a roll, until it has announced its build; this head, stamped with a commit
 // of its own, then boots beside it and creates an ask, which its writer marks and states on the
 // ask's node. The base release answers that ask through its own answer route, which writes the

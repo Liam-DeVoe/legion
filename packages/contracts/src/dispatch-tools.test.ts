@@ -118,15 +118,15 @@ const ASK_RULE =
 const characterCount = /\d[\d,]*[\s-]*characters?\b/iu;
 
 /**
- * The sentence `BODY_BLOCK_RULE` gives about a decision block in a body, written once in
+ * The sentence `BODY_BLOCK_RULE` gives about an ask block in a body, written once in
  * `dispatch-tools.ts` and carried by every tool that writes one: Dispatch refuses such a body
  * (400 DECISION_BLOCK_IN_BODY), since the card it draws is one nobody can answer where it
  * stands (INFRA-1201).
  */
 const DECISION_BLOCK_RULE =
-  "A body holding a decision block (`:::ask`) is refused however short it is, since nobody can " +
+  "A body holding an ask block (`:::ask`) is refused however short it is, since nobody can " +
   "answer a question put in a comment or a message: ask the question in the issue's own " +
-  "document, as a decision block there, or open an ask with `dispatch ask`.";
+  "document, as an ask block there, or open an ask with `dispatch ask`.";
 
 /** The same rule as the Dispatch skill words it, in `## Asks and ask blocks`. */
 const SKILL_DECISION_BLOCK_RULE =
@@ -200,6 +200,7 @@ const validCalls = {
   dispatch_limits: {},
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
+  dispatch_steps: { issue: "DSP-1" },
   dispatch_inbox: {},
 } as const;
 
@@ -303,6 +304,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_limits",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
+      "dispatch_steps",
       "dispatch_inbox",
     ]);
 
@@ -445,6 +447,7 @@ describe("dispatchToolSpecs", () => {
       "acme/infra",
       "sjawhar/legion",
       "Owner-1/repo.name_2",
+      "mona-cat_octo/arch",
       "a/..b",
     ]) {
       expect(schema.safeParse({ project: "CORE", repo }).success, String(repo)).toBe(true);
@@ -721,6 +724,15 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ issue: "DSP-1", phase: "review", body: "{}" }).success).toBe(false);
   });
 
+  test("dispatch_steps takes one issue and nothing else", () => {
+    const schema = schemaFor("dispatch_steps");
+
+    expect(schema.safeParse({ issue: "DSP-1" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "acme/infra#12" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", task: "default" }).success).toBe(false);
+    expect(schema.safeParse({ issue: 1 }).success).toBe(false);
+  });
+
   test("dispatch_project takes a key and a name and nothing else", () => {
     const schema = schemaFor("dispatch_project");
 
@@ -817,7 +829,7 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", labels: [] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
-      { issue: "DSP-1", assignee: "alice@theorem.dev" },
+      { issue: "DSP-1", assignee: "alice@example.com" },
       { issue: "DSP-1", assignee: null },
       { issue: "DSP-1", external_links: ["https://github.com/owner/repo/pull/7"] },
       { issue: "DSP-1", route: "" },
@@ -1542,7 +1554,7 @@ describe("dispatchToolSpecs", () => {
   // R4 (INFRA-1201): the rule stands where the writer reads it, before the write. The skill a
   // session reads before its first `dispatch` command says it too, in the section the ask blocks
   // are defined in.
-  test("the Dispatch skill says a body holding a decision block is refused", () => {
+  test("the Dispatch skill says a body holding an ask block is refused", () => {
     expect(dispatchSkill(), "skills/dispatch/SKILL.md").toContain(SKILL_DECISION_BLOCK_RULE);
   });
 
@@ -1562,7 +1574,7 @@ describe("dispatchToolSpecs", () => {
 
   test.each(
     BODY_WRITING_TOOLS
-  )("%s says a decision block in its %s is refused, and where the question belongs", (name, field) => {
+  )("%s says an ask block in its %s is refused, and where the question belongs", (name, field) => {
     const fields = specFor(name).arguments(schemaApi) as unknown as Record<
       string,
       { description?: string; unwrap?: () => { description?: string } }

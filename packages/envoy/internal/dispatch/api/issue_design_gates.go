@@ -9,15 +9,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // An issue's design gates are the documents the Legion deployment's gate records on that issue,
-// one per step it gates (design_gates, migration 20261110214252_issue_design_gates): `decisions`
-// the decisions document the gate recorded, `criteria` the Verification document, `spec` the
-// primary document. A project's row says which steps a deployment gates at all
-// (PUT /api/v1/projects/{key}/gated-steps); this says which document each of those steps named
-// on one issue, so Dispatch's `superseded_approval` advice prints a design-gate clause for a
-// document a gate really records and stays quiet about every other document.
+// one per step it gates (design_gates, migration 20261110214252_issue_design_gates): `criteria`
+// the Verification document, `spec` the primary document. A project's row says which steps a
+// deployment gates at all (PUT /api/v1/projects/{key}/gated-steps); this says which document each
+// of those steps named on one issue, so Dispatch's `superseded_approval` advice prints a
+// design-gate clause for a document a gate really records and stays quiet about every other
+// document. A row of the retired `decisions` step, which a daemon of the release before wrote,
+// stays until the root's pull request deletes it, and every read of the rows leaves it out.
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
 // no personal scope — routeScopes names it nowhere (routes_table.go): the daemon presents the
@@ -31,9 +33,9 @@ import (
 // daemon republished what Dispatch already holds.
 
 // issueDesignGate is one step of an issue's gate: the step word and the document that step
-// records. The step is one of model.GatedStepsKnown, which design_gates' own check repeats. The
-// route takes and answers the same shape, since what the daemon publishes is what Dispatch
-// stores.
+// records. The step is one of model.GatedStepsKnown, or the retired `decisions`, which the write
+// admits and drops. The route takes and answers the same shape, since what the daemon publishes is
+// what Dispatch stores.
 type issueDesignGate struct {
 	Step       string `json:"step" enum:"decisions,criteria,spec"`
 	ArtifactID string `json:"artifact_id"`
@@ -59,10 +61,12 @@ type issueDesignGatesInput struct {
 // putIssueDesignGates publishes the documents an issue's design-gate steps record. The daemon
 // sends the issue's whole set, so the transaction deletes the rows the body does not name and
 // upserts the ones it does: the stored set is what was published and nothing older survives
-// beside it. A list naming anything but the three steps is refused before the database's own
+// beside it. A list naming anything but the known steps is refused before the database's own
 // check would raise, a step named twice is refused as the project's own publish refuses it (one
 // record per step is all the gate keeps), and a gate naming no document is refused because the
-// document is the whole of what the row says.
+// document is the whole of what the row says. A gate of the retired `decisions` step, which a
+// daemon of the release before still publishes, is admitted and dropped, so the delete takes
+// that issue's stored row of the step away.
 func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	var input issueDesignGatesInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -83,7 +87,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	}
 	gates := *input.Gates
 	for index, gate := range gates {
-		if !slices.Contains(model.GatedStepsKnown, gate.Step) {
+		if gate.Step != retiredDecisionsStep && !slices.Contains(model.GatedStepsKnown, gate.Step) {
 			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
 				"%q is not a design-gate step: gates names %s", gate.Step, strings.Join(model.GatedStepsKnown, ", ")))
 			return
@@ -99,6 +103,8 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// kept for one release: steps-write-admits
+	gates = slices.DeleteFunc(gates, func(gate issueDesignGate) bool { return gate.Step == retiredDecisionsStep })
 	// The order a reader gets the set back in is model.GatedStepsKnown's, whatever order the
 	// publish named the steps in: the rows are a set keyed by step, so the answer is sorted
 	// where a project's list is stored in the order it was published.
@@ -118,19 +124,26 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue is read in the write's own transaction, under the key-share lock the rows'
-	// foreign key takes anyway, so the refusal and the write decide on the same row. The code is
-	// written here rather than taken from loadIssue, which answers the package's plain
-	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that
-	// does not serve this route at all, and that one answers the router's own
-	// `404 {"code":"NOT_FOUND"}` (routes/router.go), which is the plain code loadIssue would
-	// give here too. The daemon ends a publication on this code alone, so the two must differ:
-	// with loadIssue's code every publication against a Dispatch older than the route would be
-	// dropped as a refusal no retry repairs.
+	// The issue is read in the write's own transaction, under its owner's advisory lock, which
+	// every writer of the issue takes (store.LockOwner): the lock and the read are one batch,
+	// the read is a plain select in the statement after the lock, and the refusal and the write
+	// decide on the same row (INFRA-636: while no earlier build is in the fleet, no row lock of an
+	// owner table, which would give the transaction its id before the reads; beside an earlier
+	// build LockOwnerAndRead also takes the issue's row, as that build's writers do). The lock is
+	// exclusive and held to the commit, so a second publish of the same issue waits for it and the
+	// two replace the set one after the other: the stored set is always one whole set, the set of
+	// the one that finishes last (TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet). The
+	// code is written here rather than taken from loadIssue, which answers the package's plain
+	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that does
+	// not serve this route at all, and that one answers the router's own `404 {"code":"NOT_FOUND"}`
+	// (routes/router.go), which is the plain code loadIssue would give here too. The daemon ends a
+	// publication on this code alone, so the two must differ: with loadIssue's code every
+	// publication against a Dispatch older than the route would be dropped as a refusal no retry
+	// repairs.
 	var issue string
-	if err := tx.QueryRow(r.Context(), `
-		select key from issues where key = $1 for key share
-	`, r.PathValue("key")).Scan(&issue); err != nil {
+	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(r.PathValue("key")), `
+		select key from issues where key = $1
+	`, []any{r.PathValue("key")}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
 			return

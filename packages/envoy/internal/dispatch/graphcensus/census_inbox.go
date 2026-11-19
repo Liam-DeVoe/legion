@@ -296,8 +296,8 @@ func itemProjections() []projection {
 // attemptCensus is one of the two attempt tables as the census reads it: the table as the backfill's
 // attempt pass reads it (attemptTable: its name and the node address of a row over d,
 // graphstore.AttemptKey.ID), the label of a row, the joins its rows need, the prefix of its nodes'
-// addresses, and the facts a row states as graphstore's attemptRow.fill states them, each written
-// kind>to_kind:to_id.
+// addresses, and the facts a row states as graphstore's attemptMoved reads them off the row
+// (attempt_rows and attempt_ends), each written kind>to_kind:to_id.
 type attemptCensus struct {
 	attemptTable
 	label, joins, prefix string
@@ -354,8 +354,9 @@ var (
 // attemptProjection is one attempt table held digest against digest: a row's digest is every fact
 // its row states (attemptCensus.facts), and its node's every fact the node states now - the newest
 // value tuple of each value kind while it asserts, and each owed_to, delivered_to and answered_by it
-// asserts (graphstore's readAttemptFacts) - so a value, a relation or a retraction the store lost
-// or kept past its row reads as a row and a node that disagree.
+// asserts (graphstore's attemptMoved, as its held_values and held_relations read them) - so a
+// value, a relation or a retraction the store lost or kept past its row reads as a row and a node
+// that disagree.
 func attemptProjection(table attemptCensus) projection {
 	values := `'` + strings.Join([]string{graphstore.AttemptNumber, graphstore.AttemptState, graphstore.AttemptEnvelopeID,
 		graphstore.AttemptError, graphstore.AttemptResolveError, graphstore.AttemptDuplicate, graphstore.AttemptClaimedAt,

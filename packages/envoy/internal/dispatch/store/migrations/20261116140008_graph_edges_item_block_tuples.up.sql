@@ -73,8 +73,12 @@
 -- the arm would answer.
 --
 -- Measured on this pod's PostgreSQL 18.6 over the seed at scale 0.01 (130,240 tuples across 14
--- far-end kinds, 60,644 of them out of an item's block), beside 20261116124448's view over the
--- same rows, in shared buffers read by the whole view, this one's against that one's:
+-- far-end kinds, 60,644 of them out of an item's block), on an earlier set of read indexes that
+-- also held graph_tuples_inbound, beside 20261116124448's view over the same rows, in shared
+-- buffers read by the whole view, this one's against that one's (under the four read indexes, over
+-- 700,000 synthetic tuples out of nodes the store does not hold, so that no arm answers a row, the
+-- whole view reads 30 against 24 out of one comment block, 43 against 40 into one comment, 43
+-- against 38 out of one comment and 63 against 55 into one issue):
 --
 --   out of one comment block (2 rows)       47 against 29
 --   into one comment (2 rows)               56 against 30
@@ -91,14 +95,21 @@
 --
 -- With 650,000 tuples added beside the seed that no node holds (780,240 in all, 510,644 out of an
 -- item's block; 1,765 into the issue read, 1,258 of those out of blocks, 756 of them an item's),
--- the read into that issue reads 10,771 buffers against 4,380. The item block arm binds (to_kind,
--- to_id, from_kind) of graph_tuples_inbound in a bitmap scan of 3 index searches, over `kind`, and
--- walks the 1,258 block tuples into the issue once to keep the 756 an item prefix names (1,298
--- buffers; a `like` prefix binds no btree column under the database's ICU collation), 2,857 with
--- its link probes. The same read through one constant arm per item kind read those block tuples
--- three times, 14,875 buffers in all. The tuple arm reads 7,879: the 1,765 tuples into the issue,
--- leaving the 756 out, the block_refs probes of the 502 document blocks' links (1,006), and 5,045
--- in 506 citation probes of tuples no refs row holds, which the view before leaves to no probe.
+-- the read into that issue reads 10,771 buffers against 4,380. Those figures were read on an
+-- earlier set of read indexes that also held graph_tuples_inbound (to_kind, to_id, kind,
+-- from_kind, from_id, seq desc): the item block arm bound (to_kind, to_id, from_kind) of it in a
+-- bitmap scan of 3 index searches, over `kind`, and walked the 1,258 block tuples into the issue
+-- once to keep the 756 an item prefix names (1,298 buffers; a `like` prefix binds no btree column
+-- under the database's ICU collation), 2,857 with its link probes. The same read through one
+-- constant arm per item kind read those block tuples three times, 14,875 buffers in all. The tuple
+-- arm reads 7,879: the 1,765 tuples into the issue, leaving the 756 out, the block_refs probes of
+-- the 502 document blocks' links (1,006), and 5,045 in 506 citation probes of tuples no refs row
+-- holds, which the view before leaves to no probe. Under the four read indexes (20261109013400)
+-- the item block arm binds (to_kind, to_id) of graph_tuples_as_of_in in one index search and
+-- filters `from_kind = 'block'` as well, so it walks every tuple into the node: over 700,000
+-- synthetic tuples, into an issue 5,000 tuples reach, 1,250 of them out of blocks and none an
+-- item's, it reads 170 buffers to keep none, where graph_tuples_inbound's 9 index searches over
+-- the same rows read 145.
 --
 -- refs.TupleKinds, the list the store's arms render and the announcer writes, gains `part_of`, an
 -- item block's placement; `mentions` is there since 20261109215947.

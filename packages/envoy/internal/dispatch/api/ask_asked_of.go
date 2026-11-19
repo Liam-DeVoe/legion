@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Handing an ask on: PUT /api/v1/asks/{id}/asked-of.
@@ -69,9 +71,10 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The locks, in the order the ask writes take them: the owner row, then the ask row. A
-	// closed issue is 409 ISSUE_CLOSED here; a project document is always open, so a document
-	// ask passes.
+	// The owner's lock, which every writer of an ask takes before it reads the ask's state, so
+	// the ask read under it holds still until this transaction ends and needs no row lock of its
+	// own (readAskForTransition). A closed issue is 409 ISSUE_CLOSED here; a project document is
+	// always open, so a document ask passes.
 	unlockedAsk, err := s.loadAsk(r.Context(), tx, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -81,7 +84,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask, err := s.lockAskForTransition(r.Context(), tx, askID)
+	ask, err := s.readAskForTransition(r.Context(), tx, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -90,8 +93,8 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ASK_NOT_OPEN", http.StatusConflict, "only open asks may be handed to another person")
 		return
 	}
-	// Whom the ask waited on before this write, read under the two locks through the expression
-	// every reader of that person shares - so its joins are that expression's own
+	// Whom the ask waited on before this write, read under the owner's lock through the
+	// expression every reader of that person shares - so its joins are that expression's own
 	// (askedOfPersonJoins): the ask's issue, its own document and their project - and the
 	// assignee of its issue beside it (null for a document ask, which has none, and for an issue
 	// nobody holds). The person is scanned into a string: every project names a default
@@ -134,25 +137,24 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	ask.AskedOfAt = &handedOnAt
 
 	payload := model.NewAskEventPayload(ask, model.ReferenceChanges{})
-	// The two people the hand-on moved, as an assignee move names them (issueWriteThreadLogins):
+	// The two people the hand-on moved, as an assignee move names them (api/issue_patch.go):
 	// the Inbox lists an open ask under the person it waits on, so this write takes it out of
 	// one person's list and puts it into the other's, and no other reader's rows move. That is
-	// why the event does not carry the ask's thread logins (events.AskEventPayload): somebody
+	// why the event does not carry the ask's thread logins (events.ThreadLoginsOf): somebody
 	// who replied in the thread has the same rows after this write as before it.
 	payload.ThreadLogins = movedLogins(nil, waitedOn, askedOf)
-	event, err := s.appendEvent(r.Context(), tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
-		"ask.asked_of", actor, payload,
-	))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	// The ask now reaches the person it was handed to, who takes part in its thread, and whoever
 	// its delivery stood to loses it - and their part in the thread, where nothing of their own
-	// holds them there - under this write's event (dispatch://INFRA-1152 R2's move). The ask's
-	// row is held since lockAskForTransition, before the person it waited on was read, so a move
-	// of the project's default waits for this write at that row.
-	if err := inboxwrite.MoveWaiting(r.Context(), tx, inboxwrite.HandedOn(ask.ID, event)); err != nil {
+	// holds them there - under this write's event, in that event's batch right after it
+	// (inboxwrite.QueueMoveWaiting), dated at the hand-on's own moment. The owner's lock is held
+	// since before the person the ask waited on was read, so a move of the project's default
+	// waits for this write.
+	event, err := s.appendEventThen(r.Context(), tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
+		"ask.asked_of", actor, payload,
+	), func(b *store.WriteBatch) error {
+		return inboxwrite.QueueMoveWaiting(b, inboxwrite.HandedOn(ask.ID, handedOnAt, actor), graphstore.LatestEvent)
+	})
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

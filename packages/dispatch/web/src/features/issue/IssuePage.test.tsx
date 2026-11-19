@@ -9,6 +9,7 @@ import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "rea
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -17,6 +18,7 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -1193,6 +1195,61 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   }
 });
 
+// `s` is the Spec's and `t` starts the chord, so the Steps tab takes the next letter of its name.
+test("IssuePage opens the Steps tab with the t e chord", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+
+  try {
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await user.keyboard("t");
+    await user.keyboard("e");
+
+    await screen.findByRole("tab", { name: "Steps", selected: true });
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/steps");
+    await screen.findByText("No step of this issue has run in Legion.");
+    expect(steps).toHaveBeenCalledWith("CORE-1");
+  } finally {
+    view.unmount();
+    steps.mockRestore();
+    restore();
+  }
+});
+
+// The page keeps the Steps tab mounted once shown and hides its panel, so the page tells the tab
+// when it is shown: a Steps tab the reader left reads nothing more, however long the page stays
+// open, and catches up once it is shown again.
+test("IssuePage stops the Steps tab's reads while another tab is shown, and restarts them when Steps is", async () => {
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    const restore = stubIssuePage(issue);
+    const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
+    const view = renderIssuePage("/issues/CORE-1/steps");
+    try {
+      await tick(0);
+      expect(screen.getByRole("tab", { name: "Steps", selected: true })).toBeDefined();
+      expect(steps).toHaveBeenCalledTimes(1);
+
+      await user.click(screen.getByRole("tab", { name: "Activity" }));
+      await tick(0);
+      expect(screen.getByRole("tab", { name: "Activity", selected: true })).toBeDefined();
+      const left = steps.mock.calls.length;
+      await tick(600_000, 1_000);
+      expect(steps).toHaveBeenCalledTimes(left);
+
+      await user.click(screen.getByRole("tab", { name: "Steps" }));
+      await tick(300_000, 1_000);
+      expect(steps).toHaveBeenCalledTimes(left + 7);
+    } finally {
+      view.unmount();
+      steps.mockRestore();
+      restore();
+    }
+  });
+});
+
 test("IssuePage opens the Collaborators tab with the t o chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
@@ -1949,18 +2006,20 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
 
   try {
     expect(await screen.findByText("Waiting on you (1)")).not.toBeNull();
-    queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
-      ...waitingIssue,
-      open_asks: [
-        {
-          ...openIssueAsk,
-          last_reply: {
-            author: { id: "alice", kind: "user" },
-            created_at: "2026-09-11T01:00:00Z",
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...waitingIssue,
+        open_asks: [
+          {
+            ...openIssueAsk,
+            last_reply: {
+              author: { id: "alice", kind: "user" },
+              created_at: "2026-09-11T01:00:00Z",
+            },
+            waiting_on: "agent",
           },
-          waiting_on: "agent",
-        },
-      ],
+        ],
+      });
     });
     expect(await screen.findByText("Waiting on agents (1)")).not.toBeNull();
   } finally {
@@ -2029,7 +2088,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
   });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria", "spec"],
+    gated_steps: ["criteria", "spec"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -2046,12 +2105,12 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria", "spec"]);
+    ).toEqual(["criteria", "spec"]);
     // The primary document keeps today's chip and its review actions, inside its own step.
     expect(within(steps).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(steps).getByRole("button", { name: "Approve" })).not.toBeNull();
-    // The two steps nobody has written say so, rather than borrowing the spec's state.
-    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    // The step nobody has written says so, rather than borrowing the spec's state.
+    expect(within(steps).getAllByText("Not requested").length).toBe(1);
     // The steps take the chip's place when one of them holds the primary document: the row
     // draws one approval area, not both, so it carries one pair of controls.
     expect(
@@ -2075,11 +2134,11 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
       },
     ],
   });
-  // A deployment may gate the decisions and the Verification document and not the spec; the
-  // spec still has an approval to answer, and only the header's own chip can answer it.
+  // A deployment may gate the Verification document and not the spec; the spec still has an
+  // approval to answer, and only the header's own chip can answer it.
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria"],
+    gated_steps: ["criteria"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -2095,9 +2154,9 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria"]);
-    // Neither step holds the primary document, so neither carries its state or its actions.
-    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    ).toEqual(["criteria"]);
+    // The step holds no primary document, so it carries neither its state nor its actions.
+    expect(within(steps).getAllByText("Not requested").length).toBe(1);
     expect(within(steps).queryByRole("button", { name: "Awaiting approval" })).toBeNull();
     // The primary document's own chip stays in the state row, with both of its controls.
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,14 +24,15 @@ import (
 // document defers: one of this many blocks or fewer is indexed by its own write, as every
 // document was.
 //
-// The in-request index costs about 46 µs a block on a two-core pod: refs.IndexBlocks writes two
-// rows a block, one in document_blocks and one in document_block_texts. At the bound itself a
-// write of a list of 1,999 blocks took 234, 239 and 252 ms against 144, 145 and 157 ms for the
-// same list one block longer, which defers - 92 ms for 2,000 blocks - and the same difference at
-// 5,000 blocks is 239 ms, 48 µs a block. The heavy write measured for sjawhar/legion#2519 agrees:
-// its 8,000-item list body is 8,001 blocks and spends 347 ms in IndexDocumentReferences, 43 µs a
-// block, of a request total of 939-1,130 ms against the 1 s that write is held to. A bullet list
-// is one block for the list and one for each item's paragraph; the list item itself is no block.
+// The in-request index costs about 46 µs a block on a two-core pod: refs.BlockIndexing.Queue
+// writes two rows a block, one in document_blocks and one in document_block_texts. At the bound
+// itself a write of a list of 1,999 blocks took 234, 239 and 252 ms against 144, 145 and 157 ms
+// for the same list one block longer, which defers - 92 ms for 2,000 blocks - and the same
+// difference at 5,000 blocks is 239 ms, 48 µs a block. The heavy write measured for
+// sjawhar/legion#2519 agrees: its 8,000-item list body is 8,001 blocks and spends 347 ms in
+// IndexDocumentReferences, 43 µs a block, of a request total of 939-1,130 ms against the 1 s that
+// write is held to. A bullet list is one block for the list and one for each item's paragraph; the
+// list item itself is no block.
 //
 // The budget this holds the in-request index to is a tenth of that 1 s, 100 ms, which is well
 // inside the ±150 ms by which this pod moves the same byte-identical write, so the block index of
@@ -55,20 +57,26 @@ const deferBlockIndexBlocks = 2000
 // in its own request leaves them to the block-index reconciliation (deferBlockIndexBlocks). It
 // refuses a context that was not joined.
 //
-// Its second result is what the block index stated in the node and tuple store, which the
-// caller appends under the event it goes on to record for this version
-// (graphstore.Caused), in this same transaction.
+// The version's time, which dates its new references and blocks, is the transaction's now()
+// (Ledger.Now): every writer of a version in a joined transaction dates it so, by the column's
+// default or explicitly (NextVersion), and its row may not be written yet - its insert can be
+// queued for the write phase like the index's own writes.
+//
+// Its second result is what the block index states in the node and tuple store, the removals a
+// person's own write of this transaction made of answered asks' blocks of the document among it
+// (removalsOf), which the caller appends under the event it goes on to queue for this version,
+// right after that event (graphstore.QueueCaused), in this same write phase.
 func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, errUnjoined
 	}
-	var versionAt time.Time
-	if err := tx.QueryRow(ctx, `select created_at from artifact_versions where artifact_id = $1 and number = $2`,
-		artifactID, version).Scan(&versionAt); err != nil {
-		return model.ReferenceChanges{}, graphstore.Uncaused{}, fmt.Errorf("read version %d of %s: %w", version, artifactID, err)
+	ledger := ledgerFrom(ctx)
+	versionAt, err := ledger.Now(ctx)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	rendered := ledgerFrom(ctx).writtenRendering(artifactID)
+	rendered := ledger.writtenRendering(artifactID)
 	if rendered.tree != nil && rendered.markdown != markdown {
 		slog.Warn("dispatch: a document version left its reference excerpts and blocks to the reconciliation: the tree its transaction wrote does not render as the version's markdown",
 			"artifact", artifactID, "version", version)
@@ -76,14 +84,15 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	}
 	// Above deferBlockIndexBlocks the write indexes this version's references alone: migration
 	// 0122's trigger marked the document owed a block index (document_block_versions.version
-	// null) when the version's row was inserted, and nothing here settles that mark, so the
-	// block-index reconciliation (RunBlockIndexReconciliation) indexes the blocks and the
-	// mentions they hold out of the request. The typed-node pass still runs here, so a decision
-	// is a node, with its ties and their rows, in the transaction that accepts it, whatever the
-	// size of its document (indexDeferredVersion).
-	if blocks := len(rendered.offsets); rendered.tree != nil && blocks > deferBlockIndexBlocks {
+	// null) when the version's row was inserted, indexDeferredVersion adds this build's own mark
+	// (queueDocumentIndexOwed), and nothing here settles either, so the block-index
+	// reconciliation (RunBlockIndexReconciliation) indexes the blocks and the mentions they hold
+	// out of the request. The typed-node pass still runs here, so a decision is a node, with its
+	// ties and their rows, in the transaction that accepts it, whatever the size of its document
+	// (indexDeferredVersion).
+	if held := len(rendered.offsets); rendered.tree != nil && held > deferBlockIndexBlocks {
 		slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
-			"artifact", artifactID, "version", version, "blocks", blocks, "bound", deferBlockIndexBlocks)
+			"artifact", artifactID, "version", version, "blocks", held, "bound", deferBlockIndexBlocks)
 		return s.indexDeferredVersion(ctx, tx, artifactID, version, versionAt, markdown, rendered)
 	}
 	return s.indexDocument(ctx, tx, artifactID, version, versionAt, markdown, rendered, nil)
@@ -91,29 +100,49 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 
 // indexDeferredVersion indexes one document version whose blocks its write leaves to the
 // block-index reconciliation (deferBlockIndexBlocks), written at versionAt, in a transaction
-// holding the document's owner row: its references, as indexUnrenderedVersion indexes them, and
+// holding the document owner's lock: its references, as indexUnrenderedVersion indexes them, and
 // its decisions, readings and ask blocks through the typed-node pass on its own
-// (refs.IndexDecisionNodes), which writes those nodes, their values and their ties' rows from
-// rendered, the tree the write left. The targets those ties moved are counted with the
-// references'. What the pass stated is answered for the caller's event, as the block index's is.
+// (refs.PlanDecisionNodes), which plans those nodes, their values and their ties' rows from
+// rendered, the tree the write left, against what the block index holds (heldBlockIndex), and
+// writes them through write. The targets those ties moved are counted with the references'. What
+// the pass states, the removals a person's own write of this transaction made of answered asks'
+// blocks among it (removalsOf), is answered for the caller's event, as the block index's is. The
+// version takes this build's own index mark first (queueDocumentIndexOwed), as indexDocument's
+// unrendered one does, so a version the release before indexes first during a roll is drained by
+// this build once the roll ends.
 func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	if err := queueDocumentIndexOwed(ctx, tx, artifactID); err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
 	blocks := offsetBlocks(rendered.offsets)
-	facts, err := refs.DecisionFacts(ctx, tx, artifactID, version, blocks, rendered.tree, blockPointers(blocks, rendered.tree),
+	record, err := indexedVersionOf(ctx, tx, artifactID, version)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	facts, err := refs.DecisionFacts(ctx, tx, artifactID, record, blocks, rendered.tree, blockPointers(blocks, rendered.tree),
 		typedSources(ctx, tx, artifactID, rendered.tree, nil))
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	moved, write, err := refs.IndexDecisionNodes(ctx, tx, artifactID, version, versionAt, facts, false)
+	index, err := heldBlockIndex(ctx, tx, artifactID)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
+	decisions, err := refs.PlanDecisionNodes(ctx, tx, index, artifactID, version, versionAt, facts, removalsOf(ctx, artifactID))
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	recordBlockIndex(ctx, tx, artifactID, decisions.Held())
+	if err := write(ctx, tx, decisions.Queue); err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
 	reader := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL)
-	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), moved, nil)
-	return changes, write, err
+	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), decisions.Moved(), nil)
+	return changes, decisions.Stated(), err
 }
 
 // indexDocument indexes one document version, written at versionAt, in its writer's transaction,
-// which holds the document's owner row, from the render the version's markdown came from:
+// which holds the document owner's lock, from the render the version's markdown came from:
 // indexRenderedVersion with rendered's blocks. The blocks are rendered.offsets; GET …/blocks lists
 // one block per offset of the same renderer (renderedBlocks), so both list one set of blocks. A
 // version with no rendering - an upload whose replacement changed nothing, which writes no tree,
@@ -121,10 +150,28 @@ func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactI
 // which indexes no blocks: migration 0122's trigger left the document owed when the version's row
 // was inserted, for the block-index reconciliation, which reads the document itself. settled is
 // the authors a settlement read of the blocks it settles (typedSources), nil for any other write.
+// What it answers for the caller's event carries the removals a person's own write of this
+// transaction made of answered asks' blocks of the document (removalsOf): planned into the index
+// pass's own write where one runs, and queued on their own where none does (queueRemovals).
+//
+// That trigger's mark is the null version, which the release before this one reads and drains
+// too, so during a roll a pod of that release can index this version first and write its rows
+// naming no node. Such a version therefore takes this build's own mark as well, in this same
+// transaction (queueDocumentIndexOwed), which that release neither reads nor clears: this build's
+// reconciliation then indexes the version after it, names every row's node and states what each
+// projects (refs.PlanBlocks). A version whose blocks the write deferred takes it in
+// indexDeferredVersion.
 func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if rendered.tree == nil {
+		if err := queueDocumentIndexOwed(ctx, tx, artifactID); err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
 		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
-		return changes, graphstore.Uncaused{}, err
+		if err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
+		removals, err := queueRemovals(ctx, tx, artifactID)
+		return changes, removals, err
 	}
 	return s.indexRenderedVersion(ctx, tx, artifactID, version, versionAt, markdown, offsetBlocks(rendered.offsets), rendered.tree, settled)
 }
@@ -139,52 +186,54 @@ func offsetBlocks(offsets []pmdoc.BlockOffset) []model.ArtifactBlock {
 }
 
 // indexRenderedVersion indexes one document version, written at versionAt, in a transaction
-// holding the document's owner row: its references, the excerpt of each mention, and its blocks
-// with the links each holds (refs.IndexBlocks), all from one reading of markdown over that
+// holding the document owner's lock: its references, the excerpt of each mention, and its blocks
+// with the links each holds (refs.PlanBlocks), all from one reading of markdown over that
 // transaction (refs.Reader.Mentions), so the document's own edges, its blocks' and their
 // excerpts read the bare keys, `#id`s and short ids it writes alike. blocks index into
 // markdown, the render they came from; tree, when the caller holds it, is the tree markdown
 // was rendered from, and nil otherwise, for which markdown is read back once (versionTree). The
 // event the caller appends names the counted targets the document's references and their
-// excerpts, its blocks and its blocks' links moved (refs.ReplaceDocumentCounted), since a node is
-// counted once for each block citing it.
+// excerpts, its blocks and its blocks' links moved (replaceVersionRefs), since a node is counted
+// once for each block citing it. The reading, the index's plans and the counted targets are
+// worked out where it is called; its writes go through write, in the order the index makes them.
 //
-// The typed-node pass runs beside the block index, over the facts both take (refs.DecisionFacts):
-// the index writes every block's node, part_of and block_refs row, those of the decisions,
-// readings and ask blocks among them, and the pass then writes the typed nodes' values and their
-// authors (refs.IndexDecisionNodes). A pass that lost the revision fence to a newer version
-// writes neither, since what it would state is what that version already stated. settled is the
-// authors a settlement read of the blocks it settles, nil for any other caller (typedSources).
+// The typed-node pass runs beside the block index, over the facts both take (refs.DecisionFacts),
+// in the one plan (refs.PlanBlocks): the index writes every block's node, part_of and block_refs
+// row, those of the decisions, readings and ask blocks among them, and the typed nodes' values and
+// their authors. A plan that lost the revision fence to a newer version writes neither, since what
+// it would state is what that version already stated. settled is the authors a settlement read of
+// the blocks it settles, nil for any other caller (typedSources).
 //
-// Its second result is what the pass states in the node and tuple store, which the caller
-// appends under that same event (graphstore.Caused): the pass writes the block nodes
+// Its second result is what the pass states in the node and tuple store, the removals a person's
+// own write of this transaction made of answered asks' blocks of the document among it
+// (removalsOf, planned into the pass's own write whether or not it won the fence), which the
+// caller appends under that same event (graphstore.QueueCaused): the pass writes the block nodes
 // itself, because the foreign key on the projection rows needs them, and holds its tuples back
 // because on the request path the event does not exist yet.
 func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	located := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL).Mentions(markdown)
 	tree = versionTree(artifactID, markdown, blocks, tree)
 	pointers := blockPointers(blocks, tree)
-	facts, err := refs.DecisionFacts(ctx, tx, artifactID, version, blocks, tree, pointers, typedSources(ctx, tx, artifactID, tree, settled))
+	record, err := indexedVersionOf(ctx, tx, artifactID, version)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	facts, err := refs.DecisionFacts(ctx, tx, artifactID, record, blocks, tree, pointers, typedSources(ctx, tx, artifactID, tree, settled))
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, won, write, err := refs.IndexBlocks(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, pointers, facts)
+	moved, indexBlocks, stated, err := planBlockIndex(ctx, tx, artifactID, record, version, versionAt, markdown, blocks, located, pointers, facts, removalsOf(ctx, artifactID))
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	if won {
-		_, typed, err := refs.IndexDecisionNodes(ctx, tx, artifactID, version, versionAt, facts, true)
-		if err != nil {
-			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
-		}
-		write.Nodes = append(write.Nodes, typed.Nodes...)
-		write.Tuples = append(write.Tuples, typed.Tuples...)
+	if err := write(ctx, tx, indexBlocks); err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located))
-	return changes, write, err
+	return changes, stated, err
 }
 
 // versionTree is the tree a version's markdown was rendered from: tree, when its caller holds it,
@@ -221,7 +270,7 @@ func blockPointers(blocks []model.ArtifactBlock, tree *pmdoc.Node) []refs.Pointe
 }
 
 // indexUnrenderedVersion indexes one document version with no rendering, written at versionAt, in
-// a transaction holding the document's owner row: its references alone. It indexes no blocks and
+// a transaction holding the document owner's lock: its references alone. It indexes no blocks and
 // marks the document's mentions owed an excerpt (refs.ClearExcerpts) for the excerpt
 // reconciliation, which reads the document itself.
 func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string) (model.ReferenceChanges, error) {
@@ -230,10 +279,328 @@ func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifac
 }
 
 // replaceVersionRefs reconciles the document's references, dated versionAt, to the mentions
-// located in its version, stores excerpts on them (nil: marks them owed), and counts the targets
-// moved, which its blocks and their mentions moved, as well (refs.ReplaceDocumentCounted).
+// located in its version, stores excerpts on them (nil: marks them owed, refs.ClearExcerpts), and
+// counts the targets moved, which its blocks and their mentions moved, as well. A document mention
+// shows the block holding it as its excerpt, so a target whose kept edge now stores another block
+// is counted beside the ones whose edges the version inserted or deleted (refs.ExcerptsMoved,
+// worked out here, before the reconciliation and the excerpts are written, in that order, by one
+// write).
 func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, located []text.Located, moved []refs.Target, excerpts map[refs.Target]model.GraphExcerpt) (model.ReferenceChanges, error) {
-	return refs.ReplaceDocumentCounted(ctx, tx, artifactID, version, versionAt, text.Refs(located), moved, excerpts)
+	replacement, err := planReplacement(ctx, tx, "artifact", artifactID, text.Refs(located), &versionAt, nil)
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
+	counted := slices.Concat(replacement.Changed(), moved)
+	writeExcerpts := func(b *store.WriteBatch) { refs.ClearExcerpts(b, artifactID) }
+	if excerpts != nil {
+		recorded, err := refs.ExcerptsMoved(ctx, tx, artifactID, version, replacement.Held(), excerpts)
+		if err != nil {
+			return model.ReferenceChanges{}, err
+		}
+		counted = append(counted, recorded...)
+		writeExcerpts = func(b *store.WriteBatch) { refs.QueueRecordExcerpts(b, artifactID, version, excerpts) }
+	}
+	changes, err := refs.CountedChanges(ctx, tx, counted)
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
+	return changes, write(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		writeExcerpts(b)
+		return nil
+	})
+}
+
+// planBlockIndex plans version's block index of artifactID, its block pointers and its typed
+// nodes included (refs.PlanBlocks, over facts, the typed-node pass's facts read from record), with
+// beside, a write planned for the same event that no index pass of its own carries - the removals
+// of answered asks' blocks a person's own write made (removalsOf) - planned into it. It returns the
+// targets it moves, the cited blocks it changes included (refs.BlockIndexing.Cited), the step that
+// writes it, and what it states in the node and tuple store, held for the event the caller
+// appends for the version (refs.BlockIndexing.Stated). It plans against what the index holds
+// (heldBlockIndex), and records what this one leaves for a later indexing of the same document
+// (recordBlockIndex).
+func planBlockIndex(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID string,
+	record refs.IndexedVersion,
+	version int,
+	versionAt time.Time,
+	markdown string,
+	blocks []model.ArtifactBlock,
+	located []text.Located,
+	pointers []refs.Pointer,
+	facts refs.TypedFacts,
+	beside graphstore.Uncaused,
+) ([]refs.Target, WriteStep, graphstore.Uncaused, error) {
+	index, err := heldBlockIndex(ctx, tx, artifactID)
+	if err != nil {
+		return nil, nil, graphstore.Uncaused{}, err
+	}
+	now, err := transactionNow(ctx, tx)
+	if err != nil {
+		return nil, nil, graphstore.Uncaused{}, err
+	}
+	indexing, err := refs.PlanBlocks(ctx, tx, index, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers, facts, beside)
+	if err != nil {
+		return nil, nil, graphstore.Uncaused{}, err
+	}
+	cited, err := indexing.Cited(ctx, tx)
+	if err != nil {
+		return nil, nil, graphstore.Uncaused{}, err
+	}
+	recordBlockIndex(ctx, tx, artifactID, indexing.Held())
+	return slices.Concat(indexing.Moved(), cited), indexing.Queue, indexing.Stated(), nil
+}
+
+// heldBlockIndex is what artifactID's block index holds as a plan of it reads it: as the
+// transaction's own queued indexing of the document leaves it, when there is one
+// (recordBlockIndex), else as read in tx.
+func heldBlockIndex(ctx context.Context, tx pgx.Tx, artifactID string) (refs.BlockIndex, error) {
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		if index, held := ledger.blockIndexes[artifactID]; held {
+			return index, nil
+		}
+	}
+	return refs.ReadBlockIndex(ctx, tx, artifactID)
+}
+
+// recordBlockIndex records index as what artifactID's block index holds once the plan this
+// transaction has just queued is written, which a later plan of the same document in the
+// transaction reads (heldBlockIndex). Nothing is recorded where no ledger queues tx's writes: the
+// plan's writes then ran at once, and a later read finds them in the table.
+func recordBlockIndex(ctx context.Context, tx pgx.Tx, artifactID string, index refs.BlockIndex) {
+	ledger := queueFor(ctx, tx)
+	if ledger == nil {
+		return
+	}
+	if ledger.blockIndexes == nil {
+		ledger.blockIndexes = make(map[string]refs.BlockIndex)
+	}
+	ledger.blockIndexes[artifactID] = index
+}
+
+// indexedVersionOf is what version's own row says of its block index (refs.IndexedVersion): the
+// document's ref_key, from its address as this transaction leaves it (addressOfDocument), and the
+// version's first author and the document's scope, from the version and the address this
+// transaction queued and has not written where that is the version, which no read of the table
+// answers yet, and else from the stored rows.
+func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version int) (refs.IndexedVersion, error) {
+	address, err := addressOfDocument(ctx, tx, artifactID)
+	if err != nil {
+		return refs.IndexedVersion{}, err
+	}
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		if pending, queued := ledger.latest[artifactID]; queued && pending.version.Number == version {
+			record := refs.IndexedVersion{RefKey: address.RefKey, Issue: address.IssueKey}
+			if len(pending.version.Authors) > 0 {
+				record.Writer = pending.version.Authors[0]
+			}
+			if _, created := pendingArtifact(ctx, artifactID); created {
+				record.Project, record.Parties = graphstore.SessionScope(address.Project, address.Session)
+				return record, nil
+			}
+			stored, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
+			if err != nil {
+				return refs.IndexedVersion{}, err
+			}
+			record.Project, record.Parties = stored.Project, stored.Parties
+			return record, nil
+		}
+	}
+	record, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
+	if err != nil {
+		return refs.IndexedVersion{}, err
+	}
+	record.RefKey = address.RefKey
+	return record, nil
+}
+
+// planReplacement plans the reconciliation of fromKind/fromID's references with found, a new edge
+// dated insertedAt (nil: the transaction's time), against the source's edges as the transaction's
+// own queued reconciliation of it leaves them, when there is one, else as read in tx, and records
+// this one for the next. A comment's, a message's or an ask's is planned with the item's
+// citations (planItemReplace) under scope, the item's node as the calling write queued it
+// (refs.WrittenItem), or nil to read it; a second one of the same item in this transaction is
+// planned against the rows the first leaves, each with the tuples_stored it holds then
+// (refs.Replacement.PlanItemAfter), so it retracts the citations the first stated of the rows it
+// drops and states those of the rows it adds.
+func planReplacement(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, scope *refs.ItemScope) (refs.Replacement, error) {
+	ledger := queueFor(ctx, tx)
+	source := refs.Target{Kind: fromKind, ID: fromID}
+	var replacement, earlier refs.Replacement
+	known := false
+	if ledger != nil {
+		earlier, known = ledger.referenced[source]
+	}
+	var err error
+	switch kind := refs.ItemKind(fromKind); {
+	case kind == refs.ItemAsk || kind == refs.ItemComment || kind == refs.ItemMessage:
+		replacement, err = planItemReplace(ctx, tx, kind, fromID, found, insertedAt, scope, earlier, known)
+	case known:
+		replacement = refs.PlanReplaceFrom(earlier.Held(), fromKind, fromID, found, insertedAt)
+	default:
+		replacement, err = refs.PlanReplace(ctx, tx, fromKind, fromID, found, insertedAt)
+	}
+	if err != nil {
+		return refs.Replacement{}, err
+	}
+	if ledger != nil {
+		if ledger.referenced == nil {
+			ledger.referenced = make(map[refs.Target]refs.Replacement)
+		}
+		ledger.referenced[source] = replacement
+	}
+	return replacement, nil
+}
+
+// planItemReplace plans the reconciliation of item itemID's references with found together with
+// the item's citations (refs.PlanItemReplace), which every writer of an item's refs rows states,
+// so no row is written holding tuples_stored without the tuple it says the store holds. scope is
+// the item's node as the calling write queued it with the item's insert, which no read finds yet
+// (refs.WrittenItem); nil reads it from the store (refs.ReadItemScope). Where this transaction
+// has queued a reconciliation of the item already (known), it is planned against the rows that
+// one leaves, under its scope (refs.Replacement.PlanItemAfter). The rows it inserts and the
+// citations they stand for are dated insertedAt, or where that is nil the transaction's now(), the
+// created_at a new row takes by default.
+func planItemReplace(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID string, found []text.Ref, insertedAt *time.Time, scope *refs.ItemScope, earlier refs.Replacement, known bool) (refs.Replacement, error) {
+	var at time.Time
+	if insertedAt != nil {
+		at = *insertedAt
+	} else {
+		var err error
+		if at, err = transactionNow(ctx, tx); err != nil {
+			return refs.Replacement{}, err
+		}
+	}
+	if known {
+		return earlier.PlanItemAfter(found, at), nil
+	}
+	var itemScope refs.ItemScope
+	if scope != nil {
+		itemScope = *scope
+	} else {
+		var err error
+		if itemScope, err = refs.ReadItemScope(ctx, tx, kind, itemID); err != nil {
+			return refs.Replacement{}, err
+		}
+	}
+	return refs.PlanItemReplace(ctx, tx, itemScope, kind, itemID, found, at)
+}
+
+// planReplaceCounted is the read half of a reconciliation this package writes: it plans the
+// reconciliation of fromKind/fromID's references with found (planReplacement, under scope),
+// resolves the counted targets it and moved move, and returns those with the step that writes it
+// and what it states in the node and tuple store (refs.Replacement.Cited), held for the event of
+// the write, which the caller queues with graphstore.QueueCaused right after that event.
+func planReplaceCounted(
+	ctx context.Context,
+	tx pgx.Tx,
+	fromKind, fromID string,
+	found []text.Ref,
+	insertedAt *time.Time,
+	moved []refs.Target,
+	scope *refs.ItemScope,
+) (model.ReferenceChanges, WriteStep, graphstore.Uncaused, error) {
+	replacement, err := planReplacement(ctx, tx, fromKind, fromID, found, insertedAt, scope)
+	if err != nil {
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
+	}
+	changes, err := refs.CountedChanges(ctx, tx, slices.Concat(replacement.Changed(), moved))
+	if err != nil {
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
+	}
+	return changes, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		return nil
+	}, replacement.Cited(), nil
+}
+
+// planAskPartIndex plans the parts the ask's row holds at `at` - its question, its options and
+// the answer it carries - read through r, the Reader of the write that holds the ask's text,
+// and returns the plan, which writes nothing (refs.PlanAskParts). It plans against what the
+// index holds: as the transaction's own queued writes of the same ask leave it, when there is
+// one, else as read in tx; and it records what this one leaves for a later plan of the same ask.
+// A version write that moves an open approval request and then answers it plans the one ask's
+// parts twice, and the answer takes a revision of its own because it runs against the move's
+// rows rather than the stored ones. scope is the ask's node as the calling write queued it with
+// the ask's insert (refs.WrittenItem), which a read of the index finds no row of yet, so the
+// parts are planned under it, as the stored ask's are under the node the store holds of it; nil
+// for an ask whose row is stored.
+func planAskPartIndex(ctx context.Context, tx pgx.Tx, r *refs.Reader, ask model.Ask, at time.Time, scope *refs.ItemScope) (refs.ItemIndexing, error) {
+	ledger := queueFor(ctx, tx)
+	index, held := refs.ItemIndex{}, false
+	if ledger != nil {
+		index, held = ledger.askParts[ask.ID]
+	}
+	if !held {
+		var err error
+		if index, err = refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID); err != nil {
+			return refs.ItemIndexing{}, fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
+		}
+		if scope != nil {
+			index = index.Scoped(*scope)
+		}
+	}
+	indexing, err := refs.PlanAskParts(index, r, ask, at)
+	if err != nil {
+		return refs.ItemIndexing{}, err
+	}
+	if ledger != nil {
+		if ledger.askParts == nil {
+			ledger.askParts = make(map[string]refs.ItemIndex)
+		}
+		ledger.askParts[ask.ID] = indexing.Held()
+	}
+	return indexing, nil
+}
+
+// planAskPartsCounted is the counted index of an ask's parts as this package makes its writes: it
+// plans them (planAskPartIndex, under scope), resolves the counted targets they move and merges
+// them into beside, what the same write moved elsewhere, and returns those with the step that
+// writes the parts and what the parts state in the node and tuple store - their block nodes, their
+// part_of and their links (refs.ItemIndexing.Stated) - held for the event of the write, which the
+// caller queues with graphstore.QueueCaused right after that event. The step is queued after the
+// statements that leave the row as the plan reads it, since a part row names its ask; the plan
+// itself runs in the read phase, where the counts the event carries are worked out. The parts are
+// read through r, the Reader of the write that holds the ask's text, so a write that reconciles
+// the ask's question as well passes the one reader to both and the database answers it once per
+// kind.
+func planAskPartsCounted(
+	ctx context.Context,
+	tx pgx.Tx,
+	r *refs.Reader,
+	ask model.Ask,
+	at time.Time,
+	beside model.ReferenceChanges,
+	scope *refs.ItemScope,
+) (model.ReferenceChanges, WriteStep, graphstore.Uncaused, error) {
+	indexing, err := planAskPartIndex(ctx, tx, r, ask, at, scope)
+	if err != nil {
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
+	}
+	counted, err := refs.CountedChanges(ctx, tx, indexing.Moved())
+	if err != nil {
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
+	}
+	return refs.MergeChanges(beside, counted), indexing.Queue, indexing.Stated(), nil
+}
+
+// planAskReferences is planReplaceCounted for ask askID, whose references are the ones its
+// question cites, read with the whole grammar through r (refs.Reader.Mentions), under scope, the
+// ask's node as the calling write queued it (nil for a stored ask's). It returns the ask's
+// citations beside the step, held for the write's event.
+func planAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, question string, scope *refs.ItemScope) (model.ReferenceChanges, WriteStep, graphstore.Uncaused, error) {
+	return planReplaceCounted(ctx, tx, "ask", askID, text.Refs(r.Mentions(question)), nil, nil, scope)
+}
+
+// planEditedAskReferences is planAskReferences for an edit of a stored ask's question from
+// previous: it also counts every target the question still cites when the edit moves the head of
+// its text, which each of the ask's edges shows (refs.EditedTargets).
+func planEditedAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, previous, question string) (model.ReferenceChanges, WriteStep, graphstore.Uncaused, error) {
+	found := text.Refs(r.Mentions(question))
+	return planReplaceCounted(ctx, tx, "ask", askID, found, nil, refs.EditedTargets(previous, question, found), nil)
 }
 
 // ExcerptsOwedChannel is the Postgres notification channel every artifact mention left owed an

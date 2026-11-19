@@ -27,6 +27,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	payloads := []OutboxPayload{
 		OrdinaryStatusWrite("testing", "in_progress", ""),
 		OrdinaryStatusWrite("done", "in_progress", "Closed by its architect: no change is needed."),
+		// A workflow move that nothing else on Dispatch explains, here a head that conflicts with its
+		// base, carries its reason to post on the issue before the status (workflow's moveReason).
+		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."),
 		PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusWrite("in_progress", "done"),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
@@ -56,6 +59,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		WorkspaceRemove{Linger: 3},
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}}},
+		RoleHoldersPublish{Issue: "LEGION-208"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
@@ -217,14 +221,21 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 
 // Every kind the outbox stores runs on exactly one lane, and LaneOf names the lane whose kinds
 // list it: a kind on neither lane would be queued and never run, one on both would run twice over.
+// The kinds and the lanes named here are this test's own, the oracle, and the kinds are read from
+// the outbox's own lanes (OutboxLanes): a lane added there with its kinds and not named here fails
+// both the count of lanes and the count of kinds.
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord}
+	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
+	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
+		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
+	}
 	lanes := map[OutboxKind][]OutboxLane{}
-	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
+	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
 			lanes[kind] = append(lanes[kind], lane)
 		}
@@ -259,6 +270,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a status write of no kind", payload: StatusWrite{Status: "testing", ObservedStatus: "in_progress"}, reason: `unknown kind ""`},
 		{name: "a status write of a kind nobody gave a rule", payload: StatusWrite{Kind: "escalation", Status: "testing", ObservedStatus: "in_progress"}, reason: `unknown kind "escalation"`},
 		{name: "empty status", payload: StatusWrite{Kind: OrdinaryStatusRow}, reason: "empty status"},
+		{name: "a reason on a re-assertion", payload: StatusWrite{Kind: ReassertStatusRow, Status: "in_progress", ObservedStatus: "done", Reason: "set back"}, reason: "only a done write or the workflow's own move does"},
+		{name: "a reason on a hand-over", payload: StatusWrite{Kind: HandOverStatusRow, Status: "todo", ObservedStatus: "in_progress", HandOverTree: "LEGION-200", HandOverLinger: 3, Reason: "handed over"}, reason: "only a done write or the workflow's own move does"},
 		{name: "unknown notice", payload: Notice{Kind: "unknown"}, reason: "unknown notice kind"},
 		{name: "a triage notice for an architect", payload: Notice{Kind: TriageNotice}, reason: "unknown notice kind"},
 		{name: "a slot-free notice for an architect", payload: Notice{Kind: SlotFreeNotice}, reason: "unknown notice kind"},
@@ -439,6 +452,45 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 			_, err := DecodeOutboxPayload(tc.row)
 			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("row %d", tc.row.ID)) || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("DecodeOutboxPayload error = %v, want row %d and %q", err, tc.row.ID, tc.reason)
+			}
+		})
+	}
+}
+
+// A design-gates publish the release before queued may carry the `decisions` step, which this
+// release no longer has, and still wait in the outbox when this release boots: the boot queues a
+// fresh set over it only for an issue Dispatch does not show as done (the daemon's
+// queueRecordedGatesPublish). Such a row decodes with that step left out, so the outbox sends the
+// other gates, a set Dispatch takes, rather than retrying for ever a row it cannot decode. A row
+// that named that step alone sends the empty set, which clears the set Dispatch holds.
+func TestAQueuedDesignGatesPublishLeavesTheDecisionsStepOut(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    []DesignGateDocument
+	}{
+		{
+			name: "beside the remaining steps",
+			payload: `{"issue":"LEGION-208","gates":[{"step":"decisions","artifactId":"artifact-decisions"},` +
+				`{"step":"criteria","artifactId":"artifact-criteria"},{"step":"spec","artifactId":"artifact-208"}]}`,
+			want: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}},
+		},
+		{
+			name:    "alone",
+			payload: `{"issue":"LEGION-208","gates":[{"step":"decisions","artifactId":"artifact-decisions"}]}`,
+			want:    []DesignGateDocument{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := OutboxRow{ID: 62, Kind: OutboxKindDesignGatesPublish, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
+			got, err := DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload: %v, want the row decoded with the decisions step left out", err)
+			}
+			publish, ok := got.(DesignGatesPublish)
+			if !ok || publish.Issue != "LEGION-208" || len(publish.Gates) != len(tc.want) ||
+				(len(tc.want) > 0 && !reflect.DeepEqual(publish.Gates, tc.want)) {
+				t.Fatalf("decoded %#v, want the publish of LEGION-208 carrying %#v", got, tc.want)
 			}
 		})
 	}
@@ -857,7 +909,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "child-status", Role: claim.RoleArchitect, Reason: "LEGION-209 is todo; it runs again under LEGION-208"},
 		{Kind: "children-first", Role: claim.RoleArchitect, Reason: "LEGION-208 starts no phase of its own while LEGION-209 is open under it"},
 		{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: "LEGION-209 has waited for its release since 2026-11-08T09:00:00Z"},
-		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: its repository is not one Legion serves"},
+		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: the review App is not installed on acme/gadgets; the daemon said so on the issue. Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again."},
 		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
 			Reason: "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
 			CatchUp: &CatchUp{Generation: 3, Launch: 2,
@@ -867,6 +919,15 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
+			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
+			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
+				UsedBytes: 48 << 30, FreeBytes: 2 << 30, FreedBytes: 1 << 30,
+				StopReason: "nothing left older than the minimum age", RefusedReads: []string{"pid 42"},
+				Sizes: []VolumeSize{{Path: "caches/uv", Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
+					Refused: "caches/uv/.../locked (depth 2)", Refusals: 3}},
+				SizesAt: answered, SizesPartial: true, SizesMissing: []VolumeMissing{{Path: "workspaces/LEGION-209", Reason: "openat: permission denied"}},
+				Faults: []string{"read the volume: panic: runtime error\nmain.go:1"}}},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))

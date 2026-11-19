@@ -20,16 +20,14 @@ import (
 // holding one runs over its decided asks, reaching them through their primary key, and which the
 // boot runs over every decided ask (a null $1).
 //
-// The part_of is held to no index by name. graph_tuples_current leads with the ask's node and is
-// the index the read is written for, but graph_tuples_inbound keys the same node behind its far
-// end, which PostgreSQL 18 reads with a skip scan, and graph_tuples_as_of_out leads with it too.
-// Over this fixture's few tuples the planner's costs for them are close, and which one it takes
-// turns on whether graph_tuples has statistics: with none, as a fresh clone of the template has,
-// it takes graph_tuples_current (8.17 against inbound's 8.19 on the pod's PostgreSQL 18.6), and
-// once the table is analyzed it takes inbound at 6.76, the plan CI's run of this package read. So
-// every read is explained both ways, and what holds the part_of under either is that it reaches
+// The part_of is held to no index by name: what holds it under either plan is that it reaches
 // graph_tuples through an index whose condition keys the ask's node (from_id) and the index's own
-// first key column, and scans no part of the table by sequence (requireTuplesKeyedOnTheAsk).
+// first key column, and scans no part of the table by sequence (requireTuplesKeyedOnTheAsk). The
+// read binds no far end's kind, so only graph_tuples_as_of_out keys it; bound, that kind fit
+// graph_tuples_as_of_in too, keyed on the far end's kind and the tuple's kind alone, which reads
+// every part_of into every document, and once graph_tuples is analyzed the planner took it, so
+// every read is explained both ways: as the fixture's writes leave the table, with no statistics,
+// and analyzed.
 func TestCopiedAskQueriesAvoidSequentialScans(t *testing.T) {
 	service, _ := newTestService(t)
 	ctx := context.Background()
@@ -78,9 +76,11 @@ func TestCopiedAskQueriesAvoidSequentialScans(t *testing.T) {
 		{"the documents an issue's copy sources are part of", sourcesOfIssue, "artifacts", "artifacts_ref_key_key", []any{blocks, document, issueKey}},
 		{"the documents a project's copy sources are part of", sourcesOfProject, "artifacts", "artifacts_ref_key_key", []any{blocks, document, projectKey}},
 		{"what a copied ask asked and decided", copiedAskHistoryQuery, "events", "events_ask_payload_id", []any{[]string{"ask-id"}}},
-		{"a settlement's decided asks", decidedWordingRestore, "asks", "asks_pkey", []any{[]string{document}}},
-		{"a settlement's decided asks' events", decidedWordingRestore, "events", "events_ask_payload_id", []any{[]string{document}}},
-		{"the boot's decided asks' events", decidedWordingRestore, "events", "events_ask_payload_id", []any{[]string(nil)}},
+		// The restoration guards each ask on the answer its plan read, which it is given beside
+		// the ids (decidedWordingRestore).
+		{"a settlement's decided asks", decidedWordingRestore, "asks", "asks_pkey", []any{[]string{document}, []*string{nil}}},
+		{"a settlement's decided asks' events", decidedWordingRestore, "events", "events_ask_payload_id", []any{[]string{document}, []*string{nil}}},
+		{"the boot's decided asks' events", decidedWordingRestore, "events", "events_ask_payload_id", []any{[]string(nil), []*string(nil)}},
 	}
 	// First as the fixture's writes leave graph_tuples, then once it is analyzed, on this test's
 	// own database.

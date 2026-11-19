@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// thisChildsMigrations names every migration dispatch://INFRA-1150 adds, by its .up.sql file in
+// thisChildsMigrations names every migration this change adds, by its .up.sql file in
 // migrations/. A migration of this child joins the list in the commit that adds it: the
 // measurement driver (packages/dispatch/e2e/acceptance/answer-attribute-removal.sh) reads a
 // pg_total_relation_size of every table this test prints from the pull request body, so a
@@ -19,9 +19,9 @@ var thisChildsMigrations = []string{
 	"20261116094059_asks_node_index.up.sql",
 	"20261116094100_ask_followers_node_index.up.sql",
 	"20261116094101_graph_edges_asks.up.sql",
-	"20261116220307_graph_tuples_store_only_index.up.sql",
 	"20261117002006_block_moved_to.up.sql",
 	"20261117002045_artifacts_retired_at.up.sql",
+	"20261117093337_decisions_documents.up.sql",
 }
 
 // TestTheTablesThisChildsMigrationsTouch prints, once each, the tables this child's migrations

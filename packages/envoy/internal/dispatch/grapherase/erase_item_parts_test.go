@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // itemPartsServer is the server the item writes of these tests read their mentions with.
@@ -41,17 +42,62 @@ func writeAsThisBuild(t *testing.T, database *store.Store, what string, write fu
 }
 
 // openAttempt writes the node of the attempt key names before the row insert writes that names
-// it, and what the row then holds, as this release's writers open one (graphstore.AttemptOpened,
-// graphstore.AttemptStated).
+// it, and what the row then holds, in one write phase, as this release's writers open one
+// (graphstore.AttemptOpened, graphstore.QueueAttempted), and answers the node held for its cause.
 func openAttempt(ctx context.Context, tx pgx.Tx, key graphstore.AttemptKey, insert string, args ...any) (graphstore.Uncaused, error) {
-	kind, address, opened, err := graphstore.AttemptOpened(ctx, tx, key, graphstore.AttemptWriter)
+	var at time.Time
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&at); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	kind, address, opened := graphstore.AttemptOpened(key, graphstore.AttemptWriter, at)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := graphstore.QueueNodes(b, opened); err != nil {
+			return err
+		}
+		b.Queue("open the attempt", insert, append(args, kind, address)...)
+		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
+	}); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	return opened, nil
+}
+
+// indexItem indexes the body of comment or message itemID, whose row the calling transaction
+// holds, as this release's item writers index one (api's planItemWrite): its blocks and the
+// mentions each holds (refs.PlanItemIndex), then its own references (refs.PlanItemReplace), from
+// one reading of body, queued as one write phase. It answers what the pass states in the store,
+// held for the cause the caller gives it: the block nodes, each block's part_of and links, and
+// the item's citations.
+func indexItem(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string, at time.Time) (graphstore.Uncaused, error) {
+	index, err := refs.ReadItemIndex(ctx, tx, kind, itemID)
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	if _, err := tx.Exec(ctx, insert, append(args, kind, address)...); err != nil {
+	located := refs.NewReader(ctx, tx, string(kind), itemID, itemPartsServer).Mentions(body)
+	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, at, located, nil)
+	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	return graphstore.AttemptStated(ctx, tx, opened, graphstore.AttemptWriter, key)
+	scope, err := refs.ReadItemScope(ctx, tx, kind, itemID)
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	replacement, err := refs.PlanItemReplace(ctx, tx, scope, kind, itemID, text.Refs(located), at)
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := indexing.Queue(b); err != nil {
+			return err
+		}
+		replacement.Queue(b)
+		return nil
+	}); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	stated := indexing.Stated()
+	stated.Tuples = append(stated.Tuples, replacement.Cited().Tuples...)
+	return stated, nil
 }
 
 // heldOfParts counts what the store holds of the nodes of kind whose ids start prefix, and of the
@@ -79,7 +125,7 @@ func TestTheEraseOfACommentTakesItsAttemptsAndItsBlocks(t *testing.T) {
 	seeded := seedAgreeingStore(t, database)
 	key := graphstore.CommentAttempt(seeded.comment, "session:s1", 1)
 	writeAsThisBuild(t, database, "the comment's blocks and its mention's attempt", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		_, indexed, err := refs.ReplaceCountedItem(ctx, tx, refs.ItemComment, seeded.comment, "A remark on the spec.", itemPartsServer, time.Now().UTC())
+		indexed, err := indexItem(ctx, tx, refs.ItemComment, seeded.comment, "A remark on the spec.", time.Now().UTC())
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
@@ -142,7 +188,7 @@ func TestTheEraseOfAMessageTakesItsRowAndItsParts(t *testing.T) {
 		if err := graphstore.Authored(ctx, tx, graphstore.KindMessage, message, author, at, graphstore.NoEvent); err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, indexed, err := refs.ReplaceCountedItem(ctx, tx, refs.ItemMessage, message, "A message nobody may keep.", itemPartsServer, at)
+		indexed, err := indexItem(ctx, tx, refs.ItemMessage, message, "A message nobody may keep.", at)
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
@@ -213,8 +259,7 @@ func TestTheEraseRefusesABlockAnItemsBlockCites(t *testing.T) {
 		t.Fatalf("write the comment's body: %v", err)
 	}
 	writeAsThisBuild(t, database, "the comment's citing body", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		_, indexed, err := refs.ReplaceCountedItem(ctx, tx, refs.ItemComment, seeded.comment, body, itemPartsServer, time.Now().UTC())
-		return indexed, err
+		return indexItem(ctx, tx, refs.ItemComment, seeded.comment, body, time.Now().UTC())
 	})
 	var links int
 	if err := database.Pool.QueryRow(ctx, `

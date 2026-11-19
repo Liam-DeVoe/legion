@@ -231,6 +231,11 @@ func parseDispatch(value string) (Ref, bool) {
 		if tail == "spec" {
 			return Ref{Kind: "artifact", IssueKey: key, ID: "spec"}, true
 		}
+		// The issue's Decisions page, which reads the issue's decision nodes: the reference names
+		// the issue, as the page's URL does (parseServer).
+		if tail == "decisions" {
+			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
+		}
 		if artifact, ok := strings.CutPrefix(tail, "artifact/"); ok {
 			if slug, ok := parseArtifactSlug(artifact); ok {
 				return Ref{Kind: "artifact", IssueKey: key, ID: slug}, true
@@ -314,7 +319,7 @@ func parseArtifactSlug(value string) (string, bool) {
 // fails every write that indexes it. (A block's node id `<ref_key>#<block id>` holds the
 // document's unbounded ref_key too, so it is hash indexed, never a B-tree key.) Text citing a
 // longer id cites nothing (inBound), and the index makes no node of a block carrying one
-// (refs.IndexBlocks). It decides only which blocks the graph keys: a block whose id is longer is
+// (refs.PlanBlocks). It decides only which blocks the graph keys: a block whose id is longer is
 // written, stored, read and rendered as any other, and a request naming it (ParseRef) finds no
 // node. Its twin is MAX_BLOCK_ID_BYTES in @legion/contracts.
 const MaxBlockIDBytes = 256
@@ -562,10 +567,11 @@ func parseServer(raw string, base *url.URL) (Ref, bool) {
 		// for an anchored comment or ask.
 		case len(parts) == 3 && parts[2] == "spec":
 			return documentPage(Ref{Kind: "artifact", IssueKey: key, ID: "spec"}, query, "v", value)
-		// The Decisions tab, a view of the issue's decisions.md: its page names that document,
-		// whatever its fragment, as the dashboard and the agent client read it.
+		// The Decisions tab reads the issue's decision nodes, so its page names the issue,
+		// whatever its fragment, as `dispatch://KEY/decisions` does (parseDispatch) and as the
+		// dashboard and the agent client read it.
 		case len(parts) == 3 && parts[2] == "decisions":
-			return Ref{Kind: "artifact", IssueKey: key, ID: "decisions-md"}, true
+			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
 		case len(parts) == 4 && parts[2] == "artifacts":
 			slug, err := url.PathUnescape(parts[3])
 			if err != nil || !artifactSlugPattern.MatchString(slug) {

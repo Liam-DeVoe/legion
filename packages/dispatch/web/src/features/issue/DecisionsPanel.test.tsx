@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
@@ -11,16 +12,15 @@ import type {
   Artifact,
   AskRead,
   Comment,
+  DecisionEntry,
   DecisionKeep,
   DecisionLink,
   DisplayTree,
   IssueAskRow,
   IssueDecisions,
 } from "../../api/types";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionsPanel } from "./DecisionsPanel";
-
-type DecisionEntry = NonNullable<IssueDecisions["entries"]>[number];
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const askId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -32,15 +32,15 @@ const artifacts = [
     id: documentId,
     issue_key: "CORE-1",
     kind: "doc",
-    name: "decisions.md",
+    name: "notes.md",
     primary: false,
     project: "",
-    slug: "decisions-md",
+    slug: "notes-md",
   },
 ] as unknown as Artifact[];
 
 /** An entry of the Decisions read: by default an agent's decision under block `block` of
- *  decisions.md, whose node holds it. */
+ *  notes.md, whose node holds it. */
 function entry(
   fields: Partial<DecisionEntry> & Pick<DecisionEntry, "text"> & { block: string }
 ): DecisionEntry {
@@ -57,20 +57,20 @@ function entry(
     declined_note: null,
     document: {
       artifact_id: documentId,
-      block: `CORE-1/decisions-md#${block}`,
+      block: `CORE-1/notes-md#${block}`,
       block_id: block,
-      ref: "dispatch://CORE-1/artifact/decisions-md",
+      ref: "dispatch://CORE-1/artifact/notes-md",
     },
     kept: null,
     kept_by: null,
     kept_text_sum: null,
     kind: "agent",
     multiple: null,
-    node: { id: `CORE-1/decisions-md#${block}`, kind: "block" },
+    node: { id: `CORE-1/notes-md#${block}`, kind: "block" },
     options: null,
     question: null,
     readings: [],
-    ref: `dispatch://CORE-1/artifact/decisions-md#b-${block}`,
+    ref: `dispatch://CORE-1/artifact/notes-md#b-${block}`,
     replaced: false,
     resolution: null,
     selected: null,
@@ -203,7 +203,7 @@ test("the panel sorts the view into its four lists, in order", async () => {
       .getAllByRole("link")
       .map((link) => link.getAttribute("href"));
     expect(shaped).toEqual([
-      "/issues/CORE-1/artifacts/decisions-md#b-store",
+      "/issues/CORE-1/artifacts/notes-md#b-store",
       "/issues/CORE-1/spec#b-p1",
       "/issues/CORE-1/spec#b-p%202",
     ]);
@@ -251,7 +251,7 @@ test("Keep records the decision and moves it from Waiting for your review to You
   }
 });
 
-test("Change opens the comment composer on decisions.md, quoting the decision's first paragraph, and posts it as the issue's comment", async () => {
+test("Change opens the comment composer on notes.md, quoting the decision's first paragraph, and posts it as the issue's comment", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const comment = spyOn(api, "createComment").mockResolvedValue({} as Comment);
@@ -279,6 +279,80 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
   } finally {
     read.mockRestore();
     comment.mockRestore();
+  }
+});
+
+/** The view of one person's decision: an ask bob answered, `fields` its answer. */
+function answeredView(fields: Partial<DecisionEntry>): IssueDecisions {
+  const question = "Name them notices";
+  return {
+    decisions: [],
+    document: null,
+    entries: [
+      entry({
+        answer_state: "answered",
+        answered_at: "2026-11-01T00:00:00Z",
+        answered_by: "bob",
+        block: "name",
+        kind: "person",
+        node: { id: askId, kind: "ask" },
+        question,
+        ref: `dispatch://CORE-1/ask/${askId}`,
+        text: question,
+        ...fields,
+      }),
+    ],
+    open_questions: [],
+  };
+}
+
+/** Counts the markdown parses the page's one engine makes from here on, which every body and
+ *  preview of the panel reaches through (`markdown-engine.ts`, as `stored-text-drawing.test.tsx`
+ *  counts them). Every tree a row seeds is read before this is called, since `displayTree` is a
+ *  parse of that same engine. */
+function countParses() {
+  const engine = loadedEngine();
+  if (engine === undefined) {
+    throw new Error("the Markdown engine did not load");
+  }
+  return spyOn(engine, "parse");
+}
+
+// A person's decision is drawn by their answer, a stored text the server read for display
+// beside it (`answer_tree`), so the tab draws that reading and parses no markdown, as it draws an
+// agent's decision from the reading of its text.
+test("a person's answer is drawn from the reading the server sent with it, parsing nothing", async () => {
+  const answer = "The person chose **the name**.";
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    answeredView({ answer, answer_tree: displayTree(answer), selected: [] })
+  );
+  const parse = countParses();
+  try {
+    renderPanel();
+    const mine = await screen.findByRole("region", { name: "Your decisions" });
+    await waitFor(() => expect(within(mine).getByText("the name").tagName).toBe("STRONG"));
+    expect(parse).not.toHaveBeenCalled();
+  } finally {
+    parse.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// An answer that chose options and wrote nothing holds no stored text: the tab draws the labels
+// chosen as the words they are, as the Answers page draws a chosen label, and parses nothing.
+test("an answer of chosen options alone is drawn as their labels' words, parsing nothing", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    answeredView({ answer: null, selected: ["Notices", "A **bold** name"] })
+  );
+  const parse = countParses();
+  try {
+    renderPanel();
+    const mine = await screen.findByRole("region", { name: "Your decisions" });
+    expect(await within(mine).findByText("Notices, A **bold** name")).toBeDefined();
+    expect(parse).not.toHaveBeenCalled();
+  } finally {
+    parse.mockRestore();
+    read.mockRestore();
   }
 });
 
@@ -491,7 +565,7 @@ test("a block whose tree the engine refuses shows its own text alone", async () 
     waitingView({ text, text_tree: refusedTree(text) })
   );
   // The engine reports every tree it refuses, one report per block drawn.
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });

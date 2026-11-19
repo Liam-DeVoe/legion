@@ -145,7 +145,7 @@ func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.
 // no architect hands them over (HandOverKept). A nil kept enqueues payload as enqueueAt does.
 func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue, tree string, payload record.OutboxPayload,
 	kept *record.KeptDecisions, at time.Time) error {
-	row, err := record.NewOutboxRow(issue, payload, at)
+	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
 		return err
 	}
@@ -265,16 +265,13 @@ func (e *Engine) GatedSteps() []record.DesignStep { return e.cfg.Steps }
 
 // stepRef is the Dispatch reference of the document a design-gate step reviews on issue key: the
 // issue's spec for the spec step, which is the reference every design decision carried before a
-// deployment could gate more than one step, and the slug Dispatch files the document under for
-// the other two. A person's decision is kept and relayed under it (record.ParkedDecision.Ref,
-// the outbox's parkDecision), and the newest decision per reference is the one kept, so two
-// steps of one root must answer to two references or each person's decision would replace the
-// other's.
+// deployment could gate more than one step, and the slug Dispatch files the Verification document
+// under for the criteria step. A person's decision is kept and relayed under it
+// (record.ParkedDecision.Ref, the outbox's parkDecision), and the newest decision per reference is
+// the one kept, so two steps of one root must answer to two references or each person's decision
+// would replace the other's.
 func stepRef(key string, step record.DesignStep) string {
-	switch step {
-	case record.DesignStepDecisions:
-		return "dispatch://" + key + "/artifact/" + dispatch.DecisionsSlug
-	case record.DesignStepCriteria:
+	if step == record.DesignStepCriteria {
 		return "dispatch://" + key + "/artifact/" + dispatch.VerificationSlug
 	}
 	return "dispatch://" + key + "/spec"
