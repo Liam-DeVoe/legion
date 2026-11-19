@@ -99,8 +99,9 @@ jobs:
   # the judgement and says why a comparison of values would be red every night on nothing.
   #
   # It is a job of this file rather than a workflow of its own because GitHub starts a schedule
-  # and a `workflow_dispatch` from the default branch alone, so a workflow that exists only on a
-  # branch can be dispatched by nobody and proved before its merge by nothing
+  # from the default branch alone and offers a `workflow_dispatch` only for a file the default
+  # branch holds, so a workflow that exists only on a branch can be dispatched by nobody and
+  # proved before its merge by nothing
   # (dispatch://INFRA-1621/comment/36392fee-60e8-4dbd-9068-bd8524088d08 records that refusal).
   # This file already stands on main with both triggers, so `gh workflow run
   # dispatch-browser-nightly.yaml --ref <branch>` runs the branch's own copy of this job.
