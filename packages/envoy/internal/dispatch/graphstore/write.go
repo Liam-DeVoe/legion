@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -104,6 +105,17 @@ type Uncaused struct {
 	// sentinel, as PlanUncaused's writer holds all of them for its cause; a follow's or a settle's
 	// node (the arms) is caused only where that write made it.
 	sentinel bool
+	// appended, where Counting set it, counts the tuples the append appends (queueAppend).
+	appended *int64
+}
+
+// Counting answers write with its append counting into appended the tuples it appends once
+// QueueCaused runs: the caller's own and the base attributes its node write stated, each once, and
+// none a repeat key drops. It is for a writer that reports what it stated, as the backfill's
+// object pass does, so the count is the store's own and no caller derives which attributes moved.
+func Counting(write Uncaused, appended *int64) Uncaused {
+	write.appended = appended
+	return write
 }
 
 // UncausedTuple is one fact an Uncaused write holds for its cause. LegacyFromCause marks a fact
@@ -196,7 +208,7 @@ func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) error {
 	}
 	return queueAppend(b, appending{
 		tuples: tuples, nodes: write.Nodes, mark: write.mark, baseAt: write.baseAt,
-		cause: &event, sentinel: write.sentinel, own: tuples,
+		cause: &event, sentinel: write.sentinel, own: tuples, appended: write.appended,
 	})
 }
 
@@ -463,6 +475,8 @@ type appending struct {
 	// own is what the writer states itself, read for a base attribute it states, which the
 	// append does not state twice.
 	own []Tuple
+	// appended, where not nil, counts the tuples the statement appends.
+	appended *int64
 }
 
 // queueAppend queues the one statement that appends a write's tuples and moves its nodes onto
@@ -519,12 +533,12 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 		from unnest(` + tupleArrays(1) + `, $11::bigint[])
 			as tuple(` + tupleWriteColumns + `, major)`
 	if write.mark == 0 && !write.sentinel {
-		b.Queue("append graph tuples", `
+		counted(b.Queue("append graph tuples", `
 			insert into graph_tuples (`+tupleWriteColumns+`)
 			select `+tupleWriteColumns+` from (`+stated+`) appended
 			order by major, minor
 			on conflict do nothing
-		`, params...)
+		`, params...), write.appended)
 		return nil
 	}
 	nodeArgs, err := appendedNodeParams(write)
@@ -536,7 +550,7 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 	markParam := "$" + strconv.Itoa(at+len(nodeArgs))
 	params = append(params, write.mark, baseSlot, write.sentinel)
 	baseParam, sentinelParam := "$"+strconv.Itoa(at+len(nodeArgs)+1), "$"+strconv.Itoa(at+len(nodeArgs)+2)
-	b.Queue("append graph tuples", `
+	counted(b.Queue("append graph tuples", `
 		with written as (
 			select kind, id, visibility, state, project, parties, made_at, made_by, cause, skip, position
 			from unnest(`+arrayList(at, "text", "text", "text", "text", "text", "text", "timestamptz", "jsonb", "bigint", "integer")+`)
@@ -577,8 +591,19 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 		) appended
 		order by major, minor
 		on conflict do nothing
-	`, params...)
+	`, params...), write.appended)
 	return nil
+}
+
+// counted has queued add the rows it inserts to appended, where appended is not nil.
+func counted(queued store.Queued, appended *int64) {
+	if appended == nil {
+		return
+	}
+	queued.Exec(func(tag pgconn.CommandTag) error {
+		*appended += tag.RowsAffected()
+		return nil
+	})
 }
 
 // appendedNodeParams are the ten arrays the append reads a write's nodes through, by position:

@@ -491,30 +491,32 @@ func derefText(value *string) string {
 // this run to paper over. Each node and what it states carry its row's own create event where the
 // read found one (readObjectNodes), and the sentinel otherwise: the batch writes its nodes in
 // ascending id, in runs of consecutive nodes of one cause, each run through graphstore.WriteUncaused
-// and then graphstore.Caused under that cause, and the report counts the tuples those runs stated.
+// and then graphstore.Caused under that cause, and the report counts the tuples the store appended
+// for those runs (graphstore.Counting).
 //
 // The batch was read before this transaction opened, and a removal may commit in between: a node
 // written live then would stand behind no row. So for a kind a writer deletes rows of
-// (objectKind.owners) the transaction first takes the owner row each of its rows stands under
-// (lockObjectOwners): api's removeArtifact takes the document's issue row before it states the
-// node gone and deletes the row, and a removal of a build before this one takes it too and states
-// nothing. Under those rows it reads the stable identity of each row that still stands
+// (objectKind.owners) the transaction first takes the owner lock each of its rows stands under
+// (lockObjectOwners): api's removeArtifact takes the document's issue owner lock before it states
+// the node gone and deletes the row, and a removal of a build before this one takes it too and
+// states nothing. Under those locks it reads the stable identity of each row that still stands
 // (objectKind.rows), and writes only the node of the same row the batch read. A replacement
 // document has another UUID even when its created_at is identical; it is left for the next run,
-// which the report's remaining count names. A removal waiting for this batch removes a row whose node is
-// live, and this build's removal then states that node gone. The owner rows come first and the
-// nodes after them, the order every writer of these nodes takes (a document's create, its removal,
-// the erase). A kind no writer deletes a row of takes no lock and is read again the same way.
+// which the report's remaining count names. A removal waiting for this batch removes a row whose
+// node is live, and this build's removal then states that node gone. The owner locks come first
+// and the nodes after them, the order every writer of these nodes takes (a document's create, its
+// removal, the erase). A kind no writer deletes a row of takes no lock and is read again the same
+// way.
 //
 // Under those locks it reads the nodes the store holds of the batch (heldNodes). One that is not
 // gone, its row's own (ownLiveStatement, for a document a removal can take; any such one for the
 // rest, whose address no later row takes) and naming a project or parties was written meanwhile, by
 // another run of the backfill that took the owner rows first, and is left as it is; one that is
 // not gone and its row's own but names neither is written again, which states its project or
-// parties alone. A document whose node is not gone but not its
-// row's own is one a build before this one removed and made again at the address: its node is
-// first stated gone, by the backfill, and then live, under the row's own event, as this build's
-// create states it (api's storeArtifact). A node the store holds is dated one microsecond past
+// parties alone. A document whose node is not gone but not its row's own is one a build before
+// this one removed and made again at the address: its node is stated gone, by the backfill, and
+// then live, under the row's own event, as this build's create states it (api's queueNewArtifact),
+// both as the run's own state tuples (stateTuple). A node the store holds is dated one microsecond past
 // the newest statement it holds about it where the row's created_at is no later - a row a build
 // before this one dated at its transaction's start can predate a removal it waited behind - so a
 // read of the node as of a time reads the statements in the order the store appended them.
@@ -577,27 +579,26 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				end++
 			}
 			run := write[start:end]
-			var gone []graphstore.Node
+			// A node a writer left standing for an earlier row is stated gone and then live by
+			// the run's own tuples, both under its cause: one node write of the node in this
+			// transaction leaves one mark on its row (graphstore's nodeMark), so a second write of
+			// it would lose the first's statement, and the node write then states no state of its
+			// own beside them.
+			var stated []graphstore.Tuple
 			for _, node := range run {
 				if statement, ok := taken[node.ID]; ok {
-					gone = append(gone, statement)
+					stated = append(stated, stateTuple(statement), stateTuple(node))
 				}
 			}
-			var stated graphstore.Uncaused
-			if len(gone) > 0 {
-				if stated, err = graphstore.WriteUncaused(ctx, tx, gone, nil); err != nil {
-					return err
-				}
-			}
-			made, err := graphstore.WriteUncaused(ctx, tx, run, nil)
+			made, err := graphstore.WriteUncaused(ctx, tx, run, stated)
 			if err != nil {
 				return err
 			}
-			made.Tuples = append(stated.Tuples, made.Tuples...)
-			written.Tuples += int64(len(made.Tuples))
-			if err := graphstore.Caused(ctx, tx, made, run[0].SourceEvent); err != nil {
+			var appended int64
+			if err := graphstore.Caused(ctx, tx, graphstore.Counting(made, &appended), run[0].SourceEvent); err != nil {
 				return err
 			}
+			written.Tuples += appended
 			start = end
 		}
 		return nil
@@ -605,6 +606,16 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		return KindBackfill{}, fmt.Errorf("write a batch of %s nodes: %w", kind.kind, err)
 	}
 	return written, nil
+}
+
+// stateTuple is node's state as a tuple of its own, dated and written as the node is, for a write
+// that states a node's state itself rather than through its node write (graphstore.PlanUncaused's
+// stated tuples), which then states no state of that node beside it.
+func stateTuple(node graphstore.Node) graphstore.Tuple {
+	return graphstore.Tuple{
+		FromKind: node.Kind, FromID: node.ID, Kind: graphstore.AttributeState,
+		ToKind: graphstore.KindValue, ToID: node.State, At: node.MadeAt, Who: node.MadeBy, Asserted: true,
+	}
 }
 
 // storedNode is what the store holds of one node of a batch: whether it is present, at any state
