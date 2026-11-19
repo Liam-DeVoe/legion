@@ -2,6 +2,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ArtifactUploadResponse } from "../web/src/api/types";
+import { issueTabChunks } from "../web/src/features/issue/issue-tab-list";
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -18,6 +19,7 @@ import {
   patchIssue,
   publishAgentStreamFrame,
   putArchitectureSource,
+  putStep,
   syncArchitectureSource,
   userHeaders,
 } from "./api";
@@ -138,6 +140,7 @@ const shown = {
   issueArtifact: "These notes track the rollout.",
   planTask: "Pin the assets to the other process.",
   spec: "Both builds serve every page.",
+  stepTask: "rollout",
 };
 
 /** The list the issue message carries under its diagram, drawn from the tree the server read the
@@ -204,10 +207,10 @@ interface Seeded {
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
- *  project with an architecture source, an issue with a spec, a child, a comment, a message
- *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
- *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
- *  in flight that advances it, and the delivery timeline's runs. */
+ *  project with an architecture source, an issue with a spec, a child, a comment, a run of a step,
+ *  a message holding a Mermaid diagram and a document artifact, a project document, a live session
+ *  with a broadcast, a replayed conversation and a picture, a priority with a description and an
+ *  issue in flight that advances it, and the delivery timeline's runs. */
 async function seedEveryRoute(): Promise<Seeded> {
   await setLiveSessions([session]);
   await createProject({ key: "CORE", name: "Core" });
@@ -253,6 +256,22 @@ async function seedEveryRoute(): Promise<Seeded> {
   await createIssueArtifact(issue.key, {
     content: `## ${shown.decision}\n\nChosen so either process can serve either build's page.\n`,
     name: "decisions.md",
+  });
+  // A run of a step as Legion's daemon records it, so the Steps tab draws its table rather than
+  // the state that says no step of the issue has run. That tab is a chunk of its own as well
+  // (`issueTabChunks` in `web/src/features/issue/issue-tab-list.ts`).
+  await putStep(issue.key, crypto.randomUUID(), {
+    agent: `legion-core-${issue.key.toLowerCase()}-implementer`,
+    ended_at: "2026-11-16T09:40:00Z",
+    generation: 1,
+    kind: "step",
+    model: "anthropic/claude-opus-5",
+    result: "passed",
+    role: "implementer",
+    started_at: "2026-11-16T09:00:00Z",
+    step: 2,
+    task: shown.stepTask,
+    type: "implementation",
   });
   const document = await createProjectDocument("CORE", {
     content: `# Handbook\n\n${shown.document}\n`,
@@ -504,7 +523,7 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `${issue}/activity`,
     },
     {
-      // Each of the four tabs below is a chunk of its own, asked for from the address that
+      // Each of the five tabs below is a chunk of its own, asked for from the address that
       // opens it (`importTheOpenTab` in `web/src/app.tsx`), so each needs an address of its own
       // here: a walk that opened only the Spec, Conversation, Children, Artifacts and Activity
       // tabs asked the other build's process for none of them.
@@ -526,6 +545,15 @@ function visits(seed: Seeded): readonly Visit[] {
         documentEditor(page).filter({ hasText: shown.planTask }),
       ],
       url: `${issue}/plan`,
+    },
+    {
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .getByRole("table", { exact: true, name: `Steps of task ${shown.stepTask}` })
+          .locator("tbody tr", { hasText: "implementer" }),
+      ],
+      url: `${issue}/steps`,
     },
     {
       route: "/issues/:key/*",
@@ -676,6 +704,13 @@ async function walk(
       planned.every((visit) => !visit.loads?.includes(piece as LazyPiece))
     ),
     "every lazy piece of e2e/two-builds-routes.ts has a visit that loads it"
+  ).toEqual([]);
+  expect(
+    Object.keys(issueTabChunks).filter(
+      (tab) => !planned.some((visit) => visit.url === `/issues/${seed.issue}/${tab}`)
+    ),
+    "every issue tab that is a chunk of its own (`issueTabChunks`, " +
+      "web/src/features/issue/issue-tab-list.ts) has a visit that opens it"
   ).toEqual([]);
 
   const assetsFrom = `Dispatch ${assetProcess.toUpperCase()}`;
