@@ -228,7 +228,7 @@ export const realStackReasons: Record<string, string> = {
   "large-documents-reader.e2e.ts":
     "the document is read in its live editor and the decisions in it are answered against the asks the server records; the reconnect row reads the frames the document's room answers a SyncStep1 with, and an edit's arrival in the server's `/text`",
   "layout.e2e.ts":
-    "its two rows read a whole page load on each of the routes that draw a margin, and one of those is a project document, whose margin sits on the live document's room",
+    "its rows read a whole page load on each of the routes that draw a margin, one of those a project document, whose margin sits on the live document's room, and one resizes such a page across 1280 px and back",
   "legion.e2e.ts":
     "the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",

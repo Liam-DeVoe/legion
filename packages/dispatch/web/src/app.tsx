@@ -891,9 +891,16 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           <PendingWritesIndicator />
           <ConnectionPill />
         </div>
+        {/* Every box below whose place hangs on the 1280 px breakpoint - this bar, the sidebar's
+            column and rail, and the margin's (`features/margin/Margin.tsx`) - takes its display
+            from an `xl:` class, the clock the shell's own `xl:flex` runs on. The browser applies
+            those in the frame a window crosses the breakpoint, while `isCompactViewport` follows
+            a task or two later; a box this state placed drew a frame or two of the other layout,
+            which squeezed `<main>` to almost nothing crossing upward (dispatch://INFRA-1630). So
+            the state chooses what a box holds, and never where the box goes. */}
         {isCompactViewport ? (
           <header
-            className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
+            className={`flex items-center justify-between border-b px-3 xl:hidden ${railBorder} ${railBg} ${railText}`}
           >
             {/* The title never shrinks and no count breaks its own words: the counts that do not
                 fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
@@ -942,10 +949,19 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </aside>
           </>
         ) : null}
-        {isCompactViewport ? null : sidebarHidden ? (
+        {isCompactViewport ? (
+          // Below `xl` the navigation is the drawer's, and this column holds none of it. It is
+          // drawn all the same, hidden until `xl`, so that the frame which already lays the
+          // desktop shell out while this render is still the compact one holds the sidebar's
+          // width, and `<main>` is laid out at the width it keeps rather than across the
+          // sidebar's column. A collapsed sidebar's gutter is `<main>`'s own padding.
+          sidebarHidden ? null : (
+            <div aria-hidden="true" className="hidden order-1 w-80 xl:block" />
+          )
+        ) : sidebarHidden ? (
           <aside
             aria-label="Collapsed sidebar"
-            className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
+            className={`fixed inset-y-0 left-0 z-10 hidden w-14 justify-center border-r p-2 xl:flex ${railBorder} ${railBg} ${railText}`}
             data-testid="sidebar-rail"
           >
             <button
@@ -965,7 +981,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           // longer shifts what they are looking at.
           <aside
             aria-label="Navigation"
-            className={`relative order-1 w-80 max-w-none border-r [overflow-anchor:none] ${railBorder} ${railBg} ${railText}`}
+            className={`relative hidden order-1 w-80 max-w-none border-r [overflow-anchor:none] xl:block ${railBorder} ${railBg} ${railText}`}
             onFocusCapture={reachForTheShell}
             onPointerDownCapture={reachForTheShell}
           >
