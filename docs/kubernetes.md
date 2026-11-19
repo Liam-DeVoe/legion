@@ -2184,7 +2184,7 @@ a release whose daemon stops serving a route, or stops setting a variable, that 
 LEGION-631 is one: it deletes the `/legion/v1/gh-token` and `/legion/v1/git-credential` routes, which a pod's `legion gh` and `legion credential` from the earlier image still call.
 The daemon's boot log, and every orphan sweep after it, names each pod still on another image
 — `sandbox runtime: <sandbox> runs image <image>, the configured image is <image>; its agents call
-this daemon as the older release until its update round replaces the pod` (`warnPodDrift` in `internal/runtime/sandbox/sandbox.go`).
+this daemon as the older release until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does` (`warnPodDrift` in `internal/runtime/sandbox/sandbox.go`).
 The same log names each pod running as a ServiceAccount other than `runtime.kubernetes.pod.service_account`
 — `sandbox runtime: <sandbox> runs as ServiceAccount <account>, the configured ServiceAccount is
 <account>; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does` (`accountDrift`, warned by the same function)

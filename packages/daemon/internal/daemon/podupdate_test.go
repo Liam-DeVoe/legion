@@ -698,6 +698,11 @@ func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 // the round has answered, but a failed one and one that has left the round's pod, which the round
 // neither asks nor waits for (askedClaims, waitingClaims). A claim with no session — a role
 // nothing has ever launched — blocks nothing.
+//
+// The replacement once every worker has answered is read as awaitReplacement reads it, sweeping
+// until it is made: a sweep that reads a worker while its machine is deciding reads it unanswered
+// (roundGroup's mask) and leaves the replacement to the next sweep, so how busy a machine was at
+// that sweep changes nothing the check reads. That no replacement is made before is read once.
 func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
@@ -735,12 +740,7 @@ func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing
 	}
 
 	rig.signal(claim.RoleTester, "")
-	rig.tick()
-
-	calls := rig.replacements()
-	if len(calls) != 1 {
-		t.Fatalf("ReplacePod called %d times once every worker answered, want once", len(calls))
-	}
+	calls := rig.awaitReplacement(1, "once every worker answered")
 	if calls[0].Pod.Locator == nil || calls[0].Pod.Locator.Sandbox.PodUID != podUpdatePod {
 		t.Fatalf("ReplacePod called with %+v, want a process of pod %s", calls[0].Pod, podUpdatePod)
 	}
@@ -2632,7 +2632,6 @@ func (r *podUpdateRig) envoyTurn(role claim.Role) {
 // (reconcileIssuePodUpdate), the turn in the new pod is left running, and the operator's side is
 // told nothing, however long past the round's bound the sweep runs.
 func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplacedIt(t *testing.T) {
-	const held = "supervise: every worker of this update round but a failed one and one that has left the round's pod has answered; the replacement waits for the turns still running"
 	const overAGonePod = "supervise: the pod this issue's update round was opened over is gone; the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -2659,10 +2658,11 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	rig.tick()
 
 	// What the sweep itself did, read before the round's end is waited for: a sweep that waited
-	// on the turn instead says so in these three, and leaves the round open behind them.
-	if lines := loggedLines(t, rig.logs.String(), held); len(lines) != 0 {
+	// on the turn instead says so in these three, and leaves the round open behind them. The wait is
+	// read by the fields of its line (turnWaits), so a change of its words changes nothing here.
+	if waits := turnWaits(t, rig.logs.String(), podUpdateRound); len(waits) != 0 {
 		t.Errorf("the sweep waited for the turns still running %d times, and that turn is in the pod that replaced this round's own: %+v",
-			len(lines), lines)
+			len(waits), waits)
 	}
 	if lines := loggedLines(t, rig.logs.String(), overAGonePod); len(lines) != 1 {
 		t.Errorf("the sweep ended the round over a gone pod %d times, want once: %+v", len(lines), lines)
@@ -2685,6 +2685,30 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 		rig.awaitClaim(role, "its round to end over the pod that is gone",
 			func(c supervise.Claim) bool { return c.UpdateRound == "" })
 	}
+}
+
+// turnWaits is every line of the daemon's JSON log that says a turn holds round's replacement, read
+// by its fields rather than its words: the line names the round and the roles whose turns run
+// (working), and it is no line of a replacement made, which names the roles that answered beside
+// them (answered).
+func turnWaits(t *testing.T, logs, round string) []map[string]any {
+	t.Helper()
+	var waits []map[string]any
+	for line := range strings.SplitSeq(logs, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var fields map[string]any
+		if err := json.Unmarshal([]byte(line), &fields); err != nil {
+			t.Fatalf("decode the log line %q: %v", line, err)
+		}
+		_, working := fields["working"]
+		_, answered := fields["answered"]
+		if fields["round"] == round && working && !answered {
+			waits = append(waits, fields)
+		}
+	}
+	return waits
 }
 
 // Two rounds can stand on one group at once while a dead round's end is still on its way: the

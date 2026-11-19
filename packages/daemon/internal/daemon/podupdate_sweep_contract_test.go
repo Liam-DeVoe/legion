@@ -1,22 +1,29 @@
 package daemon
 
 // The sweep's contract with the one rule of whom an update round asks (supervise's
-// Claim.OwesUpdateAsk): from openPodUpdate to the ask it enqueues, the sweep asks a claim exactly
-// where that rule owes it an ask, it has a session, its agent said it is ready and a machine of
-// this daemon holds it, over every state, role and fact of a claim, in groups of every size an
-// issue's claims make, and over every field of a claim at every depth. The delivery of an ask
-// once the sweep enqueued it is podupdate_undelivered_ask_test.go's.
+// Claim.OwesUpdateAsk): from the daemon's tick (supervision.reconcilePodUpdates) to the publish of
+// each ask it enqueued (the outbox's updateAsk), the sweep asks a claim, and the ask reaches the
+// claim's role, exactly where that rule owes it an ask, it has a session, its agent said it is
+// ready and a machine of this daemon holds it, over every state, role and fact of a claim, in groups
+// of every size and mix an issue's claims make, and over every field of a claim at every depth,
+// alone and in pairs. An ask that waited in the outbox while its claim moved on is
+// podupdate_undelivered_ask_test.go's.
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -68,9 +75,10 @@ func TestPodUpdateSweepOwesAnAskWhereTheClaimsOwnRecordOwesOne(t *testing.T) {
 // claim can be in (supervise.States), every role a claim can be on (claim.Roles, and the
 // controller's, which is none of them), and each of a session, a delivered ask, an answer, a leave
 // of the round's pod, another round and a process locator, set or not, which is 64 claims for each
-// state and role, in that order. Each claim carries token(role) and records the round's opening,
-// as the one write of a round on a claim does (supervise's openPodUpdate), so the sweep's ask has
-// a bound to state (roundBound). A state or a role added to those lists joins the tests without an
+// state and role, in that order. Each claim carries token(role) and records the round's opening at
+// at, as the one write of a round on a claim does (supervise's openPodUpdate), so the sweep's ask
+// has a bound to state (roundBound); the tests give at as the rig's held clock, so no round they
+// build has reached its bound. A state or a role added to those lists joins the tests without an
 // edit.
 func sweepFacts(at time.Time, token func(claim.Role) claim.Token) []supervise.Claim {
 	var claims []supervise.Claim
@@ -108,78 +116,192 @@ func sweepFacts(at time.Time, token func(claim.Role) claim.Token) []supervise.Cl
 // sweepRoles is every role a claim can be on: claim.Roles, and the controller's.
 func sweepRoles() []claim.Role { return append(slices.Clone(claim.Roles), claim.RoleController) }
 
-// roundOpener drives the sweep's whole path to the ask from its top, openPodUpdate, over claims a
-// test builds. openPodUpdate hands the group it is given to askRound, which reads the sweep's list
+// sweepPath drives the sweep's whole path over claims a test builds, from the daemon's tick to the
+// publish of each ask. The tick is supervision.reconcilePodUpdates, which the orphan sweep calls
+// with every claim it read: it groups the claims by issue (reconcileIssuePodUpdate), reads the
+// issue's pod and the round open over it, reads the pod's drift, reads the group live from the
+// claims' machines (liveGroup), decides whether the round is over (completePodUpdate), and hands
+// the live group to openPodUpdate. That hands it to askRound, which reads the sweep's list
 // (unaskedClaims), keeps each claim of it whose agent said it is ready and that a machine of this
-// daemon holds, reads the round's asks still queued, and enqueues one ask for each claim it keeps;
-// and it posts PodUpdateOpen to each claim with a session (blockingClaims). So a statement of the
-// sweep's own placed anywhere on that path — in openPodUpdate, in askRound or in the list — changes
-// what a test reads here. The ask-path test and the sweep's rig below both open their rounds
-// through it.
+// daemon holds, reads the round's asks still queued and enqueues one ask for each claim it keeps;
+// and openPodUpdate posts PodUpdateOpen to each claim with a session (blockingClaims). The outbox
+// then runs each ask's row (the outbox's updateAsk), which publishes it under the claim's own
+// machine (supervise's Machine.PublishUpdateAsk). So a statement of the sweep's own placed anywhere
+// on that path changes what a test reads here: in reconcilePodUpdates or reconcileIssuePodUpdate,
+// in the live read, in openPodUpdate, in askRound, in the list, or in the outbox's publish.
 //
-// The rig's machines are fed nothing once the opener is built: each one's inbox is swapped for one
+// Each claim a test builds is put where every read of it on that path finds it. A machine built
+// from the claim itself takes the place of the rig's machine of its token (hold), so the live
+// read, askRound's question whether a machine holds the claim, and the publish under the claim's
+// lock each read the claim as built. The claims the tick is handed are the same claims, each with
+// the issue and the round set and, where a machine holds it, a process in the pod (sweep): those
+// are what the tick reads to group the claims and to find the group's pod and the round open over
+// it, and the sweep ends a round over any other pod, and opens rather than asks where no claim is
+// in one, before openPodUpdate. Every other fact of a claim the tick reads as built, and the
+// machine holds the claim whole. A claim of a token no machine holds (the controller's) is read
+// live as the tick was handed it (roundGroup), so it is handed with no process: the round is then
+// replaced through no claim but one the test built. A group in which no claim waits for the round
+// (waitingClaims) is decided before openPodUpdate too (completePodUpdate), and the rule owes no
+// claim of such a group an ask, so the path is held to the rule there as well.
+//
+// The machines a test builds write nothing to the store (sweepClaims) and arm no timer
+// (sweepClock): a test puts hundreds of thousands of claims to the path, each a machine of its own
+// for one sweep. The runtime reads every pod there and drifted, and records nothing (steadyPod).
+// The rig's machines are fed nothing once the path is built: each one's inbox is swapped for one
 // no goroutine takes from, and the inbox it had is closed, which ends the goroutine that fed it. So
-// each post openPodUpdate makes is kept there for open to read rather than decided: the claims a
-// test builds are the only claims the sweep reads, and no machine changes under a test that puts
-// hundreds of thousands of groups to the sweep.
-type roundOpener struct {
+// each post openPodUpdate makes is kept there for posts to read rather than decided, and no
+// machine changes under a test.
+type sweepPath struct {
 	rig    *podUpdateRig
 	posted map[claim.Token]*inbox
+	deps   supervise.Deps
+	read   []supervise.Claim
 }
 
-func newRoundOpener(rig *podUpdateRig) *roundOpener {
-	o := &roundOpener{rig: rig, posted: map[claim.Token]*inbox{}}
+func newSweepPath(rig *podUpdateRig) *sweepPath {
+	p := &sweepPath{rig: rig, posted: map[claim.Token]*inbox{}, deps: rig.sup.deps}
+	p.deps.Store, p.deps.Clock, p.deps.Log = sweepClaims{rig.sup.deps.Store}, sweepClock{rig.clock}, slog.New(slog.DiscardHandler)
+	rig.s.runtime = steadyPod{rig.rt}
 	rig.sup.mu.Lock()
 	defer rig.sup.mu.Unlock()
 	for token, m := range rig.sup.machines {
 		fed := m.inbox
 		m.inbox = newInbox()
 		fed.close()
-		o.posted[token] = m.inbox
+		p.posted[token] = m.inbox
 	}
-	return o
+	return p
 }
 
-// open puts group to openPodUpdate as the round over pod, with the rig's drift as its reasons, and
-// reports each claim of group a machine of this daemon holds that was not posted exactly one
-// PodUpdateOpen of that round where it has a session and nothing where it has none, and each post
-// to a claim of no claim of the group. The posts are cleared after.
-func (o *roundOpener) open(group []supervise.Claim, pod string) (wrong []string) {
-	round := supervise.PodRound(pod)
-	o.rig.s.openPodUpdate(o.rig.ctx, podUpdateIssue, group, pod, podUpdateDrift)
-	for token, box := range o.posted {
+// hold puts each claim of group into a machine of its own, in the place of the rig's machine of
+// the claim's token. A claim of a token no machine of the rig holds stays unheld.
+func (p *sweepPath) hold(group []supervise.Claim) {
+	p.rig.t.Helper()
+	p.rig.sup.mu.Lock()
+	defer p.rig.sup.mu.Unlock()
+	for _, c := range group {
+		member, ok := p.rig.sup.machines[c.Token]
+		if !ok {
+			continue
+		}
+		m, err := supervise.NewMachine(p.rig.sup.ctx, p.deps, c)
+		if err != nil {
+			p.rig.t.Fatalf("build the machine of %s: %v", describeSwept(c), err)
+		}
+		member.machine = m
+	}
+}
+
+// sweep runs the daemon's tick over group, each claim of it read by the tick in the issue and in
+// the round over pod, with the rig's drift as the reasons it records, and in a process in pod where
+// a machine holds it.
+func (p *sweepPath) sweep(group []supervise.Claim, pod string) {
+	p.read = append(p.read[:0], group...)
+	for i := range p.read {
+		c := &p.read[i]
+		c.Issue, c.UpdateRound, c.UpdateReasons, c.Locator = podUpdateIssue, supervise.PodRound(pod), podUpdateDrift, nil
+		if _, held := p.posted[c.Token]; held {
+			c.Locator = podUpdateLocator(c.Token, podUpdateIssue, pod)
+		}
+	}
+	p.rig.s.reconcilePodUpdates(p.rig.ctx, p.read)
+}
+
+// posts reports what is wrong with the posts the last sweep made to the claims of group, of the
+// tokens a machine of this daemon holds, and clears them. The tick posts PodUpdateOpen of round,
+// with the rig's drift as its reasons, once to each claim of group with a session that has not
+// retired, and nothing to any other claim; a retired claim is weighed by no round
+// (reconcilePodUpdates, roundGroup). Or it posts no opening at all, where it decided the round
+// before openPodUpdate because no claim of the group waits for it (completePodUpdate), which it may
+// do only where the rule owes no claim of the group with a session an ask; a round so decided may
+// be replaced at that sweep, which posts the round's end to its members (endPodUpdates). So it never
+// posts the opening to some of those claims and not to others. A claim of a token no machine holds
+// has no inbox to read.
+func (p *sweepPath) posts(group []supervise.Claim, round string) (wrong []string) {
+	got := map[claim.Token]int{}
+	posted, ended := false, false
+	for token, box := range p.posted {
 		box.mu.Lock()
 		events := box.events
 		box.events = nil
 		box.mu.Unlock()
-		i := slices.IndexFunc(group, func(c supervise.Claim) bool { return c.Token == token })
-		want := i >= 0 && group[i].Session != ""
-		got := 0
 		for _, ev := range events {
 			if ev == (supervise.PodUpdateOpen{Claim: token, Round: round, Reasons: podUpdateDrift}) {
-				got++
+				got[token]++
+				posted = true
 				continue
 			}
-			wrong = append(wrong, fmt.Sprintf("openPodUpdate posted %#v to %s, want only PodUpdateOpen of round %s", ev, token, round))
+			if ev == (supervise.PodUpdateEnded{Claim: token, Round: round}) {
+				ended = true
+				continue
+			}
+			wrong = append(wrong, fmt.Sprintf("the sweep posted %#v to %s, want only PodUpdateOpen or PodUpdateEnded of round %s", ev, token, round))
 		}
-		if (got == 1) != want || got > 1 {
-			wrong = append(wrong, fmt.Sprintf("openPodUpdate posted %s the round %d times, want it posted once exactly where the group holds its claim with a session (in the group: %t)",
-				token, got, i >= 0))
+	}
+	for token := range p.posted {
+		i := slices.IndexFunc(group, func(c supervise.Claim) bool { return c.Token == token })
+		want := posted && i >= 0 && group[i].Session != "" && group[i].State != supervise.StateRetired
+		if n := got[token]; (n == 1) != want || n > 1 {
+			wrong = append(wrong, fmt.Sprintf("the sweep posted %s the round %d times, want it posted once exactly where the group holds its claim with a session that has not retired, where it posts to any claim (in the group: %t)",
+				token, n, i >= 0))
+		}
+	}
+	if posted && ended {
+		wrong = append(wrong, fmt.Sprintf("the sweep both posted round %s and ended it at one sweep", round))
+	}
+	if !posted {
+		for _, c := range group {
+			_, held := p.posted[c.Token]
+			if owed, _ := c.OwesUpdateAsk(round); held && owed && c.Session != "" && c.State != supervise.StateRetired {
+				wrong = append(wrong, fmt.Sprintf("the sweep posted the round to no claim of the group, and the rule owes %s an ask", describeSwept(c)))
+			}
 		}
 	}
 	return wrong
 }
 
+// sweepClaims is the store the machines a sweepPath builds write through: it takes every claim
+// write and keeps nothing, so the ask mark a publish writes stays on the machine, and a claim a
+// test built with a value the claims table would refuse is not written there.
+type sweepClaims struct{ supervise.Store }
+
+func (sweepClaims) PutClaim(context.Context, supervise.Claim) error { return nil }
+
+// sweepClock is the rig's held clock as the machines a sweepPath builds read it, arming nothing: a
+// machine built from a launching or registered claim arms its boot watch at once, and a timer per
+// claim tried would be kept by the held clock for the whole test.
+type sweepClock struct{ *heldClock }
+
+func (sweepClock) AfterFunc(time.Duration, func()) supervise.Cancel { return sweepTimer{} }
+
+type sweepTimer struct{}
+
+func (sweepTimer) Stop() bool { return true }
+
+// steadyPod is the runtime as a sweepPath's tick reads it: every pod is there and has drifted by
+// the rig's drift, and nothing of the reads is recorded, since a test reads the pod hundreds of
+// thousands of times. Everything else is the rig's runtime.
+type steadyPod struct{ runtime.Runtime }
+
+func (steadyPod) PodDrift(context.Context, runtime.Known) ([]string, error) {
+	return []string{podUpdateDrift}, nil
+}
+
 // sweepRig is the pod-update rig with a ready worker of every workflow role, so a machine holds
 // the claim of each role's token, and the controller's token, like any token of no issue, is held
-// by none, driven from openPodUpdate (roundOpener). The round's enqueue is recorded rather than
-// written: a test puts groups to the sweep hundreds of thousands of times, and the outbox's row is
-// the ask-path test's below, and its publish podupdate_undelivered_ask_test.go's. With nothing
-// written, no ask of the round is ever queued, so each group is asked afresh.
+// by none, driven from the daemon's tick to the publish (sweepPath). The round's enqueue is
+// recorded rather than written: a test puts groups to the sweep hundreds of thousands of times, and
+// the outbox's own rows are the ask-path test's below. Each recorded ask is then run as the
+// outbox runs its row (outbox.execute), through the rig's supervisor, so it is published under the
+// machine of the claim it names; what reaches each role's topic is read from the listener (heard).
+// With nothing written, no ask of the round is ever queued, so each group is asked afresh.
 type sweepRig struct {
-	rig    *podUpdateRig
-	opener *roundOpener
-	asked  []record.UpdateAsk
+	rig   *podUpdateRig
+	path  *sweepPath
+	asked []record.UpdateAsk
+	lane  *outbox
+	heard *holderPublisher
+	row   int64
 }
 
 func newSweepRig(t *testing.T) *sweepRig {
@@ -188,8 +310,8 @@ func newSweepRig(t *testing.T) *sweepRig {
 	for _, role := range claim.Roles {
 		workers = append(workers, readyWorker(role))
 	}
-	r := &sweepRig{rig: newPodUpdateRig(t, workers...)}
-	r.rig.s.log = quietLogger()
+	r := &sweepRig{rig: newPodUpdateRig(t, workers...), heard: &holderPublisher{}}
+	r.rig.s.log = slog.New(slog.DiscardHandler)
 	r.rig.s.enqueue = func(_ context.Context, issue string, rows ...record.OutboxPayload) error {
 		for _, row := range rows {
 			ask, ok := row.(record.UpdateAsk)
@@ -200,7 +322,8 @@ func newSweepRig(t *testing.T) *sweepRig {
 		}
 		return nil
 	}
-	r.opener = newRoundOpener(r.rig)
+	r.lane = &outbox{project: podUpdateProject, notices: r.heard, supervisor: r.rig.sup, log: slog.New(slog.DiscardHandler)}
+	r.path = newSweepPath(r.rig)
 	return r
 }
 
@@ -213,18 +336,39 @@ func (r *sweepRig) token(role claim.Role) claim.Token {
 	return claim.Token("legion-legion-" + string(role))
 }
 
-// hold puts group, which holds one claim of a role at most, to the sweep's whole path from
-// openPodUpdate (roundOpener), and reports each claim of it the sweep treats otherwise than the
-// rule. The sweep's list (unaskedClaims) must hold a claim exactly where it has a session and its
-// own record owes it an ask (supervise's Claim.OwesUpdateAsk), the sweep must enqueue one ask of
-// the round for a claim exactly where the list holds it, its agent said it is ready
-// (supervise.SaidReady) and a machine of this daemon holds it, and openPodUpdate must post the
-// round to each claim with a session (roundOpener.open). asked is how many claims of the group are
-// owed an ask that way.
+// hold puts group, which holds one claim of a role at most, to the sweep's whole path from the
+// daemon's tick to the publish (sweepPath), and reports each claim of it the sweep treats otherwise
+// than the rule. The sweep's list (unaskedClaims) must hold a claim exactly where it has a session
+// and its own record owes it an ask (supervise's Claim.OwesUpdateAsk); the sweep must enqueue one
+// ask of the round for a claim, and that ask's row must reach the claim's role topic once, exactly
+// where the list holds the claim, its agent said it is ready (supervise.SaidReady) and a machine of
+// this daemon holds it; every row must run without an error; and the tick must post the round to
+// each claim with a session that has not retired (sweepPath.posts). asked is how many claims of the
+// group are owed an ask that way.
 func (r *sweepRig) hold(group []supervise.Claim) (asked int, wrong []string) {
 	listed := unaskedClaims(group, podUpdateRound)
 	r.asked = r.asked[:0]
-	wrong = r.opener.open(group, podUpdatePod)
+	r.path.hold(group)
+	r.path.sweep(group, podUpdatePod)
+	wrong = r.path.posts(group, podUpdateRound)
+	r.heard.mu.Lock()
+	r.heard.delivered = r.heard.delivered[:0]
+	r.heard.mu.Unlock()
+	for _, ask := range r.asked {
+		r.row++
+		payload, err := json.Marshal(ask)
+		if err != nil {
+			r.rig.t.Fatalf("encode the ask %+v: %v", ask, err)
+		}
+		row := record.OutboxRow{ID: r.row, Kind: record.OutboxKindUpdateAsk, Issue: podUpdateIssue, Payload: payload}
+		if err := r.lane.execute(r.rig.ctx, row); err != nil {
+			wrong = append(wrong, fmt.Sprintf("the row of the ask to the %s of round %s failed: %v", ask.Role, ask.Round, err))
+		}
+	}
+	heard := map[string]int{}
+	for _, published := range r.heard.delivered {
+		heard[published.topic]++
+	}
 	for _, c := range group {
 		owed, why := c.OwesUpdateAsk(podUpdateRound)
 		wantListed := c.Session != "" && owed
@@ -241,18 +385,24 @@ func (r *sweepRig) hold(group []supervise.Claim) (asked int, wrong []string) {
 				gotAsked++
 			}
 		}
+		topic := notify.RoleTopicPrefix + string(c.Token)
+		gotHeard := heard[topic]
+		delete(heard, topic)
 		if wantAsked {
 			asked++
 		}
-		if (gotListed == 1) != wantListed || gotListed > 1 || (gotAsked == 1) != wantAsked || gotAsked > 1 {
-			wrong = append(wrong, fmt.Sprintf("%s: the sweep's list holds it %d times and the sweep asks it %d times, where the rule says owed=%t (%v), so want it listed %t and asked %t",
-				describeSwept(c), gotListed, gotAsked, owed, why, wantListed, wantAsked))
+		if (gotListed == 1) != wantListed || gotListed > 1 || (gotAsked == 1) != wantAsked || gotAsked > 1 || (gotHeard == 1) != wantAsked || gotHeard > 1 {
+			wrong = append(wrong, fmt.Sprintf("%s: the sweep's list holds it %d times, the sweep asks it %d times and %d asks reached its role, where the rule says owed=%t (%v), so want it listed %t, and asked once and reached once %t",
+				describeSwept(c), gotListed, gotAsked, gotHeard, owed, why, wantListed, wantAsked))
 		}
 	}
 	for _, a := range r.asked {
 		if a.Round != podUpdateRound || !slices.ContainsFunc(group, func(c supervise.Claim) bool { return c.Role == a.Role }) {
 			wrong = append(wrong, fmt.Sprintf("the sweep asked %s in round %q, which is no claim of the group's round", a.Role, a.Round))
 		}
+	}
+	for topic, n := range heard {
+		wrong = append(wrong, fmt.Sprintf("%d asks reached %s, which is the topic of no claim of the group", n, topic))
 	}
 	return asked, wrong
 }
@@ -270,6 +420,27 @@ var sweepRoleCount = len(sweepRoles())
 // sweepRoleOf is the role, as its index in sweepRoles, of the claim at index i of sweepFacts or of
 // a copy of it.
 func sweepRoleOf(i int) int { return i / 64 % sweepRoleCount }
+
+// sweepKindsOf is the claims of sweepFacts, by index, that the property test puts in groups of
+// four or more and the field test sets a field on: for every state and role, the claim with a
+// session, in the round, that no ask of the round reached, that has not answered it and has not
+// left its pod — which the rule owes an ask unless it failed — with a process locator and without;
+// and that claim refused by one fact alone: an ask of the round reached it, its role answered the
+// round, it left the round's pod, or it is in another round; and that claim with no session. A
+// claim refused by two of those facts at once is tried alone and in groups of two and three, as
+// every claim of sweepFacts is, and not in the larger groups or with a field set: the seven kinds
+// a state and role give are what a statement that reads one fact beside the field or the group can
+// tell apart, at a ninth of the claims.
+func sweepKindsOf(facts []supervise.Claim) []int {
+	var kinds []int
+	for i := range facts {
+		switch i % 64 {
+		case 1, 1 | 32, 1 | 2, 1 | 4, 1 | 8, 1 | 16, 0:
+			kinds = append(kinds, i)
+		}
+	}
+	return kinds
+}
 
 // sweepOwed is whether the rule owes c an ask of the round and c has a session: whether the
 // sweep's list holds c (unaskedClaims).
@@ -371,11 +542,11 @@ func (s sweepShape) at(i int) int {
 	return s.place
 }
 
-// sweepPropertyShapes is each group the property test puts every claim to the sweep in: alone; at
+// sweepPropertyShapes is each group the property test puts a claim to the sweep in: alone; at
 // each place of a group of two and of three, beside claims of every mix of the two kinds, owed an
 // ask and refused one; and in a group of each size from four to one claim of every role, beside
-// claims all owed and beside claims all refused. So every size of group an issue's claims make is
-// tried, and every group of two or three of the kinds.
+// claims of which every count from none to all is owed and the rest refused. So every size of
+// group an issue's claims make is tried, and every count of owed claims at each size.
 func sweepPropertyShapes() []sweepShape {
 	shapes := []sweepShape{{name: "alone"}}
 	for size := 2; size <= 3; size++ {
@@ -392,39 +563,40 @@ func sweepPropertyShapes() []sweepShape {
 		}
 	}
 	for size := 4; size <= sweepRoleCount; size++ {
-		for _, kind := range []sweepKind{sweepOwedOne, sweepRefused} {
-			others := slices.Repeat([]sweepKind{kind}, size-1)
-			shapes = append(shapes, sweepShape{name: fmt.Sprintf("in a group of %d, beside claims all %s", size, kind), others: others, place: -1})
+		for owed := range size {
+			others := append(slices.Repeat([]sweepKind{sweepOwedOne}, owed), slices.Repeat([]sweepKind{sweepRefused}, size-1-owed)...)
+			shapes = append(shapes, sweepShape{name: fmt.Sprintf("in a group of %d, beside %d claims owed an ask and %d refused one", size, owed, size-1-owed), others: others, place: -1})
 		}
 	}
 	return shapes
 }
 
-// The sweep's whole path to the ask, from openPodUpdate (sweepRig.hold), asks a claim exactly
-// where the claim has a session, its own record owes it an ask (supervise's Claim.OwesUpdateAsk),
-// its agent said it is ready and a machine of this daemon holds it, over every mix of the facts of
-// a claim sweepFacts names, in groups of every size an issue's claims make (sweepPropertyShapes):
-// alone; at each place of a group of two and of three, beside claims of every mix of the two
-// kinds, one the rule owes an ask and one it refuses; and in a group of each size from four to one
-// claim of every role, beside claims all owed and beside claims all refused. The claims beside it
-// are taken in turn (sweepPools), and each of them holds one more field of the claim, a field at
-// any depth taken in turn that keeps it of its kind (claimLeaves). Every claim of every group is
-// held to the rule, the claims beside it included, so a group that holds two or more claims the
-// sweep owes an ask fails the test where any one of them is not asked.
+// The sweep's whole path, from the daemon's tick to the publish (sweepRig.hold), asks a claim, and
+// the ask reaches its role, exactly where the claim has a session, its own record owes it an ask
+// (supervise's Claim.OwesUpdateAsk), its agent said it is ready and a machine of this daemon holds
+// it, over every mix of the facts of a claim sweepFacts names, in groups of every size an issue's
+// claims make (sweepPropertyShapes): every claim of sweepFacts alone, and at each place of a group
+// of two and of three, beside claims of every mix of the two kinds, one the rule owes an ask and
+// one it refuses; and each kind of claim of every state and role (sweepKindsOf) in a group of each
+// size from four to one claim of every role, beside claims of every count owed and the rest
+// refused. The claims beside it are taken in turn (sweepPools), and each of them holds one more
+// field of the claim, a field at any depth taken in turn that keeps it of its kind (claimLeaves).
+// Every claim of every group is held to the rule, the claims beside it included, so a group that
+// holds two or more claims the sweep owes an ask fails the test where any one of them is not asked
+// or not reached.
 //
 // With the test above it holds the one rule of whom a round asks, which is neither a failed claim
 // nor one that has left the round's pod: that test fails when the rule loses a case, and this one
 // fails when the sweep refuses or owes a claim by a statement of its own that the rule does not
-// make. That statement can stand in openPodUpdate, which hands the group to askRound, in askRound,
-// which filters the sweep's list again before it enqueues the ask, or in the list, and it can read
+// make. That statement can stand anywhere from the tick to the publish (sweepPath), and it can read
 // the claim or the claims beside it: a filter of its own on one state, on one role or on a locator
 // present or absent, its own failed filter put back while the rule's failed case is taken out, its
-// left-pod check taken out, a filter on a pending task that holds only in a group of one size, a
-// claim refused while another claim of its group is owed an ask too, or only the first owed claim
-// of a group asked. The test after it holds the same over every field of a claim. None of them
-// fails for a statement of the sweep's own that agrees with the rule in every group, such as that
-// failed filter put back with the rule whole: it changes no claim's answer, and it shows here the
-// first time the rule changes and the two disagree.
+// left-pod check taken out, a filter on a pending task that holds only in a group of one size or
+// only beside a given count of owed claims, a claim refused while another claim of its group is
+// owed an ask too, or only the first owed claim of a group asked. The test after it holds the same
+// over every field of a claim. None of them fails for a statement of the sweep's own that agrees
+// with the rule in every group, such as that failed filter put back with the rule whole: it changes
+// no claim's answer, and it shows here the first time the rule changes and the two disagree.
 //
 // The negative control is the sweep's own failed filter put back with the rule's failed case taken
 // out: this test then fails on each failed claim with a session that the rule owes an ask, and the
@@ -433,7 +605,7 @@ func sweepPropertyShapes() []sweepShape {
 // such a set shows nothing.
 func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
 	r := newSweepRig(t)
-	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	at := podUpdateStart
 	facts := sweepFacts(at, r.token)
 	leaves, unset := claimLeaves()
 	if len(unset) > 0 || len(leaves) == 0 {
@@ -462,10 +634,18 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
 	checked, owed, refused, groups, twoAsked := 0, 0, 0, 0, 0
 	askedBySize := make([]int, sweepRoleCount+1)
 	buf := make([]supervise.Claim, 0, sweepRoleCount)
+	every, kinds := make([]int, len(facts)), sweepKindsOf(facts)
+	for i := range every {
+		every[i] = i
+	}
 	for _, s := range shapes {
 		wrong, seen, example := 0, 0, ""
-		for i := range facts {
-			group := pools.group(buf, i, s.at(i), s.others, vary)
+		tried := every
+		if len(s.others) >= 3 {
+			tried = kinds
+		}
+		for n, i := range tried {
+			group := pools.group(buf, i, s.at(n), s.others, vary)
 			asked, misses := r.hold(group)
 			groups++
 			seen += len(group)
@@ -518,45 +698,52 @@ var sweepFieldShapes = []sweepShape{
 	{name: "beside a claim of every other role", others: slices.Repeat([]sweepKind{sweepEither}, len(claim.Roles)), place: -1},
 }
 
-// The sweep's whole path to the ask, from openPodUpdate, asks a claim exactly where the claim has
-// a session, its own record owes it an ask (which it owes neither a failed claim nor one that has
-// left the round's pod), its agent said it is ready and a machine of this daemon holds it
-// (sweepRig.hold), whatever else the claim holds. Each exported field of supervise.Claim at every
-// depth below it — through structs, pointers, and each slice at its first element and again at
-// its second, so each of the four budgets, each field of a pending task, of the handshake and of
-// a turn's outcome, with one turn outcome and with two — is set in turn (claimLeaves), one field at
-// a time: every claim of sweepFacts that leaves that field empty is put to the sweep again with
-// the field set, alone, beside a claim of another role and beside a claim of every other role
-// (sweepFieldShapes), each of which holds the field too and is the next claim of its role in turn
-// (sweepPools). So a filter of the sweep's own on a field the test above does not vary — a pending
-// task, a task's text or the moment a turn confirmed it, the round's told mark, the claim's deaths
-// or prompt failures, the claim's issue, a claim with more than one turn outcome — fails here, in
-// openPodUpdate, in askRound and in the sweep's list alike, on the claims with a session the rule
-// owes an ask: a sweep that skipped every claim holding a task would leave a working role unasked
-// until the round's bound, and every test of the sweep before these passed under it. A field added
-// to the claim joins the test without an edit, and a field of a type this test cannot set fails
-// it.
+// The sweep's whole path, from the daemon's tick to the publish (sweepRig.hold), asks a claim, and
+// the ask reaches its role, exactly where the claim has a session, its own record owes it an ask
+// (which it owes neither a failed claim nor one that has left the round's pod), its agent said it
+// is ready and a machine of this daemon holds it, whatever else the claim holds. Each exported
+// field of supervise.Claim at every depth below it — through structs, pointers, and each slice at
+// each of its elements up to launch_failure_limit's shipped value (sweepSliceLength), so each of
+// the four budgets, each field of a pending task, of the handshake and of a turn's outcome, with
+// one, two and three turn outcomes — is set in turn (claimLeaves), one field at a time: each kind
+// of claim of every state and role (sweepKindsOf) that leaves that field empty is put to the sweep
+// again with the field set, alone, beside a claim of another role and beside a claim of every other
+// role (sweepFieldShapes), each of which holds the field too and is the next claim of its role in
+// turn (sweepPools). Then each pair of those fields is set together on the ready implementer the
+// rule owes an ask and on that claim refused an ask by each case of the rule or by having no
+// session (sweepPairBases). So a filter of the sweep's own on a field the test above does not vary,
+// or on two of them together —
+// a pending task, a task's text or the moment a turn confirmed it, the round's told mark, the
+// claim's deaths or prompt failures, the claim's issue, a claim with more than one or two turn
+// outcomes, a pending task on a claim whose round was told — fails here, wherever it stands from
+// the tick to the publish, on the claims with a session the rule owes an ask: a sweep that skipped
+// every claim holding a task would leave a working role unasked until the round's bound. A field
+// added to the claim joins the test without an edit, and a field of a type this test cannot set
+// fails it.
 //
 // The test leaves out the fields every claim of sweepFacts sets (sweepFieldsEveryClaimSets: the
 // token, the role, the state, the round and the round's opening), each named with why, and it
 // fails when one of them is no field of the claim or is empty on some claim, and when a field it
 // does not name is tried on no claim.
 //
-// Each field is set to one value, and one field at a time. So this test does not fail for a
-// filter of the sweep's own on one value of a field other than the one it sets: a filter on a
-// claim an operator suspended (supervise.SuspendedByOperator) passes it, since SuspendedBy is set
-// to "x" here. Nor does it fail for a filter on two fields set together, such as a pending task on
-// a claim whose round was told, since no claim here holds both; nor for a filter that agrees with
-// the rule in every group, as the test above says.
+// Each field is set to one value. So this test does not fail for a filter of the sweep's own on one
+// value of a field other than the one it sets: a filter on a claim an operator suspended
+// (supervise.SuspendedByOperator) passes it, since SuspendedBy is set to "x" here. A pair is tried
+// on the ready implementer and its refused forms alone, so a filter that reads two of these fields
+// together with one state or role, or three of them together, passes it too. Compacting and
+// ProcessGone are the machine's own state, which its view puts over the claim's record (supervise's
+// Machine.View), so the live read finds both false on every claim here, and a filter on either
+// placed after the live read passes. Nor does the test fail for a filter that agrees with the rule
+// in every group, as the test above says.
 //
-// The negative control is a filter of the sweep's own on a pending task (Claim.Pending), in
-// openPodUpdate, in askRound or in the sweep's list: this test then fails with each field of
-// Pending set, and the test above fails too, on the groups beside whose claims a pending task is
-// set. The test also fails when it tried no field, or saw no owed or no refused claim, since such
-// a set shows nothing.
+// The negative control is a filter of the sweep's own on a pending task (Claim.Pending), anywhere
+// from the tick to the publish: this test then fails with each field of Pending set, and the test
+// above fails too, on the groups beside whose claims a pending task is set. A filter on a pending
+// task together with the round's told mark fails the pairs alone. The test also fails when it
+// tried no field or no pair, or saw no owed or no refused claim, since such a set shows nothing.
 func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds(t *testing.T) {
 	r := newSweepRig(t)
-	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	at := podUpdateStart
 	facts := sweepFacts(at, r.token)
 	leaves, unset := claimLeaves()
 	if len(unset) > 0 {
@@ -574,6 +761,7 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 	checked, owed, refused, fields := 0, 0, 0, 0
 	buf := make([]supervise.Claim, 0, sweepRoleCount)
 	others := make([]supervise.Claim, len(facts))
+	kinds := sweepKindsOf(facts)
 	for _, leaf := range leaves {
 		for j, c := range facts {
 			if others[j] = c; leaf.empty(c) {
@@ -582,13 +770,14 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 		}
 		pools := newSweepPools(others)
 		tried, wrong, example := 0, 0, ""
-		for i, c := range facts {
+		for n, i := range kinds {
+			c := facts[i]
 			if !leaf.empty(c) {
 				continue
 			}
 			tried++
 			for _, s := range sweepFieldShapes {
-				group := pools.group(buf, i, s.at(i), s.others, nil)
+				group := pools.group(buf, i, s.at(n), s.others, nil)
 				asked, misses := r.hold(group)
 				checked += len(group)
 				owed += asked
@@ -609,20 +798,99 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 			fields++
 		}
 		if wrong > 0 {
-			t.Errorf("with %s set, the sweep disagrees with the rule on %d claims of %d groups, for example %s; want the sweep to ask a claim exactly where the rule owes it an ask, it has a session, its agent said it is ready and a machine holds it",
+			t.Errorf("with %s set, the sweep disagrees with the rule on %d claims of %d groups, for example %s; want the sweep to ask a claim, and the ask to reach it, exactly where the rule owes it an ask, it has a session, its agent said it is ready and a machine holds it",
 				leaf.name, wrong, tried*len(sweepFieldShapes), example)
 		}
 	}
-	if fields == 0 || owed == 0 || refused == 0 {
-		t.Fatalf("checked %d claims over %d fields, %d owed and %d refused: a set with no field tried, or no owed or no refused claim, shows nothing", checked, fields, owed, refused)
+	bases := sweepPairBases(at, r.token(claim.RoleImplementer))
+	pairs, pairsOwed, pairsWrong := 0, 0, 0
+	for i, a := range leaves {
+		for _, b := range leaves[i+1:] {
+			tried, wrong, example := 0, 0, ""
+			for _, base := range bases {
+				if !a.empty(base) || !b.empty(base) {
+					continue
+				}
+				c := base
+				a.set(&c, at)
+				b.set(&c, at)
+				asked, misses := r.hold([]supervise.Claim{c})
+				tried++
+				checked++
+				owed += asked
+				pairsOwed += asked
+				refused += 1 - asked
+				wrong += len(misses)
+				if example == "" && len(misses) > 0 {
+					example = misses[0]
+				}
+			}
+			if tried > 0 {
+				pairs++
+			}
+			if wrong > 0 {
+				if pairsWrong++; pairsWrong <= 10 {
+					t.Errorf("with %s and %s set together, the sweep disagrees with the rule on %d of %d claims, for example %s",
+						a.name, b.name, wrong, tried, example)
+				}
+			}
+		}
 	}
-	t.Logf("checked %d claims over %d fields of a claim at every depth: %d owed an ask, %d refused one", checked, fields, owed, refused)
+	if pairsWrong > 10 {
+		t.Errorf("and on %d more pairs of fields", pairsWrong-10)
+	}
+	if fields == 0 || pairs == 0 || pairsOwed == 0 || owed == 0 || refused == 0 {
+		t.Fatalf("checked %d claims over %d fields and %d pairs of fields (%d owed in the pairs), %d owed and %d refused: a set with no field or no pair tried, or no owed or no refused claim, shows nothing",
+			checked, fields, pairs, pairsOwed, owed, refused)
+	}
+	t.Logf("checked %d claims over %d fields of a claim at every depth and %d pairs of them: %d owed an ask, %d refused one", checked, fields, pairs, owed, refused)
+}
+
+// sweepPairBases is the claims the field test sets each pair of fields on: the ready implementer of
+// the round with a session, which the rule owes an ask, and that claim refused an ask by each case
+// of the rule — an ask of the round reached its session, its role answered the round, it left the
+// round's pod, it is in another round, it failed — and by having no session. None records a
+// process, so every field under the locator is empty on each of them and tried in each pair.
+func sweepPairBases(at time.Time, token claim.Token) []supervise.Claim {
+	opened := at
+	owed := supervise.Claim{Token: token, Role: claim.RoleImplementer, State: supervise.StateReady, Session: "ses_i",
+		UpdateRound: podUpdateRound, UpdateOpenedAt: &opened}
+	bases := []supervise.Claim{owed}
+	for _, refuse := range []func(*supervise.Claim){
+		func(c *supervise.Claim) { c.UpdateTaskedAt = &opened },
+		func(c *supervise.Claim) { c.UpdateSignalledAt = &opened },
+		func(c *supervise.Claim) { c.UpdateLeftRound = podUpdateRound },
+		func(c *supervise.Claim) { c.UpdateRound = "pod:" + podUpdateReplacementPod },
+		func(c *supervise.Claim) { c.State = supervise.StateFailed },
+		func(c *supervise.Claim) { c.Session = "" },
+	} {
+		c := owed
+		refuse(&c)
+		bases = append(bases, c)
+	}
+	return bases
+}
+
+// sweepSliceLength is how many elements claimLeaves walks each slice of the claim to:
+// launch_failure_limit's shipped value (config.ConfigReference), which is how many turn outcomes a
+// claim's window holds (supervise's turnOutcomeWindow) where a deployment leaves the key unset.
+func sweepSliceLength() (int, error) {
+	for _, key := range config.ConfigReference() {
+		if key.Name == "launch_failure_limit" {
+			n, err := strconv.Atoi(strings.Trim(key.Default, "`"))
+			if err != nil || n < 1 {
+				return 0, fmt.Errorf("launch_failure_limit's shipped value %q is no positive number: %v", key.Default, err)
+			}
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("the key table holds no launch_failure_limit")
 }
 
 // claimLeaf is one exported field of supervise.Claim at any depth below it, through structs,
-// pointers and a slice's first or second element, that holds a value of its own: a string, a
-// bool, a number or a time. name is its path ("Pending.ConfirmedAt", "TurnOutcomes[0].Generation",
-// "TurnOutcomes[1].Generation"), and top is the claim's own field it is under.
+// pointers and a slice's elements, that holds a value of its own: a string, a bool, a number or a
+// time. name is its path ("Pending.ConfirmedAt", "TurnOutcomes[0].Generation",
+// "TurnOutcomes[2].Generation"), and top is the claim's own field it is under.
 type claimLeaf struct {
 	name, top string
 	path      []leafStep
@@ -630,7 +898,7 @@ type claimLeaf struct {
 
 // leafStep is one step of a leaf's path: a struct's field (kind reflect.Struct, field its index),
 // the value a pointer points to (reflect.Pointer), or a slice's element (reflect.Slice, field its
-// index: 0, or 1 for a slice of two elements).
+// index, which gives the slice that index plus one elements).
 type leafStep struct {
 	kind  reflect.Kind
 	field int
@@ -638,11 +906,15 @@ type leafStep struct {
 
 // claimLeaves is every leaf of supervise.Claim, and the name of each field at any depth that holds
 // a value this test cannot set — an interface, a map, a function, a channel, a struct with no
-// exported field, or a type that holds itself — which the tests fail on. A slice is walked twice:
-// at its first element, which gives the slice one element, and at its second, which gives it two,
-// so that a statement that reads how many elements a slice holds (a claim's turn outcomes) is
-// tried with one and with more than one.
+// exported field, or a type that holds itself — which the tests fail on. A slice is walked at each
+// of its elements up to sweepSliceLength, the element at index i giving the slice i+1 elements, so
+// that a statement that reads how many elements a slice holds (a claim's turn outcomes) is tried
+// with one, with two and with three, the most a claim holds under the shipped launch_failure_limit.
 func claimLeaves() (leaves []claimLeaf, unset []string) {
+	elements, err := sweepSliceLength()
+	if err != nil {
+		unset = append(unset, fmt.Sprintf("every slice (%v)", err))
+	}
 	timeType := reflect.TypeOf(time.Time{})
 	var walk func(t reflect.Type, name, top string, path []leafStep, seen []reflect.Type)
 	walk = func(t reflect.Type, name, top string, path []leafStep, seen []reflect.Type) {
@@ -662,7 +934,7 @@ func claimLeaves() (leaves []claimLeaf, unset []string) {
 		case reflect.Pointer:
 			walk(t.Elem(), name, top, append(slices.Clone(path), leafStep{kind: reflect.Pointer}), seen)
 		case reflect.Slice:
-			for i := range 2 {
+			for i := range elements {
 				walk(t.Elem(), fmt.Sprintf("%s[%d]", name, i), top, append(slices.Clone(path), leafStep{kind: reflect.Slice, field: i}), seen)
 			}
 		case reflect.Struct:
@@ -754,54 +1026,76 @@ func (l claimLeaf) set(c *supervise.Claim, at time.Time) {
 }
 
 // The sweep's ask reaches a ready claim the rule owes an ask whatever else the claim holds, through
-// the rig's real outbox: for the rig's ready implementer, the control with nothing more set and
-// then each exported field of the claim at every depth that the claim leaves empty, set in turn
-// (claimLeaves), the sweep's whole path from openPodUpdate (roundOpener) queues one ask of a round
-// of the case's own exactly where the claim's own record owes it one (supervise's
-// Claim.OwesUpdateAsk, which owes a failed claim and one that has left the round's pod nothing)
-// and its agent said it is ready, and posts the round to the claim once. Each case is its own
-// round, over a pod of its own, so no ask an earlier case queued stands in its way. The acceptance
-// test of this change wrote it as the red of a filter placed in askRound: a sweep that skipped
-// every claim holding a pending task there passed every other test of the sweep, and failed this
-// one. The same filter placed one call higher, in openPodUpdate, fails it the same way.
+// the rig's real outbox: for the rig's ready implementer in the round, the control with nothing
+// more set and then each exported field of the claim at every depth that the claim leaves empty,
+// set in turn (claimLeaves), the daemon's tick (sweepPath) queues one row of the round's ask, and
+// the role-message lane's run of that row delivers one ask to the implementer's topic, exactly
+// where the claim's own record owes it one (supervise's Claim.OwesUpdateAsk, which owes a failed
+// claim and one that has left the round's pod nothing) and its agent said it is ready; and the
+// tick posts the round to the claim once. Through every case the round's ask to another role, the
+// tester's, waits in the outbox as a row the lane has not run yet, so the tick asks each case
+// beside an ask of the round still queued: askRound skips a claim whose own ask of the round is
+// queued (the store's QueuedUpdateAsks), and an ask queued for one role holds back no other role's.
+// Each case's rows are run and finished before the next case, so no row of the implementer's that
+// an earlier case queued stands in its way. The acceptance test of this change wrote it as the red
+// of a filter placed in askRound: a sweep that skipped every claim holding a pending task there
+// passed every other test of the sweep, and failed this one. The same filter placed anywhere from
+// the tick to the outbox's publish fails it the same way, and so does a sweep that skips every
+// claim while any ask of the round is queued.
 //
 // The negative control is that filter: this test then fails with each field of Pending set, as
-// "the sweep queued 0 asks of the ready implementer". The test also fails when it tried no field,
-// or saw no owed or no refused case.
+// "the tick queued 0 rows and the lane delivered 0 asks". The test also fails when it tried no
+// field, or saw no owed or no refused case.
 func TestPodUpdateTheSweepsAskReachesEveryOwedReadyClaimWhateverElseItHolds(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	opened := podUpdateStart
 	base := rig.claimOf(claim.RoleImplementer)
-	base.UpdateOpenedAt, base.UpdateReasons = &opened, podUpdateDrift
-	opener := newRoundOpener(rig)
+	base.UpdateRound, base.UpdateOpenedAt, base.UpdateReasons = podUpdateRound, &opened, podUpdateDrift
+	path := newSweepPath(rig)
 	leaves, unset := claimLeaves()
 	if len(unset) > 0 {
 		t.Fatalf("the fields %v cannot be set, so this test cannot try them", unset)
 	}
-	n, fields, owedSeen, refusedSeen := 0, 0, 0, 0
+	fields, owedSeen, refusedSeen := 0, 0, 0
 	try := func(label string, c supervise.Claim) {
 		t.Helper()
-		n++
-		pod := fmt.Sprintf("case-%04d", n)
-		round := supervise.PodRound(pod)
-		c.UpdateRound = round
-		owed, why := c.OwesUpdateAsk(round)
+		owed, why := c.OwesUpdateAsk(podUpdateRound)
 		want := owed && supervise.SaidReady(c.State)
-		if wrong := opener.open([]supervise.Claim{c}, pod); len(wrong) > 0 {
+		heard := rig.deliveredTo(claim.RoleImplementer)
+		other := record.UpdateAsk{Role: claim.RoleTester, Round: podUpdateRound, Pod: podUpdatePod,
+			Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))}
+		if err := rig.s.enqueue(rig.ctx, podUpdateIssue, other); err != nil {
+			t.Fatalf("%s: queue the tester's ask of the round: %v", label, err)
+		}
+		group := []supervise.Claim{c}
+		path.hold(group)
+		path.sweep(group, podUpdatePod)
+		if wrong := path.posts(group, podUpdateRound); len(wrong) > 0 {
 			t.Errorf("%s: %s", label, strings.Join(wrong, "; "))
 		}
-		got := 0
-		for _, ask := range rig.asks() {
-			if ask.Round == round {
-				if ask.Role != claim.RoleImplementer {
-					t.Fatalf("%s: an ask of round %s went to %s, want only the implementer", label, round, ask.Role)
-				}
-				got++
+		queued, others := 0, 0
+		for _, row := range rig.rows(record.OutboxKindUpdateAsk) {
+			var ask record.UpdateAsk
+			if err := json.Unmarshal(row.Payload, &ask); err != nil {
+				t.Fatalf("%s: decode update ask %d: %v", label, row.ID, err)
+			}
+			switch {
+			case ask == other:
+				others++
+			case ask.Role == claim.RoleImplementer && ask.Round == podUpdateRound:
+				queued++
+			default:
+				t.Fatalf("%s: an ask of round %s went to %s, want only the implementer's of round %s beside the tester's queued one", label, ask.Round, ask.Role, podUpdateRound)
 			}
 		}
-		if (got == 1) != want || got > 1 {
-			t.Errorf("%s: the sweep queued %d asks of the ready implementer, state %s; the rule says owed=%t (%v); want one exactly where the rule owes one and the agent said it is ready",
-				label, got, c.State, owed, why)
+		if others != 1 {
+			t.Fatalf("%s: the outbox holds %d rows of the tester's ask, want the one this case queued", label, others)
+		}
+		rig.runLane()
+		got := rig.deliveredTo(claim.RoleImplementer) - heard
+		if (queued == 1) != want || queued > 1 || (got == 1) != want || got > 1 {
+			t.Errorf("%s: the tick queued %d rows and the lane delivered %d asks to the ready implementer, state %s; the rule says owed=%t (%v); want one of each exactly where the rule owes one and the agent said it is ready",
+				label, queued, got, c.State, owed, why)
 		}
 		if want {
 			owedSeen++
@@ -822,5 +1116,5 @@ func TestPodUpdateTheSweepsAskReachesEveryOwedReadyClaimWhateverElseItHolds(t *t
 	if fields == 0 || owedSeen == 0 || refusedSeen == 0 {
 		t.Fatalf("tried %d fields, %d owed and %d refused: a test with no field tried, or no owed or no refused case, shows nothing", fields, owedSeen, refusedSeen)
 	}
-	t.Logf("tried the control and %d fields of a claim at every depth through openPodUpdate: %d owed an ask, %d refused one", fields, owedSeen, refusedSeen)
+	t.Logf("tried the control and %d fields of a claim at every depth from the tick to the publish: %d owed an ask, %d refused one", fields, owedSeen, refusedSeen)
 }

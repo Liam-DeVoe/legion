@@ -738,12 +738,19 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 
 // A round open at the deploy whose members stand three ways: the implementer has not answered,
 // the tester answered under the earlier release, and the planner failed. The migration's reset
-// keeps the tester's answer and starts every member's clock at the deploy. So the first sweeps
-// ask the implementer alone, once, with the end at the deploy plus pod_update_grace_minutes: the
-// tester has answered and the planner is failed, and the round asks neither. Nothing is replaced
-// while the implementer has not answered. Once it answers, and with no turn running, the next
-// sweep replaces the pod, still before the new bound, because the tester's answer from before the
-// deploy counts and the failed planner is waited for by no one.
+// keeps the tester's answer and starts every member's clock at the deploy. So over the first
+// sweeps an ask reaches the implementer alone, once, with the end at the deploy plus
+// pod_update_grace_minutes: the tester has answered and the planner is failed, and the round asks
+// neither. Nothing is replaced while the implementer has not answered. Once it answers, and with no
+// turn running, a sweep replaces the pod, still before the new bound, because the tester's answer
+// from before the deploy counts and the failed planner is waited for by no one.
+//
+// What the check counts is what reached each role: every row the sweeps queued is run through the
+// role-message lane, which publishes an ask under the claim's own machine and reads the rule there
+// (supervise's Machine.PublishUpdateAsk). A sweep that reads the tester while its machine is
+// deciding reads it unanswered (roundGroup's mask) and queues a row for it; that row reaches nobody,
+// because the tester's own record holds its answer. So how busy a machine was at a sweep changes
+// nothing the check reads, and an ask that did reach the tester fails it.
 //
 // The control is a reset that also clears update_signalled_at: then the tester is asked as well.
 func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *testing.T) {
@@ -774,18 +781,17 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 	for range 3 {
 		next.tick()
 	}
+	next.runLane()
 	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace))
-	asked := map[claim.Role]int{}
 	for _, ask := range next.asks() {
-		asked[ask.Role]++
 		if ask.Text != text {
 			t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
 		}
 	}
 	want := map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0, claim.RolePlanner: 0}
 	for role, n := range want {
-		if asked[role] != n {
-			t.Errorf("the %s was asked %d times after the deploy, want %d", role, asked[role], n)
+		if got := next.deliveredTo(role); got != n {
+			t.Errorf("the %s's topic was delivered %d asks after the deploy, want %d", role, got, n)
 		}
 	}
 	if calls := next.replacements(); len(calls) != 0 {
