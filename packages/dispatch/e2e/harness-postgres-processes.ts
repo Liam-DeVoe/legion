@@ -128,33 +128,38 @@ for (const path of paths) {
 
 /** How a start reads where each path a process names leads: the program that reads, with its
  *  arguments, run as a child of the start, which reads and writes as `statScript` does (`run`);
- *  and the mount table, a file in the format of `/proc/self/mountinfo`, by which the start puts
- *  the paths into the groups it reads at the same time (`mounts`, `topOf`). A start runs
- *  `statReader`; a row runs a stand-in program that never answers one path, as a stat on a mount
- *  whose server hangs never does, beside a mount table that says that path is on such a mount, to
- *  see the start's bound on it (`identities`). */
+ *  the mount table, a file in the format of `/proc/self/mountinfo`, by which the start puts the
+ *  paths into the groups it reads at the same time (`mounts`, `topOf`); and how long one path may
+ *  go unanswered (`statMs`). A start runs `statReader`; a row runs a stand-in program that never
+ *  answers one path, as a stat on a mount whose server hangs never does, beside a mount table that
+ *  says that path is on such a mount, to see the start's bound on it (`identities`), and sets that
+ *  bound low, a few seconds, to see it end in that time and not in the start's own. */
 export interface StatReader {
   readonly run: readonly [program: string, ...args: string[]];
   readonly mounts: string;
+  readonly statMs: number;
 }
 
-/** The start's own `StatReader`: the runtime of this process, Bun or Node, with `statScript`, and
- *  the kernel's mount table of this process. */
+/** The start's own `StatReader`: the runtime of this process, Bun or Node, with `statScript`, the
+ *  kernel's mount table of this process, and the start's own bound on one path (`statMs`). */
 export const statReader: StatReader = {
   run: [process.execPath, "-e", statScript],
   mounts: "/proc/self/mountinfo",
+  statMs,
 };
 
 /** What this module's own lines are prefixed with, as every starter in `e2e/` names itself. */
 const named = "e2e/harness-postgres-processes.ts";
 
-/** Each path that answered no stat within `statMs` in this process: it is not asked again, and no
- *  path under it is, since a mount that hangs holds each later stat of it, and of what is on it. */
-const unanswered = new Set<string>();
+/** Each path that answered no stat within the bound of the reader that read it (`StatReader`) in
+ *  this process, with that bound: it is not asked again, and no path under it is, since a mount
+ *  that hangs holds each later stat of it, and of what is on it. */
+const unanswered = new Map<string, number>();
 
 /** Whether `path` is one that answered no stat in this process, or is under one (`unanswered`). */
 function underUnanswered(path: string): boolean {
-  for (const hung of unanswered) if (path === hung || path.startsWith(`${hung}/`)) return true;
+  for (const hung of unanswered.keys())
+    if (path === hung || path.startsWith(`${hung}/`)) return true;
   return false;
 }
 
@@ -167,10 +172,10 @@ interface ChildRead {
 
 /** What one child that runs `reader` read of `paths` before it ended or was ended (`ChildRead`).
  *  It is ended where it has not started within `statStartMs`, or has read no next path within
- *  `statMs`, and nothing waits for a child that the kernel still holds after SIGKILL. The child is
- *  told which read of this process, and which of its top paths, it serves (`HOLDER_READ`, `read`
- *  and `top` of `identities`), which the start's own reader ignores and a row's count of reads
- *  reads. */
+ *  the reader's bound (`StatReader.statMs`), and nothing waits for a child that the kernel still
+ *  holds after SIGKILL. The child is told which read of this process, and which of its top
+ *  paths, it serves (`HOLDER_READ`, `read` and `top` of `identities`), which the start's own
+ *  reader ignores and a row's count of reads reads. */
 function statInChild(paths: readonly string[], reader: StatReader, of: string): Promise<ChildRead> {
   const { promise, resolve } = Promise.withResolvers<ChildRead>();
   const [program, ...args] = reader.run;
@@ -203,7 +208,7 @@ function statInChild(paths: readonly string[], reader: StatReader, of: string): 
       if (started) read.push(line === "-" ? null : line);
       else started = line === "ready";
       clearTimeout(timer);
-      timer = setTimeout(end, statMs);
+      timer = setTimeout(end, reader.statMs);
     }
     if (read.length === paths.length) end();
   });
@@ -344,14 +349,15 @@ const namedLeft = 5;
  *  its own. Each group is read by children of its own, and the children of the groups are started
  *  at the same time, so mounts that hang run out their bounds together: two that hang cost one
  *  bound, not two, and a path of a mount that answers is read at once. Within a group each
- *  directory is read before the paths under it. A path that answered no stat within `statMs`, or is
- *  under one, here or earlier in this process (`unanswered`), has no entry and is not asked: where a
- *  child waits on a path past that bound, the path joins `unanswered`, and a line names it at once,
- *  with `directory`, whose holders the read is for. On another mount a child of its own then reads
- *  the paths of that mount after it that are not under it; on the machine's own filesystems, which
- *  hang only where the kernel does, the read stops there, and leaves the paths after it unread
- *  (`notReached`), and the line names them. A child that did not start leaves the paths it was
- *  given without an entry, and they are asked again at the next read. */
+ *  directory is read before the paths under it. A path that answered no stat within the reader's
+ *  bound (`StatReader.statMs`), or is under one, here or earlier in this process (`unanswered`),
+ *  has no entry and is not asked: where a child waits on a path past that bound, the path joins
+ *  `unanswered`, and a line names it at once, with `directory`, whose holders the read is for. On
+ *  another mount a child of its own then reads the paths of that mount after it that are not under
+ *  it; on the machine's own filesystems, which hang only where the kernel does, the read stops
+ *  there, and leaves the paths after it unread (`notReached`), and the line names them. A child
+ *  that did not start leaves the paths it was given without an entry, and they are asked again at
+ *  the next read. */
 async function identities(
   paths: readonly string[],
   reader: StatReader,
@@ -392,7 +398,7 @@ async function identities(
         for (const [at, identity] of answers.entries()) found.set(rest[at] ?? "", identity);
         const hung = rest[answers.length];
         if (!started || hung === undefined) break;
-        unanswered.add(hung);
+        unanswered.set(hung, reader.statMs);
         const after = rest.slice(answers.length + 1).filter((path) => !underUnanswered(path));
         const stops = top === local && after.length > 0;
         if (stops) for (const path of after) notReached.set(path, hung);
@@ -400,7 +406,7 @@ async function identities(
           ? `, and reads none of the ${after.length} paths of the machine's own filesystems after it: ${after.slice(0, namedLeft).join(", ")}${after.length > namedLeft ? ` and ${after.length - namedLeft} more` : ""}`
           : "";
         console.error(
-          `${named}: the read of what holds ${directory} waits no longer on ${hung}, which answered no stat within ${statMs / 1000} s, nor asks a path under it${left}: a process that names one may hold ${directory}`
+          `${named}: the read of what holds ${directory} waits no longer on ${hung}, which answered no stat within ${reader.statMs / 1000} s, nor asks a path under it${left}: a process that names one may hold ${directory}`
         );
         rest = stops ? [] : after;
       }
@@ -421,17 +427,19 @@ export interface Holding {
   }[];
 }
 
-/** Why `path` has no answer of a holder read, as a line says it: it answered no stat within
- *  `statMs`, or a directory above it did (`unanswered`); the read of the machine's own filesystems
- *  stopped at a path before it (`notReached`); or the reader that was to read it did not start
- *  within `statStartMs`. */
+/** Why `path` has no answer of a holder read, as a line says it: it answered no stat within the
+ *  bound of the reader that read it, or a directory above it did (`unanswered`); the read of the
+ *  machine's own filesystems stopped at a path before it (`notReached`), which answered no stat
+ *  within that bound; or the reader that was to read it did not start within `statStartMs`. */
 function whyUnread(path: string): string {
-  const hung = `answered no stat within ${statMs / 1000} s`;
+  const hung = (at: string): string =>
+    `answered no stat within ${(unanswered.get(at) ?? Number.NaN) / 1000} s`;
   for (let at = path; ; at = dirname(at)) {
-    if (unanswered.has(at)) return at === path ? `which ${hung}` : `under ${at}, which ${hung}`;
+    if (unanswered.has(at))
+      return at === path ? `which ${hung(at)}` : `under ${at}, which ${hung(at)}`;
     const before = notReached.get(at);
     if (before !== undefined)
-      return `which the read did not reach, as ${before}, before it, ${hung}`;
+      return `which the read did not reach, as ${before}, before it, ${hung(before)}`;
     if (dirname(at) === at) {
       return `which no reader read, as the reader did not start within ${statStartMs / 1000} s`;
     }
@@ -469,7 +477,7 @@ function outsideOwnClaims(pid: string, paths: readonly string[]): string[] {
  *  start by its paths under its own claim (`outsideOwnClaims`), which are its removal. A process
  *  that ends while it is read, or whose links this user may not read, holds nothing here, and
  *  nothing holds a directory that is gone. `/proc` is read here; where each path leads is read in
- *  a child that runs `reader` (`StatReader`), all of them within `statMs` (`identities`), and a
+ *  a child that runs `reader` (`StatReader`), all of them within its bound (`identities`), and a
  *  process none of whose paths leads into the directory, but one of whose paths has no answer, is
  *  one the start cannot judge (`unread`). Answers each holder and each process it cannot judge,
  *  in pid order (`Holding`). */

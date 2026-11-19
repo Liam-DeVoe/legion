@@ -48,14 +48,21 @@ const dockerWatchMs = 5_000;
 
 /** The bounds of a start's removal of one container: how long one ask of Docker may go
  *  unanswered, which is also how long the removal runs before the start says that it waits
- *  (`answerMs`), and how long the start waits in all (`boundMs`). A start keeps `dockerMs` and
- *  `removalMs`; a row sets them low to see each end. */
+ *  (`answerMs`), how long the start waits in all (`boundMs`), and how long it waits before each
+ *  ask (`watchMs`). A start keeps `dockerMs`, `removalMs` and `dockerWatchMs`; a row sets each low,
+ *  a few seconds, to see each end in that time and not in the start's own, and the source check
+ *  of the rows holds each row's limit to the program's sum of what it waits for. */
 export interface RemovalBounds {
   readonly answerMs: number;
   readonly boundMs: number;
+  readonly watchMs: number;
 }
 /** The start's own bounds, which a row runs too, to see that nothing ends a removal before them. */
-export const removalBounds: RemovalBounds = { answerMs: dockerMs, boundMs: removalMs };
+export const removalBounds: RemovalBounds = {
+  answerMs: dockerMs,
+  boundMs: removalMs,
+  watchMs: dockerWatchMs,
+};
 
 /** What a start's removal of a container reads the time from, waits on and runs `docker` on: the
  *  machine's own (`machine`), or a row's, whose clock the row moves itself and whose `docker`
@@ -181,7 +188,7 @@ function cutShort(asked: Ask, limit: number, { answerMs }: RemovalBounds): boole
 
 /** Runs `docker rm --force --volumes id` on `on` for as long as Docker takes over it, within
  *  `boundMs` of the start of the removal (`wait`). While it runs, the start asks Docker every
- *  `dockerWatchMs` whether it still answers (`ask`), and says that it waits once the removal has
+ *  `watchMs` whether it still answers (`ask`), and says that it waits once the removal has
  *  run `answerMs` (`wait`); where one ask gets no answer, the daemon hangs or cannot be reached,
  *  and where the bound comes first, the removal is given up: the start stops its `docker rm`. Each
  *  pause and each ask takes the less of its own limit and what is left of the bound (`within`). */
@@ -200,7 +207,7 @@ async function removeOnce(
   const bound = `Docker did not end the removal within ${bounds.boundMs / 1000} s`;
   let why = `${bound}, while it answered each ask`;
   while (wait.left() > 0) {
-    await on.sleep(within(dockerWatchMs, wait), ended.signal);
+    await on.sleep(within(bounds.watchMs, wait), ended.signal);
     if (ended.signal.aborted) return removal;
     if (wait.left() <= 0) break;
     const limit = within(bounds.answerMs, wait);
@@ -234,7 +241,7 @@ export type ContainerRemoval =
  *  (moby v28.5.2, `daemon/delete.go:40-44`, then `:91-101`), and reads that container as `running`
  *  until its process has ended (`container/state.go:121-136`), which a kill sent through containerd
  *  with no deadline (`daemon/kill.go:111`) can make last as long as the daemon hangs. It asks
- *  Docker every `dockerWatchMs` whether it still lists the container (`ask`), and says that it
+ *  Docker every `watchMs` whether it still lists the container (`ask`), and says that it
  *  waits once the removal has run `answerMs` (`wait`), within the bound of the start's removal,
  *  each pause and each ask taking the less of its own limit and what is left of that bound
  *  (`within`), on `on`. Answers that another start removed it, in Docker's words, once Docker
@@ -248,7 +255,7 @@ async function otherRemoval(
   on: Machine
 ): Promise<ContainerRemoval> {
   while (wait.left() > 0) {
-    await on.sleep(within(dockerWatchMs, wait));
+    await on.sleep(within(bounds.watchMs, wait));
     if (wait.left() <= 0) break;
     const limit = within(bounds.answerMs, wait);
     const listed = await ask(id, limit, on);

@@ -214,22 +214,24 @@ const containerRemovalModule = fileURLToPath(
 );
 
 /** The start's sweep, as a child of this file runs it: within the start's own bounds of a
- *  container's removal, or the row's (`RemovalBounds`), where `ANSWER_MS` and `BOUND_MS` give them,
- *  and with the start's own reader of where each path a process names leads, or the row's
- *  (`StatReader`), where `STAT_READER` gives it. */
+ *  container's removal, or the row's (`RemovalBounds`), where `ANSWER_MS`, `BOUND_MS` and
+ *  `WATCH_MS` give them, and with the start's own reader of where each path a process names
+ *  leads, or the row's (`StatReader`), where `STAT_READER` gives it. */
 const sweepScript = `
 import { removeLeftoverPostgres } from ${JSON.stringify(removalModule)};
-const { ANSWER_MS, BOUND_MS, STAT_READER } = process.env;
+const { ANSWER_MS, BOUND_MS, WATCH_MS, STAT_READER } = process.env;
 await removeLeftoverPostgres(
-  ANSWER_MS === undefined ? undefined : { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS) },
+  ANSWER_MS === undefined
+    ? undefined
+    : { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS), watchMs: Number(WATCH_MS) },
   STAT_READER === undefined ? undefined : JSON.parse(STAT_READER)
 );
 `;
 
 /** The environment that gives a start's removal of a container in a child of this file the
  *  row's `bounds`. */
-function boundsEnv({ answerMs, boundMs }: RemovalBounds): Record<string, string> {
-  return { ANSWER_MS: String(answerMs), BOUND_MS: String(boundMs) };
+function boundsEnv({ answerMs, boundMs, watchMs }: RemovalBounds): Record<string, string> {
+  return { ANSWER_MS: String(answerMs), BOUND_MS: String(boundMs), WATCH_MS: String(watchMs) };
 }
 
 /** A stand-in for the reader a start's holder read runs (`StatReader`): its program reads the
@@ -244,14 +246,16 @@ function boundsEnv({ answerMs, boundMs }: RemovalBounds): Record<string, string>
  *  time it reached that path and the time again every 500 ms until it is killed
  *  (`clockOf`), each in seconds since the machine booted, the one clock the kernel gives both a
  *  process's start and `/proc/uptime` on. Its mount table is this process's, with each mount of
- *  `mounts` added after it, a
- *  mount point and its type, as the row plants a path of `never` on a network mount, and with no
- *  type where `type` is empty, as a line whose type the start cannot read: the file `table`, which
- *  the stand-in writes. */
+ *  `mounts` added after it, a mount point and its type, as the row plants a path of `never` on a
+ *  network mount, and with no type where `type` is empty, as a line whose type the start cannot
+ *  read: the file `table`, which the stand-in writes. The start waits on one path `bound` ms
+ *  (`StatReader.statMs`): the row's own, a few seconds, so the row sees that wait end in that time
+ *  and not in the start's own `statMs`. */
 export function neverAnswering(
   never: readonly string[],
   clock: string,
   table: string,
+  bound: number,
   mounts: readonly { readonly point: string; readonly type: string }[] = []
 ): StatReader {
   const own = readFileSync("/proc/self/mountinfo", "utf8").trimEnd();
@@ -269,6 +273,7 @@ export function neverAnswering(
   );
   return {
     mounts: table,
+    statMs: bound,
     run: [
       process.execPath,
       "--eval",
@@ -309,15 +314,17 @@ for (const path of paths) {
 }
 
 /** A stand-in for the reader a start's holder read runs (`StatReader`), with this process's mount
- *  table: it reads where each path leads as the start's own reader does, but each path that is
- *  `to` or under it as the same path under `from`: what the kernel answers once `from` has been
- *  renamed to `to`, as another start's claim of a directory renames it (`claimForRemoval` of
+ *  table and the start's own bound on one path (`statMs`), which it never runs out, as it answers
+ *  each path at once: it reads where each path leads as the start's own reader does, but each path
+ *  that is `to` or under it as the same path under `from`: what the kernel answers once `from` has
+ *  been renamed to `to`, as another start's claim of a directory renames it (`claimForRemoval` of
  *  `e2e/harness-postgres-removal.ts`). A row so runs a holder read that looked at `from` before
  *  that rename and reads what the processes name after it, an order no row can time: the start
  *  looks at the directory and reads `/proc` with no `await` between them. */
 export function readsAfterRename(from: string, to: string): StatReader {
   return {
     mounts: "/proc/self/mountinfo",
+    statMs,
     run: [
       process.execPath,
       "--eval",
@@ -431,7 +438,9 @@ const readsAfterStop = 2;
  *  Those come after the row's deadline (`Row.deadline`), which ends every fixture call of the
  *  row's own waits: a call that runs to the deadline then leaves the `finally` the time its stops
  *  take, and the removals after them the room above it (`Row.cleanup`), where a deadline that
- *  counted the stops left a removal none, and the container of a stack the row killed stayed. */
+ *  counted the stops left a removal none, and the container of a stack the row killed stayed. The
+ *  room above all of them is `rowRoomMs`, or the row's own (`roomMs`), a few seconds, for a row
+ *  that sees that room run out in real time, so it takes seconds and not the room's minute. */
 export interface Waits {
   readonly children: number;
   readonly reads: number;
@@ -440,6 +449,7 @@ export interface Waits {
   readonly bounds: readonly number[];
   readonly parts?: readonly (Part | AtOnce)[];
   readonly ends?: readonly (number | Part)[];
+  readonly roomMs?: number;
 }
 
 /** What only `partOf` puts in a `Part`, so that no row and no fixture writes a part, or its bound,
@@ -522,15 +532,16 @@ export function waitsMs(waits: Waits): number {
 export const rowRoomMs = 60_000;
 
 /** A row's own limit: everything it waits for (`waitsMs`), the waits of its `finally`
- *  (`Waits.ends`), and `rowRoomMs` above them. Every row of the files these fixtures serve that
- *  counts its waits (`rowOf`) states its limit so, and no other way, which a row of
- *  `harness-postgres-removal.test.ts` reads from their source (`limitsNotSummed`). */
+ *  (`Waits.ends`), and its room above them, `rowRoomMs` or its own (`Waits.roomMs`). Every row of
+ *  the files these fixtures serve that counts its waits (`rowOf`) states its limit so, and no
+ *  other way, which a row of `harness-postgres-removal.test.ts` reads from their source
+ *  (`limitsNotSummed`). */
 export function rowMs(waits: Waits): number {
   const ends = (waits.ends ?? []).reduce<number>(
     (sum, end) => sum + (typeof end === "number" ? end : end.ms),
     0
   );
-  return waitsMs(waits) + ends + rowRoomMs;
+  return waitsMs(waits) + ends + (waits.roomMs ?? rowRoomMs);
 }
 
 /** The variable through which a CI step that runs these rows gives the time at which its own
@@ -568,9 +579,10 @@ export function stepEnds(): number | undefined {
  *  then and no longer, so it ends within the row's own limit with a reason that names it.
  *  `stops` is when the waits of the row's `finally` (`Waits.ends`), such as the stop of a stack
  *  it started, end, and `cleanup` when a fixture call that removes what the row made waits until:
- *  after them, and before half the room above them (`rowRoomMs`), so a removal's line, and not
- *  the row's own clock, ends the row. `end` is when the row's own limit ends it (`rowMs` from its
- *  start), until which each stand-in the row needs alive lives (`lifeOf`).
+ *  after them, and before half the room above them (`rowRoomMs`, or `Waits.roomMs`), so a
+ *  removal's line, and not the row's own clock, ends the row. `end` is when the row's own limit
+ *  ends it (`rowMs` from its start), until which each stand-in the row needs alive lives
+ *  (`lifeOf`).
  *  Where the CI step that runs the row ends before that (`stepEnds`), the step's end is the row's
  *  end, and `cut` says so: the deadline is that end less the row's own time for its `finally`
  *  (its stops, and the room above them in which it removes what it made), each scaled by what the
@@ -644,13 +656,14 @@ export function rowOf(waits: Waits): Row {
   ];
   const start = machine.now();
   const own = rowMs(waits);
+  const room = waits.roomMs ?? rowRoomMs;
   const step = stepEnds();
   const limit = step === undefined ? own : Math.max(0, Math.min(own, step - start));
   // What the step leaves of the row's own limit: 1 where the step leaves it all, as off CI.
   const share = limit / own;
   const deadline = start + Math.floor(waitsMs(waits) * share);
   // The waits of the `finally` after the deadline: its stops, then the room for its removals.
-  const stops = deadline + Math.floor((own - waitsMs(waits) - rowRoomMs) * share);
+  const stops = deadline + Math.floor((own - waitsMs(waits) - room) * share);
   const cut =
     step !== undefined && limit < own
       ? `the end of the CI step that runs it, at ${new Date(step).toISOString()} (${stepEndsVariable}), ${limit / 1000} s after the row began and before its own ${own / 1000} s`
@@ -660,7 +673,7 @@ export function rowOf(waits: Waits): Row {
     deadline,
     stops,
     // Half the room after the stops: the row's limit less half its share of the room.
-    cleanup: start + limit - (rowRoomMs * share) / 2,
+    cleanup: start + limit - (room * share) / 2,
     end: start + limit,
     cut,
     child: (what) => {
@@ -985,8 +998,9 @@ export function holding(lines: readonly string[], text: string): string[] {
  *  stderr. */
 const removeScript = `
 import { removeContainer } from ${JSON.stringify(containerRemovalModule)};
-const { CONTAINER_ID: id = "", ANSWER_MS, BOUND_MS } = process.env;
-console.log(JSON.stringify(await removeContainer(id, undefined, { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS) })));
+const { CONTAINER_ID: id = "", ANSWER_MS, BOUND_MS, WATCH_MS } = process.env;
+const bounds = { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS), watchMs: Number(WATCH_MS) };
+console.log(JSON.stringify(await removeContainer(id, undefined, bounds)));
 `;
 
 /** One entry of a stand-in's own clock: when a call reached it, or when it ended, in seconds since

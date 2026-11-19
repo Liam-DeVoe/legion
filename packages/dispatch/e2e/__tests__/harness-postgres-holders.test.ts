@@ -501,14 +501,25 @@ test.skipIf(!onLinux)(
  *  the paths after it that are not under it. */
 const neverAnswers: Waits = { children: 2, reads: 2, bounds: [claimEventMs] };
 
-/** The room the next rows give the stand-in reader's clock above the bound of the start's wait,
- *  in seconds: the timer of the start that ends that wait, which fires late under load, and the
- *  last tick of the stand-in's own clock before its kill, 500 ms apart. It is far less than the
- *  240 s a reader has to start (`statStartMs`), so a wait bounded by that time falls outside it,
- *  and so does a bound for each path in turn, which nine paths under one directory make 100 s,
- *  and not one bound for the directory they are under.
- */
-const clockRoomS = 60;
+/** How long the start of the next rows waits on one path that answers no stat (`StatReader.statMs`
+ *  of the row's stand-in reader, `neverAnswering`): the row's own, 3 s, through the same parameter
+ *  the start's own reader gives its own `statMs`, 10 s, so each row waits seconds and not the
+ *  start's own bound. */
+const readerMs = 3_000;
+
+/** The room the next rows give the stand-in reader's clock above the bound of the start's wait
+ *  (`readerMs`), in seconds: the timer of the start that ends that wait, which fires late under
+ *  load, and the last tick of the stand-in's own clock before its kill, 500 ms apart. In 680 runs
+ *  of the two-mounts rows beside a shared Linux machine's load on 2026-11-19, from the first hung
+ *  reader's fork to its last tick took at most 0.1 s past the start's own 10 s bound. The room is
+ *  less than the 7 s from the row's bound to that 10 s (`statMs`), so a start that keeps its own
+ *  bound and not the reader's falls outside it, and so do a wait bounded by the 240 s a reader has
+ *  to start (`statStartMs`), and a bound for each path in turn, which nine paths under one
+ *  directory make 27 s, and not one bound for the directory they are under. */
+const clockRoomS = 5;
+if ((statMs - readerMs) / 1000 <= clockRoomS) {
+  throw new Error("the rows' room reaches the start's own bound on one path, which they must see");
+}
 
 // A path on a network or FUSE mount whose server hangs never answers a stat, nor does any path
 // under it, and a start whose holder read waits on one waits for ever with no line. The row's start
@@ -552,7 +563,7 @@ for (const holder of [
         // The hung directory is on the machine's own filesystem here, which the mount table says
         // (this process's own table): the read of those filesystems stops at it, and its line
         // names the paths it then leaves unread, the limit of a local filesystem that hangs.
-        const reader = neverAnswering([never], clock, join(tmp, "mountinfo"));
+        const reader = neverAnswering([never], clock, join(tmp, "mountinfo"), readerMs);
         const started = startSweep(row, tmp, { reader });
         sweeping = started.child;
         // A bound on another process, which no fake clock of this one reaches: the row's own end
@@ -571,21 +582,21 @@ for (const holder of [
           held[0]?.split(`bun ${holds.pid} may hold, as it names `)[1] ?? ""
         ).split(", ");
         const reason = rest.join(", ");
-        const hungReason = `${never === named[0] ? "which" : `under ${never}, which`} answered no stat within ${statMs / 1000} s`;
-        const stoppedReason = `which the read did not reach, as ${never}, before it, answered no stat within ${statMs / 1000} s`;
+        const hungReason = `${never === named[0] ? "which" : `under ${never}, which`} answered no stat within ${readerMs / 1000} s`;
+        const stoppedReason = `which the read did not reach, as ${never}, before it, answered no stat within ${readerMs / 1000} s`;
         expect(
           (path === named[0] && reason.startsWith(hungReason)) || reason.startsWith(stoppedReason)
         ).toBe(true);
         expect(holding(lines, `: the read of what holds ${data} waits no longer on `)).toEqual([
           expect.stringContaining(
-            `waits no longer on ${never}, which answered no stat within ${statMs / 1000} s, nor asks a path under it, and reads none of the `
+            `waits no longer on ${never}, which answered no stat within ${readerMs / 1000} s, nor asks a path under it, and reads none of the `
           ),
         ]);
         const waited = clockOf(clock);
         expect(waited.length).toBeGreaterThan(0);
         for (const { ticks } of waited) {
           expect((ticks.at(-1) ?? Number.NaN) - (ticks[0] ?? Number.NaN)).toBeLessThan(
-            statMs / 1000 + clockRoomS
+            readerMs / 1000 + clockRoomS
           );
         }
       } finally {
@@ -609,11 +620,11 @@ const twoHungMounts: Waits = { children: 3, reads: 1, bounds: [claimEventMs, cla
 // Two mounts whose servers hang, as two network or FUSE mounts of one machine can at once: a start
 // reads the paths of each such mount, and of each mount of a type it does not know or that the
 // mount table does not give, in a group of its own, and the groups at the same time, so the two
-// cost one bound, about 10 s, and not one after the other, 20 s; and a path of the machine's own
-// filesystems, which answer, is read all the same. The row runs the start's read on a mount table
-// of its own (`neverAnswering`): this process's, with the two hung directories planted as two
-// mounts (`/never-answers-a-<pid>`, `/never-answers-b-<pid>`), which the stand-in reader never
-// answers. Its own clock, which no load stretches, times each wait: each hung reader was forked
+// cost one bound, `readerMs`, and not one after the other, twice that; and a path of the
+// machine's own filesystems, which answer, is read all the same. The row runs the start's read on a
+// mount table of its own (`neverAnswering`): this process's, with the two hung directories planted
+// as two mounts (`/never-answers-a-<pid>`, `/never-answers-b-<pid>`), which the stand-in reader
+// never answers. Its own clock, which no load stretches, times each wait: each hung reader was forked
 // before the other's wait ended. The healthy holder holds the data directory only through a link,
 // which only a read of where it leads, and no spelling of the mark, shows.
 for (const mounts of [
@@ -668,6 +679,7 @@ for (const mounts of [
           hung,
           clock,
           join(tmp, "mountinfo"),
+          readerMs,
           hung.map((point, index) => ({ point, type: mounts.types[index] ?? "" }))
         );
         const started = startSweep(row, tmp, { reader });
@@ -689,7 +701,7 @@ for (const mounts of [
           `two hung mounts (${mounts.types.map((type) => type || "no type").join(", ")}): ${waited.length} hung readers, ${(last - forks).toFixed(1)} s from the first hung reader's fork to the last tick`
         );
         expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
-        const why = `under ${hung[0]}, which answered no stat within ${statMs / 1000} s`;
+        const why = `under ${hung[0]}, which answered no stat within ${readerMs / 1000} s`;
         expect(holding(lines, `${mark} (${data}, which `)).toEqual([
           expect.stringContaining(
             `${data}, which bun ${healthy.pid} still holds and bun ${holds.pid} may hold, as it names ${named[0]}, ${why})`
@@ -700,7 +712,7 @@ for (const mounts of [
         ).toEqual(
           hung.map((path) =>
             expect.stringContaining(
-              `waits no longer on ${path}, which answered no stat within ${statMs / 1000} s, nor asks a path under it: `
+              `waits no longer on ${path}, which answered no stat within ${readerMs / 1000} s, nor asks a path under it: `
             )
           )
         );
@@ -714,7 +726,7 @@ for (const mounts of [
         expect(first.forked).toBeLessThan(second.ticks.at(-1) ?? Number.NaN);
         for (const { ticks } of waited) {
           expect((ticks.at(-1) ?? Number.NaN) - (ticks[0] ?? Number.NaN)).toBeLessThan(
-            statMs / 1000 + clockRoomS
+            readerMs / 1000 + clockRoomS
           );
         }
       } finally {
@@ -780,7 +792,7 @@ test.skipIf(!onLinux)(
         );
       }
 
-      const reader = neverAnswering([], clock, join(tmp, "mountinfo"), [
+      const reader = neverAnswering([], clock, join(tmp, "mountinfo"), readerMs, [
         { point, type: "binfmt_misc" },
       ]);
       const started = startSweep(row, tmp, { reader });

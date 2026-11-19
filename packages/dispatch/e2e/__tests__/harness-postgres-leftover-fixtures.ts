@@ -843,6 +843,7 @@ async function removeMade(row: Row, args: readonly string[]): Promise<string> {
     const removal = await removeContainer(id, `container ${id.slice(0, 12)} (${name})`, {
       answerMs: left(),
       boundMs: left(),
+      watchMs: removalBounds.watchMs,
     });
     said.push(
       removal.kind === "failed"
