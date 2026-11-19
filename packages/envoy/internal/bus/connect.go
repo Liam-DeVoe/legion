@@ -317,11 +317,12 @@ func options(name string, urls []string, callbacks connectCallbacks, now func() 
 	// the list this client was configured with, never from the connection: nc.ConnectedUrl() is
 	// empty while reconnecting. The line goes through the package-level slog, like every other bus
 	// line, because a listener process test fails if a bus line stops being Go's text format
-	// (cmd/listener/startup_test.go:598-612 names the deployed metric filters). Each server is
-	// written without its userinfo (natsURLWithoutUserinfo), because nats.go authenticates with a
-	// URL's userinfo, a token or a user and password, when the URL carries one. The nkey credential
-	// never reaches a line: options never sees it, since nkeyCredential is applied to the options
-	// value afterwards (connect.go, connectWithContext) and holds a public key and a signer only.
+	// (cmd/listener/startup_test.go, TestListenerLogsFromOtherPackagesKeepTheirHandlers, names the
+	// deployed metric filters). Each server is written without its userinfo
+	// (natsURLWithoutUserinfo), because nats.go authenticates with a URL's userinfo, a token or a
+	// user and password, when the URL carries one. The nkey credential never reaches a line:
+	// options never sees it, since nkeyCredential is applied to the options value afterwards
+	// (connect.go, connectWithContext) and holds a public key and a signer only.
 	reconnectAttemptFailed := func(err error) {
 		if !throttle.allow() {
 			return
