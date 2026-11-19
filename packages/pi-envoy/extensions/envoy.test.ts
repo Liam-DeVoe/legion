@@ -625,9 +625,9 @@ beforeAll(() => setNatsConnectForTests(natsStandInConnect));
 afterAll(() => resetNatsConnectForTests());
 
 // A bound on work, not a hang guard: nothing here waits. The body removes and makes the row's
-// scratch directories, which a loaded host stretches. 60_000. Worst measured cost: 194.62 ms over
-// 10 runs of the `session_shutdown` budget row at 22 busy loops (11 per CPU) on a two-CPU, 8 GiB
-// pod; 29.72 ms idle over 3 087 invocations.
+// scratch directories, which a loaded host stretches. 60_000. Worst measured cost: 122.19 ms over
+// 10 runs of the `session_shutdown` budget row at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB
+// pod; 80.06 ms idle over 3 174 invocations.
 beforeEach(() => {
   rowGeneration += 1;
   jest.useRealTimers();
@@ -12073,8 +12073,10 @@ console.log(JSON.stringify(args));
         ENVOY_SESSION_ROLE: "fan-cloud",
         ENVOY_SESSION_ROLE_SESSION: "ses_pod_parent",
       },
-      // Killed before the row's own bound, so a hung run leaves no process and reports its stderr.
-      timeoutMs: 30_000,
+      // A backstop above the row's own limit, so that limit, not this kill, decides a slow run.
+      // The runner kills the process of a row it abandons, and the children end with it
+      // (`runSessionPod`).
+      timeoutMs: 360_000,
     });
     const refusal = (session: string) =>
       `envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_parent; this session ${session} claims nothing`;
@@ -12097,7 +12099,12 @@ console.log(JSON.stringify(args));
         },
       ],
     });
-  }, 60_000);
+    // A hang guard: what can hang is a process that never reports. 200_000. Worst measured cost:
+    // 66 217.75 ms at 15 busy loops (the 48 rung) on a two-CPU, 8 GiB pod. The row's rung is 48,
+    // below this file's: its three processes each load the extension, so at 96 it cost up to
+    // 131 805.62 ms, and at 240 more than 540 s, and three times either is past what the pi-envoy
+    // job's 10 minutes leave one row.
+  }, 200_000);
 
   test("unsubscribing all topics preserves a held role for heartbeat re-assertion", async () => {
     const role = "librarian";
