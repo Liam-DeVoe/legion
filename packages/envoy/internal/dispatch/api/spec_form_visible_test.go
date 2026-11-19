@@ -76,12 +76,17 @@ func TestTheRequestJudgesTheWordsAndTheAddressesOfALink(t *testing.T) {
 	})
 }
 
-// The deep audit's four addresses with no scheme, through the approval request route: the
-// document's page reads such an address against itself, so from a spec, a path of another
-// document of its issue, of its Verification document and of its decisions, and a block of the
-// spec itself, each opens the page of a record, and the request is refused. From a Verification
-// document, the name of another document of its issue opens that document. The control opens no
-// record from either base, the document's page or the server's origin.
+// The deep audit's addresses with no scheme, through the approval request route: each page that
+// draws a document reads such an address against itself, so the judgment reads it against each.
+// The dashboard draws a spec on the Spec tab of its issue, on the issue's own page and on its
+// Artifacts page (`/issues/<KEY>/artifacts/spec`, where the version picker and the activity lines
+// open it), and the Verification document on its own tab and on its Artifacts page. So from a
+// spec, a path of another document of its issue, of its Verification document and of its
+// decisions, a block of the spec itself, the name of another document of the issue alone, and a
+// path up to the issue's own pages each open the page of a record, and the request is refused.
+// The singular `artifact/<slug>`, which the dashboard reads as the plural, does too. From a
+// Verification document, the name of another document of its issue and a path of the issue's
+// Artifacts route open that document. The controls open no record from any page.
 func TestTheRequestReadsAnAddressAgainstThePageOfItsDocument(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
@@ -93,9 +98,25 @@ func TestTheRequestReadsAnAddressAgainstThePageOfItsDocument(t *testing.T) {
 			want: []string{"statement decisions dispatch-link"}},
 		{name: "a block of the spec, from the spec", spec: formRequirement("block", "Dispatch keeps [the part](#b-x1)."),
 			want: []string{"statement block dispatch-link"}},
-		{name: "the control: a page that is no record from either base", spec: formRequirement("guide", "Dispatch keeps [the guide](docs/guide)."),
+		{name: "a document of the issue by its name alone, from the spec's Artifacts page", spec: formRequirement("slug-notes", "Dispatch keeps [the notes](notes-md)."),
+			want: []string{"statement slug-notes dispatch-link"}},
+		{name: "the terms of the issue by their name alone, from the spec's Artifacts page", spec: formRequirement("slug", "Dispatch keeps [the terms](terms-md)."),
+			want: []string{"statement slug dispatch-link"}},
+		{name: "the Verification document by its name alone, from the spec's Artifacts page", spec: formRequirement("slug-checks", "Dispatch keeps [the checks](verification-md)."),
+			want: []string{"statement slug-checks dispatch-link"}},
+		{name: "the decisions up one folder, from the spec's Artifacts page", spec: formRequirement("up-decisions", "Dispatch keeps [the decisions](../decisions)."),
+			want: []string{"statement up-decisions dispatch-link"}},
+		{name: "the spec up one folder, from the spec's Artifacts page", spec: formRequirement("up-spec", "Dispatch keeps [the spec](../spec)."),
+			want: []string{"statement up-spec dispatch-link"}},
+		{name: "a document of the issue by the singular artifact path, from its spec", spec: formRequirement("singular", "Dispatch keeps [the notes](artifact/notes-md)."),
+			want: []string{"statement singular dispatch-link"}},
+		{name: "the Verification tab of the issue, from its spec", spec: formRequirement("tab", "Dispatch keeps [the checks](verification)."),
+			want: []string{"statement tab dispatch-link"}},
+		{name: "the Activity tab up one folder, from the spec's Artifacts page", spec: formRequirement("up-tab", "Dispatch keeps [the events](../activity)."),
+			want: []string{"statement up-tab dispatch-link"}},
+		{name: "the control: a page that is no record from any page", spec: formRequirement("guide", "Dispatch keeps [the guide](docs/guide)."),
 			reads: specform.KindStatement},
-		{name: "the control: the name of a document alone, from a spec", spec: formRequirement("slug", "Dispatch keeps [the terms](terms-md)."),
+		{name: "the control: a path up to a page that is no record from any page", spec: formRequirement("up-guide", "Dispatch keeps [the guide](../docs/guide)."),
 			reads: specform.KindStatement},
 	})
 	for _, test := range []struct {
@@ -103,7 +124,9 @@ func TestTheRequestReadsAnAddressAgainstThePageOfItsDocument(t *testing.T) {
 		refused       bool
 	}{
 		{"another document of the issue, by its name alone", "terms-md", true},
-		{"the control: a page that is no record from either base", "docs/guide", false},
+		{"a document of the issue, by the path of its Artifacts route", "artifacts/notes-md", true},
+		{"the terms of the issue, by the path of their Artifacts route", "artifacts/terms-md", true},
+		{"the control: a page that is no record from any page", "docs/guide", false},
 	} {
 		t.Run("from a Verification document: "+test.name, func(t *testing.T) {
 			issue := createFormIssue(t, tree.handler, tree.root, test.name, "# Spec\n\n"+formRequirement("spec", "Dispatch keeps each check."))

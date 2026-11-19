@@ -360,17 +360,19 @@ const standInServer = "https://dispatch.invalid"
 
 // serverPage is the record of Dispatch whose page address opens, an address with no scheme (a
 // path, a fragment, or "//" and a host), by the server's one reading of the address of a page
-// (text.ParseRef): an issue, its documents, its asks, comments and messages, a document of a
-// project or of an agent, and a block of each. It reads address with each "\" as "/", as a browser
-// reads an address of http, and in the two ways that the dashboard reads it. A component's prose
-// on a page of its own reads it against the origin of the server (nodeRouteFromHref), and the page
-// of the document that holds it reads it against that page (c.Page), as the editor and the browser
-// do. The address links to a record when either reading opens the page of one. So
+// (text.ParseRef, which reads the pages the dashboard's route table reads): an issue and each of
+// its tabs, its documents, its asks, comments and messages, a document of a project or of an
+// agent, and a block of each. It reads address with each "\" as "/", as a browser reads an
+// address of http, and in each way that the dashboard reads it. A component's prose on a page of
+// its own reads it against the origin of the server (nodeRouteFromHref), and each page that draws
+// the document that holds it reads it against that page (c.Pages), as the editor and the browser
+// do. The address links to a record when any reading opens the page of one. So
 // "/projects/ACME/documents/terms-md", "projects/ACME/documents/terms-md" and
-// "../../projects/ACME/documents/terms-md" name the same document, and from the spec of ACME-1,
-// "artifacts/notes-md", "decisions" and "#b-x1" name a document of ACME-1, its decisions and a
-// block of the spec. A path that names no such page from either base, and an address of another
-// host, name none.
+// "../../projects/ACME/documents/terms-md" name the same document; from the spec of ACME-1,
+// "artifacts/notes-md", "decisions", "verification" and "#b-x1" name a document of ACME-1, its
+// decisions, its Verification tab and a block of the spec, and from its Artifacts page
+// "notes-md" and "../decisions" do too. A path that names no such page from any base, and an
+// address of another host, name none.
 func serverPage(c Context, address string) (text.Ref, bool) {
 	if written, err := url.Parse(address); err != nil || written.Scheme != "" {
 		return text.Ref{}, false
@@ -388,14 +390,19 @@ func serverPage(c Context, address string) (text.Ref, bool) {
 		return text.Ref{}, false
 	}
 	origin := &url.URL{Scheme: base.Scheme, Host: base.Host}
-	if record, ok := text.ParseRef(origin.ResolveReference(relative).String(), serverURL); ok || c.Page == "" {
-		return record, ok
+	if record, ok := text.ParseRef(origin.ResolveReference(relative).String(), serverURL); ok {
+		return record, true
 	}
-	page, err := url.Parse(strings.TrimSuffix(serverURL, "/") + c.Page)
-	if err != nil {
-		return text.Ref{}, false
+	for _, path := range c.Pages {
+		page, err := url.Parse(strings.TrimSuffix(serverURL, "/") + path)
+		if err != nil {
+			continue
+		}
+		if record, ok := text.ParseRef(page.ResolveReference(relative).String(), serverURL); ok {
+			return record, true
+		}
 	}
-	return text.ParseRef(page.ResolveReference(relative).String(), serverURL)
+	return text.Ref{}, false
 }
 
 // formBreaks is each word that holds a stop with no space after it (stopsWithNoSpace), the

@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // judgedRow is one stored document: each finding of its texts as "<kind> <node> <rule>", in
@@ -344,43 +346,60 @@ func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
 	}
 }
 
-// The page of a document reads an address with no scheme against itself, as the editor and the
-// browser do, and the origin reads it as the dashboard reads a component's prose. An address links
-// to a record when either reading opens the page of one: from a spec, a document of its issue, its
-// Verification document, its decisions and a block or a part of the spec itself; from a
-// Verification document, another document of its issue by its name alone; from a document of a
-// project, another document of the project. A path that opens no record from either base links to
-// none, and with no page the origin's reading alone decides.
+// Each page that draws a document reads an address with no scheme against itself, as the editor
+// and the browser do, and the origin reads it as the dashboard reads a component's prose. An
+// address links to a record when any reading opens the page of one. The pages of a document are
+// the dashboard's (text.DocumentPages): a spec is drawn on its issue's page, on the Spec tab and on
+// its Artifacts page, so from a spec a document of its issue, its Verification document, its
+// decisions, a tab of the issue, a block or a part of the spec itself, and the name of a document
+// of the issue alone each name a record. A Verification document is drawn on its own tab and on
+// its Artifacts page, so from it the name of another document of its issue and a path of the
+// Artifacts route each name one; from a document of a project, another document of the project. A
+// path that opens no record from any base links to none, and with no page the origin's reading
+// alone decides.
 func TestAnAddressIsReadAgainstThePageOfItsDocumentToo(t *testing.T) {
-	const spec, checks, project = "/issues/ACME-1/spec", "/issues/ACME-1/artifacts/verification-md", "/projects/ACME/documents/notes-md"
+	spec := text.DocumentPages(text.DocumentOwner{IssueKey: "ACME-1", Slug: "spec", Primary: true})
+	checks := text.DocumentPages(text.DocumentOwner{IssueKey: "ACME-1", Slug: "verification-md", Role: "verification"})
+	project := text.DocumentPages(text.DocumentOwner{Project: "ACME", Slug: "notes-md"})
 	for _, test := range []struct {
-		page, address string
-		want          []string
+		pages   []string
+		address string
+		want    []string
 	}{
 		{spec, "artifacts/notes-md", []string{`it links to a record of Dispatch: "artifacts/notes-md"`}},
 		{spec, "artifacts/verification-md", []string{`it links to a record of Dispatch: "artifacts/verification-md"`}},
 		{spec, "decisions", []string{`it links to a record of Dispatch: "decisions"`}},
 		{spec, "#b-x1", []string{`it links to a record of Dispatch: "#b-x1"`}},
 		{spec, "#s-form", []string{`it links to a record of Dispatch: "#s-form"`}},
+		{spec, "notes-md", []string{`it links to a record of Dispatch: "notes-md"`}},
+		{spec, "terms-md", []string{`it links to a record of Dispatch: "terms-md"`}},
+		{spec, "verification-md", []string{`it links to a record of Dispatch: "verification-md"`}},
+		{spec, "../decisions", []string{`it links to a record of Dispatch: "../decisions"`}},
+		{spec, "../spec", []string{`it links to a record of Dispatch: "../spec"`}},
+		{spec, "artifact/notes-md", []string{`it links to a record of Dispatch: "artifact/notes-md"`}},
+		{spec, "verification", []string{`it links to a record of Dispatch: "verification"`}},
+		{spec, "../activity", []string{`it links to a record of Dispatch: "../activity"`}},
 		{checks, "terms-md", []string{`it links to a record of Dispatch: "terms-md"`}},
+		{checks, "artifacts/notes-md", []string{`it links to a record of Dispatch: "artifacts/notes-md"`}},
+		{checks, "artifacts/terms-md", []string{`it links to a record of Dispatch: "artifacts/terms-md"`}},
 		{project, "../documents/terms-md", []string{`it links to a record of Dispatch: "../documents/terms-md"`}},
 		{project, "terms-md", []string{`it links to a record of Dispatch: "terms-md"`}},
 		{spec, "docs/guide", []string{}},
+		{spec, "../docs/guide", []string{}},
 		{checks, "docs/guide", []string{}},
 		{project, "docs/guide", []string{}},
-		{spec, "terms-md", []string{}},
 		{spec, "../documents/terms-md", []string{}},
-		{"", "artifacts/notes-md", []string{}},
+		{nil, "artifacts/notes-md", []string{}},
 	} {
 		context := planted()
-		context.Page = test.page
+		context.Pages = test.pages
 		text := Text{Node: "planted", Kind: KindStatement, Body: "Dispatch keeps the record.", Where: where, Held: Held{Addresses: []string{test.address}}}
 		got := []string{}
 		for _, finding := range Check(context, Input{Texts: []Text{text}}) {
 			got = append(got, finding.Detail)
 		}
 		if !slices.Equal(got, test.want) {
-			t.Errorf("%q from the page %q: the details %q, want %q", test.address, test.page, got, test.want)
+			t.Errorf("%q from the pages %q: the details %q, want %q", test.address, test.pages, got, test.want)
 		}
 	}
 }

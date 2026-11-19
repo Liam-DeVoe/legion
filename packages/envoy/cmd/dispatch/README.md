@@ -2978,6 +2978,7 @@ A paragraph whose text holds a `-protect` value (repeatable) is never edited, so
 
 Mentions (`dispatch://` references and same-origin dashboard URLs) in document versions, ask questions, comment bodies, and issue messages are indexed into `refs` on every write;
 migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `source_seq` (the `events.id` that introduced it), and creates the `graph_edges` view, which unions those mentions with the structural relations already stored on the node tables (`child_of`, `attached_to`, `anchored_to`, `owned_by`, `replies_to`, `followed_by`).
+A tab of an issue that is a view of the issue, as the dashboard's pages file (`internal/dispatch/text/dashboard-pages.json`) names them, is a mention of the issue: its page (`/issues/<KEY>/activity`) and its reference (`dispatch://<KEY>/activity`, and `dispatch://<KEY>/log` for the Conversation tab) are each an edge to the issue, and a document's page by the singular `/issues/<KEY>/artifact/<slug>` names the document as the plural does.
 The name of a typed block's `block[]` attribute is an edge kind too:
 each block the attribute points at is an edge of that kind from the typed block (migration `20261101144855`, Database migrations above).
 `GET /api/v1/references?to=<ref>` lists everything that points at a node and `?from=<ref>` everything it points to, cross-project.
@@ -4668,15 +4669,18 @@ Each item below names a path with its method and identity, then its purpose.
       So it reads that address in the words of the page, beside the words before and after it.
       A `mailto:` link with other words, such as `[dispatch://ACME-1](mailto:dispatch://ACME-1)`, is read in its address too.
       An address with no scheme opens a page of the server.
-      Dispatch reads it in the two ways that the dashboard reads it, with each `\` read as `/`.
+      Dispatch reads it in each way that the dashboard reads it, with each `\` read as `/`.
       Against the origin of the server, as the dashboard reads a link in a component's prose, `/projects/ACME/documents/terms-md`, `projects/ACME/documents/terms-md` and `../../projects/ACME/documents/terms-md` link to that document.
-      Against the page of the document that holds it, as the editor and the browser read it, `artifacts/notes-md`, `decisions` and `#b-x1` in the spec of ACME-1 link to a document of ACME-1, to its decisions and to a block of the spec.
-      And `terms-md` in the Verification document of ACME-1 links to the document `terms-md` of ACME-1.
-      The page of a document is `/issues/<KEY>/spec` for a spec, `/issues/<KEY>/artifacts/<slug>` for another document of an issue, and `/projects/<PROJECT>/documents/<slug>` for a document of a project.
-      The address links to a record when either reading opens the page of one.
+      Against each page that draws the document that holds it, as the editor and the browser read it, `artifacts/notes-md`, `decisions`, `verification` and `#b-x1` in the spec of ACME-1 link to a document of ACME-1, to its decisions, to its Verification tab and to a block of the spec.
+      The dashboard draws a spec on the page of its issue, on the Spec tab (`/issues/<KEY>/spec`) and on its Artifacts page (`/issues/<KEY>/artifacts/spec`, where the version picker opens it).
+      So `notes-md`, `terms-md`, `verification-md`, `../decisions` and `../spec` in the spec of ACME-1 link to a record too.
+      The dashboard draws the Verification document on its tab (`/issues/<KEY>/verification`) and on its Artifacts page, so `terms-md` and `artifacts/terms-md` in the Verification document of ACME-1 link to the document `terms-md` of ACME-1.
+      A document of a role draws the same way on its own tab, another document of an issue on its Artifacts page, and a document of a project or of an agent on its one page.
+      The dashboard's pages file (`internal/dispatch/text/dashboard-pages.json`), which the dashboard's route table generates, lists these pages, and the server and the agent client read it.
+      The address links to a record when any reading opens the page of one.
       So a fragment alone, such as `#s-form`, opens the document that holds it, which is a record, and breaks the form.
-      The server's own reading of the address of its pages decides which paths are pages of a record: an issue, a document of an issue, of a project or of an agent, an ask, a comment, a message and a block.
-      A path that opens no such page from either base, such as `docs/guide` or `terms-md` in a spec, and an address of another host link to no record.
+      The dashboard's route table decides which paths are pages of a record: an issue and each tab of it, a document of an issue (by `artifacts/<slug>` and by the singular `artifact/<slug>`), of a project or of an agent, an ask, a comment, a message and a block.
+      A path that opens no such page from any base, such as `docs/guide` or `../docs/guide` in a spec, and an address of another host link to no record.
       Where the address of a link and the words of the page name one record, the text has one finding for it, the address's.
       The words name the record also by the key of its issue or by its id, wherever they stand in the text, as in `[ACME-1](dispatch://ACME-1/spec)`, and the finding names the words too.
       So one link gives one finding, and two links to two records give two, also when one record is a part of the other, such as the spec of an issue and the issue.

@@ -1977,6 +1977,47 @@ func TestIssueDocumentCreationIndexesDispatchReferences(t *testing.T) {
 	}
 }
 
+// A link to a tab of an issue that is a view of the issue (the dashboard's pages file: the
+// Activity tab, `dispatch://<KEY>/activity`) is an edge to the issue, as a link to the issue is.
+func TestADocumentsLinkToATabOfAnIssueIsAnEdgeToTheIssue(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "TEST", "name": "Test project",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"project": "TEST", "title": "Tab references",
+	}, "alice")
+	issue := decodeBody[struct {
+		Key string `json:"key"`
+	}](t, created)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
+	}
+	uploaded := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+		"name": "notes.md",
+	}, "notes.md", "text/markdown", []byte("See dispatch://"+issue.Key+"/activity."), "alice")
+	artifact := decodeBody[struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+	}](t, uploaded)
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload document: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	var references int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from refs
+		where from_kind = 'artifact' and from_id = $1 and to_kind = 'issue' and to_id = $2
+	`, artifact.Artifact.ID, issue.Key).Scan(&references); err != nil {
+		t.Fatalf("count the document's edges to its issue: %v", err)
+	}
+	if references != 1 {
+		t.Fatalf("the document's edges to %s = %d, want 1", issue.Key, references)
+	}
+}
+
 // cookieRequest sends one request to a newCookieServer handler as alice, with body as its JSON.
 type cookieRequest func(method, target string, body any) *httptest.ResponseRecorder
 

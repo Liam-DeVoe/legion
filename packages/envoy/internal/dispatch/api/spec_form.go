@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The form of The Spec (R49) as the server holds it. A setting names the roots of The Spec
@@ -485,7 +485,7 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) e
 	if err != nil {
 		return err
 	}
-	context.Page = documentPage(document.artifact)
+	context.Pages = documentPages(document.artifact)
 	document.texts = extracted.Counts
 	if document.root != nil {
 		document.unread = append(document.unread, j.unread[*document.root]...)
@@ -498,20 +498,21 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) e
 	return nil
 }
 
-// documentPage is the path of the dashboard's page of artifact under the server's address: the
-// Spec tab of its issue or its own Artifacts route (issueDocumentHref), the route of a document of
-// a project, or of an artifact of an agent's conversation. The form reads an address with no
-// scheme of the document's texts against it, as that page does.
-func documentPage(artifact model.Artifact) string {
+// documentPages is each path of the dashboard that draws artifact, under the server's address, as
+// the dashboard's pages file lists them (text.DocumentPages): a spec on its issue's own page, on
+// the Spec tab and on its Artifacts page, a document of a role on that role's tab and on its
+// Artifacts page, another document of an issue on its Artifacts page, and a document of a project
+// or of an agent's conversation on its own page. The form reads an address with no scheme of the
+// document's texts against each, as each page does.
+func documentPages(artifact model.Artifact) []string {
+	owner := text.DocumentOwner{Project: artifact.Project, Slug: artifact.Slug, Role: artifact.Role, Primary: artifact.Primary}
 	switch {
 	case artifact.IssueKey != nil:
-		return issueDocumentHref("/issues/"+*artifact.IssueKey, artifact.Slug, artifact.Primary)
+		owner.IssueKey = *artifact.IssueKey
 	case artifact.SessionID != nil:
-		return "/agents/" + url.PathEscape(*artifact.SessionID) + "/artifacts/" + url.PathEscape(artifact.Slug)
-	case artifact.Project != "":
-		return projectDocumentHref(artifact.Project, artifact.Slug)
+		owner.Session = *artifact.SessionID
 	}
-	return ""
+	return text.DocumentPages(owner)
 }
 
 // contextFor is what Check knows of the system for a document under root (nil for none).

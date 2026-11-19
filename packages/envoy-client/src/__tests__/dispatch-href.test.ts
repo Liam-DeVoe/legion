@@ -30,6 +30,23 @@ test("the issue's activity and conversation pages keep their own references", ()
   );
 });
 
+// The agent client's own rows of the dashboard's pages file: each tab that names its issue is its
+// reference, the singular document page is the document as the plural is, and a tab or a segment
+// the file does not name is no reference.
+test.each([
+  ["/issues/CORE-1/verification", "dispatch://CORE-1/verification"],
+  ["/issues/CORE-1/plan", "dispatch://CORE-1/plan"],
+  ["/issues/CORE-1/artifacts", "dispatch://CORE-1/artifacts"],
+  ["/issues/CORE-1/collaborators", "dispatch://CORE-1/collaborators"],
+  ["/issues/CORE-1/log", "dispatch://CORE-1/log"],
+  ["/issues/CORE-1/artifact/notes-md", "dispatch://CORE-1/artifact/notes-md"],
+  ["/issues/CORE-1/artifact/notes-md?v=2", "dispatch://CORE-1/artifact/notes-md@v2"],
+  ["/issues/CORE-1/settings", undefined],
+  ["/issues/CORE-1/artifactz/notes-md", undefined],
+])("the page %s resolves to %s", (href, ref) => {
+  expect(dispatchRefFromUrl(`${server}${href}`, server)).toBe(ref);
+});
+
 test("an issue document URL carrying both item parameters is refused", () => {
   expect(
     dispatchRefFromUrl(`${server}/issues/CORE-1/spec?comment=c1&ask=a1`, server)
