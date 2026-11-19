@@ -224,17 +224,21 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 	if len(named) > MaxSlackChannels {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %d given", ErrSlackChannelsFull, len(named))
 	}
-	tag, err := tx.Exec(ctx, `update projects set slack_channels = $2 where key = $1`, key, named)
-	if err != nil {
-		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("write the Slack channels of project %s: %w", key, err)
-	}
-	if tag.RowsAffected() == 0 {
-		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+	if err := updateProject(ctx, tx, key, `update projects set slack_channels = $2 where key = $1`, named); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
 	}
 	return appendProjectChange(ctx, tx, ev, key, model.AccessSlackChannelsChanged, "", by)
 }
 
-func updateProject(ctx context.Context, tx pgx.Tx, key, statement string, value string) error {
+// updateProject writes one column of project key's row after the project's owner lock, the order
+// store.LockOwner's contract names: the lock and then the row. Written first, the row would be held
+// while the append waits for the lock, and a holder of the lock that writes the row next, as an
+// issue create does, would wait for it in turn (TestAProjectWriteTakesTheOwnerLockBeforeTheRow).
+// A caller that holds the lock already, the routes after LockForAccessWrite, takes it again at once.
+func updateProject(ctx context.Context, tx pgx.Tx, key, statement string, value any) error {
+	if err := lockProject(ctx, tx, key); err != nil {
+		return err
+	}
 	tag, err := tx.Exec(ctx, statement, key, value)
 	if err != nil {
 		return fmt.Errorf("write project %s: %w", key, err)
