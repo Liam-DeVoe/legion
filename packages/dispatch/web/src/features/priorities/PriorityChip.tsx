@@ -6,6 +6,7 @@ import {
   borderStrong,
   borderTransparent,
   textMutedOnCanvas,
+  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
@@ -16,6 +17,10 @@ import { priorityPath } from "./priority-routes";
  * it") and, where the surface has tooltips, in its `title`, so a row stays one line tall however
  * long the title is. A priority the issue inherits from an issue above takes the muted, dashed
  * style, and its name and tooltip say it is inherited.
+ *
+ * `titled` draws the title after the chip, inside the same link, wrapped whole and never cut: for
+ * a cell whose point is which priority the row is under, as a fault list's Advances cell is,
+ * where a phone has no tooltip to read the title in.
  *
  * `place` and `title` are the priorities read's: a priority that read does not hold, one deleted
  * since, is named by its id.
@@ -28,36 +33,50 @@ export function PriorityChip({
   inherited,
   place,
   title,
+  titled = false,
 }: {
   id: string;
   inherited: boolean;
   /** The priority's place in the order, from 1: what `#3` reads from. */
   place: number | undefined;
   title: string | undefined;
+  /** Whether the title follows the chip, whole, in the link. */
+  titled?: boolean;
 }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
   const label = place === undefined ? id : orderLabel(place - 1);
   const named = title === undefined ? label : `${label} ${title}`;
   const whole = title ?? id;
+  const chip = `rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline ${
+    inherited
+      ? `border-dashed ${borderStrong} ${textMutedOnCanvas}`
+      : `${borderTransparent} ${badgePrimary.bg} ${badgePrimary.text}`
+  }`;
   return (
     <Link
       aria-label={
         inherited ? `${named}, ${page?.CONTROL_LABELS.advances_inherited ?? "inherited"}` : named
       }
-      className="group inline-flex shrink-0 items-center"
+      className={
+        titled
+          ? "group flex min-w-0 items-baseline gap-1.5"
+          : "group inline-flex shrink-0 items-center"
+      }
       title={tooltips ? (inherited ? `${whole}, inherited from an issue above` : whole) : undefined}
       to={priorityPath(id)}
     >
-      <span
-        className={`rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline ${
-          inherited
-            ? `border-dashed ${borderStrong} ${textMutedOnCanvas}`
-            : `${borderTransparent} ${badgePrimary.bg} ${badgePrimary.text}`
-        }`}
-      >
-        {label}
-      </span>
+      <span className={titled ? `shrink-0 ${chip}` : chip}>{label}</span>
+      {/* The space between the two is no box of the flex row, but it is in the link's words, so
+          they read "#3 Ship it" as its name does (axe's `label-content-name-mismatch`). */}
+      {titled && title !== undefined ? (
+        <>
+          {" "}
+          <span className={`min-w-0 break-words group-hover:underline ${textSecondaryOnCanvas}`}>
+            {title}
+          </span>
+        </>
+      ) : null}
     </Link>
   );
 }

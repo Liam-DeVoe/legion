@@ -2046,10 +2046,10 @@ test("the default shapes keep main's class strings", async () => {
     "IssueLabels rail line": "relative flex shrink-0 flex-nowrap items-center gap-1",
 
     // INFRA-2947's features/priorities/IssuePriorityLine.tsx, outside `NoTooltips`: the line in
-    // the issue header's details row, each priority's link and the chip it holds
+    // the issue header's state row, each priority's link and the chip it holds
     // (`PriorityChip.tsx`), an inherited one's, and the picker's trigger; then the refusal of the
-    // priorities' read and that of a save, which keep their width, as the row scrolls.
-    "IssuePriorityLine line": "flex shrink-0 items-center gap-1",
+    // priorities' read and that of a save, which wrap within the line, as the row wraps.
+    "IssuePriorityLine line": "flex max-w-full flex-wrap items-center gap-1",
     "IssuePriorityLine link": "group inline-flex shrink-0 items-center",
     "IssuePriorityLine chip":
       "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-transparent bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
@@ -2057,8 +2057,10 @@ test("the default shapes keep main's class strings", async () => {
       "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-dashed border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400",
     "IssuePriorityLine trigger":
       "inline-flex min-h-11 min-w-7 shrink-0 items-center justify-center rounded-full px-2 text-sm leading-none whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-7 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
-    "IssuePriorityLine priorities unread": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
-    "IssuePriorityLine not saved": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
+    "IssuePriorityLine priorities unread":
+      "max-w-full [overflow-wrap:anywhere] text-xs text-rose-700 dark:text-rose-400",
+    "IssuePriorityLine not saved":
+      "max-w-full [overflow-wrap:anywhere] text-xs text-rose-700 dark:text-rose-400",
 
     "AgentName link":
       "rounded outline-none focus-visible:ring-2 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400 text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",

@@ -334,17 +334,19 @@ const LISTING_COLUMNS: readonly {
   },
   {
     id: "advances",
-    // Sized for its chips, `#3` each, two to a line: the title beside it takes the rest.
-    size: 84,
-    min: 84,
+    // Each priority is its chip and its title after it, wrapped whole: the cell is where a fault
+    // row says which priority it stands under, and a phone has no tooltip to read a title in. A
+    // layout names its own width where its other columns leave this one more or less room.
+    size: 200,
+    min: 160,
     rendering: (priorityOf) => ({
       header: "Advances",
       accessorFn: (item) =>
         (item.issue.advances ?? []).map(({ id }) => priorityOf(id).title ?? id).join(", "),
       cell: ({ row }) => (
-        <span className="flex flex-wrap gap-1">
+        <span className="flex flex-col gap-1">
           {(row.original.issue.advances ?? []).map(({ id, inherited }) => (
-            <PriorityChip id={id} inherited={inherited} key={id} {...priorityOf(id)} />
+            <PriorityChip id={id} inherited={inherited} key={id} titled {...priorityOf(id)} />
           ))}
         </span>
       ),

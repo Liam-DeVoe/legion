@@ -489,6 +489,16 @@ export function IssueHeader({
             issueKey={issue.key}
             write={priorityWrite}
           />
+          {/* The priorities the issue advances, each the chip of its place in the order, and the
+              picker's "+", right after the P0-P3 tag: this row wraps, where the details row below
+              scrolls sideways and is long enough without them. Below `sm` they take a line of
+              their own at the row's end, so the status, the tag, the assignee and Close keep one
+              line at a phone's width; they stay after the tag in the keyboard's order. */}
+          <IssuePriorityLine
+            className="order-last basis-full sm:order-none sm:basis-auto"
+            disabled={isClosed}
+            issue={issue}
+          />
           <AssigneeControl
             assignee={issue.assignee}
             disabled={isClosed || updateIssue.isPending}
@@ -591,9 +601,6 @@ export function IssueHeader({
               {whoseTurn}
             </span>
           )}
-          {/* The priorities the issue advances, each the chip of its place in the order, and the
-              picker's "+": no word and no title on the row, so they take what a tag takes. */}
-          <IssuePriorityLine disabled={isClosed} issue={issue} />
           {issue.created_by == null ? null : (
             <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
               <span className="font-medium">Opened by:</span>

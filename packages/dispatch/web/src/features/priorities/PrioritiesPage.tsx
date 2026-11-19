@@ -57,7 +57,10 @@ const FAULT_WIDTHS = {
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
   opens: FAULT_OPENS,
-  widths: FAULT_WIDTHS,
+  // Its statuses are the in-flight ones, the longest of whose pills, "Needs review" (133 px in
+  // Chromium at 1440 and at 1280), the Issues table's own Status width cuts at the column's
+  // edge: this one holds it inside the cell's padding, and the room it takes is Title's.
+  widths: { ...FAULT_WIDTHS, status: { min: 156, size: 156 } },
 } as const;
 const PARKED_LAYOUT = {
   key: "priorities-parked",
@@ -66,8 +69,10 @@ const PARKED_LAYOUT = {
   // it leaves is Title's.
   opens: [...FAULT_OPENS.filter((id) => id !== "updated"), "advances", "moved"],
   // Its statuses are backlog and icebox alone, whose pills are narrower than the in-flight
-  // statuses', and a move is a time and a name, which wrap. The Advances column is sized for its
-  // chips by its own declaration.
+  // statuses', and a move is a time and a name, which wrap. The Advances column is sized by its
+  // own declaration for its chips and the titles after them, which wrap whole: at 1440 px every
+  // other column here stands at what its header or its widest value needs, so Title, which
+  // takes the rest, gives that room.
   widths: {
     ...FAULT_WIDTHS,
     status: { min: 112, size: 112 },

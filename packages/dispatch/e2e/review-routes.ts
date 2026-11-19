@@ -24,9 +24,9 @@ export interface ReviewSeed {
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
-  /** The priority `/priorities/:id` is opened on: the one `e2e/review-seed.ts` writes, which
-   *  carries work in flight under it and work parked under it, so both pages draw rows rather
-   *  than the sentence a deployment that has written no priority draws. */
+  /** The priority `/priorities/:id` is opened on: the first of the five `e2e/review-seed.ts`
+   *  writes, which carries work in flight under it and work parked under it, so both pages draw
+   *  rows rather than the sentence a deployment that has written no priority draws. */
   readonly priority: string;
   /** The `from=…&to=…` query string, without the leading "?". */
   readonly deliveryQuery: string;

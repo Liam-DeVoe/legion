@@ -5,9 +5,10 @@
  *  It builds on the fixtures that already exist rather than writing a second corpus:
  *  `seedWorkspace` fills the Inbox, the Agents page, a broadcast, the answers, the projects and
  *  the issue tree, and the delivery fixtures fill `/delivery` and `/pipeline`. What it adds is
- *  the four documents the issue tabs need, and the one priority the two priority pages are read
- *  against: `seedWorkspace` writes none, and both of those pages draw a sentence instead of a
- *  row for a deployment that has written no priority. */
+ *  the four documents the issue tabs need, the priorities the two priority pages are read
+ *  against - `seedWorkspace` writes none, and both of those pages draw a sentence instead of a
+ *  row for a deployment that has written no priority - and the issue header of a working issue:
+ *  its whose-turn chip, two labels and a message route someone receives. */
 import {
   createIssueArtifact,
   createPlanReview,
@@ -61,15 +62,20 @@ function firstMachine(): string {
   return machine;
 }
 
-/** The one priority this corpus writes. It is written as the signed-in person rather than over
- *  the agent bearer, because the margin of `/priorities/:id` draws who wrote the priority and a
- *  bearer would name a session there instead. Its description holds a link, so the accessibility
- *  pass reads a link inside the rendered description a writer may open into its editor: a
- *  control wrapping that text would put the link inside it (axe's `nested-interactive`). Its
- *  title is 90 characters, as long as production's run (up to 94), so the shots read whether a
- *  page shows a whole title. */
-function createReviewPriority() {
-  return createPriority({
+/** The priorities this corpus writes, in the order they are written, which is the one order: a
+ *  priority takes the last place of it as it is written (`POST /api/v1/priorities`). Each title
+ *  is as long as production's run (70 to 94 characters), so the shots read whether a page shows a
+ *  whole title: the Priorities tab lists five of them, the Parked tab names the first after its
+ *  chip, and the first's own page is the `priority` route.
+ *
+ *  The first is the one `/priorities/:id` opens. It is written as the signed-in person rather
+ *  than over the agent bearer, as every one is, because the margin of that page draws who wrote
+ *  the priority and a bearer would name a session there instead. Its description holds a link,
+ *  so the accessibility pass reads a link inside the rendered description a writer may open into
+ *  its editor: a control wrapping that text would put the link inside it (axe's
+ *  `nested-interactive`). */
+const PRIORITIES = [
+  {
     description:
       "Every reader of this deployment reaches the same corpus in one command.\n\n" +
       "The work under it is the seeding, the sign-in and the pages both review layers read, " +
@@ -77,8 +83,27 @@ function createReviewPriority() {
     owner: "alice",
     title:
       "Local testing is one command for every reader of this deployment, on any developer machine",
-  });
-}
+  },
+  {
+    owner: "bob",
+    title:
+      "Every Legion phase worker reaches a merged pull request without a person's hand in between it",
+  },
+  {
+    owner: "alice",
+    title:
+      "Dispatch answers each reader in under a second, on every page, at the load we are heading to",
+  },
+  {
+    owner: "bob",
+    title:
+      "Sessions resume where they stopped, across a pod replacement, with nothing a person typed lost",
+  },
+  {
+    owner: "alice",
+    title: "Cost per merged change falls each week, as the daily work-cost reading measures it",
+  },
+] as const;
 
 /** Seeds the review corpus into an empty database; the caller resets first. `boundMs` is the
  *  bound of the seed's waits, which `seedWorkspace` gives each of its own: the caller's, so a
@@ -165,18 +190,34 @@ Each page is read once it is drawn.
     name: "decisions.md",
   });
 
-  // The priority `/priorities` lists and `/priorities/:id` opens, and the work under it. The
-  // workflow issue stands in `in_progress`, so the row counts one in flight and the priority's
-  // own page lists it; the freshness-folds issue stands in `backlog`, so it is a row of the
-  // second fault list. Every other issue of the corpus that is in flight advances none, which
-  // is what fills the first fault list. Both relations are written last, so the activity of
-  // each issue keeps the order the rows above it were seeded in, and one after the other: the
-  // priority's margin lists its history newest first by the order the store wrote it, so two
-  // writes made at once land in either order and the page differs between two runs of one tree
-  // (the 68 pixels the visual review read on `priority` in two rounds).
-  const priority = await createReviewPriority();
+  // The workflow issue's header reads as a working issue's does: the decision its spec asks
+  // waits on alice, the signed-in reader, so the header carries "Waiting on you"; it carries two
+  // labels; and its message route is a role the Planner session holds in the fake Envoy
+  // (`workspaceSessions`), so the route reaches someone and the header warns of nothing.
+  await patchIssue(issue, { labels: ["dispatch", "testing"], route: "role:planner" });
+
+  // The priorities `/priorities` lists, the first of which `/priorities/:id` opens, and the work
+  // under them. The workflow issue stands in `in_progress`, so the first's row counts one in
+  // flight and its own page lists it; the freshness-folds issue stands in `backlog`, so it is
+  // the row of the second fault list, parked under the first. Three issues standing in triage
+  // advance the next three, so their rows count work waiting; the fifth has none yet. Every
+  // other issue of the corpus that is in flight advances none, which is what fills the first
+  // fault list. The relations are written last, so the activity of each issue keeps the order
+  // the rows above it were seeded in, and each write is one after the other: a priority's margin
+  // lists its history newest first by the order the store wrote it, so two writes made at once
+  // land in either order and the page differs between two runs of one tree (the 68 pixels the
+  // visual review read on `priority` in two rounds).
+  const [first, second, third, fourth, fifth] = PRIORITIES;
+  const priority = await createPriority(first);
+  const phases = await createPriority(second);
+  const speed = await createPriority(third);
+  const resume = await createPriority(fourth);
+  await createPriority(fifth);
   await patchIssue(issue, { advances: [priority.id] });
   await patchIssue(workspace.issues.folds, { advances: [priority.id] });
+  await patchIssue(workspace.issues.rotate, { advances: [phases.id] });
+  await patchIssue(workspace.issues.snooze, { advances: [speed.id] });
+  await patchIssue(workspace.issues.retracted, { advances: [resume.id] });
 
   // The slug of the `Runbook` document `seedWorkspace` creates: read back rather than assumed,
   // so a rename there fails this seed instead of the page it opens.

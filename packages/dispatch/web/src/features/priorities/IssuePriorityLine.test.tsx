@@ -13,9 +13,10 @@ import { writesOf } from "../writes/write-store";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
 /**
- * The priorities of the issue header's row of chips (INFRA-2947, R16 and R3): what it draws for a
- * priority of the issue's own and for one it inherits, what it draws for an issue that advances
- * none, and the writes its picker, the shared `MultiSelect`, makes when it closes.
+ * The chips of an issue's priorities in the issue header's state row (INFRA-2947, R16 and R3):
+ * what it draws for a priority of the issue's own and for one it inherits, what it draws for an
+ * issue that advances none, and the writes its picker, the shared `MultiSelect`, makes when it
+ * closes.
  */
 
 function priority(id: string, title: string): PriorityRow {
@@ -167,9 +168,9 @@ test("an issue that advances none carries no line and no empty label, and reads 
   }
 });
 
-// The issue header's details row holds the line beside the labels and the route, which is no room
-// for a priority's title: each priority is a chip of its place alone, its title in its name and in
-// the shared tooltip, and no word stands before them.
+// The issue header's state row holds the line after the status and the P0-P3 tag, beside the
+// assignee, which is no room for a priority's title: each priority is a chip of its place alone,
+// its title in its name and in the shared tooltip, and no word stands before them.
 test("each priority is a chip whose visible text is its #N alone, and the line draws no Advances", async () => {
   const view = renderLine([
     { id: "rocq-lean", inherited: false },

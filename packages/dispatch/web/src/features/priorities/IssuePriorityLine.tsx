@@ -44,14 +44,15 @@ interface Draft {
 }
 
 /**
- * The first item of the issue header's details row (INFRA-2947, R16 and R3): each priority this
- * issue advances, as the chip of its place in the one order (`PriorityChip`, `#1`) that links to
- * that priority's own page, its title in its name and its tooltip, and the shared `MultiSelect`
- * that adds and removes the issue's own, as the labels and components beside it are edited. Like
- * those it stages a draft while open and saves the final draft once, when it closes. The chips
- * are the line's only words, so it takes no more of the row than a few tags do, whatever the
- * titles: no `Advances` stands before them, and the group they make carries that word as its
- * name for a screen reader alone.
+ * The item after the P0-P3 tag in the issue header's state row (INFRA-2947, R16 and R3): each
+ * priority this issue advances, as the chip of its place in the one order (`PriorityChip`, `#1`)
+ * that links to that priority's own page, its title in its name and its tooltip, and the shared
+ * `MultiSelect` that adds and removes the issue's own, as the labels and components are edited.
+ * Like those it stages a draft while open and saves the final draft once, when it closes. The
+ * chips are the line's only words, so it takes no more of the row than a few tags do, whatever
+ * the titles: no `Advances` stands before them, and the group they make carries that word as its
+ * name for a screen reader alone. That row wraps, and so does the line: a refusal's reason takes
+ * a line of its own under the chips rather than push the row past the header's edge.
  *
  * An issue that advances none carries no chip and no empty label — only the picker's trigger,
  * which places it under a priority, and which is how a person acts on a row of the page's first
@@ -79,10 +80,14 @@ interface Draft {
  * advances none.
  */
 export function IssuePriorityLine({
+  className,
   disabled,
   inRow = false,
   issue,
 }: {
+  /** How the row the line stands in places it, outside `NoTooltips`: the issue header's state
+   *  row gives it a line of its own below `sm`. */
+  className?: string;
   disabled: boolean;
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
@@ -232,11 +237,11 @@ export function IssuePriorityLine({
       // as an empty box where no CJK font is installed, which is this pod's Chromium and some
       // readers' browsers.
       triggerAriaLabel={triggerName}
-      // In the issue header's details row it is a 28 px pill from `md`, as the labels' trigger
-      // beside it is there. Inside `NoTooltips` it is 28 px tall from `md`, as the controls beside
-      // it in Details are (the repository's box, `main`'s input in `RepoControl.tsx`, with its
-      // `md:min-h-7`; the labels' and the components' triggers' `sm:min-h-7`). Below 1280 px
-      // `styles.css` gives each a 44 px floor.
+      // In the issue header's state row it is a 28 px pill from `md`, as the labels' trigger is
+      // in the details row under it. Inside `NoTooltips` it is 28 px tall from `md`, as the
+      // controls beside it in Details are (the repository's box, `main`'s input in
+      // `RepoControl.tsx`, with its `md:min-h-7`; the labels' and the components' triggers'
+      // `sm:min-h-7`). Below 1280 px `styles.css` gives each a 44 px floor.
       triggerClassName={
         page === null
           ? `inline-flex min-h-11 min-w-7 shrink-0 items-center justify-center rounded-full px-2 text-sm leading-none whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-7 ${surfaceMutedStrongBg} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`
@@ -246,15 +251,14 @@ export function IssuePriorityLine({
       {page === null ? "+" : <span {...page.pageChrome}>{addWords ?? "+"}</span>}
     </MultiSelect>
   );
-  // Inside `NoTooltips` nothing of the line keeps its width: a refusal's reason is a value, which
-  // breaks anywhere and stays within its line (`max-w-full`) rather than push the line past its
-  // row. Outside, the line stands in the issue header's details row, which scrolls sideways, so
-  // each part stays whole, as on `main`.
+  // Nothing of the line keeps its width: a refusal's reason is a value, which breaks anywhere and
+  // stays within its line (`max-w-full`) rather than push the line past its row, whether that row
+  // is a row of Details inside `NoTooltips` or the issue header's state row, which wraps.
   const refusals = (
     <>
       {priorities.isError ? (
         <span
-          className={`${page === null ? "shrink-0 " : ""}text-xs ${failed}`}
+          className={`${page === null ? "max-w-full [overflow-wrap:anywhere] " : ""}text-xs ${failed}`}
           role="alert"
           {...page?.pageChrome}
         >
@@ -263,7 +267,7 @@ export function IssuePriorityLine({
       ) : null}
       {write.error === null ? null : (
         <span
-          className={`${page === null ? "shrink-0 " : "max-w-full [overflow-wrap:anywhere] "}text-xs ${failed}`}
+          className={`max-w-full [overflow-wrap:anywhere] text-xs ${failed}`}
           role="alert"
           {...(saveFailure === notSaved ? page?.pageChrome : page?.authorText)}
         >
@@ -278,7 +282,7 @@ export function IssuePriorityLine({
       // biome-ignore lint/a11y/useSemanticElements: the chips are links and a picker's trigger, which no form's fieldset holds; the group names them for a screen reader, since no word on the row does.
       <div
         aria-label="Advances"
-        className="flex shrink-0 items-center gap-1"
+        className={`flex max-w-full flex-wrap items-center gap-1${className === undefined ? "" : ` ${className}`}`}
         data-testid="issue-advances"
         role="group"
       >

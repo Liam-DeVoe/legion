@@ -2121,27 +2121,28 @@ test("a priority's work table offers Project and, given the titles, Advances, an
   const row = within(list).getByRole("row", { name: "CORE-1 Work CORE-1" });
   const cells = within(row).getAllByRole("cell");
   expect(cells[headers().indexOf("Project")]?.textContent).toBe("CORE");
-  // Each priority is a chip reading its place in the order alone, a link to its page, its title
-  // in its name and its tooltip; one the issue inherits from an issue above says so in both.
+  // Each priority is a chip reading its place in the order and then its title, whole, in one link
+  // to its page, its title in its name and its tooltip; one the issue inherits from an issue
+  // above says so in both.
   const chips = within(cells[headers().indexOf("Advances")] as HTMLElement).getAllByRole("link");
   expect(
     chips.map((link) => ({
+      drawn: [...link.children].map((part) => part.textContent),
       href: link.getAttribute("href"),
       name: link.getAttribute("aria-label"),
-      text: link.textContent,
       title: link.getAttribute("title"),
     }))
   ).toEqual([
     {
+      drawn: ["#1", "Ship it everywhere"],
       href: "/priorities/ship-it",
       name: "#1 Ship it everywhere",
-      text: "#1",
       title: "Ship it everywhere",
     },
     {
+      drawn: ["#2", "Keep it running"],
       href: "/priorities/keep-it",
       name: "#2 Keep it running, inherited",
-      text: "#2",
       title: "Keep it running, inherited from an issue above",
     },
   ]);

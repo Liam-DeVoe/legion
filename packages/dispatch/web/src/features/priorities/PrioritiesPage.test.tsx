@@ -448,21 +448,22 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   );
   expect(moved("Moved there").textContent).toContain("bob");
   const unrecorded = await cellsOf(parked, "OPS-4 Work OPS-4");
-  // Each priority is a chip that reads its place alone, its title in its name and its tooltip.
+  // Each priority is a chip that reads its place and then its title, drawn whole after it in the
+  // same link, its title in its name and its tooltip.
   const chips = within(unrecorded("Advances")).getAllByRole("link");
   expect(
     chips.map((link) => ({
+      drawn: [...link.children].map((part) => part.textContent),
       name: link.getAttribute("aria-label"),
-      text: link.textContent,
       title: link.getAttribute("title"),
     }))
   ).toEqual([
     {
+      drawn: ["#1", "Legion works reliably first"],
       name: "#1 Legion works reliably first",
-      text: "#1",
       title: "Legion works reliably first",
     },
-    { name: "#3 OSS Verify", text: "#3", title: "OSS Verify" },
+    { drawn: ["#3", "OSS Verify"], name: "#3 OSS Verify", title: "OSS Verify" },
   ]);
   expect(unrecorded("Moved there").textContent).toBe("");
   expect(within(unrecorded("Moved there")).queryByRole("time")).toBeNull();
