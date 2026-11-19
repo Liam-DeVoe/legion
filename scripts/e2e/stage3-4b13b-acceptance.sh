@@ -164,7 +164,8 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "${instructor_pid:-}"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  # no-wait: the workspace is kept, and nothing after reads the table or binds a port of theirs.
+  # no-wait: none can add an entry after SIGKILL, so the cache's rm -rf below meets none, and the
+  # workspace is kept; nothing after reads the table or binds a port of theirs.
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
   collect_transcripts
   rm -rf "$work/model-gateway-cache" || true

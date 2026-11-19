@@ -44,7 +44,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# scripts/e2e/lib/wait-gone.sh holds kill_gone, the wait for the broker property 6 kills.
+# scripts/e2e/lib/wait-gone.sh holds wait_gone, the wait for the broker property 6 kills.
 # shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/wait-gone.sh
 . "$SCRIPT_DIR/../../../scripts/e2e/lib/wait-gone.sh"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/callout-check.XXXXXX")"
@@ -260,10 +260,11 @@ callout_connections() {
 }
 
 # 6. One of the two brokers killed, then three new sessions, each admitted within 2 s: the first
-# counted from the moment the killed broker has left the process table (kill_gone,
-# scripts/e2e/lib/wait-gone.sh), so the wait for the hub to drop the killed replica is inside its
-# 2 s and the time the kernel takes to end the process is not: until its exit has finished, the
-# broker still holds the connection the hub lists.
+# counted from the kill, so the wait for the hub to drop the killed replica is inside its 2 s.
+# The killed broker holds its connection to the hub until its exit has finished, so the reads of
+# the hub's list wait first for it to leave the process table (wait_gone,
+# scripts/e2e/lib/wait-gone.sh), and one still there 10 s on is named; the 2 s still count from
+# the kill.
 read -r _ second_broker <<<"$DEV_STACK_BROKER_PIDS"
 killed_property="one broker killed and a new session admitted within 2 s"
 if [ -z "${second_broker:-}" ] || ! kill -0 "$second_broker" 2>/dev/null; then
@@ -274,10 +275,9 @@ else
     unknown "$killed_property: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read before the kill"
   elif [ "$before" -lt 2 ]; then
     unknown "$killed_property: the hub lists $before connection named envoy-broker-callout before the kill, not one for each of the two brokers"
-  elif ! kill_gone KILL 10 "$second_broker"; then
+  elif killed=$(date +%s%N) && kill -KILL "$second_broker" && ! wait_gone 10 "$second_broker"; then
     unknown "$killed_property: the killed broker (pid $second_broker) was still in the process table 10 s after its SIGKILL"
   else
-    killed=$(date +%s%N)
     dropped=""
     listed=""
     waited=0

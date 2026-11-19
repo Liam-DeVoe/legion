@@ -1042,6 +1042,7 @@ jobs:
               # (stage1-skeleton.sh:202-203).
               - 'scripts/e2e/stage1-skeleton.sh'
               - 'scripts/e2e/lib/rig.sh'
+              - 'scripts/e2e/lib/wait-gone.sh'
               - 'scripts/e2e/lib/loopback-dsn.sh'
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'
@@ -3577,6 +3578,9 @@ jobs:
               # internal/testnats/nats_test.go:741-754, which that step runs, opens every .go file
               # under packages/envoy but infra's, test files included.
               - 'packages/envoy/**'
+              # scripts/callout-check.sh, which a step of this job runs, sources the wait for the
+              # broker it kills (packages/envoy/scripts/callout-check.sh:49).
+              - 'scripts/e2e/lib/wait-gone.sh'
               # pmdoc's tests run pmdoc/gen, which imports the editor
               # (internal/dispatch/pmdoc/update_test.go:236-239), whose src/block-pointers.ts
               # imports @legion/contracts.
