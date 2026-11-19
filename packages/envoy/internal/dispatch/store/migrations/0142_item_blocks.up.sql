@@ -1,4 +1,5 @@
 -- 0142_item_blocks.up.sql
+-- replaces: 0142_item_blocks.up.sql sha256:3c451206c844c5f65ab15afe23fc9742419d1c8440d829995f062c4f2fbae130
 --
 -- Every comment and message is a collection of blocks, its body split as the document parser reads
 -- it (internal/dispatch/itemblocks). A block is a graph node: its node id is

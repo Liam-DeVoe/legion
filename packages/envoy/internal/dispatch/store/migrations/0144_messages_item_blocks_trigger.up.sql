@@ -1,4 +1,5 @@
 -- 0144_messages_item_blocks_trigger.up.sql
+-- replaces: 0144_messages_item_blocks_trigger.up.sql sha256:4beca25108f0eef0ec429e9ea833f8d4ece48187f4002ffb4e4acdef6702263c
 --
 -- A message any build inserts, a direct message included, is owed a block index (0142's
 -- message_block_state.owed_at), as 0143 owes a comment. No route edited a message when this was
