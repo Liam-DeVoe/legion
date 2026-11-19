@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -58,12 +56,14 @@ func topLevelCandidates(blocks []model.ArtifactBlock, candidates []respellCandid
 // recorded text reads alone as it stood there. A text that does not occur there, and a version
 // that holds no markdown, keep nothing.
 //
-// The row of each block it keeps takes the new text's sha256 and excerpt and keeps its changed
-// version and time, and it returns the ids it kept; version is the version IndexBlocks indexes,
-// which a failed write names. One query reads the recorded text of every candidate, one the
-// stored markdown of each distinct version the candidates whose text reads alone name, and one
-// statement updates the blocks it kept; none runs when it has nothing to do.
-func respelledBlocks(ctx context.Context, tx pgx.Tx, artifactID string, version int, candidates []respellCandidate) (map[string]bool, error) {
+// It returns the candidates it keeps, and writes nothing: each such block's row takes the new
+// text's sha256 and excerpt and keeps its changed version and time in the write phase
+// (BlockIndexing.Queue). One query reads the recorded text of every candidate, and one the stored
+// markdown of each distinct version the candidates whose text reads alone name; neither runs when
+// it has nothing to read, so a version with no candidate reads nothing here. The candidates'
+// changed versions are stored ones, written before the transaction that indexes this version, so
+// both reads see them as they stand. It filters candidates in place.
+func respelledBlocks(ctx context.Context, q Queryer, artifactID string, candidates []respellCandidate) ([]respellCandidate, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -72,7 +72,7 @@ func respelledBlocks(ctx context.Context, tx pgx.Tx, artifactID string, version 
 	for index, candidate := range candidates {
 		ids[index], versions[index] = candidate.block.ID, candidate.storedAt
 	}
-	rows, err := tx.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		select t.block_id, t.text
 		from unnest($2::text[], $3::integer[]) as c (id, version)
 		join document_block_texts t on t.artifact_id = $1 and t.block_id = c.id and t.version = c.version
@@ -109,7 +109,7 @@ func respelledBlocks(ctx context.Context, tx pgx.Tx, artifactID string, version 
 	if len(readsAlone) == 0 {
 		return nil, nil
 	}
-	rows, err = tx.Query(ctx, `
+	rows, err = q.Query(ctx, `
 		select number, markdown from artifact_versions
 		where artifact_id = $1 and number = any($2::integer[]) and markdown is not null
 	`, artifactID, numbers)
@@ -129,22 +129,10 @@ func respelledBlocks(ctx context.Context, tx pgx.Tx, artifactID string, version 
 		return nil, fmt.Errorf("read the stored markdown of the versions of %s its blocks were recorded at: %w", artifactID, err)
 	}
 	rows.Close()
-	kept := make(map[string]bool, len(readsAlone))
-	var keptIDs, keptSums, keptExcerpts []string
+	kept := readsAlone[:0]
 	for _, candidate := range readsAlone {
 		if startsLinesOnly(markdowns[candidate.storedAt], recorded[candidate.block.ID]) {
-			kept[candidate.block.ID] = true
-			keptIDs, keptSums = append(keptIDs, candidate.block.ID), append(keptSums, candidate.sum)
-			keptExcerpts = append(keptExcerpts, candidate.excerpt)
-		}
-	}
-	if len(keptIDs) > 0 {
-		if _, err := tx.Exec(ctx, `
-			update document_blocks d set text_sha256 = r.sum, excerpt = r.excerpt
-			from unnest($2::text[], $3::text[], $4::text[]) as r (id, sum, excerpt)
-			where d.artifact_id = $1 and d.block_id = r.id
-		`, artifactID, keptIDs, keptSums, keptExcerpts); err != nil {
-			return nil, fmt.Errorf("record the blocks version %d of %s holds respelled: %w", version, artifactID, err)
+			kept = append(kept, candidate)
 		}
 	}
 	return kept, nil
