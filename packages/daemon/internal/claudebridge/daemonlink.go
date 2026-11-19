@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -198,14 +199,14 @@ var errNoAnswerInTime = errors.New("no answer within the attempt's bound")
 // unanswered names why an attempt got no answer from the daemon, and is "" for an attempt it
 // answered: the failures listed here, and nothing else. A refused, reset or closed
 // connection, an unreachable host or network, a name that did not resolve, and a dial or a read
-// that timed out never reached the daemon or lost its answer on the way; an attempt past
-// calls.answerTimeout is a daemon that took the request and never answered; and a 502, 503 or
-// 504 that names no Legion error code is a proxy in front of a daemon that is not serving. Every
-// refusal the daemon itself makes names a code (api's taskRefusal), so a coded answer, whatever
-// its status, is the daemon's word and is never sent again.
+// that timed out — which any error in the chain may say (timedOut) — never reached the daemon or
+// lost its answer on the way; an attempt past calls.answerTimeout is a daemon that took the
+// request and never answered; and a 502, 503 or 504 that names no Legion error code is a proxy in
+// front of a daemon that is not serving. Every refusal the daemon itself makes names a code (api's
+// taskRefusal), so a coded answer, whatever its status, is the daemon's word and is never sent
+// again.
 func (d *daemonLink) unanswered(status int, body []byte, err error) string {
 	var dns *net.DNSError
-	var transport net.Error
 	switch {
 	case err == nil:
 	case errors.Is(err, errNoAnswerInTime):
@@ -222,7 +223,7 @@ func (d *daemonLink) unanswered(status int, body []byte, err error) string {
 		return "the daemon's network was unreachable"
 	case errors.As(err, &dns):
 		return "the daemon's name did not resolve"
-	case errors.As(err, &transport) && transport.Timeout():
+	case timedOut(err):
 		return "the connection timed out"
 	default:
 		return ""
@@ -234,6 +235,28 @@ func (d *daemonLink) unanswered(status int, body []byte, err error) string {
 		}
 	}
 	return ""
+}
+
+// timedOut is whether any error in err's chain, through both forms of Unwrap, says it timed out
+// (a Timeout method that answers true). net/http gives one read that timed out in either of two
+// shapes — the read's error directly under the client's *url.Error, or wrapped first by its read
+// loop — and *url.Error's own Timeout asks only the error it directly wraps, so only the whole
+// chain finds the timeout in both.
+func timedOut(err error) bool {
+	for err != nil {
+		if t, ok := err.(interface{ Timeout() bool }); ok && t.Timeout() {
+			return true
+		}
+		switch wrapper := err.(type) {
+		case interface{ Unwrap() error }:
+			err = wrapper.Unwrap()
+		case interface{ Unwrap() []error }:
+			return slices.ContainsFunc(wrapper.Unwrap(), timedOut)
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // coded is whether body is a refusal the daemon made: one JSON object naming a Legion error code
