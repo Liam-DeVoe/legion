@@ -1675,7 +1675,7 @@ func memberOf(c supervise.Claim, round string) bool {
 // on it only as a way to the pod (blockingClaims).
 func lostClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var lost []supervise.Claim
-	for _, c := range blockingClaims(group, round) {
+	for _, c := range group {
 		if memberOf(c, round) && !answered(c, round) && c.Session != "" {
 			lost = append(lost, c)
 		}
@@ -1789,7 +1789,7 @@ func podWentMessage(round, reasons string, lost []supervise.Claim) string {
 	}
 	return fmt.Sprintf(`The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (%s). %s The pod went before the round was over.
 
-These roles did not answer the update ask before the pod went: %s. The pod's disk went with the pod. Work that these roles did not push is lost.
+These roles did not answer the update round before the pod went: %s. The pod's disk went with the pod. Work that these roles did not push is lost.
 
 The daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed.`,
 		round, opened, roleStates(lost))

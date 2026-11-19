@@ -424,9 +424,9 @@ type Claim struct {
 	//
 	// It is what the daemon's update round has of such a claim, which may be the issue's only
 	// one: the round opens over this pod as over a pod a process runs in, waits on no answer and
-	// no turn of the claim, decides whether a gone pod or a replacement names the claim as having
-	// lost work, and replaces the pod through this locator where no claim records a process there
-	// (internal/daemon's groupPod, waitingClaims, lostClaims, podProcess).
+	// no turn of the claim, and replaces the pod through this locator where no claim records a
+	// process there. Three functions of internal/daemon read it: podLocator, awaitsRoundPod and
+	// podProcess. The doc of awaitsRoundPod says what the round does with such a claim.
 	AwaitsPod *runtime.Locator
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
