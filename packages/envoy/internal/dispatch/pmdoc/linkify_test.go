@@ -420,6 +420,49 @@ func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 	}
 }
 
+// R4 stores every text the base stores (main 948aeca5 stores each of these), each address as
+// written or linked whole. These two hold an earlier email link the reader made and then a second
+// address after `/`, as `alice@example.com/bob-smith@example.com` does, where the earlier link
+// starts `b-_www.` or after a code span and a character reference: the tester's own generator found
+// them (seeds 11, 23 and 4242 over its own pieces). A write of each is not refused, its rendering
+// reads back as its tree, and the engine reads the markdown and the rendering as Go does.
+func TestLinkifyStoresTheShapesTheTesterFoundRefused(t *testing.T) {
+	shapes := []string{
+		"b-_www.@example.com./bob-smith@example.com\n",
+		"`c`&period;.@x_y.com/bob-smith@example.com\n",
+	}
+	docs := make([]*Node, len(shapes))
+	var markdowns []string
+	for index, shape := range shapes {
+		if _, err := ParseForWrite(shape, nil); err != nil {
+			t.Errorf("a write of %q is refused: %v", shape, err)
+		}
+		doc, err := Parse(shape)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", shape, err)
+			markdowns = append(markdowns, shape, shape)
+			continue
+		}
+		rendering := mustRender(t, doc)
+		if back, err := Parse(rendering); err != nil || !back.Equal(doc) {
+			t.Errorf("%q is written %q, which Go reads back as %s (%v), not %s", shape, rendering, inlineSummaries(back), err, inlineSummaries(doc))
+		}
+		docs[index] = doc
+		markdowns = append(markdowns, shape, rendering)
+	}
+	readings := engineReadings(t, markdowns)
+	for index, shape := range shapes {
+		if docs[index] == nil {
+			continue
+		}
+		for offset, markdown := range markdowns[2*index : 2*index+2] {
+			if engine := readings[2*index+offset]; engine == nil || !withoutBlockIDs(engine).Equal(withoutBlockIDs(docs[index])) {
+				t.Errorf("the engine reads %q as %s, and Go reads %q as %s", markdown, inlineSummaries(engine), shape, inlineSummaries(docs[index]))
+			}
+		}
+	}
+}
+
 // literalURL answers a URL at each offset of a line as a fresh read would, through the two records
 // that keep a line linear: the domain read from an earlier trigger (literalDomains), which a www
 // literal starting inside it reads again with its own underscores and dots, and a trail run
