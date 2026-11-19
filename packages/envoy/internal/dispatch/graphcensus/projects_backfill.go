@@ -273,11 +273,17 @@ func WriteOwedObjectNodes(ctx context.Context, database *store.Store, batches in
 
 // writeObjectKind walks kind's rows its marker does not mark, one batch at a time from the
 // start of its key, and writes each batch's nodes (writeObjectBatch), answering what it wrote.
-// Each batch spends one of budget's batches, nil being no bound; once budget is spent the walk
-// reads whether a row is left for the next run (more) and writes nothing more. A batch the store
-// refuses because it holds one of its nodes in another project (graphstore.ErrProjectMoved) is
-// written again one row at a time, so that row alone is left, answered in moved, and every other
-// row of the batch is written.
+// Each batch that writes a node spends one of budget's batches, nil being no bound; once budget is
+// spent the walk reads whether a row a pass can write is left for the next run (more) and writes
+// nothing more. A batch the store refuses because it holds one of its nodes in another project
+// (graphstore.ErrProjectMoved) is written again one row at a time, so that row alone is left,
+// answered in moved, and every other row of the batch is written.
+//
+// A row no pass can write - between a party the store refuses, or whose node the store holds in
+// another project - stays unmarked, so every run reads it again from the start of the key. So a
+// batch that writes nothing spends no budget, and the read past the budget skips such rows
+// (writableRowLeft): otherwise those rows would take the budget every run, hold back the rows after
+// them, and keep more, and with it the tick's debt, for ever.
 func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind, budget *int) (report KindBackfill, more bool, moved []error, err error) {
 	report = KindBackfill{Kind: kind.kind}
 	after := kind.start
@@ -289,8 +295,8 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 	}
 	for {
 		if budget != nil && *budget == 0 {
-			left, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, 1)
-			return report, len(left) > 0, moved, err
+			left, err := writableRowLeft(ctx, database, kind, after)
+			return report, left, moved, err
 		}
 		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
 		if err != nil {
@@ -299,10 +305,8 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 		if len(nodes) == 0 {
 			return report, false, moved, nil
 		}
-		if budget != nil {
-			*budget--
-		}
 		after = nodes[len(nodes)-1].ID
+		before := report.Rows
 		written, err := writeObjectBatch(ctx, database, kind, nodes)
 		switch {
 		case errors.Is(err, graphstore.ErrProjectMoved):
@@ -322,10 +326,67 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 		default:
 			add(written)
 		}
+		if budget != nil && report.Rows > before {
+			*budget--
+		}
 		if len(nodes) < backfillBatch {
 			return report, false, moved, nil
 		}
 	}
+}
+
+// writableRowLeft answers whether a row of kind after the id after is one a pass can write: a row
+// its marker does not mark whose parties the store takes and whose node, if the store holds one,
+// names no other project. It reads the kind's rows one batch at a time until it finds one or none
+// is left.
+func writableRowLeft(ctx context.Context, database *store.Store, kind objectKind, after string) (bool, error) {
+	for {
+		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
+		if err != nil || len(nodes) == 0 {
+			return false, err
+		}
+		ids := make([]string, len(nodes))
+		for index, node := range nodes {
+			ids[index] = node.ID
+		}
+		held, err := heldProjects(ctx, database.Pool, kind.kind, ids)
+		if err != nil {
+			return false, err
+		}
+		for _, node := range nodes {
+			if partiesRefused(node.Parties) {
+				continue
+			}
+			if project, found := held[node.ID]; found && node.Project != "" && project != node.Project {
+				continue
+			}
+			return true, nil
+		}
+		if len(nodes) < backfillBatch {
+			return false, nil
+		}
+		after = nodes[len(nodes)-1].ID
+	}
+}
+
+// heldProjects answers, by id, the project the store holds each node of kind at ids in, for the
+// nodes that hold one.
+func heldProjects(ctx context.Context, q graphstore.Queryer, kind string, ids []string) (map[string]string, error) {
+	rows, err := q.Query(ctx, `
+		select id, project_key from graph_nodes where kind = $1 and id = any($2) and project_key is not null
+	`, kind, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the projects of the %s nodes the store holds: %w", kind, err)
+	}
+	held := map[string]string{}
+	var id, project string
+	if _, err := pgx.ForEachRow(rows, []any{&id, &project}, func() error {
+		held[id] = project
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the projects of the %s nodes the store holds: %w", kind, err)
+	}
+	return held, nil
 }
 
 // statedOf is how many base attributes the node write states for nodes it makes: visibility and
