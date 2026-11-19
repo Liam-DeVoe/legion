@@ -688,11 +688,10 @@ test("created-by sessions use their live name and state, and a null creator is U
     issue("CORE-2", { created_by: null }),
   ]);
   const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  expect(
-    within(row)
-      .getByRole("link", { name: /Table author/ })
-      .getAttribute("href")
-  ).toContain("table-creator");
+  expect(within(row).getByRole("link", { name: /Table author/ })).toHaveAttribute(
+    "href",
+    expect.stringContaining("table-creator")
+  );
   expect(within(row).getByRole("img", { name: /running/i })).toBeDefined();
   expect(
     within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByText("Unknown")
@@ -704,8 +703,9 @@ test("created-by sessions use their live name and state, and a null creator is U
 test("a row a server sends without created_by or created_at renders, with no author and no time", async () => {
   table([issue("CORE-2"), issueFromOlderServer("CORE-1")], "?sort=created");
   const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  expect(within(row).getByRole("link", { name: "CORE-1" }).getAttribute("href")).toContain(
-    "CORE-1"
+  expect(within(row).getByRole("link", { name: "CORE-1" })).toHaveAttribute(
+    "href",
+    expect.stringContaining("CORE-1")
   );
   expect(within(row).getByText("Unknown")).toBeDefined();
   expect(row.querySelector("time")).toBeNull();

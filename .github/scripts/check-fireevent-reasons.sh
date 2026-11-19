@@ -26,17 +26,22 @@
 # is the reviewer's to judge. A gate checks what a program can check; the judgement stays with a
 # reader.
 #
-# The second rule is the same check over two assertions. The unit suite's preload registers
-# `@testing-library/jest-dom`'s matchers, which print the element they read and what they found
-# when they fail, and the suite asserts focus and attributes with them: `expect(el).toHaveFocus()`,
-# not `expect(document.activeElement).toBe(el)`, and `expect(el).toHaveAttribute(name, value)` or
-# `expect(el).not.toHaveAttribute(name)`, not `expect(el.getAttribute(name)).toBe(…)`. Those two
-# hand-written shapes, and their `.not.toBe(` forms, were rewritten by codemod, and nothing but
-# this keeps a new test from writing them again: between the merge that moved the suite to the
-# matchers (cybermonklabs/legion#2884) and this rule, the test files' focus reads went from 3 to
-# 126 and their attribute reads from 212 to 273. A site the matcher cannot say the same thing at —
-# a comparison with `document.body` or `null`, a value that is not a string — keeps its form and
-# carries its reason as a `fireEvent` call does.
+# The second rule is the same check over the assertions jest-dom's matchers carry. The unit
+# suite's preload registers `@testing-library/jest-dom`'s matchers, which print the element they
+# read and what they found when they fail, and the suite asserts focus and attributes with them:
+# `expect(el).toHaveFocus()`, not `expect(document.activeElement).toBe(el)`; and
+# `expect(el).toHaveAttribute(name, value)`, `expect(el).not.toHaveAttribute(name)` or
+# `expect(el).toHaveAttribute(name, expect.stringContaining(part))` (`expect.stringMatching(re)`),
+# not `expect(el.getAttribute(name))` compared by hand with `.toBe(`, `.toBeNull(`, `.toContain(`
+# or `.toMatch(`. Those hand-written shapes, and their `.not` forms, were rewritten by codemod, and
+# nothing but this keeps a new test from writing them again: between the merge that moved the
+# suite to the matchers (cybermonklabs/legion#2884) and this rule, the test files' focus reads went
+# from 3 to 126 and their attribute reads compared with `.toBe(` from 212 to 273. A site the
+# matcher cannot say the same thing at keeps its form and carries its reason as a `fireEvent` call
+# does: a value that may be null, which `toHaveAttribute` takes as one the attribute must hold, or
+# a `.not` form the matcher decides otherwise. On an absent attribute `.not.toContain(` fails and
+# `.not.toHaveAttribute(name, expect.stringContaining(…))` passes; on an element that may be
+# missing, `.not.toBeNull()` over `el?.getAttribute(name)` passes and `toHaveAttribute` fails.
 #
 # Biome's formatter wraps a long assertion, so this rule reads each file whole: a site whose
 # `expect(` ends its line, with the `getAttribute` read on the next, is the same site, and is named
@@ -85,9 +90,11 @@ COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*)")
 BALANCED = r"[^()]"
 for _ in range(4):
     BALANCED = rf"(?:[^()]|\({BALANCED}*\))"
-TO_BE = r"\s*(?:\.not\s*)?\.toBe\("
-FOCUS = re.compile(rf"\bexpect\(\s*document\.activeElement\s*\){TO_BE}")
-ATTRIBUTE = re.compile(rf"\bexpect\({BALANCED}*?\.getAttribute\({BALANCED}*\)\s*\){TO_BE}")
+FOCUS = re.compile(r"\bexpect\(\s*document\.activeElement\s*\)\s*(?:\.not\s*)?\.toBe\(")
+ATTRIBUTE = re.compile(
+    rf"\bexpect\({BALANCED}*?\.getAttribute\({BALANCED}*\)\s*\)"
+    r"\s*(?:\.not\s*)?\.(?:toBe|toBeNull|toContain|toMatch)\("
+)
 
 
 def reasoned(lines: list[str], index: int) -> bool:
@@ -164,11 +171,15 @@ if bare_reads:
     report(bare_reads)
     print(
         "\nThe preload's jest-dom matchers say each of these and print the element they read when "
-        "they fail: `expect(el).toHaveFocus()` for `expect(document.activeElement).toBe(el)`, and "
-        "`expect(el).toHaveAttribute(name, value)` or `expect(el).not.toHaveAttribute(name)` for "
-        "`expect(el.getAttribute(name)).toBe(…)`. Where the matcher cannot say the same thing — a "
-        "comparison with `document.body` or `null`, a value that is not a string — write the "
-        "reason on the line above the assertion.",
+        "they fail: `expect(el).toHaveFocus()` for `expect(document.activeElement).toBe(el)`; and "
+        "for `expect(el.getAttribute(name))`, `expect(el).toHaveAttribute(name, value)` for "
+        "`.toBe(value)`, `expect(el).not.toHaveAttribute(name)` for `.toBeNull()`, "
+        "`expect(el).toHaveAttribute(name)` for `.not.toBeNull()`, and "
+        "`expect(el).toHaveAttribute(name, expect.stringContaining(part))` or "
+        "`expect.stringMatching(re)` for `.toContain(part)` or `.toMatch(re)`. Where the matcher "
+        "cannot say the same thing — a value that may be null, a `.not` form over a part of an "
+        "attribute or over an element that may be missing — write the reason on the line above "
+        "the assertion.",
         file=sys.stderr,
     )
 

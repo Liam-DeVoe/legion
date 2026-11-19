@@ -285,6 +285,19 @@ The clock of a unit test:
   runs through `bun run test:web <file>`, which loads the preloads, and never through a bare
   `bun test <file>`.
 
+How a unit test acts on the page and reads it:
+
+- A row acts as a person does, through user-event. A `fireEvent` call carries a comment within
+  the five lines above it that says why user-event has no form for it.
+
+- A row reads focus and attributes through jest-dom: `expect(el).toHaveFocus()`, never
+  `expect(document.activeElement).toBe(el)`, and `expect(el).toHaveAttribute(name, value)`, never
+  `expect(el.getAttribute(name))` with `.toBe()`, `.toBeNull()`, `.toContain()` or `.toMatch()`.
+  `expect.stringContaining` and `expect.stringMatching` give `toHaveAttribute` a part of the
+  value. A site that keeps the hand-written form carries its reason the same way.
+  `.github/scripts/check-fireevent-reasons.sh`, which CI's lint job runs, refuses a call or a read
+  without one.
+
 Pages under `docs/solutions/` that describe what this layout replaced. They stay as history, and
 no page there is edited:
 

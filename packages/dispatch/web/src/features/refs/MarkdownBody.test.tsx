@@ -418,7 +418,7 @@ describe("Dispatch pictures", () => {
       }
       const bare = within(view.container).getByRole("link", { name: page });
       expect(bare).toHaveAttribute("href", page);
-      expect(bare.getAttribute("data-dispatch-ref")).toBeNull();
+      expect(bare).not.toHaveAttribute("data-dispatch-ref");
     } finally {
       getArtifactText.mockRestore();
       getIssueSummary.mockRestore();
@@ -494,7 +494,7 @@ describe("Dispatch pictures", () => {
       const image = await within(view.container).findByRole("img", { name: "chart" });
       expect(image).toHaveAttribute("src", "https://example.com/a.png");
       expect(image.closest("a")).toBeNull();
-      expect(image.getAttribute("loading")).toBeNull();
+      expect(image).not.toHaveAttribute("loading");
     } finally {
       view.unmount();
     }
@@ -877,7 +877,7 @@ test("raw unsupported HTML renders as literal text with no element created", asy
       const body = view.container.firstElementChild as HTMLElement;
       expect(body.querySelector(tag)).toBeNull();
       expect(body.querySelector("p")?.textContent).toBe(markdown);
-      await waitFor(() => expect(body.getAttribute("data-markdown-fallback")).toBeNull());
+      await waitFor(() => expect(body).not.toHaveAttribute("data-markdown-fallback"));
     } finally {
       view.unmount();
     }
@@ -896,7 +896,7 @@ test("a clock time such as 16:25Z renders as Markdown, not as the literal-text f
     const strong = await within(view.container).findByText("held", { selector: "strong" });
     expect(strong).toBeDefined();
     expect(view.container.querySelector("li")?.textContent).toBe("retry at 04:20Z");
-    expect(view.container.firstElementChild?.getAttribute("data-markdown-fallback")).toBeNull();
+    expect(view.container.firstElementChild).not.toHaveAttribute("data-markdown-fallback");
   } finally {
     view.unmount();
   }

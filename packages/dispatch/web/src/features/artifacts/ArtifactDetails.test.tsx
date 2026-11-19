@@ -347,7 +347,7 @@ test("ArtifactDetails encodes an author-set block id in the source deep link", a
     const view = renderDetails(artifact);
     const references = await screen.findByRole("region", { name: "Referenced by" });
     const source = within(references).getByRole("link", { name: "Artifact · CORE-1" });
-    expect(source.getAttribute("href")).toContain("#b-two%20words%25");
+    expect(source).toHaveAttribute("href", expect.stringContaining("#b-two%20words%25"));
     view.unmount();
   } finally {
     getReferences.mockRestore();

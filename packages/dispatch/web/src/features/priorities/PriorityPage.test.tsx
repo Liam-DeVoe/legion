@@ -215,7 +215,7 @@ test("the rendered description is no control: the keyboard opens the editor with
   const edit = within(described).getByRole("button");
   expect(edit).toBe(screen.getByRole("button", { name: "Edit the description of P2" }));
   expect(edit.textContent).toBe("Edit the description of P2");
-  expect(edit.getAttribute("aria-label")).toBeNull();
+  expect(edit).not.toHaveAttribute("aria-label");
   edit.focus();
   await user.keyboard("{Enter}");
   expect(await screen.findByRole("textbox", { name: "Description of P2" })).toBeDefined();

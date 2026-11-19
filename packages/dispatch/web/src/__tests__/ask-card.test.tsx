@@ -1866,7 +1866,7 @@ test("AskCard shows the newest two replies, expands the earlier ones, and puts a
 
     const showMore = view.getByRole("button", { name: "Show 3 earlier replies" });
     expect(showMore).toHaveAttribute("aria-expanded", "false");
-    expect(showMore.getAttribute("aria-controls")).not.toBeNull();
+    expect(showMore).toHaveAttribute("aria-controls");
     showMore.focus();
     await user.click(showMore);
     await waitFor(() =>

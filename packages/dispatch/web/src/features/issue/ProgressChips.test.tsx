@@ -13,7 +13,7 @@ test("the header's bar fills to done of total and names each count", () => {
   try {
     const tasks = screen.getByTestId("issue-progress-tasks");
     expect(tasks.textContent).toBe("3/4 tasks");
-    expect(tasks.getAttribute("title")).toContain("3 of 4 task-list items");
+    expect(tasks).toHaveAttribute("title", expect.stringContaining("3 of 4 task-list items"));
     const fills = [tasks, screen.getByTestId("issue-progress-children")].map(
       (chip) => (chip.querySelector("[aria-hidden] > span") as HTMLElement).style.width
     );

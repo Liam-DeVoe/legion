@@ -138,7 +138,7 @@ test("a pane names its session and its state; one with no session says so and sh
     expect(within(top).getByTestId("window-pane-state").textContent).toBe("Idle");
     // Unseen for half an hour: the registry's own silence, which is Quiet.
     expect(within(left).getByTestId("window-pane-state").textContent).toBe("Quiet");
-    expect(right.getAttribute("data-agent")).toBeNull();
+    expect(right).not.toHaveAttribute("data-agent");
     expect(right.textContent).toBe("Pane 2No agent");
   } finally {
     view.unmount();

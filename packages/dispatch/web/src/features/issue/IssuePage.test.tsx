@@ -522,7 +522,7 @@ test("IssuePage's header marks an unresponsive route holder apart from an unheld
     const marker = within(row).getByTestId("issue-route-unresponsive");
     expect(marker).toHaveTextContent("role:sre:");
     expect(marker).toHaveTextContent("Unresponsive, still reached");
-    expect(marker.getAttribute("title")).toContain("waits until it answers");
+    expect(marker).toHaveAttribute("title", expect.stringContaining("waits until it answers"));
     expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-refilling")).not.toBeInTheDocument();

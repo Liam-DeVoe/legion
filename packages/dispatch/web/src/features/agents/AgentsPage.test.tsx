@@ -458,10 +458,10 @@ test("Agents lists an unresponsive session with its state, neither dropped nor d
     const row = card(screen.getByRole("region", { name: "Agents" }), "Stalled");
     const note = within(row).getByTestId("agent-unresponsive");
     expect(note).toHaveTextContent("Unresponsive");
-    expect(note.getAttribute("title")).toContain("It has not ended");
+    expect(note).toHaveAttribute("title", expect.stringContaining("It has not ended"));
     // The name's own mark reads the row's state, never the list's membership.
     const mark = within(row).getByRole("img", { name: "Unresponsive" });
-    expect(mark.getAttribute("title")).toContain("seen 6 minutes ago");
+    expect(mark).toHaveAttribute("title", expect.stringContaining("seen 6 minutes ago"));
     expect(within(row).queryByRole("img", { name: "Not running" })).not.toBeInTheDocument();
     expect(within(row).queryByRole("img", { name: "Running" })).not.toBeInTheDocument();
     // A live row beside it says nothing of the kind.
@@ -648,7 +648,7 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
     const waiting = within(builderCard).getByRole("link", { name: "Waiting on agent 2" });
     // The filter cleared, so the list it opens holds the question it counted whoever holds it.
     expect(waiting).toHaveAttribute("href", "/?agent=builder-session&assignee=everyone");
-    expect(waiting.getAttribute("title")).toContain("Builder");
+    expect(waiting).toHaveAttribute("title", expect.stringContaining("Builder"));
 
     const reviewer = card(region, "Reviewer");
     // Every card carries the Open action; what this card must not carry is a whose-turn pill.
@@ -2562,7 +2562,7 @@ test("Restore draft refuses, and says why on screen, while the composer holds a 
     const sends = await screen.findByRole("region", { name: "Sends" });
     await within(sends).findByText(`Could not send to 1 agent: ${BROADCAST_REFUSED}`);
     const restore = within(sends).getByRole("button", { name: "Restore draft" });
-    expect(restore.getAttribute("aria-disabled")).toBeNull();
+    expect(restore).not.toHaveAttribute("aria-disabled");
 
     // A message started since the press: Restore draft would overwrite it, so it refuses, and the
     // line under its row, which it is described by, says why.
@@ -2587,7 +2587,7 @@ test("Restore draft refuses, and says why on screen, while the composer holds a 
 
     // With nothing begun, the refused send's message and selection come back.
     await user.click(planner);
-    expect(restore.getAttribute("aria-disabled")).toBeNull();
+    expect(restore).not.toHaveAttribute("aria-disabled");
     expect(within(sends).queryByText(reason)).not.toBeInTheDocument();
     await user.click(restore);
     expect(message()).toHaveProperty("value", "Keep this.");

@@ -254,7 +254,7 @@ test("a reader who lands on a comment link can still select another card", async
     const second = screen.getByTestId("margin-comment-comment-2");
     expect(second).toHaveAttribute("aria-current", "true");
     expect(second).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByTestId("margin-comment-comment-1").getAttribute("aria-current")).toBeNull();
+    expect(screen.getByTestId("margin-comment-comment-1")).not.toHaveAttribute("aria-current");
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -277,7 +277,7 @@ test("a reader who lands on a comment link can select a Needs you ask", async ()
     await waitFor(() =>
       expect(screen.getByLabelText("Selected margin item").textContent).toBe(anchoredAsk.id)
     );
-    expect(screen.getByTestId("margin-comment-comment-1").getAttribute("aria-current")).toBeNull();
+    expect(screen.getByTestId("margin-comment-comment-1")).not.toHaveAttribute("aria-current");
   } finally {
     view.unmount();
     restoreMatchMedia();

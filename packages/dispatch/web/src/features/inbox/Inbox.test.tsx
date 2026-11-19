@@ -2631,7 +2631,7 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
     // The first row is selected when the Inbox opens, and the address says so.
     expect(selectedIds()).toEqual(["ask-a"]);
     expect(address()).toBe("/?item=ask-a");
-    expect(shortRow("ask-b").getAttribute("data-inbox-selected")).toBeNull();
+    expect(shortRow("ask-b")).not.toHaveAttribute("data-inbox-selected");
   } finally {
     unmount();
     narrow();

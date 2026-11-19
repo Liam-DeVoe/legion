@@ -175,7 +175,7 @@ test("a lead with no body shows the lead alone", async () => {
   });
   try {
     await waitFor(() => expect(preview().textContent).toBe("Replying to a message"));
-    expect(preview().getAttribute("data-markdown-fallback")).toBeNull();
+    expect(preview()).not.toHaveAttribute("data-markdown-fallback");
   } finally {
     view.unmount();
   }
@@ -244,7 +244,7 @@ test("a body that is only a code fence shows its code on the line, with no fence
     expect(preview().textContent).not.toContain("```");
     // Code is code: a reference written inside the fence is not resolved.
     expect(preview().querySelector("[data-dispatch-ref]")).toBeNull();
-    expect(preview().getAttribute("data-markdown-fallback")).toBeNull();
+    expect(preview()).not.toHaveAttribute("data-markdown-fallback");
   } finally {
     view.unmount();
   }
@@ -329,7 +329,7 @@ test("a body the engine cannot parse shows its literal text, led, and never as H
     // Edited into a body that parses, it renders formatted and stops being the fallback.
     rerender({ lines: 2, markdown: "**fixed** astrolabe" });
     await waitFor(() => expect(preview().querySelector("strong")?.textContent).toBe("fixed"));
-    expect(preview().getAttribute("data-markdown-fallback")).toBeNull();
+    expect(preview()).not.toHaveAttribute("data-markdown-fallback");
     expect(preview().textContent).toBe("fixed astrolabe");
   } finally {
     view.unmount();

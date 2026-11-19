@@ -6,11 +6,13 @@
 # above, and the direct `fireEvent(node, event)` form the dotted pattern never saw; a call named
 # inside a comment is prose and is not counted. The jest-dom rule: a hand-written focus read, its
 # `.not` form and a hand-written attribute read with no comment above each fail, the attribute read
-# also when Biome has wrapped it onto lines of its own, where it is named at its `expect(`; a kept
-# site with its reason above passes; jest-dom's own matchers, a read nested inside `expect`'s
-# argument and a read named in a comment are not counted; and one run reports both rules. The real
-# repository passes over a count of calls and of files it actually found, so a run that scanned
-# nothing fails rather than reporting a clean scan.
+# whether it is compared with `.toBe(`, `.toBeNull(`, `.not.toBeNull(`, `.toContain(` or
+# `.toMatch(`, and also when Biome has wrapped it onto lines of its own, where it is named at its
+# `expect(`; a kept site with its reason above passes; jest-dom's own matchers, an asymmetric
+# matcher among them, a read nested inside `expect`'s argument and a read named in a comment are
+# not counted; and one run reports both rules. The real repository passes over a count of calls
+# and of files it actually found, so a run that scanned nothing fails rather than reporting a clean
+# scan.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -205,6 +207,25 @@ check "fails" "$(is "$status" 1)"
 check "names the read" "$(contains "$out" 'rows.test.tsx:3')"
 check "names the matcher to use" "$(contains "$out" 'expect(el).toHaveAttribute(name, value)')"
 
+echo "case: an attribute read compared by hand with toBeNull, its .not, toContain or toMatch is refused"
+root=$(fixture compared)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(row.getAttribute("aria-busy")).toBeNull();
+  expect(row.getAttribute("aria-controls")).not.toBeNull();
+  expect(row.getAttribute("title")).toContain("ready");
+  expect(row.getAttribute("title")).toMatch(/^Copy issue key/);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts all four" "$(contains "$out" '4 of 4 hand-written focus and attribute assertions')"
+check "names the toBeNull read" "$(contains "$out" 'rows.test.tsx:2')"
+check "names the .not.toBeNull read" "$(contains "$out" 'rows.test.tsx:3')"
+check "names the toContain read" "$(contains "$out" 'rows.test.tsx:4')"
+check "names the toMatch read" "$(contains "$out" 'rows.test.tsx:5')"
+check "names the matcher to use" "$(contains "$out" 'expect.stringContaining(part)')"
+
 # Biome's formatter wraps a long assertion so: a line-by-line pattern would see neither the
 # `expect(` line nor the read below it as the shape.
 echo "case: an attribute read Biome wrapped onto lines of its own is refused at its expect"
@@ -241,6 +262,7 @@ test("a row", () => {
   expect(row).toHaveFocus();
   expect(row).toHaveAttribute("aria-current", "true");
   expect(row).not.toHaveAttribute("aria-busy");
+  expect(row).toHaveAttribute("title", expect.stringContaining("ready"));
   expect(rows.map((item) => item.getAttribute("data-turn"))).toEqual(["a", "b"]);
   expect(rows.map((item) => item.getAttribute("data-turn")).join()).toBe("a,b");
 });

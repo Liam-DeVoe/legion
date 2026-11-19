@@ -3344,7 +3344,7 @@ test("outside NoTooltips a labelled CopyButton's words and a route marker's rout
   try {
     const words = within(caseOf(view, "copy")).getByText("session-1");
     expect(words.tagName).toBe("SPAN");
-    expect(words.getAttribute("class")).toBeNull();
+    expect(words).not.toHaveAttribute("class");
     const routes = [...caseOf(view, "route").querySelectorAll("span")].filter((span) =>
       /^role:(reviewer|architect):$/.test(span.textContent ?? "")
     );
@@ -3543,7 +3543,7 @@ test("inside NoTooltips the repository row with no repository reads None and ope
 
       // "None" is a button that says the word it is named by first, and carries no title.
       expect(none().textContent).toBe(CONTROL_LABELS.none);
-      expect(none().getAttribute("title")).toBeNull();
+      expect(none()).not.toHaveAttribute("title");
       expect(scope.queryByRole("combobox")).toBeNull();
 
       // A click draws the box, with its description and its placeholder, the focus in it.
@@ -3676,7 +3676,7 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       // The text is the whole repository, in the ink with the author's mark and no title, and
       // the box's one description describes it. No box is drawn.
       expect(text().textContent).toBe(LONG_REPOSITORY);
-      expect(text().getAttribute("title")).toBeNull();
+      expect(text()).not.toHaveAttribute("title");
       expect(text().hasAttribute(AUTHOR_TEXT_ATTRIBUTE)).toBe(true);
       expect(classOf(text())).toEqual(expect.arrayContaining(tokens(pageInkText)));
       expect(text()).toHaveAccessibleDescription(LONG_REPOSITORY);

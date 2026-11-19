@@ -1039,7 +1039,7 @@ test("Send stays open with text while an earlier send is out or late, and each p
     await user.click(input);
     await user.paste("and this");
     expect(sendButton().disabled).toBe(false);
-    expect(sendButton().getAttribute("aria-disabled")).toBeNull();
+    expect(sendButton()).not.toHaveAttribute("aria-disabled");
     await user.click(sendButton());
     await tick(0);
     expect(screen.getAllByTestId("agent-send-held")).toHaveLength(2);
@@ -1052,7 +1052,7 @@ test("Send stays open with text while an earlier send is out or late, and each p
     expect(within(late as HTMLElement).getByRole("button", { name: "Stop trying" })).toBeTruthy();
     await user.click(input);
     await user.paste("a third");
-    expect(sendButton().getAttribute("aria-disabled")).toBeNull();
+    expect(sendButton()).not.toHaveAttribute("aria-disabled");
     await user.clear(input);
 
     await act(async () => {

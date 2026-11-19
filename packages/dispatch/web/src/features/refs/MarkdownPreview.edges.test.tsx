@@ -152,7 +152,7 @@ test("right-to-left text keeps its characters in order, its marks on the words m
       expect(element.querySelector("strong")?.textContent).toBe("עולם");
       expect(element.querySelector("em")?.textContent).toBe("بالعالم");
       expect(element.querySelector("code")?.textContent).toBe("kubectl get pods");
-      expect(element.getAttribute("data-markdown-fallback")).toBeNull();
+      expect(element).not.toHaveAttribute("data-markdown-fallback");
     }
   } finally {
     view.unmount();

@@ -88,7 +88,7 @@ test("renders every pending credential request, linking a secret row to its brok
   expect(screen.getByText("worker-7.example.com")).toBeDefined();
   const secret = screen.getByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s });
   expect(secret).toHaveAttribute("href", "https://secrets.example.com/approve/req-1");
-  expect(secret.getAttribute("target")).toBeNull();
+  expect(secret).not.toHaveAttribute("target");
   const machine = await screen.findByRole("link", {
     name: /Machine login.*worker-7\.example\.com/s,
   });

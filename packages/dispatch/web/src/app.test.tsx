@@ -958,8 +958,9 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
       expect(screen.getByRole("button", { name: "Show margin" })).toBeTruthy();
 
       await user.click(screen.getByRole("button", { name: "Show margin" }));
-      expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
-        "width: 408px"
+      expect(screen.getByTestId("desktop-margin-shell")).toHaveAttribute(
+        "style",
+        expect.stringContaining("width: 408px")
       );
       await user.click(screen.getByRole("button", { name: "Show sidebar" }));
 

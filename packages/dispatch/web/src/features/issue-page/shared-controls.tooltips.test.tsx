@@ -2721,7 +2721,7 @@ test("inside NoTooltips the repository's clear control is described by what its 
       const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
       const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
       if (surface === "inside") {
-        expect(clear.getAttribute("title")).toBeNull();
+        expect(clear).not.toHaveAttribute("title");
         expect(
           scope.getByRole("button", {
             description: clearExplains,

@@ -263,7 +263,7 @@ test("a live address opens that session's view, in front of everything else", as
   await screen.findByTestId("agent-conversation");
   const view = viewOf(PLANNER);
   expect(view).toHaveAttribute("data-front", "true");
-  expect(view.getAttribute("aria-hidden")).toBeNull();
+  expect(view).not.toHaveAttribute("aria-hidden");
   await waitFor(() => expect(document.title).toContain("Planner"));
   expect(watched(openSocket())).toEqual([PLANNER]);
 });

@@ -126,13 +126,13 @@ test("the owner and service attribution follow the name, outside its link, read 
     // The link is named by the visible name; the attribution after it is text, so a screen
     // reader hears the byline as it reads, never the attribution twice.
     const owned = await screen.findByRole("link", { name: "Planner" });
-    expect(owned.getAttribute("aria-label")).toBeNull();
+    expect(owned).not.toHaveAttribute("aria-label");
     await waitFor(() =>
       expect(spokenText(agentNode(view.container, LISTED_ID))).toBe("Running Planner (for alice)")
     );
     expect(agentNode(view.container, LISTED_ID).textContent).toBe("Planner (for alice)");
     const service = screen.getByRole("link", { name: "Implementer" });
-    expect(service.getAttribute("aria-label")).toBeNull();
+    expect(service).not.toHaveAttribute("aria-label");
     expect(spokenText(agentNode(view.container, "worker-session"))).toBe(
       "Not running Implementer (as legion/legion-worker)"
     );
@@ -154,8 +154,8 @@ test("a name in the short form carries the full session id as its tooltip", asyn
   );
   try {
     await screen.findByRole("link", { name: "Planner" });
-    expect(agentNode(view.container, LISTED_ID).getAttribute("title")).toBeNull();
-    expect(agentNode(view.container, "fedcba9876543210").getAttribute("title")).toBeNull();
+    expect(agentNode(view.container, LISTED_ID)).not.toHaveAttribute("title");
+    expect(agentNode(view.container, "fedcba9876543210")).not.toHaveAttribute("title");
     // Two sessions minted in the same minute read alike; their tooltips tell them apart.
     for (const id of ["0123456789abcdef", "01234567ffffffff"]) {
       expect(agentNode(view.container, id).textContent).toBe("session:01234567…");

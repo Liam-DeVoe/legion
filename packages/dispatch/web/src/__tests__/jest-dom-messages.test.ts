@@ -31,3 +31,31 @@ test("a failed toHaveAttribute names the attribute and both values", () => {
   expect(message).toContain("option-expected");
   expect(message).toContain("option-actual");
 });
+
+// The suite writes a part of an attribute as `toHaveAttribute(name, expect.stringContaining(…))`
+// or `expect.stringMatching(…)`, where it once wrote `expect(el.getAttribute(name)).toContain(…)`
+// or `.toMatch(…)`. That holds only while jest-dom's comparison, the `equals` of the context
+// `jest-dom-matchers.ts` builds, honours an asymmetric matcher: this row passes on a part the
+// attribute holds, and fails, naming what it asked for and what it found, on a part it does not
+// hold and on an attribute that is absent, as the hand-written read failed on both.
+test("toHaveAttribute takes an asymmetric matcher, and fails as the hand-written read did", () => {
+  const chip = document.createElement("span");
+  chip.setAttribute("title", "It has not ended, and may yet answer.");
+
+  expect(chip).toHaveAttribute("title", expect.stringContaining("not ended"));
+  expect(chip).toHaveAttribute("title", expect.stringMatching(/^It has not ended/));
+
+  const missed = failureOf(() =>
+    expect(chip).toHaveAttribute("title", expect.stringContaining("has ended"))
+  );
+  expect(missed).toContain("has ended");
+  expect(missed).toContain("It has not ended, and may yet answer.");
+
+  const absent = failureOf(() =>
+    expect(document.createElement("span")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/not ended/)
+    )
+  );
+  expect(absent).toContain("not ended");
+});
