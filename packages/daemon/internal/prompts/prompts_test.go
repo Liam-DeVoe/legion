@@ -361,6 +361,27 @@ func clauses(text string) []string {
 	return found
 }
 
+// clauseHolds says whether one clause of text (clauses) holds each of terms, in the order given:
+// a rule pinned by its terms, so a rewording that keeps them passes and a change of one fails,
+// while each term still has to stand in the one clause that states the rule.
+func clauseHolds(text string, terms ...string) bool {
+	for _, clause := range clauses(text) {
+		rest, held := clause, true
+		for _, term := range terms {
+			_, after, found := strings.Cut(rest, term)
+			if !found {
+				held = false
+				break
+			}
+			rest = after
+		}
+		if held {
+			return true
+		}
+	}
+	return false
+}
+
 // What a phase proved is a result recorded against a `check` block of the issue's Verification
 // document (`dispatch result`), and the pull request body carries one line per check. No composed
 // prompt — any phase worker's, and the architect's in both its shapes — still teaches the two
@@ -907,14 +928,14 @@ func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarrie
 // and Legion starts no pod for it: the line is a wish that a later read of the stored sessions
 // counts. Legion's own part of every prompt gives the form, architect-common.md for an owner and
 // worker-common.md for the agent of a step, so each composition an issue's agents start with holds
-// the line whole, the form and the sentence that says Legion starts no pod for it. This shows the
-// text is loaded, never that an agent writes the line.
+// the form, in the clause that says when to write it, and the clause that says Legion starts no
+// pod for it, each held by its terms. This shows the text is loaded, never that an agent writes
+// the line.
 func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	const line = "If a task of this issue needs a pod of its own, write one line in your reply that starts with SEPARATE-POD, then the issue key, the task id and the reason: SEPARATE-POD <ISSUE> <task> <reason>. Legion starts no pod for this line, and the work goes on in this issue's pod."
 	for _, tc := range []struct {
 		name   string
 		role   claim.Role
@@ -929,10 +950,13 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 		{"merger", claim.RoleMerger, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
-			for _, phrase := range []string{"SEPARATE-POD <ISSUE> <task> <reason>", "Legion starts no pod for this line", line} {
-				if !strings.Contains(text, phrase) {
-					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
+			text := composedText(t, composer, tc.role, tc.isRoot)
+			for _, terms := range [][]string{
+				{"pod of its own", "one line", "SEPARATE-POD", "SEPARATE-POD <ISSUE> <task> <reason>"},
+				{"Legion", "no pod", "this line"},
+			} {
+				if !clauseHolds(text, terms...) {
+					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
 				}
 			}
 		})
@@ -945,14 +969,15 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 // first step settles the plan that step would walk, the notices that a stopped task, a parent
 // held before its retro and a plan of an earlier owner send it, the two stops a task-stopped
 // notice tells of (a failed step's, and another architect's stop_task, whose notice names that
-// architect) and the stop it is not sent for (its own), the three sentences that say when a plan
-// must be given and how a plan replaces the default steps once the work started, and the answers
-// a later version gets from the workflow (workflow.planGiven), each by its code where it has
-// one: the running task's block, its text included, is refused and the
+// architect) and the stop it is not sent for (its own), when a plan must be given and how a plan
+// replaces the default steps once the work started, and the answers a later version gets from the
+// workflow (workflow.planGiven): the running task's block, its text included, is refused and the
 // unchanged block taken, each refusal names its cause and changes nothing so the same version can
-// be given again, and an issue that started its work before Legion took plans takes none. Both
-// architect compositions share that part, so both are read. This shows the text is loaded, never
-// that an owner follows it.
+// be given again, and an issue that started its work before Legion took plans takes none. Each is
+// held by its terms: a term alone where the term is the rule (a code, an operation, a role), and
+// otherwise the terms of the clause that states the rule, in their order. Both architect
+// compositions share that part, so both are read. This shows the text is loaded, never that an
+// owner follows it.
 func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -963,8 +988,9 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 		isRoot bool
 	}{{"root architect", true}, {"sub-architect", false}} {
 		t.Run(tc.name, func(t *testing.T) {
-			text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, tc.isRoot))
-			for _, phrase := range []string{
+			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
+			text := foldWhitespace(composed)
+			for _, term := range []string{
 				"planner (planning)",
 				"implementer (implementation)",
 				"tester (testing)",
@@ -975,10 +1001,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				"task-stopped",
 				"retro-held",
 				"plan-not-taken",
-				"stop_task on the task default",
-				"before release_children",
-				"Give each issue its plan before its work starts. For the root, call register_plan before register_gate: the gate's opening starts the root's first step. For a child, call register_plan before release_children releases it: Legion keeps the plan and starts the child's first step from it.",
-				"An issue whose work started before you gave it a plan runs the task default, the project's default steps. To give it a plan, call stop_task on the task default, then register_plan with a version whose one task replaces it: Legion starts that task at its first step.",
 				// The hold a stop leaves and what ends or refuses it, by its contract terms: the
 				// person's `todo`, the tool that refuses a release, its two refusal codes, and the
 				// case of a task that never started, which waits for its gate instead.
@@ -999,18 +1021,36 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				"`ISSUE_NOT_OWNED`",
 				"`SIGNOFF_STALE_GENERATION`",
 				"`SIGNOFF_STALE_ENTRY`",
-				"A later version may change or remove only a task that waits or is stopped. Legion refuses one that changes or removes the running task, a change of the text in its block alone included (`PLAN_REFUSED`, with the reason `task <id> is running: stop it with stop_task before you change it.`). It takes one that leaves the running task's block as it is, and the task goes on at its step.",
 				// A later version's answers by their codes.
 				"`PLAN_VERSION_OLD`",
 				"`PLAN_DOCUMENT_CHANGED`",
 				"`PLAN_STALE_GENERATION`",
-				"A refusal changes nothing, and the same version can be given again: one refused for a generation the issue left at once, and one refused while its task ran after stop_task.",
-				"An issue that started its work before Legion took plans takes no plan (`PLAN_REFUSED`): it runs the steps it started with to their end.",
-				"Where another architect of your tree stopped it with `stop_task`, its reason names that architect, the notice carries `stoppedBy`, and no step failed.",
-				"A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.",
 			} {
-				if !strings.Contains(text, phrase) {
-					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
+				if !strings.Contains(text, term) {
+					t.Errorf("the composed %s prompt omits %q", tc.name, term)
+				}
+			}
+			for _, terms := range [][]string{
+				// A root's plan comes before its gate, and a child's before its release.
+				{"register_plan", "register_gate"},
+				{"register_plan", "release_children"},
+				// An issue already at work runs the task default: stop it, then give the plan.
+				{"stop_task", "default", "register_plan"},
+				// A later version changes only a task that waits or is stopped, refuses a change
+				// of the running task, and takes its block unchanged.
+				{"later version", "waits", "stopped"},
+				{"running task", "`PLAN_REFUSED`", "task <id> is running"},
+				{"running task's block", "goes on"},
+				// A refusal changes nothing, so the same version is given again, and an issue
+				// that started before plans takes none.
+				{"changes nothing", "given again"},
+				{"started its work before Legion took plans", "`PLAN_REFUSED`"},
+				// Another architect's stop names it in the notice; one's own stop sends none.
+				{"`stop_task`", "`stoppedBy`"},
+				{"no notice", "200", "`stop_task`"},
+			} {
+				if !clauseHolds(composed, terms...) {
+					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
 				}
 			}
 		})
@@ -1113,20 +1153,25 @@ func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
 // names, an owner wrote that plan, and the planner changes no task block, adds none, and writes its
 // plan below them as plain sections; where it holds none (the task `default`, or an issue with no
 // `Task:` line), the planner writes each task as a `plan_task` block. The old rule, which wrote a
-// block in every case, is gone. This shows the text is loaded, never that a planner follows it.
+// block in every case, is gone. Each rule is held by the terms of the clause that states it, in
+// their order. This shows the text is loaded, never that a planner follows it.
 func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	text := foldWhitespace(composedText(t, composer, claim.RolePlanner, false))
-	for _, phrase := range []string{
-		"Read `plan.md` first, where the issue holds one: `dispatch doc-read --issue <issue> --artifact plan.md --blocks` lists its blocks with their ids.",
-		"Where it holds a `plan_task` block whose id is the task your `Task:` line names, the issue's owner wrote that plan, and Legion carries out each task block of a version its owner gives, so a block of yours would become work of its own: change no `plan_task` block and add none, and write your plan below them as plain sections of the same document.",
-		"Where it holds no such block (your task is `default`, or your task has no `Task:` line), write each task of your plan as a `plan_task` block of `plan.md`",
+	composed := composedText(t, composer, claim.RolePlanner, false)
+	text := foldWhitespace(composed)
+	for _, terms := range [][]string{
+		// Read plan.md first, with the command that lists its blocks.
+		{"`plan.md`", "first", "`dispatch doc-read --issue <issue> --artifact plan.md --blocks`"},
+		// A block whose id the Task: line names is the owner's: change none, add none.
+		{"`plan_task`", "`Task:`", "owner", "no `plan_task` block", "add none", "plain sections"},
+		// With no such block, the planner writes its tasks as plan_task blocks.
+		{"no such block", "`default`", "`Task:`", "`plan_task` block", "`plan.md`"},
 	} {
-		if !strings.Contains(text, phrase) {
-			t.Errorf("the composed planner prompt omits %q", phrase)
+		if !clauseHolds(composed, terms...) {
+			t.Errorf("no clause of the composed planner prompt holds %q, in that order", terms)
 		}
 	}
 	if retired := "Write each task of the plan as a `plan_task` block of `plan.md`"; strings.Contains(text, retired) {
@@ -1176,9 +1221,11 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 // read rather than passing with nothing read. This shows the text is loaded, never that an owner
 // follows it.
 func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
-	const parentHeld = "A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from you: Legion holds it before its retro while issues beneath it are still in the workflow (`retro-held`) and starts the retro once they have left, so give a parent whose finished work you want to read the step `acceptance:owner`."
+	// A parent with no acceptance step gets no reading of its whole: Legion holds it before its
+	// retro (`retro-held`), so a parent whose work the owner wants to read is given the step. Held
+	// by the terms of the one clause that says so, in their order.
+	parentHeld := []string{"parent", "no step `acceptance:owner`", "`retro-held`", "the step `acceptance:owner`"}
 	shared := []string{
-		parentHeld,
 		"`register_plan` (`issue`, `artifactId`, `version`)",
 		"`stop_task` (`issue`, `task`)",
 		"in the order of the steps of",
@@ -1212,11 +1259,15 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		{"architect.md", append(slices.Clone(shared), "the agent of its first step may already be reading it", "given it its plan with `register_plan`")},
 	} {
 		t.Run(tc.part, func(t *testing.T) {
-			text := foldWhitespace(rolePart(t, tc.part))
+			part := rolePart(t, tc.part)
+			text := foldWhitespace(part)
 			for _, phrase := range tc.want {
 				if !strings.Contains(text, phrase) {
 					t.Errorf("roles/%s omits %q", tc.part, phrase)
 				}
+			}
+			if !clauseHolds(part, parentHeld...) {
+				t.Errorf("no clause of roles/%s holds %q, in that order", tc.part, parentHeld)
 			}
 			for _, phrase := range retired {
 				if strings.Contains(text, phrase) {
