@@ -562,35 +562,9 @@ type published struct {
 	next      func(what string)
 }
 
-// deliveryEnd is the end a driver checks once the attempt that publishes has run: keptOnce for a
-// phase-ended message, the listener keeping it, and heldUntilItsRoleIsHeld for a hook prompt, the
-// daemon holding it.
+// deliveryEnd is the end a driver checks once the attempt that publishes has run:
+// heldUntilItsRoleIsHeld for a hook prompt, the daemon holding it.
 type deliveryEnd func(t *testing.T, d published)
-
-// keptOnce is one publish, kept rather than delivered, of the message to the topic with keep and
-// under the row's own key; the row finished, with the listener as the message's keeper; and the one
-// resume of the role's pod, the wake the row's first attempt took.
-func keptOnce(t *testing.T, d published) {
-	t.Helper()
-	attempts, delivered := d.publisher.snapshot()
-	kept := d.publisher.keptCopies()
-	if attempts != 1 || len(delivered) != 0 || len(kept) != 1 {
-		t.Fatalf("%s made %d publishes, %d delivered and %d kept, want the one publish, kept for the role's next holder: a keep: false publish meets the no-holder answer and the message is kept nowhere",
-			d.what, attempts, len(delivered), len(kept))
-	}
-	if kept[0].topic != d.topic || !kept[0].keep || kept[0].message != d.message || kept[0].payload != any(d.message) {
-		t.Fatalf("the listener keeps %#v, want the message to %s, published with keep:\n\t%q", kept[0], d.topic, d.message)
-	}
-	if want := record.OutboxKey(d.row); kept[0].key != want {
-		t.Fatalf("the message went under key %q, want its row's own, %q, which a retry of the row repeats", kept[0].key, want)
-	}
-	if left := outboxRows(t, d.pool); left != 0 {
-		t.Fatalf("outbox rows left after %s = %d, want the row finished with the listener as the message's keeper", d.what, left)
-	}
-	if resumes := podResumes(t, d.pool, "LEGION-208"); resumes != 1 {
-		t.Fatalf("recorded resumes of the %s = %d, want the one wake the row's first attempt took", d.role, resumes)
-	}
-}
 
 // heldUntilItsRoleIsHeld is a hook prompt's end for a woken claim, which keeps its session (R5):
 // the attempt that publishes publishes without keep and meets no holder, so the listener keeps

@@ -22,7 +22,7 @@ import (
 // holds each role message and hook prompt for it until a session holds the role again, the claim
 // ends, or its phase moves on, in place of finishing it undelivered (R5): the claim is one the
 // daemon still runs and the controller may relaunch, and the resumed session reads the held message
-// with its time. A phase-ended message keeps today's end.
+// with its time.
 
 // sessionKeptClaim restores role's claim on LEGION-208 in state on its recorded session: the claim
 // of a session Envoy has stopped hearing from, which the daemon still runs.

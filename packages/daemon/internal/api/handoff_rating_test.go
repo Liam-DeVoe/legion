@@ -404,8 +404,9 @@ func TestANewPluginMustRate(t *testing.T) {
 }
 
 // "PlanRatingContract or later" holds above the contract too, where TestANewPluginMustRate's claim
-// cannot reach: every claim the harness registers declares this daemon's own contract, which is
-// PlanRatingContract. The claim here records a later one and the daemon still serves it, a claim
+// need not stand: every claim the harness registers declares this daemon's own contract,
+// DaemonAPIVersion, which is PlanRatingContract or later. The claim here records a later one than
+// that and the daemon still serves it, a claim
 // in its turn (staleClaim), as after a later release rolled back to this daemon while its worker
 // was in the retro's turn. Its retro's completion with no rating is refused PLAN_RATING_REQUIRED
 // with nothing recorded, and the same completion with a rating is taken (mustRate).
