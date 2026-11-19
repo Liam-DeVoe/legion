@@ -4,9 +4,10 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 
 // step-records-read.sh (the read of a deployed issue's step records after the merge) against the
-// fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH. The answers below are the lines
-// `dispatch steps` prints (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then
-// one run per line.
+// fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH, which prints a warning on stderr
+// where a case gives one, as the real command prints its `dispatch: <warning>` lines before its
+// answer. The answers below are the lines `dispatch steps` prints
+// (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one run per line.
 const script = join(import.meta.dir, "..", "step-records-read.sh");
 const dir = temporaryDirectory("step-records-read-test");
 
@@ -33,8 +34,8 @@ function without(drop: RegExp): string {
   const lines = whole.slice(1).filter((line) => !drop.test(line));
   return `${[`${key}: ${lines.length} steps in 1 tasks`, ...lines].join("\n")}\n`;
 }
-// read runs the script with args against the fake dispatch, which prints out and exits exit, on
-// path, which by default finds the fake first.
+// read runs the script with args against the fake dispatch, which prints err on stderr and out on
+// stdout and exits exit, on path, which by default finds the fake first.
 const read = fakeDispatchRead(script, dir, [key]);
 
 describe("step-records-read.sh", () => {
@@ -45,6 +46,14 @@ describe("step-records-read.sh", () => {
     expect(stdout).toContain(
       `PASS: ${key}: 10 records; steps 1 to 5, the retro and the merge each have one, each record ended, each step and retro with an agent, each step with a model`
     );
+    expect(code).toBe(0);
+  });
+
+  test("a warning the command prints on stderr is no part of its answer: the read passes", () => {
+    const warning = "dispatch: the bearer token expires in 2 days\n";
+    const { code, stdout, stderr } = read(`${whole.join("\n")}\n`, [key], 0, undefined, warning);
+    expect(stdout).toContain(`PASS: ${key}: 10 records`);
+    expect(stderr).toContain(warning.trim());
     expect(code).toBe(0);
   });
 
@@ -185,6 +194,14 @@ describe("step-records-read.sh", () => {
       `UNKNOWN: dispatch steps --issue ${key} exited 1, so nothing was read`
     );
     expect(stdout).toContain("is unreachable: ECONNREFUSED");
+    expect(code).toBe(2);
+  });
+
+  test("a failed read's message keeps what it said on stderr and on stdout on lines of their own", () => {
+    const warning = "dispatch: the bearer token expires in 2 days\n";
+    const { code, stdout } = read(`${key}: 7 steps in 1 tasks\n`, [key], 1, undefined, warning);
+    expect(stdout).toContain(`exited 1, so nothing was read: ${warning}${key}: 7 steps in 1 tasks`);
+    expect(stdout).not.toContain(`days${key}`);
     expect(code).toBe(2);
   });
 

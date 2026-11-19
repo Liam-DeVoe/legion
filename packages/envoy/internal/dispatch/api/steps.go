@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
@@ -26,28 +26,33 @@ import (
 // which the daemon sends again until Dispatch serves it. All three live in
 // internal/dispatch/workflowstore, the one writer of the nodes and tuples that hold them.
 //
-// The writes are the daemon's and no one else's: a person, an agent's session and the daemon of
-// another project are refused 403 STEP_WRITER, so a record says what that deployment's daemon
-// saw. Like the design gates' publish they append no issue event and notify nobody, since an
-// event would feed the daemon's intake with facts it caused; and they read the issue with no open
-// check, because the merge that closes an issue ends a step of it.
+// Each write names the session of the issue's project's daemon, legion-daemon:<PROJECT>, as its
+// actor, or is refused 403 STEP_WRITER. That holds the session the body names, which a bearer
+// bound to a session cannot make another's (403 ACTOR_SESSION_MISMATCH); a credential that proves
+// no session, such as the shared agent token, a personal agent token or a service account's, can
+// name the daemon's session and write, as the role-holders publish can. Like the design gates'
+// publish the writes append no issue event and notify nobody, since an event would feed the
+// daemon's intake with facts it caused; and they read the issue with no open check, because the
+// merge that closes an issue ends a step of it.
 
-// The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND.
+// The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND,
+// each the code contracts gives it, which the Legion daemon reads to end a row on.
 const (
 	// codeStepInput is a value outside its form, or a first write of a run that does not name
 	// its identity; the message names the field (workflowstore.ErrStepInput).
-	codeStepInput = "STEP_INPUT"
+	codeStepInput = contracts.StepInputCode
 	// codeStepWriter is a writer that is not the session of the issue's project's daemon.
-	codeStepWriter = "STEP_WRITER"
+	codeStepWriter = contracts.StepWriterCode
 	// codeStepOtherIssue is an id whose record is a run of another issue.
-	codeStepOtherIssue = "STEP_OTHER_ISSUE"
+	codeStepOtherIssue = contracts.StepOtherIssueCode
 )
 
 // stepRecordInput is the body PUT /api/v1/issues/{key}/steps/{id} takes: the writer, and each
 // field of the run the write states. A field the body leaves out, or sends null or "", states
 // nothing, so the write leaves it to the write that knows it. A first write of a run names its
 // task, step, kind, role and generation. returned_to 0 is place 0 and states it
-// (workflowstore.StepWrite).
+// (workflowstore.StepWrite). The enum tags are the words of contracts' STEP_KINDS and
+// STEP_RESULTS, which a tag cannot name; TestTheStepRouteNamesContractsWords holds them to those.
 type stepRecordInput struct {
 	Actor      *model.Actor `json:"actor"`
 	Task       *string      `json:"task"`
@@ -186,17 +191,15 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 
 // requireIssueDaemon is the prelude of every record write: the caller's actor (requireActor) and
 // the issue key of the path, where the actor is the writer of the records of that issue, the
-// session of its project's Legion daemon by the rule of the daemon's own DaemonSession
-// (packages/daemon/internal/dispatch/client.go), legion-daemon: and the part of the key before
-// its first hyphen. It refuses any other writer 403 STEP_WRITER, naming what record and whose.
+// session of its project's Legion daemon (legionDaemonSessionOf). It refuses any other writer 403
+// STEP_WRITER, naming what record and whose.
 func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supplied *model.Actor, record string) (model.Actor, string, bool) {
 	actor, ok := s.requireActor(w, r, supplied)
 	if !ok {
 		return model.Actor{}, "", false
 	}
 	key := r.PathValue("key")
-	project, _, _ := strings.Cut(key, "-")
-	writer := legionDaemonSessionPrefix + project
+	writer := legionDaemonSessionOf(key)
 	if actor.Kind != "session" || actor.ID != writer {
 		writeError(w, codeStepWriter, http.StatusForbidden,
 			fmt.Sprintf("only the session %s writes %s of %s", writer, record, key))
@@ -205,15 +208,23 @@ func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supp
 	return actor, key, true
 }
 
-// lockRecordedIssue reads the issue key a record is written to, under the key-share lock and with
-// no open check, as the design gates' publish reads it, and answers its project. An issue Dispatch
-// does not hold is refused with a code of its own rather than loadIssue's NOT_FOUND: the daemon
-// must tell a Dispatch that holds no such issue from one that does not serve the route, whose
-// router answers NOT_FOUND.
+// lockRecordedIssue takes the owner lock of the issue key a record is written to, shared, then
+// reads the issue in a statement of its own and answers its project: a record write waits for the
+// issue's writer that holds the owner and holds off the next one, and two record writes do not
+// wait on each other. The store's write (workflowstore's putNode) then locks the record's own row,
+// which only it writes, so the two are always taken in this order. The read has no open check, so
+// the merge that closes an issue still records its step. An issue Dispatch does not hold is
+// refused with a code of its own rather than loadIssue's NOT_FOUND: the daemon must tell a
+// Dispatch that holds no such issue from one that does not serve the route, whose router answers
+// NOT_FOUND.
 func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string) (string, bool) {
+	if err := store.LockOwnersShared(r.Context(), tx, store.IssueOwner(key)); err != nil {
+		s.writeHandlerError(w, err)
+		return "", false
+	}
 	var project string
 	if err := tx.QueryRow(r.Context(), `
-		select project_key from issues where key = $1 for key share
+		select project_key from issues where key = $1
 	`, key).Scan(&project); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))

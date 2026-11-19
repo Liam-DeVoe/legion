@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // The kinds and the supertags of the two nodes this store writes, a step's run and a plan, and the
@@ -64,18 +66,19 @@ const NoEvent int64 = 0
 
 // The three kinds of a run. StepKindStep is a step a plan names, at its place from 1; the retro and
 // the merge are acts of Legion that no plan names, so their place is 0 and their kind tells them
-// apart.
+// apart. Each is the one word contracts gives it, which the Legion daemon reads too.
 const (
-	StepKindStep  = "step"
-	StepKindRetro = "retro"
-	StepKindMerge = "merge"
+	StepKindStep  = contracts.StepKindStep
+	StepKindRetro = contracts.StepKindRetro
+	StepKindMerge = contracts.StepKindMerge
 )
 
-// The three results of a run that ended. A run that still runs has none.
+// The three results of a run that ended, each the word contracts gives it. A run that still runs
+// has none.
 const (
-	ResultPassed  = "passed"
-	ResultFailed  = "failed"
-	ResultStopped = "stopped"
+	ResultPassed  = contracts.StepResultPassed
+	ResultFailed  = contracts.StepResultFailed
+	ResultStopped = contracts.StepResultStopped
 )
 
 // The attributes of a step, each the name of its value tuples and of its key in the node row's

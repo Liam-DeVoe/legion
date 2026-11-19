@@ -64,8 +64,9 @@ const handed = true
 
 var fixedNow = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 
-// testRepositories serves every repository the admission tests record issues on, each at main, and
-// leaves out acme/gadgets, whose review App is not installed.
+// testRepositories is every repository the admission tests record issues on, each at main, and
+// leaves out acme/gadgets, whose review App is not installed. A repository it does not name is
+// one no preparation has read GitHub for, which the daemon answers as unread (its lookup).
 var testRepositories = servedRepositories{"sjawhar/legion": "main", "acme/widgets": "main", "acme/tools": "release/v7.1"}
 
 type servedRepositories map[string]string
@@ -77,7 +78,7 @@ func (r servedRepositories) ResolveRepository(resolved string) (workflow.Resolut
 	if resolved == "acme/gadgets" {
 		return workflow.Resolution{Refusal: "the review App is not installed on acme/gadgets", LeftOut: true}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + testProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 func newAdmission(t *testing.T, cap int, log *slog.Logger) *Admission {
@@ -165,8 +166,8 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // package's own helpers are. A start that names no phase is no phase worker's — the architect
 // start promotion makes, the production check's look — and is left in. A step record is written
 // beside the rows of each start and end of a step, and the tests of those sites read it exactly
-// (workflow's step_sites_test.go, and step_records_test.go here for admission's own sites), so
-// every row of any other kind is still compared here.
+// (workflow's step_sites_test.go and step_sites_linger_test.go, and step_records_test.go here for
+// admission's own sites), so every row of any other kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
 // which the transition raised on the role's phases row: the record counts the entries a role has

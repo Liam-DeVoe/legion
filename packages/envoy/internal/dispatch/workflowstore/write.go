@@ -21,10 +21,13 @@ import (
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
 // no plan (taskRule); a role and a type are a word of lowercase letters, digits and hyphens
-// (roleRule), and so is the role a plan's step names before its key.
+// (roleRule), and so is the role a plan's step names before its key. The agent, the session and
+// the model are printable ASCII with no space, at most 128 characters
+// (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields with spaces.
 var (
-	taskForm = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
-	roleForm = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	taskForm      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	roleForm      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	agentTextForm = regexp.MustCompile(contracts.StepAgentTextPattern)
 )
 
 // taskRule and roleRule are taskForm and roleForm as a refusal states them.
@@ -312,9 +315,10 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		switch {
 		case place < 0:
 			return "", nil, refusal(ErrStepInput, "step %d is no place: a step's place is 0 or more", place)
-		case kind == StepKindStep && place < 1:
-			return "", nil, refusal(ErrStepInput, "step %d is no place of a step of kind step: a plan's steps count from 1", place)
-		case kind != "" && kind != StepKindStep && place != 0:
+		case kind != "" && !contracts.StepPlaceHolds(kind, place):
+			if kind == StepKindStep {
+				return "", nil, refusal(ErrStepInput, "step %d is no place of a step of kind step: a plan's steps count from 1", place)
+			}
 			return "", nil, refusal(ErrStepInput, "step %d is no place of a %s: no plan names it, so its step is 0", place, kind)
 		}
 		number(AttributeStep, int64(place))
@@ -329,9 +333,14 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	if err := typeOfKind(kind, typ); err != nil {
 		return "", nil, err
 	}
-	text(AttributeAgent, write.Agent)
-	text(AttributeSession, write.Session)
-	text(AttributeModel, write.Model)
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{{AttributeAgent, write.Agent}, {AttributeSession, write.Session}, {AttributeModel, write.Model}} {
+		if value := text(field.name, field.value); value != "" && !agentTextForm.MatchString(value) {
+			return "", nil, refusal(ErrStepInput, "%s %q is not an agent's text: %s", field.name, value, contracts.StepAgentTextRule)
+		}
+	}
 	if err := moment(AttributeStartedAt, write.StartedAt); err != nil {
 		return "", nil, err
 	}

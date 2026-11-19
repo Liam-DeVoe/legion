@@ -17,8 +17,6 @@ import (
 // embedded migrations (internal/store/migrations, as the guide's migration list is), so neither
 // half reads a file of another package.
 const (
-	// stepRecordsRollForward is the version of the roll forward whose header carries the block.
-	stepRecordsRollForward = 20261117064152
 	// stepRecordsWayBackFirst opens the block in the header and in the guide.
 	stepRecordsWayBackFirst = "insert into step_starts_rollback (issue, tree, witness, taken_at)"
 	// stepRecordsWayBackSection is the heading of the guide's section that gives the block, which
@@ -29,20 +27,20 @@ const (
 
 // stepRecordsMigrations are the versions of the release's migrations: the outbox kind's, the
 // tables' and the roll forward's.
-var stepRecordsMigrations = []int{20261117000528, 20261117004117, stepRecordsRollForward}
+var stepRecordsMigrations = []int{20261117000528, 20261117004117, migrations.StepRecordsRollForward}
 
 // stepRecordsWayBackMark is the line that deletes the roll forward's version row, which closes the
 // block and which no other rollback's block carries.
-var stepRecordsWayBackMark = fmt.Sprintf("delete from schema_version where version = %d;", stepRecordsRollForward)
+var stepRecordsWayBackMark = fmt.Sprintf("delete from schema_version where version = %d;", migrations.StepRecordsRollForward)
 
 // The guide's way back of the release that records each step is the block its roll forward's
 // header carries, line for line: an edit to either alone fails here, since the store's test runs
 // the header's and an operator runs the guide's.
 func TestTheStepRecordsWayBackIsOneTextInTheRollForwardAndTheGuide(t *testing.T) {
-	name := "the header of " + migrationNames(t, stepRecordsRollForward)[0]
-	header := headersWayBack(t, stepRecordsRollForward, name)
+	name := "the header of " + migrationNames(t, migrations.StepRecordsRollForward)[0]
+	header := headersWayBack(t, migrations.StepRecordsRollForward, name)
 	if first, _, _ := strings.Cut(header, "\n"); first != stepRecordsWayBackFirst {
-		t.Fatalf("the way back of migration %d opens %q, want %q", stepRecordsRollForward, first, stepRecordsWayBackFirst)
+		t.Fatalf("the way back of migration %d opens %q, want %q", migrations.StepRecordsRollForward, first, stepRecordsWayBackFirst)
 	}
 	assertIsTheGuidesBlock(t, heldBlock{Text: header, Name: name, Label: "the header",
 		Why: "the store's test runs the header's block and an operator the guide's"},

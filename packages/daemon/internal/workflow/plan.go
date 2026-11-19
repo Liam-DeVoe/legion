@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -47,9 +48,9 @@ func stepWork(p phase.Phase) (role stepRole, typ stepType, ok bool) {
 func stepIn(steps []string, p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
 	switch p {
 	case phase.Retro:
-		return record.StepPlace{Task: defaultTask, Kind: "retro"}, "implementer", "", true
+		return record.StepPlace{Task: defaultTask, Kind: steprecord.KindRetro}, "implementer", "", true
 	case phase.Merging:
-		return record.StepPlace{Task: defaultTask, Kind: "merge"}, "merger", "", true
+		return record.StepPlace{Task: defaultTask, Kind: steprecord.KindMerge}, "merger", "", true
 	}
 	role, typ, ok = stepWork(p)
 	if !ok {
@@ -57,7 +58,7 @@ func stepIn(steps []string, p phase.Phase) (place record.StepPlace, role stepRol
 	}
 	for i, named := range steps {
 		if head, _, _ := strings.Cut(named, ":"); stepRole(head) == role {
-			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, role, typ, true
+			return record.StepPlace{Task: defaultTask, Kind: steprecord.KindStep, Place: i + 1}, role, typ, true
 		}
 	}
 	return record.StepPlace{}, "", "", false

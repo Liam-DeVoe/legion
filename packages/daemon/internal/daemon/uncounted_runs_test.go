@@ -22,20 +22,21 @@ import (
 // A run the release before this one started has no row in step_starts, so the record names no
 // agent of a run on its issue, and a fact its agent's request applies waits for nothing
 // (api's apply). The boot gives the run an open row (workflow's OpenUncountedRuns), so the
-// planner's completion waits for its stream, and the record of planning ends naming the model
-// that answered last, under the id of the count 0, with the planner and the moment its entry was
-// raised. The control takes the row out after the boot, as a boot without that pass leaves the
-// store: the completion waits for nothing, and the record names the model the claim's machine had
-// decided before the request.
+// planner's completion waits for its stream (the daemon says the wait began,
+// overrides.streamWaitBegan), and the record of planning ends naming the model that answered
+// last, under the id of the count 0, with the planner and the moment its entry was raised. The
+// control takes the row out after the boot, as a boot without that pass leaves the store: the
+// completion applies at once, with no wait for the planner's stream, and since the boot's row is
+// the one path a run no start counted is ended by, it ends no run of planning, and Dispatch holds
+// no record of it once the next step's start, written by the same fact, has reached it.
 func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForItsStream(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// noRow takes the run's row out after the boot.
 		noRow bool
-		model string
 	}{
-		{name: "the boot opens the run", model: "stand-in/planner-second"},
-		{name: "control: no row after the boot, as a boot without the pass leaves it", noRow: true, model: "stand-in/planner-first"},
+		{name: "the boot opens the run"},
+		{name: "control: no row after the boot, as a boot without the pass leaves it", noRow: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newStepRecordsRig(t, 1)
@@ -53,8 +54,27 @@ func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForIts
 			if status, body := r.heldRequest(planner, "stand-in/planner-second", "/legion/v1/handoff/complete", req); status != http.StatusOK {
 				t.Fatalf("the planner's completion = %d %s, want 200", status, body)
 			}
+			if r.waited == tc.noRow {
+				t.Fatalf("the planner's completion waited for its stream: %t; want %t, as the run's row in step_starts says (none %t)", r.waited, !tc.noRow, tc.noRow)
+			}
 			planner.endTurn()
 			r.waitPhase(phase.Implementing)
+			if tc.noRow {
+				r.waitSteps("the start of implementing", func(got stepRecordsRead) error {
+					if found := got.find("step", 2, 1); found.ID == "" {
+						return errors.New("implementing has no record yet")
+					}
+					return nil
+				})
+				got, err := r.readSteps()
+				if err != nil {
+					t.Fatalf("read the steps: %v", err)
+				}
+				if found := got.find("step", 1, 1); found.ID != "" || r.unfinishedRows(record.OutboxKindStepRecord) != 0 {
+					t.Fatalf("planning reads %+v with %d step rows unfinished, want no record of it: no row holds its run open", found, r.unfinishedRows(record.OutboxKindStepRecord))
+				}
+				return
+			}
 			raised := r.phaseOf(claim.RolePlanner).EntryRaisedAt
 			id := workflow.StepID(r.key, 1, record.StepPlace{Task: "default", Kind: "step", Place: 1}, 0)
 			r.waitSteps("the end of planning", func(got stepRecordsRead) error {
@@ -63,8 +83,8 @@ func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForIts
 					return fmt.Errorf("planning reads %+v, want the record %s ended passed", found, id)
 				case found.Agent != string(planner.token) || found.StartedAt == nil || !found.StartedAt.Equal(raised):
 					return fmt.Errorf("planning names agent %q started at %v; want %s and the moment its entry was raised, %s", found.Agent, found.StartedAt, planner.token, raised)
-				case found.Session != planner.session || found.Model != tc.model:
-					return fmt.Errorf("planning names session %q and model %q; want %q and %s", found.Session, found.Model, planner.session, tc.model)
+				case found.Session != planner.session || found.Model != "stand-in/planner-second":
+					return fmt.Errorf("planning names session %q and model %q; want %q and stand-in/planner-second", found.Session, found.Model, planner.session)
 				}
 				return nil
 			})

@@ -6,30 +6,31 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // The end of a step's run follows from the record, at one point every fact passes, so that no way
-// out of a step has to remember to end it. A run — one the store holds open, or one no start of
-// this release counted at the place an issue stood when the fact began (endStep's uncounted end) —
-// is over when (runOver):
+// out of a step has to remember to end it. A run is one the store holds open: a start opens it,
+// and the daemon's boot opens each run no start of this release counted before any fact applies
+// (OpenUncountedRuns). It is over when (runOver):
 //   - its issue no longer stands there: it has no record, or stands at another place, or in
-//     another generation (recordedPlace);
-//   - its place starts again (startStep), for a run the store holds open: a new run of the place
-//     begins, as the promotion of a tree admitted again starts a member's merger again; or
+//     another generation (standingStep);
+//   - its place starts again (startStep): a new run of the place begins, as the promotion of a
+//     tree admitted again starts a member's merger again; or
 //   - its tree's run is over: the tree's root lingers, and the run is not a merge that can still
 //     land in that tree (mergeCanLand).
 //
 // The point is SettleFact, which intake.ApplyFact runs after a fact's last handler, in the fact's
-// own transaction and before its commit, and which the daemon's boot reconcile runs the same way
-// for the admission pass it applies in a transaction of its own (intake.OpenSettlers). It reads the
-// runs of the issues the fact touched — those whose record or pull request it wrote, which the
-// store keeps with each one's record from before the fact (record.WithIssueWrites), and the members
-// of a tree whose root it left lingering or whose linger it closed — and of no other issue, so what
-// a fact reads grows with what it changed, never with the store. A start ends the over runs of its
-// own issue first (startStep), so the end of the run an issue leaves reaches Dispatch before the
-// start of the run it moves into.
+// own transaction and before its commit, and which two transactions of the daemon's own run the
+// same way (intake.OpenSettlers): the boot reconcile's, for the admission pass it applies, and the
+// outbox's settling, for each drop of a hand-over fence. It reads the runs of the issues the fact
+// touched — those whose record, pull request or hand-over fence it wrote, which the store keeps
+// (record.WithIssueWrites), and the members of a tree whose root it left lingering or whose linger
+// it closed — and of no other issue, so what a fact reads grows with what it changed, never with
+// the store. A start ends the over runs of its own issue first (startStep), so the end of the run
+// an issue leaves reaches Dispatch before the start of the run it moves into.
 //
 // What the record does not hold, a fact names: the result of a move of the table and the step its
 // work returns to (nameMoveEnd), and the close of a tree's linger (closeLinger), which writes no
@@ -77,9 +78,9 @@ func (runs *factRuns) endOf(run runAt) StepEnd {
 }
 
 // OpenFact answers ctx carrying what the engine keeps of one fact while its handlers apply it: the
-// ends its moves name, the lingers it closes, and the issues its writes touch with their records
-// from before it (record.WithIssueWrites). A ctx that carries them already, opened by another
-// engine of the same fact, is answered as it is (intake.Settler).
+// ends its moves name, the lingers it closes, and the issues its writes touch
+// (record.WithIssueWrites). A ctx that carries them already, opened by another engine of the same
+// fact, is answered as it is (intake.Settler).
 func (e *Engine) OpenFact(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(factRunsKey{}).(*factRuns); !ok {
 		ctx = context.WithValue(ctx, factRunsKey{}, &factRuns{ends: map[runAt]StepEnd{}, closed: map[string]bool{}})
@@ -97,11 +98,7 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 		return nil
 	}
 	runs.settled = true
-	var keys []string
-	for _, written := range record.IssuesWritten(ctx) {
-		keys = append(keys, written.Key)
-	}
-	return e.settleRuns(ctx, tx, runs, keys, true, nil)
+	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil)
 }
 
 // nameMoveEnd names the end of the run issue stands in that a move on trigger into to ends: the
@@ -140,14 +137,17 @@ func (e *Engine) settleStart(ctx context.Context, tx pgx.Tx, issue string, place
 	if err != nil {
 		return err
 	}
-	return e.settleRuns(ctx, tx, runs, []string{issue}, false, &runAt{issue: issue, place: place})
+	return e.settleRuns(ctx, tx, runs, []string{issue}, &runAt{issue: issue, place: place})
 }
 
-// settleRuns ends each run of keys that is over (runOver), with the end the fact named for it or
-// stopped. withTrees adds the members of each tree whose root among keys lingers, and of each tree
-// whose linger the fact closed. starting is the place a start of one issue is about to begin (its
-// generation unread), nil for none. It is the one writer of a run's end (endStep).
-func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys []string, withTrees bool, starting *runAt) error {
+// settleRuns ends each open run of keys that is over (runOver), with the end the fact named for it
+// or stopped. starting is the place a start of one issue is about to begin (its generation unread),
+// whose settle reads that issue alone (settleStart); nil is the fact's own settle (SettleFact),
+// which adds the members of each tree whose root among keys lingers, and of each tree whose linger
+// the fact closed. It is the one writer of a run's end (endStep). Every run it can end has an open
+// row: a start writes it, and the daemon's boot writes it for each run no start of this release
+// counted (OpenUncountedRuns), before any fact applies.
+func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys []string, starting *runAt) error {
 	issues := map[string]*record.Issue{}
 	read := func(key string) (*record.Issue, error) {
 		if issue, ok := issues[key]; ok {
@@ -166,7 +166,7 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			order = append(order, key)
 		}
 	}
-	if withTrees {
+	if starting == nil {
 		var trees []string
 		for _, key := range order {
 			issue, err := read(key)
@@ -201,36 +201,6 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 	if err != nil {
 		return err
 	}
-	rows := make(map[runAt]record.IssueStepRun, len(stored))
-	for _, row := range stored {
-		rows[runAt{issue: row.Issue, place: row.Place}] = row
-	}
-	over := func(run runAt, now *record.Issue, restarted bool) (bool, error) {
-		if restarted {
-			return true, nil
-		}
-		if now == nil {
-			return true, nil
-		}
-		if step, ok := standingStep(*now); !ok || step.place != run.place || now.Generation != run.generation {
-			return true, nil
-		}
-		root := now
-		if now.Tree != now.Key {
-			if root, err = read(now.Tree); err != nil {
-				return false, err
-			}
-		}
-		if root == nil || !root.Lingers() {
-			return false, nil
-		}
-		if !awaitsMerge(*now) {
-			return true, nil
-		}
-		canLand, err := e.mergeCanLand(ctx, tx, runs, *now, *root)
-		return !canLand, err
-	}
-	// The runs the store holds open.
 	for _, row := range stored {
 		if row.Run != record.RunOpen {
 			continue
@@ -241,7 +211,7 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			return err
 		}
 		restarted := starting != nil && starting.issue == row.Issue && starting.place == row.Place
-		ended, err := over(run, now, restarted)
+		ended, err := e.runOver(ctx, tx, runs, run, now, restarted, read)
 		if err != nil {
 			return err
 		}
@@ -258,50 +228,92 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			return err
 		}
 	}
-	// The run each issue stood in when the fact began that no start of this release counted: the
-	// place has no row, or one the roll forward of a rollback marked uncounted. The daemon's boot
-	// gives each such run it finds an open row (OpenUncountedRuns), which the loop above ends, so
-	// this ends a run the boot found none of. Such a run is in Dispatch only once its end is
-	// written, so a start of its place leaves it be: the start cannot tell it from the run it begins.
-	for _, key := range order {
-		now, err := read(key)
-		if err != nil {
-			return err
-		}
-		stood := now
-		if before, written := record.IssueBefore(ctx, key); written {
-			stood = before
-		}
-		if stood == nil {
-			continue
-		}
-		step, ok := standingStep(*stood)
-		if !ok {
-			continue
-		}
-		if row, counted := rows[runAt{issue: key, place: step.place}]; counted && row.Run != record.RunUncounted {
-			continue
-		}
-		run := runAt{issue: key, generation: stood.Generation, place: step.place}
-		ended, err := over(run, now, false)
-		if err != nil {
-			return err
-		}
-		if !ended {
-			continue
-		}
-		// A tree the operator holds never ran a phase of the workflow, so its issues ran no step.
-		if operator, err := record.OperatorHoldsTree(ctx, e.store, tx, *stood); err != nil || operator {
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		if err := e.endStep(ctx, tx, *stood, runs.endOf(run)); err != nil {
-			return err
+	return nil
+}
+
+// issueReader reads the record of an issue by key, nil for none: the settle's read of the store as
+// it stands, or the boot's (OpenUncountedRuns).
+type issueReader func(key string) (*record.Issue, error)
+
+// runOver is the end rule, the one answer to whether run is over. now is its issue as it stands
+// (nil for none), restarted whether a start of its place is about to begin, and read how its tree's
+// root is read. A run is over when its issue has no record, or stands at another place or in
+// another generation (standingStep); when a start of its place begins; or when its tree's root
+// lingers, unless it is a merge that can still land in that linger (mergeCanLand, whose closed
+// lingers runs holds).
+func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now *record.Issue, restarted bool, read issueReader) (bool, error) {
+	if restarted || now == nil {
+		return true, nil
+	}
+	if step, ok := standingStep(*now); !ok || step.place != run.place || now.Generation != run.generation {
+		return true, nil
+	}
+	root := now
+	if now.Tree != now.Key {
+		var err error
+		if root, err = read(now.Tree); err != nil {
+			return false, err
 		}
 	}
-	return nil
+	if root == nil || !root.Lingers() {
+		return false, nil
+	}
+	if !awaitsMerge(*now) {
+		return true, nil
+	}
+	canLand, err := e.mergeCanLand(ctx, tx, runs, *now, *root)
+	return !canLand, err
+}
+
+// uncountedRunOpen is the boot's answer (OpenUncountedRuns) to whether issue, as read reads its
+// tree, stands in an open run that no start of this release counted, and that run: issue
+// stands in a step whose runs are recorded (standingStep), the end rule does not hold that run over
+// (runOver), its tree is not the operator's, which runs no step of the workflow
+// (record.OperatorHoldsTree), and its generation started a run (generationStarted).
+func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns, issue record.Issue, read issueReader) (runAt, bool, error) {
+	step, ok := standingStep(issue)
+	if !ok {
+		return runAt{}, false, nil
+	}
+	run := runAt{issue: issue.Key, generation: issue.Generation, place: step.place}
+	over, err := e.runOver(ctx, tx, runs, run, &issue, false, read)
+	if err != nil || over {
+		return run, false, err
+	}
+	operator, err := record.OperatorHoldsTree(ctx, e.store, tx, issue)
+	if err != nil || operator {
+		return run, false, err
+	}
+	started, err := e.generationStarted(ctx, tx, issue, read)
+	return run, started, err
+}
+
+// generationStarted says whether the run issue stands in has started, with its tree's root read
+// by read. It has not while that root waits for the promotion that opens its tree
+// (record.AwaitsPromotion): a root a re-admission or a hand-over put back in the line, whose
+// carried phase starts its run at that promotion (admit's readmit), and each member such a
+// re-admission left mid-phase, which the promotion starts again (admit's startMidPhaseMembers).
+// The run a member stood in before ended with the linger the re-admission cleared, so the
+// re-admission leaves the end rule (runOver) no linger to read, and this is the clause that holds
+// such a member's run unstarted. Every other issue that stands in a step started its run there.
+func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.Issue, read issueReader) (bool, error) {
+	root := &issue
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+		var err error
+		if root, err = read(issue.Tree); err != nil || root == nil {
+			return true, err
+		}
+	}
+	gates, err := e.store.GatesOf(ctx, tx, root.Key)
+	if err != nil {
+		return false, err
+	}
+	slots, err := e.store.Slots(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	holds := slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == root.Key })
+	return !record.AwaitsPromotion(*root, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
 }
 
 // mergeCanLand says whether member's merge, which awaits its landing in the tree root lingers, can
@@ -326,13 +338,11 @@ func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, me
 	return handover != nil && handover.Tree == root.Tree && handover.Generation == root.Generation, nil
 }
 
-// stepPhases is every phase that runs a step (stepOf).
-var stepPhases = []phase.Phase{phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
-
-// phaseAt is the phase whose step runs at place.
+// phaseAt is the phase whose step runs at place: of the workflow's line (phase.Order), the phase
+// whose step (stepOf) is at place.
 func phaseAt(place record.StepPlace) (phase.Phase, bool) {
-	for _, p := range stepPhases {
-		if at, _, _, _ := stepOf(p); at == place {
+	for _, p := range phase.Order {
+		if at, _, _, ok := stepOf(p); ok && at == place {
 			return p, true
 		}
 	}

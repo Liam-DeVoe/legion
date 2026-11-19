@@ -420,6 +420,20 @@ func (s *supervisor) supervised() []*supervise.Machine {
 	return nil
 }
 
+// supervisedMachine is the claim's machine read without mu, from the lock-free list of machines
+// (supervised), for a reader inside a fact's transaction: Create holds mu across the store's
+// AdmitClaim, which waits on the fact lock (intake.SerializeFacts), so a reader holding that lock
+// and waiting on mu would wait on a Create that waits on it, which nothing in PostgreSQL can see
+// or break. A machine's published view names its claim without its lock either (View).
+func (s *supervisor) supervisedMachine(token claim.Token) (*supervise.Machine, bool) {
+	for _, machine := range s.supervised() {
+		if machine.View().Token == token {
+			return machine, true
+		}
+	}
+	return nil, false
+}
+
 // halt feeds no machine another event, and waits for nothing.
 func (s *supervisor) halt() {
 	s.mu.Lock()
@@ -611,15 +625,11 @@ func (b *inbox) put(ev supervise.Event) {
 	b.signal()
 }
 
-// mark puts done behind every event put before it. An inbox already closed hands its machine
-// nothing more, so done is closed at once.
+// mark puts done behind every event put before it. Its one caller (supervisor.drained) holds the
+// supervisor's read lock and has seen supervision not stopped, and only halt closes an inbox, under
+// the write lock after it sets stopped, so the inbox is open here; close closes a mark it holds.
 func (b *inbox) mark(done chan<- struct{}) {
 	b.mu.Lock()
-	if b.closed {
-		b.mu.Unlock()
-		close(done)
-		return
-	}
 	b.items = append(b.items, inboxItem{drained: done})
 	b.mu.Unlock()
 	b.signal()

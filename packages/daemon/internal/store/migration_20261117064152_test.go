@@ -13,13 +13,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
-// stepRecordsRollForwardVersion is the version of the migration this file tests: the roll forward
-// of a rollback of the release that records each step, whose header carries that rollback's way
-// back.
-const stepRecordsRollForwardVersion = 20261117064152
-
-// stepRecordsRelease names the release whose way back the roll forward's header carries, as a
-// failure to read that block names it.
+// stepRecordsRelease names the release whose way back the roll forward's header
+// (migrations.StepRecordsRollForward) carries, as a failure to read that block names it.
 const stepRecordsRelease = "the roll forward of the release that records each step"
 
 // wayBackOf is the block the header of the migration version carries, read by the one reader of a
@@ -145,7 +140,7 @@ func (s rollBackStore) recordID(place string) string {
 // wayBack runs the way back an operator runs with the daemon stopped.
 func (s rollBackStore) wayBack() {
 	s.t.Helper()
-	s.exec(wayBackOf(s.t, stepRecordsRollForwardVersion, stepRecordsRelease))
+	s.exec(wayBackOf(s.t, migrations.StepRecordsRollForward, stepRecordsRelease))
 }
 
 // rollForward is the newer image's Migrate, which applies the roll forward the way back re-armed.
@@ -262,7 +257,7 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 
 	s.wayBack()
 	var recorded bool
-	if err := s.store.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`, stepRecordsRollForwardVersion).Scan(&recorded); err != nil || recorded {
+	if err := s.store.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`, migrations.StepRecordsRollForward).Scan(&recorded); err != nil || recorded {
 		t.Fatalf("after the way back the roll forward is recorded = %t, %v; want its row deleted, so the roll forward applies it again", recorded, err)
 	}
 	var rolledBackAt time.Time
@@ -545,11 +540,12 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 }
 
 // A rollback to a release before 20261111225552_phase_entry drops the phase entries
-// (docs/kubernetes.md, the contract 146 block), and that migration numbers them again at the roll
-// forward, from 1, so an entry then is no count of the starts the earlier release made. The roll
-// forward reads no such entry: a running step of an issue the earlier release did not move stands
-// open, and where the issue or its root moved, every place of it reads as one that release may
-// have started again, as it reads where no entry says otherwise.
+// (docs/kubernetes.md, the phase entry's block: the eleven statements of the rollback to contract
+// 87), and that migration numbers them again at the roll forward, from 1, so an entry then is no
+// count of the starts the earlier release made. The roll forward reads no such entry: a running
+// step of an issue the earlier release did not move stands open, and where the issue or its root
+// moved, every place of it reads as one that release may have started again, as it reads where no
+// entry says otherwise.
 func TestTheRollForwardReadsNoEntryARollbackPastTheEntriesNumberedAgain(t *testing.T) {
 	s := newRollBackStore(t)
 	s.issue("LEGION-361", "LEGION-361", "testing", "", 1)
@@ -614,7 +610,7 @@ func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
 		t.Fatalf("seeded %d outbox rows and %d step_starts rows, want 3 and 2", len(outboxBefore), len(startsBefore))
 	}
 	for run := 1; run <= 2; run++ {
-		if _, err := store.Pool().Exec(ctx, wayBackOf(t, stepRecordsRollForwardVersion, stepRecordsRelease)); err != nil {
+		if _, err := store.Pool().Exec(ctx, wayBackOf(t, migrations.StepRecordsRollForward, stepRecordsRelease)); err != nil {
 			t.Fatalf("run %d of the way back: %v", run, err)
 		}
 		if got := read(outbox); !reflect.DeepEqual(got, outboxBefore) {
@@ -625,7 +621,7 @@ func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
 		}
 		var want []string
 		for _, version := range versionsBefore {
-			if version != fmt.Sprint(stepRecordsRollForwardVersion) {
+			if version != fmt.Sprint(migrations.StepRecordsRollForward) {
 				want = append(want, version)
 			}
 		}
