@@ -853,17 +853,19 @@ func seededDrives(database *store.Store) []StoreDrive {
 
 // writeTheStore runs every drive of the store's writers: the ones over the history
 // seedSizedHistory wrote on database (seededDrives), graphstore's own writers run on their own
-// (graphstoreDrives), the boot step's ask passes (askBackfillDrives), the seed (seedRunDrives), and
-// the drives of the sites whose packages import this one, which this package's external test
-// registers (ImportedDrives). It holds them to driving every site the register of the store's
-// writers lists (requireEveryListedSiteDriven). Each drive is the writer itself and not a copy of
-// what it writes. It answers how many tuples of each kind each drive appended, read off
-// graph_tuples by the sequences the drive's tuples took, and the terms each drive says count each
-// kind it appends; and it logs, for every listed site, what each drive that runs it appended.
+// (graphstoreDrives), the boot step's ask passes (askBackfillDrives), the seed (seedRunDrives), the
+// backfill's other passes, the catalogue's, the pointer's and the rebuild's writers and the
+// architecture import (internalDrives), and the drives of the sites whose packages import this
+// one, which this package's external test registers (ImportedDrives). It holds them to driving
+// every site the register of the store's writers lists (requireEveryListedSiteDriven). Each drive
+// is the writer itself and not a copy of what it writes. It answers how many tuples of each kind
+// each drive appended, read off graph_tuples by the sequences the drive's tuples took, and the
+// terms each drive says count each kind it appends; and it logs, for every listed site, what each
+// drive that runs it appended.
 func writeTheStore(t *testing.T, database *store.Store) (map[writtenKind]int64, map[writtenKind][]string) {
 	t.Helper()
 	ctx := context.Background()
-	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), askBackfillDrives(t), seedRunDrives(t))
+	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), askBackfillDrives(t), seedRunDrives(t), internalDrives(t))
 	if ImportedDrives == nil {
 		t.Errorf("no drive of the sites whose packages import graphcensus is registered: ImportedDrives, which this package's external test sets, is nil")
 	} else {
@@ -1167,8 +1169,11 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"artifact_removed": {tuples: 1, writes: 1},
 		"criterion":        {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
 		"result":           {tuples: int64(len(resultKinds)), writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
-		// The leaf's part_of the root and its depends_on it, and CORE-1's affects of the root.
-		"component": {tuples: 2, writes: 2}, "component_relation": {tuples: 1, writes: 3},
+		// Each component's node is in its project. The leaf's part_of the root and its depends_on
+		// it, and CORE-1's affects of the root.
+		"component": {tuples: 3, writes: 2}, "component_relation": {tuples: 1, writes: 3},
+		// No table keeps a component an import dropped or a source's removal took.
+		"component_retired": {tuples: 3, writes: sizingWindowDays / 7, assumed: true},
 		// The ask's part_of the document holding its block beside its anchored_to, an answer's
 		// decided_by beside its answered_by, and a resolution's value and its retraction.
 		"ask": {tuples: 3, writes: 1}, "ask_opened": {tuples: 7, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 6, writes: 1},
@@ -1181,14 +1186,16 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		// No table holds a kind of the lenses child's yet, so each term reads the writes it
 		// is assumed at, and the tuples its writer appends (storeKinds names each writer).
-		"interaction":  {tuples: 9, writes: 10 * sizingWindowDays, assumed: true},
-		"frame":        {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
-		"lens":         {tuples: 10, writes: 2 * sizingWindowDays, assumed: true},
-		"lens_finding": {tuples: 8, writes: 10 * sizingWindowDays, assumed: true},
-		"lens_kind":    {tuples: 8, writes: 22, assumed: true},
-		"constraint":   {tuples: 11, writes: 1 * sizingWindowDays, assumed: true},
-		"risk":         {tuples: 11, writes: 11 * sizingWindowDays, assumed: true},
-		"node_state":   {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
+		"interaction":      {tuples: 9, writes: 10 * sizingWindowDays, assumed: true},
+		"frame":            {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
+		"interaction_gone": {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
+		"lens":             {tuples: 10, writes: 2 * sizingWindowDays, assumed: true},
+		"lens_finding":     {tuples: 8, writes: 10 * sizingWindowDays, assumed: true},
+		"lens_kind":        {tuples: 8, writes: 22, assumed: true},
+		"constraint":       {tuples: 11, writes: 1 * sizingWindowDays, assumed: true},
+		"risk":             {tuples: 11, writes: 11 * sizingWindowDays, assumed: true},
+		"node_state":       {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
+		"pointer_retarget": {tuples: 2, writes: 1 * sizingWindowDays, assumed: true},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]

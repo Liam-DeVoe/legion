@@ -244,16 +244,18 @@ const (
 //     and their first versions - and the values of each query node, a document's references, a
 //     comment's anchored_in its anchor's block, the authored_by of a block of an issue's room, a
 //     result's node with its values and tuples, its screenshots and its retraction, a component's
-//     node with its part_of, depends_on and affects, and a criterion's authored_by
+//     node with its part_of, depends_on and affects, a retired component's node stated gone with
+//     those relations retracted, and a criterion's authored_by
 //     (#b-r-issue-relations, #b-r-result-node, #b-r-artifacts-in-tree, #b-r-reasoning-tree,
 //     #b-r-one-room, #b-r-queries);
 //   - the asks child's ask's answer_state, question, options, authored_by, anchored_to and
 //     owned_by, and what its other events state - an edit, an answer, a resolution, a follower - a
 //     Keep, and an agent's decision and its reading (#b-r-ask-node, #b-r-decision-node,
 //     #b-r-reading);
-//   - the lenses child's interaction and its frames, a lens and its finding blocks, a lens
-//     kind, a constraint, a risk and a node's state (#b-r-interaction, #b-r-lens,
-//     #b-r-lens-catalogue, #b-r-constraint-risk), every one of them assumed.
+//   - the lenses child's interaction, its frames and its node stated gone once the release before
+//     deletes its row, a lens and its finding blocks, a lens kind, a constraint, a risk, a node's
+//     state and a pointer's retarget (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
+//     #b-r-constraint-risk), every one of them assumed.
 //
 // Every node of an issue, a document, an ask, a message, a comment and a block states its project
 // or its parties beside its visibility and state, written by the create that makes it: each of
@@ -562,9 +564,12 @@ func storeKinds() []StoreKind {
 		Driver: "check_result_retractions.created_at: the result's retracted value",
 		count:  `(select count(*) from check_result_retractions where created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "component", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 2,
+		// Counted off graphstore.ComponentNode, the node an import (architecture's stateComponents)
+		// and the backfill (writeComponentBatch) write a component as: in its project.
+		Name: "component", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 3,
 		Driver: "components of an architecture snapshot imported in the window, each the node the import writes or" +
-			" rewrites, which over-states a component an import left as it was: its node and its visibility and state",
+			" rewrites, which over-states a component an import left as it was: its node and its visibility, state" +
+			" and project",
 		count: `(select count(*) from sized_components)`,
 	}, {
 		Name: "component_relation", MovedBy: movedWithBlocks, Tuples: 1,
@@ -575,6 +580,13 @@ func storeKinds() []StoreKind {
 			   join sized_components c on c.project_key = d.project_key and c.id = d.from_id)
 			+ (select count(*) from issue_component_members m join issue_components i on i.issue_key = m.issue_key
 			   where i.updated_at > ` + sizingWindow + `))`,
+	}, {
+		// Counted off architecture's retiredComponents, which an import that drops a component
+		// (stateComponents) and a source's removal (RetireComponents) write a component through: its
+		// node stated gone and the retraction of each part_of and depends_on it holds.
+		Name: "component_retired", MovedBy: movedWithBlocks, Tuples: 3, Assumed: sizingWindowDays / 7,
+		Driver: "assumed at one a week, since no table keeps a component a re-import dropped or a source's removal" +
+			" took: its node stated gone and the retraction of its part_of and of its depends_on, taken as one each",
 	}, {
 		Name: "ask", MovedBy: movedHere, Nodes: 1, Tuples: 3,
 		Driver: "ask.opened events in the window: the ask's node and its visibility, state and project or parties",
@@ -674,6 +686,13 @@ func storeKinds() []StoreKind {
 		Driver: "assumed at 50 for each assumed run, 500 a day, since the release before dispatch://INFRA-1950" +
 			" deletes a run's going_events rows with its going_requests row: one frame value each",
 	}, {
+		// Counted off writeGoneRun, the one writer that states a run's node gone (backfillGoneRuns):
+		// the state value it moves.
+		Name: "interaction_gone", MovedBy: movedWithLenses, Tuples: 1, Assumed: 10 * sizingWindowDays,
+		Driver: "assumed at one for each assumed run, 10 a day, since the release before deletes every run an hour" +
+			" old (contracts.GoingRequestTTL) and no table holds the window's runs: the run's node stated gone once" +
+			" that release has deleted its row, which over-states a run once no process of that release serves",
+	}, {
 		// Counted off api's invokeLens and writeReasoningNodes: graphstore.Write's visibility, state
 		// and project, the issue's; the part_of, the has_kind and, where the body names them, the
 		// verdict value and the triggered_by; and, where graphstore.AuthorOf names a writer of its
@@ -728,6 +747,14 @@ func storeKinds() []StoreKind {
 		Name: "node_state", MovedBy: movedWithLenses, Tuples: 1, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 a day, one for each assumed finding, since production writes no node state but live and" +
 			" gone before the lenses child ships: a node's proposed, settled or overtaken state value",
+	}, {
+		// Counted off graphstore.Retarget, which the pointer route (api's writeReasoningPointer)
+		// moves a pointer through: the retraction of the far end it held and the assertion of the
+		// new one.
+		Name: "pointer_retarget", MovedBy: movedWithLenses, Tuples: 2, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at 1 a day, since production writes no pointer before the lenses child ships: a retarget of" +
+			" a lens's, a risk's or a requirement's pointer, the retraction of the far end it held and the assertion" +
+			" of the new one",
 	}}
 }
 
