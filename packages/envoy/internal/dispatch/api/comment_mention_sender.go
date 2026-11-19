@@ -514,17 +514,22 @@ func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) 
 //
 // It runs on the background pool (mentionSenderPool) as the sender's other statements do: what
 // it claims is a send of the sender's lanes, which runs on past the repeat it was queued by, and
-// the repeat holds no connection of its own while it is made.
+// the repeat holds no connection of its own while it is made. The claim waits for the attempt's
+// row in a bounded wait, in a batch of its own sent on the pool (store.WriteBatch,
+// QueueWithinBound): a claim, a reply or a settle holding the row takes no lock the repeat holds,
+// and the repeat waits for this claim.
 func (s *server) claimQueuedMention(ctx context.Context, key mentionKey) (claimed time.Time, ok bool, err error) {
 	pool, err := s.mentionSenderPool()
 	if err != nil {
 		return time.Time{}, false, err
 	}
-	err = pool.QueryRow(ctx, `
+	var claim store.WriteBatch
+	claim.QueueWithinBound("", `
 		update comment_deliveries set claimed_at = now()
 		where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending' and `+model.DeliveryClaimFreeSQL+`
 		returning claimed_at
-	`, key.comment, key.target, key.attempt).Scan(&claimed)
+	`, key.comment, key.target, key.attempt).QueryRow(func(row pgx.Row) error { return row.Scan(&claimed) })
+	err = claim.Send(ctx, pool)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
 	}

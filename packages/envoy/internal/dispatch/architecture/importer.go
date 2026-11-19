@@ -399,18 +399,30 @@ func (i *Importer) failed(ctx, parent context.Context, source loadedSource, impo
 // touch is the unchanged-model short-circuit's only write: last_sync_at (and
 // the moved head's commit), guarded by the repo/branch/state and the row
 // version the sync began from, so neither a concurrent PUT nor another sync
-// that recorded since is overstamped. No event either way.
+// that recorded since is overstamped. No event either way. The row is taken in
+// a bounded wait and written behind it, in one batch
+// (store.LockWithinBoundAndRead), as lockSourceRow's is: no owner lock orders
+// the source's writers.
 func (i *Importer) touch(ctx context.Context, source loadedSource, commit string) (model.ArchitectureSource, error) {
 	var updated model.ArchitectureSource
 	err := i.inTransaction(ctx, func(tx pgx.Tx) error {
-		var err error
-		updated, err = ScanSource(tx.QueryRow(ctx, `
+		return store.LockWithinBoundAndRead(ctx, tx, `
+			select 1 from architecture_sources
+			where project_key = $1 and id = $2 and repo = $3 and branch = $4 and last_error is null
+			  and xmin::text = $5
+			for update`,
+			[]any{source.Project, source.ID, source.Repo, source.Branch, source.version}, `
 			update architecture_sources
 			set last_sync_at = now(), last_commit = $5
 			where project_key = $1 and id = $2 and repo = $3 and branch = $4 and last_error is null
 			  and xmin::text = $6
-			returning `+SourceColumns, source.Project, source.ID, source.Repo, source.Branch, commit, source.version))
-		return err
+			returning `+SourceColumns,
+			[]any{source.Project, source.ID, source.Repo, source.Branch, commit, source.version},
+			func(row pgx.Row) (err error) {
+				updated, err = ScanSource(row)
+				return err
+			},
+		)
 	})
 	if err == nil {
 		return updated, nil
@@ -478,12 +490,18 @@ func (i *Importer) resolve(ctx context.Context, source *loadedSource) (owner, na
 	}
 	if installation.ID != source.InstallationID {
 		var version string
+		// Taken in a bounded wait and written behind it, as touch's row is.
 		err := i.inTransaction(ctx, func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `
+			return store.LockWithinBoundAndRead(ctx, tx, `
+				select 1 from architecture_sources where project_key = $1 and id = $2 and xmin::text = $3
+				for update`,
+				[]any{source.Project, source.ID, source.version}, `
 				update architecture_sources set installation_id = $3
 				where project_key = $1 and id = $2 and xmin::text = $4
 				returning xmin::text`,
-				source.Project, source.ID, installation.ID, source.version).Scan(&version)
+				[]any{source.Project, source.ID, installation.ID, source.version},
+				func(row pgx.Row) error { return row.Scan(&version) },
+			)
 		})
 		switch {
 		case err == nil:

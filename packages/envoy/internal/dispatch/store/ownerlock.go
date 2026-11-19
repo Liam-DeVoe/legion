@@ -194,10 +194,12 @@ func ownerLockArgs(keys []string) []any {
 // and repository-mapping locks, prioritystore's priority-rank lock, delivery's session-groups
 // lock, docs' copy and conditional-edit queue locks, and a request's wait for a document's own
 // lock, docs.lockDocumentRoom). It bounds too every row lock a write takes on a row that some
-// other locker takes without an owner lock the write holds, so that no owner lock orders the two
-// (LockWithinBound, and WriteBatch.QueueWithinBound in a write phase: a step's node, a message's
-// row and its delivery attempts, a comment delivery's attempts, the Inbox's and agent state's own
-// rows, a person's row, a pull request's head, an architecture source's rows and an item's block
+// other locker takes without an owner lock the write holds, so that no owner lock orders the two,
+// and every write of such a row, which takes the row in the bound first or runs in the bound
+// itself (LockWithinBound and LockWithinBoundAndRead, and WriteBatch.QueueWithinBound in a write
+// phase or in a write of its own sent on a pool: a step's node, a message's row and its delivery
+// attempts, a comment delivery's attempts, the Inbox's and agent state's own rows, an agent's read
+// mark, a person's row, a pull request's head, an architecture source's rows and an item's block
 // state). A wait that runs it out is refused as a pool that could not serve the call is refused
 // (ErrPoolBusy, leaveBoundedWait): a request answers 503 DATABASE_BUSY with Retry-After and its
 // client sends the write again; a background pass logs it and tries again at its next tick; a
@@ -356,28 +358,30 @@ func sendOne(ctx context.Context, q OwnerLocker, sql string) error {
 
 // LockWithinBound runs lock with args, a statement that takes a lock another writer may hold - a
 // transaction advisory lock, or a row lock on a row no owner lock of the caller's keeps every other
-// locker from - and answers nothing its caller reads, in a bounded wait (lockWait), as a
-// read-phase owner lock waits: a lock still held when the bound runs out is refused ErrPoolBusy,
-// and the transaction is as it was before the statement (leaveBoundedWait). It is how a request's
-// write takes every advisory lock of its own besides the owner lock (api's dependency,
-// rank-allocation, upload and repository-mapping locks, prioritystore's priority-rank lock,
-// delivery's session-groups lock, docs' copy and conditional-edit queue locks, and a document's
-// lock where a request waits for it) and every such row lock, so no write waits on one without
-// end. A caller that reads the locked row reads it in a statement after this one, which finds the
-// row already held, and sends it in the same batch (LockWithinBoundAndRead). It is one round
-// trip, as the statement alone was.
+// locker from, taken by a locking read or by the row's own write - and answers nothing its caller
+// reads, in a bounded wait (lockWait), as a read-phase owner lock waits: a lock still held when the
+// bound runs out is refused ErrPoolBusy, and the transaction is as it was before the statement
+// (leaveBoundedWait). It is how a request's write takes every advisory lock of its own besides the
+// owner lock (api's dependency, rank-allocation, upload and repository-mapping locks,
+// prioritystore's priority-rank lock, delivery's session-groups lock, docs' copy and
+// conditional-edit queue locks, and a document's lock where a request waits for it) and every such
+// row lock, so no write waits on one without end. A caller that reads the locked row, or what its
+// write returned, reads it in a statement after this one, which finds the row already held, and
+// sends it in the same batch (LockWithinBoundAndRead). It is one round trip, as the statement
+// alone was.
 func LockWithinBound(ctx context.Context, q OwnerLocker, lock string, args ...any) error {
 	return LockWithinBoundAndRead(ctx, q, lock, args, "", nil, nil)
 }
 
 // LockWithinBoundAndRead is LockWithinBound followed by read with readArgs, the statement that
-// reads the row lock took, whose one row scan reads. The two go in one batch, one round trip and
-// one statement of the transaction's as the locking read alone was, and stay two statements: the
-// server starts read, taking its snapshot, only once the bounded wait has ended and the row is
-// the transaction's, so read sees every commit of the row's previous holder and runs under the
-// transaction's own lock_timeout again. The lock's failure comes back as LockWithinBound's does,
-// ErrPoolBusy at its bound, and scan is not called; read's comes back as scan returned it,
-// pgx.ErrNoRows included. An empty read sends none.
+// reads the row lock took, or writes it and returns what it wrote (an update, a delete or an
+// upsert, `returning` the row), whose one row scan reads. The two go in one batch, one round trip
+// and one statement of the transaction's as the locking read or the write alone was, and stay two
+// statements: the server starts read, taking its snapshot, only once the bounded wait has ended
+// and the row is the transaction's, so read sees every commit of the row's previous holder, waits
+// on nothing the lock took, and runs under the transaction's own lock_timeout again. The lock's
+// failure comes back as LockWithinBound's does, ErrPoolBusy at its bound, and scan is not called;
+// read's comes back as scan returned it, pgx.ErrNoRows included. An empty read sends none.
 func LockWithinBoundAndRead(
 	ctx context.Context, q OwnerLocker, lock string, lockArgs []any, read string, readArgs []any, scan func(pgx.Row) error,
 ) error {

@@ -20,6 +20,13 @@ import (
 // id sequence's currval), never read back in Go between them. A value the caller needs once the
 // batch has run - an event's id, a returned timestamp - is read by the statement's callback (Exec,
 // QueryRow, Query), which runs as Send reads that statement's result, in statement order.
+//
+// Sent on a pool rather than on a transaction, a batch is a write of its own: the server runs its
+// statements as one transaction, which commits once the last of them has run and rolls back whole
+// when one fails, so a row a statement locks stays locked for the statements after it. A write
+// that was one statement on the pool is sent so when it must wait on a row in a bounded wait
+// (QueueWithinBound): the bound is a setting of the transaction the batch is, which ends with it,
+// and the write is still one round trip, as the statement alone was.
 type WriteBatch struct {
 	batch pgx.Batch
 	// bounds is the statement of each bounded wait queued on the batch (QueueWithinBound) that
@@ -41,6 +48,9 @@ const LatestEventID = `currval(pg_get_serial_sequence('events', 'id'))`
 type Queued struct {
 	query *pgx.QueuedQuery
 	what  string
+	// bound is the statement that sets lock_timeout to the bounded wait the statement runs in
+	// (QueueWithinBound), nil for one queued bare.
+	bound *pgx.QueuedQuery
 }
 
 // Queue adds sql with args after every statement queued so far. A failure of the statement itself
@@ -52,38 +62,39 @@ func (b *WriteBatch) Queue(what, sql string, args ...any) Queued {
 	return queued
 }
 
-// failed is err, the statement's own failure, wrapped as what failed.
+// failed is err, the statement's own failure, wrapped as what failed: a statement queued within a
+// bound that ran it out (ranOutItsBound) named ErrPoolBusy first (heldPastItsBound).
 func (q Queued) failed(err error) error {
+	if q.bound != nil && ranOutItsBound(err) {
+		err = heldPastItsBound(q.bound.Arguments[0].(string), err)
+	}
 	if err == nil || q.what == "" {
 		return err
 	}
 	return fmt.Errorf("%s: %w", q.what, err)
 }
 
-// QueueWithinBound queues lock with args, a statement that takes a row lock another transaction
-// may hold and answers nothing its caller reads, under the bound LockWithinBound waits under
-// (lockWait, or the bound a test put on the context Send is given: lockWaitSetting): the
-// transaction's own lock_timeout kept, lock_timeout set to the bound, the lock, and the kept value
-// set again (boundedWaitKeep, boundedWaitBound, boundedWaitRestore). An admitted write has no
-// deadline, so a write phase that queued the lock bare would wait on a held row for as long as
-// its holder held it. A wait that runs the bound out fails the batch with ErrPoolBusy, which a
-// request answers 503 DATABASE_BUSY with Retry-After; nothing queued after it runs, and the
-// transaction, which a failed write phase abandons, rolls back with everything it wrote. That is
-// why it takes no savepoint, as LockWithinBound does to leave its transaction usable: nothing is
-// left to use. Any other failure of the lock comes back wrapped as what failed, as Queue's does.
-func (b *WriteBatch) QueueWithinBound(what, lock string, args ...any) {
+// QueueWithinBound queues sql with args, a statement that takes a row lock another transaction
+// may hold - a locking read, or a write of the row itself - under the bound LockWithinBound waits
+// under (lockWait, or the bound a test put on the context Send is given: lockWaitSetting): the
+// transaction's own lock_timeout kept, lock_timeout set to the bound, the statement, and the kept
+// value set again (boundedWaitKeep, boundedWaitBound, boundedWaitRestore). Its result is read as a
+// statement Queue queued is (the Queued it returns). An admitted write has no deadline, so a write
+// phase that queued the statement bare would wait on a held row for as long as its holder held it.
+// A wait that runs the bound out fails the batch with ErrPoolBusy, which a request answers 503
+// DATABASE_BUSY with Retry-After; nothing queued after it runs, and the transaction - the one a
+// failed write phase abandons, or the batch's own when it is sent on a pool - rolls back with
+// everything it wrote. That is why it takes no savepoint, as LockWithinBound does to leave its
+// transaction usable: nothing is left to use. Any other failure of the statement comes back
+// wrapped as what failed, as Queue's does.
+func (b *WriteBatch) QueueWithinBound(what, sql string, args ...any) Queued {
 	b.Queue("", boundedWaitKeep)
 	bound := b.Queue("", boundedWaitBound, lockWaitDefault).query
 	b.bounds = append(b.bounds, bound)
-	queued := b.Queue(what, lock, args...)
-	queued.query.Fn = func(results pgx.BatchResults) error {
-		_, err := results.Exec()
-		if ranOutItsBound(err) {
-			err = heldPastItsBound(bound.Arguments[0].(string), err)
-		}
-		return queued.failed(err)
-	}
+	queued := Queued{query: b.batch.Queue(sql, args...), what: what, bound: bound}
+	queued.Exec(nil)
 	b.Queue("", boundedWaitRestore)
+	return queued
 }
 
 // Exec hands the statement's command tag to fn once it has run; nil drops it. fn's error stops the
@@ -149,13 +160,19 @@ func (r batchRow) Scan(dest ...any) error {
 	return r.queued.failed(r.rows.Err())
 }
 
-// Send sends every queued statement to tx in one batch and reads their results in order, running
+// BatchSender is what a WriteBatch is sent on: the transaction whose write phase it is, or a pool,
+// on which the batch is a write of its own (WriteBatch).
+type BatchSender interface {
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+}
+
+// Send sends every queued statement to q in one batch and reads their results in order, running
 // each statement's callback as it reads its result. It returns the first failure: the first
 // statement that failed (the server runs none after it) or the first callback that returned an
 // error (whose later statements ran, and are rolled back with the transaction the caller now
-// abandons), whichever comes first in the batch. The batch is empty again afterwards. An empty
-// batch sends nothing.
-func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
+// abandons; on a pool they have committed with the batch), whichever comes first in the batch. The
+// batch is empty again afterwards. An empty batch sends nothing.
+func (b *WriteBatch) Send(ctx context.Context, q BatchSender) error {
 	if b.batch.Len() == 0 {
 		return nil
 	}
@@ -165,7 +182,7 @@ func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
 	}
 	batch := b.batch
 	b.batch, b.bounds = pgx.Batch{}, nil
-	return tx.SendBatch(ctx, &batch).Close()
+	return q.SendBatch(ctx, &batch).Close()
 }
 
 // RunWrite runs write's statements in tx at once, as a batch of their own (Send): what a write

@@ -251,12 +251,22 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("attempt %d was requested more than a minute ago", number))
 		return
 	}
-	accepted, err := scanMessageDelivery(tx.QueryRow(ctx, `
+	// The attempt row is taken in a bounded wait and written behind it, in one batch
+	// (store.LockWithinBoundAndRead): the session's reply, the settle and the claim's renewal
+	// hold it without the message's lock taken above, so that lock orders none of them.
+	var accepted model.MessageDelivery
+	err = store.LockWithinBoundAndRead(ctx, tx,
+		`select 1 from message_deliveries where message_id = $1 and attempt = $2 for update`,
+		[]any{message.ID, number}, `
 		update message_deliveries set accepted_at = now(), accepted_as = $3
 		where message_id = $1 and attempt = $2
 		returning `+messageDeliveryColumns,
-		message.ID, number, acceptedAsUserTurn,
-	))
+		[]any{message.ID, number, acceptedAsUserTurn},
+		func(row pgx.Row) (err error) {
+			accepted, err = scanMessageDelivery(row)
+			return err
+		},
+	)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -710,13 +720,26 @@ func (s *server) completeMessageDelivery(
 		SessionID: pending.resolved.attemptSessionID, State: state, Duplicate: outcome.duplicate, Error: failure,
 	}, pending.resolved.title)
 	return settleDeliveryAttempt(ctx, s, receipt,
-		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
-			return scanMessageDelivery(tx.QueryRow(ctx, `
+		func(ctx context.Context, tx pgx.Tx) (settled model.MessageDelivery, err error) {
+			// The attempt row is taken in a bounded wait and written behind it, in one batch
+			// (store.LockWithinBoundAndRead): a direct message's receipt has no owner, so the owner
+			// lock settleDeliveryAttempt takes orders none of the row's other holders (the reply,
+			// the accept, the claim's renewal).
+			err = store.LockWithinBoundAndRead(ctx, tx, `
+				select 1 from message_deliveries
+				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
+				for update`,
+				[]any{message.ID, pending.attempt, pending.claimedAt}, `
 				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7
 				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 				returning `+messageDeliveryColumns,
-				message.ID, pending.attempt, pending.claimedAt, outcome.envelopeID, state, failure, outcome.duplicate,
-			))
+				[]any{message.ID, pending.attempt, pending.claimedAt, outcome.envelopeID, state, failure, outcome.duplicate},
+				func(row pgx.Row) (err error) {
+					settled, err = scanMessageDelivery(row)
+					return err
+				},
+			)
+			return settled, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {
 			var mine bool
@@ -869,13 +892,21 @@ func (s *server) renewMessageDeliveryClaim(
 		return pending, false, err
 	}
 	defer tx.Rollback(ctx)
-	err = tx.QueryRow(ctx, `
+	// The attempt row is taken in a bounded wait and written behind it, in one batch
+	// (store.LockWithinBoundAndRead): its other holders (the reply, the accept, another sender's
+	// settle) take it under no lock this transaction holds.
+	err = store.LockWithinBoundAndRead(ctx, tx, `
+		select 1 from message_deliveries
+		where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
+		for update`,
+		[]any{message.ID, pending.attempt, pending.claimedAt}, `
 		update message_deliveries
 		set claimed_at = now(), session_id = coalesce(nullif(session_id, ''), $4)
 		where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
-		returning claimed_at, session_id
-	`, message.ID, pending.attempt, pending.claimedAt, renewed.resolved.attemptSessionID,
-	).Scan(&renewed.claimedAt, &renewed.resolved.attemptSessionID)
+		returning claimed_at, session_id`,
+		[]any{message.ID, pending.attempt, pending.claimedAt, renewed.resolved.attemptSessionID},
+		func(row pgx.Row) error { return row.Scan(&renewed.claimedAt, &renewed.resolved.attemptSessionID) },
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return pending, false, nil
 	}

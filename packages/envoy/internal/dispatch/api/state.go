@@ -430,7 +430,11 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if readThrough != nil {
-		if _, err := tx.Exec(r.Context(), `
+		// The upsert runs in a bounded wait itself (store.LockWithinBound; it answers nothing this
+		// handler reads), so a concurrent mark of the same login and session - another tab or
+		// device - holding the row, or an uncommitted first mark of it, is waited for no longer
+		// than any lock a write waits on: no owner lock orders the writers of this row.
+		if err := store.LockWithinBound(r.Context(), tx, `
 			insert into user_agent_read (login, session_id, read_through)
 			values ($1, $2, least($3::timestamptz, now()))
 			on conflict (login, session_id) do update set

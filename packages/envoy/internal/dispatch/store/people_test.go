@@ -740,32 +740,62 @@ func TestPgPeopleStoreEndSubjectEndsOnlyTheAccountItNames(t *testing.T) {
 // records, and wait for a row another transaction holds no longer than a write waits for any lock
 // another writer holds (lockWait): at that bound they are refused ErrPoolBusy, which the identity
 // routes answer 503 DATABASE_BUSY with Retry-After (identity.WriteError, held by identity's own
-// test of a busy pool), and the transaction writes nothing. Without the bound a sign-in behind a
-// held row waited for as long as its holder held it: nothing that writes the row takes a lock that
-// orders it against these two, and a request's write has no deadline. Once the row is free both go
-// through. The bound is the test's (WithLockWaitForTest) rather than production's ten seconds.
+// test of a busy pool), and the transaction writes nothing. So is every other write of the row,
+// each one statement on the pool sent in a bounded wait (writeWithinBound): a sign-in through a
+// sign-in pool, a refresh's confirmation under a group or a domain, the end of a membership, and
+// the retirement of a token stored in plain text a sign-in makes first. Without the bound each
+// waited behind a held row for as long as its holder held it: nothing that writes the row takes a
+// lock that orders it against the others, and a request's write has no deadline. Once the row is
+// free each goes through. The bound is the test's (WithLockWaitForTest) rather than production's
+// ten seconds.
 func TestPgPeopleStoreWaitsForAHeldPersonRowNoLongerThanItsBound(t *testing.T) {
 	const bound = time.Second
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	_, flow := revokingPool(t)
+	revoking := NewPgPeopleStore(database.Pool, testSigningKey, flow)
 	const email = "held.person@example.com"
 	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1"); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range []struct {
 		name string
-		run  func(ctx context.Context) error
+		// arrange, when set, readies the row before it is held.
+		arrange func(t *testing.T)
+		run     func(ctx context.Context) error
 	}{
-		{"a sign-in", func(ctx context.Context) error {
+		{name: "a sign-in", run: func(ctx context.Context) error {
 			return people.SignInSubject(ctx, email, "subject-1", "refresh-2")
 		}},
-		{"an end of the sign-in", func(ctx context.Context) error {
+		{name: "an end of the sign-in", run: func(ctx context.Context) error {
 			_, err := people.EndSubject(ctx, email, "subject-1")
 			return err
 		}},
+		{name: "a sign-in through a sign-in pool", run: func(ctx context.Context) error {
+			return people.SignIn(ctx, email, "refresh-3")
+		}},
+		{name: "a confirmation under a group", run: func(ctx context.Context) error {
+			return people.Confirm(ctx, email, "refresh-4")
+		}},
+		{name: "a confirmation under a domain", run: func(ctx context.Context) error {
+			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-5")
+		}},
+		{name: "an end of the membership", run: func(ctx context.Context) error {
+			return people.End(ctx, email)
+		}},
+		{
+			name:    "a retirement of a token stored in plain text",
+			arrange: func(t *testing.T) { storePlainRefreshToken(t, database, email, "plain-held") },
+			run: func(ctx context.Context) error {
+				return revoking.retire(ctx, email, "plain-held")
+			},
+		},
 	} {
 		t.Run(call.name, func(t *testing.T) {
+			if call.arrange != nil {
+				call.arrange(t)
+			}
 			holder, err := database.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatalf("begin the holder: %v", err)

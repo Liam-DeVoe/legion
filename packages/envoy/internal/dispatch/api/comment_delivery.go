@@ -495,15 +495,31 @@ func (s *server) completeCommentDelivery(
 	sent.State, sent.Error = deliveryOutcome(outcome.failure, outcome.queued)
 	sent.Duplicate, sent.EnvelopeID = outcome.duplicate, outcome.envelopeID
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
-		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			return scanCommentDelivery(tx.QueryRow(ctx, `
+		func(ctx context.Context, tx pgx.Tx) (settled model.CommentDelivery, err error) {
+			// The attempt row is taken in a bounded wait and written behind it, in one batch
+			// (store.LockWithinBoundAndRead): the comment's owner lock, which settleDeliveryAttempt
+			// takes, does not order the mention sender's claim statements, which take none
+			// (comment_mention_sender.go).
+			err = store.LockWithinBoundAndRead(ctx, tx, `
+				select 1 from comment_deliveries
+				where comment_id = $1 and target = $2 and attempt = $3
+				  and state = 'pending' and claimed_at = $4
+				for update`,
+				[]any{comment.ID, sent.Target, claim.attempt, claim.claimedAt}, `
 				update comment_deliveries set envelope_id = $5, state = $6, error = $7, duplicate = $8
 				where comment_id = $1 and target = $2 and attempt = $3
 				  and state = 'pending' and claimed_at = $4
 				returning `+commentDeliveryColumns,
-				comment.ID, sent.Target, claim.attempt, claim.claimedAt,
-				sent.EnvelopeID, sent.State, sent.Error, sent.Duplicate,
-			))
+				[]any{
+					comment.ID, sent.Target, claim.attempt, claim.claimedAt,
+					sent.EnvelopeID, sent.State, sent.Error, sent.Duplicate,
+				},
+				func(row pgx.Row) (err error) {
+					settled, err = scanCommentDelivery(row)
+					return err
+				},
+			)
+			return settled, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
@@ -545,15 +561,25 @@ func (s *server) supersedeCommentDelivery(
 	failed := bound
 	failed.State, failed.Error = deliveryOutcome(mentionSupersededError, false)
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, failed),
-		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			return scanCommentDelivery(tx.QueryRow(ctx, `
-				update comment_deliveries set state = 'failed', error = $5, claimed_at = null
+		func(ctx context.Context, tx pgx.Tx) (superseded model.CommentDelivery, err error) {
+			// Taken in a bounded wait and written behind it, as the settle's row is
+			// (completeCommentDelivery).
+			guard := `
 				where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
-				  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`)
-				  and `+model.MentionAttemptDeliveredLaterSQL("comment_deliveries")+`
+				  and (` + model.DeliveryClaimFreeSQL + ` or ` + model.DeliveryClaimMineSQL("$4") + `)
+				  and ` + model.MentionAttemptDeliveredLaterSQL("comment_deliveries")
+			err = store.LockWithinBoundAndRead(ctx, tx,
+				`select 1 from comment_deliveries`+guard+` for update`,
+				[]any{comment.ID, bound.Target, claim.attempt, claim.claimedAt}, `
+				update comment_deliveries set state = 'failed', error = $5, claimed_at = null`+guard+`
 				returning `+commentDeliveryColumns,
-				comment.ID, bound.Target, claim.attempt, claim.claimedAt, mentionSupersededError,
-			))
+				[]any{comment.ID, bound.Target, claim.attempt, claim.claimedAt, mentionSupersededError},
+				func(row pgx.Row) (err error) {
+					superseded, err = scanCommentDelivery(row)
+					return err
+				},
+			)
+			return superseded, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
@@ -651,14 +677,27 @@ func (s *server) recordCommentDeliveryResolution(
 		return model.CommentDelivery{}, claim, false, err
 	}
 	defer tx.Rollback(ctx)
-	recorded, err := scanCommentDelivery(tx.QueryRow(ctx, `
+	// The attempt row is taken in a bounded wait and written behind it, in one batch
+	// (store.LockWithinBoundAndRead): this transaction takes no owner lock, and the row's other
+	// holders (the claim, the reply route, a settle) take it under none it holds.
+	var recorded model.CommentDelivery
+	err = store.LockWithinBoundAndRead(ctx, tx, `
+		select 1 from comment_deliveries
+		where comment_id = $1 and target = $2 and attempt = $3
+		  and state = 'pending' and claimed_at = $4
+		for update`,
+		[]any{comment.ID, target.Target, claim.attempt, claim.claimedAt}, `
 		update comment_deliveries
 		set claimed_at = now(), delivery = $5, session_id = coalesce(session_id, $6), resolve_error = $7
 		where comment_id = $1 and target = $2 and attempt = $3
 		  and state = 'pending' and claimed_at = $4
 		returning `+commentDeliveryColumns+`, claimed_at`,
-		comment.ID, target.Target, claim.attempt, claim.claimedAt, target.Delivery, target.SessionID, resolveError,
-	), &renewed.claimedAt)
+		[]any{comment.ID, target.Target, claim.attempt, claim.claimedAt, target.Delivery, target.SessionID, resolveError},
+		func(row pgx.Row) (err error) {
+			recorded, err = scanCommentDelivery(row, &renewed.claimedAt)
+			return err
+		},
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.CommentDelivery{
 			CommentID: comment.ID, Target: target.Target, Attempt: claim.attempt,

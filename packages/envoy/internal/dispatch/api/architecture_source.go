@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project imports its component model from any number of sources, one per repository, and a
@@ -154,7 +155,15 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	source, err := architecture.ScanSource(tx.QueryRow(r.Context(), `
+	// The source's row is taken in a bounded wait and written behind it, in one batch
+	// (store.LockWithinBoundAndRead): a sync holds it through its projection or its failure's
+	// record (architecture's lockProjectSources, lockSourceRow) under no lock this route takes. A
+	// source not saved yet locks nothing, and the insert can then wait only on another save's
+	// uncommitted insert of the same repository, a request whose every wait is bounded so.
+	var source model.ArchitectureSource
+	err = store.LockWithinBoundAndRead(r.Context(), tx,
+		`select 1 from architecture_sources where project_key = $1 and repo = $2 for update`,
+		[]any{key, owner + "/" + name}, `
 		insert into architecture_sources (project_key, repo, branch, enabled, installation_id, created_by)
 		values ($1, $2, $3, true, $4, $5)
 		on conflict (project_key, repo) do update set
@@ -167,7 +176,12 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 			last_tree_sha = null,
 			last_error = null
 		returning `+architecture.SourceColumns,
-		key, owner+"/"+name, branch, installationID, actorJSON))
+		[]any{key, owner + "/" + name, branch, installationID, actorJSON},
+		func(row pgx.Row) (err error) {
+			source, err = architecture.ScanSource(row)
+			return err
+		},
+	)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -234,10 +248,19 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer tx.Rollback(r.Context())
-	source, err := architecture.ScanSource(tx.QueryRow(r.Context(), `
+	// Taken in a bounded wait and removed behind it, as the save's row is (putArchitectureSource).
+	var source model.ArchitectureSource
+	err = store.LockWithinBoundAndRead(r.Context(), tx,
+		`select 1 from architecture_sources where project_key = $1 and repo = $2 for update`,
+		[]any{key, repo}, `
 		delete from architecture_sources where project_key = $1 and repo = $2
 		returning `+architecture.SourceColumns,
-		key, repo))
+		[]any{key, repo},
+		func(row pgx.Row) (err error) {
+			source, err = architecture.ScanSource(row)
+			return err
+		},
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeSourceNotFound(w, key, repo)
