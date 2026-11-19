@@ -629,9 +629,13 @@ test("a fault tab of more than one page counts every row, keeps its status strip
     const pager = page.getByTestId("issues-table-pager");
     await expect(pager).toContainText("51");
     await pager.getByRole("button", { name: "Next ›" }).click();
-    await expect.poll(async () => (await rowNames(table)).length).toBe(1);
-    const last = (await rowNames(table))[0]?.split(" ")[0] ?? "";
-    expect(keys).toContain(last);
+    // The second page's one row, read until it is the only row drawn: its key is one of the
+    // fifty-one written, taken as the row name's first word.
+    await expect
+      .poll(async () =>
+        (await rowNames(table)).map((name) => keys.includes(name.split(" ", 1).join("")))
+      )
+      .toEqual([true]);
   } finally {
     await context.close();
   }
