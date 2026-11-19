@@ -84,9 +84,23 @@ func daemonsLines(t *testing.T, who, task, text string) string {
 	return task[:at]
 }
 
+// withoutRoundsSentences is the reviewer's task without the two sentences of the review round that
+// end each task of the reviewer in reviewing, after all the task composed (queuedRow): the commit
+// its last deciding review read, none in these tests, and its entry, the reviewer's row's now.
+func withoutRoundsSentences(t *testing.T, pool *pgxpool.Pool, task string) string {
+	t.Helper()
+	tail := reviewedPartOf("none") + reviewEntryPartOf(reviewerRow(t, pool).Entry)
+	cut, ok := strings.CutSuffix(task, tail)
+	if !ok {
+		t.Fatalf("the reviewer's task = %q, want it to end with the review round's sentences %q", task, tail)
+	}
+	return cut
+}
+
 // The task each agent of an owner's plan is told names its working copy, its task and its step in
-// it, each step of the task in order and the report of each earlier step, and, last, the task's
-// text inside a fence: the reviewer of the task `implementer reviewer` reads the implementer's
+// it, each step of the task in order and the report of each earlier step, and, last of what the
+// task composes, the task's text inside a fence, which only the reviewer's two sentences of the
+// review round follow: the reviewer of the task `implementer reviewer` reads the implementer's
 // report, and the retro and the merger, which run no step, are told the task and its steps alone,
 // and read the runs of the steps from Dispatch.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
@@ -105,7 +119,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	lacks(t, "implementer", implementer, "reported:")
 
 	completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
-	reviewer := daemonsLines(t, "reviewer", lastStart(t, pool, root.Key, claim.RoleReviewer), text)
+	reviewer := daemonsLines(t, "reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
 	hasPrefix(t, "reviewer", reviewer, continued+"reviewing."+working+" Task: a. Step 2 of 2: reviewer."+steps+
 		" Step 1 (implementer) reported: implement version 1."+
 		" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1).")
@@ -119,7 +133,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 		return engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleReviewer)
 	})
 
-	resumed := daemonsLines(t, "resumed reviewer", lastStart(t, pool, root.Key, claim.RoleReviewer), text)
+	resumed := daemonsLines(t, "resumed reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
 	if want := continued + "reviewing." + working + " Task: a. Step 2 of 2: reviewer." + steps +
 		" Step 1 (implementer) reported: implement version 1. Resume the existing phase work."; resumed != want {
 		t.Fatalf("the resumed reviewer's task before the owner's text = %q,\nwant %q", resumed, want)
