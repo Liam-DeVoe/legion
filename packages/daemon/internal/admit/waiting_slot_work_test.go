@@ -174,8 +174,10 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 			t.Fatalf("the starts of %s = %+v, want the merger's one row, held for no slot and claimable at once: a phase past the review runs on no slot, so the wait holds nothing of it",
 				waiter, got)
 		}
-		if want := seededEntryTask(waiter); got[0].task != want {
-			t.Fatalf("the start of %s carries %q, want the work of the entry its phases row names, %q", waiter, got[0].task, want)
+		// The merger's work ends with the head the decided review approved, none here, since the
+		// fixture records no review round (workflow's withApprovedHead).
+		if want := seededEntryTask(waiter) + " Approved head: none."; got[0].task != want {
+			t.Fatalf("the start of %s carries %q, want the work of the entry its phases row names, with the approved head, %q", waiter, got[0].task, want)
 		}
 	})
 
