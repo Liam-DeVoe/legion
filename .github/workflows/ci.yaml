@@ -4302,6 +4302,7 @@ jobs:
               - '!packages/envoy/internal/legionagents/**/*_test.go'
               - '!packages/envoy/internal/logging/**/*_test.go'
               - '!packages/envoy/internal/mcpbridge/**/*_test.go'
+              - '!packages/envoy/internal/measurebounds/**/*_test.go'
               - '!packages/envoy/internal/metrics/**/*_test.go'
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
