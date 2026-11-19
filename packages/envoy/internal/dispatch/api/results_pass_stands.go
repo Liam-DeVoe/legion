@@ -2,6 +2,7 @@ package api
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -191,7 +192,8 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 // unknown (model.PassSubjectReasonReadFailed), since the run it would have read may decide either
 // way. The results that count at the commit count whatever repository derived them: a commit
 // holds one answer (R4), so a pass of one repository and a fail of another at one commit make it
-// not known.
+// not known. A yes or a no names, of the results another head's run derived at the commit, none
+// of the verdict this head's own run derived (derivedAtAnotherHead): the head names its own.
 func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map[string]bool, ci *model.CheckCI) model.PassStandsSubject {
 	state := model.PassStandsSubject{Basis: basis, Answer: model.PassStandsNo, Reason: model.PassSubjectReasonNoResult, CI: ci}
 	if conflicted[basis.Commit] {
@@ -219,7 +221,7 @@ func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map
 	}
 	newestFail := ""
 	for _, result := range check.Results {
-		if result.CommitSHA != basis.Commit || standingCommit(result) != model.CommitAtBasis {
+		if result.CommitSHA != basis.Commit || standingCommit(result) != model.CommitAtBasis || derivedAtAnotherHead(result, ci) {
 			continue
 		}
 		switch {
@@ -239,6 +241,16 @@ func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map
 		state.Reason, state.Results = model.PassSubjectReasonFail, []string{newestFail}
 	}
 	return state
+}
+
+// derivedAtAnotherHead reports whether result is a result another head's check run derived
+// (deriveCIResults) with the verdict ci, the read at this head, derived a result of its own: two
+// repositories open at one commit each derive their own, and a head names its own as the result
+// that decides it, never a run of the other repository. Where this head's run derived none, or one
+// of the other verdict, the other head's result is the one at the commit, and is named.
+func derivedAtAnotherHead(result model.CheckResult, ci *model.CheckCI) bool {
+	return ci != nil && ci.Result != "" && result.ID != ci.Result &&
+		strings.HasPrefix(result.ID, ciResultIDPrefix) && result.Verdict == ci.State
 }
 
 // passAndFailCommits is each commit at which check, a `before_merge` check, holds both a pass and

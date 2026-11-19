@@ -41,10 +41,17 @@ type ciRepositoryRead struct {
 
 // ciRepositoryResult is one result of c1, with only the members these tests read.
 type ciRepositoryResult struct {
-	ID         string `json:"id"`
-	Verdict    string `json:"verdict"`
-	CommitSHA  string `json:"commit_sha"`
-	NotCounted string `json:"not_counted"`
+	ID           string `json:"id"`
+	Verdict      string `json:"verdict"`
+	CommitSHA    string `json:"commit_sha"`
+	NotCounted   string `json:"not_counted"`
+	CommitStands struct {
+		Answer string `json:"answer"`
+		Basis  *struct {
+			PullRequest *int   `json:"pull_request"`
+			Repo        string `json:"repo"`
+		} `json:"basis"`
+	} `json:"commit_stands"`
 }
 
 // ciRepositoryRig is a Dispatch whose issue lives in acme/widgets and links pull requests of
@@ -157,6 +164,58 @@ func TestEachRepositoryAtOneCommitDerivesItsOwnCIResult(t *testing.T) {
 	}
 	if len(read.PassStands.Subjects) != 2 || !seen["acme/widgets"] || !seen["acme/infra"] {
 		t.Fatalf("c1's subjects are %+v, want the head of #70 of acme/widgets and of #9 of acme/infra", read.PassStands.Subjects)
+	}
+}
+
+// TestEachHeadAtOneCommitNamesTheResultItsOwnRunDerived: #70 of acme/widgets and #9 of acme/infra
+// are open at one commit, and go-checks concluded alike in both, acme/widgets' run the later. Each
+// head reads the state of the results at the commit, and names as the result that decides it the
+// one its own repository's run derived, never the other repository's newer one; each derived
+// result stands at the pull request of its own head. The case runs with two passes and two fails.
+func TestEachHeadAtOneCommitNamesTheResultItsOwnRunDerived(t *testing.T) {
+	for _, each := range []struct{ conclusion, answer, reason string }{
+		{"success", "yes", ""},
+		{"failure", "no", "fail"},
+	} {
+		t.Run(each.conclusion, func(t *testing.T) {
+			rig := newCIRepositoryRig(t)
+			rig.write("acme/widgets", 70, ciRepositoryShared)
+			rig.write("acme/infra", 9, ciRepositoryShared)
+			widgets, infra := completedRun(71, "go-checks", each.conclusion), completedRun(72, "go-checks", each.conclusion)
+			widgets["completed_at"], infra["completed_at"] = "2026-11-12T11:00:00Z", "2026-11-12T10:00:00Z"
+			rig.github.set("acme/widgets", ciRepositoryShared, widgets)
+			rig.github.set("acme/infra", ciRepositoryShared, infra)
+			read := rig.read(t)
+
+			own := map[string]string{"acme/widgets": "ci-run:71", "acme/infra": "ci-run:72"}
+			number := map[string]int{"ci-run:71": 70, "ci-run:72": 9}
+			if len(read.PassStands.Subjects) != 2 {
+				t.Fatalf("c1's subjects are %+v, want the head of #70 of acme/widgets and of #9 of acme/infra", read.PassStands.Subjects)
+			}
+			for _, subject := range read.PassStands.Subjects {
+				repo := subject.Basis.Repo
+				if repo == "" {
+					repo = "acme/widgets"
+				}
+				if subject.Answer != each.answer || subject.Reason != each.reason || !slices.Equal(subject.Results, []string{own[repo]}) {
+					t.Errorf("the head of %s reads %q (reason %q) decided by %v, want %q (reason %q) decided by its own run's %s",
+						repo, subject.Answer, subject.Reason, subject.Results, each.answer, each.reason, own[repo])
+				}
+			}
+			for _, result := range read.Results {
+				want, derived := number[result.ID]
+				if !derived {
+					continue
+				}
+				if basis := result.CommitStands.Basis; result.CommitStands.Answer != "at_basis" || basis == nil || basis.PullRequest == nil || *basis.PullRequest != want {
+					t.Errorf("the result %s stands %+v at %+v, want at_basis at #%d, the head its run was read at", result.ID, result.CommitStands.Answer, basis, want)
+				}
+				delete(number, result.ID)
+			}
+			if len(number) != 0 {
+				t.Errorf("c1's results hold no result %v", number)
+			}
+		})
 	}
 }
 

@@ -420,9 +420,11 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // another commit, or not known with the reason. It says nothing about the check's words, which
 // answer carries beside it.
 //
-// A commit one of the bases names is the whole answer, whatever Dispatch can read now. Where
-// the check named no basis, the reason it named none decides: nothing to compare with leaves
-// the commit at another commit, while a repository Dispatch could not read leaves it unknown.
+// A commit one of the bases names is the whole answer, whatever Dispatch can read now. A result a
+// head's check run derived stands at that head's basis (derivedAt), so where two repositories are
+// open at one commit, each one's derived result names its own pull request. Where the check
+// named no basis, the reason it named none decides: nothing to compare with leaves the commit at
+// another commit, while a repository Dispatch could not read leaves it unknown.
 // Where the check named bases and none is this commit, a `before_merge` result turns on
 // whether the repository can be read at all, and a branch check walks the branches
 // (onNamedBranch).
@@ -441,6 +443,9 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 func (c *comparisonReader) commitStands(
 	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
 ) model.ResultCommitStands {
+	if basis := compared.derivedAt(result); basis != nil {
+		return model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: basis}
+	}
 	if basis := basisAt(compared.bases, result.CommitSHA); basis != nil {
 		return model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: basis}
 	}
@@ -470,6 +475,18 @@ func (c *comparisonReader) commitStands(
 		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 	}
 	return c.onNamedBranch(ctx, check, compared, result)
+}
+
+// derivedAt is the basis of the subject whose read of a check CI proves derived result, the head
+// its run was read at, and nil for every other result.
+func (c comparison) derivedAt(result model.CheckResult) *model.CheckBasis {
+	for _, subject := range c.subjects {
+		if read := c.ci[ciHeadKey{repo: subject.repo, commit: subject.basis.Commit}]; read != nil && read.Result != "" && read.Result == result.ID {
+			basis := subject.basis
+			return &basis
+		}
+	}
+	return nil
 }
 
 // basisAt is the basis naming that commit, and nil where none does. A `branch` basis names no
