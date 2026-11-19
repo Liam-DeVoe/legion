@@ -1473,7 +1473,13 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // startedUnseen). It is that take's turn, so its line names the task, and the turn's end names it
 // too; but the report already ran what the take's turn start does — the take's turn recorded
 // started and the serving credit earned — so none of it runs again, and the start of the task's
-// turn is counted once.
+// turn is counted once. The start is that turn's only where it is the start of the turn the report
+// is of, the turn after the ends the machine counted (turnCount): a later turn's start says the
+// reported turn's start was lost, and the mark goes; an earlier turn's start leaves it for the
+// reported one. A machine that has not counted the process's turns takes the next start for it.
+//
+// The turn the take of the pending task is given is counted too (turnCount.take), so its report
+// tells that turn from every other (notTheTakesTurn).
 func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateWorking
 	m.claim.LastTurnStart = m.deps.Clock.Now()
@@ -1483,11 +1489,24 @@ func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	// claim alone where it is a foreign one; the task is named in the start's line for the same
 	// reason, so both are decided in the one place that asks the question.
 	persist, task := m.persist, uint64(0)
-	switch ahead := m.reportedAhead; {
-	case ahead != 0:
-		m.reportedAhead, task = 0, ahead
+	count := m.counted()
+	running := count.ended + 1
+	ahead := m.reportedAhead
+	if ahead.task != 0 && count.known && ahead.sequence != running {
+		if ahead.sequence < running {
+			m.reportedAhead = aheadReport{}
+		}
+		ahead = aheadReport{}
+	}
+	switch {
+	case ahead.task != 0:
+		m.reportedAhead, task = aheadReport{}, ahead.task
 	case p != nil && p.awaitsTurn():
 		persist, task = m.startTakesTurn, p.Number
+		count.take = 0
+		if count.known {
+			count.take = running
+		}
 	}
 	// The start is logged before the write, never after it: the decision this line exists for is
 	// a turn start whose claim write failed, and a line written after the write would leave
@@ -1576,8 +1595,12 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // That turn's start line is written here (startTurn), because its end writes the end line
 // (turnEnded): an operator reads an end with no start as a turn the daemon never saw begin, and
 // the daemon saw this one. No take started it, so it is no task's turn and its line names none.
+//
+// A start over a turn running outside a compaction says the machine missed the end of a turn, or
+// was sent a start twice, so its count of the process's turns is no longer known (turnCount).
 func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 	if m.compacting == nil {
+		m.counted().known = false
 		return nil
 	}
 	m.startTurn(0)
@@ -1607,8 +1630,13 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // runs what was held for the turn (afterTurn). Only for a claim whose plugin names no number in
 // its reports, one below TaskTakeContract, does the end of its turn finish it where no report
 // came within the RPC timeout (endFrameFinishes, TimerFinish, finishAtTurnsEnd). A suspension
-// held for the turn ends the process before any report could come, so the task whose turn this
-// was is finished first, by this end.
+// held for the turn of such a claim's task runs at this end, and the settle after its stop
+// finishes the task by this end. A suspension held for the turn of a task whose plugin names its
+// number waits for the report instead (reportSettles): the claim goes idle holding it, and the
+// report's finish runs it (reportedTask, afterTurn); its own deadline bounds that wait
+// (TimerSuspend), where its stop takes the task back as a cut turn (suspendAtTimeout). Run at
+// this end, its stop would come before the report, which the suspended claim ignores, and settle
+// would take back a task whose turn ran whole, to run again on resume.
 //
 // A stale-plugin relaunch held for this turn (refreshPlugin) runs once the turn is over for its
 // task too (afterTurn): here for a turn that was no task's, and at the task's finish for a task's
@@ -1653,10 +1681,11 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 //
 // The mark a restart left (askFirst) goes with the turn.
 //
-// A suspension held for the turn runs here, now that the turn is over (holdSuspension). Its stop
-// cuts off no turn, so what the let-go records reads the claim as idle, the state this end gives
-// it (suspendHeldAtEnd): the next process is told it was in no turn, and the task whose turn
-// this was is no task cut off in its turn (recordEnd).
+// A suspension held for the turn runs here, now that the turn is over (holdSuspension), unless
+// the turn was a task's that only its report settles, where it runs at that report's finish
+// instead (above). Its stop cuts off no turn, so what the let-go records reads the claim as
+// idle, the state this end gives it (suspendHeldAtEnd): the next process is told it was in no
+// turn, and the task whose turn this was is no task cut off in its turn (recordEnd).
 //
 // Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
 // can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
@@ -1676,6 +1705,7 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
 	m.turnsEnded.Add(1)
+	m.counted().ended++
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.claim.Budgets.Deaths = 0
 	m.resetPromptBudgets()
@@ -1688,8 +1718,17 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	p := m.claim.Pending
 	finishes := p != nil && p.turnStarted()
 	if m.held != nil {
-		// The task whose turn this was is finished by the settle that follows: the claim is
-		// suspended by then, where no end-frame bound watches a task (settle).
+		if m.reportSettles() {
+			// The task's turn is over and only its report settles it: the hold waits for that
+			// report, whose finish runs it (reportedTask, afterTurn), or for its own deadline
+			// (TimerSuspend, suspendAtTimeout).
+			m.claim.State, m.heldForReport = StateIdle, true
+			m.log.Info(heldForReportLine, "task", p.Number, "by", m.held.By, "deadline", m.held.Deadline)
+			return m.persist(ctx)
+		}
+		// Where this turn was a task's, the settle that follows the stop finishes the task, by
+		// its end frame or by the report whose finish the store refused (overTurnFinish): the
+		// claim is suspended by then, where no end-frame bound watches a task (settle).
 		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
 				// The stop landed and let the process go; only its write failed, and the claim is
@@ -1727,6 +1766,13 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // process it replaces (refreshPlugin) — so it may not run while the task whose turn just ended is
 // still unfinished. The offer of a refused take runs last, as it does from every other decision.
 //
+// A suspension held for the turn of a task that only its report settles, which waited past the
+// turn's end for that report (Machine.heldForReport, turnEnded), runs first and instead of the
+// rest: its stop ends the process the held relaunch was for, which letGo drops with it, and
+// leaves no take to offer. A stop the runtime refuses keeps it held and tries it again at the
+// probe interval (suspendHeld), the claim idle meanwhile, as a refused stop at a turn's end
+// leaves it.
+//
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
 // the claim took no credit while its turn ran (holdStaleRelaunch), so the relaunch run here
 // reaches refreshPlugin with none and asks the gate at that guard, which is where every
@@ -1739,6 +1785,10 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // The mark is not re-armed for that: it waits for a turn, and this turn has ended. The offer does
 // not wait on the answer either: it runs whichever way the gate answered.
 func (m *Machine) afterTurn(ctx context.Context) error {
+	if m.held != nil && m.heldForReport {
+		m.heldForReport = false
+		return m.suspendHeld(ctx)
+	}
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
 		if err := m.refreshPlugin(ctx, *held, false); err != nil {
@@ -1753,11 +1803,17 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 // take into the turn the claim's agent was in — is offered again now (offerPending, which still
 // holds it back from a turn on another claim of its issue, so R6's fence stands). The end is the
 // worker's act whoever saw it begin, so it resets the prompt budgets as every turn's end does.
-// A start a turn-outcome report ran ahead of is not coming any more (Machine.reportedAhead): the
-// turn it would have started is over.
+// A start a turn-outcome report ran ahead of is not coming any more where this end is of the
+// reported turn or a later one (Machine.reportedAhead), or where the machine has not counted the
+// process's turns: the turn it would have started is over. The end is counted with every other
+// (turnCount), since the producer numbered that turn too.
 func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.log.Info("supervise: a turn this daemon never saw begin has ended")
-	m.reportedAhead = 0
+	count := m.counted()
+	count.ended++
+	if !count.known || m.reportedAhead.sequence <= count.ended {
+		m.reportedAhead = aheadReport{}
+	}
 	if m.resetPromptBudgets() {
 		if err := m.persist(ctx); err != nil {
 			return err

@@ -38,7 +38,12 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 // from that transcript holds a report with no answer. So the suspension is held:
 //
 //   - It runs when the turn ends (turnEnded), or at its deadline if the turn has not ended by then
-//     (TimerSuspend, suspendAtTimeout). The operator's suspension has one at the stop timeout from
+//     (TimerSuspend, suspendAtTimeout). The turn of a task whose plugin names its number is over
+//     for the hold once its report settles the task (reportSettles), so the hold waits for that
+//     report past the end frame and runs at its finish (reportedTask, afterTurn), the claim idle
+//     meanwhile and the deadline bounding that wait too: stopped at the end frame, the process
+//     would take with it the report that finishes the task, and settle would take back as a cut
+//     turn a task whose turn ran whole. The operator's suspension has one at the stop timeout from
 //     its arrival: an operator stopping the process — to drain the daemon, say — needs the stop
 //     bounded. The daemon's own suspension (its issue left the workflow, or its tree lingers) has
 //     none unless it names one (RequestSuspend.Deadline), and waits for the turn however long it
@@ -240,14 +245,27 @@ func suspensionRank(source SuspendSource) int {
 // the workspace, the issue's branch and the session are kept either way. The stop records the turn
 // it cuts off, and the task it took back from that turn, as ended by the suspension (suspendNow,
 // Machine.cutTurnOf, recordEnd).
+//
+// A claim the deadline finds idle, the hold waiting past the end of its take's turn for the report
+// that settles the task (reportSettles, turnEnded), has its task taken back the same way before
+// the stop, with the note of a cut turn: no report came, the stop leaves no process to send one,
+// and only that report finishes such a task, as for a process that dies before its report
+// (interrupted).
 func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil && m.claim.State == StateWorking {
+	switch {
+	case m.held != nil && m.claim.State == StateWorking:
 		m.log.Warn("supervise: the agent's turn has not ended; suspending it mid-turn", "by", m.held.By, "deadline", m.held.Deadline)
 		if err := m.interrupted(ctx, "the held suspension's deadline ended the task's turn", ordinaryEnd); err != nil {
 			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("take back the task of %s before its forced stop: %w", m.claim.Token, err)
 		}
-	} else {
+	case m.held != nil && m.reportSettles():
+		m.log.Warn(reportMissedLine, "task", m.claim.Pending.Number, "by", m.held.By, "deadline", m.held.Deadline)
+		if err := m.interrupted(ctx, "the held suspension's deadline came before the report of the task's turn", ordinaryEnd); err != nil {
+			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
+			return fmt.Errorf("take back the task of %s before its stop: %w", m.claim.Token, err)
+		}
+	default:
 		m.log.Info("supervise: trying the held suspension's stop again")
 	}
 	return m.suspendHeld(ctx)
@@ -374,9 +392,32 @@ func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 	return m.suspendHeld(ctx)
 }
 
+// heldForReportLine is the line of a held suspension that waits past the end of its take's turn
+// for the report that settles the task (turnEnded), at Info, with the task's number, the hold's
+// source and its deadline (the zero time for none).
+const heldForReportLine = "supervise: the turn of the task ended with its report still to come; the held suspension waits for that report"
+
+// reportMissedLine is the line of a held suspension whose deadline came before the report it
+// waited for (suspendAtTimeout), at Warn, with the task's number, the hold's source and its
+// deadline: the task goes back as a cut turn before the stop.
+const reportMissedLine = "supervise: the held suspension's deadline came before the report of the task's turn; the task is taken back and the agent stopped"
+
+// reportSettles is whether the claim's pending task is a take whose turn started and which only
+// the report naming its number settles: no end frame finishes it and no refused finish of a
+// report is owed (overTurnFinish). A held suspension waits for that report at the end of the
+// take's turn rather than stop the process before it (turnEnded), and at its deadline takes the
+// task back as a cut turn before the stop (suspendAtTimeout).
+func (m *Machine) reportSettles() bool {
+	if p := m.claim.Pending; p == nil || !p.turnStarted() {
+		return false
+	}
+	_, finishes := m.overTurnFinish()
+	return !finishes
+}
+
 // dropHeld ends the held suspension without running it.
 func (m *Machine) dropHeld() {
-	m.held = nil
+	m.held, m.heldForReport = nil, false
 	m.disarm(TimerSuspend)
 }
 

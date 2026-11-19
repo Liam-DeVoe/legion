@@ -1363,6 +1363,12 @@ type Machine struct {
 	unansweredAsks int
 	// held is the suspension held for the agent's turn (holdSuspension), nil for none.
 	held *RequestSuspend
+	// heldForReport is whether the held suspension waits past the end of its take's turn for the
+	// report that settles the task (turnEnded, reportSettles): that report's finish runs it
+	// (afterTurn), and its deadline bounds the wait (suspendAtTimeout). A hold whose stop the
+	// runtime refused waits for no report: it is tried again at the probe interval (suspendHeld).
+	// It goes with the hold (dropHeld, letGo), and is memory only, as the hold is.
+	heldForReport bool
 	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, naming the pass
 	// that found the claim ("boot", "sweep"); nil for none. Relaunching a stale claim where it
 	// stands would end a turn whose worker the stale-plugin lane asked nothing of, so the relaunch
@@ -1378,14 +1384,21 @@ type Machine struct {
 	// is memory only: a daemon restarted mid-turn holds none, and the end line of that turn then
 	// names no task rather than guessing one, which is the safe answer.
 	turnsTask uint64
-	// reportedAhead is the number of the task a turn-outcome report finished, or took back for a
-	// provider error, before this daemon saw that take's turn start (reportedTask,
-	// startedUnseen): the report travels over HTTP and the turn's start over the worker stream,
-	// and nothing orders the two. The start frame still to come is that turn's, so turnStarted
-	// reads it as such — its line names this task, and nothing of the take is done a second time
-	// — and clears the mark. A turn's end with no start seen clears it too (blindTurnEnded): that
-	// start was lost and will not come. letGo clears it with the process, and it is memory only.
-	reportedAhead uint64
+	// reportedAhead is the task a turn-outcome report finished, or took back for a provider
+	// error, before this daemon saw that take's turn start, and the sequence of that report's
+	// turn (reportedTask, startedUnseen): the report travels over HTTP and the turn's start over
+	// the worker stream, and nothing orders the two. The start frame still to come is that turn's,
+	// so turnStarted reads the start of the turn of that sequence as such — its line names this
+	// task, and nothing of the take is done a second time — and clears the mark; one of a later
+	// turn clears it as well, since the reported turn's start was lost. Where the machine does not
+	// know which turn a start is of (turnCount.known), the next start is the reported turn's, as
+	// it always was. A turn's end with no start seen clears it too (blindTurnEnded): that start
+	// was lost and will not come. letGo clears it with the process, and it is memory only.
+	reportedAhead aheadReport
+	// turns is the count of the current process's turns this machine keeps, which tells the turn
+	// a report is of from the turn the daemon gave the pending task's take (turnCount). It is
+	// memory only.
+	turns turnCount
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
 	// process for a reason that keeps the process — a provider error's turn, a compaction, the
@@ -1646,6 +1659,9 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		stale:         map[string]bool{},
 		awaitsAct:     true,
 		seenFromStore: c.TaskSeenRevision != TaskRevision{},
+		// The process the claim records may have run turns under an earlier daemon, which this
+		// one never saw end, so its count is not known until the next launch starts one afresh.
+		turns: turnCount{generation: c.Generation},
 	}
 	m.idle = sync.NewCond(&m.mu)
 	switch c.State {
@@ -3508,9 +3524,9 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.wake = nil
 	m.askFirst = false
 	m.askTurn, m.askedAt, m.askTrigger = false, time.Time{}, ""
-	m.held = nil
+	m.held, m.heldForReport = nil, false
 	m.staleRelaunch = nil
-	m.turnsTask, m.reportedAhead, m.rewrite = 0, 0, valueRewrite{}
+	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}
 	m.cutTurnOf = ""
 	m.compacting, m.lostCompaction = nil, nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false

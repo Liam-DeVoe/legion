@@ -39,27 +39,51 @@ import (
 // made, and the worker's report sent again is a repeat that makes none. An entry stored before
 // they were kept reads back with none of them, a report naming no task, which did nothing to
 // any task.
+//
+// Watermark is set on the window's oldest entry alone, and zero on every other: the key of the
+// newest report the window dropped to keep to its bound (recordTurnOutcome). Every report at or
+// below it that the window does not hold is a repeat, since the window applied it before it
+// dropped it, or it is older than one the window applied and dropped, which no run derived over
+// the newer reports can read. It rides on an entry so that it is written with the window, in the
+// same column, and read back with it.
 type TurnOutcome struct {
-	Generation           uint64 `json:"generation"`
-	Sequence             uint64 `json:"sequence"`
-	Refused              bool   `json:"refused"`
-	Message              string `json:"message,omitempty"`
-	Unapplied            bool   `json:"unapplied,omitempty"`
-	Task                 uint64 `json:"task,omitempty"`
-	ProviderError        bool   `json:"providerError,omitempty"`
-	ProviderErrorStatus  int    `json:"providerErrorStatus,omitempty"`
-	ProviderErrorRetries int    `json:"providerErrorRetries,omitempty"`
+	Generation           uint64         `json:"generation"`
+	Sequence             uint64         `json:"sequence"`
+	Refused              bool           `json:"refused"`
+	Message              string         `json:"message,omitempty"`
+	Unapplied            bool           `json:"unapplied,omitempty"`
+	Task                 uint64         `json:"task,omitempty"`
+	ProviderError        bool           `json:"providerError,omitempty"`
+	ProviderErrorStatus  int            `json:"providerErrorStatus,omitempty"`
+	ProviderErrorRetries int            `json:"providerErrorRetries,omitempty"`
+	Watermark            TurnOutcomeKey `json:"watermark,omitzero"`
 }
 
-// compareTurnOutcomes orders reports as their turns ran: by generation, and within a generation by
-// the producer's own sequence. It is the order the window is kept in and the run is derived in, so
-// a report that arrives late or out of order lands in its own place rather than at the end.
-func compareTurnOutcomes(a, b TurnOutcome) int {
+// TurnOutcomeKey is the key a report is kept under in the window: the launch generation its turn
+// ran at and its producer's sequence within that generation (RequestTurnOutcome). The zero key is
+// none, since a producer counts its turns from 1.
+type TurnOutcomeKey struct {
+	Generation uint64 `json:"generation"`
+	Sequence   uint64 `json:"sequence"`
+}
+
+// key is the key o is kept under.
+func (o TurnOutcome) key() TurnOutcomeKey {
+	return TurnOutcomeKey{Generation: o.Generation, Sequence: o.Sequence}
+}
+
+// compareKeys orders two keys as compareTurnOutcomes orders the reports kept under them.
+func compareKeys(a, b TurnOutcomeKey) int {
 	if by := cmp.Compare(a.Generation, b.Generation); by != 0 {
 		return by
 	}
 	return cmp.Compare(a.Sequence, b.Sequence)
 }
+
+// compareTurnOutcomes orders reports as their turns ran: by generation, and within a generation by
+// the producer's own sequence. It is the order the window is kept in and the run is derived in, so
+// a report that arrives late or out of order lands in its own place rather than at the end.
+func compareTurnOutcomes(a, b TurnOutcome) int { return compareKeys(a.key(), b.key()) }
 
 // maxRefusalMessage bounds, in runes, the provider's message a report carries. The message reaches
 // the claim's failure, which is read back in notices and in every state answer, so a provider that
@@ -82,23 +106,64 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // application rather than a repeat. No count is kept anywhere: every reader derives what it needs
 // from the window as it stands (RefusedRun), which is what makes a late report and an in-order
 // one leave the same answer.
+//
+// A report the window no longer holds, at or below its watermark (TurnOutcome.Watermark), is a
+// repeat too, and is recorded nowhere: the window applied it and then dropped it to keep to its
+// bound, so its key alone no longer says so. Its first attempt's answer can have been lost — a
+// daemon restart in the middle of the request — and its sending again backs off, so newer reports
+// can push it out before it comes. A report the window never held and that is older than one it
+// dropped is the same to the window: no run derived over the newer reports reads it, and what it
+// said of the claim's task is older than everything they say. A late report newer than the
+// watermark lands in its place as before, and is applied, though the window drops it at once.
+//
+// The bound drops the oldest applied reports first. One whose write failed (Unapplied) stays
+// until it is sent again and applied, however old: dropped, it would fall under the watermark,
+// and the report sent again, which is its first application, would be answered as a repeat.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
-	if len(o.Message) > maxRefusalMessage {
-		if runes := []rune(o.Message); len(runes) > maxRefusalMessage {
-			o.Message = string(runes[:maxRefusalMessage]) + "…"
-		}
+	o = boundMessage(o)
+	window, mark := m.claim.TurnOutcomes, m.turnOutcomeMark()
+	at, found := slices.BinarySearchFunc(window, o, compareTurnOutcomes)
+	if !found && mark != (TurnOutcomeKey{}) && compareKeys(o.key(), mark) <= 0 {
+		return true
 	}
-	at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes)
 	if found {
-		repeat = !m.claim.TurnOutcomes[at].Unapplied
-		m.claim.TurnOutcomes[at] = o
+		repeat = !window[at].Unapplied
+		window[at] = o
 	} else {
-		m.claim.TurnOutcomes = slices.Insert(m.claim.TurnOutcomes, at, o)
+		window = slices.Insert(window, at, o)
 	}
-	if extra := len(m.claim.TurnOutcomes) - m.turnOutcomeWindow(); extra > 0 {
-		m.claim.TurnOutcomes = slices.Delete(m.claim.TurnOutcomes, 0, extra)
+	for len(window) > m.turnOutcomeWindow() {
+		oldest := slices.IndexFunc(window, func(o TurnOutcome) bool { return !o.Unapplied })
+		if oldest < 0 {
+			break
+		}
+		if dropped := window[oldest].key(); compareKeys(dropped, mark) > 0 {
+			mark = dropped
+		}
+		window = slices.Delete(window, oldest, oldest+1)
 	}
+	m.setTurnOutcomes(window, mark)
 	return repeat
+}
+
+// turnOutcomeMark is the window's watermark, the zero key for none (TurnOutcome.Watermark).
+func (m *Machine) turnOutcomeMark() TurnOutcomeKey {
+	if len(m.claim.TurnOutcomes) == 0 {
+		return TurnOutcomeKey{}
+	}
+	return m.claim.TurnOutcomes[0].Watermark
+}
+
+// setTurnOutcomes makes window the claim's, its watermark mark on its oldest entry and on no other
+// (TurnOutcome.Watermark).
+func (m *Machine) setTurnOutcomes(window []TurnOutcome, mark TurnOutcomeKey) {
+	for i := range window {
+		window[i].Watermark = TurnOutcomeKey{}
+	}
+	if len(window) > 0 {
+		window[0].Watermark = mark
+	}
+	m.claim.TurnOutcomes = window
 }
 
 // appliedTurnOutcome is the window's entry under the key of r, where the window holds one from an
@@ -113,11 +178,30 @@ func (m *Machine) appliedTurnOutcome(r RequestTurnOutcome) (TurnOutcome, bool) {
 }
 
 // unappliedTurnOutcome marks the window's entry for o's key as a report that never reached the
-// claim's task (TurnOutcome.Unapplied). A report the window trimmed away has no entry to mark.
+// claim's task (TurnOutcome.Unapplied). A report the window dropped as it recorded it — a late
+// one, older than everything a full window keeps — goes back in, marked: the watermark its drop
+// raised would otherwise answer its sending again as a repeat of a report never applied
+// (recordTurnOutcome).
 func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
-	if at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes); found {
-		m.claim.TurnOutcomes[at].Unapplied = true
+	window, mark := m.claim.TurnOutcomes, m.turnOutcomeMark()
+	at, found := slices.BinarySearchFunc(window, o, compareTurnOutcomes)
+	if found {
+		window[at].Unapplied = true
+		return
 	}
+	o = boundMessage(o)
+	o.Unapplied = true
+	m.setTurnOutcomes(slices.Insert(window, at, o), mark)
+}
+
+// boundMessage is o with the provider's message cut to maxRefusalMessage runes.
+func boundMessage(o TurnOutcome) TurnOutcome {
+	if len(o.Message) > maxRefusalMessage {
+		if runes := []rune(o.Message); len(runes) > maxRefusalMessage {
+			o.Message = string(runes[:maxRefusalMessage]) + "…"
+		}
+	}
+	return o
 }
 
 // owedReport is the report whose effect on the claim's pending task the store does not hold, read
@@ -183,10 +267,11 @@ func (c Claim) LastRefusal() string {
 	return ""
 }
 
-// freshRun drops every turn the claim has reports for, so its refused run starts again. The run
-// belongs to the session whose turns were refused, and a claim leaves a session only by forgetting
-// it (forgetSession): every relaunch resumes the session the claim recorded, and a registration
-// naming another is refused, so the forgetting is the one moment a fresh run begins.
+// freshRun drops every turn the claim has reports for, and the window's watermark with them
+// (TurnOutcome.Watermark), so its refused run starts again. The run belongs to the session whose
+// turns were refused, and a claim leaves a session only by forgetting it (forgetSession): every
+// relaunch resumes the session the claim recorded, and a registration naming another is refused,
+// so the forgetting is the one moment a fresh run begins.
 func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 
 // turnOutcome records the turn its producer reported and derives the claim's trailing run of
@@ -211,7 +296,8 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // such a run is counted at all. A refused turn that names no provider error counts as it always
 // has.
 //
-// A repeat (recordTurnOutcome) is written and goes no further. The producer sends a report again
+// A repeat (recordTurnOutcome) is written where the window still holds it, and goes no further,
+// whether the window holds it or its watermark covers it. The producer sends a report again
 // when its first attempt had no answer, which a daemon restart in the middle of the request
 // leaves too, so the repeat can find a claim the first attempt already changed: a task that
 // attempt took back and that the restarted daemon has given again. Applying the repeat to that
@@ -294,7 +380,7 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 	}
 	var started error
 	if p.awaitsTurn() {
-		started = m.startedUnseen(ctx)
+		started = m.startedUnseen(ctx, r)
 	}
 	if r.ProviderError != nil {
 		if err := m.providerErrored(ctx, *r.ProviderError); err != nil {
@@ -334,20 +420,26 @@ func (m *Machine) reachesLadder(r RequestTurnOutcome) bool {
 // the task's number.
 const notTheTakesTurnLine = "supervise: a turn's report names no task of the take whose turn it was given; the take awaits its turn again"
 
-// notTheTakesTurn is a turn-outcome report naming no task, or another task's number, while the
-// accepted take of the pending task has its turn started: the turn the daemon gave the take —
-// the first that started after it was accepted (turnStarted) — was not the take's. The worker can
-// be answered the take while a run no take started is running, a background result's or a
-// reminder's, and it holds the text until that run is over and reports the run as no task's; or
-// its answer was lost and it asked again, and was answered the same text after that run started
-// (answeredFromRecord). Either way the text's own turn is still to come. So where the claim's
-// plugin names its task's number (TakesNoTask is false: it reports every turn of a task with the
-// number), the take goes back to awaiting its turn: the delivery's turn start is undone
+// notTheTakesTurn is a turn-outcome report naming no task, or another task's number, of the turn
+// the daemon gave the accepted take of the pending task — the first that started after the take
+// was accepted (turnStarted) — while the take has its turn started: that turn was not the take's.
+// The worker can be answered the take while a run no take started is running, a background
+// result's or a reminder's, and it holds the text until that run is over and reports the run as
+// no task's; or its answer was lost and it asked again, and was answered the same text after that
+// run started (answeredFromRecord). Either way the text's own turn is still to come. So where the
+// claim's plugin names its task's number (TakesNoTask is false: it reports every turn of a task
+// with the number), the take goes back to awaiting its turn: the delivery's turn start is undone
 // (TurnStarted) with the text it was answered kept, and the next turn that starts is the take's
 // turn. No end-frame bound stands over such a claim's task to finish it meanwhile
 // (endFrameFinishes): its report is what finishes it. R5's second wait is on the take again
 // from this decision (secondWaitNow, armWaits), and the claim counts as in a turn for another
 // role's adoption until that turn ends (Claim.InTurn).
+//
+// The report is of that turn only where its generation and sequence are that turn's
+// (turnCount.take). A report of any earlier turn says nothing of the take: a run's report sent
+// late, after the take's own turn started or after its whole turn ran, would otherwise put back a
+// take whose turn is running or over. A take whose turn this daemon did not count — one a daemon
+// restarted under the claim's process restored — is given back by no report.
 //
 // A plugin below TaskTakeContract names no number in any report, so for its claim a report
 // naming none says nothing of which turn ran, and the end of the take's turn finishes the task
@@ -364,8 +456,12 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 		m.endFrameFinishes() {
 		return nil
 	}
+	count := m.counted()
+	if count.take == 0 || r.Sequence != count.take {
+		return nil
+	}
 	m.log.Info(notTheTakesTurnLine, "task", p.Number)
-	p.TurnStarted = false
+	p.TurnStarted, count.take = false, 0
 	return m.putPending(ctx)
 }
 
@@ -373,23 +469,67 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 // report came first (reportedTask). The turn is the take's: the delivery records its turn started
 // and the claim is written with it (startTakesTurn), so the finish that follows earns the claim
 // the serving credit a finished take's turn earns (retireTask) rather than reading the task as
-// never run; and the prompt budgets go to zero, as at any turn's start (R5).
+// never run; and the prompt budgets go to zero, as at any turn's start (R5). The report's own
+// turn is the one the take was given (turnCount.take).
 //
 // A ready or idle claim stays where it is: the report says the turn is over, and no turn's times
-// are written. The start frame still to come is this turn's, which the machine remembers
-// (Machine.reportedAhead), so its arrival names this task and starts no second turn of it
-// (turnStarted). A working claim's start frame has come already: the take awaited its turn again
-// because an earlier report said the turn it was given was not its own (notTheTakesTurn), while
-// the text's turn was the one running, so no start is still to come for it.
-func (m *Machine) startedUnseen(ctx context.Context) error {
+// are written. Where the start frame of the report's turn is still to come, the machine
+// remembers that turn (Machine.reportedAhead), so its start names this task and starts no second
+// turn of it (turnStarted). It is still to come where the machine has counted no end of that turn
+// (turnCount.ended); one whose end it has counted started before the report came, while the take
+// awaited its turn again because an earlier report said the turn it was given was not its own
+// (notTheTakesTurn), so no start is still to come for it, and a mark for it would name this task
+// in the start of the claim's next task's turn. A claim whose process's turns the machine did not
+// count marks the next start, as it always did. A working claim's start frame has come already:
+// the turn running is the report's.
+func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	m.log.Info("supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's",
 		"task", p.Number)
 	m.resetPromptBudgets()
-	if m.claim.State != StateWorking {
-		m.reportedAhead = p.Number
+	count := m.counted()
+	if m.claim.State != StateWorking && (!count.known || r.Sequence > count.ended) {
+		m.reportedAhead = aheadReport{task: p.Number, sequence: r.Sequence}
 	}
+	count.take = r.Sequence
 	return m.startTakesTurn(ctx)
+}
+
+// aheadReport is the turn whose report ran ahead of its start frame (Machine.reportedAhead): the
+// task the report named, 0 for none, and the report's sequence.
+type aheadReport struct {
+	task, sequence uint64
+}
+
+// turnCount is a process's turns as this machine counts them from the worker stream, which is
+// what tells which turn a turn-outcome report is of (RequestTurnOutcome.Sequence): the producer
+// numbers the turns of a launch generation from 1 in the order they end, and the end of every one
+// of them reaches the machine as an end frame — of a turn it saw start (turnEnded), of one it did
+// not (blindTurnEnded), or of one under a compaction — before the next one starts. So the turn
+// starting now is the one after the ends counted, and a report whose sequence is at or below that
+// count is of a turn whose start was seen.
+//
+// generation is the launch generation counted, ended the ends of its turns seen, and take the
+// sequence of the turn the daemon gave the pending task's accepted take (turnStarted), or the one
+// a report of that take's number named first (startedUnseen); 0 for none. known is whether ended
+// is every end of the generation's turns: a machine a daemon start builds over a process may have
+// missed turns of it, and a start that arrives with a turn still running says an end was missed
+// (turnStartedWhileBusy). The next launch counts its generation afresh (counted). A count not
+// known gives no take its turn back (notTheTakesTurn) and reads a report's turn start as unseen
+// wherever the claim is not working (startedUnseen), as the machine read every report before it
+// counted.
+type turnCount struct {
+	generation, ended, take uint64
+	known                   bool
+}
+
+// counted is the claim's count of its process's turns, begun afresh, known, for a launch
+// generation it has not counted yet (turnCount).
+func (m *Machine) counted() *turnCount {
+	if m.turns.generation != m.claim.Generation {
+		m.turns = turnCount{generation: m.claim.Generation, known: true}
+	}
+	return &m.turns
 }
 
 // pendingNumber is the number of the task pending, 0 for none.

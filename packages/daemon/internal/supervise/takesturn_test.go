@@ -11,6 +11,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -114,6 +115,94 @@ func TestTurnReportNamingNoTaskGivesTheTakeItsTurnBack(t *testing.T) {
 			t.Fatalf("pending %+v an end-frame bound after the run, want the task finished by its end", p)
 		}
 		h.wantFinishedOnce(finishedByEndFrame)
+	})
+}
+
+// A report of a run reaches the take of the pending task only where the run is the turn the
+// daemon gave that take, its generation and sequence that turn's (notTheTakesTurn, turnCount);
+// and a report naming the take's number marks the start of its turn as still to come only where
+// that start has not been seen (startedUnseen, Machine.reportedAhead).
+//
+// The first case is the race the review traced. The take is accepted, and the run R1 that starts
+// next is given it; the worker holds the text and runs it as R2 as soon as R1 ends. R1's report,
+// naming no task, lands while R2 runs and gives the take its turn back; R2's report, naming the
+// take's number, lands after R2's end frame and finishes the task. R2's start was seen, so none is
+// left to come for it, and the next task's turn is that task's: its start line names it, and its
+// take's turn is started (startTakesTurn). The second case is a run's report sent late, after the
+// take's own turn started: the take was accepted after R1 ended, R2 is its turn, and R1's report
+// naming no task lands while R2 runs. It is of an earlier turn than the take's and gives nothing
+// back.
+//
+// The negative controls: a mark set for a report whatever its turn (startedUnseen marking any
+// ready or idle claim) names the finished task in the next task's start line and leaves that
+// task's take awaiting its turn while the turn runs; and a put-back by any report of the claim's
+// generation (notTheTakesTurn with no sequence) gives the second case's take its turn back while
+// that turn runs.
+func TestTurnReportReachesTheTakeOnlyFromTheTurnItWasGiven(t *testing.T) {
+	t.Run("a put-back while the take's run runs, then its report after its end", func(t *testing.T) {
+		h := newHarnessOf(t, queuedClaim(), currentPlugin)
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: h.token, Task: "the first task"})
+		h.mustTake()
+		number := h.pending().Number
+		h.must(StreamTurnStart{Claim: h.token})
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.must(StreamTurnStart{Claim: h.token})
+		if err := h.reportTurn(0, nil); err != nil {
+			t.Fatalf("report R1 as no task's: %v", err)
+		}
+		if p := h.pending(); !p.awaitsTurn() {
+			t.Fatalf("after R1's report the task is %+v, want its take awaiting its turn again", p)
+		}
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		if err := h.reportTurn(number, nil); err != nil {
+			t.Fatalf("report R2 as task %d's: %v", number, err)
+		}
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after R2's report, want task %d finished", p, number)
+		}
+
+		h.must(RequestDeliver{Claim: h.token, Task: "the second task"})
+		h.mustTake()
+		next := h.pending().Number
+		starts := len(h.records.of(turnStartedLine))
+		h.must(StreamTurnStart{Claim: h.token})
+
+		wantAttr(t, h.records.of(turnStartedLine)[starts], "task", strconv.FormatUint(next, 10))
+		if p := h.pending(); p.Number != next || !p.turnStarted() {
+			t.Fatalf("while the next task's turn runs the claim holds %+v, want task %d's take with its turn started", p, next)
+		}
+		h.must(StreamTurnEnd{Claim: h.token})
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after the next task's turn was reported, want task %d finished", p, next)
+		}
+	})
+	t.Run("a run's report sent after the take's turn started", func(t *testing.T) {
+		h := newHarnessOf(t, queuedClaim(), currentPlugin)
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(StreamTurnStart{Claim: h.token})
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.must(RequestDeliver{Claim: h.token, Task: "the first task"})
+		h.mustTake()
+		h.must(StreamTurnStart{Claim: h.token})
+
+		if err := h.reportTurn(0, nil); err != nil {
+			t.Fatalf("report R1 as no task's: %v", err)
+		}
+
+		if p := h.pending(); !p.turnStarted() {
+			t.Fatalf("after R1's late report the task is %+v, want its take's turn still started", p)
+		}
+		if lines := h.logs.lines(notTheTakesTurnLine); len(lines) != 0 {
+			t.Fatalf("logged %q, want no turn given back by the report of an earlier turn", lines)
+		}
+		h.must(StreamTurnEnd{Claim: h.token})
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after the take's turn was reported, want its task finished", p)
+		}
+		h.wantFinishedOnce(finishedByReport)
 	})
 }
 
@@ -281,6 +370,92 @@ func TestTurnOutcomeAloneFinishesTheTaskOfAPluginThatNamesItsNumber(t *testing.T
 			h.wantFinishedOnce(finishedByReport)
 		})
 	}
+}
+
+// heldOverATakesTurn is a claim whose plugin names its task's number, in the turn of its task's
+// accepted take, holding the operator's suspension for that turn (holdSuspension), whose turn then
+// ends with no report behind the end frame. It answers the task's number and the stops the
+// runtime was asked for until then.
+func heldOverATakesTurn(t *testing.T) (h *harness, number uint64, stops int) {
+	t.Helper()
+	h = newHarnessOf(t, queuedClaim(), currentPlugin)
+	h.reach(StateReady)
+	h.taskTheAgentTook()
+	number = h.pending().Number
+	h.must(StreamTurnStart{Claim: h.token})
+	holdsTheSuspension(h)
+	stops = len(h.calls("Suspend"))
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	return h, number, stops
+}
+
+// A suspension held for the turn of a task whose plugin names the task's number waits at that
+// turn's end for the report that settles the task, and stops the process only once that report is
+// applied, bounded by the hold's own deadline (TimerSuspend; rule two of the plan of
+// dispatch://INFRA-2811). A report inside the deadline finishes the task once, the suspension then
+// stops the process, and the resumed process is given nothing of the task. With no report by the
+// deadline, the stop runs on time and takes the task back with the note of a cut turn, and the
+// resumed process takes it once, behind that note.
+//
+// The negative control is the suspension run at the end frame (turnEnded before this change): the
+// claim is suspended before the report comes, the suspended claim ignores the report, and settle
+// takes the finished task back as a cut turn, so it runs again on resume.
+func TestRelaunchOfAHeldSuspensionWaitsForTheTaskReport(t *testing.T) {
+	t.Run("a report inside the deadline", func(t *testing.T) {
+		h, number, stops := heldOverATakesTurn(t)
+		h.wantState(StateIdle)
+		h.advance(testStop - time.Second)
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", stops)
+		if p := h.pending(); p.Number != number || !p.turnStarted() {
+			t.Fatalf("the claim holds %+v before the report, want task %d's turn waiting for it", p, number)
+		}
+
+		h.mustReport(nil)
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", stops+1)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after the report, want task %d finished", p, number)
+		}
+		h.wantFinishedOnce(finishedByReport)
+		sent := len(h.prompts())
+		resumedByTheOperator(h)
+		for _, took := range h.prompts()[sent:] {
+			if took.Number == number {
+				t.Fatalf("the resumed process took %+v, want nothing of task %d, which its report finished", took, number)
+			}
+		}
+	})
+	t.Run("no report by the deadline", func(t *testing.T) {
+		h, number, stops := heldOverATakesTurn(t)
+		h.advance(testStop - time.Second)
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", stops)
+
+		h.advance(time.Second)
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", stops+1)
+		if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
+			t.Fatalf("the claim holds %+v after the deadline, want task %d taken back with the note of a cut turn", p, number)
+		}
+		if finished := h.records.of(finishedLine); len(finished) != 0 {
+			t.Fatalf("%q was logged %d times, want none: no report finished the task", finishedLine, len(finished))
+		}
+		sent := len(h.prompts())
+		resumedByTheOperator(h)
+		var again []taken
+		for _, took := range h.prompts()[sent:] {
+			if took.Number == number {
+				again = append(again, took)
+			}
+		}
+		if len(again) != 1 {
+			t.Fatalf("the resumed process took task %d %d times (%+v), want once", number, len(again), again)
+		}
+		wantSays(t, again[0].Message, saysTaskTurn)
+	})
 }
 
 // An end report sent again after its first attempt finished its task — the worker heard no
