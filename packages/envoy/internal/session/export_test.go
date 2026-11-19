@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -19,10 +20,18 @@ func withKnownSessionRetry(first, longest time.Duration) KnownSessionsOption {
 	}
 }
 
-// withKnownSessionAttemptWindow bounds each attempt of the background repair at d in place of
-// repairAttemptWindow (retryRepair). It is test-only.
-func withKnownSessionAttemptWindow(d time.Duration) KnownSessionsOption {
-	return func(o *knownSessionsOpts) { o.attemptWindow = d }
+// withKnownSessionAttemptContext bounds each attempt of the background repair by the context bound
+// gives it, in place of repairAttemptWindow (retryRepair): a test ends an attempt's window itself,
+// so its row counts attempts rather than reading a clock. It is test-only.
+func withKnownSessionAttemptContext(bound func(context.Context) (context.Context, context.CancelFunc)) KnownSessionsOption {
+	return func(o *knownSessionsOpts) { o.attemptBound = bound }
+}
+
+// withKnownSessionOpenWait sets the wait of each attempt's request for the bucket in place of
+// knownBucketOpenWait (knownJetStream), so a test can hold a lookup the server leaves unanswered
+// past the test's own end. It is test-only.
+func withKnownSessionOpenWait(d time.Duration) KnownSessionsOption {
+	return func(o *knownSessionsOpts) { o.openWait = d }
 }
 
 // withKnownSessionWatch adds options to the ones the store's watcher is built with: a clock that

@@ -107,9 +107,13 @@ type knownSessionsOpts struct {
 	// (withKnownSessionRetry, export_test.go).
 	retryFirst time.Duration
 	retryMax   time.Duration
-	// attemptWindow is a test's bound on one attempt of the background repair
-	// (withKnownSessionAttemptWindow, export_test.go), repairAttemptWindow when zero.
-	attemptWindow time.Duration
+	// attemptBound is a test's bound on one attempt of the background repair in place of
+	// repairAttemptWindow (withKnownSessionAttemptContext, export_test.go): a context the test
+	// ends itself. Nil outside tests.
+	attemptBound func(context.Context) (context.Context, context.CancelFunc)
+	// openWait is the wait of the one request that asks for the bucket (knownJetStream),
+	// knownBucketOpenWait unless a test lengthens it (withKnownSessionOpenWait, export_test.go).
+	openWait time.Duration
 	// watch is what a test adds to the options the store's watcher is built with
 	// (withKnownSessionWatch, export_test.go): a clock to move past the stale bound, or a short
 	// scan idle timeout. No deployment sets it.
@@ -169,6 +173,8 @@ type KnownSessions struct {
 	retryFirst   time.Duration
 	retryMax     time.Duration
 	watchOptions []kvwatch.Option
+	// openWait is the wait of each attempt's request for the bucket (knownJetStream).
+	openWait time.Duration
 
 	// mu guards records and topics, which are kept in step: every record the copy stores or
 	// removes for the bucket's sake is indexed or unindexed through its rows (newKnownSessions),
@@ -216,9 +222,9 @@ type KnownSessions struct {
 	// rearm is an arm that came while the retry ran: the retry makes another attempt rather than
 	// retiring, as it would have had the arm waited for its attempt to end.
 	rearm bool
-	// attemptWindow is a test's bound on one attempt of the retry in place of repairAttemptWindow
-	// (repairWindow); zero outside tests.
-	attemptWindow time.Duration
+	// attemptBound is a test's bound on one attempt of the retry in place of repairAttemptWindow
+	// (attemptContext); nil outside tests.
+	attemptBound func(context.Context) (context.Context, context.CancelFunc)
 	// moveFailed is set by a move to a recovered connection that failed and cleared by the next
 	// that succeeds, whichever caller makes it, which is the move that logs the store back
 	// (attemptRepair).
@@ -238,17 +244,18 @@ type KnownSessions struct {
 // the background goroutines not started.
 func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
 	s := &KnownSessions{
-		now:           opts.now,
-		log:           opts.log,
-		replicas:      opts.replicas,
-		retryFirst:    opts.retryFirst,
-		retryMax:      opts.retryMax,
-		attemptWindow: opts.attemptWindow,
-		watchOptions:  opts.watch,
-		topics:        store.NewTopicMatcher(),
-		conn:          conn,
-		wake:          make(chan struct{}, 1),
-		stopped:       make(chan struct{}),
+		now:          opts.now,
+		log:          opts.log,
+		replicas:     opts.replicas,
+		retryFirst:   opts.retryFirst,
+		retryMax:     opts.retryMax,
+		attemptBound: opts.attemptBound,
+		openWait:     opts.openWait,
+		watchOptions: opts.watch,
+		topics:       store.NewTopicMatcher(),
+		conn:         conn,
+		wake:         make(chan struct{}, 1),
+		stopped:      make(chan struct{}),
 	}
 	s.records = kvwatch.NewCopy(kvwatch.Rows[KnownSession]{
 		Decode:  decodeKnownSession,
@@ -284,6 +291,7 @@ func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSes
 		now:        time.Now,
 		retryFirst: knownBucketRetryFirst,
 		retryMax:   knownBucketRetryMax,
+		openWait:   knownBucketOpenWait,
 	}
 	for _, o := range options {
 		o(&opts)
@@ -291,11 +299,11 @@ func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSes
 	// A connection that gives no JetStream context can open nothing, now or later. It is this
 	// function's one error, read here so the caller is answered it rather than meeting it on
 	// every attempt; each attempt builds a context of its own, on the connection it runs against.
-	if _, err := knownJetStream(conn); err != nil {
+	if _, err := knownJetStream(conn, opts.openWait); err != nil {
 		return nil, err
 	}
 	s := newKnownSessions(conn, opts)
-	kv, err := openKnownBucket(ctx, conn, opts.replicas)
+	kv, err := openKnownBucket(ctx, conn, opts.replicas, opts.openWait)
 	if err != nil {
 		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
@@ -308,9 +316,10 @@ func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSes
 }
 
 // knownJetStream is the JetStream context one attempt to open the bucket asks through: its
-// requests wait knownBucketOpenWait rather than the 10 seconds nats.go gives its own by default.
-func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
-	return bus.JetStream(conn, nats.MaxWait(knownBucketOpenWait))
+// requests wait openWait, knownBucketOpenWait outside tests, rather than the 10 seconds nats.go
+// gives its own by default.
+func knownJetStream(conn *nats.Conn, openWait time.Duration) (nats.JetStreamContext, error) {
+	return bus.JetStream(conn, nats.MaxWait(openWait))
 }
 
 // openKnownBucket makes one attempt to open the bucket on conn, creating it with the retention
@@ -333,8 +342,8 @@ func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 // and must not give up on a cluster that is merely slow: a write is bounded by its caller's own
 // context (RecordWithin, bus.Bounded), and the open's short wait is for the attempt a start waits
 // on, not for the work that follows it.
-func openKnownBucket(ctx context.Context, conn *nats.Conn, replicas int) (bus.KeyValue, error) {
-	opening, err := knownJetStream(conn)
+func openKnownBucket(ctx context.Context, conn *nats.Conn, replicas int, openWait time.Duration) (bus.KeyValue, error) {
+	opening, err := knownJetStream(conn, openWait)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
@@ -486,7 +495,7 @@ func (s *KnownSessions) retryRepair() (repairResult, error) {
 	defer s.repairMu.Unlock()
 	ctx, cancel := s.untilStopped()
 	defer cancel()
-	ctx, cancelAttempt := context.WithTimeout(ctx, s.repairWindow())
+	ctx, cancelAttempt := s.attemptContext(ctx)
 	defer cancelAttempt()
 	result, err := s.attemptRepair(ctx)
 	if err == nil && result == repairNothing {
@@ -501,12 +510,13 @@ func (s *KnownSessions) retryRepair() (repairResult, error) {
 	return result, err
 }
 
-// repairWindow is repairAttemptWindow, or a test's own (attemptWindow).
-func (s *KnownSessions) repairWindow() time.Duration {
-	if s.attemptWindow > 0 {
-		return s.attemptWindow
+// attemptContext bounds one attempt of the retry at repairAttemptWindow, or as a test's own bound
+// does (attemptBound).
+func (s *KnownSessions) attemptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.attemptBound != nil {
+		return s.attemptBound(ctx)
 	}
-	return repairAttemptWindow
+	return context.WithTimeout(ctx, repairAttemptWindow)
 }
 
 // repairOnce is one attempt a caller of its own makes, the reconnect hook's move (Rewatch), which
@@ -542,7 +552,7 @@ func (s *KnownSessions) attemptRepair(ctx context.Context) (repairResult, error)
 	s.openMu.RUnlock()
 	switch {
 	case watcher == nil:
-		kv, err := openKnownBucket(ctx, conn, s.replicas)
+		kv, err := openKnownBucket(ctx, conn, s.replicas, s.openWait)
 		if err != nil {
 			return repairNothing, err
 		}

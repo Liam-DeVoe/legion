@@ -11,8 +11,9 @@ import (
 
 // openUnopenedStore is a known-session store over a connection through proxy whose user may not
 // open the bucket, so the store's background retry runs (armRepair) and attempts every
-// retryFirst, each attempt bounded at window (withKnownSessionAttemptWindow; 0 for the default).
-func openUnopenedStore(t *testing.T, window time.Duration) (*KnownSessions, *testnats.Proxy) {
+// retryFirst. ctx bounds the store's first attempt (OpenKnownSessions), and extra adds to the
+// store's options.
+func openUnopenedStore(t *testing.T, ctx context.Context, extra ...KnownSessionsOption) (*KnownSessions, *testnats.Proxy) {
 	t.Helper()
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
@@ -28,10 +29,8 @@ func openUnopenedStore(t *testing.T, window time.Duration) (*KnownSessions, *tes
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(&lockedWriter{}, nil))),
 		withKnownSessionRetry(10*time.Millisecond, 10*time.Millisecond),
 	}
-	if window > 0 {
-		options = append(options, withKnownSessionAttemptWindow(window))
-	}
-	known, err := OpenKnownSessions(t.Context(), conn, options...)
+	options = append(options, extra...)
+	known, err := OpenKnownSessions(ctx, conn, options...)
 	if err != nil {
 		t.Fatalf("open the store over a bucket its user may not open: %v", err)
 	}
@@ -42,36 +41,57 @@ func openUnopenedStore(t *testing.T, window time.Duration) (*KnownSessions, *tes
 	return known, proxy
 }
 
-// lockFreeWithin reports whether repairMu could be taken within wait.
-func lockFreeWithin(known *KnownSessions, wait time.Duration) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
-	defer cancel()
-	if known.repairMu.LockContext(ctx) != nil {
-		return false
-	}
-	known.repairMu.Unlock()
-	return true
-}
-
-// The background retry's attempt lets repairMu go at its window even while its requests get no
-// answer: the proxy holds every byte (Freeze), as a connection mid-handshake answers nothing, and
-// the attempt, bounded at its window (repairAttemptWindow, here 300 ms), ends, so a reconnect
-// hook's move and the next attempt are not held behind it. The bucket lookup an attempt opens with
-// would otherwise wait its own 2 s (knownBucketOpenWait), so the row takes the lock again and again
-// for 3 s, longer than one such lookup: each take must come within 1 s.
+// The background retry's attempt lets repairMu go once its window ends, though its request for
+// the bucket was never answered: the lookup is bounded by the attempt's context (bus.Bounded), so
+// a reconnect hook's move and the next attempt are not held behind it.
 //
-// The control is the attempt bounded only by the store's stop: an attempt holds the lock for its
-// lookup's 2 s, and a take waits past 1 s.
+// The row reads no clock to decide. The test ends each attempt's window itself
+// (withKnownSessionAttemptContext), and the lookup's own wait is an hour
+// (withKnownSessionOpenWait), past the test's end, with the proxy holding every byte (Freeze) on
+// a connection whose user the server drops the lookup for: nothing but the window ends an attempt.
+// Each attempt asks for its window while it holds repairMu, and the retry is one goroutine that
+// takes repairMu again for its next attempt, so attempt n+1 asking for its window is attempt n
+// having let the lock go. The row ends three windows and counts three such releases. A row that
+// fails ends at the test's deadline. The store's first attempt is made on a context already ended,
+// so it sends nothing and arms the retry at once.
+//
+// The controls are the attempt run on the store's context rather than its window, and the lookup
+// unbounded by the attempt's context: either way attempt 1 holds the lock after its window ends,
+// and attempt 2 never begins.
 func TestTheRetrysAttemptLetsItsLockGoAtItsWindow(t *testing.T) {
-	known, proxy := openUnopenedStore(t, 300*time.Millisecond)
+	windows := make(chan context.CancelFunc)
+	ended, endOpen := context.WithCancel(t.Context())
+	endOpen()
+	_, proxy := openUnopenedStore(t, ended,
+		withKnownSessionOpenWait(time.Hour),
+		withKnownSessionAttemptContext(func(ctx context.Context) (context.Context, context.CancelFunc) {
+			attempt, end := context.WithCancel(ctx)
+			select {
+			case windows <- end:
+			case <-ctx.Done():
+			}
+			return attempt, end
+		}))
 	proxy.Freeze()
-	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); {
-		if !lockFreeWithin(known, time.Second) {
-			t.Fatal("repairMu was held for over 1 s while the proxy held every byte: the retry's attempt waited for its requests past its 300 ms window")
+	next := func(n int) context.CancelFunc {
+		t.Helper()
+		select {
+		case end := <-windows:
+			return end
+		case <-time.After(testnats.Remaining(t)):
+			if n == 1 {
+				t.Fatal("the retry's first attempt never asked for its window")
+			}
+			t.Fatalf("attempt %d never asked for its window by the test's deadline: attempt %d still held repairMu after the test ended its window, though its lookup was never answered", n, n-1)
+			return nil
 		}
-		// The retry attempts every 10 ms: this pause lets the next attempt take the lock.
-		time.Sleep(50 * time.Millisecond)
 	}
+	end := next(1)
+	for n := 1; n <= 3; n++ {
+		end()
+		end = next(n + 1)
+	}
+	end()
 }
 
 // An arm of the background repair made while the retry's attempt holds repairMu returns at once:
@@ -82,7 +102,7 @@ func TestTheRetrysAttemptLetsItsLockGoAtItsWindow(t *testing.T) {
 //
 // The control is armRepair taking repairMu: it waits for the lock, and the row fails.
 func TestAnArmWhileTheRetrysAttemptHoldsItsLockReturnsAtOnce(t *testing.T) {
-	known, _ := openUnopenedStore(t, 0)
+	known, _ := openUnopenedStore(t, t.Context())
 	known.repairMu.Lock()
 	unlocked := false
 	t.Cleanup(func() {
