@@ -105,10 +105,16 @@ jobs:
       # .github/scripts/ci_job_reads.py from the package name the text-check job's own steps are
       # built from. The vet step above still compiles the text checks, which keeps them
       # compiling as the module changes.
+      # Under the race detector: the gate's tests drive an httptest server from a child process,
+      # whose handler shares state with the test, and two of them raced that way unseen while this
+      # step ran without it. The detector costs the compile, not the run: on a development box at
+      # GOMAXPROCS=4 the step took 3:10 under -race and 3:23 without it from a warm build cache, and
+      # 9:29 and 5:59 from an empty one. ci-caches.yaml fills no race objects for this module (its
+      # race build is held to the daemon's lane), so every run compiles them.
       - name: Unit test envoy-infra
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
+          go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race
         working-directory: packages/envoy/infra
       - name: Live tests of envoy-infra against nats-server (natslive)
         # gcp's live tests build helm, nats-server, the config reloader and the exporter with go

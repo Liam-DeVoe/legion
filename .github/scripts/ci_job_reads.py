@@ -1230,12 +1230,14 @@ def packages_kept(root: str, pattern: str, under: str = ".") -> list:
 # envoy-infra's plain run, which leaves the text checks out the way the other two lanes leave
 # theirs out: `go test ./...` cannot name "every package but one", so the step lists the module's
 # packages and drops that one before go test sees them. `set -o pipefail` is what makes a failed
-# go list fail the step rather than pass it with nothing tested.
+# go list fail the step rather than pass it with nothing tested. It runs under the race detector:
+# no test file of the module carries a race build constraint, so the race build runs every test
+# the plain one would.
 INFRA_PLAIN_STEP = "Unit test envoy-infra"
 INFRA_PLAIN_PATTERN = f"/{TEXT_CHECK_PACKAGE}$"
 INFRA_PLAIN_SCRIPT = f"""\
 set -o pipefail
-go list ./... | grep -Ev '{INFRA_PLAIN_PATTERN}' | xargs go test -count=1"""
+go list ./... | grep -Ev '{INFRA_PLAIN_PATTERN}' | xargs go test -count=1 -race"""
 
 
 # The three packages the test job's race step runs, and which its plain step therefore leaves out.
@@ -3080,7 +3082,8 @@ GATES = [
         # reads none of the files a test of theirs reads.
         pinned_step("envoy-infra-go", INFRA_PLAIN_STEP, INFRA, INFRA_PLAIN_SCRIPT, [
             (INFRA, packages_kept(INFRA, INFRA_PLAIN_PATTERN),
-             "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps", {}),
+             "go list ./... piped into go test -race, counted as go test -race over the packages its grep -Ev keeps",
+             {"race": True}),
         ]),
         # One go test per package, each running only what the natslive tag adds to it.
         pinned_step("envoy-infra-go", INFRA_NATSLIVE_STEP, INFRA, INFRA_NATSLIVE_SCRIPT, [
