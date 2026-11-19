@@ -24,6 +24,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { settled } from "@legion/test-fixtures/wait";
 
 // What people wrote to a session, on every request of the real Oh My Pi's main loop
@@ -38,6 +39,8 @@ import { settled } from "@legion/test-fixtures/wait";
 // dispatch-first-omp.test.ts. A run without one skips, except on GitHub Actions.
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
+/** The Dispatch token the session is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** What the stand-in's answers route does: list `items` at once, accept and never answer, answer
  *  as a Dispatch build older than the route does, or answer `status` with Dispatch's JSON error
@@ -548,7 +551,7 @@ async function runSession(
         env: {
           ENVOY_URL: base,
           DISPATCH_URL: base,
-          DISPATCH_TOKEN: "session-answers-token",
+          DISPATCH_TOKEN,
           [ANSWERS_WAIT_RECORD_FILE]: waitRecord,
         },
         args,

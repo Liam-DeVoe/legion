@@ -19,7 +19,7 @@
     "AGENTS.md"
   ],
   "legion": {
-    "daemonApiVersion": 152
+    "daemonApiVersion": 160
   },
   "repository": {
     "type": "git",
@@ -27,8 +27,8 @@
   },
   "//": [
     "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job).",
-    "The first, 15000: a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox, 5,687.14 ms (the slowest hook, packed-skills.test.ts's beforeAll, 984.92 ms). The codex files main's #4406 added read later, under the same 8 loops: their slowest row, codex-owner.test.ts's two server processes racing for a dead owner's place, took 4,803.83 and 5,078.79 ms at d22477d9 (two runs in builds Job d5-8, 2026-11-19; 2,970.21 and 3,190.70 ms in d4-codex-8-3 at fdce4e94d2), under the 7,500 ms half of this guard.",
-    "The second, 120000: a turn that ends with a background task running earns no reminder, 19,096.00 ms here; envoy-channel-stall.test.ts runs only with LEGION_E2E_ENVOY_STACK=1, and there its rows took up to 53,001.47 ms (its beforeAll 14,816.41 ms) under the same load.",
+    "The first, 15000: a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox, 5,687.14 ms (the slowest hook, packed-skills.test.ts's beforeAll, 984.92 ms). The codex files main's #4406 added read later, under the same 8 loops: their slowest row, codex-owner.test.ts's two server processes racing for a dead owner's place, took 4,803.83 and 5,078.79 ms at d22477d9 (two runs in builds Job d5-8, 2026-11-19; 2,970.21 and 3,190.70 ms in d4-codex-8-3 at fdce4e94d2), under the 7,500 ms half of this guard. Read again at 6ca1a534 with #4437's fourth merge, the whole command under the same load with the files main's #4140 gave row timeouts of their own (two runs each in builds Jobs d8-ce-first-8 and d8-ce-first-8b): the slowest row, the fresh bundles contain only runtime builtin module specifiers, took 7,291.90 ms (6,991.86 ms in d8-ce-first-8b, once the 401 row held its two credential shares rather than waiting them out, 8,284.27 ms before).",
+    "The second, 120000: a turn that ends with a background task running earns no reminder, 19,096.00 ms here; envoy-channel-stall.test.ts runs only with LEGION_E2E_ENVOY_STACK=1, and there its rows took up to 53,001.47 ms (its beforeAll 14,816.41 ms) under the same load. channel-nats.test.ts (main's #4140) runs here too: its start that waits through a broker refusing connections took 12,293.66 ms in d8-ce-moved-8, above the first's half.",
     "The third, 300000, runs codex-real.test.ts alone, which runs only where LEGION_TEST_CODEX names a Codex binary, and no CI job or builds Job has one: it is the 300,000 ms its beforeAll carried on main (#4406), not a reading."
   ],
   "scripts": {
@@ -37,11 +37,12 @@
     "prepack": "bash scripts/pack-skills.sh",
     "postpack": "bash scripts/pack-skills.sh --restore",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout=15000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns='tests/{answers-claude,build-inputs,build-out,codex-real,envoy-channel-stall,legion-phase-hook-claude}.test.ts' && bun test --timeout=120000 --preload @legion/test-fixtures/row-deadline ./tests/answers-claude.test.ts ./tests/build-inputs.test.ts ./tests/build-out.test.ts ./tests/envoy-channel-stall.test.ts ./tests/legion-phase-hook-claude.test.ts && bun test --timeout=300000 --preload @legion/test-fixtures/row-deadline ./tests/codex-real.test.ts",
+    "test": "bun test --timeout=15000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns='tests/{answers-claude,build-inputs,build-out,channel-nats,codex-real,envoy-channel-stall,legion-phase-hook-claude}.test.ts' && bun test --timeout=120000 --preload @legion/test-fixtures/row-deadline ./tests/answers-claude.test.ts ./tests/build-inputs.test.ts ./tests/build-out.test.ts ./tests/envoy-channel-stall.test.ts ./tests/legion-phase-hook-claude.test.ts ./tests/channel-nats.test.ts && bun test --timeout=300000 --preload @legion/test-fixtures/row-deadline ./tests/codex-real.test.ts",
     "lint": "bunx biome check src/ hooks/ scripts/"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.14",
+    "@legion/broker-client": "workspace:*",
     "@legion/contracts": "workspace:*",
     "@legion/envoy-client": "workspace:*",
     "@legion/pi-shared": "workspace:*",

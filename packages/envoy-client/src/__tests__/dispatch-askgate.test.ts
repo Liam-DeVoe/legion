@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { settled } from "@legion/test-fixtures/wait";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
@@ -83,6 +84,8 @@ const postsTo = (route: string) => posts.filter((p) => p.method === "POST" && p.
 const messagePosts = () => postsTo(MESSAGES);
 
 const makeDirectory = temporaryDirectories("dispatch-askgate");
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 let stateDir = "";
 beforeEach(() => {
   posts.length = 0;
@@ -168,7 +171,7 @@ function environment(
     ...bunCacheOff,
     HOME: stateDir,
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-    DISPATCH_TOKEN: "test-token",
+    DISPATCH_TOKEN: TOKEN,
     DISPATCH_STATE_DIR: stateDir,
     ...extra,
   };

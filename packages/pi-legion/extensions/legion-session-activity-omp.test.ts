@@ -20,6 +20,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { span, until } from "@legion/test-fixtures/wait";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
@@ -62,6 +63,9 @@ const SESSION_ACTIVITY_PERIOD_MS = 5_000;
 const ROLE = "implementer";
 const TREE = "ACT-1";
 const ISSUE = "ACT-2";
+
+/** The registration secret the stand-in daemon answers. */
+const REGISTRATION_SECRET = fixtureSecret("reg");
 
 /**
  * The daemon's assignment, sent as the RPC prompt. Every turn of the role's own conversation
@@ -207,7 +211,7 @@ async function startRolePane(): Promise<RolePane> {
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: "act-secret",
+        secret: REGISTRATION_SECRET,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });

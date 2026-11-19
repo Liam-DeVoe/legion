@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { settled } from "@legion/test-fixtures/wait";
 
@@ -12,6 +13,9 @@ const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 const PROJECTS = 4000;
 
 const makeDirectory = temporaryDirectories("dispatch-bin");
+
+/** The Dispatch bearer the entry is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 const server = Bun.serve({
   port: 0,
@@ -49,7 +53,7 @@ async function runEntry(): Promise<{ code: number; stdout: Uint8Array; stderr: s
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-bin",
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: TOKEN,
       },
       stdout: "pipe",
       stderr: "pipe",

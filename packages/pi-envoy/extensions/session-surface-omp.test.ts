@@ -15,6 +15,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { settled, span, until as waitUntil } from "@legion/test-fixtures/wait";
 import {
   connect,
@@ -49,6 +50,8 @@ const omp = process.env.LEGION_TEST_OMP;
 const natsUrl = process.env.LEGION_TEST_NATS_URL;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 const skip = (omp === undefined || natsUrl === undefined) && !onActions;
+/** The Dispatch token the session is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
 function setup(): { readonly binary: string; readonly nats: string } {
@@ -59,7 +62,7 @@ function setup(): { readonly binary: string; readonly nats: string } {
 
 // The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
 // such method. Checked once, before any case spends a binary's startup on a connection that
-// reaches no server.
+// reaches no server. The hook is bounded by the command's one guard, as each case is.
 beforeAll(async () => {
   if (skip) return;
   const probe = await connect({ servers: setup().nats });
@@ -311,7 +314,7 @@ async function startSession(
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
         DISPATCH_URL: base,
-        DISPATCH_TOKEN: "session-surface-token",
+        DISPATCH_TOKEN,
         [SHELL_RECORD_FILE]: shellRecordFile,
         ...(noWindowModel && { NO_WINDOW_PROVIDER_BASE_URL: `${base}/anthropic` }),
         ...env,

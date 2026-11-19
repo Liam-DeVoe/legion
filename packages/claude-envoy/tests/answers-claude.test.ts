@@ -6,6 +6,7 @@ import { join, resolve } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
 import { renderSessionAnswers } from "@legion/envoy-client/session-answers"
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { settled } from "@legion/test-fixtures/wait"
 
 // What people wrote to a session, on the real Claude Code (hooks/session-hook.ts
@@ -30,6 +31,8 @@ const packageRoot = resolve(import.meta.dir, "..")
 /** The assignment the stand-in's Agent call hands the subagent, which tells its requests apart. */
 const ASSIGNMENT = "SUBAGENT-ASSIGNMENT: report that you are done."
 const SUBAGENT_PROMPT = "Run a subagent."
+/** The Dispatch token Claude Code's hooks are handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp")
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -294,10 +297,10 @@ async function setUp(): Promise<{
       HOME: home as string,
       CLAUDE_CONFIG_DIR: config as string,
       ANTHROPIC_BASE_URL: standin.base,
-      ANTHROPIC_API_KEY: "sk-ant-placeholder",
+      ANTHROPIC_API_KEY: `sk-ant-${fixtureSecret("api")}`,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       DISPATCH_URL: standin.base,
-      DISPATCH_TOKEN: "dispatch-test-token",
+      DISPATCH_TOKEN,
       DISPATCH_STATE_DIR: state as string,
     },
   }

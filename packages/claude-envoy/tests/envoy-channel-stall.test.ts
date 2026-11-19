@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import {
   type EnvoyStack,
@@ -49,6 +48,12 @@ const serverRoots = [
 /** The exit this file held a server to on SIGTERM before its waits ended at the row's deadline:
  *  the bounded waits a shutdown arms on its way out must sum to less. */
 const EXIT_BOUND_MS = 15_000
+
+/** Where the socket homes are made. A mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and that
+ *  whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
+ *  `TMPDIR` (a dev box's `/mnt/scratch/...`, a Legion pod's) leaves none, so the homes go under
+ *  `/tmp`, whatever `TMPDIR` is, as channel-fatal-exit.test.ts's do. */
+const SOCKET_ROOT = "/tmp"
 
 /** What one `session.message` the server made carries: the message's own words, which the mod
  *  writes into the session as the prompt of a new turn or as a row of the turn running
@@ -118,7 +123,7 @@ async function startChannelServer(
   sessionPrefix: string,
 ): Promise<ChannelServer> {
   const proxy = await startStallProxy(stack.natsHostPort)
-  const home = await mkdtemp(join(tmpdir(), "claude-envoy-stall-"))
+  const home = await mkdtemp(join(SOCKET_ROOT, "claude-envoy-stall-"))
   const configDirectory = join(home, "claude-config")
   await mkdir(configDirectory)
   await writeFile(

@@ -147,9 +147,9 @@ if (start === undefined) throw new Error("the extension registered no session_st
 await start({}, context);
 
 /**
- * This script for `session`, started the way `spawn` names, and what it reported. A child that
- * hangs is killed at 20 s, before the test's own bound on this process, so none is left running
- * and its stderr comes back in the error.
+ * This script for `session`, started the way `spawn` names, and what it reported. The wait for a
+ * child ends at the deadline this process was handed (`runSessionPod`), which kills a child that
+ * hangs, so none is left running, and this process then reports that wait's failure.
  */
 async function child(
   spawn: "no env" | "process.env",
@@ -157,7 +157,6 @@ async function child(
 ): Promise<Report & { readonly spawn: string }> {
   const report = await runSessionPod({
     session,
-    timeoutMs: 20_000,
     ...(spawn === "process.env" ? { env: process.env } : {}),
   });
   return { spawn, ...report };

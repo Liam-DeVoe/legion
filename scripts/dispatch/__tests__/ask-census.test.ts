@@ -361,11 +361,15 @@ describe("ask census", () => {
     // gives the readers' requests. A client made for the whole run is armed once and fails the
     // count of one deadline per issue. Clients made before their issues' turns are alive more than
     // ISSUE_CONCURRENCY at once and fail the bound. With both held, each issue's reads use only
-    // the client made at its turn.
+    // the client made at its turn. Each request also arms its credential's share of the client's
+    // deadline (`credentialDeadline`, #4140), a deadline of another length that no client's count
+    // includes, so only the client's own are recorded.
     const armed: { readonly milliseconds: number; readonly alive: number }[] = [];
     const finished = new Set<string>();
     const timeout = spyOn(AbortSignal, "timeout").mockImplementation((milliseconds: number) => {
-      armed.push({ milliseconds, alive: armed.length + 1 - finished.size });
+      if (milliseconds === DISPATCH_TOOL_DEADLINE_MS) {
+        armed.push({ milliseconds, alive: armed.length + 1 - finished.size });
+      }
       return new AbortController().signal;
     });
     const read: string[] = [];

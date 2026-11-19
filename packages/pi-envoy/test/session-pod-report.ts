@@ -3,6 +3,7 @@
 // script, which starts two more of itself, and the row of `extensions/envoy.test.ts` that starts
 // it both read it here: the script runs as it loads, so neither can import it.
 import { join } from "node:path";
+import { settled, timeLeft } from "@legion/test-fixtures/wait";
 
 /** What the process prints before its report, which is one JSON line. */
 export const REPORT_MARKER = "session-pod-report ";
@@ -18,16 +19,21 @@ export interface Report {
 /**
  * Starts `session-pod-process.ts` for `session` and answers its report; with `spawn`, the process
  * also starts its two children. With no `env`, the process gets the environment this one started
- * with, as a `Bun.spawn` that names no `env` hands it; with one, that environment. It is killed at
- * `timeoutMs`, so a hung run leaves no process behind, and a run that reports nothing throws with
- * its stderr.
+ * with, as a `Bun.spawn` that names no `env` hands it; with one, that environment. The wait for it
+ * is the shared one (`settled`), which ends at the caller's deadline and then kills the process,
+ * so a hung run leaves no process behind; a run that reports nothing throws with its stderr.
+ *
+ * A process given an `env` is handed a deadline of its own too (`LEGION_PROOF_DEADLINE_MS`, the
+ * shared wait's deadline outside `bun test`), half of what is left of the caller's: its own waits
+ * on its children end there, kill them and report, before the caller's wait ends. A process
+ * started with no `env` inherits the deadline its parent started with, which is the case that
+ * spawn tests.
  */
 export async function runSessionPod(options: {
   readonly session: string;
   readonly spawn?: boolean;
   readonly env?: Record<string, string | undefined>;
   readonly cwd?: string;
-  readonly timeoutMs: number;
 }): Promise<Report> {
   const argv = [
     process.execPath,
@@ -37,20 +43,32 @@ export async function runSessionPod(options: {
     options.session,
     ...(options.spawn === true ? ["spawn"] : []),
   ];
+  const deadline = String(Date.now() + Math.floor(timeLeft() / 2));
   const started = Bun.spawn(argv, {
     stdout: "pipe",
     stderr: "pipe",
-    timeout: options.timeoutMs,
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     // Left out altogether rather than set to the live environment: the child then starts from the
     // environment this process started with, which is the case a row asks about.
-    ...(options.env === undefined ? {} : { env: options.env }),
+    ...(options.env === undefined
+      ? {}
+      : { env: { ...options.env, LEGION_PROOF_DEADLINE_MS: deadline } }),
   });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(started.stdout).text(),
-    new Response(started.stderr).text(),
-    started.exited,
-  ]);
+  let read: [string, string, number];
+  try {
+    read = await settled(
+      `the session pod process for ${options.session} to report and exit`,
+      Promise.all([
+        new Response(started.stdout).text(),
+        new Response(started.stderr).text(),
+        started.exited,
+      ])
+    );
+  } catch (error) {
+    started.kill("SIGKILL");
+    throw error;
+  }
+  const [stdout, stderr, exitCode] = read;
   const line = stdout.split("\n").find((entry) => entry.startsWith(REPORT_MARKER));
   if (exitCode !== 0 || line === undefined) {
     throw new Error(

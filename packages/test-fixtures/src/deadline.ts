@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 
 // The deadline every wait of `./wait` ends by, and the marks `./row-deadline` takes to set it. This
-// module is no export of the package: a test reaches it only through those two.
+// module is no export of the package: a test reaches it only through those two and `./fake-clock`.
 
 /** Bun's own `--timeout` when a `bun test` command line sets none (`bun test --help`). */
 const BUN_DEFAULT_GUARD_MS = 5_000;
@@ -74,9 +74,80 @@ let runner: Runner | undefined;
 /** The newest mark `./row-deadline` took, on `performance.now()`'s clock. */
 let newestMark: number | undefined;
 
-/** Records now as the moment Bun last started the guard that the next wait runs under. */
+/**
+ * A real-time alarm: `passed` turns true once its delay has gone by in real time. Bun's fake clock
+ * (`jest.useFakeTimers()`) holds every clock a row could read, `performance.now()`, `Date.now()`,
+ * `process.hrtime` and `Bun.nanoseconds()` alike, and every timer the row sets (measured on Bun
+ * 1.4.4), but not the timeout of `Atomics.waitAsync`, which the alarm waits on. A pending alarm
+ * holds no process open.
+ */
+interface Alarm {
+  readonly cell: Int32Array;
+  passed: boolean;
+}
+
+/** `Atomics.waitAsync` (ES2024)'s result: settled at the call, or a promise of how it ended. */
+type WaitAsyncResult =
+  | { readonly async: false; readonly value: string }
+  | { readonly async: true; readonly value: Promise<string> };
+
+/** `Atomics.waitAsync`, cast because the `lib` of the packages that use this module does not
+ *  declare it (ES2024). */
+const atomics = Atomics as unknown as {
+  readonly waitAsync: (
+    array: Int32Array,
+    index: number,
+    value: number,
+    timeoutMs: number
+  ) => WaitAsyncResult;
+};
+
+/** An alarm that passes once `ms` of real time have gone by. */
+function alarmAfter(ms: number): Alarm {
+  const alarm: Alarm = { cell: new Int32Array(new SharedArrayBuffer(4)), passed: false };
+  const waited = atomics.waitAsync(alarm.cell, 0, 0, Math.max(0, ms));
+  if (!waited.async) {
+    alarm.passed = waited.value === "timed-out";
+    return alarm;
+  }
+  void waited.value.then((outcome) => {
+    if (outcome === "timed-out") alarm.passed = true;
+  });
+  return alarm;
+}
+
+/** The alarm of the newest mark's deadline, armed when the mark was taken; none under
+ *  `bun test --timeout 0`. */
+let markAlarm: Alarm | undefined;
+
+/** Records now as the moment Bun last started the guard that the next wait runs under, and arms
+ *  that guard's deadline in real time. The previous mark's alarm is woken, so it ends at once. */
 export function markRow(): void {
   newestMark = performance.now();
+  if (markAlarm !== undefined) Atomics.notify(markAlarm.cell, 0);
+  const { at } = deadlineFor(newestMark, "the row-deadline preload");
+  markAlarm = Number.isFinite(at) ? alarmAfter(at - newestMark) : undefined;
+}
+
+/**
+ * The row's deadline as a wait under Bun's fake clock reads it (`./fake-clock`'s `turnsUntil`):
+ * whether it has passed in real time, and the words a failure says that with. It is the newest
+ * mark's deadline, which the mark armed in real time when it was taken, before the row's fake
+ * clock stood still; with no mark it counts from the call. Outside `bun test` no fake clock runs,
+ * so it throws.
+ */
+export function realTimeDeadline(caller: string): {
+  readonly passed: () => boolean;
+  readonly source: string;
+} {
+  runner ??= runnerFrom(ownCommandLine());
+  if (!runner.inBunTest) {
+    throw new Error(`${caller} waits on Bun's fake clock, which only \`bun test\` runs`);
+  }
+  const { at, source } = deadlineFor(newestMark ?? 0, caller);
+  if (!Number.isFinite(at)) return { passed: () => false, source };
+  const alarm = newestMark === undefined ? alarmAfter(at) : markAlarm;
+  return { passed: () => alarm?.passed === true, source };
 }
 
 /**

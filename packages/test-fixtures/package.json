@@ -13,6 +13,18 @@
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
     },
+    "./fake-clock": {
+      "types": "./src/fake-clock.ts",
+      "bun": "./src/fake-clock.ts"
+    },
+    "./fixture-secret": {
+      "types": "./src/fixture-secret.ts",
+      "bun": "./src/fixture-secret.ts"
+    },
+    "./held-deadlines": {
+      "types": "./src/held-deadlines.ts",
+      "bun": "./src/held-deadlines.ts"
+    },
     "./host-tools": {
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"

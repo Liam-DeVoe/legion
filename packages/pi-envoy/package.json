@@ -24,7 +24,7 @@
   ],
   "//": [
     "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job).",
-    "The first, 90000: every task agent the staged skills dispatch is one this plugin ships or Oh My Pi bundles, 7,790.49 ms (the slowest hook, prepack.test.ts's beforeAll, 3,809.51 ms); envoy.test.ts's NATS path freezes row runs only with LEGION_E2E_ENVOY_STACK=1, and there it took 30,499.69 ms (its beforeAll 16,397.25 ms) under the same load.",
+    "The first, 90000: every task agent the staged skills dispatch is one this plugin ships or Oh My Pi bundles, 7,790.49 ms (the slowest hook, prepack.test.ts's beforeAll, 3,809.51 ms); envoy.test.ts's NATS path freezes row runs only with LEGION_E2E_ENVOY_STACK=1, and there it took 30,499.69 ms (its beforeAll 16,397.25 ms) under the same load. Read again at 6ca1a534 with #4437's fourth merge (two runs in builds Job d8-pe-first-8): main's #4140 row a broker that answers no trade, whose trade waits out its own deadlines, took 40,220.52 ms, and the session pod row, which no longer sets a bound of its own, 3,687.45 ms.",
     "The second, 250000, read again at INFRA-3149's head 84270ff1 (two runs in builds Job gf-bun-pi-envoy, under the same load): (f) an answers route that never answers holds no request for a second, 120,876.39 ms (83,215.04 ms in the second run; 57,811.06 ms on CI), which the 240000 it had before held only 1.99 times."
   ],
   "scripts": {

@@ -35,8 +35,10 @@ jobs:
     # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
     # steps at their longest, 85 s, 6 s of its clock over them, and each test step's longest plus
     # its guard - the six bare `bun test` steps 397 s + 750 s and the role takeover smoke 111 s +
-    # 360 s - which is 1709 s, or 29 minutes.
-    timeout-minutes: 30
+    # 360 s - which is 1709 s; and the broker credential step main's #4140 added, 56 s at its
+    # longest over its 57 green runs up to 2026-11-19 plus its beforeAll's own guard, 300 s, the
+    # larger of its two: 2065 s, or 35 minutes.
+    timeout-minutes: 35
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -85,6 +87,18 @@ jobs:
       # 50,109.26 ms and the file's beforeAll 25,685.20 ms.
       - name: Stall test of envoy-client's NATS connection options
         run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/nats-stall.test.ts
+        working-directory: packages/envoy-client
+      # A session's broker-token credential on a real natsd behind the real NATS auth service
+      # (packages/envoy/internal/testnats/cmd/calloutd, built beside natsd): a token that lapses
+      # while the stub broker is away, every reconnect refused and the connection admitted again
+      # once a token is live (slice E2, t-e-9); and a session switch that subscribes
+      # the new session's subject only once the connection is admitted with its token (t-e-10).
+      # Guard 60000 ms: the row "reconnects after two refusals once a token is live again" took
+      # 20,483.92 ms under 8 busy loops on 2 CPUs in builds Job d8-natscred-8 (13,455.78 ms alone,
+      # d8-natscred). Its file's beforeAll, one go build of natsd and calloutd, keeps a guard of its
+      # own (BUILD_GUARD_MS, 300000), which the "//" note of packages/envoy-client/package.json reads.
+      - name: Broker credential tests on a hub behind the auth service
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 60000 src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
         working-directory: packages/envoy-client
       # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
       # this one as a file because of the leading "./". Guard 180000 ms: the row "a killed session

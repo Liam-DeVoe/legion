@@ -2,8 +2,8 @@
 const HEAD_LENGTH = 120;
 
 /** A run of whitespace, which `textHead` folds to one space. An excerpt of text a gateway chose
- *  ends in `textHead`, so this pattern is one of its passes (dispatch-http.ts's
- *  `EXCERPT_PATTERNS`), and recheck holds it linear there. */
+ *  ends in `textHead`, so this pattern is one of its passes (excerpt.ts's `EXCERPT_PATTERNS`), and
+ *  recheck holds it linear there. */
 export const WHITESPACE_RUN = /\s+/g;
 
 /** The first `length` units of `text` on one line (whitespace collapsed), with an ellipsis when

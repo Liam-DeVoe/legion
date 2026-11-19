@@ -662,7 +662,9 @@ test("the session's reply to a message the stream took over is still drawn", asy
   });
 
   const thread = await screen.findByTestId("agent-thread");
-  const replies = await within(thread).findAllByTestId("agent-dispatch-reply");
+  // The reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+  await within(thread).findByText("It is at /dash.");
+  const replies = within(thread).getAllByTestId("agent-dispatch-reply");
   expect(replies.map((reply) => reply.textContent)).toEqual([
     expect.stringContaining("It is at /dash."),
   ]);
@@ -3070,7 +3072,11 @@ test("a rebuild from a replay that cleared the window after its reading draws no
 
   await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
   expect(within(screen.getByTestId("agent-composer-footer")).queryByText(/%/)).toBeNull();
-  expect(within(screen.getByTestId("agent-thread")).getByText("Before the rotation.")).toBeTruthy();
+  // The message's body is drawn by the markdown engine, which loads lazily: the web-cold lane holds
+  // that load, so the row waits for the text rather than reading it at once.
+  expect(
+    await within(screen.getByTestId("agent-thread")).findByText("Before the rotation.")
+  ).toBeTruthy();
 });
 
 // R1. The ring's panel goes with the ring, and the next reading draws the ring closed: a panel the

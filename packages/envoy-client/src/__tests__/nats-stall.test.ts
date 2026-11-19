@@ -27,7 +27,7 @@ test("natsConnectionOptions leaves a frozen path and dials past a hung redial wi
   const options = natsConnectionOptions({
     servers: ["nats://127.0.0.1:4222"],
     name: "nats-stall-settings",
-    seed: undefined,
+    credential: { kind: "none" },
   });
   const left = recoveryBoundMs(options, 0);
   const redialed = recoveryBoundMs(options, 1);
@@ -81,7 +81,7 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
       const options = natsConnectionOptions({
         servers: [proxy.url],
         name: `nats-stall-${slug}`,
-        seed: undefined,
+        credential: { kind: "none" },
       });
       const client = await connect(options);
       try {

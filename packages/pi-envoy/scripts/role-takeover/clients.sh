@@ -83,6 +83,7 @@ start_omp() {
       ENVOY_CONFIG_FILE="${home}/envoy.json" ENVOY_HEARTBEAT_MS="$omp_heartbeat_ms" \
       ENVOY_PASS_DEADLINE_MS="$omp_pass_deadline_ms" ROLE_TAKEOVER_CWD="${home}/cwd" \
       ROLE_TAKEOVER_CLIENT_LOG="${work}/logs/${label}-notices.log" \
+      LEGION_PROOF_DEADLINE_MS="$LEGION_PROOF_DEADLINE_MS" \
       bun --preload "${drivers}/host-stub.ts" "${drivers}/omp-client.ts") \
     <"${work}/${label}.stdin" >"${client_out[$label]}" 2>"${work}/logs/${label}.err" &
   client_pid["$label"]=$!

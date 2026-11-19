@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text"
 import { hasErrnoCode } from "@legion/envoy-client/errors"
 import {
   renderSessionAnswers,
@@ -12,6 +13,7 @@ import {
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers"
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { settled, until } from "@legion/test-fixtures/wait"
 import { buildBundles } from "../scripts/build"
 
@@ -35,6 +37,12 @@ afterAll(async () => {
 })
 
 const SESSION = "11111111-2222-4333-8444-555555555555"
+/** The Dispatch token the hook is handed, in its environment or as its token command's output. */
+const DISPATCH_TOKEN = fixtureSecret("dsp")
+/** The Dispatch token a quick `!` token command prints. */
+const COMMAND_TOKEN = fixtureSecret("dsp")
+/** The Dispatch token the command envoy.json names first prints, before it names another. */
+const BEFORE_TOKEN = fixtureSecret("dsp")
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -393,7 +401,7 @@ test("puts the list into context at every SessionStart source and at SubagentSta
     HOME: home,
     DISPATCH_STATE_DIR: state,
     DISPATCH_URL: dispatch.base,
-    DISPATCH_TOKEN: "hook-token",
+    DISPATCH_TOKEN,
   }
   const expected = renderSessionAnswers(items, { now: Date.now(), total: items.length })
   expect(expected?.startsWith(SESSION_ANSWERS_MARKER)).toBe(true)
@@ -418,7 +426,7 @@ test("puts the list into context at every SessionStart source and at SubagentSta
   expect(dispatch.requests.length).toBeGreaterThanOrEqual(1)
   expect(dispatch.requests.length).toBeLessThanOrEqual(6)
   for (const request of dispatch.requests) {
-    expect(request).toBe(`Bearer hook-token /api/v1/agents/${SESSION}/answers`)
+    expect(request).toBe(`Bearer ${DISPATCH_TOKEN} /api/v1/agents/${SESSION}/answers`)
   }
   // A read that answered left the list for the next hook process.
   if (outcomes.includes("fresh")) {
@@ -436,7 +444,7 @@ test("with Dispatch hanging, answers by the hook's deadline with the list a hook
     HOME: home,
     DISPATCH_STATE_DIR: state,
     DISPATCH_URL: dispatch.base,
-    DISPATCH_TOKEN: "hook-token",
+    DISPATCH_TOKEN,
   }
   contextOf(await runHook(env, sessionStart("startup", home)), "SessionStart")
   const cache = JSON.parse(await readFile(join(state, "sessions", SESSION, "answers.json"), "utf8"))
@@ -471,7 +479,7 @@ test("with Dispatch hanging after a read gave an empty list, the failure line na
     HOME: home,
     DISPATCH_STATE_DIR: state,
     DISPATCH_URL: dispatch.base,
-    DISPATCH_TOKEN: "hook-token",
+    DISPATCH_TOKEN,
   }
   // The hang the case is about starts only once the empty list Dispatch holds is in the cache:
   // a hook whose read missed its wait prints the failure line and saves nothing, so the read is
@@ -496,7 +504,7 @@ test("with Dispatch hanging and no list ever read, the failure line names the wa
     HOME: home,
     DISPATCH_STATE_DIR: state,
     DISPATCH_URL: dispatch.base,
-    DISPATCH_TOKEN: "hook-token",
+    DISPATCH_TOKEN,
   }
 
   const run = await runHook(env, sessionStart("startup", home))
@@ -524,7 +532,7 @@ test("a list past the cap stays under 8,000 characters with the left-out line", 
     HOME: home,
     DISPATCH_STATE_DIR: state,
     DISPATCH_URL: dispatch.base,
-    DISPATCH_TOKEN: "hook-token",
+    DISPATCH_TOKEN,
   }
 
   // A hook whose read missed its wait carries the failure line (no list read yet) or the list a
@@ -554,7 +562,7 @@ test("adds nothing when the list is empty or Dispatch is not configured", async 
       HOME: home,
       DISPATCH_STATE_DIR: state,
       DISPATCH_URL: dispatch.base,
-      DISPATCH_TOKEN: "hook-token",
+      DISPATCH_TOKEN,
     },
     sessionStart("startup", home),
   )
@@ -590,7 +598,7 @@ test("a Dispatch with no answers route adds nothing to the context, and the hook
       HOME: home,
       DISPATCH_STATE_DIR: state,
       DISPATCH_URL: dispatch.base,
-      DISPATCH_TOKEN: "hook-token",
+      DISPATCH_TOKEN,
     },
     sessionStart("startup", home),
   )
@@ -620,7 +628,7 @@ test("a 200 that is no answers list, and a proxy's 404 page, carry the failure l
         HOME: home,
         DISPATCH_STATE_DIR: state,
         DISPATCH_URL: dispatch.base,
-        DISPATCH_TOKEN: "hook-token",
+        DISPATCH_TOKEN,
       },
       sessionStart("startup", home),
     )
@@ -637,7 +645,7 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
   await writeFile(
     join(config, "envoy.json"),
-    JSON.stringify({ dispatch: { serverUrl: dispatch.base, token: "!printf command-token" } }),
+    JSON.stringify({ dispatch: { serverUrl: dispatch.base, token: `!printf ${COMMAND_TOKEN}` } }),
   )
   cleanup.push(async () => {
     await until("the refreshers' end", () => noRefresher(home, state))
@@ -656,7 +664,7 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
   expect(starting.exitCode).toBe(0)
   expect(starting.stdout).not.toContain("answers route")
   await until("the refreshers' end", () => noRefresher(home, state))
-  expect(dispatch.requests).toContain(`Bearer command-token /api/v1/agents/${SESSION}/answers`)
+  expect(dispatch.requests).toContain(`Bearer ${COMMAND_TOKEN} /api/v1/agents/${SESSION}/answers`)
 })
 
 test("a `!` token command runs outside the hook: a quick one gives the bearer, a slow one cannot hold the hook", async () => {
@@ -666,11 +674,11 @@ test("a `!` token command runs outside the hook: a quick one gives the bearer, a
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
   const envoyJson = join(config, "envoy.json")
-  const bearer = `Bearer command-token /api/v1/agents/${SESSION}/answers`
+  const bearer = `Bearer ${COMMAND_TOKEN} /api/v1/agents/${SESSION}/answers`
 
   await writeFile(
     envoyJson,
-    JSON.stringify({ dispatch: { serverUrl: dispatch.base, token: "!printf command-token" } }),
+    JSON.stringify({ dispatch: { serverUrl: dispatch.base, token: `!printf ${COMMAND_TOKEN}` } }),
   )
   const quickSince = Date.now()
   const quick = await runHook(env, sessionStart("startup", home))
@@ -818,7 +826,7 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!echo $$ >'${pidFile}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf hook-token`,
+        token: `!echo $$ >'${pidFile}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
       },
     }),
   )
@@ -839,7 +847,7 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   await refresherFinished(state, firstSince)
   expect(await readdir(tmp)).toEqual([])
   expect(commandRuns(pidFile)).toBe(false)
-  expect(dispatch.requests).toEqual([`Bearer hook-token /api/v1/agents/${SESSION}/answers`])
+  expect(dispatch.requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/agents/${SESSION}/answers`])
 
   await rm(gate)
   const secondSince = Date.now()
@@ -866,7 +874,7 @@ test("with a slow token command, a list read from another Dispatch than envoy.js
 
   await writeFile(
     envoyJson,
-    JSON.stringify({ dispatch: { serverUrl: before.base, token: "!printf before-token" } }),
+    JSON.stringify({ dispatch: { serverUrl: before.base, token: `!printf ${BEFORE_TOKEN}` } }),
   )
   const firstSince = Date.now()
   const first = await runHook(env, sessionStart("startup", home))
@@ -875,7 +883,7 @@ test("with a slow token command, a list read from another Dispatch than envoy.js
   // either way the refresher leaves that list for the next hook.
   allowedOutcome(contextOf(first, "SessionStart"), beforeItems, refresherMissed(first))
   await refresherFinished(state, firstSince)
-  expect(before.requests).toEqual([`Bearer before-token /api/v1/agents/${SESSION}/answers`])
+  expect(before.requests).toEqual([`Bearer ${BEFORE_TOKEN} /api/v1/agents/${SESSION}/answers`])
   const cache = JSON.parse(await readFile(join(state, "sessions", SESSION, "answers.json"), "utf8"))
   expect(cache.dispatch_url).toBe(before.base)
 
@@ -914,7 +922,8 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   // refresher started while envoy.json named `before` that finishes after a later hook, started
   // after envoy.json moved to `now`, began must not give that hook `before`'s list, the
   // invariant the review asked for ("no list from another Dispatch URL"). `before` is named with
-  // a user and a password, which the request carries and the hook's reason leaves out.
+  // a user and a password, which the request carries and the hook's reason names by its fixed
+  // phrase alone (`urlForText`), no part of it.
   const before = standinDispatch()
   before.route = { kind: "list", items: [answer("ask-x", "Read from the Dispatch before.", 1)] }
   const now = standinDispatch()
@@ -935,7 +944,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
     JSON.stringify({
       dispatch: {
         serverUrl: beforeUrl,
-        token: `!echo $$ >'${pidFile}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf before-token`,
+        token: `!echo $$ >'${pidFile}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
       },
     }),
   )
@@ -964,13 +973,13 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   )
 
   // The refresher did read `before`, so the case is not vacuous.
-  expect(before.requests).toEqual([`Bearer before-token /api/v1/agents/${SESSION}/answers`])
+  expect(before.requests).toEqual([`Bearer ${BEFORE_TOKEN} /api/v1/agents/${SESSION}/answers`])
   expect(context).not.toContain("Read from the Dispatch before.")
   // The hook names why it carried nothing of that read; the list `before` answered is no list
   // read from `now`, so the failure line stands.
   expect(context).toBe(
     sessionAnswersFailureLine(
-      `the refresher read ${before.base}, not the Dispatch envoy.json names now`,
+      `the refresher read another Dispatch URL ${URL_NOT_PRINTED}, not the Dispatch envoy.json names now`,
     ),
   )
   expect(context).not.toContain(user)
@@ -1040,11 +1049,12 @@ test("with envoy.json unreadable, a list read from another Dispatch never stands
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
   const envoyJson = join(config, "envoy.json")
+  const otherToken = fixtureSecret("dsp")
 
   // A list read from `other`, in answers.json and as a refresher's fresh outcome.
   await writeFile(
     envoyJson,
-    JSON.stringify({ dispatch: { serverUrl: other.base, token: "!printf other-token" } }),
+    JSON.stringify({ dispatch: { serverUrl: other.base, token: `!printf ${otherToken}` } }),
   )
   const since = Date.now()
   await runHook(env, sessionStart("startup", home))
@@ -1078,15 +1088,16 @@ test("a list read for the Dispatch envoy.json names stands in even when a refres
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
   const envoyJson = join(config, "envoy.json")
+  const sameToken = fixtureSecret("dsp")
 
   await writeFile(
     envoyJson,
-    JSON.stringify({ dispatch: { serverUrl: dispatch.base, token: "!printf same-token" } }),
+    JSON.stringify({ dispatch: { serverUrl: dispatch.base, token: `!printf ${sameToken}` } }),
   )
   const firstSince = Date.now()
   await runHook(env, sessionStart("startup", home))
   await refresherFinished(state, firstSince)
-  expect(dispatch.requests).toEqual([`Bearer same-token /api/v1/agents/${SESSION}/answers`])
+  expect(dispatch.requests).toEqual([`Bearer ${sameToken} /api/v1/agents/${SESSION}/answers`])
 
   // A refresher that ran while envoy.json was broken recorded no Dispatch and an error line.
   await refresherOutcome(state, null, sessionAnswersFailureLine("envoy.json: invalid JSON"))
@@ -1097,7 +1108,7 @@ test("a list read for the Dispatch envoy.json names stands in even when a refres
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf same-token`,
+        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${sameToken}`,
       },
     }),
   )
@@ -1135,7 +1146,7 @@ test("hooks started together run a slow token command once", async () => {
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!printf 'run\\n' >> '${runs}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf hook-token`,
+        token: `!printf 'run\\n' >> '${runs}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
       },
     }),
   )
@@ -1208,7 +1219,7 @@ test("a hook whose start-up took past 800 ms still gives Dispatch its least wait
     HOME: home,
     DISPATCH_STATE_DIR: state,
     DISPATCH_URL: dispatch.base,
-    DISPATCH_TOKEN: "hook-token",
+    DISPATCH_TOKEN,
   }
   const run = await runHook(env, sessionStart("resume", home), { preload })
 
@@ -1223,7 +1234,7 @@ test("a hook whose start-up took past 800 ms still gives Dispatch its least wait
   expect(run.timing.began).toBeGreaterThanOrEqual(820)
   expectPrinted(run)
   // A read that missed its wait may not have reached the stand-in before the hook exited.
-  const read = `Bearer hook-token /api/v1/agents/${SESSION}/answers`
+  const read = `Bearer ${DISPATCH_TOKEN} /api/v1/agents/${SESSION}/answers`
   if (outcome === "fresh") expect(dispatch.requests).toEqual([read])
   else expect(dispatch.requests.filter((request) => request !== read)).toEqual([])
 })
