@@ -80,10 +80,11 @@ import (
 // the reviewer's reviewed commit: it names every kind the merge-queue list names and its own.
 // The two kind lists above it are named here too: the step record's (20261117000528) restates
 // 20261116165926's kinds with step_record, and the plan record's (20261117023932) restates those
-// with plan_record and stands above every other version of the list, so an upgrade applies it last
-// and it is the last word of outbox_kind_check. The count of starts of each step (20261117004117)
-// creates tables and a function of its own, and its roll forward (20261117064152) changes nothing
-// on a database no rollback touched; neither touches outbox_kind_check.
+// with plan_record. It stands above every other version of the list that rewrites
+// outbox_kind_check, so an upgrade applies it after all of them and it is the last word of that
+// check. The count of starts of each step (20261117004117) creates tables and a function of its
+// own, and its roll forward (20261117064152) changes nothing on a database no rollback touched;
+// neither touches outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
