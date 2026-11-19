@@ -1,5 +1,5 @@
 kind: Fixed
-body: A Codex message that arrives while the Codex session's delivery stops no longer waits for ever. When the stop came while the message was still being written into the session's inbox, its write never settled, so its Envoy frame was never answered or sent again. The message is now withdrawn and its write refused, so Envoy sends it again, as for any other message the stop found waiting.
+body: A Codex message whose write the delivery's stop overtook no longer stays waiting in the session's inbox after the stop. Envoy sends such a message again, and the line left behind could also be handed to a Codex turn that was still running, so the session could get the message twice. The stop now withdraws it.
 time: 2026-11-19T02:42:11Z
 custom:
     Issue: pr3675

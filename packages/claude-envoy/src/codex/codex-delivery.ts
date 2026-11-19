@@ -60,7 +60,10 @@ export interface CodexDelivery {
   /** Whether a turn runs, as the transcript last said. */
   turnRunning(): boolean
   /** Stops watching waiting lines; a write still waiting rejects. Resolves once every waiting line
-   *  is withdrawn or found taken. */
+   *  is withdrawn or found taken. A write that stop() overtakes, one still putting its line into
+   *  the inbox, ends in deliver() after stop() has resolved, and its line may already be gone
+   *  then. That is safe: the server answers every frame still unsettled at its shutdown `nak`, so
+   *  Envoy sends that message again whatever its write does. */
   stop(): Promise<void>
 }
 
