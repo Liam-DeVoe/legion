@@ -572,6 +572,41 @@ test("a lead-time card colours a day by that day's value of the judged statistic
   expect(card("merge_to_production").innerHTML).toContain("target median above 45m");
 });
 
+// R5, the architect's ruling of 2026-11-19 on the tester's round-11 finding: a bar is a figure
+// too, so it takes a tone only where the target judges the statistic it draws. Judged by its
+// count of pull requests, merge to production's median and p90 bars draw statistics the target
+// is not of: each reads neutral, with no target line. At 06b73b46 a day with a 25m median and 1
+// pull request draws red bars and a day with a 300m median and 4 draws green ones
+// (dispatch://INFRA-2916, the testing round of 2026-11-19 at 06b73b46).
+test("a lead-time bar is toned only where the target judges the statistic it draws: merge to production judged by its count draws neutral bars", () => {
+  const byCount: NonNullable<Targets["merge_to_production_minutes"]> = {
+    value: 2,
+    inclusive: true,
+    direction: "higher_better",
+    judges: ["minutes.n"],
+  };
+  for (const today of [
+    { n: 1, median: 25, p90: 30, max: 30 },
+    { n: 4, median: 300, p90: 500, max: 540 },
+  ]) {
+    view({
+      ...PIPELINE,
+      merge_to_production: leadTimes(today, today),
+      targets: { ...TARGETS, merge_to_production_minutes: byCount },
+      status: { ...PIPELINE.status, merge_to_production: today.n >= 2 },
+    });
+    expect(todaysBars("merge_to_production").map((bar) => bar.getAttribute("class"))).toEqual([
+      chartBar.neutralFaint,
+      chartBar.neutral,
+    ]);
+    expect(
+      card("merge_to_production").querySelectorAll('svg[aria-label="per-day median and p90"] line')
+        .length
+    ).toBe(0);
+    cleanup();
+  }
+});
+
 test("lists the slowest jobs in the server's order and the jobs that failed in the last day", () => {
   view();
   const slowest = document.querySelector<HTMLElement>('[data-section="slowest-jobs"]');

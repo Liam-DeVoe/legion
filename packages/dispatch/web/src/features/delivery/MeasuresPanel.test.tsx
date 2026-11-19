@@ -518,6 +518,38 @@ test("a day's bar is coloured by that day's value of the judged statistic, and i
   expect(chart("Deploys a day").lines).toBe(1);
 });
 
+// R5, the architect's ruling of 2026-11-19 on the tester's round-11 finding: a bar is a figure
+// too, so it takes a tone only where the target judges the statistic it draws. Judged by its
+// concluded runs, the success-rate bars draw a statistic the target is not of: every bar reads
+// neutral and no line is drawn, as the headline rate and the table's rate cells already do. At
+// 06b73b46 the bars take each day's concluded-count verdict instead: under "at least 2" every
+// bar is red, the 100% days among them, under a met badge (dispatch://INFRA-2916, the testing
+// round of 2026-11-19 at 06b73b46).
+test("a bar is toned only where the target judges the statistic it draws: run success judged by its concluded runs draws neutral bars", () => {
+  for (const value of [1, 2]) {
+    renderPanel({
+      ...fixtureMeasures,
+      targets: {
+        ...catalogueTargets,
+        deploy_run_success_rate: {
+          value,
+          inclusive: true,
+          direction: "higher_better",
+          judges: ["runs.concluded"],
+        },
+      },
+      status: { ...fixtureMeasures.status, deploy_run_success: true },
+    });
+    const runs = chart("Deploy runs reaching production");
+    const toned = [chartBar.met, chartBar.missed, chartBar.metFaint, chartBar.missedFaint];
+    expect(runs.bars.filter((bar) => toned.includes(bar ?? ""))).toEqual([]);
+    // 2026-09-11, the thirteenth day: 0% success, one concluded run.
+    expect(runs.bars[12]).toBe(chartBar.neutral);
+    expect(runs.lines).toBe(0);
+    cleanup();
+  }
+});
+
 test("a lead-time card whose target is off reads off alone, with no verdict", () => {
   renderPanel({
     ...fixtureMeasures,
