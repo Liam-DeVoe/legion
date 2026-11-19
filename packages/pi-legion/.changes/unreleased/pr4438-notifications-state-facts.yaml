@@ -1,5 +1,4 @@
 kind: Changed
 body: |-
-  The bundled skills and the plugin's notices follow the daemon's new texts: the skills give the
-  steps the texts no longer give, name the fields of each notice, and say which kinds are read at
-  the next turn. The workspace-recreated notice and the stall restart state their fields.
+  The plugin's notices follow the daemon's new texts: the workspace-recreated notice and the stall
+  restart state their fields.

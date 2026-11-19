@@ -50,6 +50,12 @@ An `abandoned-session-note` names the session that this claim left behind (`sess
 This session is new: the turns, tool calls, subagents and background jobs of that session are gone, and only what it wrote in Dispatch survives.
 Before you repeat any of that work, read the issue.
 
+A `session-lost` notice says that a role of the issue lost the session it recorded (`detail`): the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it.
+A `session-store-fault` notice says that a role of the issue cannot start because the session store could not be asked for its session (`detail`): nothing is lost or charged, the daemon asks the store again every `retry_every`, and no worker of the issue runs until the store answers, so name it in the day's report.
+An `unslotted` notice says that a root left Legion's workflow, moved to the status `status` names or unable to resume its wait on a person (`unresumable`): the daemon set its phase to `done` and starts nothing for it, and `todo` with the `legion` label queues it again, so re-admit nothing.
+An `awaiting-person` notice names a root that waits only on a person, for an ask (`ask`) or for the review of a document at its `version` (`document`): take nothing for its slot, which it keeps while it waits.
+A `tree-stalled` notice names a tree of which nothing has moved for `quiet_for`, with each of its issues the workflow still runs (`members`): read the tree and decide what it needs, as `skill://legion-controller` says: ask a role what it waits on, move an issue back a phase, or ask whether to park the tree.
+
 Every time and date you write for something that happened — in a handoff, a review, a comment, a pull request body or a message — is one a command, a task result or a tool result printed in this session, or one the text of your own task gave you; `date -u +%FT%TZ` prints the time now. Never write a time or date you estimated as if it were measured.
 
 Give a person no date or time estimate unless it names the work left and what it rests on, a measured rate or a step whose length is known; with nothing measured, say what is left and what decides it, and after an estimate proves wrong, say why it was wrong and what changed, not only a new date.

@@ -422,7 +422,8 @@ func gatedNames(steps []record.DesignStep) []string {
 // gateActs is what the architect does about the design gate once the spec is written: a request
 // for approval of each document the deployment gates and a registration of each of their steps,
 // or, where it gates none, the one registration that opens the gate with no approval
-// (skills/legion-architect/references/design-gate.md, "The steps").
+// (skills/legion-architect/references/design-gate.md, "Which steps are gated" and "The armed
+// gate").
 func gateActs(steps []record.DesignStep) []string {
 	if len(steps) == 0 {
 		return []string{FirstActRegisterGate}

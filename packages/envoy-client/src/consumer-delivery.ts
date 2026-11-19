@@ -845,14 +845,15 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
 /**
  * The gap notice: messages published to this session may be missing. `cause` is the gap's kind.
  * A `retention_gap` names the stream it is in and how long that stream keeps a message; a
- * `stream_recreated` names the stream that was replaced and the one that replaced it.
+ * `stream_recreated` names the stream that was replaced and the one that replaced it. Its step:
+ * read the live source of each thing the session waits on before it relies on a message about it.
  */
-export const GAP_NOTICE = noticeKind("envoy", "messages may be missing", [
-  "cause",
-  "stream",
-  "previous_stream",
-  "retention_hours",
-]);
+export const GAP_NOTICE = noticeKind(
+  "envoy",
+  "messages may be missing",
+  ["cause", "stream", "previous_stream", "retention_hours"],
+  "read the live source of each thing you wait on"
+);
 
 /**
  * A gap notice as every host shows it: a card, rendered as every notice is (`noticeText`). It is a
@@ -873,11 +874,15 @@ export function gapNoticeText(notice: ConsumerGapNotice): string {
  * The notice a session gets when the listener can give it no consumer: its registration was
  * refused, by one of the reasons `ErrorWireSchema.reason` lists (`transport.ts`), or it failed, so
  * nothing reaches it until a later registration is accepted. `error` is the listener's own
- * message, which carries its machine-readable reason.
+ * message, which carries its machine-readable reason. Its step: read live sources rather than
+ * wait for a message until then.
  */
-export const INBOUND_UNAVAILABLE_NOTICE = noticeKind("envoy", "Envoy inbound unavailable", [
-  "error",
-]);
+export const INBOUND_UNAVAILABLE_NOTICE = noticeKind(
+  "envoy",
+  "Envoy inbound unavailable",
+  ["error"],
+  "read live sources until a registration is accepted"
+);
 
 /**
  * The inbound-unavailable notice for `why`, the listener's own message, built once for every host.

@@ -15,10 +15,9 @@ import (
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7 or 724196ef
-// for a sentence main wrote since (a format verb, %s or %d, and … stand for any text), the readers, and
-// the passage of the readers' prompt
-// (packages/daemon/internal/prompts) or of a skill they load (skills/) that gives each of them its
-// own rule for the step, quoted word for word from one line of the file.
+// for a sentence main wrote since (a format verb, %s or %d, and … stand for any text), the readers,
+// and the passage of the readers' prompt (packages/daemon/internal/prompts) that gives each of them
+// its own rule for the step, quoted word for word from one line of the file.
 type goldenStep struct {
 	kind     texts.Kind
 	sentence string
@@ -235,51 +234,51 @@ var goldenSteps = []goldenStep{
 	{texts.ChildrenFirst, "%s is blocked_by %s, which stands above it on its own Dispatch parent chain, so neither can start until a person takes that link off", "architect",
 		goPrompts + "architect-common.md", "neither can start until that link is gone: ask a person with `dispatch ask` to take it off, naming both issues."},
 	{texts.CarriedGateOpened, "; any child waiting on it starts", "architect (root)",
-		"skills/legion-architect/references/wake-routing.md", "the daemon has started any child waiting on it."},
+		goPrompts + "architect-root.md", "which asks nothing of you, since the daemon has started any child waiting on that gate."},
 	{texts.ChildNotRecorded, " Set its repository to one of the project's (dispatch issue-update --repo owner/name), then release it again.", "architect",
-		"skills/legion-architect/references/wake-routing.md", "Set the child's repository (`dispatch issue-update --repo owner/name`), or get the named App installed on the repository it has, then release it again with `release_children`."},
+		goPrompts + "architect-common.md", "set the child's repository to one both Legion Apps are installed on, spelled as GitHub spells it (`dispatch issue-update --repo owner/name`), or get the App the refusal names installed on the repository it has, then release the child again with `release_children`."},
 	{texts.ChildNotRecorded, " Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again.", "architect",
-		"skills/legion-architect/references/wake-routing.md", "Set the child's repository (`dispatch issue-update --repo owner/name`), or get the named App installed on the repository it has, then release it again with `release_children`."},
+		goPrompts + "architect-common.md", "set the child's repository to one both Legion Apps are installed on, spelled as GitHub spells it (`dispatch issue-update --repo owner/name`), or get the App the refusal names installed on the repository it has, then release the child again with `release_children`."},
 	{texts.ChildReleaseStalled, " Release %s first, then release %s again.", "architect",
-		"skills/legion-architect/references/wake-routing.md", "release the parent first where it is not recorded, then run `release_children` for the child again once the parent is recorded in your tree"},
+		goPrompts + "architect-common.md", "release that issue first, then release the child again once it is recorded in your tree, and tell the controller if it never is."},
 	{texts.ChildReleaseStalled, "; inspect the tree before trying again", "architect",
-		"skills/legion-architect/references/wake-routing.md", "so inspect the tree before you try again."},
+		goPrompts + "architect-common.md", "With `stall: attempts-spent`, the parent's release has not reached the daemon after the tries `attempts` counts, so inspect the tree before you try again."},
 	{texts.ChildReleaseStalled, "its parent %s is not recorded: release %s first, then %s", "architect",
-		"skills/legion-architect/references/wake-routing.md", "release the parent first where it is not recorded, then run `release_children` for the child again once the parent is recorded in your tree"},
+		goPrompts + "architect-common.md", "release that issue first, then release the child again once it is recorded in your tree, and tell the controller if it never is."},
 	{texts.ChildReleaseStalled, "; install the App on it, or set a repository both Legion Apps are installed on, then release %s again)", "architect",
-		"skills/legion-architect/references/wake-routing.md", "Where `refusal` is set and `for_now` is false, install the App the refusal names on the repository, or set a repository both Legion Apps are installed on, then release the child again."},
+		goPrompts + "architect-common.md", "Where `refusal` is set and `for_now` is false, install the App the refusal names on the repository, or set a repository both Legion Apps are installed on, then release the child again."},
 	{texts.ChildReleaseStalled, "; the daemon recovers the issues on it once GitHub answers, and records %s then if it is todo)", "architect",
-		"skills/legion-architect/references/wake-routing.md", "Where `for_now` is true, the daemon records the child once GitHub answers for its repository and the child is `todo`."},
+		goPrompts + "architect-common.md", "has `for_now` true, the daemon records the child once GitHub answers for its repository and the child is `todo`."},
 	{texts.ChildReleaseStalled, " in Dispatch now: release it again once it is todo)", "architect",
-		"skills/legion-architect/references/wake-routing.md", "Otherwise, release the child again once it is `todo`."},
+		goPrompts + "architect-common.md", "Otherwise, release the child again once it is `todo`."},
 	{texts.WorkerDied, "%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", "architect",
-		"skills/legion-architect/references/wake-routing.md", "The child's notices come to you until that architect runs again, and the daemon starts it again, with fresh budgets, at the child's next phase start."},
+		goPrompts + "architect-common.md", "the child's notices come to you until that architect runs again, and the daemon starts it again at the child's next phase start."},
 	{texts.WorkerDied, "the %s does not work %s's phase %s; nothing is held", "architect",
 		goPrompts + "architect-common.md", "nothing is held and the phase runs on, so there is nothing to `retry_or_escalate`"},
 	{texts.WorkerStalled, "The arguments of a call are never recorded, so they are in no part of this notice.", "architect",
-		"skills/legion-architect/references/wake-routing.md", "and never a call's arguments, whose text the daemon keeps in no column."},
+		goPrompts + "architect-common.md", "it names the last call the daemon saw, and never a call's arguments, which the daemon does not record."},
 	{texts.WorkerSilent, ". A suspension an operator holds over the claim refuses that start when the outbox runs it", "architect",
-		"skills/legion-architect/references/wake-routing.md", "The one thing that still refuses the start is a suspension an operator holds over the claim, which the outbox reads when it runs the row"},
+		goPrompts + "architect-common.md", "only a suspension an operator holds over the claim still refuses that start, and ask the operator to resume such a claim."},
 	{texts.WorkerBackgroundStalled, "The daemon sent that worker nothing and will send it nothing for this: nothing can tell a background job that hung from a long one, so read what its session says it is waiting on and decide whether that work needs a decision of its own", "architect",
-		"skills/legion-architect/references/wake-routing.md", "Your part is to read what the session says it is waiting on and to judge whether that work needs a decision of its own"},
+		goPrompts + "architect-common.md", "the daemon sends that worker nothing for it, since nothing tells a job that hung from a long one, so read what the session says it waits on and judge whether that work needs a decision of its own."},
 	{texts.SessionLost, "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "architect",
-		"skills/legion-architect/references/wake-routing.md", "The daemon runs the role in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives."},
+		goPrompts + "architect-common.md", "the daemon runs the role in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives."},
 	{texts.SessionLost, "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "controller",
-		"skills/legion-controller/references/wakes.md", "read none of its own earlier turns, and only what it pushed and committed survives."},
-	{texts.SessionLost, "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "controller",
-		"skills/legion-controller/SKILL.md", "Nothing: the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives"},
+		rolePrompts + "controller-root.md", "the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it."},
+	{texts.SessionStoreFault, " Nothing is lost and nothing is charged; the daemon tries again every minute, and no worker of this issue runs until the store answers.", "controller",
+		rolePrompts + "controller-root.md", "nothing is lost or charged, the daemon asks the store again every `retry_every`, and no worker of the issue runs until the store answers, so name it in the day's report."},
 	{texts.Unslotted, "; the daemon set its phase to done and starts nothing for it; todo with the legion label queues it again", "controller",
-		"skills/legion-controller/references/wakes.md", "`todo` with the `legion` label queues it again"},
+		rolePrompts + "controller-root.md", "the daemon set its phase to `done` and starts nothing for it, and `todo` with the `legion` label queues it again, so re-admit nothing."},
 	{texts.AwaitingPerson, "%s waits on a person (%s): it keeps its admission slot until they answer", "controller",
-		"skills/legion-controller/SKILL.md", "take nothing for its slot, which it keeps while it waits."},
+		rolePrompts + "controller-root.md", "take nothing for its slot, which it keeps while it waits."},
 	{texts.TreeStalled, "Read the tree and decide what it needs. You can ask a role what it waits on. You can move an issue back a phase. You can park the tree.", "controller",
-		"skills/legion-controller/SKILL.md", "Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows"},
+		rolePrompts + "controller-root.md", "read the tree and decide what it needs, as `skill://legion-controller` says: ask a role what it waits on, move an issue back a phase, or ask whether to park the tree."},
 	{texts.CISettled, " Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", "implementer",
 		goPrompts + "implementer.md", "That message is yours to act on while the issue is still in a phase you work: re-run a check that failed on itself rather than on your code"},
 	{texts.CISettled, " Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", "planner, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "whether it is re-run, waited for or fixed is a decision for the roles it reached"},
 	{texts.CISettled, " Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", "architect",
-		"skills/legion-architect/references/wake-routing.md", "the worker that holds the phase re-runs a red that failed on itself."},
+		goPrompts + "architect-common.md", "you read it at your next turn: the worker that holds the phase re-runs a red that failed on itself."},
 	{texts.CISettled, " Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", "architect",
 		goPrompts + "architect-common.md", "A red is yours to decide on — re-run it, wait for it, or have the implementer fix the code —"},
 	{texts.GateMoved, "and every step the deployment gates now stands open, so the design you are working to is the approved one. A merge the closed gate held is released.", "planner, implementer, tester, reviewer",
@@ -398,8 +397,8 @@ const goldenRepositoryRoot = "../../../.."
 var goldenDeploymentWords = regexp.MustCompile(`[0-9]|\b(January|February|March|April|May|June|July|August|September|October|November|December)\b`)
 
 // The check c-daemon-texts-are-facts, fourth test: each sentence this change took out of a daemon
-// text, for each of its readers, is given by a passage of that reader's prompt or of a skill it
-// loads, quoted word for word on one line of its file. No golden sample holds such a sentence
+// text, for each of its readers, is given by a passage of that reader's prompt, quoted word for
+// word on one line of its file. No golden sample holds such a sentence
 // outside what R8 keeps and another author's words, and no passage names a number, a date, a time
 // or a project of one deployment.
 func TestEveryStepTakenOutOfATextIsInItsReadersPrompt(t *testing.T) {

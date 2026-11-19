@@ -186,6 +186,22 @@ describe("envoyToolSpecs", () => {
     );
     expect(publish?.description).toContain("a role topic names its holder instead");
   });
+
+  // A card from another session carries no reply command: the reader replies from its from, its
+  // role or roles and its id, and its to says whether it was sent to the reader directly.
+  test("says how to reply to a card, and when a card reads to: you", () => {
+    const send = envoyToolSpecs.find((spec) => spec.name === "envoy_send")?.description;
+    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish")?.description;
+
+    expect(send).toContain("send to the session ID at the start of the card's from field");
+    expect(publish).toContain("publish to notifications.role.<role>");
+    for (const description of [send, publish]) {
+      expect(description).toContain("Set in_reply_to to the card's id.");
+    }
+    expect(send).toContain(
+      "A card reads to: you only when it was sent to you directly; a card that came through a role or a topic has no to field."
+    );
+  });
 });
 
 describe("publishConfirmationText", () => {

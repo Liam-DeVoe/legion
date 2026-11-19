@@ -214,7 +214,7 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_send",
-    description: `Send an Envoy agent-to-agent message directly to another session by session ID. To reply to a card from another session, send to the session ID at the start of the card's from field. Set in_reply_to to the card's id. The confirmation names the recipient's state. A message to an unresponsive session is stored and reaches it when it answers again, so an unresponsive recipient is not a failed send and no reason to send to someone else instead. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT} A send that is not confirmed delivered errs naming its idempotency_key; send the same message again with that idempotency_key within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and Envoy drops it as a repeat if the first copy arrived.`,
+    description: `Send an Envoy agent-to-agent message directly to another session by session ID. To reply to a card from another session, send to the session ID at the start of the card's from field. Set in_reply_to to the card's id. A card reads to: you only when it was sent to you directly; a card that came through a role or a topic has no to field. The confirmation names the recipient's state. A message to an unresponsive session is stored and reaches it when it answers again, so an unresponsive recipient is not a failed send and no reason to send to someone else instead. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT} A send that is not confirmed delivered errs naming its idempotency_key; send the same message again with that idempotency_key within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and Envoy drops it as a repeat if the first copy arrived.`,
     arguments: (schema) => ({
       session_id: schema
         .string()

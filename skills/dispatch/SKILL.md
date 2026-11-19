@@ -1,11 +1,11 @@
 ---
 name: dispatch
-description: "Use before your first dispatch command in a session: a message, comment, ask, artifact, document edit, claim or status change."
+description: "Use when you first use `dispatch` in a session: a message, comment, ask, artifact, document edit, claim or status change."
 ---
 
 # Dispatch
 
-Dispatch is a record for people who decide, never a log of your work.
+Dispatch is a record for the people who decide, never a log of your work.
 
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin, one flag per call: `--<field>-file -` with `<<'EOF'`; objects and lists take JSON.
@@ -40,7 +40,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
 - When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status to the one it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
 - Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link.
-- `dispatch issue-update --blocked-by` replaces the whole list: read its links first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
+- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
 - Name an issue's priority: `--advance <id>`; `dispatch priorities` lists what advances no priority.
 
@@ -48,7 +48,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 
 Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
 
-A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event. The Legion daemon's status moves come at `low`, except a close or release. Oh My Pi holds them for your next turn.
+A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event.
 
 ## Close what you opened
 
@@ -58,7 +58,7 @@ A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to r
 
 - One issue per deliverable, its content the issue's document.
 - A message replies to a person or tells them what they must know now.
-- Text a person must read to decide belongs in the spec. An artifact is a real file; markdown uploads as `.md`, never `.txt`.
+- Text a person must read to decide belongs in the spec. An artifact is a real file; markdown uploads as `.md` whatever its local name, never `.txt`.
 
 ## Architecture components
 

@@ -11,14 +11,28 @@ import {
   failureNoticeText,
   MESSAGE_NOT_SHOWN_NOTICE,
 } from "../delivery-ledger";
+import type { NoticeKind } from "../notice-text";
 
 /** A frame given up on, with every fact of its notice its own. */
 function failure(facts: Omit<FailureNotice, "envelope">): FailureNotice {
   return { ...facts, envelope: { event_id: facts.eventId, source: "agent" } };
 }
 
+/**
+ * `rendering` with the step its kind keeps taken off. The step is the notice's last line
+ * (`step: <words>`), the same in every notice of the kind, so the field rule reads only the facts
+ * before it.
+ */
+function withoutStep(declared: NoticeKind<string>, rendering: string): string {
+  const step = `\n  step: ${declared.step}`;
+  expect(declared.step).toBeTruthy();
+  expect(rendering).toEndWith(step);
+  return rendering.slice(0, -step.length);
+}
+
 // Each notice Envoy's client builds, each variant of it rendered twice from different values in
 // every field: a sentence the same in every notice of its kind is what two renderings would share.
+// Each states the step its kind keeps, last.
 test("every plugin notice states its fields", () => {
   const renderings = [
     {
@@ -92,6 +106,9 @@ test("every plugin notice states its fields", () => {
     },
   ] as const;
   for (const { declared, variants } of renderings) {
-    expect(noticeProblems(declared, variants)).toEqual([]);
+    const facts = variants.map(
+      ([a, b]) => [withoutStep(declared, a), withoutStep(declared, b)] as const
+    );
+    expect(noticeProblems(declared, facts)).toEqual([]);
   }
 });

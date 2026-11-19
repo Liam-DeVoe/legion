@@ -146,10 +146,11 @@ const CONTROLLER_EXTENSIONS = [
 
 /**
  * The kind line of pi-envoy's wake (src/card-wake.ts, `CardWake`), whatever count it states, and
- * the wake for the one card the startup cases send, as a request's JSON writes its two lines.
+ * the wake for the one card the startup cases send, as a request's JSON writes its lines: the
+ * count, then the step its kind keeps.
  */
 const WAKE_TEXT = /notice: unread messages/;
-const WAKE_ONE = 'notice: unread messages\\n  unread: 1"';
+const WAKE_ONE = "notice: unread messages\\n  unread: 1\\n  step: ";
 
 /** The TUI's busy row while a turn runs (`⎋ Working…`). */
 const BUSY = "Working…";

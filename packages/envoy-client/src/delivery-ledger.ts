@@ -433,16 +433,15 @@ export function storedText(content: string, publishedAt: string): string {
 /**
  * The notice shown in place of a frame the session could not be shown: the message's id, sender,
  * summary and publish time, the error that kept it from the session, and what reads it
- * (`read_with`: the `dispatch read` command or the `envoy_inbox` tool).
+ * (`read_with`: the `dispatch read` command or the `envoy_inbox` tool). The message does not come
+ * back on its own, so its step is to read it now.
  */
-export const MESSAGE_NOT_SHOWN_NOTICE = noticeKind("envoy", "message not shown", [
-  "event_id",
-  "from",
-  "summary",
-  "published_at",
-  "error",
-  "read_with",
-]);
+export const MESSAGE_NOT_SHOWN_NOTICE = noticeKind(
+  "envoy",
+  "message not shown",
+  ["event_id", "from", "summary", "published_at", "error", "read_with"],
+  "read it now with the command read_with names"
+);
 
 /** The text of `notice`, as each host shows it. */
 export function failureNoticeText(notice: FailureNotice): string {
