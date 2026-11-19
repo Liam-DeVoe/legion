@@ -554,6 +554,12 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		Mergeability:    MergeabilityMergeable,
 		MergeState:      MergeStateClean,
 		ConflictingHead: "a0b1c2",
+		// The first conflicting read still waiting for its second and the ask to merge forward,
+		// each a jsonb column of its own, read back with every field and time as written, the
+		// merge forwards that landed before the ask among them.
+		ConflictRead: &ConflictRead{Head: "b1c2d3", Base: "main", At: updatedAt.Add(2 * time.Minute)},
+		MergeForward: &MergeForward{Head: "a0b1c2", Base: "main", Phase: phase.Accepting, Why: ConflictCheckNotGreen,
+			AskedAt: updatedAt.Add(-time.Hour), Landed: "b1c2d3", ReviewAsked: true, Earlier: []LandedMergeForward{{Head: "8e7d6c", Landed: "9f8e7d"}}},
 		// The moment of the last read that answered is read back as it was written, so the column
 		// the daemon tells a head read a minute ago from one nothing has read for a day by is
 		// carried by the write and the read rather than lost between them.
@@ -975,7 +981,8 @@ func samePullRequest(got, want PullRequest) bool {
 		got.State == want.State &&
 		got.Mergeability == want.Mergeability && got.MergeState == want.MergeState &&
 		got.ConflictingHead == want.ConflictingHead &&
-		got.StateReadAt.Equal(want.StateReadAt)
+		got.StateReadAt.Equal(want.StateReadAt) &&
+		reflect.DeepEqual(got.ConflictRead, want.ConflictRead) && reflect.DeepEqual(got.MergeForward, want.MergeForward)
 }
 
 // A production check is one record per closed issue, every field read back as written — the role
@@ -1488,7 +1495,7 @@ func TestHeldRowsListsLifecycleRowsBehindTheirIssuesRunningOne(t *testing.T) {
 }
 
 // UnfinishedLanes names each lane with a row left, once, by issue then lane, for the project alone:
-// an issue with a status write, a start and a phase-ended message has all three lanes, one with two
+// an issue with a status write, a start and a hook prompt has all three lanes, one with two
 // board rows has the board lane once, and a project with no rows has none.
 func TestUnfinishedLanesNamesEachLaneWithARowLeft(t *testing.T) {
 	ctx := context.Background()
@@ -1500,7 +1507,7 @@ func TestUnfinishedLanesNamesEachLaneWithARowLeft(t *testing.T) {
 			{Kind: OutboxKindDispatchStatus, Issue: "LEGION-208", Payload: json.RawMessage(`{"status":"testing"}`)},
 			{Kind: OutboxKindSupervise, Issue: "LEGION-208", Payload: json.RawMessage(`{"op":"start"}`)},
 			{Kind: OutboxKindNotice, Issue: "LEGION-209", Payload: json.RawMessage(`{"kind":"phase-finished"}`)},
-			{Kind: OutboxKindPhaseEnded, Issue: "LEGION-208", Payload: json.RawMessage(`{"role":"tester","from":"testing","to":"implementing","reason":"CI is red"}`)},
+			{Kind: OutboxKindHookPrompt, Issue: "LEGION-208", Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"implementer","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)},
 			{Kind: OutboxKindDispatchMessage, Issue: "LEGION-209", Payload: json.RawMessage(`{"body":"Done."}`)},
 			{Kind: OutboxKindSupervise, Issue: "OTHER-7", Payload: json.RawMessage(`{"op":"start"}`)},
 		} {
@@ -2361,7 +2368,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_awaiting", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head"},
-		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha"},
+		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},

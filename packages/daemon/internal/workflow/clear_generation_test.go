@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -43,19 +44,25 @@ func issuePhases(t *testing.T, pool *pgxpool.Pool, issue string) []record.PhaseR
 
 // A new generation keeps an open pull request but none of the old generation's reading of its CI:
 // the settlement it recorded is of a head nobody has judged since, with the commit statuses it
-// named, and its head run would replay the old generation's judgement.
+// named, and its head run would replay the old generation's judgement. The old run's ask to merge
+// the base forward goes with it, and a first conflicting read still waiting for its second stays:
+// that is GitHub's answer about the head and the base, which the new generation does not change.
 func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-285")
 	seedIssue(t, pool, issue)
-	seedPR(t, pool, record.PullRequest{
+	pr := record.PullRequest{
 		Issue: issue.Key, Repo: "acme/widgets", Number: 1359, Branch: "legion/LEGION-285",
 		HeadSHA: "red-tests", HeadUpdatedAt: time.Date(2026, 9, 25, 21, 0, 0, 0, time.UTC),
 		CheckedHead: "red-tests", Failing: []string{"test"}, CheckRuns: []record.AttemptRun{},
-		Statuses: []record.CommitStatus{{Context: "ci", State: record.CommitStatusFailure, CreatedAt: time.Date(2026, 9, 25, 20, 59, 0, 0, time.UTC), Head: "red-tests"}},
-		Run:      &record.HeadRun{Anchor: record.Judgement{HeadSHA: "fix"}, Steps: []record.RunStep{{Head: "red-tests"}}},
-		State:    record.PullRequestOpen,
-	})
+		Statuses:     []record.CommitStatus{{Context: "ci", State: record.CommitStatusFailure, CreatedAt: time.Date(2026, 9, 25, 20, 59, 0, 0, time.UTC), Head: "red-tests"}},
+		Run:          &record.HeadRun{Anchor: record.Judgement{HeadSHA: "fix"}, Steps: []record.RunStep{{Head: "red-tests"}}},
+		State:        record.PullRequestOpen,
+		ConflictRead: &record.ConflictRead{Head: "red-tests", Base: "main", At: time.Date(2026, 9, 25, 21, 1, 0, 0, time.UTC)},
+		MergeForward: &record.MergeForward{Head: "fix", Base: "main", Phase: phase.Reviewing, Why: record.ConflictRequiresCurrent,
+			AskedAt: time.Date(2026, 9, 25, 20, 58, 0, 0, time.UTC), Landed: "red-tests"},
+	}
+	seedPR(t, pool, pr)
 	clearIssueGeneration(t, pool, issue)
 	var got *record.PullRequest
 	seedRecord(t, pool, func(tx pgx.Tx) error {
@@ -69,6 +76,12 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 	if got.CheckedHead != "" || len(got.Failing) != 0 || len(got.Statuses) != 0 || got.Run != nil {
 		t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v statuses=%v run=%+v, want \"\", none, none and nil",
 			got.CheckedHead, got.Failing, got.Statuses, got.Run)
+	}
+	if got.MergeForward != nil {
+		t.Fatalf("after ClearGeneration: the ask to merge forward = %+v, want none: it was the old run's", *got.MergeForward)
+	}
+	if !reflect.DeepEqual(got.ConflictRead, pr.ConflictRead) {
+		t.Fatalf("after ClearGeneration: the first conflicting read = %+v, want %+v kept", got.ConflictRead, pr.ConflictRead)
 	}
 }
 
