@@ -12439,6 +12439,56 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses by name" "$(contains "$out" '^::error file=.github/workflows/case.yaml,line=')"
 
+# T4 to T7. A bracket expression bash matches, but the gate's pattern does not: a POSIX class
+# (`[[:alpha:]]`), a `]` written first in the class (`[]t]`), a `]` escaped in it (`[t\]]`) and
+# a negated `]` (`[!]]`). bash expands each of the words below to .github/scripts/r38-fetch.sh,
+# which retries at 180 s (1050 s). At 98832fe87a80 each step passed under a 17-minute key, 1020 s,
+# where the same words spelled `[!x]` are refused (dispatch://INFRA-1545, the tester's round-39
+# battery, B02 to B17). Each word is literal text a static reader sees, not a path built at run
+# time. Each case asks only that the gate exits 1 with no traceback, so a refusal by name or a
+# charged figure both pass it.
+for r39_case in "T4 a POSIX class:[[:alpha:]]" "T5 a ] written first:[]t]" "T6 an escaped ]:[t\\]]" "T7 a negated ]:[!]]"; do
+  r39_id=${r39_case%% *}
+  r39_what=${r39_case#* }
+  r39_what=${r39_what%%:*}
+  r39_class=${r39_case#*:}
+  echo "case: r39 $r39_id a run after a cd whose word holds $r39_what is not passed under its retries"
+  root=$(fixture "r39-$r39_id-run-after-cd")
+  cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the fetching script through a bracket expression
+        timeout-minutes: 17
+        run: cd .github/scripts && ./r38-fe${r39_class}ch.sh
+YAML
+  run_check "$root"
+  check "exits 1" "$(is "$status" 1)"
+  check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+  echo "case: r39 $r39_id an argument of flock whose word holds $r39_what is not passed under its retries"
+  root=$(fixture "r39-$r39_id-flock-argument")
+  cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the fetching script under flock through a bracket expression
+        timeout-minutes: 17
+        run: flock /tmp/l .github/scripts/r38-fe${r39_class}ch.sh
+YAML
+  run_check "$root"
+  check "exits 1" "$(is "$status" 1)"
+  check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+done
+
 # W10 and W11. W1, W2, W6 and W9 above share one cure: the gate reads the `.sh` scripts directly
 # in .github/scripts/ and no other file there, so every other file under that directory, at any
 # depth, is refused by name at its line 1, whatever its name, its first line or its text, but a
