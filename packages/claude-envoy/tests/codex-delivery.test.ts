@@ -23,6 +23,29 @@ function inbox(): string {
   return directory
 }
 
+/** How many lines wait in `directory`'s inbox; none before the first one is written. */
+function waitingLines(directory: string): number {
+  try {
+    return readdirSync(join(directory, "waiting")).length
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Waits until a line waits in `directory`'s inbox, the point a write made during a turn reaches
+ * once its file is in place. A fixed sleep stood here, and under load the file was not in place by
+ * its end. Polled on the real clock: the file is the write's own filesystem work, which no fake
+ * clock advances. Fails after 10 s, well inside the test's own timeout, naming what it waited for.
+ */
+async function untilWaiting(directory: string): Promise<void> {
+  const deadline = performance.now() + 10_000
+  while (waitingLines(directory) === 0) {
+    if (performance.now() > deadline) throw new Error(`no line waited in ${directory} within 10 s`)
+    await Bun.sleep(5)
+  }
+}
+
 describe("the Codex inbox", () => {
   test("a message is taken once, by whichever taker renames it first, oldest first", async () => {
     const directory = inbox()
@@ -117,7 +140,7 @@ describe("createCodexDelivery", () => {
     const written = delivery.deliver({ content: "mid-turn", dispatchMessageId: "m1" }).then(() => {
       done = true
     })
-    await Bun.sleep(30)
+    await untilWaiting(directory)
     expect(done).toBe(false)
     expect((await takeInbox(directory, "hook")).map(({ item }) => item.content)).toEqual([
       "mid-turn",
@@ -130,10 +153,11 @@ describe("createCodexDelivery", () => {
   })
 
   test("a line no tool call took goes to codex queue when the turn ends", async () => {
-    const { delivery, queued, taken } = harness(inbox())
+    const directory = inbox()
+    const { delivery, queued, taken } = harness(directory)
     delivery.turnStarted()
     const written = delivery.deliver({ content: "late" })
-    await Bun.sleep(20)
+    await untilWaiting(directory)
     expect(queued).toEqual([])
     await delivery.turnEnded()
     await written
@@ -146,7 +170,8 @@ describe("createCodexDelivery", () => {
     const idle = harness(inbox(), true)
     await expect(idle.delivery.deliver({ content: "x" })).rejects.toThrow("codex queue exited 1")
     await idle.delivery.stop()
-    const busy = harness(inbox(), true)
+    const directory = inbox()
+    const busy = harness(directory, true)
     busy.delivery.turnStarted()
     const written = busy.delivery.deliver({ content: "y" })
     // A handler is on the write from the start: its rejection lands while turnEnded's sweep runs,
@@ -156,7 +181,7 @@ describe("createCodexDelivery", () => {
       () => new Error("the write resolved"),
       (error: unknown) => error,
     )
-    await Bun.sleep(20)
+    await untilWaiting(directory)
     await busy.delivery.turnEnded()
     expect(String(await outcome)).toContain("codex queue exited 1")
     await busy.delivery.stop()
@@ -177,7 +202,7 @@ describe("createCodexDelivery", () => {
     })
     delivery.turnStarted()
     const written = delivery.deliver({ content: "waiting" })
-    await Bun.sleep(20)
+    await untilWaiting(codexInboxDirectory(base, "old"))
     session = "new"
     await delivery.rebind()
     await written
@@ -201,7 +226,7 @@ describe("createCodexDelivery", () => {
     })
     delivery.turnStarted()
     const written = delivery.deliver({ content: "late" })
-    await Bun.sleep(20)
+    await untilWaiting(directory)
     // The first sweep finds a file where the server's directory should be and fails.
     const blocker = join(directory, "queued")
     await Bun.write(blocker, "not a directory")
@@ -238,7 +263,7 @@ describe("createCodexDelivery", () => {
     const { delivery } = harness(directory)
     delivery.turnStarted()
     const written = delivery.deliver({ content: "never" })
-    await Bun.sleep(20)
+    await untilWaiting(directory)
     expect(readdirSync(join(directory, "waiting"))).toHaveLength(1)
     delivery.stop()
     await expect(written).rejects.toThrow("stopped before the message was taken")
