@@ -295,6 +295,22 @@ EXCEPTIONS = (
             "runs FuzzAirlock alone and does not name it."
         ),
     ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+        }),
+        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
+        requirement=(
+            "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "
+            "comparison runs a host-less entry carrying guidance, a field the generator never "
+            "writes, through both the Go airlock and the Lean model's, with AIRLOCK_MODEL set. "
+            "envoy-go's step \"Count the database broker suites' skips\" lists it too, and it "
+            "skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS records, so "
+            "the comparison runs only in airlock-lean."
+        ),
+    ),
 )
 
 # `go test -list` prints one name per line, then a status line per package.
@@ -329,7 +345,7 @@ AUDITED_SCRIPTS = {
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         command="go test -json -count=1 -timeout 15m ./internal/broker/...",
-        sha256="1faea929b05df719acbfa91c4ed40c7621262bb921e3764853e553fb32a29052",
+        sha256="6532bb9d89d0fdc8c1027d27e0c682e2ae159a45240c7a37beee5cc965c44ede",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
