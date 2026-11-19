@@ -1030,14 +1030,24 @@ func printReread(s *secretSession, stdout io.Writer, name string, r Reread, dele
 // landed, and prints the broker's answer without judging it, since either outcome is possible.
 // When the broker cannot be asked, it says so and names the reread to ask for once the store
 // holds what the person wants, and nothing of when the broker would serve a change on its own:
-// that depends on the write, which may not have landed.
+// that depends on the write, which may not have landed. The command reads the broker's address
+// from AGENT_SECRETS_URL, which this CLI may have read from its config file instead, so it stops
+// with a message naming that file where the shell has no such variable, and curl prints the
+// broker's refusal (-sSf); the CLI prints no broker address itself.
 func rereadOpen(s *secretSession, stdout, stderr io.Writer, form, name string) {
 	r, err := s.broker.RereadSecret(s.ctx, name)
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets %s: %s could not be asked to reread %s: %v. Once the store holds what you want, ask for the reread with `curl -s -X POST \"$AGENT_SECRETS_URL/v1/secrets/%s/reread\"`\n", form, s.src.brokerAt(), name, err, name)
+		fmt.Fprintf(stderr, "agent-secrets %s: %s could not be asked to reread %s: %v. Once the store holds what you want, ask for the reread with `%s`\n", form, s.src.brokerAt(), name, err, rereadCommand(name))
 		return
 	}
 	printReread(s, stdout, name, r, false, nil)
+}
+
+// rereadCommand is the shell command that asks the broker to reread name: POST
+// /v1/secrets/{name}/reread at AGENT_SECRETS_URL, which stops naming the config file where the
+// shell has no such variable.
+func rereadCommand(name string) string {
+	return fmt.Sprintf(`curl -sSf -X POST "${AGENT_SECRETS_URL:?set it to the broker address in ~/.config/agent-secrets/config}/v1/secrets/%s/reread"`, name)
 }
 
 // secretView is what list and show print of one secret: never its value.

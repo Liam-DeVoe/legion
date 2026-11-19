@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -162,4 +166,64 @@ func TestAnOpenOutcomeTheBrokerCannotRereadClaimsNothing(t *testing.T) {
 		t.Fatalf("set whose answer was lost, its reread refused: exit %d stderr %q; want 1, the open outcome and the broker not asked", code, stderr)
 	}
 	assertNoClaim(t, "set", stdout, stderr)
+}
+
+// TestTheRereadAnOpenOutcomeNamesReachesTheBroker: the command the form prints when the broker
+// cannot be asked, run in bash, asks the broker to reread the secret once where the shell has
+// AGENT_SECRETS_URL, and stops naming the config file, asking nothing, where the address was only
+// in the CLI's config file.
+func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
+	for _, fromFile := range []bool{false, true} {
+		t.Run(map[bool]string{false: "the address in AGENT_SECRETS_URL", true: "the address in the config file alone"}[fromFile], func(t *testing.T) {
+			local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			broker := startSecretBroker(t, servedBy(local))
+			url := os.Getenv("AGENT_SECRETS_URL")
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if fromFile {
+				dir := filepath.Join(home, ".config", "agent-secrets")
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "config"), []byte("AGENT_SECRETS_URL="+url+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("AGENT_SECRETS_URL", "")
+			}
+			t.Cleanup(func() { clientConfig = nil })
+			if err := loadClientConfig(); err != nil {
+				t.Fatal(err)
+			}
+			broker.failRereads(http.StatusTooManyRequests)
+			useAWS(t, &raceOnTag{secretsAPI: local, loseAnswer: "put"}, testAccount, adaSignIn)
+			useStdin(t, "v2")
+			_, stderr, code := runSecret("set", "API_KEY")
+			printed := regexp.MustCompile("ask for the reread with `([^`]*)`").FindStringSubmatch(stderr)
+			if code != 1 || printed == nil || printed[1] != rereadCommand("API_KEY") {
+				t.Fatalf("set: exit %d stderr %q; want 1 and the reread command %q", code, stderr, rereadCommand("API_KEY"))
+			}
+			broker.failRereads(0)
+			var env []string
+			for _, kv := range os.Environ() {
+				key := strings.ToLower(strings.SplitN(kv, "=", 2)[0])
+				if strings.HasSuffix(key, "_proxy") || (fromFile && key == "agent_secrets_url") {
+					continue
+				}
+				env = append(env, kv)
+			}
+			cmd := exec.Command("bash", "-c", printed[1])
+			cmd.Env = env
+			out, err := cmd.CombinedOutput()
+			rereads, _ := broker.recorded()
+			if fromFile {
+				if err == nil || !strings.Contains(string(out), "~/.config/agent-secrets/config") || len(rereads) != 0 {
+					t.Fatalf("the printed command with no AGENT_SECRETS_URL: err %v, output %q, rereads %v; want it to stop naming the config file and ask nothing", err, out, rereads)
+				}
+				return
+			}
+			if err != nil || len(rereads) != 1 || rereads[0] != "API_KEY" {
+				t.Fatalf("the printed command: err %v, output %q, rereads %v; want one reread of API_KEY", err, out, rereads)
+			}
+		})
+	}
 }
