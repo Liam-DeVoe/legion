@@ -1130,28 +1130,28 @@ func TestTaskCostLogWithNoTaskValueAndNoTakePrintsNoPass(t *testing.T) {
 
 // A window holds the take model's own evidence once it holds one task value written or one take
 // answered, of the claim asked for, and judges each verdict then; without it, a fail the reading
-// proves from the state carried into the window is evidence for its own verdict alone, and every
-// other verdict holds no evidence, however many daemon lines the window holds (TaskCost.judges).
-// No evidence for any verdict: the log of a daemon from before the task value, a turn of no cause
-// and a charge of the push path; a window whose value write and take of the claim fell before it,
-// with only that take's turn in it; under --claim, a claim whose lines hold no write and no take
-// while another claim's do; a number written and seen before the window, whose first bound passed
-// before it, with only a turn of no cause in it, which stops the clock before a bound passes inside
-// it; and a charge of a worker whose turn began within the second bound after its take, all before
-// the window, with only that turn's end in it. A bound that passed, or a charge made, before From
-// is no evidence. Each prints its daemon lines as it read them, then the line that says it judges
-// no verdict, and each verdict as "no evidence". Judged by a carried fail alone, since the reading
-// never hides a fail it can prove and never prints a pass it has no evidence for, each printing its
-// daemon lines, then the line that says only such a fail is judged, the verdict that fail fails,
-// and the other two as "no evidence": a charge inside the window of a worker whose turn began
-// within the second bound after a take accepted before the window, which fails the first verdict;
-// and the page's own sample read for the planner of INFRA-2812 up to 09:05:30, whose task 1 was
-// written and seen before the window, charged inside it, and taken only after it (the review's
-// repro), which fails the third. Judged whole, each printing no such line: a window whose one write
-// or take of the claim is a take answered accepted, refused or dropped, of a number written before
-// the window, or a value write, and the claim whose lines hold a write and a take, whose verdicts
-// all pass; and the same sample read for the planner up to 10:00, whose take of task 1 inside the
-// window judges the two verdicts its stranded task does not fail, each a pass.
+// proves from the state carried into the window is evidence for its own verdict alone, and each
+// verdict no such fail fails holds none, however many daemon lines, one or more, the window holds
+// (TaskCost.judges). No evidence for any verdict: the log of a daemon from before the task value, a
+// turn of no cause and a charge of the push path; a window whose value write and take of the claim
+// fell before it, with only that take's turn in it; under --claim, a claim whose lines hold no
+// write and no take while another claim's do; a number written and seen before the window, whose
+// first bound passed before it, with only a turn of no cause in it, which stops the clock before a
+// bound passes inside it; and a charge of a worker whose turn began within the second bound after
+// its take, all before the window, with only that turn's end in it. A bound that passed, or a
+// charge made, before From is no evidence. Each prints its daemon lines as it read them, then the
+// line that says it judges no verdict, and each verdict as "no evidence". Judged by a carried fail
+// alone, since the reading never hides a fail it can prove and never prints a pass it has no
+// evidence for, each printing its daemon lines, then the line that says only such a fail is judged,
+// the verdict that fail fails, and the other two as "no evidence": a charge inside the window of a
+// worker whose turn began within the second bound after a take accepted before the window, which
+// fails the first verdict; and the page's own sample read for the planner of INFRA-2812 up to
+// 09:05:30, whose task 1 was written and seen before the window, charged inside it, and taken only
+// after it (the review's repro), which fails the third. Judged whole, each printing no such line: a
+// window whose one write or take of the claim is a take answered accepted, refused or dropped, of a
+// number written before the window, or a value write, and the claim whose lines hold a write and a
+// take, whose verdicts all pass; and the same sample read for the planner up to 10:00, whose take
+// of task 1 inside the window judges the two verdicts its stranded task does not fail, each a pass.
 //
 // The negative controls: with the take model's own evidence back to a window that holds a daemon
 // line, the windows with no evidence print their verdicts as passes; with own evidence that reads
@@ -1183,6 +1183,7 @@ func TestTaskCostLogJudgesAWindowThatHoldsAValueWriteOrATakeAnswer(t *testing.T)
 		b.seen(-2*time.Minute, claim, 1, 1),
 		b.answered(-time.Minute, claim, 1, TakeOutcomeAccepted, ""),
 	}
+	sample := readSample(t)
 	for _, tc := range []struct {
 		name  string
 		lines []string
@@ -1245,19 +1246,21 @@ func TestTaskCostLogJudgesAWindowThatHoldsAValueWriteOrATakeAnswer(t *testing.T)
 	} {
 		var cost TaskCost
 		if tc.page != nil {
-			cost = readExample(t, docExample{command: strings.Join(tc.page, " "), args: tc.page}, readSample(t))
+			cost = readExample(t, docExample{command: strings.Join(tc.page, " "), args: tc.page}, sample)
 		} else {
 			cost = b.readCostOf(tc.claim, tc.lines)
 		}
 		text := cost.Text()
-		// under is what the window prints under the count of its lines, and others what each
-		// verdict it does not fail reads.
+		// under is the count of the window's lines and the line under it, "" for a window that
+		// holds its own evidence; judged is what EveryVerdictJudged answers; and others is what
+		// each verdict the window's fails do not fail reads.
 		judged, others, under := true, "pass", ""
-		switch {
-		case tc.counted != "" && tc.fails != "":
-			judged, others, under = false, "no evidence", tc.counted+zero+"only a fail carried into the window is judged\n"
-		case tc.counted != "":
-			judged, others, under = false, "no evidence", tc.counted+zero+"no verdict is judged\n"
+		if tc.counted != "" {
+			so := "no verdict is judged\n"
+			if tc.fails != "" {
+				so = "only a fail carried into the window is judged\n"
+			}
+			judged, others, under = false, "no evidence", tc.counted+zero+so
 		}
 		verdicts := strings.HasSuffix(text, costVerdicts(others))
 		if tc.fails != "" {

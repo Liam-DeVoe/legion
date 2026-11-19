@@ -131,19 +131,21 @@ func TestTaskCostExitsOneWhenTheWindowHoldsNoDaemonLine(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name, stdin string
-		// fails is the verdict the window fails, with what fails it, "" where it fails none, and
-		// passes how many verdicts pass.
-		fails  string
-		passes int
+		// fails is the verdict the window fails, with what fails it, "" where it fails none.
+		fails string
 	}{
-		{"the three lines", taskCostLog, "", 3},
-		{"the three lines and the charge", taskCostChargedLog, charged, 2},
+		{"the three lines", taskCostLog, ""},
+		{"the three lines and the charge", taskCostChargedLog, charged},
 	} {
 		code, stdout, stderr := taskCost(t, tc.stdin, "--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z")
+		passes := 3
+		if tc.fails != "" {
+			passes = 2
+		}
 		if code != 0 || stderr != "" || strings.Contains(stdout, "no evidence") || strings.Contains(stdout, "task values written and takes answered") ||
-			!strings.Contains(stdout, tc.fails) || strings.Count(stdout, ": pass\n") != tc.passes {
+			!strings.Contains(stdout, tc.fails) || strings.Count(stdout, ": pass\n") != passes {
 			t.Errorf("legion task-cost over %s = %d, stdout %q, stderr %q; want 0 and its three verdicts judged, %d a pass and %q",
-				tc.name, code, stdout, stderr, tc.passes, tc.fails)
+				tc.name, code, stdout, stderr, passes, tc.fails)
 		}
 	}
 }

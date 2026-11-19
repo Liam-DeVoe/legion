@@ -101,7 +101,7 @@ So each figure that names a task names its claim too.
   When these lines hold no task value written and no take answered, the next line says so.
   It is `task values written and takes answered in the window: 0, so no verdict is judged` when each verdict gives `no evidence`.
   It is `task values written and takes answered in the window: 0, so only a fail carried into the window is judged` when a fail that the state at `<from>` proves fails a verdict.
-  That verdict gives `fail`, and each other verdict gives `no evidence`.
+  Each verdict that such a fail fails gives `fail`, and each other verdict gives `no evidence`.
 
 - `turns started` and `turns ended` are the workers' turns, by cause.
 
@@ -256,7 +256,7 @@ So each figure that names a task names its claim too.
       The first verdict fails for it.
 
     A fail that the state at `<from>` proves is evidence for its own verdict only.
-    In a window without the evidence of the delivery by task values, that verdict gives `fail`, and each other verdict gives `no evidence`.
+    In a window that holds a line of the daemon but not the evidence of the delivery by task values, each verdict that such a fail fails gives `fail`, and each other verdict gives `no evidence`.
     A pass that the state at `<from>` shows is not evidence.
     A bound that passed before `<from>`, or a charge made before `<from>`, is no evidence for the window.
 

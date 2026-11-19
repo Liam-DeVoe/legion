@@ -146,21 +146,22 @@ import (
 // for and never hides a fail it can prove. A window holds the take model's own evidence when it
 // holds, of the claim asked for, a daemon line and a value write (valueWrittenLine) or an answer
 // to a take (takeAnsweredLine), and such a window judges each verdict, a pass or a fail. Without
-// that evidence, a fail the reading proves from where the claim stood at From is evidence for its
-// own verdict alone, which reads that fail, and each other verdict reads "no evidence" rather than
-// a pass or a fail (TaskCost.EveryVerdictJudged); every other figure is printed as it is read, and
-// `legion task-cost` exits non-zero for such a reading. Such a fail is one of two, each of an
-// event inside the window: a time owed whose first bound passed in the window with no take (the
-// figure above, which judges clock time inside the window alone), which fails the third verdict,
-// and a charge made in the window of a worker whose turn began within the second bound after a
-// take accepted before From (the first verdict, which counts a charge made inside the window
-// alone). So a bound that passed, or a charge made, before From is no evidence. A window that
-// holds no daemon line, of the claim asked for — a wrong selector, a window the node no longer
-// keeps — judges no verdict, a carried fail included, since nothing in it shows the daemon lived
-// through it. Nor does one whose daemon lines hold neither kind of evidence: the log of a daemon
-// from before the task value, of one not yet rolled out, or of an older container that `kubectl
-// logs --previous` reads, whose turns name no task and whose charges are the push path's, holds no
-// line of the take model, and both carried fails need such lines before From.
+// that evidence, in a window with a daemon line, a fail the reading proves from where the claim
+// stood at From is evidence for its own verdict alone, which reads that fail, and each verdict no
+// such fail fails reads "no evidence" rather than a pass or a fail (TaskCost.EveryVerdictJudged);
+// every other figure is printed as it is read, and `legion task-cost` exits non-zero for such a
+// reading. Such a fail is one of two, each of an event inside the window: a time owed whose first
+// bound passed in the window with no take (the figure above, which judges clock time inside the
+// window alone), which fails the third verdict, and a charge made in the window of a worker whose
+// turn began within the second bound after a take accepted before From (the first verdict, which
+// counts a charge made inside the window alone). So a bound that passed, or a charge made, before
+// From is no evidence. A window that holds no daemon line, of the claim asked for — a wrong
+// selector, a window the node no longer keeps — judges no verdict, a carried fail included, since
+// nothing in it shows the daemon lived through it. Nor does one whose daemon lines hold neither
+// kind of evidence: the log of a daemon from before the task value, of one not yet rolled out, or
+// of an older container that `kubectl logs --previous` reads, whose turns name no task and whose
+// charges are the push path's, holds no line of the take model, and both carried fails need such
+// lines before From.
 //
 // Every figure is a lower bound but two, which can also count too many: the numbers no take
 // reached (above), and the turns each number took, since a run the daemon gave a take inside the
@@ -1081,10 +1082,8 @@ func (c TaskCost) Text() string {
 			c.Lines, lineTime(c.FirstLine), lineTime(c.LastLine))
 		if !c.holdsOwnEvidence() {
 			so := "no verdict is judged"
-			for _, v := range verdicts {
-				if c.judges(v) {
-					so = "only a fail carried into the window is judged"
-				}
+			if slices.ContainsFunc(verdicts[:], c.judges) {
+				so = "only a fail carried into the window is judged"
 			}
 			fmt.Fprintf(&b, "task values written and takes answered in the window: 0, so %s\n", so)
 		}

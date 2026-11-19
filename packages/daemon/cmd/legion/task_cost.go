@@ -24,14 +24,14 @@ is a lower bound but the owed numbers and the turns each number took, which can 
 many (the page says when): the log reaches back no further than the current container (--previous
 reads the one before), and only as far as the node kept it. A window that holds, of the claim
 asked for, a daemon line and a task value written or a take answered judges all three verdicts,
-each a pass or a fail. In any other window, a fail proved from where a claim stood at --from (a
-number whose first bound passed in the window with no take, or a charge in the window of a worker
-whose turn began within the second bound after a take accepted before --from) is evidence for its
-own verdict alone, and every other verdict prints "no evidence": a pass carried into the window is
-no evidence. A window with no daemon line of the claim asked for judges no verdict, and neither
-does the log of a daemon from before the task value, of one not yet rolled out, or of an older
-container --previous reads. The command exits 1 when any verdict prints "no evidence", and 0 when
-it judges all three, a fail included.`
+each a pass or a fail. In any other window that holds a daemon line of the claim asked for, a fail
+proved from where a claim stood at --from (a number whose first bound passed in the window with no
+take, or a charge in the window of a worker whose turn began within the second bound after a take
+accepted before --from) is evidence for its own verdict alone, and each verdict no such fail fails
+prints "no evidence": a pass carried into the window is no evidence. A window with no daemon line
+of the claim asked for judges no verdict, and neither does the log of a daemon from before the
+task value, of one not yet rolled out, or of an older container --previous reads. The command
+exits 1 when any verdict prints "no evidence", and 0 when it judges all three, a fail included.`
 
 // taskCostStdin is where `legion task-cost` reads the daemon's log: the process's own standard
 // input, which a test replaces.
