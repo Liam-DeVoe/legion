@@ -350,9 +350,11 @@ function collapsedOffsets(markdown: string): number[] {
  * still forbids the re-run of a lane costs the tree a whole lap for a failure its code never
  * caused.
  *
- * Two shapes, each with its subject enumerated rather than left open. The passive: a universal
+ * Three shapes, each with its subject enumerated rather than left open. The passive: a universal
  * negative (`no`, `neither`) over a lane noun — `lane`, `check`, `suite`, `job` — that is re-run.
- * The active: `never re-runs a …` over the same nouns behind a determiner. `run` is deliberately
+ * The active: `never re-runs a …` over the same nouns behind a determiner. The imperative: `re-run
+ * no …` over the same nouns, the shape cybermonklabs/legion#4447 brought back into pr-body.md as
+ * "rerun no lane as evidence" in a forward merge that took main's side. `run` is deliberately
  * no such noun, which is what lets the sentences the change keeps pass: "A merge-group run is
  * never re-run" (merge-gate.md, pr-body.md and the implementer's prompt overlay) and "Where no
  * run at the head holds the failing check, the role re-runs nothing" (red-at-the-head.md). "No
@@ -369,7 +371,7 @@ function collapsedOffsets(markdown: string): number[] {
  * correct text too.
  */
 const NO_LANE_IS_RERUN =
-  /\b(?:no|neither)\s+(?:CI\s+|required\s+|test\s+)?(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,40}?\bre-?run\b|\bnever\s+re-?runs?\s+(?:a|an|any|the)\s+(?:CI\s+|required\s+|test\s+)?(?:lane|check|suite|job)\b(?!\s+for\b)/i;
+  /\b(?:no|neither)\s+(?:CI\s+|required\s+|test\s+)?(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,40}?\bre-?run\b|\bnever\s+re-?runs?\s+(?:a|an|any|the)\s+(?:CI\s+|required\s+|test\s+)?(?:lane|check|suite|job)\b(?!\s+for\b)|\bre-?runs?\s+no\s+(?:CI\s+|required\s+|test\s+)?(?:lanes?|checks?|suites?|jobs?)\b/i;
 
 /**
  * The prohibition INFRA-1303 retired from the tester's prompt part
@@ -427,10 +429,10 @@ const ONLY_THE_IMPLEMENTER_WAITS = /\ba Legion implementer waits this way only\b
  * (packages/daemon/internal/prompts/roles/merger.md) carried the same rule as "That is work to
  * fix. Send the issue back", and for a while in this change as "is work to fix, so send the issue
  * back". A `failed_checks` removal at a head that has not changed now gets that same head queued
- * once more, and the issue goes back only on the second such removal of that head
- * (`skill://legion-worker/references/merge-gate.md`, *A `failed_checks` ejection at an unchanged
- * head is queued once more*): the first-removal rule sent cybermonklabs/legion#3972 round a lap
- * on a flaky group build (INFRA-3204's retro).
+ * once more, and the issue goes back only on the second such removal of that head (the merger's
+ * prompt part, where cybermonklabs/legion#4447 moved every step of the merger's): the
+ * first-removal rule sent cybermonklabs/legion#3972 round a lap on a flaky group build
+ * (INFRA-3204's retro).
  *
  * The subject is the `merge_group` checks, and the gap after them is `.{0,30}` rather than
  * `[^.]`, so it reaches across the one full stop of the prompt part's "checks failed. That is
@@ -611,7 +613,12 @@ export const RED_AT_THE_HEAD = path.join(
   "skills/legion-worker/references/red-at-the-head.md"
 );
 
-/** The merge gate, which carries the merger's merge-queue rule and one pointer to that page. */
+/**
+ * The merge gate, which carries the reviewer's one pointer to that page. The merger's merge-queue
+ * rule and the reviewer's round order are in their role prompts since cybermonklabs/legion#4447
+ * ("The merger's steps are all in its role prompt"), and
+ * `packages/daemon/internal/prompts/roles_test.go` pins them there.
+ */
 export const MERGE_GATE = path.join(REPO_ROOT, "skills/legion-worker/references/merge-gate.md");
 
 /** The pull-request body reference, which points at that page twice. */
@@ -794,54 +801,38 @@ const A_FAILING_TEST_IS_NO_EXTERNAL_CAUSE =
   "A failing test is never the second case, whatever package holds it: one that is not the change's takes the one re-run on its first red, and on its second red it is the round's failure, as *Red again* above says, never an external cause.";
 
 /**
- * The merger's merge-queue rule, its two sentences pinned whole and literally. The first is the
- * one re-queue: a role that lost it sends the work back to `implementing` on the first
- * `failed_checks` ejection of a head GitHub itself may queue again, which is the lap this change
- * exists to save. The second is the bound on it, and a role that lost that one reads the first as
- * leave to re-run the group build — which puts nothing back in the queue, since GitHub deletes
- * the entry's branch (measured on cybermonklabs/legion#2811).
- */
-const EJECTION_IS_QUEUED_ONCE_MORE =
-  "When GitHub takes the pull request out of the merge queue because the group build failed a check (`failed_checks`) and the head has not changed, the merger queues that same head once more.";
-const NO_ROLE_RERUNS_A_GROUP_BUILD = "No role re-runs a group build.";
-
-/**
  * The four pointers to the page, each pinned whole and literally: the worker skill's own
- * References row, which is how a role reaches the page at all; the merge gate's; and the two in
- * the pull-request body reference — the one in `## Never waiting on CI`, beside the
- * implementer's own re-run, and the one in the tester's evidence bullet, where the prohibition
- * this change retired used to stand. A reference is reached only through a link from somewhere a
- * role reads, so a lost pointer leaves the rule shipped and unread: the role goes on from the
- * text around the gap, which tells it to finish its round on a red the change never made.
+ * References line, which is how a role reaches the page at all; the merge gate's; and the two in
+ * the pull-request body reference — the one in `## Never waiting on CI`, beside the phase
+ * holder's one re-run, and the one in the tester's evidence bullet, where the prohibition this
+ * change retired used to stand. A reference is reached only through a link from somewhere a role
+ * reads, so a lost pointer leaves the rule shipped and unread: the role goes on from the text
+ * around the gap, which tells it to finish its round on a red the change never made.
  */
 const SKILL_LINKS_THE_PAGE =
-  "| A check is red at the head of the pull request, in the phase the role holds | `skill://legion-worker/references/red-at-the-head.md` |";
+  "A check red at the head of the pull request, in the phase you hold: `skill://legion-worker/references/red-at-the-head.md`.";
 const MERGE_GATE_POINTS_AT_THE_PAGE =
   "A required check that is red at the head is a different case, which `skill://legion-worker/references/red-at-the-head.md` decides.";
 const NEVER_WAITING_POINTS_AT_THE_PAGE =
-  "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: which red is the change's, which a pass in the implementer's own pod does not move; that the counted set must report the check before any re-run, however the role learned of the red; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.";
+  "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: which red is the change's, which a pass in the role's own pod does not move; that the counted set must report the check before any re-run, however the role learned of the red; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.";
 const TESTER_EVIDENCE_POINTS_AT_THE_PAGE =
   "A red at the head that the change did not make is the tester's to re-run once, and `skill://legion-worker/references/red-at-the-head.md` holds the rule.";
 const TESTER_READS_THE_HEAD =
   "The tester reads the head's checks on GitHub before any verdict, whether or not a check of the issue carries `ci_check`.";
 
 /**
- * The same rulings where the reviewer and the tester read them outside the page, each pinned
- * whole and literally: the merge gate's round order, which names the record before the press and
- * the three disposal steps after a green re-run, and the tester's evidence bullet, whose wait is
- * for a red the counted set does not report however the tester learned of it, and whose red is
- * the change's by the page's reading, whatever a run in the tester's own pod shows; and the
- * implementer's re-run in `## Never waiting on CI`, whose wait has the page's bound where no
- * settlement comes.
+ * The same rulings where the tester reads them outside the page, each pinned whole and literally:
+ * the tester's evidence bullet, whose wait is for a red the counted set does not report however
+ * the tester learned of it, and whose red is the change's by the page's reading, whatever a run in
+ * the tester's own pod shows; and the re-run in `## Never waiting on CI`, whose wait has the
+ * page's bound where no settlement comes.
  */
-const REVIEWER_ORDER_RECORDS_AND_DISPOSES =
-  "record the failure in a `review` handoff record with `dispatch handoff-write` before the `gh run rerun` call (`skill://legion-worker/references/red-at-the-head.md`), and once that re-run is green, run the three steps of that page's *What becomes of the record*;";
 const TESTER_WAITS_HOWEVER_IT_LEARNED =
   "and a red the counted set does not yet report `completed`, however the tester learned of it,";
 const TESTER_LOCAL_PASS_MOVES_NOTHING =
   "That page's *Which red is the change's* decides whose red it is, and a pass in the tester's own pod does not move it.";
-const IMPLEMENTER_WAIT_IS_BOUNDED =
-  "(where no settlement comes, the bound is the phase reminder or the daemon's backstop: it reads the counted set once then, and waits again on a re-run still queued or in progress);";
+const RERUN_WAIT_IS_BOUNDED =
+  "(where no settlement comes, the bound is the phase reminder or the daemon's backstop: it reads the counted set once then, and waits again on a re-run still queued or in progress)";
 
 /**
  * What the four files INFRA-1303 wrote or changed get wrong about a red at the head: the worker
@@ -924,31 +915,16 @@ export function redAtTheHeadFaults(pages: {
     ),
     ...prosePinFaults("skills/legion-worker/references/merge-gate.md", pages.mergeGate, null, [
       {
-        sentence: EJECTION_IS_QUEUED_ONCE_MORE,
-        because:
-          "a merger told nothing of the re-queue sends the work back on the first failed_checks ejection of a head GitHub would queue again",
-      },
-      {
-        sentence: NO_ROLE_RERUNS_A_GROUP_BUILD,
-        because:
-          "a role that re-runs a group build puts nothing back in the queue, since GitHub deletes the entry's branch",
-      },
-      {
         sentence: MERGE_GATE_POINTS_AT_THE_PAGE,
         because:
           "a reviewer reading the merge gate reaches the re-run rule only through this pointer",
-      },
-      {
-        sentence: REVIEWER_ORDER_RECORDS_AND_DISPOSES,
-        because:
-          "a reviewer that follows the round order presses before the record and approves after green with no occurrence",
       },
     ]),
     ...prosePinFaults("skills/legion-worker/references/pr-body.md", pages.prBody, null, [
       {
         sentence: NEVER_WAITING_POINTS_AT_THE_PAGE,
         because:
-          "an implementer reading `## Never waiting on CI` reaches the spent-re-run test and the reading of whose red it is only through this pointer",
+          "a role reading `## Never waiting on CI` reaches the spent-re-run test and the reading of whose red it is only through this pointer",
       },
       {
         sentence: TESTER_EVIDENCE_POINTS_AT_THE_PAGE,
@@ -970,9 +946,9 @@ export function redAtTheHeadFaults(pages: {
         because: "a tester whose test passes in its own pod re-runs a red the change made",
       },
       {
-        sentence: IMPLEMENTER_WAIT_IS_BOUNDED,
+        sentence: RERUN_WAIT_IS_BOUNDED,
         because:
-          "an implementer whose settlement never comes waits forever, or judges a lane still running at the reminder",
+          "a role whose settlement never comes waits forever, or judges a lane still running at the reminder",
       },
     ]),
   ];

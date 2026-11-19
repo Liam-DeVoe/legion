@@ -1,6 +1,8 @@
 kind: Changed
 body: |-
-  The `envoy` skill this plugin ships: the role that holds an issue's phase waits on the re-run of
-  a red at the head, not the implementer alone.
+  The Legion plugin this package builds ships `skill://legion-worker/references/red-at-the-head.md`:
+  the role that holds an issue's phase re-runs a red check at the head of its pull request once,
+  after it records the failure, and the `legion-controller` skill keeps one issue per test that
+  such a re-run cleared.
 custom:
   Issue: pr3514

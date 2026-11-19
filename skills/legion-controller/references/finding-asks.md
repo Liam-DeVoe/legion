@@ -7,7 +7,7 @@ Read this when a clear defect or a finding ask's reference reaches you, when an 
 Every issue you file carries one line in its spec, which triage reads to tell your filing from another's label:
 
 - for a person: `Filed for <person> at their request: <request>`. The request is `dispatch://<REPORT KEY>/ask/<id>` for who answered it; `Slack <channel_id> message <ts>` for the mention's `<@user_id>` (`…, adopting message <earlier ts>` when the mention asks for an earlier message's request); or `direct message <id>`, the id its frame's `reply_with` names after `--in-reply-to` (for a message that came as your own user turn, `direct message to session <your session id>`).
-- for a clear defect no running tree owns: `Filed for Legion from <role> on <issue>: <evidence reference>`.
+- for a clear defect no running tree owns, a test a role re-ran green among them: `Filed for Legion from <role> on <issue>: <evidence reference>`.
 
 ## Hand over a clear defect
 
@@ -20,6 +20,8 @@ A role sends a clear defect with its role token, the defect, its issue, where th
    `dispatch issue --project <KEY> --repo <owner/name> --title '<the defect>' --label legion --spec-file -`
    The spec states the defect, where the fix belongs and the fix, and ends with the `Filed for Legion from` line.
 5. Reply under the evidence comment (`--reply-to '<comment id>'`) or the ask (`--reply-to-ask '<ask id>'`), its first line exactly `Filed dispatch://<NEW KEY>` or `Handed dispatch://<KEY>`.
+
+A test a role re-ran green (`skill://legion-worker/references/red-at-the-head.md`) reaches you in the role's message, or as a `Clear defect from` comment that names it, when no open issue tracks the test or the one that does reads `done`. No tree owns it and no person need ask you: take it as a census, in place of steps 1 to 4, one issue per test and never one per occurrence. An open issue that tracks the test gets the occurrence as a comment. With none, file one as step 4 says, titled `<the test's full name> fails at random in CI`, its spec naming the test, the job, the head, the failing run and the green re-run, and saying in one line that the test was re-run green and the round went on, so no reader takes it for a blocked merge. When the test's issue reads `done`, read it: if its fix is still in place and the same test failed again, reopen it with `set_status` to `todo` and comment the occurrence there; if it shipped a different fix, or this failure is another mechanism in the same test, file a new issue as step 4 says, citing the closed one in its spec. Reply under a comment as step 5 says, and name in your summary the issue the occurrence went to.
 
 ## Follow it
 

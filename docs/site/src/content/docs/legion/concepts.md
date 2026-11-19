@@ -399,10 +399,11 @@ Legion uses GitHub's own review mechanisms rather than labels:
   current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
   message names the head's commit statuses too, each with its state: Dispatch reads them from
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
-  names no pull request. A red is for those roles to decide on — re-run a check that failed on
-  itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
-  branch's own required checks, which Legion reads only to decide whether a conflicting head needs
-  its merge forward now (below), and never re-implements. The reviewer reads the
+  names no pull request. A red is for the role that holds the issue's phase to act on — that role
+  re-runs a check that failed on itself once at that head, the implementer fixes code that is at
+  fault, and a check still running is waited for — and for GitHub to hold the merge over, under the
+  base branch's own required checks, which Legion reads only to decide whether a conflicting head
+  needs its merge forward now (below), and never re-implements. The reviewer reads the
   head's checks on GitHub itself before it approves, and the architect before it accepts; those
   reads are the ones that decide anything. Two settlements of the same head that name the same
   checks tell nobody twice, and a lingering tree is told nothing at all.
@@ -617,9 +618,10 @@ Four moves release a held issue. The architect's own retry puts it back in that 
 held root to `todo` releases the hold the same way, whether you move it in the Dispatch
 dashboard, the controller sets it, or an operator runs `legion issue status`: the issue returns to
 that phase and its worker starts again at the same generation, in the same pod and at the same place
-in the admission line. A red head moves nothing; a held review whose round is already decided
-goes where that decision sends it, and the board then shows the phase the issue ends in.
-Starting the worker's claim in a fresh session does the same at the cost of that session. A restart, the root set to `backlog` and then to
+in the admission line. A red head moves nothing, and the restored worker reads the head's checks
+itself; a held review whose round is already decided goes where that decision sends it, and the
+board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
+does the same at the cost of that session. A restart, the root set to `backlog` and then to
 `todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
 from its architect.
 

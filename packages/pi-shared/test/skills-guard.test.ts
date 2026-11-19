@@ -105,6 +105,15 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
     2,
   ],
   [
+    'pr-body.md\'s "rerun no lane as evidence", as cybermonklabs/legion#4447 wrote it',
+    [
+      "- The tester tries to break the changed surface and writes the red test for a way no test would catch.",
+      "  Lint, types and the unit and integration suites are CI's: read them on GitHub at the head, rerun",
+      "  no lane as evidence, and wait for none.",
+    ],
+    2,
+  ],
+  [
     'tester.md\'s "rerun none of them yourself"',
     [
       "Read CI for everything static, on GitHub at the head you tested and written down nowhere for a",

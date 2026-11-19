@@ -2,6 +2,7 @@
 
 Part of `skill://legion-worker`. Read it when a check is red at the head of the issue's pull
 request and a phase of that issue is open. Every path it cites is in cybermonklabs/legion.
+The runs that show what GitHub answers here: <https://cybermonklabs.github.io/legion/legion/checks-and-re-runs/>.
 
 A red the change did not make costs the tree a whole lap today: an implementing round, a new CI
 pass, a new testing round, and often a new review round. The role that already reads that head
@@ -18,7 +19,7 @@ clears such a red where it stands. It writes the failure down in a handoff recor
   with no re-run, nothing shows the test fails at random, so the red is no occurrence for the
   census. The tester and the implementer still re-run such a red once.
 - The merger, the architect in `accepting` and an implementer that runs retro re-run nothing. The
-  merger's `failed_checks` ejection rule is in `skill://legion-worker/references/merge-gate.md`.
+  merger's `failed_checks` ejection rule is in its role prompt.
 - A role that is told of a red whose phase it does not hold re-runs nothing.
 
 ## The record comes first, never after
@@ -40,7 +41,7 @@ counted as such.
 **The run that holds the check must have ended first.** A lane can fail and read `completed` while
 other lanes of its workflow run still run. Until that run ends, `gh run view <run-id> --log-failed`
 answers `run <id> is still in progress; logs will be available when it is complete` and exits 1, and
-GitHub refuses `gh run rerun` (measured on run 43686474806). So before the log read the role reads
+GitHub refuses `gh run rerun`. So before the log read the role reads
 the run's own status, `gh run view <run-id> --json status --jq .status`, and reads the log and
 presses the re-run only on `completed`. The run's own `completed` is no leave to press while the
 counted set does not report that check `completed`. Until then it waits for the pull request's
@@ -52,8 +53,7 @@ The role reads that first line with `gh run view <run-id> --log-failed`. A read 
 recorded as failed, with the error, and the role makes the re-run all the same. Where the log
 can be read and holds no line that states the failure, the record says that, naming the step and
 what the log did hold, rather than leaving the field empty or writing a line the log does not
-carry: a log of `677 bytes, none printed` hid an apt failure's own diagnosis for a whole fleet
-until a round printed the body (dispatch://INFRA-1545).
+carry.
 
 The record is a handoff record of the role's own phase, written with
 `dispatch handoff-write --issue <issue> --phase <implement|test|review> --body-file <file>` before the
@@ -107,10 +107,9 @@ require included. The role reads it one of two ways. At the pull request's curre
 gh pr checks <n>
 ```
 
-Never with `--required`, which prints the checks the base requires and no other: at `ed157dc9` it
-printed 1 row where the rollup held 46, so a lane under the aggregate `ci-ok` and a check the base
-does not require are never in it, and on a base that requires nothing it prints that no required
-checks are reported and exits 1 (dispatch://INFRA-3035, on cybermonklabs/legion#3658).
+Never with `--required`, which prints the checks the base requires and no other, so a lane under
+an aggregate such as `ci-ok` and a check the base does not require are never in it, and on a base
+that requires nothing it prints that no required checks are reported and exits 1.
 
 At a named head, which is what a role holds after a push, the rollup of that commit:
 
@@ -119,14 +118,11 @@ gh api graphql --paginate -F oid=<head> -f query='query($oid:GitObjectID!,$endCu
 ```
 
 `--paginate` with the `$endCursor` variable and `endCursor` in the page info is what follows
-`hasNextPage`, because the context list is capped at 100 a page; a real head of this repository
-carries 65. The read costs 1 point of a limit of 10,000 an hour.
+`hasNextPage`, because the context list is capped at 100 a page.
 
 **Do not judge a red from `repos/<o>/<r>/commits/<head>/check-runs`.** That endpoint answers
 every check run at the commit, a by-hand `workflow_dispatch` run's among them, which GitHub
-counts for no pull request. Measured in this repository on 2026-11-11: at `9b728582e2762eb62b9c582d7d843df772b951ff`
-it answers 113 check runs where the pull request's rollup holds 57, the 56 left out belonging to
-two by-hand runs at that commit (dispatch://INFRA-3035).
+counts for no pull request.
 
 **The spend is a different question, and a different read.** Whether the red is the change's is
 judged on the counted set, above. Whether the head's one re-run is already spent is judged on
@@ -155,17 +151,13 @@ succeed or skip is `cancelled`, or is an aggregate that failed over such a lane.
 conclusion spends it, one this page does not name included. A lane GitHub cancelled at two attempts
 of the same run is read as `failure`, so a cancelled lane gets one re-run that spends nothing, and
 the head's one re-run is still left after it. That bound is what holds a hung job: GitHub cancels a
-job that runs past its `timeout-minutes`, so a lane that hangs again reads `cancelled` again
-(<https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idtimeout-minutes>).
-Measured on run 43330369709 at `94fa9812fd0fcbecf444016d93ff41428dcce523`: attempt 1 ended
-`cancelled`, its job `dispatch-browser / merge` `cancelled` and the aggregate `ci-ok` `failure`,
-and attempt 2 passed, so that head's one re-run is unspent. `event=pull_request` keeps the by-hand
-`workflow_dispatch` runs out, as the counted set does.
+job that runs past its `timeout-minutes`, so a lane that hangs again reads `cancelled` again.
+`event=pull_request` keeps the by-hand `workflow_dispatch` runs out, as the counted set does.
 
 An aggregate is resolved to its lane, as step 2 of *Which red is the change's* says, before the
-spend is judged. The reviewer's existing re-run of a cancelled or absent required check
-(`skill://legion-worker/references/merge-gate.md`) neither spends the head's re-run nor is spent
-by it, and an aggregate that reads `failure` over a lane GitHub cancelled is that cancelled lane.
+spend is judged. The reviewer's existing re-run of a cancelled or absent required check, which its
+role prompt gives, neither spends the head's re-run nor is spent by it, and an aggregate that reads
+`failure` over a lane GitHub cancelled is that cancelled lane.
 A `gh run rerun <run-id> --failed` call pressed while a check of the counted set, resolved to its
 lane, is `failure` spends the head's re-run, whatever else that call clears.
 
@@ -174,8 +166,7 @@ and it names the check.
 
 **An empty counted set.** A rollup of `null`, which `gh pr checks` prints as no checks reported,
 means GitHub counts no context at that head. A check with no counted run there has no re-run to
-spend: there is nothing to re-run. Measured at `ebb186ba575924b3a341769ad2168387d056724f`, where the
-commit endpoint answers 55 runs of a by-hand `workflow_dispatch` and the rollup is `null`.
+spend: there is nothing to re-run.
 
 **An unread counted set is not an empty one.** After a push the counted set can lag, so a role that
 reads it at once may find the failing check pending, queued, in progress or absent. The spend test
@@ -264,10 +255,6 @@ give the same empty log and no exit status tells them apart. For a commit: the e
 compare, so fetch and read again. Two repositories of one fleet carry the same pull request
 numbers, so a key is no answer and a file read is a date.
 
-The case is live: on theorem-labs/agent-infra#3160 at head `8fc15cf3`, the `route-tests` lane failed
-on the runner with `unable to write file spend/README.md`, exit 128, before a test of the change had
-run, and the required aggregate was red only because of it.
-
 ## What the daemon does with a red
 
 A red moves no phase: the daemon names each check of a settlement to the architect, the phase's
@@ -283,8 +270,7 @@ is paid to stop. A re-run that comes back red is the round's failure and owes no
 1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks
    that test. An issue a record of an earlier red already cites is read again before it is cited
    again — whether it is open, whether its fix has merged, whether it is still the owner — since
-   a stale key reads exactly like a tracked defect and becomes the resting place: one was carried
-   as the remedy for four rounds after it had stopped being one (dispatch://INFRA-1192).
+   a stale key reads exactly like a tracked defect and becomes the resting place.
 2. `dispatch comment --issue <that KEY> --body-file -`, the occurrence on that issue, unless it
    reads `done`: the test, the job, the head, the failing run and the green re-run.
 3. The message to the controller: an `envoy_publish` to the controller topic the role's

@@ -336,11 +336,14 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 // the head out because its own `merge_group` checks failed is work to fix, so send the issue
 // back", which sent cybermonklabs/legion#3972 round a lap on a flaky group build (INFRA-3204's
 // retro). The record the requeue owes is pinned as a pointer to the page that holds it, so the
-// merger keeps no second list of its facts.
+// merger keeps no second list of its facts. cybermonklabs/legion#4447 moved every step of the
+// merger's out of skills/legion-worker/references/merge-gate.md into this part, so these rows also
+// hold the two sentences the skills guard pinned there: the requeue at an unchanged head, and that
+// no role re-runs a group build.
 func TestTheMergerQueuesAFailedChecksEjectionOnceMore(t *testing.T) {
 	merger := rolePart(t, "merger.md")
 	for _, want := range []string{
-		"gets that same head queued once more",
+		"At a head that has not changed, the removal gets that same head queued once more",
 		"the issue goes back only on the second such removal of that head",
 		"no role re-runs a group build",
 		"carrying the facts `skill://legion-worker/references/red-at-the-head.md` names for the record",
@@ -626,10 +629,19 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"go/reviewer.md", "A check the base does not require you neither wait for nor re-run for the approval: you approve over a red of it that the change did not make and record it as that page says, and a red of it whose log shows that the change breaks something is a finding like any other, as `skill://legion-worker/references/merge-gate.md` says."},
 		// The reviewer's round order carries the same record before the press and the same disposal
 		// steps after a green re-run (trial-i-head-2 and i-nos1-5 approved after green with no
-		// occurrence), and its wait is the tester's.
+		// occurrence), and its wait is the tester's. The skills guard pinned the same order in
+		// merge-gate.md until cybermonklabs/legion#4447 left the round order to this part alone.
 		{"go/reviewer.md", "record the failure in a `review` handoff record with `dispatch handoff-write` before the `gh run rerun` call"},
 		{"go/reviewer.md", "and once that re-run is green, run the three steps of that page's *What becomes of the record*"},
 		{"go/reviewer.md", "and a red the counted set does not yet report `completed`, however you learned of it"},
+		// A required red is judged on the counted set, and the line says both halves of the rule
+		// (the architect's ruling of 2026-11-19 on the forward merge of cybermonklabs/legion#4447,
+		// whose sentence "A required check red there is a `REQUEST_CHANGES` naming it" sent every
+		// required red to a request for changes with no re-run): a red the change made is a request
+		// for changes, and one it did not make takes the head's one re-run first. The read is the
+		// counted set, never the commit's check runs, which the red-at-the-head page refuses.
+		{"go/reviewer.md", "A required check red there that the change made is a `REQUEST_CHANGES` naming it, and one the change did not make takes the head's one re-run first"},
+		{"go/reviewer.md", "Second the head's checks as GitHub counts them for the pull request, the counted set"},
 		// The worker part names the same record, and the implementer's overlay the same reading of
 		// whose red it is.
 		{"go/worker-common.md", "after it records the failure in a handoff record of its own phase with `dispatch handoff-write`"},
