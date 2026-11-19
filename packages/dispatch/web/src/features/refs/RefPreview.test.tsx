@@ -1,6 +1,6 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the hover-intent sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget), and `scroll` has no user-event form at all.
+// biome-ignore lint/style/noRestrictedImports: the hover-intent sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget), `scroll` has no user-event form at all, and neither has an Escape that ends an IME composition.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useRef } from "react";
 import { Link, MemoryRouter } from "react-router-dom";
@@ -417,6 +417,32 @@ test("Escape closes the open card", async () => {
     });
     expect(screen.getByRole("tooltip")).toBeTruthy();
     await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// The Escape that ends an IME composition is the composition's: the open card stays open, and an
+// Escape after the composition closes it.
+test("an Escape that ends an IME composition leaves the open card open", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const view = render(<Harness />);
+  try {
+    const first = screen.getByRole("link", { name: "first" });
+    fireEvent.pointerOver(first, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    fireEvent.keyDown(document, { isComposing: true, key: "Escape" });
+    expect(
+      screen.queryByRole("tooltip"),
+      "the Escape that ended a composition closed the card"
+    ).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   } finally {
     view.unmount();
