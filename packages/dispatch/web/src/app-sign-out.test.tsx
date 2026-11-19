@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
+import { keptWrites } from "./__tests__/kept-sends-harness";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
@@ -125,13 +126,6 @@ function aliceWrite(
       .catch((error: unknown) => error);
   });
   return pressed;
-}
-
-/** The names of the writes this tab keeps across a reload. */
-function keptWrites(): string[] {
-  return Array.from({ length: window.sessionStorage.length }, (_, index) =>
-    window.sessionStorage.key(index)
-  ).filter((name): name is string => name?.startsWith("dispatch.write:") === true);
 }
 
 /** Another tab of this browser on the sign-in channel, as a test drives it. */

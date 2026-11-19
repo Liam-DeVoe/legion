@@ -42,6 +42,14 @@ const OWNER_FIELD = "priority-owner";
  */
 export function PriorityPage(): ReactNode {
   const { id = "" } = useParams();
+  // Keyed by the priority: going from one priority's page to another's draws the page afresh,
+  // so each field starts from its own priority's text, and the writes the page held for the one
+  // before go back to the shell's line (`usePriorityWrites`).
+  return <PriorityView id={id} key={id} />;
+}
+
+/** The page of the priority `id`. */
+function PriorityView({ id }: { id: string }): ReactNode {
   const priorities = useQuery(prioritiesQuery());
   const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });
   const [open, setOpen] = useState(true);
@@ -109,11 +117,8 @@ export function PriorityPage(): ReactNode {
             <span className={`text-2xl font-semibold ${textMutedOnCanvas}`}>{item.order}</span>
             <h1 className={`min-w-64 flex-1 text-2xl font-semibold ${textPrimaryOnCanvas}`}>
               {canWrite ? (
-                // Keyed by the priority, as each field below is: the page stays mounted from one
-                // priority to the next, and a field holds what its priority's edit started from.
                 <InPlaceField
                   kept={kept(id, "title", title)}
-                  key={id}
                   label="Title"
                   maxLength={ISSUE_TITLE_MAX}
                   noticeAt={titleNoticeAt}
@@ -140,7 +145,6 @@ export function PriorityPage(): ReactNode {
                 <label htmlFor={OWNER_FIELD}>Owner</label>
                 <InPlaceField
                   id={OWNER_FIELD}
-                  key={id}
                   label="Owner"
                   onSave={(owner) =>
                     patch.mutate({
@@ -181,7 +185,6 @@ export function PriorityPage(): ReactNode {
               canWrite={canWrite}
               description={description}
               kept={keptDescription}
-              key={id}
               label={`Description of ${item.order}`}
               onKeptChange={(texts) => keep(id, "description", texts)}
               onSave={(next) =>

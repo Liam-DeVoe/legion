@@ -320,24 +320,19 @@ function hold(
   return { ...priority };
 }
 
-/** The seed run as the command it is, against the fake Dispatch, with the shared bearer every
- *  pod carries and the session it names on each write. */
-async function runCommand(
-  session: string
-): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {
-  const env: Record<string, string | undefined> = {
-    ...process.env,
-    DISPATCH_URL: config.url,
-    DISPATCH_TOKEN: "token",
-    DISPATCH_SESSION_ID: session,
-  };
-  delete env.DISPATCH_TOKEN_FILE;
-  delete env.ENVOY_CONFIG_FILE;
-  const child = Bun.spawn(["bun", `${import.meta.dir}/priorities-seed.ts`, DOCUMENT], {
-    env,
-    stderr: "pipe",
-    stdout: "pipe",
-  });
+/** What a command this test runs answered: its exit code and what it printed. */
+interface Spawned {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/** Runs `argv` with `env` as its whole environment, and answers once it has exited. */
+async function spawned(
+  argv: readonly string[],
+  env: Record<string, string | undefined>
+): Promise<Spawned> {
+  const child = Bun.spawn([...argv], { env, stderr: "pipe", stdout: "pipe" });
   const [code, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
@@ -346,31 +341,31 @@ async function runCommand(
   return { code, stdout, stderr };
 }
 
+/** The seed run as the command it is, against the fake Dispatch, with the shared bearer every
+ *  pod carries and the session it names on each write. */
+function runCommand(session: string): Promise<Spawned> {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    DISPATCH_URL: config.url,
+    DISPATCH_TOKEN: "token",
+    DISPATCH_SESSION_ID: session,
+  };
+  delete env.DISPATCH_TOKEN_FILE;
+  delete env.ENVOY_CONFIG_FILE;
+  return spawned(["bun", `${import.meta.dir}/priorities-seed.ts`, DOCUMENT], env);
+}
+
 /** The check of R10 (`priorities-seed-check.sh`) run against the fake Dispatch, its bearer in a
  *  file of a scratch directory of its own, which goes with the run. */
-async function runCheck(): Promise<{
-  readonly code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}> {
+async function runCheck(): Promise<Spawned> {
   const scratch = mkdtempSync(join(tmpdir(), "priorities-seed-check."));
   try {
     const tokenFile = join(scratch, "token");
     writeFileSync(tokenFile, "token", { mode: 0o600 });
-    const child = Bun.spawn(
+    return await spawned(
       ["bash", `${import.meta.dir}/priorities-seed-check.sh`, "--artifact", DOCUMENT],
-      {
-        env: { ...process.env, DISPATCH_TOKEN_FILE: tokenFile, DISPATCH_URL: config.url },
-        stderr: "pipe",
-        stdout: "pipe",
-      }
+      { ...process.env, DISPATCH_TOKEN_FILE: tokenFile, DISPATCH_URL: config.url }
     );
-    const [code, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    return { code, stdout, stderr };
   } finally {
     rmSync(scratch, { recursive: true });
   }

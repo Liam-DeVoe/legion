@@ -5,8 +5,9 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { onFakeClock } from "../../__tests__/fake-clock";
+import { keptWrites } from "../../__tests__/kept-sends-harness";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
-import { answerPriorityPatches } from "../../__tests__/send-answers";
+import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
 import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
@@ -94,6 +95,14 @@ const BODY: Priorities = {
   priority_work_parked: { by_priority: null, count: 0, issues: null },
 };
 
+/** The read of the priorities once another person wrote `overrides` over priority `id`. */
+function writtenOver(id: string, overrides: Partial<PriorityRow>): Priorities {
+  return {
+    ...BODY,
+    priorities: ROWS.map((row) => (row.id === id ? { ...row, ...overrides } : row)),
+  };
+}
+
 const saved = (id: string): Priority => ({
   id,
   title: "Rocq and Lean speed work restarted",
@@ -147,8 +156,9 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   };
   // The description is drawn in the documents' own editor, whose handles a test edits through.
   const editors = recordedEditors();
-  // The page, the priorities page its link leads to - a stand-in with a way back - and the
-  // shell's line of pending writes, which stands above the router as the app's does.
+  // The page, the priorities page its link leads to - a stand-in with a way back - the shell's
+  // line of pending writes, which stands above the router as the app's does, and a way to
+  // another priority's page, which the router draws on the same page.
   const draw = (app: QueryClient) =>
     render(
       <MemoryRouter initialEntries={[`/priorities/${id}`]}>
@@ -162,6 +172,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
               />
             </Routes>
             <PendingWritesIndicator />
+            <Link to="/priorities/runbook">The runbook's page</Link>
           </DocumentRuntime.Provider>
         </QueryClientProvider>
       </MemoryRouter>
@@ -179,10 +190,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   /** Another person's write of the priority on the page reaching it, as a refresh of its read
    *  does. */
   const writtenElsewhere = (overrides: Partial<PriorityRow>) => {
-    const written = {
-      ...BODY,
-      priorities: ROWS.map((row) => (row.id === id ? { ...row, ...overrides } : row)),
-    };
+    const written = writtenOver(id, overrides);
     priorities.mockResolvedValue(written);
     act(() => client.setQueryData(prioritiesQuery().queryKey, written));
   };
@@ -481,25 +489,6 @@ test("a description a reload took up and another person's change refused is kept
   expect(patch.mock.calls[0]?.[1]).toEqual(body);
 });
 
-/** Dispatch's refusal of a title another person wrote since the reader's edit started. */
-const TITLE_CHANGED = new ApiError(409, {
-  code: "PRIORITY_CHANGED",
-  error: "the title was written meanwhile",
-});
-
-/** The priority's read once another person wrote its title. */
-const RETITLED: Priorities = {
-  ...BODY,
-  priorities: ROWS.map((row) => (row.id === "rocq-lean" ? { ...row, title: "Theirs" } : row)),
-};
-
-/** The names of the writes this tab keeps across a reload. */
-function keptWrites(): string[] {
-  return Array.from({ length: window.sessionStorage.length }, (_, index) =>
-    window.sessionStorage.key(index)
-  ).filter((name): name is string => name?.startsWith("dispatch.write:") === true);
-}
-
 /** The reader writes `, mine` at the end of the title, and leaves the field: Dispatch refuses it
  *  (`patch`), another person having written `Theirs` since, which the page reads (`priorities`)
  *  once it takes the refusal. Answers the notice the page then draws, holding the reader's
@@ -510,8 +499,8 @@ async function refusedTitle(
 ) {
   const user = userEvent.setup();
   const title = await screen.findByRole("textbox", { name: "Title" });
-  priorities.mockResolvedValue(RETITLED);
-  patch.mockRejectedValueOnce(TITLE_CHANGED);
+  priorities.mockResolvedValue(writtenOver("rocq-lean", { title: "Theirs" }));
+  patch.mockRejectedValueOnce(PRIORITY_TITLE_CHANGED);
   await user.type(title, ", mine");
   await user.tab();
   const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
@@ -577,4 +566,39 @@ test("a title another person's change refused outlives a reload, and keeping the
   expect(keptWrites()).toEqual([]);
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Theirs");
   expect(patch).toHaveBeenCalledTimes(1);
+});
+
+// A write the page holds whose text the page then reads is one Dispatch holds: the reader wrote
+// it again, or another person wrote the same text. It goes, from the store and from what the tab
+// keeps, so leaving the page puts nothing on the shell's line.
+test("a title another person's change refused goes once the page reads it, so leaving shows nothing", async () => {
+  const { client, patch, priorities, writtenElsewhere } = page();
+  const { user } = await refusedTitle(priorities, patch);
+  writtenElsewhere({ title: `${ROWS[1]?.title}, mine` });
+  await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+  expect(keptWrites()).toEqual([]);
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+
+  await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
+  await screen.findByRole("link", { name: "Back to the priority" });
+  expect(screen.queryByTestId("pending-writes")).toBeNull();
+  expect(patch).toHaveBeenCalledTimes(1);
+});
+
+// The router keeps the page drawn as the reader goes from one priority's page to another's, and
+// the page draws itself afresh for each: the write it held for the priority before goes back to
+// the shell's line, which offers the reader's text to copy, as leaving the page does.
+test("going to another priority's page hands the title another person's change refused back to the line", async () => {
+  const { client, patch, priorities } = page();
+  const { user } = await refusedTitle(priorities, patch);
+  await user.click(screen.getByRole("link", { name: "The runbook's page" }));
+  await waitFor(() =>
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("The fleet has a runbook")
+  );
+  const line = await screen.findByTestId("pending-writes");
+  expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(
+    `${ROWS[1]?.title}, mine`
+  );
+  expect(writesOf(client).rows()).toMatchObject([{ claimed: false, status: "refused" }]);
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
 });

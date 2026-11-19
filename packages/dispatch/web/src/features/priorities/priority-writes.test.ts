@@ -3,8 +3,8 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { settle } from "../../__tests__/fake-clock";
-import { answerPriorityPatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
+import { api } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Priorities, Priority } from "../../api/types";
 import { writesOf } from "../writes/write-store";
@@ -124,11 +124,6 @@ const SAVED: Priority = {
   made_by: { kind: "user", id: "alice" },
 };
 
-const CHANGED = new ApiError(409, {
-  code: "PRIORITY_CHANGED",
-  error: "the title was written meanwhile",
-});
-
 const restores: (() => void)[] = [];
 afterEach(() => {
   for (const restore of restores.splice(0)) restore();
@@ -187,6 +182,8 @@ function pageWrites(shown: readonly string[] = []) {
     client,
     /** The page's texts kept beside `p1`'s title, where it reads `held`. */
     kept: (held: string) => hook.result.current.kept("p1", "title", held),
+    /** The field keeps `texts`, newest first, beside `p1`'s title. */
+    keep: (texts: readonly string[]) => act(() => hook.result.current.keep("p1", "title", texts)),
     /** Draws another page, which shows `ids`, on the same app. */
     drawAnother: (ids: readonly string[]) => {
       const other = draw(ids);
@@ -204,7 +201,7 @@ function pageWrites(shown: readonly string[] = []) {
     answer: async (index: number, refused: boolean) => {
       await waitFor(() => expect(answers.length).toBeGreaterThan(index));
       await act(async () => {
-        if (refused) answers[index]?.reject(CHANGED);
+        if (refused) answers[index]?.reject(PRIORITY_TITLE_CHANGED);
         else answers[index]?.resolve(SAVED);
         await settle();
       });
@@ -412,4 +409,20 @@ test("a page that goes hands its refused title back, one drawn later offers it a
   act(() => later.result.current.keep("p1", "title", []));
   expect(writes.rows()).toEqual([]);
   expect(later.result.current.kept("p1", "title", "Bob")).toEqual([]);
+});
+
+// The reader's texts beside a field run newest first. Another person's text arriving while the
+// reader typed "Typed" has the field keep that ahead of the text a refused write brought back,
+// and the refused write's text keeps its place behind it, though the store carries it too.
+test("a field's kept texts stay newest first, a refused write's text keeping its place among them", async () => {
+  const { answer, client, keep, kept, read, rename, sentAt } = pageWrites(SHOWS_P1);
+  await read(0);
+  rename("Mine", "Old");
+  await sentAt(0);
+  await answer(0, true);
+  await read(1);
+  await waitFor(() => expect(kept("Bob")).toEqual(["Mine"]));
+  keep(["Typed", "Mine"]);
+  expect(kept("Bob")).toEqual(["Typed", "Mine"]);
+  expect(writesOf(client).rows()).toMatchObject([{ claimed: true, detail: { text: "Mine" } }]);
 });

@@ -182,7 +182,7 @@ done < <(jq -r --arg document "$document" '
   | select($marker != null)
   | ($marker.value | split(" ")) as $words
   | select($words[4] == $document + ",")
-  | ([$lines[($marker.key + 1):][] | select(. != "")][0] // "") as $under
+  | (first($lines[($marker.key + 1):][] | select(. != "")) // "") as $under
   | [$priority.id, $words[2], ($words[8] | rtrimstr(".")),
      (if ($under | startswith("Advances: ")) then ($under | ltrimstr("Advances: ") | rtrimstr(".")) else "" end)]
   | @tsv' "$work/priorities.json")

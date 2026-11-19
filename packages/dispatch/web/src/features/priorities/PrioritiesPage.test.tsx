@@ -6,8 +6,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
-import { answerPriorityPatches } from "../../__tests__/send-answers";
-import { ApiError, api, priorityPatchRequest } from "../../api/client";
+import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
+import { api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
@@ -452,6 +452,25 @@ test("a person who may write adds a priority", async () => {
   expect(create.mock.calls[0]?.[0]).toEqual({ title: "Spend ruthlessly" });
 });
 
+// Dispatch refuses a priority title longer than an issue title may be, so the New priority form
+// holds no more than that: a longer text pasted in is cut at the bound, and no longer title is
+// sent.
+test("the New priority title holds no more than an issue title may, so no longer title is sent", async () => {
+  const user = userEvent.setup();
+  const { create } = page(FIFTEEN);
+  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await user.click(screen.getByRole("button", { name: "New priority" }));
+  const title = screen.getByRole("textbox", {
+    name: "Title of the new priority",
+  }) as HTMLInputElement;
+  expect(title.maxLength).toBe(ISSUE_TITLE_MAX);
+  await user.click(title);
+  await user.paste("t".repeat(ISSUE_TITLE_MAX + 1));
+  await user.click(screen.getByRole("button", { name: "Add priority" }));
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  expect(create.mock.calls[0]?.[0]).toEqual({ title: "t".repeat(ISSUE_TITLE_MAX) });
+});
+
 test("a title is renamed where it is read, with no edit mode and no Save button", async () => {
   const user = userEvent.setup();
   const { patch } = page(FIFTEEN);
@@ -521,11 +540,6 @@ const RENAMED = body({
   ),
 });
 
-const CHANGED = new ApiError(409, {
-  code: "PRIORITY_CHANGED",
-  error: "the title was written meanwhile",
-});
-
 // A rename of a row the server refused because another person's title landed first is the
 // table's to settle with the reader: their text is kept beside the row's title once the table
 // has read the other person's, the store holds the write for it, and nothing stands for it on
@@ -537,7 +551,7 @@ test("a title another person's change refused is kept beside its row, and above 
   const { client, patch, priorities } = page(FIFTEEN);
   const field = await screen.findByRole("textbox", { name: "Title of P2" });
   priorities.mockResolvedValue(RENAMED);
-  patch.mockRejectedValueOnce(CHANGED);
+  patch.mockRejectedValueOnce(PRIORITY_TITLE_CHANGED);
   await user.type(field, ", mine");
   await user.tab();
   const notice = () =>
@@ -600,7 +614,12 @@ test("a refusal of a row the table does not draw stays on the shell's line, and 
       request: priorityPatchRequest("linkage-closure", input),
       sent: true,
       state: {
-        refusal: { code: "PRIORITY_CHANGED", kind: "api", message: CHANGED.message, status: 409 },
+        refusal: {
+          code: "PRIORITY_CHANGED",
+          kind: "api",
+          message: PRIORITY_TITLE_CHANGED.message,
+          status: 409,
+        },
         status: "refused",
       },
       target: "priority:linkage-closure",

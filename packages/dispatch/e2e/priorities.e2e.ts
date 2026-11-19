@@ -27,6 +27,7 @@ import {
   patchPriority,
 } from "./api";
 import { actionBar } from "./editor";
+import { pauseClock } from "./page-clock";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -807,13 +808,10 @@ test("what a reader types into a priority survives a reload made before the typi
   try {
     const page = await context.newPage();
     await priorityPage(page);
-    // The page's own clock, held while the reader types: the half-second timer cannot write
-    // then, so only leaving the page can. `install()` alone leaves it running at real speed;
-    // `pauseAt` holds it, a second past the page's own reading of it. The reloaded page reads
-    // the priorities on its own timers, so its clock runs again once it has loaded.
+    // The page's own clock, held while the reader types (`pauseClock`): the half-second timer
+    // cannot write then, so only leaving the page can. The reloaded page reads the priorities on
+    // its own timers, so its clock runs again once it has loaded.
     await page.clock.install();
-    const holdClock = async () =>
-      page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
     await page.goto(`/priorities/${seed.ids[0]}`);
     const stored = async () =>
       (await listPriorities()).priorities?.find((one) => one.id === seed.ids[0]);
@@ -823,7 +821,7 @@ test("what a reader types into a priority survives a reload made before the typi
     // as a click elsewhere is, and what the reader typed is theirs.
     const title = page.getByRole("textbox", { name: "Title" });
     await expect(title).toHaveValue(seed.titles[0]);
-    await holdClock();
+    await pauseClock(page);
     await title.click();
     await page.keyboard.press("End");
     await page.keyboard.type(" now");
@@ -834,7 +832,7 @@ test("what a reader types into a priority survives a reload made before the typi
     // The description, the same way.
     const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
     await expect(editor).toContainText("nothing is waiting on one");
-    await holdClock();
+    await pauseClock(page);
     await editor.click();
     await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.type(" Typed before the reload.");
@@ -886,9 +884,11 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
     await page.keyboard.press("End");
     await page.keyboard.type(" first");
     await title.blur();
-    // The notice only a handled refusal draws, holding her text: the page has taken the 409.
+    // The notice holds her text. That does not say the page took the 409 - the field draws the
+    // same notice when Bob's text reaches the page while her write is still out - so the count
+    // waits for that answer itself.
     await expect(notice).toContainText(`${seed.titles[0]} first`);
-    expect(refused).toHaveLength(1);
+    await expect.poll(() => refused.length).toBe(1);
     // She uses her text, and it lands over Bob's.
     await notice.getByRole("button", { name: "Use my text" }).click();
     await expect
@@ -897,9 +897,9 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
           (await listPriorities()).priorities?.find((one) => one.id === seed.ids[0])?.title
       )
       .toBe(`${seed.titles[0]} first`);
-    // Her text is written, so nothing on the page says it was not, and no control on it sends
-    // the refused body again.
-    await expect(page.getByText(/^Not saved:/)).toHaveCount(0);
+    // Her text is written, so nothing on the page says it was not - neither a refusal nor a
+    // conflict on the shell's line - and no control on it sends the refused body again.
+    await expect(page.getByText(/^Not saved/)).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
     await page.unroute(`**/api/v1/priorities/${seed.ids[0]}`);
 
@@ -921,10 +921,11 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
     await page.reload();
     await expect(title).toHaveValue("Bob's second rename");
     await expect.poll(() => refused.length).toBe(2);
-    // The page has taken the resumed write's 409 once its notice holds her text; only then does
-    // the line's absence say anything.
+    // The page has taken the resumed write's 409 once its notice holds her text: after the
+    // reload no write of hers is out, so only that refusal draws it. Only then does the line's
+    // absence say anything.
     await expect(notice).toContainText(`${seed.titles[0]} first second`);
-    await expect(page.getByText(/^Not saved:/)).toHaveCount(0);
+    await expect(page.getByText(/^Not saved/)).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
     expect(new Set(refused).size).toBe(refused.length);
   } finally {

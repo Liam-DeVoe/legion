@@ -1,3 +1,4 @@
+import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useState } from "react";
 import {
   borderDefault,
@@ -45,6 +46,7 @@ export function NewPriority(): ReactNode {
           <input
             aria-label="Title of the new priority"
             className={`min-w-64 flex-1 rounded-lg border px-3 py-1.5 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+            maxLength={ISSUE_TITLE_MAX}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="What the new priority is"
             value={title}
