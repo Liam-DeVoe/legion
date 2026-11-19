@@ -451,6 +451,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   writes each claim's recorded session file (from `legion claims list --json`) into Oh My Pi's session table under its recorded path, read from the tree volume mounted at --tree-volume;
   one line per selected claim (copied, copied before, recorded no session, failed, refused), then a `missing` line for every claim of the list whose session the table lacks, then a count of each;
   exit 1 on a failure, a refusal, a missing session of the selection, or a --tree that selects no claim;
+  a database that has no session table after the copy (nothing was copied to make one) cannot say which sessions it lacks, so the command exits 1 with one line naming the database and the table, and prints no `missing` line and no count;
   a session the table already holds byte for byte is not copied again, and one it holds with other content is refused and left as it is (docs/kubernetes.md "Copying file sessions before turning it on")
 
 - `legion probe-boot [--config <legion.yaml>]`

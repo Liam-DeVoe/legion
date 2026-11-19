@@ -1417,6 +1417,7 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
    It creates the two tables with Oh My Pi's own statements when the database has none.
    It prints one line per claim of the tree — `copied`, `copied before (identical …)`, `recorded no session`, `failed` (a file or retained session the volume does not hold) or `refused` (several files for one retained session id, or a table row with other content, which it leaves as it is) — then a `missing` line for every claim of the whole list, any tree's, whose recorded session the table does not hold, then a count of each.
    It exits 1 on any `failed` or `refused`, on a `missing` of the claims it was asked to copy (another tree's is reported only), and when `--tree` selects no claim of the list, which is a mistyped key.
+   A database that has no session table after the copy, because no claim of the tree was copied to make one, cannot say which recorded sessions it lacks: the import then exits 1 with one line naming the database and the table (`the session database <name> at <host:port> has no session table omp_session_files, …`), and prints no `missing` line and no count.
 
 4. **Copy every tree again.**
    Each run must print only `copied before` or `recorded no session` for its tree's claims, and its `missing` lines may name only claims step 5 is to clear: one whose volume was gone before step 3 (the cleared controller's, or a claim of a tree closed earlier), or a `failed` you cannot fix.

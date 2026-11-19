@@ -63,6 +63,16 @@ func CreateTables(ctx context.Context, conn *pgx.Conn) error {
 // undefinedTable is Postgres's SQLSTATE for a relation that does not exist.
 const undefinedTable = "42P01"
 
+// SessionTable is the table of Oh My Pi's that holds one row per session (createTables), the one
+// Written asks.
+const SessionTable = "omp_session_files"
+
+// NoSessionTable is whether err is a database's answer that a session table it was asked does not
+// exist: a database no Oh My Pi and no Import has made its tables in.
+func NoSessionTable(err error) bool {
+	return isUndefinedTable(err)
+}
+
 // ReadDSN is the connection URL a DSN file holds, trimmed as Oh My Pi trims it. Every caller reads
 // the session database's: Connect, which opens it, and the launcher's own resume lookup
 // (launcher.sessionWritten), which reads the file afresh before each attempt so a URL rewritten
@@ -106,7 +116,7 @@ func ConnectURL(ctx context.Context, dsn string) (*pgx.Conn, error) {
 // and every store a claim recorded a session in made that table (Oh My Pi when it starts, Import).
 func Written(ctx context.Context, conn *pgx.Conn, path string) (at time.Time, ok bool, err error) {
 	var mtime int64
-	err = conn.QueryRow(ctx, "SELECT mtime_ms FROM omp_session_files WHERE path = $1", path).Scan(&mtime)
+	err = conn.QueryRow(ctx, "SELECT mtime_ms FROM "+SessionTable+" WHERE path = $1", path).Scan(&mtime)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
