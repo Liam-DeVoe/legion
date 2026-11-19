@@ -12,9 +12,9 @@ import (
 
 // TestTheJudgeLeavesAPrivateProjectsSecretToItsPerson: a request for a secret whose
 // dispatch-project tag names a private project, or a project Dispatch does not hold, stops at the
-// project check. The model is never asked and Dispatch is never read, so the person the request
-// names decides it. A project whose state could not be read stops the run too: the judge fails
-// closed.
+// project check and is handed to its person: no refusal, since a person may decide it. The model
+// is never asked and Dispatch is never read. A project whose state could not be read hands the
+// request over too: the judge fails closed.
 func TestTheJudgeLeavesAPrivateProjectsSecretToItsPerson(t *testing.T) {
 	for _, c := range []struct {
 		name, wantDetail string
@@ -24,7 +24,7 @@ func TestTheJudgeLeavesAPrivateProjectsSecretToItsPerson(t *testing.T) {
 		{"a project whose state could not be read", "could not be read", func(f *fakeRequests) { f.projectErr = errors.New("dispatch answered 503") }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 			c.machine(machine)
 			New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
 
@@ -35,8 +35,11 @@ func TestTheJudgeLeavesAPrivateProjectsSecretToItsPerson(t *testing.T) {
 			if detail := failedDetail(t, row); !strings.Contains(detail, testSecret) || !strings.Contains(detail, c.wantDetail) {
 				t.Errorf("the project check reads %q; want it to name %s and say %q", detail, testSecret, c.wantDetail)
 			}
-			if row["verdict"] != Refer || row["asked"] != false || model.asked() != 0 {
-				t.Errorf("the row reads verdict %v, asked %v, and the model got %d requests; want a referral the model was never asked for", row["verdict"], row["asked"], model.asked())
+			if row["asked"] != false || model.asked() != 0 {
+				t.Errorf("the row reads asked %v, and the model got %d requests; want a hand-over the model was never asked for", row["asked"], model.asked())
+			}
+			if denied, _ := machine.refused(); len(denied) != 0 {
+				t.Errorf("the judge refused the request (%v); want it handed to its person, who may decide it", denied)
 			}
 			if len(dispatch.got()) != 0 {
 				t.Errorf("Dispatch got %v; want no read: the project check stops the run before the issue", dispatch.got())
@@ -52,11 +55,11 @@ func TestTheJudgeLeavesAPrivateProjectsSecretToItsPerson(t *testing.T) {
 }
 
 // TestTheJudgeOfAnUntaggedRequestAsksDispatchNothingNew: a request for a secret of no private
-// project passes the project check and goes on exactly as before it existed — the seven checks
+// project passes the project check and goes on exactly as before it existed — the six checks
 // in their order, the issue and spec reads it always made and no other Dispatch route, and the
-// model's approval applied.
+// model's grant applied.
 func TestTheJudgeOfAnUntaggedRequestAsksDispatchNothingNew(t *testing.T) {
-	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
 
 	applied, logged := machine.rows()
@@ -74,9 +77,9 @@ func TestTheJudgeOfAnUntaggedRequestAsksDispatchNothingNew(t *testing.T) {
 			t.Errorf("check %s failed: %s", c.Check, c.Detail)
 		}
 	}
-	want := []string{checkRulesJudge, checkLifetime, checkPolicy, checkAdmin, checkWithheld, checkProject, checkIssue}
+	want := []string{checkRulesJudge, checkLifetime, checkPolicy, checkAdmin, checkWithheld, checkProject}
 	if !slices.Equal(names, want) {
-		t.Errorf("the run made the checks %v; want %v, the project check after withheld and before the issue", names, want)
+		t.Errorf("the run made the checks %v; want %v, the project check after withheld and before the Dispatch reads", names, want)
 	}
 	for _, call := range dispatch.got() {
 		if !strings.HasPrefix(call.path, "/api/v1/issues/") {

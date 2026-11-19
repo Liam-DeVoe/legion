@@ -47,7 +47,7 @@ func lineWith(lines []string, words ...string) string {
 // machine refusing the judge. It is logged as that, at INFO, and never as the ERROR "refused"; the
 // verdict's row is still written, on its own context, saying the approval was not applied.
 func TestAShutdownDuringTheApprovalIsNoRefusal(t *testing.T) {
-	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	machine.commitTakes = 3 * time.Second
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
 	ctx, cancel := context.WithCancel(t.Context())
@@ -56,7 +56,7 @@ func TestAShutdownDuringTheApprovalIsNoRefusal(t *testing.T) {
 	defer stop.Stop()
 
 	lines := capturedLog(t, func() {
-		runner.write(ctx, pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+		runner.write(ctx, pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 	})
 	if line := lineWith(lines, "record=record-1", "the broker stopped"); !strings.Contains(line, "level=INFO") {
 		t.Errorf("the approval's line is %q; want an INFO line saying the broker stopped under it (lines: %q)", line, lines)
@@ -85,12 +85,12 @@ func TestAnApprovalWhoseAnswerWasLostWritesNoSecondRow(t *testing.T) {
 		{requests.JudgedAppliedUnknown, "level=WARN", "could not be read", "applied=" + requests.AppliedUnknown},
 	} {
 		t.Run(string(c.wrote), func(t *testing.T) {
-			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 			machine.applyErr = errors.New("unexpected EOF")
 			machine.wrote = c.wrote
 			runner := New(t.Context(), testOptions(t, dispatch, model, machine))
 			lines := capturedLog(t, func() {
-				runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+				runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 			})
 			if line := lineWith(lines, "record=record-1", c.says); !strings.Contains(line, c.level) {
 				t.Errorf("the approval's line is %q; want a %s line saying %q (lines: %q)", line, c.level, c.says, lines)
@@ -114,11 +114,11 @@ func TestAnApprovalWhoseAnswerWasLostWritesNoSecondRow(t *testing.T) {
 // mid-commit — is no refusal, and the row LogJudged then wrote says whether it applied. One that
 // did not apply is logged at WARN as that, and never as the ERROR "refused".
 func TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal(t *testing.T) {
-	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	machine.applyErr = fmt.Errorf("%w: conn closed", requests.ErrCommitUncertain)
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
 	lines := capturedLog(t, func() {
-		runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+		runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 	})
 	if line := lineWith(lines, "record=record-1", "COMMIT"); !strings.Contains(line, "level=WARN") {
 		t.Errorf("the approval's line is %q; want a WARN line saying its COMMIT got no answer (lines: %q)", line, lines)
@@ -136,14 +136,14 @@ func TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal(t *testing.T) {
 // approval runs. Only the approval's own answer says whether the stop cut it (context.Canceled in
 // that error); the run's context being cancelled says nothing of why this approval failed.
 func TestAnUnexpectedRefusalDuringAStopIsStillAnError(t *testing.T) {
-	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	machine.onApply = cancel
 	machine.applyErr = errors.New("the state machine refused the approval for a reason the judge never meets")
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
 	lines := capturedLog(t, func() {
-		runner.write(ctx, pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+		runner.write(ctx, pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 	})
 	if line := lineWith(lines, "record=record-1", "refused"); !strings.Contains(line, "level=ERROR") {
 		t.Errorf("the approval's line is %q; want the ERROR \"refused\": the stop did not cause it (lines: %q)", line, lines)
@@ -157,12 +157,12 @@ func TestAnUnexpectedRefusalDuringAStopIsStillAnError(t *testing.T) {
 // approval's not-applied line describes the row LogJudged wrote, so a row that could not be written
 // gets the one ERROR saying so, with the approval's error beside it, and no line that claims a row.
 func TestTheVerdictLineWaitsForTheRowItNames(t *testing.T) {
-	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	machine.applyErr = fmt.Errorf("%w: unexpected EOF", requests.ErrCommitUncertain)
 	machine.logErr = errors.New("the database refused the row")
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
 	lines := capturedLog(t, func() {
-		runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+		runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 	})
 	if line := lineWith(lines, "record=record-1", "could not be written"); !strings.Contains(line, "level=ERROR") || !strings.Contains(line, "not_applied=") {
 		t.Errorf("the line is %q; want the ERROR that the verdict could not be written, naming the approval's error", line)

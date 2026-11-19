@@ -66,8 +66,12 @@ type recordView struct {
 	// MayDecide is whether the signed-in person may decide it (record.MayDecide).
 	MayDecide bool
 	// Buttons is whether the page offers Approve and Deny for it: a pending agent_secret record
-	// the person may decide.
+	// the person may decide, and not one the model judge holds.
 	Buttons bool
+	// JudgeDeciding is whether the model judge holds this record now. The page prints such a
+	// record read-only: nobody decides it here until the judge has given it up, and if the judge
+	// cannot decide it, it comes back to its person as an ordinary card.
+	JudgeDeciding bool
 	// Projects is one row per requested secret tagged with a Dispatch project: the secret, its
 	// project, whether that project is private (or one Dispatch does not hold), and whether the
 	// requesting session names it. Empty for a record touching no project, which prints as before.
@@ -203,7 +207,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	if main.Buttons {
 		printed = append(printed, id)
 	}
-	pending, err := p.cfg.Machine.PendingForApprover(r.Context(), sess.Login)
+	pending, err := p.cfg.Machine.PendingForApprover(r.Context(), sess.Login, requests.PendingStates{})
 	if err != nil {
 		writeUnavailable(w, "list the pending requests", err)
 		return
@@ -310,7 +314,8 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	if d.State == "pending" && !v.Pending {
 		v.State = "expired"
 	}
-	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide
+	v.JudgeDeciding = v.Pending && d.JudgeDeciding
+	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide && !v.JudgeDeciding
 	v.SessionProjects = d.SessionProjects
 	for _, sp := range d.SecretProjects {
 		v.Projects = append(v.Projects, projectRow{Secret: sp.Name, Project: sp.Project, Private: sp.Private, Named: slices.Contains(d.SessionProjects, sp.Project)})
@@ -664,6 +669,8 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "refused: " + err.Error(), refusedPolicy, false
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		return "unavailable: " + err.Error(), "", false
+	case errors.Is(err, requests.ErrJudgeHolds):
+		return "refused: the model judge is deciding this request", "", false
 	}
 	slog.Error("approval page: decide the record", "record", id, "error", err)
 	return "error", refusedError, false

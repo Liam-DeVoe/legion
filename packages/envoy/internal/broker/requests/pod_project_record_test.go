@@ -48,7 +48,7 @@ func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *tes
 	records := map[string]string{*plain.RecordID: "SHARED_KEY, untagged, reason naming no issue", *tagged.RecordID: "PRIV_HUMAN"}
 
 	listed := func(login string) []string {
-		pending, err := m.PendingForApprover(t.Context(), login)
+		pending, err := m.PendingForApprover(t.Context(), login, PendingStates{})
 		if err != nil {
 			t.Fatalf("PendingForApprover(%s): %v", login, err)
 		}

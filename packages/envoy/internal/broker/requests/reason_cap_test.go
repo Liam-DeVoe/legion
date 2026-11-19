@@ -47,7 +47,7 @@ func storedBeforeTheCap(t *testing.T, m *Machine, enrollmentID string, key *ecds
 // pendingRecords is the record ids PendingForApprover lists for login.
 func pendingRecords(t *testing.T, m *Machine, login string) []string {
 	t.Helper()
-	pending, err := m.PendingForApprover(t.Context(), login)
+	pending, err := m.PendingForApprover(t.Context(), login, PendingStates{})
 	if err != nil {
 		t.Fatalf("PendingForApprover(%s): %v", login, err)
 	}

@@ -1,21 +1,31 @@
 // Package judge is the secrets broker's model judge: the background run that decides a pending
-// human-tier credential request the airlock rules allow it to decide, and leaves every other
-// request for the person who decides it today. It approves or refers, and it never denies.
+// request for keys the airlock rules let it decide — every key that needs a decision has a judge
+// entry, and none carries an administrator's tag (requests.Machine.judgeDecides). A key the
+// session gets at once may stand beside them; it needs no decision, so the judge decides nothing
+// of it and its grant releases it with the rest. The broker holds such a request for the judge
+// (requests.judge_until): it is on no person's list and no person may decide it while the run
+// lasts. The judge grants it or refuses it, and a refusal is final; a run that cannot decide
+// hands the request to its person, once.
 //
-// One run is one request. It makes seven checks of its own before any model is asked — the rules
-// entry's judge bound, the request's shape and lifetime, the tag policy re-read now, whether the
-// secret is an administrator's, what the session has had withheld from it, whether the request
-// belongs to a private project, and the Dispatch issue the signed reason names — and stops at the
-// first that fails, leaving the request pending with a request.judged row that says which check
-// it was and asking the model nothing. A request
-// that passes all seven, and that the machine still shows pending when the run reads its state
-// once more (Runner.stillPending), is put to one model through packages/envoy/agentloop, as data
-// to judge rather than as instructions (D15): approve is written with the approval itself, in
-// one transaction, and refer writes the row alone.
+// One run is one request. It makes six checks of its own before any model is asked — the rules
+// entry of every key it decides, the request's lifetime against each of those keys' judge
+// seconds, the tag policy re-read now (a key it decides must still need approval, and a key the
+// session got at once must still need none), whether a key has become an administrator's, what
+// the session has had withheld from it, and whether the request belongs to a private project —
+// and stops at the first that fails. Two of them refuse the request outright, since no grant could
+// follow: the policy now denies a key, or a key is withheld from the session. Every other failure
+// hands the request over; a private project's request is always a person's, since the judge's own
+// token names no person and may see no private project. A run whose checks pass reads what the
+// reason points at in Dispatch — the issue it names and the ask it cites — as data, and, if the
+// machine still shows the request pending (Runner.stillPending), puts it to one model through
+// packages/envoy/agentloop, with the guidance of each key it decides as the instruction to follow
+// and everything an agent wrote as data to judge (D15). Grant is written with the approval
+// itself, in one transaction, and deny with the refusal itself; a model that gives no verdict
+// hands the request over.
 //
 // Nothing a run does is on a caller's path. A run that goes past its budget, and a broker that
-// stops serving under one, write nothing at all, which leaves the request exactly as the hook
-// handed it over: pending, for its person.
+// stops serving under one, write nothing at all, and the hold then runs out, which hands the
+// request to its person (requests.JudgeHold).
 package judge
 
 import (
@@ -23,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
@@ -32,26 +43,29 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/requests"
 )
 
-// runBudget is how long one run has, taken when the run starts (D9): the Dispatch phase,
-// bounded at dispatchBound, and the model call, bounded at modelBound (model.go), with room
-// left over for everything else a run asks of the request machine.
-const runBudget = 30 * time.Second
+// runBudget is how long one run has, taken when the run starts (D9): the Dispatch phase, bounded
+// at dispatchBound; then the ask read, made only when the reason cites an ask and bounded at a
+// dispatchBound of its own; and the model call, bounded at modelBound (model.go), with room left
+// over for everything else a run asks of the request machine.
+const runBudget = 35 * time.Second
 
-// dispatchBound is how long the whole Dispatch phase of one run has: every read of Dispatch before
-// the model — the policy check's (Requests.JudgePolicy reads what Dispatch holds of a tagged
-// name), the project check's (Requests.JudgeProject) and both of Runner.issue's GETs — run under
-// one requests.JudgeDispatch, so they share one bound. It is requests.JudgeDispatchBound, the bound
-// the decision's own reads of Dispatch run under too.
+// dispatchBound is how long one read of Dispatch has. The Dispatch phase is one: every read of
+// Dispatch before the ask — the policy check's (Requests.JudgePolicy reads what Dispatch holds of
+// a tagged name), the project check's (Requests.JudgeProject) and both of Runner.issue's GETs —
+// runs under one requests.JudgeDispatch, so they share one bound. It is
+// requests.JudgeDispatchBound, the bound the decision's own reads of Dispatch run under too.
+// Runner.ask's own GET gets a bound of its own, because it is a second read and not part of the
+// first.
 //
-// The bounds sit together because they have to add up: 5 seconds and modelBound's 20 of the 30
-// runBudget gives leave the run 5 seconds after the worst case of the two, a Dispatch phase that
-// spends its whole bound and a model call that then times out. In those 5 seconds the run reads
-// the request's state (JudgeRequestState), and an approval makes its reads of Dispatch before its
-// transaction (ApplyJudgeDecision) under requests.JudgeDispatch, which ends them
-// requests.JudgeRowReserve before the run does, then its transaction. The request.judged row is
-// written on a context of its own (Runner.write), so neither a slow Dispatch at the decision nor
-// the run's own deadline can leave a run that asked the model without its row: the one outcome
-// the audit trail exists to prevent.
+// The bounds sit together because they have to add up: two of 5 seconds and modelBound's 20 of
+// the 35 runBudget gives leave the run 5 seconds after the worst case, a Dispatch phase and an ask
+// read that each spend their whole bound and a model call that then times out. In those 5 seconds
+// the run reads the request's state (JudgeRequestState), and an approval makes its reads of
+// Dispatch before its transaction (ApplyJudgeDecision) under requests.JudgeDispatch, which ends
+// them requests.JudgeRowReserve before the run does, then its transaction. The request.judged row
+// is written on a context of its own (Runner.write), so neither a slow Dispatch at the decision
+// nor the run's own deadline can leave a run that asked the model without its row: the one
+// outcome the audit trail exists to prevent.
 //
 // The per-call bounds of the two clients are backstops under this and not the phase's bound:
 // cmd/broker's judgeDispatchTimeout is http.Client.Timeout, which is per Do, and Issue makes two
@@ -65,25 +79,23 @@ const dispatchBound = requests.JudgeDispatchBound
 // rules entry allows: the bound of the class itself.
 const maxJudgedLifetime = 15 * time.Minute
 
-// doneStatus is the one Dispatch issue status the judge refuses to decide against. The design
-// says "not done or canceled"; Dispatch has no canceled status at all (model.IssueStatuses,
-// internal/dispatch/model/model.go), so this is the whole of that rule. The word is spelled here
-// rather than imported, because the broker reads Dispatch over its API and shares no types
-// with it.
-const doneStatus = "done"
+// notFound is the state an issue or an ask is shown to the model in when Dispatch holds none
+// under the key or id the reason gave.
+const notFound = "not found"
 
-// The seven checks a run makes before the model, in the order it makes them. These are the names
+// The six checks a run makes before the model, in the order it makes them. These are the names
 // a request.judged row calls them by, so a reader of the row and a reader of this package see
 // one set of words.
 //
-// They read from the request outwards: what the rules say of the name, what the request itself
-// asks for, what the policy answers for it now, what the secret is, what this session has had
-// taken back, the project the secret belongs to, and last the issue outside the broker the reason
-// names. checkAdmin sits directly after checkPolicy because the two are one read of the machine
-// (Requests.JudgePolicy): the policy's outcome and the secret's admin tag come back together, and
-// the admin refusal is about the secret rather than about the session, which is what
-// checkWithheld is about. checkProject sits before checkIssue so that a private project's secret
-// costs no Dispatch read of the issue: the judge leaves every such secret to a person.
+// They read from the request outwards: what the rules say of each key, what the request itself
+// asks for, what the policy answers for each key now, what each key is, what this session has had
+// taken back, and the project each key belongs to. checkAdmin sits directly after checkPolicy
+// because the two are one read of the machine per key (Requests.JudgePolicy): the policy's
+// outcome and the key's admin tag come back together. Two of them refuse the request for good when
+// they fail — the policy denying a key, and a key withheld from the session — since no decision of
+// anyone's could grant it; the rest hand the request to its person, who may. checkProject comes
+// last, before the reads of what the reason points at, so that a private project's request costs
+// no Dispatch read of its issue or its ask: the judge leaves every such request to a person.
 const (
 	checkRulesJudge = "rules-judge"
 	checkLifetime   = "lifetime"
@@ -91,21 +103,26 @@ const (
 	checkAdmin      = "admin"
 	checkWithheld   = "withheld"
 	checkProject    = "project"
-	checkIssue      = "issue"
+	// checkDispatch is no check of the request: it is the run's read of what the reason points
+	// at, recorded as a failed check when a read fails, so the row says why the request went to
+	// its person.
+	checkDispatch = "dispatch"
 )
 
 // check is one check and what it found. Detail says what the check read, and is written for a
-// check that failed; a check that passed is its name and its result.
+// check that failed; a check that passed is its name and its result. Final is set on a failed
+// check that refuses the request for good, rather than handing it to its person.
 type check struct {
 	Check  string `json:"check"`
 	Passed bool   `json:"passed"`
 	Detail string `json:"detail,omitempty"`
+	Final  bool   `json:"final,omitempty"`
 }
 
 // Requests is what a run asks of the broker's request machine: the three questions it must ask
-// again before it decides, and the two writes a verdict makes. It is declared here, in the
+// again before it decides, and the three writes a verdict makes. It is declared here, in the
 // consumer, so that this package depends on no concrete machine; *requests.Machine answers all
-// five, and requests imports nothing of this package.
+// six, and requests imports nothing of this package.
 type Requests interface {
 	// JudgePolicy answers, for the enrollment that made a pending request, what the live
 	// policy says about one of its names at this moment: the decision policy.Set.Evaluate
@@ -139,38 +156,44 @@ type Requests interface {
 	JudgeProject(ctx context.Context, enrollmentID, name, reason string) (private bool, err error)
 
 	// JudgeRequestState answers the state a decision would meet now for the record a run
-	// is judging: "pending" for a request still waiting on its person, "expired" for one
-	// whose pending window has passed though the sweep has not written that yet, and the
-	// row's own word for one a person decided or a session cancelled. The run reads it
-	// immediately before the model call (Runner.stillPending), so a request that went away
-	// while the run was reading Dispatch costs no model call.
+	// is judging: "pending" for a request still waiting, "expired" for one whose pending
+	// window has passed though the sweep has not written that yet, and the row's own word
+	// for one decided or cancelled. The run reads it immediately before the model call
+	// (Runner.stillPending), so a request that went away while the run was reading Dispatch
+	// costs no model call.
 	JudgeRequestState(ctx context.Context, recordID string) (state string, err error)
 
 	// ApplyJudgeDecision writes the approval and its request.judged row in one
 	// transaction, so a grant and the record of why it exists commit together or not at all.
 	ApplyJudgeDecision(ctx context.Context, recordID, modelID string, judged map[string]any) (requests.Decision, error)
 
-	// LogJudged writes the request.judged row alone, which is every verdict that decides
-	// nothing: a referral, a check that failed, and an approval the state machine then
-	// refused or could not make. It answers what it did: for a row saying an approval was not
-	// applied, nothing at all when that approval's own row is there (its COMMIT applied and
-	// only the answer was lost), and applied requests.AppliedUnknown when that could not be
-	// read.
+	// LogJudged writes the request.judged row of a run that decided nothing and hands the
+	// request to its person: it ends the judge's hold in the same transaction. That is a
+	// check that failed other than finally, a read of Dispatch that failed, a model that gave
+	// no verdict, and an approval the state machine then refused or could not make. It answers
+	// what it did: for a row saying an approval was not applied, nothing at all when that
+	// approval's own row is there (its COMMIT applied and only the answer was lost), and applied
+	// requests.AppliedUnknown when that could not be read.
 	LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (requests.JudgedWrite, error)
+
+	// DenyJudged ends a request the judge holds as the judge's refusal: the denial, why as
+	// its detail for the agent to read, and the request.judged row, in one transaction. It
+	// refuses a request the judge does not hold (requests.ErrJudgeHoldEnded).
+	DenyJudged(ctx context.Context, recordID, modelID string, judged map[string]any, why string) (requests.Decision, error)
 }
 
 // Options are what a Runner judges with.
 type Options struct {
-	// Rules is the airlock rules as the broker last read them, which say which secrets the
-	// judge may decide at all and for how long.
+	// Rules is the airlock rules as the broker last read them, which say which keys the judge
+	// may decide at all, for how long, and on what guidance.
 	Rules airlock.Rules
-	// Dispatch is the read of the issue a request's reason names, and Model the one model
-	// the run asks.
+	// Dispatch is the read of what a request's reason points at, and Model the one model the
+	// run asks.
 	Dispatch Dispatch
 	Model    Model
 	// Requests is the machine a verdict is written through.
 	Requests Requests
-	// SkipChecks turns the seven checks off as a bar: each is still made and still recorded,
+	// SkipChecks turns the six checks off as a bar: each is still made and still recorded,
 	// and none of them holds a request back, so the model is asked about a request a check
 	// would have stopped. It is the negative control of the judge's own checks and is for
 	// the broker's local stack alone (BROKER_JUDGE_TEST_SKIP_CHECKS).
@@ -194,9 +217,9 @@ func New(ctx context.Context, o Options) *Runner {
 // nothing a run does belongs on its path.
 //
 // There is no bound on the runs in flight and no queue. A queue would leave a legitimate request
-// waiting for a person while another request's model call ran, which is the wait the judge
-// exists to take away, and no load the broker has met needs one: a run is its Dispatch reads
-// under one bound, one model call and one short transaction.
+// waiting while another request's model call ran, which is the wait the judge exists to take
+// away, and no load the broker has met needs one: a run is its Dispatch reads under two bounds,
+// one model call and one short transaction.
 func (r *Runner) Consider(p requests.PendingRequest) {
 	go func() {
 		ctx, cancel := context.WithTimeout(r.ctx, runBudget)
@@ -211,7 +234,7 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 		return
 	}
 	checks, data := r.beforeTheModel(ctx, p)
-	row := verdictRow{checks: checks, verdict: Verdict{Word: Refer}}
+	row := verdictRow{checks: checks, verdict: Verdict{Word: Deny}}
 	if firstFailure(checks) == nil || r.opts.SkipChecks {
 		if row.notPending = r.stillPending(ctx, p); row.notPending == "" {
 			row.asked = true
@@ -228,10 +251,9 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 //
 // It is read again because nothing has said the request is still there since the hook handed it
 // over: the Dispatch phase above may spend the whole of dispatchBound, and in those seconds the
-// session can cancel the request, the person who decides it can decide it, or its pending
-// window can pass. A cancelled or decided request must not be judged: the state machine refuses
-// a decision on it, so the model call would buy nothing at all, and the requester is told
-// nothing by it either.
+// session can cancel the request or its pending window can pass. A cancelled request must not be
+// judged: the state machine refuses a decision on it, so the model call would buy nothing at all,
+// and the requester is told nothing by it either.
 //
 // What it does not do is bound how many model calls one session can start: each create makes a
 // request of its own, live for the milliseconds this run spends before the model call, so a
@@ -242,12 +264,12 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 // expiry are state changes — so LogJudged finds the request and the enrollment it hangs off,
 // and the trail says why a run that cost a Dispatch read decided nothing.
 //
-// It is a gate and not an eighth entry in the checks array. The seven checks answer one question —
-// may the judge decide this request? — and a reader of a row reads them as that one list, which
-// the verification document's check k10 and scripts/judge-check.sh pin by name and in order.
-// This answers another question altogether: is there still a request to decide? Nothing is
-// wrong with a request that was cancelled, so no check of it failed, and the row says what
-// happened in a key of its own.
+// It is a gate and not an entry in the checks array. The checks answer one question — may the
+// judge decide this request? — and a reader of a row reads them as that one list, which the
+// verification document's check k10 and scripts/judge-check.sh pin by name and in order. This
+// answers another question altogether: is there still a request to decide? Nothing is wrong
+// with a request that was cancelled, so no check of it failed, and the row says what happened in
+// a key of its own.
 func (r *Runner) stillPending(ctx context.Context, p requests.PendingRequest) string {
 	state, err := r.opts.Requests.JudgeRequestState(ctx, p.RecordID)
 	switch {
@@ -261,167 +283,238 @@ func (r *Runner) stillPending(ctx context.Context, p requests.PendingRequest) st
 	return ""
 }
 
-// beforeTheModel makes the seven checks, in order, and builds the data the model would be shown.
-// It stops at the first failure, so a request the rules do not let the judge decide costs no
-// Dispatch read and no model call. Under Options.SkipChecks it makes every check all the same,
-// recording each, so the negative control shows the model a request a check would have stopped.
+// beforeTheModel makes the six checks, in order, then the reads of what the reason points at,
+// and builds the data the model would be shown. It stops at the first failure, so a request the
+// rules do not let the judge decide costs no Dispatch read and no model call. Under
+// Options.SkipChecks it makes every check all the same, recording each, so the negative control
+// shows the model a request a check would have stopped.
 func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) ([]check, Data) {
 	var checks []check
 	// add records one check and answers whether the run goes on: it stops at the first
-	// failure, unless the checks have been turned off as a bar.
-	add := func(name string, ok bool, detail string) bool {
+	// failure, unless the checks have been turned off as a bar. final marks a failure that
+	// refuses the request for good.
+	add := func(name string, ok bool, detail string, final bool) bool {
 		c := check{Check: name, Passed: ok}
 		if !ok {
-			c.Detail = detail
+			c.Detail, c.Final = detail, final
 		}
 		checks = append(checks, c)
 		return ok || r.opts.SkipChecks
 	}
 
-	// The name is the request's first, so that the data in front of the model says what
-	// was asked for even under SkipChecks, where a request for two secrets still reaches
-	// it. Both of the first two checks refuse a request that names other than one.
-	name := ""
-	if len(p.Secrets) > 0 {
-		name = p.Secrets[0]
-	}
-	data := Data{Secret: name, Rules: r.opts.Rules.Lookup(name), Reason: p.Reason}
-
-	seconds, judged := r.opts.Rules.JudgeSeconds(name)
-	switch {
-	case len(p.Secrets) != 1:
-		if !add(checkRulesJudge, false, decidesOneSecret(len(p.Secrets))) {
-			return checks, data
-		}
-	case !judged:
-		if !add(checkRulesJudge, false, decidesNothingFor(name)) {
-			return checks, data
-		}
-	default:
-		add(checkRulesJudge, true, "")
+	// The model is shown the keys the judge decides and nothing of a key the session gets at
+	// once beside them, which no guidance is about.
+	data := Data{Reason: p.Reason}
+	for _, name := range p.Decided {
+		data.Keys = append(data.Keys, KeyData{Name: name, Rules: r.opts.Rules.Lookup(name), Guidance: r.opts.Rules.Guidance(name)})
 	}
 
-	if ok, detail := lifetimeAllowed(p, seconds, judged); !add(checkLifetime, ok, detail) {
+	if ok, detail := r.rulesJudge(p); !add(checkRulesJudge, ok, detail, false) {
+		return checks, data
+	}
+	if ok, detail := r.lifetimeAllowed(p); !add(checkLifetime, ok, detail, false) {
 		return checks, data
 	}
 
-	// The Dispatch phase: from here to the issue check every read of Dispatch — the policy
-	// check's, the project check's and the issue check's two GETs — runs under one
-	// requests.JudgeDispatch, so however slowly Dispatch answers, the model call and the row's
-	// write keep the part of runBudget the arithmetic gives them.
+	// The Dispatch phase: from here to the issue read, every read of Dispatch — the policy
+	// check's, the project check's and the issue's two GETs — runs under one
+	// requests.JudgeDispatch, so however slowly Dispatch answers, the ask read, the model call and
+	// the row's write keep the parts of runBudget the arithmetic gives them.
 	phase, cancel := requests.JudgeDispatch(ctx)
 	defer cancel()
-	now, withheld, admin, err := r.opts.Requests.JudgePolicy(phase, p.EnrollmentID, name)
-	switch {
-	case err != nil:
-		if !add(checkPolicy, false, "the policy could not be re-read: "+err.Error()) {
-			return checks, data
-		}
-	case now.Outcome != policy.Approval:
-		if !add(checkPolicy, false, fmt.Sprintf("the policy answers %s for %s now, not approval", now.Outcome, name)) {
-			return checks, data
-		}
-	default:
-		add(checkPolicy, true, "")
-	}
 
-	if !add(checkAdmin, !admin, decidedByAPerson(name)) {
+	// One read of the machine per key answers the next three checks: the policy's outcome,
+	// the admin tag and the withheld names all come back together, off one snapshot. Each
+	// check names the first key it failed for. Every key of the request is read, the ones
+	// granted at once too, since the grant releases them all: a key the judge decides must
+	// still need approval, and a key the session got at once must still need none.
+	//
+	// A key the policy now denies, and a key withheld from the session, refuse the request for
+	// good whatever else the snapshot shows (R2: a refusal is final). So a deny outranks another
+	// key's failure of the policy check, a withheld key is judged by the withheld check alone —
+	// the policy folds a withheld name into an approval, which would otherwise read as a key
+	// that needs a decision now — and a failure of the policy or admin check that would hand the
+	// request over does not stop the run before the withheld check is recorded.
+	policyOK, policyDetail, policyFinal := true, "", false
+	adminOK, adminDetail := true, ""
+	withheldOK, withheldDetail := true, ""
+	for _, name := range p.Secrets {
+		now, withheld, admin, err := r.opts.Requests.JudgePolicy(phase, p.EnrollmentID, name)
+		if err != nil {
+			if policyOK {
+				policyOK, policyDetail = false, "the policy could not be re-read: "+err.Error()
+			}
+			continue
+		}
+		if admin && adminOK {
+			adminOK, adminDetail = false, decidedByAPerson(name)
+		}
+		if withheld && withheldOK {
+			withheldOK, withheldDetail = false, fmt.Sprintf("%s is withheld from this session", name)
+		}
+		decides := slices.Contains(p.Decided, name)
+		switch {
+		case policyFinal:
+		case now.Outcome == policy.Deny:
+			policyOK, policyDetail, policyFinal = false, fmt.Sprintf("the policy denies %s to this session now", name), true
+		case withheld, !policyOK:
+		case decides && now.Outcome != policy.Approval:
+			policyOK, policyDetail = false, fmt.Sprintf("the policy answers %s for %s now, not approval", now.Outcome, name)
+		case !decides && now.Outcome != policy.Automatic:
+			policyOK, policyDetail = false, fmt.Sprintf("%s needs a decision now, where the session got it at once when it asked", name)
+		}
+	}
+	refused := policyFinal || !withheldOK
+	if !add(checkPolicy, policyOK, policyDetail, policyFinal) && (policyFinal || !refused) {
+		return checks, data
+	}
+	if !add(checkAdmin, adminOK, adminDetail, false) && !refused {
+		return checks, data
+	}
+	if !add(checkWithheld, withheldOK, withheldDetail, true) {
 		return checks, data
 	}
 
-	if !add(checkWithheld, !withheld, fmt.Sprintf("%s is withheld from this session", name)) {
+	// The project check, for every key of the request, since the grant releases them all. A
+	// private project's request is its person's: the judge's own token names no person, so it
+	// may see no private project. A failed read hands the request over too; neither is a
+	// refusal, since a person may decide it.
+	projectOK, projectDetail := true, ""
+	for _, name := range p.Secrets {
+		private, err := r.opts.Requests.JudgeProject(phase, p.EnrollmentID, name, p.Reason)
+		switch {
+		case err != nil:
+			projectOK, projectDetail = false, fmt.Sprintf("whether the request for %s belongs to a private project (by the secret, the credential that asked, or an issue its reason names) could not be read: %v", name, err)
+		case private:
+			projectOK, projectDetail = false, fmt.Sprintf("the request for %s belongs to a private project (by the secret, the credential that asked, or an issue its reason names), or the secret to one Dispatch does not hold, which a person decides", name)
+		}
+		if !projectOK {
+			break
+		}
+	}
+	if !add(checkProject, projectOK, projectDetail, false) {
 		return checks, data
 	}
 
-	private, err := r.opts.Requests.JudgeProject(phase, p.EnrollmentID, name, p.Reason)
-	switch {
-	case err != nil:
-		if !add(checkProject, false, fmt.Sprintf("whether the request for %s belongs to a private project (by the secret, the credential that asked, or an issue its reason names) could not be read: %v", name, err)) {
-			return checks, data
-		}
-	case private:
-		if !add(checkProject, false, fmt.Sprintf("the request for %s belongs to a private project (by the secret, the credential that asked, or an issue its reason names), or the secret to one Dispatch does not hold, which a person decides", name)) {
-			return checks, data
-		}
-	default:
-		add(checkProject, true, "")
+	// What the reason points at, read as data. A key or an id Dispatch holds nothing under is
+	// shown to the model as that; a read that failed hands the request to its person, since
+	// the guidance may need what the read would have shown. The issue is read on the phase; the
+	// ask has a bound of its own.
+	if ok, detail := r.issue(phase, p, &data); !ok {
+		add(checkDispatch, false, detail, false)
+		return checks, data
 	}
-
-	ok, detail := r.issue(phase, p, &data)
-	add(checkIssue, ok, detail)
+	if ok, detail := r.ask(ctx, p, &data); !ok {
+		add(checkDispatch, false, detail, false)
+	}
 	return checks, data
 }
 
-// lifetimeAllowed is the second check: the request names one secret, its grant has a lifetime —
-// the one it signed, else the broker's default (requests.PendingRequest.LifetimeSeconds) — and
-// that lifetime is within both bounds: the class's own 15 minutes and the seconds the rules give
-// the judge for that secret.
-func lifetimeAllowed(p requests.PendingRequest, seconds uint32, judged bool) (bool, string) {
-	switch {
-	case len(p.Secrets) != 1:
-		return false, decidesOneSecret(len(p.Secrets))
-	case p.LifetimeSeconds == nil:
-		return false, "the request signed no lifetime, and the judge decides none that lasts as long as the session"
-	case time.Duration(*p.LifetimeSeconds)*time.Second > maxJudgedLifetime:
-		return false, fmt.Sprintf("the request asks for %d seconds, past the %s the judge decides", *p.LifetimeSeconds, maxJudgedLifetime)
-	case !judged:
-		return false, decidesNothingFor(p.Secrets[0])
-	case !record.JudgeAllowsLifetime(seconds, *p.LifetimeSeconds):
-		return false, fmt.Sprintf("the request asks for %d seconds of %s, past the %d the rules let the judge decide", *p.LifetimeSeconds, p.Secrets[0], seconds)
+// rulesJudge is the first check: every key the judge decides has a judge entry in the rules the
+// broker holds now. Create held the request for the judge on the rules it read then; a reload
+// since may have taken an entry away, and such a request is its person's to decide. A key the
+// session gets at once needs no decision, so no entry of it is asked for.
+func (r *Runner) rulesJudge(p requests.PendingRequest) (bool, string) {
+	if len(p.Decided) == 0 {
+		return false, "the request names no key that needs a decision"
+	}
+	for _, name := range p.Decided {
+		if _, judged := r.opts.Rules.JudgeSeconds(name); !judged {
+			return false, decidesNothingFor(name)
+		}
 	}
 	return true, ""
 }
 
-// decidesOneSecret and decidesNothingFor are the two sentences the first check and the second
-// both write. The two checks are deliberately made twice — under Options.SkipChecks the first
-// no longer stops the run, so the second meets a request the first refused — and what a reader
-// of the row sees for one request's two rows is spelled once.
-func decidesOneSecret(secrets int) string {
-	return fmt.Sprintf("the request names %d secrets, and the judge decides a request for one", secrets)
+// lifetimeAllowed is the second check: the grant has a lifetime — the one the request signed,
+// else the broker's default, which for a judge key is its judge seconds — within the class's 15
+// minutes and within the judge seconds of every key the judge decides. Create refuses a request
+// that asks for longer, so a failure here is rules that moved under the request.
+func (r *Runner) lifetimeAllowed(p requests.PendingRequest) (bool, string) {
+	switch {
+	case p.LifetimeSeconds == nil:
+		return false, "the request signed no lifetime, and the judge decides none that lasts as long as the session"
+	case time.Duration(*p.LifetimeSeconds)*time.Second > maxJudgedLifetime:
+		return false, fmt.Sprintf("the request asks for %d seconds, past the %s the judge decides", *p.LifetimeSeconds, maxJudgedLifetime)
+	}
+	for _, name := range p.Decided {
+		seconds, judged := r.opts.Rules.JudgeSeconds(name)
+		if !judged {
+			return false, decidesNothingFor(name)
+		}
+		if !record.JudgeAllowsLifetime(seconds, *p.LifetimeSeconds) {
+			return false, fmt.Sprintf("the request asks for %d seconds of %s, past the %d the rules let the judge decide", *p.LifetimeSeconds, name, seconds)
+		}
+	}
+	return true, ""
 }
 
+// decidesNothingFor is the sentence the first two checks write for a key the rules give the judge
+// nothing of.
 func decidesNothingFor(name string) string {
 	return fmt.Sprintf("the airlock rules let the judge decide nothing for %s", name)
 }
 
 // decidedByAPerson is the sentence the admin check writes, and the one a person reads in the
-// request.judged row of a request the judge left alone for being an administrator's. It says
-// both halves of why nothing happened: what the secret is, and that the promise its tag makes
-// is unconditional — every release of such a credential is approved by a person, and no rules
-// file that gives the judge seconds of the name can undo that (policy.TagAdmin, the broker's
-// concepts document).
+// request.judged row of a request the judge handed over for being an administrator's. It says
+// both halves of why: what the key is, and that the promise its tag makes is unconditional —
+// every release of such a credential is approved by a person, and no rules file that gives the
+// judge seconds of the name can undo that (policy.TagAdmin, the broker's concepts document).
 func decidedByAPerson(name string) string {
 	return fmt.Sprintf("%s is an administrator's secret, and a person approves every release of one", name)
 }
 
-// issue is the seventh check: the signed reason names a Dispatch issue key, and Dispatch shows
-// that issue at a status that is not done. What it read goes into data, so the model sees the
-// issue the check passed on; a read that failed still leaves the key there, which is what the
-// negative control shows the model.
+// issue reads the Dispatch issue the signed reason names, when it names one, into data, so the
+// model can read it against the keys' guidance. A key Dispatch holds no issue for is shown as not
+// found; a read that failed answers false, and the run hands the request over.
 //
 // ctx is the Dispatch phase's, which the policy and project checks' reads have already spent part
 // of: its two GETs share what is left of one dispatchBound, so the phase costs the run what
-// runBudget gave it however the reads go. They stay one after the other: a refused issue read
-// means the spec is never asked for.
+// runBudget gave it however the reads go.
 func (r *Runner) issue(ctx context.Context, p requests.PendingRequest, data *Data) (bool, string) {
 	key := record.IssueKeyInReason(p.Reason)
 	if key == "" {
-		return false, "the request's signed reason names no Dispatch issue"
+		return true, ""
 	}
-	data.Issue.Key = key
 	issue, err := r.opts.Dispatch.Issue(ctx, key)
 	switch {
 	case errors.Is(err, ErrNoIssue):
-		return false, fmt.Sprintf("dispatch shows no issue %s", key)
+		data.Issue = &IssueData{Key: key, Status: notFound}
+		return true, ""
 	case err != nil:
+		data.Issue = &IssueData{Key: key}
 		return false, fmt.Sprintf("issue %s could not be read: %v", key, err)
 	}
-	data.Issue = IssueData{
+	data.Issue = &IssueData{
 		Key: issue.Key, Title: issue.Title, Status: issue.Status,
-		Spec: specExtract(issue.Spec), SpecPresent: issue.HasSpec,
+		Spec: specExtract(issue.Spec), SpecPresent: issue.HasSpec, Found: true,
 	}
-	if issue.Status == doneStatus {
-		return false, fmt.Sprintf("issue %s is %s", key, issue.Status)
+	return true, ""
+}
+
+// ask reads the Dispatch ask the signed reason cites, when it cites one, into data: its issue,
+// its state, the question, the options, and the answer with who gave it. Nothing requires a
+// reason to cite one; a key's guidance can ask for one, and this is what lets the model see that
+// the ask is real. An id Dispatch holds no ask for is shown as not found; a read that failed
+// answers false, and the run hands the request over. The read gets a dispatchBound of its own.
+func (r *Runner) ask(ctx context.Context, p requests.PendingRequest, data *Data) (bool, string) {
+	_, id := record.AskRefInReason(p.Reason)
+	if id == "" {
+		return true, ""
+	}
+	readCtx, cancel := context.WithTimeout(ctx, dispatchBound)
+	defer cancel()
+	ask, err := r.opts.Dispatch.Ask(readCtx, id)
+	switch {
+	case errors.Is(err, ErrNoAsk):
+		data.Ask = &AskData{ID: id, State: notFound}
+		return true, ""
+	case err != nil:
+		return false, fmt.Sprintf("ask %s could not be read: %v", id, err)
+	}
+	data.Ask = &AskData{
+		ID: ask.ID, IssueKey: ask.IssueKey, State: ask.State, Question: ask.Question,
+		Options: ask.Options, Selected: ask.Selected, Text: ask.Text, AnsweredBy: ask.AnsweredBy,
 	}
 	return true, ""
 }
@@ -440,19 +533,22 @@ type verdictRow struct {
 	// notPending is what stillPending answered: why a run whose checks all passed asked
 	// the model nothing. Empty for every other run.
 	notPending string
-	// notApplied is why an approve verdict's approval wrote nothing at all, and is what
-	// the row's applied is read off: a row this package writes on its own says applied
-	// false exactly when the machine refused the attempt. The row written inside the
-	// decision's own transaction carries an applied of that transaction's making, since
-	// only the transaction knows what it did (requests' decider.judgedRow).
+	// notApplied is why a grant verdict's approval wrote nothing at all, and is what the
+	// row's applied is read off: a row this package writes on its own says applied false
+	// exactly when the machine refused the attempt. The row written inside the decision's
+	// own transaction carries an applied of that transaction's making, since only the
+	// transaction knows what it did (requests' decider.judgedRow).
 	notApplied error
 	// appliedUnknown is a row LogJudged wrote with applied requests.AppliedUnknown: the
 	// approval's answer was lost, and so was the read of whether it applied.
 	appliedUnknown bool
 	// decided is the state that transaction left the request in — "granted", or "denied"
-	// where the approval committed and granted nothing — for the log line alone, and is
-	// empty for every run that made no decision.
+	// where the approval committed and granted nothing, or where the judge refused it — for
+	// the log line alone, and is empty for every run that made no decision.
 	decided string
+	// refusal is what a refused request's agent was told (refusalOf), for the log line; empty
+	// for every run that refused nothing.
+	refusal string
 }
 
 // detail is the row's detail object, the one place this package spells its keys. The row an
@@ -499,24 +595,40 @@ func (v verdictRow) detail(modelID string) map[string]any {
 	return detail
 }
 
-// write is the one place a run writes anything. An approve verdict goes through
-// ApplyJudgeDecision, which commits the approval and the row together; every other verdict, and
-// an approval the state machine refused or could not make, writes the row alone, on a context of
+// write is the one place a run writes anything, and it chooses between the three ends a request
+// the judge holds can come to. A grant verdict goes through ApplyJudgeDecision, which commits the
+// approval and the row together. A deny verdict, and a check that fails finally, go through
+// DenyJudged, which refuses the request for good. Everything else — a check that fails other than
+// finally, a Dispatch read that failed, a model that gave no verdict, an approval the machine
+// then refused or could not make, and a request that is no longer pending — writes the row
+// through LogJudged, which hands the request to its person. That row is written on a context of
 // its own (rowContext), so the run's deadline cannot cancel the one write that records what the
 // judge was asked. What a failed approval's line says is decided once that row is written, since
 // only LogJudged can tell an approval that did not apply from one whose COMMIT applied and whose
 // answer was lost.
 func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdictRow) {
 	if ctx.Err() != nil {
-		// The run's budget went, or the broker stopped serving, so nothing is written
-		// and the request stays as it was: pending, for the person who decides it
-		// today, which is where a judge that never ran would have left it.
+		// The run's budget went, or the broker stopped serving, so nothing is written. The
+		// hold runs out at its own time and the request is then its person's
+		// (requests.JudgeHold).
 		slog.Info("broker judge: the run ended before it wrote anything", "record", p.RecordID,
 			"request", p.RequestID, "secrets", p.Secrets, "reason", ctx.Err())
 		return
 	}
 	modelID := r.opts.Model.ID
-	if row.verdict.Word == Approve {
+	failed := decidingFailure(row.checks)
+	switch {
+	case row.notPending != "":
+		// Nothing is left to decide.
+	case failed != nil && failed.Final && !r.opts.SkipChecks:
+		if r.refuse(ctx, p, row) {
+			return
+		}
+	case failed != nil && !r.opts.SkipChecks:
+		// Handed over: the request is its person's.
+	case row.asked && row.err != nil:
+		// The model gave no verdict: handed over.
+	case row.asked && row.verdict.Word == Grant:
 		dec, err := r.opts.Requests.ApplyJudgeDecision(ctx, p.RecordID, modelID, row.detail(modelID))
 		if err == nil {
 			// The transaction wrote its own request.judged row and set that row's
@@ -528,7 +640,16 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 			r.logged(p, row)
 			return
 		}
+		// The request was decided or expired first, the hold ended under the run, or the
+		// current policy moved while the judge was reading; notApplied says which once the row
+		// below is written. Either way the approval wrote nothing it is known to have written;
+		// the row hands a request still pending to its person, and keeps the verdict as the
+		// record of what was asked.
 		row.notApplied = err
+	case row.asked:
+		if r.refuse(ctx, p, row) {
+			return
+		}
 	}
 	rowCtx, cancel := rowContext(ctx)
 	defer cancel()
@@ -557,24 +678,26 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 
 // notApplied is the line for an approval that wrote nothing, err being what it answered and wrote
 // what LogJudged then did with the verdict's row, which is written by then. A person decided the
-// request first, it expired, or the current policy moved while the judge was reading: the
-// session's operator withheld the name or its owner tagged it an administrator's (the two guards
-// currentPolicyAdmits makes for the judge alone), the name's owner changed, its max-grant fell
-// below the request's lifetime, or the request became a private project's. Each is the ordinary
-// outcome of losing a race and no fault of the judge's (D10), and each answers
-// record.ErrNotApprover. The broker stopping under the approval (context.Canceled in what the
-// approval answered), a COMMIT that failed and, by the row LogJudged read, did not apply
-// (requests.ErrCommitUncertain), Dispatch not answering the approval's check, and the run's time
-// running out before the approval landed are no refusal either. Any other refusal is one the
-// judge should not have reached at all, and is an ERROR even while the broker stops.
+// request first, it expired, the judge's hold ended under the run, or the current policy moved
+// while the judge was reading: the session's operator withheld a key or its owner tagged it an
+// administrator's (the two guards currentPolicyAdmits makes for the judge alone), the key's owner
+// changed, its max-grant fell below the request's lifetime, or the request became a private
+// project's. Each is the ordinary outcome of losing a race and no fault of the judge's (D10), and
+// the policy's all answer record.ErrNotApprover. The broker stopping under the approval
+// (context.Canceled in what the approval answered), a COMMIT that failed and, by the row
+// LogJudged read, did not apply (requests.ErrCommitUncertain), Dispatch not answering the
+// approval's check, and the run's time running out before the approval landed are no refusal
+// either. Any other refusal is one the judge should not have reached at all, and is an ERROR even
+// while the broker stops.
 func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error, wrote requests.JudgedWrite) {
 	attrs := []any{"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", err}
 	switch {
 	case wrote == requests.JudgedAppliedUnknown:
 		slog.Warn("broker judge: whether the judge's approval applied could not be read: its COMMIT failed, and so did the read of its own row; the row it wrote says applied unknown",
 			attrs...)
-	case errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, record.ErrNotApprover):
-		slog.Info("broker judge: the request was decided, expired or moved out of the judge's policy before the judge's approval landed",
+	case errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) ||
+		errors.Is(err, requests.ErrJudgeHoldEnded) || errors.Is(err, record.ErrNotApprover):
+		slog.Info("broker judge: the request was decided, expired, handed over or moved out of the judge's policy before the judge's grant landed",
 			attrs...)
 	case errors.Is(err, context.Canceled):
 		slog.Info("broker judge: the broker stopped while the judge's approval was being written; the approval was not applied, and the request waits for its person",
@@ -586,7 +709,7 @@ func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error
 		slog.Warn("broker judge: the judge's approval was not applied: Dispatch could not be asked whether the request is still the judge's, or the run's time ran out; the request waits for its person",
 			attrs...)
 	default:
-		slog.Error("broker judge: the judge's approval was refused", attrs...)
+		slog.Error("broker judge: the judge's grant was refused", attrs...)
 	}
 }
 
@@ -602,6 +725,44 @@ func rowContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithDeadline(context.WithoutCancel(ctx), deadline)
 }
 
+// refuse ends a request the judge holds with its refusal, the reason in its detail, and answers
+// whether it did. A refusal the machine declines — the request was decided, expired or handed over
+// in the meantime — leaves the verdict to be written alone; one that failed for another reason is
+// logged as an error and does the same, so the trail keeps the verdict and the request goes to its
+// person.
+func (r *Runner) refuse(ctx context.Context, p requests.PendingRequest, row verdictRow) bool {
+	modelID := r.opts.Model.ID
+	why := refusalOf(row)
+	if _, err := r.opts.Requests.DenyJudged(ctx, p.RecordID, modelID, row.detail(modelID), why); err != nil {
+		if errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, requests.ErrJudgeHoldEnded) {
+			slog.Info("broker judge: the request was decided, expired or handed over before the judge's refusal landed",
+				"record", p.RecordID, "request", p.RequestID, "model", modelID, "reason", err)
+		} else {
+			slog.Error("broker judge: the judge's refusal was refused", "record", p.RecordID,
+				"request", p.RequestID, "model", modelID, "err", err)
+		}
+		return false
+	}
+	row.decided = "denied"
+	row.refusal = why
+	r.logged(p, row)
+	return true
+}
+
+// refusalOf is the sentence a refused request's agent reads in the request's decision detail
+// (agent-secrets status, and the use command's own refusal): what the judge found, that this
+// request will not be granted, and to tell whoever gave it the work. It tells the agent to try
+// nothing again: a refusal is the end of the request. It holds the model's own words where the
+// model's answer is the reason, clamped and filtered as the row holds them (D12).
+func refusalOf(row verdictRow) string {
+	const end = ". This request will not be granted. Tell whoever gave you this work."
+	why := row.verdict.Reason
+	if failed := decidingFailure(row.checks); failed != nil && failed.Final {
+		why = failed.Detail
+	}
+	return "the model judge refused this request: " + record.Sanitize(why, maxRawAnswer-len(end)-40) + end
+}
+
 // logged is the one line a run that wrote a row leaves behind. It carries the model's own words
 // — the reason, and the raw answer where there was one — already clamped and filtered (D12), the
 // same strings the row holds and GET /v1/grant-log then serves.
@@ -611,7 +772,7 @@ func (r *Runner) logged(p requests.PendingRequest, row verdictRow) {
 		"approver", p.Approver, "secrets", p.Secrets, "model", r.opts.Model.ID,
 		"asked", row.asked, "verdict", row.verdict.Word, "reason", row.verdict.Reason,
 	}
-	if failed := firstFailure(row.checks); failed != nil {
+	if failed := decidingFailure(row.checks); failed != nil {
 		attrs = append(attrs, "failed_check", failed.Check, "failed_detail", failed.Detail)
 	}
 	if row.raw != "" {
@@ -623,21 +784,26 @@ func (r *Runner) logged(p requests.PendingRequest, row verdictRow) {
 	if row.notPending != "" {
 		attrs = append(attrs, "not_pending", row.notPending)
 	}
-	// applied is the approve verdict's alone: what the decision transaction did where it
-	// ran, false where the machine refused the attempt outright, and unknown where the
-	// attempt's answer was lost and so was the read of whether it applied.
+	// applied is the grant verdict's alone: what the decision transaction did where it ran,
+	// false where the machine refused the attempt outright, and unknown where the attempt's
+	// answer was lost and so was the read of whether it applied. A refusal is decided denied,
+	// and carries what its agent was told. Every other row handed the request over.
 	switch {
+	case row.refusal != "":
+		attrs = append(attrs, "applied", false, "decided", row.decided, "refusal", row.refusal)
 	case row.decided != "":
 		attrs = append(attrs, "applied", row.decided == "granted", "decided", row.decided)
 	case row.appliedUnknown:
 		attrs = append(attrs, "applied", requests.AppliedUnknown)
 	case row.notApplied != nil:
-		attrs = append(attrs, "applied", false)
+		attrs = append(attrs, "applied", false, "handed_over", true)
+	case row.notPending == "":
+		attrs = append(attrs, "handed_over", true)
 	}
 	slog.Info("broker judge: wrote a verdict", attrs...)
 }
 
-// firstFailure is the check a run stopped at, and nil for a run every check passed.
+// firstFailure is the first check that failed, and nil for a run every check passed.
 func firstFailure(checks []check) *check {
 	for i := range checks {
 		if !checks[i].Passed {
@@ -645,4 +811,16 @@ func firstFailure(checks []check) *check {
 		}
 	}
 	return nil
+}
+
+// decidingFailure is the check that decides how a run ends: the first that failed for good, which
+// refuses the request whatever failed before it, else the first that failed, which hands it over;
+// nil for a run every check passed.
+func decidingFailure(checks []check) *check {
+	for i := range checks {
+		if !checks[i].Passed && checks[i].Final {
+			return &checks[i]
+		}
+	}
+	return firstFailure(checks)
 }

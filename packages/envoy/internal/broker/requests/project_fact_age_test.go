@@ -263,7 +263,7 @@ func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
 		m, enr, key, dispatch := newProjectFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule(slackToken, "")}}, publicTeam)
 		nameProjects(t, m, enr, teamProject)
 		_, grantID := grantOf(t, m, enr, key, "post the release notes", slackToken)
-		checked, err := m.checkRelease(t.Context(), grantID, "")
+		checked, err := m.checkRelease(t.Context(), grantID, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}

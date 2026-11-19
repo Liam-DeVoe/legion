@@ -310,7 +310,7 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 	}
 	ofPRIV := []string{*tagged.RecordID, *reasoned.RecordID, *hashedReason.RecordID}
 	listed := func(login string) []string {
-		pending, err := m.PendingForApprover(t.Context(), login)
+		pending, err := m.PendingForApprover(t.Context(), login, PendingStates{})
 		if err != nil {
 			t.Fatalf("PendingForApprover(%s): %v", login, err)
 		}
@@ -366,7 +366,7 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 
 	pendingIDs := func() []string {
 		t.Helper()
-		pending, err := m.PendingForApprover(t.Context(), insider)
+		pending, err := m.PendingForApprover(t.Context(), insider, PendingStates{})
 		if err != nil {
 			t.Fatalf("PendingForApprover(%s) while Dispatch is down: %v; want the list answered", insider, err)
 		}
@@ -458,7 +458,7 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 			if err != nil || pending.RecordID == nil {
 				t.Fatalf("Create(SHARED_KEY) = %+v, %v", pending, err)
 			}
-			if listed, err := m.PendingForApprover(t.Context(), insider); err != nil || len(listed) != 1 {
+			if listed, err := m.PendingForApprover(t.Context(), insider, PendingStates{}); err != nil || len(listed) != 1 {
 				t.Fatalf("PendingForApprover(%s) = %+v, %v; want the one request", insider, listed, err)
 			}
 			if _, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, insider); err != nil {
@@ -587,7 +587,7 @@ func TestNoK3CallRunsInsideATransaction(t *testing.T) {
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v", pending, err)
 	}
-	if _, err := m.PendingForApprover(t.Context(), insider); err != nil {
+	if _, err := m.PendingForApprover(t.Context(), insider, PendingStates{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, insider); err != nil {

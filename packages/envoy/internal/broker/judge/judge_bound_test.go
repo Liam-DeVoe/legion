@@ -43,11 +43,11 @@ func (b *boundTransport) calls() []bool {
 
 // TestEveryDispatchReadOfARunIsUnderTheOneBound is the judge's half of round 4's class test: the
 // policy check (JudgePolicy, which reads what Dispatch holds of a tagged name), the project check
-// (JudgeProject) and both of the issue check's GETs run under requests.JudgeDispatch, the one bound
-// the run's arithmetic gives its Dispatch reads. A run that made none of them, or no GET, is a
+// (JudgeProject) and both of the issue read's GETs run under requests.JudgeDispatch, the one bound
+// the run's arithmetic gives its Dispatch phase. A run that made none of them, or no GET, is a
 // failure too: a list without them cannot say whether they are bounded.
 func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
-	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	opts := testOptions(t, dispatch, model, machine)
 	transport := &boundTransport{inner: opts.Dispatch.HTTP.Transport}
 	client := *opts.Dispatch.HTTP
@@ -90,12 +90,12 @@ func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
 // run's deadline does not cancel, with JudgeRowReserve to write in.
 func TestTheJudgedRowIsWrittenOnAContextOfItsOwn(t *testing.T) {
 	t.Parallel()
-	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	machine.applyTakes = 3 * time.Second
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	runner.write(ctx, pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+	runner.write(ctx, pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 
 	applied, logged := machine.rows()
 	if len(applied) != 0 || len(logged) != 1 {
@@ -115,9 +115,9 @@ func TestADispatchFailureAtTheApprovalIsNoRefusal(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	defer slog.SetDefault(previous)
 
-	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	machine.applyErr = fmt.Errorf("%w: dispatch answered 503", requests.ErrProjectAccessUnavailable)
-	New(t.Context(), testOptions(t, dispatch, model, machine)).write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+	New(t.Context(), testOptions(t, dispatch, model, machine)).write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 
 	if _, logged := machine.rows(); len(logged) != 1 {
 		t.Fatalf("the run logged %d rows; want the failed approval's row", len(logged))

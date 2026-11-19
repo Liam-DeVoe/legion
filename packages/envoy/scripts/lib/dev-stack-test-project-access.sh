@@ -2,8 +2,8 @@
 # shellcheck disable=SC2154 # every lowercase global read here is dev-stack.test.sh's own
 # packages/envoy/scripts/lib/dev-stack-test-project-access.sh
 # The --project-access half of scripts/dev-stack.test.sh: assert_project_access, which a run with
-# the option and a run without it are each held to, and the cases that run with it, (j), (k) and
-# (l) of that test's header, as two functions it calls where those cases run in its order. It is
+# the option and a run without it are each held to, and the cases that run with it, (q), (r) and
+# (s) of that test's header, as two functions it calls where those cases run in its order. It is
 # sourced, never run, and dev-stack.test.sh is its one caller. Every helper and global these read
 # is that file's: fail, exported, run_instance, wait_for_exit, refuse_run, refuse_binaries,
 # refused_files_are, the assert_* checks and the globals they set, and its runs' log and call
@@ -60,12 +60,12 @@ assert_project_access() {
   fi
 }
 
-# (j) and (k), run after (h): the --project-access run, and the port race it takes.
+# (q) and (r), run after (h): the --project-access run, and the port race it takes.
 project_access_run_cases() {
-  # (j) --project-access: the same stack, its broker pointed at its own Dispatch's access routes
+  # (q) --project-access: the same stack, its broker pointed at its own Dispatch's access routes
   # with a token of its own account, and that account admitted to both of Dispatch's lists.
   # Instance 1, run without it, is the control: neither is set there. It builds
-  # dev-airlock-stands beside the seven, which instance 1 did not (l).
+  # dev-airlock-stands beside the eight, which instance 1 did not (s).
   go_calls_access="${temporary_dir}/go-calls-project-access"
   DEV_STACK_TEST_GO_CALL_FILE="$go_calls_access" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --project-access
   assert_instance_ready 'the --project-access run' "$log1" "$psql_calls1" "$curl_calls1"
@@ -79,7 +79,7 @@ project_access_run_cases() {
   assert_databases_dropped 'the --project-access run' "$psql_calls1" "$run_suffix"
   printf 'PASS: --project-access pointed the broker at its own Dispatch with its own token, started the airlock in a container of its own, and Dispatch admits that account; a run without it sets none of it\n'
 
-  # (k) The port race --project-access takes: the run picks a free port for the airlock's proxy,
+  # (r) The port race --project-access takes: the run picks a free port for the airlock's proxy,
   # lets it go, and the broker binds it a moment later. A run that loses that race must stop
   # rather than print an address nothing serves, so here the broker reports another port and the
   # run is expected to fail, naming both.
@@ -94,18 +94,18 @@ project_access_run_cases() {
   printf 'PASS: a --project-access run whose airlock proxy bound another port stops, naming both ports\n'
 }
 
-# (l), run after (i), whose refusal checks it uses: --project-access given --binaries, and given
+# (s), run after (i), whose refusal checks it uses: --project-access given --binaries, and given
 # no docker on PATH.
 project_access_binaries_cases() {
-  # (l) --project-access given --binaries: that run starts the airlock's stands, so it needs an
-  # eighth binary, dev-airlock-stands. The seven-binary directory (h) ran is refused, naming that
+  # (s) --project-access given --binaries: that run starts the airlock's stands, so it needs a
+  # ninth binary, dev-airlock-stands. The eight-binary directory (h) ran is refused, naming that
   # binary and no other; the control is (h) itself, the same directory running without the flag.
-  refuse_binaries 'a --project-access run given the seven binaries' "$prebuilt" --project-access
-  refused_files_are 'a --project-access run given the seven binaries' "$prebuilt" "  ${prebuilt}/dev-airlock-stands: missing"
-  printf 'PASS: a --project-access run given the seven binaries is refused with exit 2, naming %s/dev-airlock-stands, before anything is created or started\n' "$prebuilt"
+  refuse_binaries 'a --project-access run given the eight binaries' "$prebuilt" --project-access
+  refused_files_are 'a --project-access run given the eight binaries' "$prebuilt" "  ${prebuilt}/dev-airlock-stands: missing"
+  printf 'PASS: a --project-access run given the eight binaries is refused with exit 2, naming %s/dev-airlock-stands, before anything is created or started\n' "$prebuilt"
 
   # The same directory with dev-airlock-stands added runs under --project-access, copying all
-  # eight and starting the stands: the control that the refusal above was that binary's alone.
+  # nine and starting the stands: the control that the refusal above was that binary's alone.
   with_stands="${temporary_dir}/prebuilt-with-stands"
   cp -R "$prebuilt" "$with_stands"
   env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${with_stands}/" ./cmd/dev-airlock-stands
@@ -122,12 +122,12 @@ project_access_binaries_cases() {
   [[ "$exited_status" -eq 130 ]] || fail "the --project-access --binaries run exited $exited_status on INT, not 130"
   assert_everything_stopped 'the --project-access --binaries run'
   assert_databases_dropped 'the --project-access --binaries run' "$psql_calls1" "$run_suffix"
-  printf 'PASS: a --project-access run given the eight binaries copied each of them and ran\n'
+  printf 'PASS: a --project-access run given the nine binaries copied each of them and ran\n'
 
   # docker: --project-access runs the stands in a container, so a PATH with no docker is refused
   # before anything is created or started, naming docker. The PATH is this test's own, every
   # command on it but docker linked into one directory; the control is the same PATH and the same
-  # eight binaries without --project-access, which runs to ready, so the refusal is the option's.
+  # nine binaries without --project-access, which runs to ready, so the refusal is the option's.
   no_docker_bin="${temporary_dir}/bin-without-docker"
   mkdir -p "$no_docker_bin"
   IFS=: read -r -a path_dirs <<<"${fake_bin_dir}:${PATH}"
