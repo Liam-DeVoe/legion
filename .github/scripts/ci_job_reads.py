@@ -2160,13 +2160,14 @@ SCRIPTS = ".github/scripts"
 TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 
 
-def harness(filter, step, harness_script, subjects):
-    """A gate for one harness step of the test job: the harness itself, test-lib.sh, which the
-    harness sources, and `subjects`, the (path, why) pairs of what else that step reads - the
+def harness(filter, step, harness_script, subjects, lib=True):
+    """A gate for one harness step of the test job: the harness itself, test-lib.sh where the
+    harness sources it, and `subjects`, the (path, why) pairs of what else that step reads - the
     script it tests first among them. The gate is the step's, so its `if:` must test this
     filter and no other (rule 2)."""
-    entries = [(harness_script, at("test", step)),
-               (TEST_LIB, f"{harness_script} sources it for check/is/summary")]
+    entries = [(harness_script, at("test", step))]
+    if lib:
+        entries.append((TEST_LIB, f"{harness_script} sources it for check/is/summary"))
     return gate(filter, "test", step=step,
                 reads=reads(*entries, *subjects))
 
