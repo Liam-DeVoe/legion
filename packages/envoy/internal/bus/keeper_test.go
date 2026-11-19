@@ -202,9 +202,7 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 	}
 	lowered := deployedStream(t, js).Config
 	lowered.MaxBytes = -1
-	if _, err := js.UpdateStream(&lowered); err != nil {
-		t.Fatalf("remove the byte limit: %v", err)
-	}
+	testnats.UpdateStream(t, js, lowered)
 
 	keeper := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
 		if _, err := ensureStreamWithConfig(t.Context(), js, &newer, capsAnUnsetStream, atStart); err != nil {
@@ -355,9 +353,7 @@ func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testi
 	lowered.Subjects = append(slices.DeleteFunc(slices.Clone(info.Config.Subjects), func(subject string) bool { return subject == removed }), "operations.foreign.>")
 	lowered.MaxAge = info.Config.MaxAge + time.Hour
 	lowered.Discard = nats.DiscardOld
-	if _, err := js.UpdateStream(&lowered); err != nil {
-		t.Fatalf("operator update: %v", err)
-	}
+	testnats.UpdateStream(t, js, lowered)
 
 	restored := awaitKept(t, js, Stream, "three copies, the byte limit and an id", keptAtSettings(""))
 	if want := append(slices.Clone(lowered.Subjects), removed); !slices.Equal(restored.Config.Subjects, want) {
@@ -402,9 +398,7 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 
 	raise := info.Config
 	raise.MaxBytes = 4 * keeperByteLimit
-	if _, err := js.UpdateStream(&raise); err != nil {
-		t.Fatalf("operator raise: %v", err)
-	}
+	testnats.UpdateStream(t, js, raise)
 	raised := testnats.AwaitSettledStream(t, js, Stream).Config
 	if raised.MaxBytes != raise.MaxBytes {
 		t.Fatalf("stream byte limit = %d after the operator's raise, want %d", raised.MaxBytes, raise.MaxBytes)
@@ -428,9 +422,7 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 
 	lower := raised
 	lower.MaxBytes = keeperByteLimit / 2
-	if _, err := js.UpdateStream(&lower); err != nil {
-		t.Fatalf("operator lowering: %v", err)
-	}
+	testnats.UpdateStream(t, js, lower)
 	awaitKept(t, js, Stream, "the byte limit", func(info *nats.StreamInfo) bool { return info.Config.MaxBytes == keeperByteLimit })
 	awaitRestoredLog(t, logs, fmt.Sprintf("max_bytes %d -> %d", lower.MaxBytes, keeperByteLimit))
 }
@@ -468,9 +460,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 		before[bucket] = info.Config
 		lowered := info.Config
 		lowered.Replicas = 1
-		if _, err := js.UpdateStream(&lowered); err != nil {
-			t.Fatalf("lower %s to one copy: %v", stream, err)
-		}
+		testnats.UpdateStream(t, js, lowered)
 	}
 
 	raised := awaitKept(t, js, "KV_"+listed, "three copies", func(info *nats.StreamInfo) bool { return info.Config.Replicas == 3 })
@@ -530,9 +520,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)
 	}
-	if _, err := js.UpdateStream(&info.Config); err != nil {
-		t.Fatalf("update the stream: %v", err)
-	}
+	testnats.UpdateStream(t, js, info.Config)
 	deadline := time.Now().Add(keepWait)
 	for updates.Load() == 0 {
 		if time.Now().After(deadline) {
@@ -572,9 +560,7 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			client.mu.Unlock()
 			lowered := info.Config
 			lowered.Replicas = 1
-			if _, err := js.UpdateStream(&lowered); err != nil {
-				t.Fatalf("lower the stream to one copy: %v", err)
-			}
+			testnats.UpdateStream(t, js, lowered)
 			select {
 			case <-entered:
 			case <-time.After(keepWait):

@@ -531,14 +531,8 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 	originalConfig := info.Config
 	unboundConfig := originalConfig
 	unboundConfig.Subjects = []string{"notifications.bound.>"}
-	if _, err := client.JS().UpdateStream(&unboundConfig); err != nil {
-		t.Fatalf("remove publish subject binding: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := client.JS().UpdateStream(&originalConfig); err != nil {
-			t.Errorf("restore stream subject bindings: %v", err)
-		}
-	})
+	testnats.UpdateStream(t, client.JS(), unboundConfig)
+	t.Cleanup(func() { testnats.UpdateStream(t, client.JS(), originalConfig) })
 
 	published := make(chan struct{}, 1)
 	noAck, err := client.Conn.Subscribe(topic, func(*natsgo.Msg) {

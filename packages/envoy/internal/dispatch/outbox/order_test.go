@@ -167,9 +167,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	notAgents.Subjects = slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
 		return subject == contracts.AgentTopicPrefix+">"
 	})
-	if _, err := js.UpdateStream(&notAgents); err != nil {
-		t.Fatalf("stop the stream capturing agent subjects: %v", err)
-	}
+	testnats.UpdateStream(t, js, notAgents)
 
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -188,9 +186,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 		_, attempts := publishedDestinations(t, database, first.ID)
 		return attempts > 0
 	})
-	if _, err := js.UpdateStream(&capturing); err != nil {
-		t.Fatalf("let the stream capture agent subjects again: %v", err)
-	}
+	testnats.UpdateStream(t, js, capturing)
 	second, third := write("second"), write("third")
 
 	waitFor(t, 30*time.Second, "all three events published", func() bool {
@@ -393,17 +389,12 @@ func (r sessionOrderRig) refuse(t *testing.T, prefix string) {
 	if len(narrowed.Subjects) == len(r.capturing.Subjects) {
 		t.Fatalf("no stream subject is under %q: %v", prefix, r.capturing.Subjects)
 	}
-	if _, err := r.js.UpdateStream(&narrowed); err != nil {
-		t.Fatalf("stop the stream capturing %s: %v", prefix, err)
-	}
+	testnats.UpdateStream(t, r.js, narrowed)
 }
 
 func (r sessionOrderRig) captureAgain(t *testing.T) {
 	t.Helper()
-	capturing := r.capturing
-	if _, err := r.js.UpdateStream(&capturing); err != nil {
-		t.Fatalf("let the stream capture every subject again: %v", err)
-	}
+	testnats.UpdateStream(t, r.js, r.capturing)
 }
 
 func (r sessionOrderRig) write(t *testing.T, actor model.Actor, body string) model.Event {

@@ -899,6 +899,10 @@ RULES = {
                              "it finds, test files included (:126, :221)")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
         (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
+    f"{ENVOY}/internal/textcheck/stream_updates_test.go": reads(
+        (f"{ENVOY}/**/*.go", "internal/textcheck/stream_updates_test.go:124 directStreamUpdates walks packages/envoy (../.., infra "
+                             "included) at :48, testdata, node_modules, vendor and hidden folders passed over, and parses every test "
+                             "file and every .go file of a folder whose name begins or ends with test (:62, :70)")),
     # The listener's Go clients held to its wire package: wirecheck.Check type-checks them over
     # the export data of `go list -deps -export`, which it runs in each module's own directory, and
     # the load-test harness's main package is parsed for a listener route named outside its client.

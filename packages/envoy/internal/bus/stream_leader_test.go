@@ -469,9 +469,7 @@ func TestAStartThatFindsAJustRaisedStreamAnswersOnceItHasALeader(t *testing.T) {
 	}
 	raised := info.Config
 	raised.Replicas = 3
-	if _, err := js.UpdateStream(&raised); err != nil {
-		t.Fatalf("another program's raise: %v", err)
-	}
+	testnats.UpdateStream(t, js, raised)
 	client := startOnCluster(t, cluster, WithReplicas(3))
 	if !hasLeader(t, js, Stream) {
 		t.Fatal("the start answered while the raised stream had no leader")
