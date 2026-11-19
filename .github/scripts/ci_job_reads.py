@@ -530,6 +530,9 @@ RULES = {
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
     f"{DAEMON}/internal/launcher/testpg_disk_doc_test.go": reads(
         ("skills/legion-worker/references/tools.md", "internal/launcher/testpg_disk_doc_test.go:23-24")),
+    f"{DAEMON}/internal/launcher/testpg_disk_test.go": reads(
+        (f"{DAEMON}/docker/legion-testpg", "internal/launcher/testpg_disk_test.go:71 runs it through the link :58 puts on PATH, "
+                                           "found by pgDiskScript (:112) walking up from the working directory to ../../../..")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),

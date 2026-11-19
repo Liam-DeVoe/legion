@@ -30,8 +30,8 @@ const (
 
 // pgDiskWait bounds a wait on one reset, whose own bound is testPGResetBound: a reset that waits
 // on the lock or on a process in the cluster waits once more for its stop, its initdb and its
-// start after that wait ends.
-const pgDiskWait = testPGResetBound
+// start after that wait ends. It is that bound as the package starts, before any test shortens it.
+var pgDiskWait = testPGResetBound
 
 // pgDiskRig is one test's own PostgreSQL, served by the worker image's real legion-testpg from a
 // short directory of the test's own (testtmp: the server binds its socket there) on a free
@@ -44,6 +44,7 @@ type pgDiskRig struct {
 	port      int
 	superuser string
 	bin       string // the real server bin directory the script would pick
+	link      string // the script's link on PATH, which every process of a run of the script names
 	log       *lockedBuffer
 }
 
@@ -53,7 +54,8 @@ type pgDiskRig struct {
 func newPGDiskRig(t *testing.T) *pgDiskRig {
 	t.Helper()
 	path := t.TempDir()
-	if err := os.Symlink(pgDiskScript(t), filepath.Join(path, testPGProgram)); err != nil {
+	link := filepath.Join(path, testPGProgram)
+	if err := os.Symlink(pgDiskScript(t), link); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", path+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -80,6 +82,7 @@ func newPGDiskRig(t *testing.T) *pgDiskRig {
 		port:      pgDiskFreePort(t),
 		superuser: strings.TrimSpace(string(superuser)),
 		bin:       pgDiskServerBin(t),
+		link:      link,
 		log:       &lockedBuffer{},
 	}
 	r.dir = testPGDir(r.cfg.RolesDir)
@@ -174,9 +177,10 @@ func pgDiskSpace(free uint64) func(string) (uint64, uint64, error) {
 	return func(string) (uint64, uint64, error) { return free, pgDiskSize, nil }
 }
 
-// check runs the launcher's own disk check, the one its loop runs, with the disk reading free.
+// check runs the launcher's own disk check, the one its loop runs, with the disk reading free and
+// the reset's bound testPGResetBound.
 func (r *pgDiskRig) check(free uint64) {
-	checkTestPGDisk(context.Background(), r.cfg, r.roleLog(), &pidGuard{}, pgDiskSpace(free))
+	checkTestPGDisk(context.Background(), r.cfg, r.roleLog(), &pidGuard{}, pgDiskSpace(free), testPGResetBound)
 }
 
 // checkInBackground runs check in a goroutine of its own and answers a channel closed when it
@@ -498,31 +502,60 @@ func TestPGDiskAResetMovesNothingAProcessStillHolds(t *testing.T) {
 	r.assertReset(t)
 }
 
-// A reset cut right after its rename, before its initdb — by its bound, a restart of the roles
-// container or a kill — leaves the old cluster set aside whole and no cluster in the data
-// directory, and the next check, over the floor or under it, deletes what was set aside and
-// serves an empty cluster on the DSN. The cut is an initdb that kills the reset's own shell.
-func TestPGDiskACheckAfterAResetCutAtItsRenameDeletesTheOldClusterAndServesAnEmptyOne(t *testing.T) {
-	r := newPGDiskRig(t)
-	r.makeDatabases(t, "tpg_one", "tpg_two")
-	cut := t.TempDir()
+// binWithInitdb is a server bin directory of the test's own, for PGBIN: initdb is the script
+// given, and every other program a link to the real one (r.bin).
+func (r *pgDiskRig) binWithInitdb(t *testing.T, initdb string) string {
+	t.Helper()
+	bin := t.TempDir()
 	programs, err := os.ReadDir(r.bin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, program := range programs {
 		if program.Name() != "initdb" {
-			if err := os.Symlink(filepath.Join(r.bin, program.Name()), filepath.Join(cut, program.Name())); err != nil {
+			if err := os.Symlink(filepath.Join(r.bin, program.Name()), filepath.Join(bin, program.Name())); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	initdb := "#!/bin/sh\n# The reset's own shell runs initdb: killing it here cuts the reset right after its rename.\nkill -KILL \"$PPID\"\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(cut, "initdb"), []byte(initdb), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "initdb"), []byte(initdb), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PGBIN", cut)
-	r.check(pgDiskUnder)
+	return bin
+}
+
+// running is every process whose command line names the cluster's directory or the script's link
+// on PATH, by pid, with that command line: what of the test's own still runs, a run of the script
+// or its server. A process that ends while it is read, or whose command line is empty, as a
+// zombie's is, is not running.
+func (r *pgDiskRig) running(t *testing.T) map[int]string {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running := map[int]string{}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		args := strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " "))
+		if strings.Contains(args, r.dir) || strings.Contains(args, r.link) {
+			running[pid] = args
+		}
+	}
+	return running
+}
+
+// assertCutAfterTheRename holds what a reset cut after its rename, at its initdb, leaves: the old
+// cluster set aside whole, no cluster in the data directory, and no reset line.
+func (r *pgDiskRig) assertCutAfterTheRename(t *testing.T) {
+	t.Helper()
 	aside := filepath.Join(r.dir, testPGSetAsideName)
 	if !pgDiskExists(t, filepath.Join(aside, "PG_VERSION")) || !pgDiskExists(t, filepath.Join(aside, "base")) {
 		t.Fatalf("the cut reset left no whole cluster at %s\n%s", aside, r.log)
@@ -533,8 +566,16 @@ func TestPGDiskACheckAfterAResetCutAtItsRenameDeletesTheOldClusterAndServesAnEmp
 	if lines := r.resetLines(); len(lines) != 0 {
 		t.Fatalf("the cut reset wrote its line %q", lines)
 	}
+}
+
+// assertNextCheckServesAnEmptyCluster runs the check that follows a cut reset, over the floor and
+// with the real PGBIN, and holds what it leaves: the old cluster set aside deleted, as the
+// container's log says, and an empty cluster served on the DSN.
+func (r *pgDiskRig) assertNextCheckServesAnEmptyCluster(t *testing.T) {
+	t.Helper()
 	t.Setenv("PGBIN", r.bin)
 	r.check(pgDiskSize)
+	aside := filepath.Join(r.dir, testPGSetAsideName)
 	if said := r.log.String(); !strings.Contains(said, "launcher: test database: deleted "+aside+",") {
 		t.Errorf("the check that followed the cut does not say it deleted %s:\n%s", aside, said)
 	}
@@ -545,6 +586,69 @@ func TestPGDiskACheckAfterAResetCutAtItsRenameDeletesTheOldClusterAndServesAnEmp
 		t.Errorf("after the cut and a check the cluster holds %v, want an empty one", made)
 	}
 	r.answers(t)
+}
+
+// A reset cut right after its rename, before its initdb — by its bound, a restart of the roles
+// container or a kill — leaves the old cluster set aside whole and no cluster in the data
+// directory, and the next check, over the floor or under it, deletes what was set aside and
+// serves an empty cluster on the DSN. The cut is an initdb that kills the reset's own shell.
+func TestPGDiskACheckAfterAResetCutAtItsRenameDeletesTheOldClusterAndServesAnEmptyOne(t *testing.T) {
+	r := newPGDiskRig(t)
+	r.makeDatabases(t, "tpg_one", "tpg_two")
+	initdb := "#!/bin/sh\n# The reset's own shell runs initdb: killing it here cuts the reset right after its rename.\nkill -KILL \"$PPID\"\nexit 1\n"
+	t.Setenv("PGBIN", r.binWithInitdb(t, initdb))
+	r.check(pgDiskUnder)
+	r.assertCutAfterTheRename(t)
+	r.assertNextCheckServesAnEmptyCluster(t)
+}
+
+// A reset its bound cuts ends whole. The script runs the reset as `flock … "$0" reset-locked`, so
+// a bound that killed the script's own process alone would leave flock and reset-locked holding
+// the cluster's lock and working on the cluster after the check returned. Cut by its bound at an
+// initdb that outlasts it, the check returns at the bound, no process of the reset is left, the
+// lock is free at once, and the next check deletes the old cluster the reset set aside and serves
+// an empty one on the DSN.
+func TestPGDiskAResetCutByItsBoundLeavesNoProcessAndTheNextCheckServesAnEmptyCluster(t *testing.T) {
+	r := newPGDiskRig(t)
+	r.makeDatabases(t, "tpg_one", "tpg_two")
+	// The server is stopped first, so the reset reaches its initdb with no stop of its own to wait
+	// on, well inside the bound.
+	r.script(t, "stop")
+	bound := testPGResetBound
+	testPGResetBound = 5 * time.Second
+	t.Cleanup(func() { testPGResetBound = bound })
+	// The initdb sleeps a second at a time for ten minutes, so the process that outlasts the bound
+	// is always this shell, whose command line names the cluster's directory, and a kill of it
+	// leaves no long sleep behind.
+	t.Setenv("PGBIN", r.binWithInitdb(t, "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 600 ]; do sleep 1; i=$((i + 1)); done\n"))
+	started := time.Now()
+	r.check(pgDiskUnder)
+	took := time.Since(started)
+	if cut := fmt.Sprintf("%s reset did not finish within %s", testPGProgram, testPGResetBound); !strings.Contains(r.log.String(), cut) {
+		t.Fatalf("the check returned after %s and its log does not say %q\n%s", took, cut, r.log)
+	}
+	if took > testPGResetBound+10*time.Second {
+		t.Errorf("the check returned %s after it started, want it at the reset's bound of %s", took, testPGResetBound)
+	}
+	// A SIGKILL ends each process as the kernel next runs it, so their exits get a moment; a
+	// process the kill missed would go on for the initdb's ten minutes. One that is left is killed
+	// here, so a failing run leaves nothing of its own behind.
+	var left map[int]string
+	if !testwait.Holds(5*time.Second, 100*time.Millisecond, func() bool {
+		left = r.running(t)
+		return len(left) == 0
+	}) {
+		for pid := range left {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+		t.Fatalf("after its bound cut the reset, these of its processes still run: %v\n%s", left, r.log)
+	}
+	lock := filepath.Join(r.dir, ".lock")
+	if out, err := exec.Command("flock", "--nonblock", lock, "true").CombinedOutput(); err != nil {
+		t.Fatalf("after its bound cut the reset, %s cannot be taken at once: %v: %s", lock, err, out)
+	}
+	r.assertCutAfterTheRename(t)
+	r.assertNextCheckServesAnEmptyCluster(t)
 }
 
 // stubPGDisk puts a `legion-testpg` on PATH that appends one line per call — the subcommand and
@@ -617,7 +721,7 @@ func TestPGDiskACheckThatCannotReadTheDiskLogsAndEnsures(t *testing.T) {
 	}
 	log := &lockedBuffer{}
 	unread := func(string) (uint64, uint64, error) { return 0, 0, syscall.EIO }
-	checkTestPGDisk(context.Background(), Config{RolesDir: rolesDir, TestPostgres: true, TestPostgresDisk: true}, &roleLog{stdout: log, stderr: log}, &pidGuard{}, unread)
+	checkTestPGDisk(context.Background(), Config{RolesDir: rolesDir, TestPostgres: true, TestPostgresDisk: true}, &roleLog{stdout: log, stderr: log}, &pidGuard{}, unread, testPGResetBound)
 	if got := callLines(calls); !slices.Equal(got, []string{"ensure unset unset unset\n"}) {
 		t.Errorf("the check ran %q, want the plain ensure alone", got)
 	}

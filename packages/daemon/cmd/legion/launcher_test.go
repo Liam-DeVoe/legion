@@ -175,13 +175,20 @@ func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *te
 	}
 }
 
+// A flag that means nothing without another is refused before anything is dialled or listened
+// on, with exit 1 and a message naming what it lacks, which proves each flag reaches the
+// launcher: one it did not know would exit 2 on its usage, and one it dropped would change the
+// refusal or dial the unreachable daemon until the context ends and exit 0.
+//
 // The metadata endpoint is a microVM issue pod's alone and named whole: both of its flags, with
-// --microvm and --roles-dir. Each other mixture is refused before anything is dialled or listened
-// on, naming what it lacks, which proves each flag reaches the launcher: one it did not know would
-// exit 2 on its usage, and one it dropped would change the refusal or dial the unreachable daemon
-// until the context ends. The controller's form with --microvm is refused for its roles directory
-// alone, so --microvm reached it too.
-func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *testing.T) {
+// --microvm and --roles-dir, and each other mixture is refused. The controller's form with
+// --microvm is refused for its roles directory alone, so --microvm reached it too.
+//
+// --test-postgres-disk tells the launcher that the test database's directory is a disk of its
+// own, which means nothing without the test database: in either form, an issue pod's or the
+// controller's, the flag without --test-postgres is refused. That refusal is launcher.Config's,
+// read from the field the flag sets.
+func TestTheLauncherCommandRefusesAFlagWithoutTheOneItNeeds(t *testing.T) {
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
@@ -189,6 +196,7 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 	const (
 		pool     = "example-project.svc.id.goog"
 		provider = "https://container.googleapis.com/v1/projects/example-project/locations/example-location/clusters/example-cluster"
+		disk     = "launcher: --test-postgres-disk says the test database's directory is a disk of its own: it needs --test-postgres"
 	)
 	for _, tc := range []struct {
 		name string
@@ -203,6 +211,8 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
 		{"the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--microvm", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
 			"the metadata endpoint is an issue pod's container: it needs --roles-dir"},
+		{"the disk in an issue pod's form", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--test-postgres-disk"}, disk},
+		{"the disk in the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--test-postgres-disk"}, disk},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -211,37 +221,6 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 			args := append([]string{"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p"}, tc.args...)
 			if code := run(ctx, args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.want) {
 				t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), tc.want)
-			}
-		})
-	}
-}
-
-// --test-postgres-disk tells the launcher that the test database's directory is a disk of its
-// own, which means nothing without the test database: in either form, the flag without
-// --test-postgres is refused before anything is dialled, naming what it lacks. The refusal is
-// launcher.Config's, read from the field the flag sets, so it proves the flag reaches the
-// launcher: one it did not know would exit 2 on its usage, and one it dropped would dial the
-// unreachable daemon until the context ends and exit 0.
-func TestPGDiskTheLauncherCommandRefusesTheDiskWithoutTheTestDatabase(t *testing.T) {
-	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
-	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
-		t.Fatal(err)
-	}
-	const want = "launcher: --test-postgres-disk says the test database's directory is a disk of its own: it needs --test-postgres"
-	for _, tc := range []struct {
-		name string
-		args []string
-	}{
-		{"an issue pod's form", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--test-postgres-disk"}},
-		{"the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--test-postgres-disk"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			var stdout, stderr bytes.Buffer
-			args := append([]string{"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p"}, tc.args...)
-			if code := run(ctx, args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), want) {
-				t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), want)
 			}
 		})
 	}
