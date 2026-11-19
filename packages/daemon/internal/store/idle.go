@@ -170,7 +170,9 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 // first and last, which is how a row of this release is told from a row of one that is over
 // (IssueReleaseStop, IssueRelease), and boundary_row is the row the mark names its boundary —
 // the stop of the first role process of the pod — which is where a delivery that reached the
-// pod after the mark cancels the release.
+// pod after the mark, while every role still ran, cancels the release. Once a stop has recorded
+// its role's claim as `released`, a wake of that role no longer cancels the release: the release
+// runs to its end, and the role comes back in the new pod (releaseOvertaken).
 //
 // It answers whether a release was marked. decide answering no rows writes nothing, which is the
 // ordinary case: nearly every tick finds a pod that is working, or one whose idle period has not
@@ -225,7 +227,8 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			started = max(started, c.LastStartRow)
 		}
 		// The newest wake this pod has had: a wake recorded above it is one this release never
-		// saw, and cancels it (releaseOvertaken).
+		// saw. It cancels the release, unless it is a wake of a role this release has since
+		// recorded as `released` (releaseOvertaken).
 		var wake int64
 		if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from pod_resumes where project = $1 and issue = $2`,
 			project, issue).Scan(&wake); err != nil {
@@ -295,6 +298,19 @@ func insertOutboxRow(ctx context.Context, tx pgx.Tx, issue string, row IdleRelea
 // is record's to encode, as every row of a release is (IdleReleaseRow).
 type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, error)
 
+// ReleaseWokenRow is ReleaseResumeRow told what the cancel dropped of the role's wake:
+// wakeKind is the kind of the resume the cancel deleted for that role and wakeTask is the task of
+// the start it deleted, both "" for a role whose wake it did not drop (dropWakesUnderRelease).
+// The builder decides what of that wake the resume's own task carries (workflow's
+// CancelledWakeTask).
+type ReleaseWokenRow func(role claim.Role, generation uint64, wakeKind, wakeTask string) (IdleReleaseRow, error)
+
+// droppedWake is what a cancel deleted of one role's wake: the kind of its resume and the task
+// of its start ("" where the cancel found no start of it).
+type droppedWake struct {
+	kind, task string
+}
+
 // CancelIssueRelease ends a release that did not finish, in one transaction: the bundle that
 // release saved is deleted, the resume of each claim this release suspended and still holds is
 // queued, and the mark goes with them. The three are one act because any of them alone is a
@@ -313,6 +329,29 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // is left to that path, which is what the source on the suspension says; one an earlier release
 // left `released` is no business of this release, which is why the mark's own set is read and
 // never every released claim of the issue.
+//
+// A wake of a role this release recorded as `released` can come before the release ends, and the
+// release goes on then (releaseOvertaken). A cancel can still follow that wake, for another cause:
+// a bundle too large or a save that failed, a role stop that met a live start of another role, or
+// an issue that left the workflow. Then the pod never goes away, and the wake brings nothing
+// back. So, for each role of the mark's set that is still suspended as `released` and has a wake
+// recorded above the mark's wake_row, this transaction deletes those resumes and the starts the
+// wake queued (resumeStartRow, above the release's last row), and then queues the role's resume
+// as above. Those starts have not run: a start waits while the release's teardown row is in the
+// outbox (record's outboxInOrder), and that row is still there whichever row runs the cancel. So
+// the role starts once, in the pod it was in, with no task that says its pod was released, and
+// no resume is left for a release that did not happen. The cause of the wake still reaches the
+// role: a message that Envoy stored or kept arrives in the role's session, and the text of a CI
+// settlement or of the backstop, which reach the role only through the wake's task (workflow's
+// tellChecks tells the woken role no message of its own), goes to the role in the cancel's resume.
+// The builder is told the kind and the task of the wake dropped for each role (ReleaseWokenRow),
+// and its text says that the release did not finish rather than that the pod came back.
+//
+// That builder is the one variadic parameter, woken, and the cancel takes at most one. A cancel
+// given more refuses before it opens its transaction. ReleaseResumeRow keeps its shape because
+// callers outside the store pass a plain function literal of it, and the outbox passes the woken
+// builder instead, with resume nil; that builder's kind and task are "" for a role whose wake the
+// cancel did not drop.
 //
 // Beside them it answers whether the release it ended was one that suspends no role
 // (IdleReleaseMark.SuspendsNoRole, issue_releases.kind): the mark's kind, read in the same
@@ -342,9 +381,22 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // that runs first queues its resume below the close's rows, which supersede it, and one that runs
 // after reads the issue as left and queues nothing.
 func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, resume ReleaseResumeRow,
-	outOfWorkflow func(status string) bool) ([]claim.Role, bool, error) {
-	if project == "" || issue == "" || resume == nil || outOfWorkflow == nil {
+	outOfWorkflow func(status string) bool, woken ...ReleaseWokenRow) ([]claim.Role, bool, error) {
+	if len(woken) > 1 {
+		return nil, false, fmt.Errorf("cancelling the release of %s takes at most one woken builder, and was given %d", issue, len(woken))
+	}
+	var wokenRow ReleaseWokenRow
+	if len(woken) == 1 {
+		wokenRow = woken[0]
+	}
+	if project == "" || issue == "" || (resume == nil && wokenRow == nil) || outOfWorkflow == nil {
 		return nil, false, errors.New("cancelling a release needs its project, its issue, the row that resumes a claim and the workflow's own rule for a status")
+	}
+	build := func(role claim.Role, generation uint64, wake droppedWake) (IdleReleaseRow, error) {
+		if wokenRow != nil {
+			return wokenRow(role, generation, wake.kind, wake.task)
+		}
+		return resume(role, generation)
 	}
 	var resumed []claim.Role
 	var suspendsNoRole bool
@@ -353,11 +405,11 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			return err
 		}
 		resumed, suspendsNoRole = nil, false
-		var release int64
+		var release, wake, last int64
 		var suspended []string
 		var kind string
-		err := tx.QueryRow(ctx, `select id, suspended, kind from issue_releases where project = $1 and issue = $2`,
-			project, issue).Scan(&release, &suspended, &kind)
+		err := tx.QueryRow(ctx, `select id, suspended, kind, wake_row, last_row from issue_releases where project = $1 and issue = $2`,
+			project, issue).Scan(&release, &suspended, &kind, &wake, &last)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -380,6 +432,10 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		if err != nil {
 			return err
 		}
+		dropped, err := dropWakesUnderRelease(ctx, tx, project, issue, roles, wake, last)
+		if err != nil {
+			return err
+		}
 		var generation uint64
 		if len(roles) > 0 {
 			var live bool
@@ -392,7 +448,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			}
 		}
 		for _, role := range roles {
-			row, err := resume(role, generation)
+			row, err := build(role, generation, dropped[role])
 			if err != nil {
 				return err
 			}
@@ -455,6 +511,53 @@ func stillReleasedRoles(ctx context.Context, tx pgx.Tx, project, issue string, s
 		roles = append(roles, claim.Role(role))
 	}
 	return roles, rows.Err()
+}
+
+// dropWakesUnderRelease deletes what a wake of each of roles left while the release stood: the
+// role's resumes above wake, the mark's wake_row, and the starts of that role above last, the
+// release's last row, that have a wake's shape (resumeStartRow). A role with no such resume keeps
+// every start it has, since no wake of it was taken under the mark. A cancel calls it before it
+// queues its own resumes (CancelIssueRelease).
+//
+// It answers, for each role whose wake it dropped, the kind of the resume and the task of the
+// start it deleted, the newest of each, which the cancel hands its builder (ReleaseWokenRow). A
+// role it dropped nothing of is not in the answer, and reads as the zero droppedWake.
+func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, roles []claim.Role, wake, last int64) (map[claim.Role]droppedWake, error) {
+	if len(roles) == 0 {
+		return nil, nil
+	}
+	names := make([]string, 0, len(roles))
+	for _, role := range roles {
+		names = append(names, string(role))
+	}
+	rows, err := tx.Query(ctx, `with woken as (
+			delete from pod_resumes where project = $1 and issue = $2 and id > $3 and role = any($4) returning id, role, kind),
+		started as (
+			delete from outbox where issue = $2 and id > $5 and `+resumeStartRow+`
+				and outbox.payload->>'role' in (select role from woken)
+			returning outbox.id, outbox.payload->>'role' as role, coalesce(outbox.payload->>'task', '') as task)
+		select w.role, w.kind, coalesce(s.task, '') from woken w left join started s on s.role = w.role
+		order by w.id desc, s.id desc`,
+		project, issue, wake, names, last)
+	if err != nil {
+		return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	defer rows.Close()
+	dropped := map[claim.Role]droppedWake{}
+	for rows.Next() {
+		var role string
+		var got droppedWake
+		if err := rows.Scan(&role, &got.kind, &got.task); err != nil {
+			return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+		}
+		if _, seen := dropped[claim.Role(role)]; !seen {
+			dropped[claim.Role(role)] = got
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	return dropped, nil
 }
 
 // ClearIssueRelease forgets the mark of issue's release once the release finished, on the pool:

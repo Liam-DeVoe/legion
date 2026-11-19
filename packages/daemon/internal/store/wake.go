@@ -493,6 +493,25 @@ func (p *PodRecords) ClaimInReleaseByToken(ctx context.Context, tx pgx.Tx, token
 	return claimInRelease(ctx, tx, `c.token = $2`, p.project, token, "role token")
 }
 
+// ReleaseRecordedRole is whether issue's release mark stands and its suspended set names role: a
+// stop of that release has recorded the role's claim as `released`, and the release's teardown has
+// not finished. The outbox's delivery wake reads it before it takes a wake (internal/daemon's
+// wakeForDelivery). That wake resumes the claim in process, so it has no `start` row to wait
+// behind the teardown row (record's outboxInOrder), and a resume now would launch the role in the
+// pod the teardown is about to take. So the delivery takes nothing while this answers true, and
+// takes its wake once the teardown has recorded the release.
+//
+// It is one statement on the pool, as ClaimStatesIn is: there is nothing for a transaction to
+// make consistent, and the delivery reads it again at its next attempt.
+func (s *Store) ReleaseRecordedRole(ctx context.Context, project, issue string, role claim.Role) (bool, error) {
+	var recorded bool
+	if err := s.pool.QueryRow(ctx, `select exists (select 1 from issue_releases
+		where project = $1 and issue = $2 and $3 = any(suspended))`, project, issue, string(role)).Scan(&recorded); err != nil {
+		return false, fmt.Errorf("read whether the release of %s recorded its %s: %w", issue, role, err)
+	}
+	return recorded, nil
+}
+
 // claimInRelease is the one claim of project that where selects, in a live state, whose issue's
 // release mark stands in issue_releases, with the mark's marked_at, and whether there is one. A
 // claim that is suspended, failed or retired is no release's to hold back: a released claim is a
@@ -521,21 +540,29 @@ func claimInRelease(ctx context.Context, tx pgx.Tx, where, project, value, what 
 	return c, marked, true, nil
 }
 
+// resumeStartRow is the shape of an outbox `start` that names no phase and waits for no admission
+// slot, over the outer table `outbox`, unaliased. It is the shape of the row a wake queues
+// (workflow's wakeRow) and of the row a cancelled release queues for each claim it suspended
+// (CancelIssueRelease). Three reads share it: StartQueued, a release's teardown, which passes over
+// a wake's own start of a role the release recorded (IssueRelease), and a cancel, which deletes
+// that start (CancelIssueRelease).
+const resumeStartRow = `outbox.kind = 'supervise' and outbox.payload->>'op' = 'start'
+	and coalesce(outbox.payload->>'phase', '') = '' and coalesce(outbox.payload->>'needsSlot', '') <> 'true'`
+
 // StartQueued is whether the outbox holds a `start` of issue's role at generation that names no
-// phase and waits for no admission slot. Rows of that shape come from a cancelled release (its
-// resume of each claim it suspended: CancelIssueRelease, the daemon outbox's releaseResume), a
-// wake (workflow's wakeRow), an architect start (admission, and the resume of an awaited root)
-// and a production check's look. Such a row meets no phase fence and waits for no slot. When it
-// runs, the outbox's start executor resumes a suspended claim of that role
+// phase and waits for no admission slot (resumeStartRow). Rows of that shape come from a cancelled
+// release (its resume of each claim it suspended: CancelIssueRelease, the daemon outbox's
+// releaseResume), a wake (workflow's wakeRow), an architect start (admission, and the resume of an
+// awaited root) and a production check's look. Such a row meets no phase fence and waits for no
+// slot. When it runs, the outbox's start executor resumes a suspended claim of that role
 // (supervise.RequestRuleResume), so a role with one queued is coming back. The one exception is a
 // production check's look: it is fenced on its check and look, and finishes without acting when
 // its look ended before it ran. A row the outbox has finished is deleted, so every row this reads
 // is still to run.
 func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
 	var queued bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = 'supervise'
-		and payload @> jsonb_build_object('op', 'start', 'role', $2::text, 'generation', $3::bigint)
-		and coalesce(payload->>'phase', '') = '' and coalesce(payload->>'needsSlot', '') <> 'true')`,
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+resumeStartRow+`
+		and payload @> jsonb_build_object('role', $2::text, 'generation', $3::bigint))`,
 		issue, string(role), int64(generation)).Scan(&queued); err != nil {
 		return false, fmt.Errorf("read whether a start of %s's %s is queued: %w", issue, role, err)
 	}
@@ -570,6 +597,14 @@ func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, r
 // left open (CloseOpenResumes), so a pod that came back and whose role took no turn the daemon
 // saw holds nothing back at the next release; a release that suspends none closes no resume,
 // because it ends no wake, and the resumes its pod leaves behind are the heal's.
+//
+// A wake can be taken while a release of the pod still runs: after a stop of that release
+// recorded the role's claim as `released`, and before its teardown recorded the release. That
+// release has no pod_releases row yet, so LatestPodRelease answers the release before it, and the
+// resume's seen_release is the one before it too. The teardown's record of the release points the
+// resume at the release it ends (RecordPodRelease), in the transaction that writes that release's
+// row. Such a wake does not cancel the release (releaseOvertaken), and its `start` waits for the
+// teardown (record's outboxInOrder), so the role starts once, in the pod that comes back.
 //
 // Every wake runs through here — the four the workflow applies inside a fact's transaction and
 // the delivery wake the outbox takes in one of its own (Store.TakePodWake) — so there is one

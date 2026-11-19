@@ -41,6 +41,11 @@ const (
 	// period. Against that, a park that lasts the hour a wave can take costs the row about twelve
 	// attempts, each logged at debug, where its backoff's 64 s would make about 57 of them.
 	parkedWakeBound = 5 * time.Minute
+	// deliveryWakeInRelease is how long a delivery row waits before it reads its role again while
+	// a release that recorded that role's claim as `released` still runs (wakeForDelivery). It is
+	// the delay a listener's wake report takes to read a release again (workflow's
+	// wakeRetryInRelease), and the teardown it waits for is one row of the issue's lifecycle lane.
+	deliveryWakeInRelease = 30 * time.Second
 	// A wake that has not reached the woken role's first turn within workflow.StrandedReleaseWake
 	// is the same fact two passes read: this one warns about it and marks it (R5), and the
 	// stranded report names its claim (workflow.Stranded), so the bound is that rule's and is
@@ -240,6 +245,16 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // (retry). A released claim this call resumes answers no turn, even where the resume parks: the
 // row waits on its backoff, and its next attempt reads the park.
 //
+// A released claim whose role a release still running has recorded (store's
+// ReleaseRecordedRole) is not woken yet. That release runs to its end whatever wakes the role
+// (store's releaseOvertaken), and a resume here would launch the role in the pod its teardown is
+// about to take. So the call takes nothing and answers, as its error, a routine wait of
+// deliveryWakeInRelease (routineWaiting, wait.Until), whose text names the release it waits for:
+// the attempts stay at debug, and the text is not the wake pacing's. Once the teardown has
+// finished, the row's next attempt takes the wake against the release the teardown recorded and
+// resumes the role in the new pod. Once a cancel has resumed the claim, the next attempt finds it
+// live and publishes.
+//
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
 // the workflow, or whose tree lingers, is not woken: that pod is a close's to stop. An outbox
@@ -276,6 +291,14 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	}
 	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, time.Time{}, nil
+	}
+	recorded, err := r.trees.ReleaseRecordedRole(ctx, r.project, issue.Key, held.Role)
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	if recorded {
+		return false, time.Time{}, routineWaiting{err: wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
+			fmt.Sprintf("a wake for %s waits for the release of %s's pod to finish", detail, issue.Key))}
 	}
 	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC())
 	if err != nil {
@@ -332,6 +355,13 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
+//
+// A role with an open resume gets none either: a wake of it was taken while this release still
+// ran, after the release recorded its claim (store's releaseOvertaken), and that wake's start is
+// already bringing it back in the new pod. A backstop for it could never act: it fires on a claim
+// that is running by then, or on one whose open resume refuses a second wake. The release's mark
+// closed every resume left open before it (store.CloseOpenResumes), so an open resume here is
+// such a wake.
 func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key); err != nil {
 		return err
@@ -350,6 +380,13 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	for _, c := range released {
 		if c.Role != role || c.ServingGeneration != issue.Generation {
 			continue
+		}
+		if _, open, err := r.trees.OpenPodResume(ctx, r.project, issue.Key, role); err != nil || open {
+			if open {
+				r.log.Info("wake: the release of an issue's pod arms no backstop: a wake is already bringing its open phase's role back",
+					"issue", issue.Key, "role", role)
+			}
+			return err
 		}
 		due := r.now().UTC().Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",

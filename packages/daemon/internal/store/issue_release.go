@@ -111,7 +111,9 @@ type releaseMark struct {
 	id                             int64
 	first, boundary, last, started int64
 	// wake is the newest wake this pod had when the mark was written (max pod_resumes.id), so a
-	// resume row above it is a wake taken since (releaseOvertaken).
+	// resume row above it is a wake taken since. Such a wake cancels the release unless its role
+	// is in suspended: a wake takes only a released claim, so a wake of such a role came after
+	// this release recorded it, and the release runs to its end (releaseOvertaken).
 	wake int64
 	// suspended are the roles whose claims this release's own role stops have suspended as
 	// `released`, each appended once its stop has suspended it (ReleaseSuspendedClaim).
@@ -166,14 +168,15 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 // releaseOvertaken is whether the pod was woken or went on working after its release was marked,
 // which is what cancels the release. Four things say it was:
 //
-//   - a wake of the pod taken since the mark: one pod_resumes row above the mark's own
-//     (TakePodWake writes one in the wake's own transaction). The wake is read rather than what
+//   - a wake of the pod taken since the mark for a role outside the mark's suspended set: a
+//     pod_resumes row above the mark's own (TakePodWake writes one in the wake's own transaction)
+//     whose role this release has not recorded as `released`. The wake is read rather than what
 //     it did to a claim, because what it did to a claim says too little. The outbox's wake of a
 //     delivery it holds resumes its role by rule (RequestRuleResume), which queues no start row
 //     and moves no last_start_row; and a wake for a claim an earlier release left `released` —
 //     a notice for an architect this release never stopped — touches no claim of the mark's own
-//     set. Either way the pod is coming back, so the release goes rather than the pod, whichever
-//     claim the wake was for and whatever that claim looks like by the time this reads it;
+//     set. Either way that role comes back in the pod that still stands, so the release goes
+//     rather than the pod, whatever that claim looks like by the time this reads it;
 //   - a claim of the issue started since the newest start the mark was taken at;
 //   - a live claim in a turn, starting, or whose launch is not yet known — the states the idle
 //     rule refuses to release a pod in (workflow's idleStateReleasable);
@@ -181,13 +184,25 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 //     resumed it or took its suspension over — an operator's resume, a close, a linger — which
 //     leaves no wake of its own to read.
 //
+// A wake of a role in the mark's suspended set is none of those. This release's record of a
+// claim as `released` (ReleaseSuspendedClaim) is the release's point of no return for that role:
+// a wake takes only a released claim, so such a wake came after the record. The release then
+// runs to its end. The wake's `start` waits for the teardown (record's outboxInOrder) and starts
+// the role once, in the pod that comes back, and the release's record points the wake's resume
+// at this release (RecordPodRelease). The outbox's delivery wake takes no wake of such a role
+// until the teardown has finished (internal/daemon's wakeForDelivery). The three claims clauses
+// still read every role of the set, because a claim that started, holds a process or is no
+// longer suspended as `released` is a process that really runs — after an operator's resume,
+// for example — and the pod must not go from under it.
+//
 // A claim the release itself suspended and still holds is none of those, so the release's own
 // stops never read as work.
 func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mark releaseMark) (bool, error) {
 	var overtaken bool
 	if err := tx.QueryRow(ctx, `select exists (
-		select 1 from pod_resumes where project = $1 and issue = $2 and id > $3)`,
-		project, issue, mark.wake).Scan(&overtaken); err != nil || overtaken {
+		select 1 from pod_resumes where project = $1 and issue = $2 and id > $3
+		and not (role = any(coalesce($4::text[], '{}'))))`,
+		project, issue, mark.wake, mark.suspended).Scan(&overtaken); err != nil || overtaken {
 		return overtaken, err
 	}
 	err := tx.QueryRow(ctx, `select exists (
@@ -329,7 +344,9 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // stored goes — when the run it released has moved on, the issue has left the workflow or its
 // tree lingers (each of which is a close's business, not a release's), when the tree's cleanup is
 // reserved, which deletes the Sandbox this release would, or when the pod went on working after
-// the mark: a claim started, resumed or holding a process now. It waits while one of the
+// the mark: a claim started, resumed or holding a process now. A wake of a role this release has
+// recorded as `released`, and the start that wake queued, are not such work: the teardown runs to
+// its end, and the start waits for it (releaseOvertaken). It waits while one of the
 // release's own role stops is unfinished or a stored claim of the issue may still hold a
 // process. outOfWorkflow is the workflow's rule for a status that takes an issue out of it
 // (record.OutOfWorkflow), which the store does not restate; the gate itself is the one every
@@ -382,23 +399,33 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if uint64(issueGeneration) != release.IssueGeneration || uint64(rootGeneration) != release.TreeGeneration || !live {
 			return nil
 		}
-		// A role started or resumed since the mark, or a start queued above the release's own
-		// rows, is the pod being used again: the teardown would take a pod with a live role in
-		// it, and the stop that would have caught it has already run. The release reads every
-		// queued start row where IssueSuspension reads only a production check's look, and
-		// needs no narrowing of its own: the read above has already returned a cancel for an
-		// issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an issue
-		// still in the workflow under a live tree, where the outbox's start fence declines
-		// nothing and a queued start row really is a start. The cause is the one a role stop
-		// reads for it.
+		// A role started or resumed since the mark, a wake of a role this release did not record,
+		// or a start queued above the release's own rows, is the pod being used again: the
+		// teardown would take a pod with a live role in it, and the stop that would have caught
+		// it has already run. The release reads every queued start row where IssueSuspension
+		// reads only a production check's look, and needs no narrowing of its own: the read
+		// above has already returned a cancel for an issue that is not
+		// pods.InWorkflowNotLingering, so this predicate runs only for an issue still in the
+		// workflow under a live tree, where the outbox's start fence declines nothing and a
+		// queued start row really is a start. The cause is the one a role stop reads for it.
+		//
+		// The one start passed over is a wake's own: a start that names no phase and waits for
+		// no slot (resumeStartRow), of a role in the mark's suspended set that has a wake recorded
+		// since the mark (workflow's wakeRow). That wake came after this release recorded the
+		// role (releaseOvertaken), and its start waits for this row (record's outboxInOrder), so
+		// it starts the role in the pod that comes back. A phase's start of the same role names
+		// its phase, and it still cancels the release.
 		overtaken, err := releaseOvertaken(ctx, tx, project, release.Issue, mark)
 		if err != nil {
 			return err
 		}
 		if !overtaken {
 			if err := tx.QueryRow(ctx, `select exists (
-				select 1 from outbox where issue = $1 and id > $2 and kind = 'supervise' and payload->>'op' = 'start')`,
-				release.Issue, mark.last).Scan(&overtaken); err != nil {
+				select 1 from outbox where issue = $1 and id > $2 and kind = 'supervise' and payload->>'op' = 'start'
+				and not (`+resumeStartRow+` and payload->>'role' = any(coalesce($3::text[], '{}'))
+					and exists (select 1 from pod_resumes woken where woken.project = $4 and woken.issue = $1
+						and woken.id > $5 and woken.role = outbox.payload->>'role')))`,
+				release.Issue, mark.last, mark.suspended, project, mark.wake).Scan(&overtaken); err != nil {
 				return err
 			}
 		}

@@ -5990,6 +5990,7 @@ The wakes are these:
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
+  A worker also gets no backstop when a wake of it came while the release ran, since that wake already brings the worker back in the new pod.
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
@@ -6006,7 +6007,18 @@ Two other boot steps can start a released claim.
 Admission's pass at a boot does what each of its passes does: when a released claim stands behind the entry that its phases row names, the pass sends that entry's task to the claim (`owedEntryRoles`, `internal/admit/admit.go`).
 The first boot of this release also queues, once, a start for each merger that the cutover from `awaiting_merge`, the phase of the builds before `legion-v20.5.0`, left stopped (`cutoverMergerRepair`, `internal/workflow/cutover_merger_repair.go`).
 That merger starts when its tree's design gate allows it, as at any start of the `merging` phase, which holds no admission slot.
-A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod; after that moment the wake waits for the release to finish and then resumes the pod.
+A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod.
+After that moment, the release's record of a role's claim as `released` is its point of no return for that role: a wake of that role no longer cancels the release.
+The release's teardown runs to its end, and the wake's start waits for it, because no start of a role of the issue runs while the issue's teardown row is in the outbox.
+The role then starts once, in the new pod.
+Its task says that its pod was released and that this wake brought it back, and the wake's resume is recorded against that release.
+A notice, phase-ended message, hook prompt or merge-queue removal message for such a role waits in its outbox row, reads the role again every 30 seconds, and wakes the role in the new pod once the teardown has finished.
+A wake of a role that the release did not stop still cancels the release, for example a notice for an architect that an earlier release left `released`.
+So do a phase start of any role of the pod and a claim of the pod that starts or holds a process again.
+A release can still be cancelled after such a wake, for another cause: a bundle above 40 MiB or a save that fails, a role stop that meets another role's start, or an issue that leaves the workflow.
+The pod then never goes away, so the cancel deletes the wake's resume and its queued start, and the role starts once, in the same pod.
+For a CI settlement or the backstop, that one start carries the wake's text under a preamble that says the release did not finish, because the role learns of either only from that text.
+For a message wake, the start carries no task, since the message itself reaches the session.
 A cancel is one act: in one transaction the daemon queues the resume of each claim that release had suspended — the roles its own mark recorded, never a claim an earlier release left `released` — and deletes the mark.
 A wake report of the Envoy listener, for a role message or a session message, that names a live claim of a pod whose release has not ended does not cancel the release, whether or not its role processes are stopped yet: that claim is not `released` yet, so the report has nothing to wake.
 The daemon applies such a report again every 30 seconds until the release ends, for at most 15 minutes after the report's own time.
@@ -6035,7 +6047,7 @@ It never reaches GitHub.
 sjawhar/legion is public and a working copy holds every file that is not ignored, so a save to a branch would publish files no agent chose to push and could start CI; the daemon's database is private and starts nothing.
 A bundle above 40 MiB, or a save that fails, stops the release, and the daemon records that reason.
 Only the pod's own launcher receives the bundle, over the launcher's authenticated connection, in `launcher_bundle` frames each under the 1 MiB frame limit (`shimwire.MaxFrameBytes`), and the launcher restores it in the roles container before any role starts, never in the token-holding `workspace-fetch` container.
-The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when a wake cancels the release.
+The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when the release is cancelled.
 A bundle is offered to one pod and one only: the first pod of the issue that is not the pod the work came off to ask for it, which in an ordinary release is the pod the teardown's next launch made.
 That pod is sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
 A restore that fails, and a refusal, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.

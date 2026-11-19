@@ -82,9 +82,11 @@ type Pods interface {
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
 // generation, naming no phase, carrying the task that says why the pod came back. It is the same
 // row a phase start writes, which is the point — the outbox's start executor already resumes a
-// suspended claim by rule (RequestRuleResume), already records the start that cancels a release
-// still in flight (StartedBy, read by store.IssueReleaseStop), and already delivers the row's
-// task once the relaunched agent is ready. Naming no phase keeps the row out of every phase
+// suspended claim by rule (RequestRuleResume) and already delivers the row's task once the
+// relaunched agent is ready. A wake taken while a release of the pod still runs, after that
+// release recorded the role's claim as `released`, does not cancel the release: its row waits for
+// the release's teardown (record's outboxInOrder), so the role starts once, in the pod that comes
+// back (store.IssueRelease). Naming no phase keeps the row out of every phase
 // fence: the issue's phase may move between the wake and the relaunch, and the wake's task is
 // never the phase's work. It is queued as every worker's task is (queuedRow), so a woken reviewer
 // of an issue in reviewing is told the entry of its round too (WakeTask says why).
@@ -101,6 +103,17 @@ const (
 	wakeRetryInRelease = 30 * time.Second
 	wakeHeldForRelease = 15 * time.Minute
 )
+
+// wakePreamble is the first two sentences of every wake's task (WakeTask): the pod was released
+// and this wake brought it back.
+const wakePreamble = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
+	"Your session, your workspace and any work you had not pushed are as you left them. "
+
+// cancelledWakePreamble is the first two sentences of the task a cancelled release's resume
+// carries in place of a wake it dropped (CancelledWakeTask): the release did not finish, so the
+// pod never went away.
+const cancelledWakePreamble = "An idle release of your issue's pod stopped your role, and that release did not finish, " +
+	"so your role goes on in the same pod. Your session, your workspace and any work you had not pushed are as you left them. "
 
 // WakeTask is the one task a woken role is given: which wake brought its pod back and what that
 // wake was about. A message Envoy kept for the role can reach the woken session as a card before
@@ -120,30 +133,51 @@ const (
 // settlement, so the wake is its newest task, and the review it then submits moves the commit it
 // read only when its footer names the entry that stands. The text here names no entry itself.
 func WakeTask(kind, detail string) string {
-	const preamble = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. "
 	switch kind {
 	case pods.WakeChecks:
-		return preamble + "The wake is a CI settlement on your pull request's head: " + detail +
+		return wakePreamble + "The wake is a CI settlement on your pull request's head: " + detail +
 			". Read the checks before you decide anything."
 	case pods.WakeRoleMessage:
-		return preamble + "The wake is a message somebody published to your role topic (" + detail +
+		return wakePreamble + "The wake is a message somebody published to your role topic (" + detail +
 			") while your pod was gone. A message that Envoy kept for your role reaches this session, " +
 			"for one hour after Envoy kept it. It comes as an Envoy card that shows kept_at, possibly " +
 			"before this task. When that hour ends before a session takes the message, Envoy drops it " +
 			"and tells its sender. A message that Envoy did not keep, such as one sent with keep: false, " +
 			"does not reach you, and its sender must send it again."
 	case pods.WakeAgentMessage:
-		return preamble + "The wake is a message somebody sent to your session (" + detail +
+		return wakePreamble + "The wake is a message somebody sent to your session (" + detail +
 			") while your pod was gone. A message that Envoy or Dispatch stored for your session reaches this " +
 			"session, for 72 hours after it was stored. A message that neither stored, such as a direct send " +
 			"that Envoy refused, does not reach you, and its sender must send it again."
 	case pods.WakeBackstop:
-		return preamble + "The wake is the release's backstop running out: " + detail +
+		return wakePreamble + "The wake is the release's backstop running out: " + detail +
 			". Nothing else asked for you, so take up your phase where you left it."
 	default:
-		return preamble + "The wake is " + kind + ": " + detail + "."
+		return wakePreamble + "The wake is " + kind + ": " + detail + "."
 	}
+}
+
+// CancelledWakeTask is the task a cancelled release's resume of a role carries in place of the
+// wake the cancel dropped (store.CancelIssueRelease): kind is the dropped resume's kind and task is
+// the task of the start it dropped. A wake taken after the release recorded the role does not
+// cancel the release, but a cancel for another cause can still follow it, and then the pod never
+// went away and the wake's own task, which says it did, is dropped with the wake.
+//
+// Two wakes reach the role only through that task: a CI settlement, whose woken role is told no
+// message of its own (tellChecks), and the backstop. For those the answer is cancelledWakePreamble
+// and then the wake's task without wakePreamble, so the review round's sentences the queue
+// appended stay. Every other wake answers "": a message wake's message reaches the session
+// anyway, and its text says it was sent "while your pod was gone", which a cancel makes false. A
+// task that does not begin with wakePreamble is no wake's task this daemon wrote, and answers "".
+func CancelledWakeTask(kind, task string) string {
+	if kind != pods.WakeChecks && kind != pods.WakeBackstop {
+		return ""
+	}
+	rest, ok := strings.CutPrefix(task, wakePreamble)
+	if !ok {
+		return ""
+	}
+	return cancelledWakePreamble + rest
 }
 
 // listenerWake applies one wake report of the Envoy listener (intake.ListenerWake). A

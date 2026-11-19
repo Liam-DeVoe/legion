@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"slices"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -458,6 +460,87 @@ func TestACancelResumesOnlyTheRolesItsOwnReleaseSuspended(t *testing.T) {
 	}
 }
 
+// A release can be cancelled after a wake it lets run: a CI settlement woke the implementer after
+// the release recorded its claim as released, and then the issue's run moved on, so the teardown
+// cancels the release. The pod never went away, so the wake's resume and its start go, and the
+// cancel's own resume is the role's one start (store.CancelIssueRelease). A CI settlement reaches
+// its woken role only through the wake's task, so that start carries the settlement's text under
+// a preamble that says the release did not finish, built by the outbox's own builder
+// (releaseResume), and nothing in it says that the pod was released.
+func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("hold the teardown back: %v", err)
+	}
+	rig.drain(t)
+	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
+		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
+			got.State, got.SuspendedBy, rig.marked(t))
+	}
+
+	// The settlement's wake, as the workflow takes it (wakeReleased): the resume, and the start
+	// that carries the wake's task.
+	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, claim.RoleImplementer, pods.WakeChecks, time.Now().UTC()); err != nil || !taken {
+		t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
+	}
+	wake, err := record.NewOutboxRow(rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
+		Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build")}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("encode the wake's start: %v", err)
+	}
+	if _, err := rig.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+		values ($1, $2, $3, 0, now(), '', '')`, string(wake.Kind), rig.issue.Key, string(wake.Payload)); err != nil {
+		t.Fatalf("queue the wake's start: %v", err)
+	}
+
+	// The issue's run moves on, so the teardown's store read cancels the release, and the
+	// outbox carries the cancel out.
+	if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
+		t.Fatalf("move the issue's generation on: %v", err)
+	}
+	var teardown record.OutboxRow
+	if err := rig.pool.QueryRow(ctx, `select id, kind, issue, payload from outbox where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key).Scan(&teardown.ID, &teardown.Kind, &teardown.Issue, &teardown.Payload); err != nil {
+		t.Fatalf("read the teardown row: %v", err)
+	}
+	if err := rig.runner.execute(ctx, teardown); err != nil {
+		t.Fatalf("run the teardown: %v", err)
+	}
+	if rig.marked(t) {
+		t.Fatal("the teardown left the release marked, want it cancelled")
+	}
+
+	rows, err := rig.pool.Query(ctx, `select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`,
+		rig.issue.Key)
+	if err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	var starts []record.SuperviseRequest
+	for rows.Next() {
+		var payload []byte
+		var start record.SuperviseRequest
+		if err := rows.Scan(&payload); err != nil || json.Unmarshal(payload, &start) != nil {
+			t.Fatalf("read a queued start: %v", err)
+		}
+		starts = append(starts, start)
+	}
+	rows.Close()
+	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
+		"Your session, your workspace and any work you had not pushed are as you left them. "
+	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."
+	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != cancelled+settled ||
+		strings.Contains(starts[0].Task, "pod had been released") {
+		t.Fatalf("queued starts = %+v, want the cancel's one start of the implementer with the task %q: the settlement reaches the role only through it, and the pod never went away",
+			starts, cancelled+settled)
+	}
+	if records := rig.records(t); len(records.Resumes) != 0 {
+		t.Fatalf("resumes = %+v, want none: the release was cancelled, so no released pod came back", records.Resumes)
+	}
+}
+
 // The boundary's read belongs to the release and not to its claim: it is the one row that
 // answers a task, notice, message or start the pod was given around the mark, so it runs before
 // the row returns for a claim with nothing to stop. A boundary that returned first left that
@@ -560,6 +643,122 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	}
 	if after := len(rig.rt.CallsOf("Resume")); after != before {
 		t.Fatalf("resumes after the wake of a running claim = %d, want the %d it already had", after, before)
+	}
+}
+
+// A delivery for a role whose claim a release still running has recorded as `released` takes no
+// wake. That release runs to its end whatever wakes the role, and the delivery's wake resumes the
+// claim in process, so a resume now would launch the role in the pod the teardown is about to
+// take. The row waits 30 seconds instead, as a routine wait, and reads the role again. Once the
+// teardown has recorded the release and cleared its mark, the next attempt takes the wake against
+// that release and resumes the role, in the new pod.
+func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	// The teardown is not due yet, so the lane runs the save and the implementer's stop and the
+	// release stands with the claim recorded.
+	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("hold the teardown back: %v", err)
+	}
+	rig.drain(t)
+	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
+		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
+			got.State, got.SuspendedBy, rig.marked(t))
+	}
+
+	resumes := len(rig.rt.CallsOf("Resume"))
+	earliest := rig.runner.now().Add(30 * time.Second)
+	woken, turn, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key)
+	latest := rig.runner.now().Add(30 * time.Second)
+	at, until := wait.UntilAt(err)
+	var routine interface{ Routine() bool }
+	if woken || !turn.IsZero() || !until || at.Before(earliest) || at.After(latest) || !errors.As(err, &routine) || !routine.Routine() {
+		t.Fatalf("the wake while the release runs = %t, %s, %v; want no wake and a routine wait until 30 seconds on: the release recorded the role",
+			woken, turn, err)
+	}
+	if _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
+		t.Fatalf("an open resume after the wake that waited = %t, %v; want none: the wake took nothing", open, err)
+	}
+	if got := rig.machine.Claim(); !got.Released() || len(rig.rt.CallsOf("Resume")) != resumes {
+		t.Fatalf("the claim after the wake that waited = %s by %s, resumes %d; want it released and not resumed in the old pod",
+			got.State, got.SuspendedBy, len(rig.rt.CallsOf("Resume"))-resumes)
+	}
+
+	// The teardown runs: it records the release and clears the mark.
+	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("let the teardown run: %v", err)
+	}
+	rig.drain(t)
+	records := rig.records(t)
+	if rig.marked(t) || len(records.Releases) != 1 {
+		t.Fatalf("the mark stands = %t and the releases = %+v, want the release finished and recorded once", rig.marked(t), records.Releases)
+	}
+
+	woken, turn, err = rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key)
+	if err != nil || !woken || !turn.IsZero() {
+		t.Fatalf("the wake once the teardown finished = %t, %s, %v; want the claim woken", woken, turn, err)
+	}
+	records = rig.records(t)
+	if len(records.Resumes) != 1 || records.Resumes[0].Release != records.Releases[0].ID || records.Resumes[0].Kind != pods.WakeDelivery {
+		t.Fatalf("resumes = %+v, want the one delivery wake of release %d", records.Resumes, records.Releases[0].ID)
+	}
+	if got := rig.machine.Claim(); got.Released() {
+		t.Fatalf("the claim after the wake = %s by %s, want it resumed in the new pod", got.State, got.SuspendedBy)
+	}
+}
+
+// A finished release arms the backstop of its open phase's worker, unless a wake of that worker
+// came after the release recorded it: that wake's start already brings the worker back in the
+// new pod, and a backstop for it could never act (armBackstops).
+func TestAReleaseArmsNoBackstopForARoleAWakeIsBringingBack(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		woken     bool
+		backstops int
+	}{
+		{name: "no wake during the release", backstops: 1},
+		{name: "a wake after the release recorded the role", woken: true, backstops: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			rig.runner.backstop = time.Hour
+			rig.w.releaseIdlePod(ctx, rig.issue.Key)
+			if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+				rig.issue.Key); err != nil {
+				t.Fatalf("hold the teardown back: %v", err)
+			}
+			rig.drain(t)
+			if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
+				t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
+					got.State, got.SuspendedBy, rig.marked(t))
+			}
+			if tc.woken {
+				if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, claim.RoleImplementer,
+					pods.WakeAgentMessage, time.Now().UTC()); err != nil || !taken {
+					t.Fatalf("take the wake after the record = %t, %v; want it taken", taken, err)
+				}
+			}
+			if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() where issue = $1 and kind = 'issue_release'`,
+				rig.issue.Key); err != nil {
+				t.Fatalf("let the teardown run: %v", err)
+			}
+			rig.drain(t)
+			if records := rig.records(t); rig.marked(t) || len(records.Releases) != 1 {
+				t.Fatalf("the mark stands = %t and the releases = %+v, want the release finished and recorded once", rig.marked(t), records.Releases)
+			}
+			var open int
+			if err := rig.pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer' and not fired`,
+				rig.issue.Key).Scan(&open); err != nil {
+				t.Fatalf("count the implementer's open backstops: %v", err)
+			}
+			if open != tc.backstops {
+				t.Fatalf("the implementer's open backstops = %d, want %d", open, tc.backstops)
+			}
+		})
 	}
 }
 

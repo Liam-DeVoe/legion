@@ -100,6 +100,18 @@ type PodReleaseRecords struct {
 // of releases is complete without reading any resume. It ends every hold streak of that pod: the
 // pod is gone, so whatever was keeping it is over, and a pod held again after it comes back is
 // a streak of its own.
+//
+// It also points at this release each wake taken while the release still stood: a resume of the
+// issue above the mark's wake_row, of a role in the mark's suspended set, with no first turn and
+// not closed. Such a wake came after a stop of this release recorded the role as `released`, so
+// it ends this release, but the take read the release before it, since this one had no row yet
+// (TakePodWake). Its release_id and seen_release become this release's id, and its time becomes
+// this release's time when it was earlier, because the pod starts to come back at the release's
+// end. A resume dated before its release would count negative pod hours. A seen_release below
+// this release would let the role's next wake close the resume as one whose pod went away
+// (ClosePodGoneResume), and take a second wake with a second start. The teardown records the
+// release before it clears the mark (internal/daemon's releaseIssue), so the mark is there to read
+// in this transaction. With no mark, or no such resume, the update changes nothing.
 func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
 	if rel.Project == "" || rel.Issue == "" {
 		return 0, errors.New("a pod release record needs its project and issue")
@@ -110,6 +122,12 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 			values ($1, $2, $3, $4, $5, $6) returning id`,
 			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes).Scan(&id); err != nil {
 			return err
+		}
+		if _, err := tx.Exec(ctx, `update pod_resumes r set release_id = $3, seen_release = $3, at = greatest(r.at, $4)
+			from issue_releases m where m.project = $1 and m.issue = $2 and r.project = m.project and r.issue = m.issue
+			and r.id > m.wake_row and r.role = any(m.suspended) and r.first_turn_at is null and r.closed_at is null`,
+			rel.Project, rel.Issue, id, rel.At); err != nil {
+			return fmt.Errorf("point the wakes taken during the release at it: %w", err)
 		}
 		return endPodHoldStreaks(ctx, tx, rel.Project, rel.Issue, "")
 	})

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -56,6 +57,71 @@ func markRelease(t *testing.T, st *store.Store) int64 {
 		t.Fatalf("read the release's mark: %v", err)
 	}
 	return boundary
+}
+
+// markTwoRoleRelease marks an idle release of LEGION-208's pod that stops two roles: the
+// implementer, whose stop is the boundary, and then the architect, with the teardown after both.
+// It answers the two stops' rows and the teardown's.
+func markTwoRoleRelease(t *testing.T, st *store.Store) (implementer, architect, teardown int64) {
+	t.Helper()
+	ctx := context.Background()
+	project := wakeProjectToken(t)
+	marked, err := st.ReleaseIdleIssue(ctx, project, "LEGION-208", func(pods.IdleView) (store.IdleReleaseMark, error) {
+		return store.IdleReleaseMark{Generation: wakeIssueGeneration, Role: claim.RoleImplementer, Rows: []store.IdleReleaseRow{
+			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"implementer","generation":7}`), Boundary: true},
+			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"architect","generation":7}`)},
+			{Kind: "issue_release", Payload: []byte(`{"tree":"LEGION-208","generation":7,"treeGeneration":7}`)},
+		}}, nil
+	})
+	if err != nil || !marked {
+		t.Fatalf("ReleaseIdleIssue = %t, %v; want the release marked", marked, err)
+	}
+	if err := st.Pool().QueryRow(ctx, `select boundary_row, last_row from issue_releases where project = $1 and issue = 'LEGION-208'`,
+		project).Scan(&implementer, &teardown); err != nil {
+		t.Fatalf("read the release's mark: %v", err)
+	}
+	if err := st.Pool().QueryRow(ctx, `select id from outbox where issue = 'LEGION-208' and kind = 'supervise'
+		and payload->>'op' = 'release' and payload->>'role' = 'architect'`).Scan(&architect); err != nil {
+		t.Fatalf("read the architect's stop: %v", err)
+	}
+	return implementer, architect, teardown
+}
+
+// stoppedByTheRelease is one role stop of the release run to its end, as the outbox runs it: the
+// claim of role suspended as `released`, the stop's record of it on the mark, and the stop's row
+// gone from the outbox, as a finished row is.
+func stoppedByTheRelease(t *testing.T, pool *pgxpool.Pool, st *store.Store, role claim.Role, row int64) {
+	t.Helper()
+	setClaimState(t, pool, role, "suspended", "released")
+	if err := st.ReleaseSuspendedClaim(context.Background(), wakeProjectToken(t), "LEGION-208", role, row); err != nil {
+		t.Fatalf("record the %s claim the release suspended: %v", role, err)
+	}
+	if _, err := pool.Exec(context.Background(), `delete from outbox where id = $1`, row); err != nil {
+		t.Fatalf("finish the %s's stop: %v", role, err)
+	}
+}
+
+// startDue is whether a `start` of LEGION-208 is among the rows the issue's lifecycle lane may run
+// now (record.Postgres.DueRows), which is what decides whether the outbox runs it.
+func startDue(t *testing.T, pool *pgxpool.Pool) bool {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	due, err := record.NewStore().DueRows(ctx, tx, "LEGION", "LEGION-208", record.LaneKinds(record.LaneLifecycle), time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("list the lifecycle lane's due rows: %v", err)
+	}
+	for _, row := range due {
+		var request record.SuperviseRequest
+		if row.Kind == record.OutboxKindSupervise && json.Unmarshal(row.Payload, &request) == nil && request.Op == "start" {
+			return true
+		}
+	}
+	return false
 }
 
 // setClaimState puts the claim of LEGION-208's role in state, suspended by source ("" for a
@@ -244,6 +310,113 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		}
 		if resumes := wakeResumes(t, rig.pool); len(resumes) != 0 {
 			t.Fatalf("pod resumes = %v, want none for a live claim", resumes)
+		}
+	})
+
+	// (f) Fix B: a wake taken after the release recorded the implementer's claim as released,
+	// and before the release's teardown, does not cancel the release. The architect's stop and
+	// the teardown go on, the wake's start waits for the teardown in the issue's lifecycle lane,
+	// and the role starts once, in the new pod, with a task that says truly that its pod was
+	// released and brought back. Its one resume is recorded against that release. Each wake the
+	// workflow takes inside a fact's transaction can land in this window.
+	t.Run("(f) a wake taken after the release records the claim waits for the teardown", func(t *testing.T) {
+		for _, wake := range []struct {
+			name string
+			kind string
+			// take applies the wake as the intake does and answers the detail its task names.
+			take func(t *testing.T, rig wakeRig) string
+		}{
+			{name: "an agent wake", kind: pods.WakeAgentMessage, take: func(t *testing.T, rig wakeRig) string {
+				fact := intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-agent"}
+				if err := applyWake(rig, "wake", fact); err != nil {
+					t.Fatalf("applying the wake after the release recorded the claim = %v, want it applied", err)
+				}
+				return "session-implementer"
+			}},
+			{name: "a CI settlement", kind: pods.WakeChecks, take: func(t *testing.T, rig wakeRig) string {
+				fact := settlement("head1", "build")
+				rig.apply("settled", fact)
+				return settlementDetail(fact)
+			}},
+			{name: "the backstop", kind: pods.WakeBackstop, take: func(t *testing.T, rig wakeRig) string {
+				id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
+				rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
+				return "the backstop armed for LEGION-208's implementer came due"
+			}},
+		} {
+			t.Run(wake.name, func(t *testing.T) {
+				rig := newWakeRig(t)
+				st := releaseStore(t, rig.pool)
+				ctx := context.Background()
+				project := wakeProjectToken(t)
+				setClaimState(t, rig.pool, claim.RoleImplementer, "idle", "")
+				setClaimState(t, rig.pool, claim.RoleArchitect, "idle", "")
+				implementer, architect, teardown := markTwoRoleRelease(t, st)
+				stoppedByTheRelease(t, rig.pool, st, claim.RoleImplementer, implementer)
+
+				detail := wake.take(t, rig)
+
+				stop, err := st.IssueReleaseStop(ctx, project, "LEGION-208", architect)
+				if err != nil || stop.Act != store.ReleaseActs {
+					t.Fatalf("the architect's stop after the wake = %s for %s, %v; want it to act: the wake is of a role the release recorded",
+						stop.Act, stop.Cause, err)
+				}
+				stoppedByTheRelease(t, rig.pool, st, claim.RoleArchitect, architect)
+				decision, err := st.IssueRelease(ctx, project, store.IssueReleased{Issue: "LEGION-208", Tree: "LEGION-208",
+					IssueGeneration: wakeIssueGeneration, TreeGeneration: wakeIssueGeneration, Row: teardown}, record.OutOfWorkflow)
+				if err != nil || decision.Act != store.ReleaseActs {
+					t.Fatalf("the teardown after the wake = %s for %s, %v; want it to act: the wake is of a role the release recorded",
+						decision.Act, decision.Cause, err)
+				}
+				if startDue(t, rig.pool) {
+					t.Fatal("the wake's start is due while the teardown row is in the outbox, want it held: it would start the role in the pod the teardown takes")
+				}
+
+				// The release finishes as the outbox's teardown finishes it (releaseIssue): the
+				// release recorded with the roles the mark suspended, then the mark cleared, then
+				// the row finished.
+				roles := make([]string, 0, len(decision.Suspended))
+				for _, role := range decision.Suspended {
+					roles = append(roles, string(role))
+				}
+				slices.Sort(roles)
+				releasedAt := wakeAt.Add(5 * time.Minute)
+				released, err := st.RecordPodRelease(ctx, store.PodRelease{Project: project, Issue: "LEGION-208",
+					Generation: wakeIssueGeneration, Roles: roles, At: releasedAt})
+				if err != nil {
+					t.Fatalf("record the release: %v", err)
+				}
+				if err := st.ClearIssueRelease(ctx, project, "LEGION-208"); err != nil {
+					t.Fatalf("clear the release's mark: %v", err)
+				}
+				if _, err := rig.pool.Exec(ctx, `delete from outbox where id = $1`, teardown); err != nil {
+					t.Fatalf("finish the teardown: %v", err)
+				}
+				if !startDue(t, rig.pool) {
+					t.Fatal("the wake's start is not due once the teardown has finished, want it due: it starts the role in the new pod")
+				}
+
+				starts := wakeStarts(t, rig.pool)
+				if want := WakeTask(wake.kind, detail); len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want {
+					t.Fatalf("supervise start rows = %+v, want the one start of the implementer with the task %q", starts, want)
+				}
+				const preamble = "Your issue's pod had been released while it was idle, and this wake brought it back. "
+				if !strings.HasPrefix(starts[0].Task, preamble) {
+					t.Fatalf("the implementer's task = %q, want it to begin %q: its pod was released", starts[0].Task, preamble)
+				}
+				var resumes int
+				var release, seen int64
+				var at time.Time
+				if err := rig.pool.QueryRow(ctx, `select count(*) over (), release_id, seen_release, at from pod_resumes
+					where issue = 'LEGION-208'`).Scan(&resumes, &release, &seen, &at); err != nil {
+					t.Fatalf("read the pod resumes: %v", err)
+				}
+				if resumes != 1 || release != released || seen != released || at.Before(releasedAt) {
+					t.Fatalf("pod resumes = %d, the resume's release %d, seen release %d and time %s; want one resume of release %d, "+
+						"timed no earlier than that release's %s", resumes, release, seen, at.UTC().Format(time.RFC3339),
+						released, releasedAt.Format(time.RFC3339))
+				}
+			})
 		}
 	})
 

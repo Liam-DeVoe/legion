@@ -157,14 +157,16 @@ type outbox struct {
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
 // suspension, an idle release's own two decisions and the bundle it saves, a stop's wait for a
-// stored claim's machine, and a workflow tree close's cleanup.
+// stored claim's machine, a workflow tree close's cleanup, and a delivery wake's read of a release
+// still running.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	IssueReleaseSave(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
-	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, bool, error)
+	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool, woken ...store.ReleaseWokenRow) ([]claim.Role, bool, error)
+	OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (int64, bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
@@ -173,6 +175,7 @@ type outboxTrees interface {
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
 	TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error)
+	ReleaseRecordedRole(ctx context.Context, project, issue string, role claim.Role) (bool, error)
 	CancelPodBackstopsOf(ctx context.Context, project, issue string) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
 	ClaimStatesIn(ctx context.Context, project, issue string) (store.ClaimStates, error)
@@ -2844,7 +2847,7 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 	// release resumes nothing, so the empty set of resumed roles is the whole story rather than
 	// a release whose claims another path took over, and the line must not say that the issue's
 	// roles go on in the pod, since no role of this issue is running anywhere.
-	resumed, suspendsNoRole, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow)
+	resumed, suspendsNoRole, err := r.trees.CancelIssueRelease(ctx, r.project, issue, nil, record.OutOfWorkflow, r.releaseResume(issue, tree))
 	if err != nil {
 		return err
 	}
@@ -2861,13 +2864,22 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the
 // `start` row a wake writes (workflow's wakeRow), at the generation the cancel read of the
-// issue, naming no phase and carrying no task. It carries no task because nothing happened to
-// the role: its process was stopped and is started again in the pod it was always in, where a
-// wake's task tells a role its pod went and came back.
-func (r *outbox) releaseResume(issue, tree string) store.ReleaseResumeRow {
-	return func(role claim.Role, generation uint64) (store.IdleReleaseRow, error) {
+// issue, naming no phase. It carries no task where nothing happened to the role but the release:
+// its process was stopped and is started again in the pod it was always in, where a wake's task
+// tells a role its pod went and came back.
+//
+// A cancel that dropped a wake of the role, taken after the release recorded it, hands this the
+// kind and the task of that wake (store.ReleaseWokenRow). A CI settlement and the backstop reach
+// the role only through that task, so the resume carries it under a preamble that says the
+// release did not finish (workflow.CancelledWakeTask), and every other wake leaves the resume no
+// task. A reviewer's wake task ends with the daemon's two sentences of its review round, as every
+// task the workflow queues for the reviewer does (workflow's queuedRow), so a reviewer's resume
+// that carries one says so (RoundNamed), and its send adds no second pair.
+func (r *outbox) releaseResume(issue, tree string) store.ReleaseWokenRow {
+	return func(role claim.Role, generation uint64, wakeKind, wakeTask string) (store.IdleReleaseRow, error) {
+		task := workflow.CancelledWakeTask(wakeKind, wakeTask)
 		row, err := record.NewOutboxRow(issue, record.SuperviseRequest{Op: "start", Tree: tree,
-			Role: role, Generation: generation}, r.now())
+			Role: role, Generation: generation, Task: task, RoundNamed: task != "" && role == claim.RoleReviewer}, r.now())
 		if err != nil {
 			return store.IdleReleaseRow{}, fmt.Errorf("encode the resume of %s's %s: %w", issue, role, err)
 		}
