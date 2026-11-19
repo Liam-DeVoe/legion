@@ -215,13 +215,15 @@ held_only_by() {
   return 1
 }
 
-# await_start NAME PID SECONDS DESCRIPTION COMMAND... waits, bounded, for COMMAND to succeed while
-# the service NAME started as PID lives, and fails the check naming the service's log the moment it
-# exits.
+# await_start NAME PID SECONDS DESCRIPTION COMMAND... waits up to SECONDS of wall time for COMMAND
+# to succeed while the service NAME started as PID lives, and fails the check naming the service's
+# log the moment it exits. The bound is time and not a count of polls, so a COMMAND that itself
+# waits (a curl --max-time against a kept port, which accepts before any server answers) does not
+# stretch it.
 await_start() {
-  local name=$1 pid=$2 limit=$3 what=$4 i
+  local name=$1 pid=$2 limit=$3 what=$4 started=$SECONDS
   shift 4
-  for ((i = 0; i < limit * 2; i++)); do
+  while ((SECONDS - started < limit)); do
     if "$@" >/dev/null 2>&1; then return 0; fi
     kill -0 "$pid" 2>/dev/null || fail "$what: the process exited; see $evidence/logs/$name.log"
     sleep 0.5

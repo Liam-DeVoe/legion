@@ -403,7 +403,7 @@ func TestANewPluginMustRate(t *testing.T) {
 
 // "PlanRatingContract or later" holds for a claim at a later contract than the harness's own
 // too: every claim the harness registers declares this daemon's own contract, DaemonAPIVersion.
-// The claim here records PlanRatingContract + 1 and the daemon still serves it, a claim in its
+// The claim here records DaemonAPIVersion + 1 and the daemon still serves it, a claim in its
 // turn (staleClaim), as after a later release rolled back to this daemon while its worker was in
 // the retro's turn. Its retro's completion with no rating is refused PLAN_RATING_REQUIRED with
 // nothing recorded, and the same completion with a rating is taken (mustRate).
@@ -412,7 +412,7 @@ func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	grants := []string{implementer.grant(t), implementer.grant(t)}
-	later := PlanRatingContract + 1
+	later := DaemonAPIVersion + 1
 	h.makeStale(t, implementer.token, implementer.session, implementer.secret, later)
 	if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.UpdateRound != "" || c.PluginContract != later {
 		t.Fatalf("the claim is %s in round %q at contract %d, want working in no round at %d: this case proves nothing",

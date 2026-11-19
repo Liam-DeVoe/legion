@@ -2711,7 +2711,7 @@ The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim
 
 #### Rolling back below the release that answers for a stopped agent
 
-The release that added the answer loop ([The answer loop](#the-answer-loop)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-204`.
+The release that added the answer loop ([The answer loop](#the-answer-loop)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-204 (cybermonklabs/legion)`.
 Name it by that entry rather than by its contract number, which moved more than once while it was open, each time `main` or another open pull request reached the number it held.
 So the release before it is whichever release of `main` precedes that entry, and the rules below apply to a rollback to it under either runtime.
 A rollback below it has three steps of its own, all taken before the earlier image is pinned, and a tmux daemon whose panes keep their sessions in a database has a wait of its own as well.
@@ -2726,7 +2726,8 @@ Take `answers` out of `legion.yaml` and restart this release's daemon once:
 without `answers` it still writes the record with its own Envoy credential (`envoy_url` and `envoy_token_file`) as soon as it has booted, and the record then says `answering: false`.
 `GET /v1/legion/agents/sessions/<session>` of any session of the project, with the listener's bearer, answers `"answering": false` once that write has landed.
 From then on the listener answers the project's messages as it did before the hand-off existed, a send stored for a session it still knows or a `404`, and a role's message kept for the role's next holder.
-Dispatch reads the same flag before it delivers to a stopped agent, so its deliveries go back to what they were too.
+Dispatch reads the same flag before it delivers to a stopped agent, so its deliveries to a stopped agent go back to what they were too.
+One case reads no flag: a message to a role whose newest entry is `released` and not `finished`, which Dispatch keeps for the role's next holder whatever the project says.
 No earlier daemon writes to the bucket, so that `false` stands until this release runs again.
 A hand-off the listener published before the write waits on the stream for this release's durable consumer, which no earlier daemon opens.
 

@@ -71,7 +71,7 @@ func TestEachAnswerIsHandedTheMachinesCheckAsItIsWhenTheAnswerOpens(t *testing.T
 	first := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
 	republished := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
 	var logs bytes.Buffer
-	tools := ghTools{machineCheck: true, host: ghtool.Host{
+	tools := ghTools{host: ghtool.Host{
 		Environ: []string{"PATH=" + t.TempDir(), "XDG_CONFIG_HOME=" + configHome}, Log: slog.New(slog.NewTextHandler(&logs, nil)),
 	}}
 

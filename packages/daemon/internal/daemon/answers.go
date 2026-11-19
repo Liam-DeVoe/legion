@@ -82,7 +82,7 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 	w.answers.loop = answerloop.New(answerloop.Config{
 		Project: p.project, Answers: *cfg.Answers, Store: st, Dispatch: client,
 		Envoy: notify.New(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]), Gate: s.answerGate,
-		Issues: recordFacts{w}, Tools: ghTools{host: host, bounds: cfg.Answers.Bounds, machineCheck: p.answers.leakCheckTag == ""},
+		Issues: recordFacts{w}, Tools: ghTools{host: host, bounds: cfg.Answers.Bounds},
 		Conversations: answerloop.Harnesses{OpenSQL: conversationStore(*cfg.Answers, p.answers)},
 		PassOn:        controllerPassOn{pool: w.pool, records: w.records, now: time.Now, log: w.log},
 		Decisions:     routedDecisions{outbox: w.outbox, now: time.Now, log: w.log},
@@ -169,14 +169,13 @@ func (r recordFacts) Facts(ctx context.Context, key string) (answerloop.IssueFac
 	return facts, nil
 }
 
-// ghTools opens the gh tool of one answer (ghtool.Open) under the daemon's host (hostFor).
-// machineCheck is a tmux daemon's: the shared public leak check the tool's guard runs is the
-// machine's own, resolved again for each answer, where a Kubernetes daemon's is the copy it
-// installed at boot, which host already names (installAnswersLeakCheck).
+// ghTools opens the gh tool of one answer (ghtool.Open) under the daemon's host (hostFor). A
+// Kubernetes daemon's host names the shared public leak check it installed at boot
+// (installAnswersLeakCheck); a tmux daemon's names none, since its guard runs the machine's own
+// check, resolved again for each answer.
 type ghTools struct {
-	host         ghtool.Host
-	bounds       config.AnswerBounds
-	machineCheck bool
+	host   ghtool.Host
+	bounds config.AnswerBounds
 }
 
 func (g ghTools) Open(ctx context.Context, agent ghtool.Agent, question string) (answerloop.Tool, error) {
@@ -187,17 +186,17 @@ func (g ghTools) Open(ctx context.Context, agent ghtool.Agent, question string) 
 	return ghTool{answer: a, bounds: g.bounds}, nil
 }
 
-// hostFor is the host the gh tool of the answer to question opens under: the daemon's, and under
-// tmux the machine's shared public leak check resolved again in the daemon's environment
-// (ghtool.MachineLeakCheck), as the tmux runtime resolves a pane's at each launch rather than
-// once at boot, since the check is installed, moved and republished on an operator's machine
-// while the daemon runs (runtime/tmux's resolveLeakCheck). A machine that no longer carries one
-// fails no answer: the guard is given none, resolves one at each call itself, and refuses every
-// call it finds none for with the setup failure naming the missing check, as a pane told of no
-// check refuses its writes.
+// hostFor is the host the gh tool of the answer to question opens under: the daemon's, and where
+// that names no check (a tmux daemon's) the machine's shared public leak check resolved again in
+// the daemon's environment (ghtool.MachineLeakCheck), as the tmux runtime resolves a pane's at
+// each launch rather than once at boot, since the check is installed, moved and republished on an
+// operator's machine while the daemon runs (runtime/tmux's resolveLeakCheck). A machine that no
+// longer carries one fails no answer: the guard is given none, resolves one at each call itself,
+// and refuses every call it finds none for with the setup failure naming the missing check, as a
+// pane told of no check refuses its writes.
 func (g ghTools) hostFor(question string) ghtool.Host {
 	host := g.host
-	if !g.machineCheck {
+	if host.LeakCheck != "" {
 		return host
 	}
 	check, err := ghtool.MachineLeakCheck(host.Environ)
