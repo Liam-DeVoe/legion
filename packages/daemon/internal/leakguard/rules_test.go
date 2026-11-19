@@ -2,10 +2,12 @@ package leakguard
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -30,7 +32,7 @@ func TestTheFixtureRulesCompile(t *testing.T) {
 
 // Each fixture rule refuses what it is written for and nothing beside it: the host and not the
 // example machine, the pair on one line and not on two, the word as a word and not inside another,
-// and the word in a path by the path rule.
+// and the word in a record's path by the path rule, whose finding stands before the record's lines.
 func TestTheFixtureRulesMatchWhatTheyAreWrittenFor(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -70,12 +72,20 @@ func TestTheFixtureRulesMatchWhatTheyAreWrittenFor(t *testing.T) {
 			record: Record{Label: "the body", Text: "a " + leakguardtest.Word + "s ledger"},
 		},
 		{
-			name:   "the word in a path",
-			record: Record{Label: "docs/" + leakguardtest.Word + "-notes.md", Text: "docs/" + leakguardtest.Word + "-notes.md"},
-			want: []string{
-				"docs/" + leakguardtest.Word + "-notes.md: " + leakguardtest.WordClass,
-				"docs/" + leakguardtest.Word + "-notes.md: " + leakguardtest.WordPathClass,
+			name: "the word in a path",
+			record: Record{
+				Label: "docs/" + leakguardtest.Word + "-notes.md",
+				Text:  "docs/" + leakguardtest.Word + "-notes.md",
+				Path:  "docs/" + leakguardtest.Word + "-notes.md",
 			},
+			want: []string{
+				"docs/" + leakguardtest.Word + "-notes.md: " + leakguardtest.WordPathClass,
+				"docs/" + leakguardtest.Word + "-notes.md: " + leakguardtest.WordClass,
+			},
+		},
+		{
+			name:   "the word in a label that is no path",
+			record: Record{Label: "docs/" + leakguardtest.Word + "-notes.md", Text: "a line of ordinary prose"},
 		},
 		{
 			name:   "ordinary prose",
@@ -93,15 +103,134 @@ func TestTheFixtureRulesMatchWhatTheyAreWrittenFor(t *testing.T) {
 }
 
 // A path-scoped allowlist clears its one path and no other: the word rule ignores the vendored
-// file's own use of the word, and the same line in a file beside it is refused.
+// file's own use of the word, and the same line in a file beside it is refused. The allowlist reads
+// a record's Path and never its label, so a record labelled with the vendored file's path and
+// holding no Path, which is what a gh call's body file of that name is, is refused too.
 func TestAPathScopedAllowlistClearsItsPathAlone(t *testing.T) {
 	const line = "var " + leakguardtest.Word + " = require('./lantern')"
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	if err := guard.Rules(bound(t), Record{Label: leakguardtest.AllowedPath, Text: line}); err != nil {
+	if err := guard.Rules(bound(t), Record{Label: leakguardtest.AllowedPath, Text: line, Path: leakguardtest.AllowedPath}); err != nil {
 		t.Fatalf("the vendored file's own line: %v", err)
 	}
 	const beside = "vendor/glasswing/other.js"
-	reports(t, refusal(t, guard.Rules(bound(t), Record{Label: beside, Text: line})).Lines, beside+": "+leakguardtest.WordClass)
+	reports(t, refusal(t, guard.Rules(bound(t), Record{Label: beside, Text: line, Path: beside})).Lines, beside+": "+leakguardtest.WordClass)
+	reports(t, refusal(t, guard.Rules(bound(t), Record{Label: leakguardtest.AllowedPath, Text: line})).Lines,
+		leakguardtest.AllowedPath+": "+leakguardtest.WordClass)
+}
+
+// A refusal shows what matched within its bounds, whatever the write is. A mebibyte of one line
+// shows its match and a window of the line around it, each end of the window cut on a rune
+// boundary; a match of 500 bytes is cut at 200, and one with a rune across byte 200 is cut before
+// that rune; sixty findings show forty lines and one that counts the rest; a newline and an escape
+// character in a match print quoted. Two matches of one line, far apart, are each shown at their
+// own place, on the first line and on a later one, which holds the engine to the column
+// RuleSet.place reads; and a match the engine begins at the newline before its line is shown on
+// that line.
+func TestRefusalShowsMatchWithinItsBounds(t *testing.T) {
+	const (
+		host = leakguardtest.RulesHost
+		word = leakguardtest.Word
+	)
+	shows := func(t *testing.T, guard *Guard, text string, want ...string) {
+		t.Helper()
+		got := refusal(t, guard.Rules(bound(t), Record{Label: "the body", Text: text})).Lines
+		if !slices.Equal(got, want) {
+			t.Errorf("the report is\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+	fixture := func(t *testing.T) *Guard {
+		t.Helper()
+		return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	}
+
+	t.Run("a mebibyte of one line", func(t *testing.T) {
+		// A two-byte rune stands across each end of the window: 120 bytes before the match falls
+		// inside the first, and 120 bytes after it inside the second, so each end is cut on the
+		// rune's far side.
+		before := strings.Repeat("a", 281) + "é" + strings.Repeat("a", 118) + " "
+		match := host + " "
+		after := strings.Repeat("b", 119) + "é"
+		text := before + match + after + strings.Repeat("b", 1<<20-len(before)-len(match)-len(after))
+		if len(text) != 1<<20 || strings.Contains(text, "\n") || len(before) <= 300 {
+			t.Fatalf("the text is %d bytes with its match at byte %d, want a mebibyte of one line with the match past byte 300", len(text), len(before))
+		}
+		shows(t, fixture(t), text,
+			matchLine("the body", leakguardtest.RulesHostClass, match, 1, "…"+strings.Repeat("a", 118)+" "+match+strings.Repeat("b", 119)+"…"))
+	})
+	t.Run("a match of 500 bytes", func(t *testing.T) {
+		match := leakguardtest.PairName + strings.Repeat("x", 483) + leakguardtest.PairWord
+		if len(match) != 500 {
+			t.Fatalf("the match is %d bytes, want 500", len(match))
+		}
+		shown := leakguardtest.PairName + strings.Repeat("x", 192)
+		// The line shows 120 bytes past the part of the match shown, which here is more of the
+		// match.
+		shows(t, fixture(t), "a note: "+match+" ends here",
+			matchLine("the body", leakguardtest.PairClass, shown+"…", 1, "a note: "+shown+strings.Repeat("x", 120)+"…"))
+	})
+	t.Run("a match cut inside a rune", func(t *testing.T) {
+		match := leakguardtest.PairName + strings.Repeat("x", 191) + "é" + strings.Repeat("x", 290) + leakguardtest.PairWord
+		if len(match) != 500 || !strings.HasPrefix(match[199:], "é") {
+			t.Fatalf("the match is %d bytes, want 500 with a rune at bytes 199 and 200", len(match))
+		}
+		shown := leakguardtest.PairName + strings.Repeat("x", 191)
+		shows(t, fixture(t), "a note: "+match+" ends here",
+			matchLine("the body", leakguardtest.PairClass, shown+"…", 1, "a note: "+shown+"é"+strings.Repeat("x", 118)+"…"))
+	})
+	t.Run("sixty findings", func(t *testing.T) {
+		lines := make([]string, 60)
+		for i := range lines {
+			lines[i] = fmt.Sprintf("machine %d answers at %s", i+1, host)
+		}
+		want := make([]string, 0, 41)
+		for i := range 40 {
+			want = append(want, matchLine("the body", leakguardtest.RulesHostClass, host, i+1, lines[i]))
+		}
+		shows(t, fixture(t), strings.Join(lines, "\n"), append(want, "… and 20 more matches not shown")...)
+	})
+	t.Run("an escape character in a match", func(t *testing.T) {
+		// The word rule's match takes in the character on either side of the word, here an
+		// escape, which the report writes as Go writes it in a quoted string.
+		shows(t, fixture(t), "a \x1b"+word+"\x1b b",
+			`the body: `+leakguardtest.WordClass+`: matched "\x1b`+word+`\x1b" on line 1: "a \x1b`+word+`\x1b b"`)
+	})
+	t.Run("a newline in a match", func(t *testing.T) {
+		// No fixture rule matches across a line, so this one is the test's own. The line shown
+		// is the one the match starts on, up to its end.
+		spanning, err := LoadRules([]byte("[[rules]]\nid = \"spanning_rule\"\ndescription = \"names the invented pair across a line\"\n" +
+			"regex = '''(?i)" + leakguardtest.PairName + `\s+` + leakguardtest.PairWord + "'''\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		guard := New(Options{
+			Check:      leakguardtest.Write(t, t.TempDir(), passes),
+			Visibility: answers(Public, nil),
+			Env:        fixtureenv.Isolated(t.TempDir()),
+			Rules:      spanning,
+		})
+		shows(t, guard, "the "+leakguardtest.PairName+"\n"+leakguardtest.PairWord+" ledger",
+			`the body: names the invented pair across a line: matched "`+leakguardtest.PairName+`\n`+leakguardtest.PairWord+`" on line 1: "the `+leakguardtest.PairName+`"`)
+	})
+	t.Run("two matches of one line", func(t *testing.T) {
+		// Two of the word's matches stand 300 bytes apart on each line, and they are the same
+		// text: placed anywhere but where each stands, the two would write one line twice, and the
+		// report would hold one line where it holds two.
+		line := "x " + word + " " + strings.Repeat("y", 300) + " " + word + " z"
+		first := "x " + word + " " + strings.Repeat("y", 120) + "…"
+		second := "…" + strings.Repeat("y", 120) + " " + word + " z"
+		match := " " + word + " "
+		shows(t, fixture(t), line+"\n"+line,
+			matchLine("the body", leakguardtest.WordClass, match, 1, first),
+			matchLine("the body", leakguardtest.WordClass, match, 1, second),
+			matchLine("the body", leakguardtest.WordClass, match, 2, first),
+			matchLine("the body", leakguardtest.WordClass, match, 2, second))
+	})
+	t.Run("a match that begins at the newline before its line", func(t *testing.T) {
+		// The word rule's match takes in the newline before the word, which the engine trims off
+		// the match and not off where it says the match starts.
+		shows(t, fixture(t), "a first line\n"+word+" starts the second",
+			matchLine("the body", leakguardtest.WordClass, word+" ", 2, word+" starts the second"))
+	})
 }
 
 // Each record is scanned on its own: a record that names something private is reported against
@@ -163,10 +292,9 @@ func TestRepoFromURL(t *testing.T) {
 }
 
 // The engine's own inline escape is inert. gitleaks drops every finding of a line that holds a
-// `gitleaks:allow` comment, and .github/scripts/check-private-names.sh, the script the rules are
-// ported from, honours no such comment: a write that carries one is refused exactly as a write
-// that does not. The comment is spelled in two pieces, as the hosts here are, so that no line of
-// this file carries an escape of its own.
+// `gitleaks:allow` comment, and the guard honours no such comment: a write that carries one is
+// refused exactly as a write that does not. The comment is spelled in two pieces, as the hosts
+// here are, so that no line of this file carries an escape of its own.
 func TestTheInlineAllowCommentIsInert(t *testing.T) {
 	const escape = "gitleaks" + ":allow"
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)

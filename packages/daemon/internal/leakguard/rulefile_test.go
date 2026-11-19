@@ -159,6 +159,11 @@ func TestARuleFileTheGuardCannotReadRefusesTheWrite(t *testing.T) {
 		{name: "an [extend] section", content: leakguardtest.Rules + "\n[extend]\nuseDefault = true\n", says: "[extend]"},
 		{name: "a file with no rule", content: "title = \"no rules here\"\n", says: "hold no rule"},
 		{
+			name:    "two rules of one id",
+			content: leakguardtest.Rules + "\n[[rules]]\nid = \"word_rule\"\ndescription = \"names the invented word again\"\nregex = '''" + leakguardtest.PairWord + "'''\n",
+			says:    `two rules of the id "word_rule"`,
+		},
+		{
 			name:    "a regex that panics",
 			content: "[[rules]]\nid = \"broken_rule\"\ndescription = \"holds a pattern that does not compile\"\nregex = '''(?P<broken'''\n",
 			says:    "did not compile",

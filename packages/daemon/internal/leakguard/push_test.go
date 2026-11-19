@@ -147,6 +147,208 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 	}
 }
 
+// A push the rules refuse shows, for each finding, the record, the class, the match and the line
+// it stands on, and the line is the line of the message or of the file: a commit message's third
+// line; added lines counted from hunk headers that start past the file's first line, two hunks of
+// one file; a line of a merge's own resolution counted from its combined hunk, past the lines of
+// the parents that the resolution does not hold; and the ref name, a line of its own. Each line is
+// the one git and the engine wrote for a real push, and the message's third line holds the engine
+// to counting a record's lines from 0.
+func TestPushRefusalShowsMatch(t *testing.T) {
+	const (
+		host  = leakguardtest.RulesHost
+		class = leakguardtest.RulesHostClass
+	)
+	home, root := t.TempDir(), t.TempDir()
+	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(t *testing.T, name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(t *testing.T, message string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
+	write(t, "README.md", "one\ntwo\nthree\nfour\nfive\n")
+	write(t, "notes.md", "first\nsecond\nthird\nfourth\nfifth\n")
+	base := commit(t, "the commit the destination holds")
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+	branch := func(t *testing.T, name string) {
+		t.Helper()
+		fixture.Run(repo, "git", "checkout", "--quiet", "-B", name, base)
+	}
+
+	for _, tc := range []struct {
+		name string
+		// build makes the case's commits on a branch of their own and answers the head's sha.
+		build func(t *testing.T) string
+		// ref is a new ref the push creates, and empty for a push to main.
+		ref string
+		// want is the whole report, as a function of the head's sha.
+		want func(head string) []string
+	}{
+		{
+			name: "the commit message",
+			build: func(t *testing.T) string {
+				branch(t, "message")
+				write(t, "README.md", "one\ntwo\nthree\nfour\nfive\nsix\n")
+				return commit(t, "a subject of no interest\n\nmoved the run to "+host+" this morning")
+			},
+			want: func(head string) []string {
+				return []string{matchLine("commit "+short(head)+" message", class, host+" ", 3, "moved the run to "+host+" this morning")}
+			},
+		},
+		{
+			name: "added lines, in hunks that start past the file's first line",
+			build: func(t *testing.T) string {
+				branch(t, "lines")
+				write(t, "README.md", "one\ntwo\nthree\nan added line\nthe runner answers at "+host+"\nfour\nfive\nsix\nthe spare answers at "+host+"\n")
+				return commit(t, "a message of no interest")
+			},
+			want: func(string) []string {
+				return []string{
+					matchLine("README.md", class, host, 5, "the runner answers at "+host),
+					matchLine("README.md", class, host, 9, "the spare answers at "+host),
+				}
+			},
+		},
+		{
+			name: "a line of a merge's own resolution",
+			build: func(t *testing.T) string {
+				branch(t, "side")
+				write(t, "notes.md", "first\nsecond\nthird\nthe side's fourth\nfifth\n")
+				commit(t, "the side's commit")
+				branch(t, "merged")
+				write(t, "notes.md", "the merged first\nsecond\nthird\nfourth\nfifth\n")
+				commit(t, "the merged branch's commit")
+				fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "--no-commit", "side")
+				// The resolution replaces the second line, which both parents hold: its combined
+				// hunk holds three lines of the parents' before the resolution's own.
+				write(t, "notes.md", "the merged first\nthe resolution answers at "+host+"\nthird\nthe side's fourth\nfifth\n")
+				head := commit(t, "the merge")
+				if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(parents)) != 3 {
+					t.Fatalf("the fixture's head is %q, want a commit of two parents", parents)
+				}
+				return head
+			},
+			want: func(string) []string {
+				return []string{matchLine("notes.md", class, host, 2, "the resolution answers at "+host)}
+			},
+		},
+		{
+			name: "the ref name",
+			build: func(t *testing.T) string {
+				branch(t, "ref-name")
+				write(t, "README.md", "one\ntwo\nthree\nfour\nfive\nseven\n")
+				return commit(t, "a message of no interest")
+			},
+			ref: "refs/heads/legion/" + host,
+			want: func(string) []string {
+				return []string{matchLine("the ref name", class, host, 1, "refs/heads/legion/"+host)}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			head := tc.build(t)
+			update := Update{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}
+			if tc.ref != "" {
+				update = Update{LocalRef: tc.ref, LocalSHA: head, RemoteRef: tc.ref, RemoteSHA: noSHA}
+			}
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{update},
+			})
+			if got, want := refusal(t, err).Lines, tc.want(head); !slices.Equal(got, want) {
+				t.Errorf("the report is\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		})
+	}
+}
+
+// A push's paths are read as paths, through the push's own records. A path the path rule matches
+// is reported once as the path, though the rule matches every record of the file's, beside the
+// word rule's match in the path's own text. The fixture's path-scoped allowlist still clears its
+// one vendored file, and not the same line in the file beside it.
+func TestAPushReadsItsPathsAsPaths(t *testing.T) {
+	const notes = "docs/" + leakguardtest.Word + "-notes.md"
+	const line = "var " + leakguardtest.Word + " = require('./lantern')"
+	home, root := t.TempDir(), t.TempDir()
+	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(t *testing.T, name, content string) {
+		t.Helper()
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(t *testing.T, message string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
+	write(t, "README.md", "one\n")
+	base := commit(t, "the commit the destination holds")
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		// want is the whole report.
+		want []string
+	}{
+		{
+			name:  "a path the path rule matches",
+			files: map[string]string{notes: "a line of ordinary prose\nand a second\n"},
+			want: []string{
+				notes + ": " + leakguardtest.WordPathClass + ": matched the path",
+				matchLine(notes, leakguardtest.WordClass, "/"+leakguardtest.Word+"-", 1, notes),
+			},
+		},
+		{
+			name:  "the vendored file's allowlist",
+			files: map[string]string{leakguardtest.AllowedPath: line + "\n", "vendor/glasswing/other.js": line + "\n"},
+			want:  []string{matchLine("vendor/glasswing/other.js", leakguardtest.WordClass, " "+leakguardtest.Word+" ", 1, line)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture.Run(repo, "git", "checkout", "--quiet", "-B", strings.ReplaceAll(tc.name, " ", "-"), base)
+			for name, content := range tc.files {
+				write(t, name, content)
+			}
+			head := commit(t, "a message of no interest")
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
+			})
+			if got := refusal(t, err).Lines; !slices.Equal(got, tc.want) {
+				t.Errorf("the report is\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(tc.want, "\n"))
+			}
+		})
+	}
+}
+
 // A push the destination already holds everything of adds no commit and so has no record but its
 // ref name, which is what a push of an existing commit to a new name is.
 func TestAPushThatAddsNoCommitReadsNoCommit(t *testing.T) {

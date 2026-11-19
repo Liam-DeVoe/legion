@@ -215,9 +215,8 @@ func jsonAlso(record Record) []Record {
 	if decoded.Len() == 0 {
 		return []Record{record}
 	}
-	// The label says which record this is of, so a report names the one the writer can find, and
-	// it is not the path of a file: a rule file's path-scoped allowlist is anchored on a whole
-	// path, and this record is of a document's strings rather than of that file.
+	// The label says which record this is of, so a report names the one the writer can find. The
+	// record carries no Path, as the record it is decoded from carries none (Record.Path).
 	return []Record{record, {Label: record.Label + ", decoded as JSON", Text: decoded.String()}}
 }
 

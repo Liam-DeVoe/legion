@@ -17,10 +17,13 @@
 // the write; they are two types so that a call site can say which one it met, the way the shared
 // check itself keeps "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR".
 //
-// What the guard reports of a rule-pass refusal is the record and the class: never the text that
-// matched, and never anything the detection engine itself printed. The classes are the
-// descriptions of the deployment's rules. A record about a file is named by its path, and a
-// report or a setup failure prints a path or a repository slug as it was written.
+// A rule-pass refusal shows what matched: each line of its report names the record, the class
+// (the description of the deployment's rule), the text that matched and the line it stands on,
+// quoted and cut to the bounds RuleSet.scan names. The agent that would make the write wrote that
+// text, so there is nothing in it to hide from the agent the refusal is shown to; this
+// repository's public CI never prints the guard's report. Nothing the detection engine itself
+// printed is reported. A record about a file is named by its path, and a report or a setup failure
+// prints a path or a repository slug as it was written.
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
@@ -156,20 +159,29 @@ func (g *Guard) env(base []string, inherit func(name string) bool, extra ...stri
 	return append(out, extra...)
 }
 
-// Record is one piece of a write the rules read: Label is what the report calls it, and Text is
-// what the rules match against. A label never carries the write's own text, since the report is
-// printed and that text is what must not be, with one exception: a record about a file carries
-// that file's path, as it was written. The path is also what the engine's path rules read, and it
-// is the whole label for a second reason — a rule file's path-scoped allowlist is anchored on a
-// whole path, and a label with anything else in it would take that allowlist away.
+// Record is one piece of a write the rules read.
 type Record struct {
+	// Label is what the report calls the record, as it was written: "the title", "commit 1a2b3c4
+	// message", a file's path. A report line holds the label, and then the text that matched and
+	// the line it stands on (RuleSet.scan).
 	Label string
-	Text  string
+	// Text is what the rules match against.
+	Text string
+	// Path is the path of the file the destination will hold the text at, which is what the
+	// engine's path rules and a rule file's path-scoped allowlist read: a pushed file's added or
+	// renamed path and each of its added lines carry it. Every other record carries none, so that
+	// no label is read as a path. A file a gh call sends carries none either: GitHub never sees
+	// the name the file has here, so its label is that name and its Path is empty.
+	Path string
+	// FirstLine is the record's first line in its file, counted from 1, so that a report names
+	// the file's line: an added line's line in the file it is added to. 0 is a record that is no
+	// file's line, whose own first line is line 1.
+	FirstLine int
 }
 
 // RefRecord is the record of a ref name, the whole of what the daemon's branch create has to
-// show and one record of every push. Its label names no ref: a ref name is text of the caller's,
-// and a report that printed it would carry out of this process the very thing it refused.
+// show and one record of every push. A report shows the ref name as the line its match stands on,
+// as it shows any record's text.
 func RefRecord(ref string) Record {
 	return Record{Label: "the ref name", Text: ref}
 }
