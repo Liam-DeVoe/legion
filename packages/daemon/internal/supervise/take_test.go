@@ -800,6 +800,56 @@ func TestRelaunchTakesAWakeTaskOnce(t *testing.T) {
 	h.wantPrompts(base + 1)
 }
 
+// A woken claim takes the task it holds first. A released pod's role is woken by a task of its
+// own (origin wake), which resumes the claim; a second task that arrives while the claim is
+// launching finds the wake's task untaken and still owed, and is refused behind it
+// (ErrDeliveryPending) rather than put in its place (queue). The process the resume starts takes
+// the wake's task under its number, and the second task's retry after the wake's turn has ended is
+// queued and taken next (R5 of dispatch://INFRA-4130).
+//
+// The negative control is queue replacing the untaken owed task with the newer one: the first
+// take is accepted on the newer task, and the wake's task is never taken.
+func TestAWokenClaimTakesItsHeldTaskFirstWhileANewerTaskWaits(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateIdle)
+	// The session reports at the turn's end that nothing of its own runs, as Oh My Pi's does, so the
+	// release ends no work and the wake's task goes as it was given (recordEnd).
+	h.reportActivity()
+	h.must(RequestSuspend{Claim: testToken, By: SuspendedByReleased})
+	h.wantState(StateSuspended)
+	base := len(h.prompts())
+
+	h.must(RequestDeliver{Claim: testToken, Task: "a notice woke this role", Origin: OriginWake})
+	wake := h.pending()
+	if wake.Origin != OriginWake {
+		t.Fatalf("pending %+v, want the wake's task", wake)
+	}
+	h.wantState(StateLaunching)
+
+	newer := RequestDeliver{Claim: testToken, Task: "review the pull request", ID: "outbox:42", Row: 42, Generation: 7}
+	if err := h.handle(newer); !errors.Is(err, ErrDeliveryPending) {
+		t.Errorf("the second task while the woken claim launches = %v, want %v behind the wake's untaken task", err, ErrDeliveryPending)
+	}
+	h.relaunched()
+
+	first := h.wantPrompts(base + 1)[base]
+	if first.Number != wake.Number || first.Message != "a notice woke this role" {
+		t.Fatalf("the relaunched worker's first take = %+v, want the wake's task %d it holds", first, wake.Number)
+	}
+
+	h.must(StreamTurnStart{Claim: testToken})
+	h.must(StreamTurnEnd{Claim: testToken})
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending %+v after the wake's turn ended, want the wake's task finished", p)
+	}
+
+	h.must(newer)
+	next := h.wantPrompts(base + 2)[base+1]
+	if next.Number == wake.Number || next.Message != "review the pull request" {
+		t.Fatalf("the take after the wake's turn = %+v, want the second task's retry queued and taken next", next)
+	}
+}
+
 // What a registering worker is told of its task (CurrentTask): the value the bucket holds for the
 // claim, none once its task is finished, and the number of the last task the claim finished.
 func TestRegisterAnswersTheCurrentValueAndTheFinishedNumber(t *testing.T) {
@@ -988,6 +1038,74 @@ func TestTakeOfARelaunchedProcessIsDecidedAfreshWhileItsPredecessorsTakeAdopts(t
 			t.Fatalf("pending %+v, want the new process's take accepted and its turn to come", p)
 		}
 		h.wantCalls("AdoptWorkingCopy", 2)
+	})
+}
+
+// A turn that starts while a take's adoption of the working copy runs, with the machine's lock let
+// go, is not that take's turn: no take was accepted when it started, so it is the agent's own and
+// its start line names no task. The adoption's outcome then reaches a working claim, which
+// refuses the take in-turn (adoptedTooLate), so the workflow is told nothing. The refusal is
+// recorded at the value's revision, so the turn's end writes the value again at a newer one
+// (offerPending), and the worker's take at that revision is accepted (R3 of
+// dispatch://INFRA-4130).
+//
+// The negative control is the adoption's outcome accepted over a working claim (adopted asked
+// there, passing over the in-turn hold): the take is accepted into the running turn and the
+// workflow told.
+func TestATurnThatStartsDuringTheAdoptionIsNotTheTasks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		gate := newGatedAdopt(h.rt)
+		h.deps.Runtime = gate
+		h.deps.Identity = adoptingIdentity
+		confirmed := 0
+		h.deps.TaskConfirmed = func(Claim) { confirmed++ }
+		h.restart()
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+		value := h.seen()
+		request := RequestTake{Claim: testToken, Generation: h.generation(), Session: session,
+			Number: value.Number, Revision: value.revision()}
+
+		var wg sync.WaitGroup
+		var answer TakeAnswer
+		var err error
+		wg.Go(func() { answer, err = h.m.Take(h.ctx, request) })
+		synctest.Wait()
+		if started := len(gate.entered); started != 1 {
+			t.Fatalf("%d adoptions started, want the take in its adoption", started)
+		}
+		h.must(StreamTurnStart{Claim: testToken})
+		gate.release <- struct{}{}
+		wg.Wait()
+		h.m.Wait()
+
+		if err != nil || answer.Outcome != TakeOutcomeRefused || answer.Hold != HoldInTurn {
+			t.Fatalf("the take whose adoption a turn's start overtook = %+v, %v, want it refused %q", answer, err, HoldInTurn)
+		}
+		wantTurnLine(t, h, startedLine, h.generation(), 0)
+		if p := h.pending(); p.taken() {
+			t.Fatalf("pending %+v after the refusal, want the task untaken: the turn is the agent's own", p)
+		}
+		if confirmed != 0 {
+			t.Fatalf("the workflow was told %d times of a take that was refused, want never", confirmed)
+		}
+
+		h.must(StreamTurnEnd{Claim: testToken})
+
+		again, held := h.values.value(testToken)
+		if !held || again.Number != value.Number || !again.revision().after(value.revision()) {
+			t.Fatalf("after the turn's end the bucket holds %+v (held %t), want task %d written again at a revision newer than %d",
+				again, held, value.Number, value.Revision)
+		}
+		gate.release <- struct{}{}
+		if answer, err := h.takeValue(again); err != nil || answer.Outcome != TakeOutcomeAccepted || answer.Text != "implement the plan" {
+			t.Fatalf("the take at the newer revision = %+v, %v, want it accepted with the task's text", answer, err)
+		}
+		if confirmed != 1 {
+			t.Fatalf("the workflow was told %d times of the accepted take, want once", confirmed)
+		}
 	})
 }
 
