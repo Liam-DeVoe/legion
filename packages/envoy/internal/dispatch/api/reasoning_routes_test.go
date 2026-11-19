@@ -27,7 +27,8 @@ type reasoningRig struct {
 	database *store.Store
 	issue    string
 	// spec, requirement, paragraph and check are dispatch:// addresses; requirementNode is the
-	// requirement's store id, which a tuple names it by.
+	// requirement's store id, which a tuple names it by: the spec is a document of its issue's
+	// room, whose tree keys its blocks' nodes.
 	spec, requirement, paragraph, check, secondCheck string
 	requirementNode                                  string
 }
@@ -41,10 +42,7 @@ func newReasoningRig(t *testing.T) reasoningRig {
 	rig.spec = "dispatch://" + issue.Key + "/spec"
 	rig.requirement = refs.BlockRef(rig.spec, "r1")
 	rig.paragraph = refs.BlockRef(rig.spec, firstBlockOf(t, handler, issue.PrimaryArtifactID))
-	if err := database.Pool.QueryRow(context.Background(),
-		`select ref_key || '#r1' from artifacts where id = $1::uuid`, issue.PrimaryArtifactID).Scan(&rig.requirementNode); err != nil {
-		t.Fatalf("read the requirement's node id: %v", err)
-	}
+	rig.requirementNode = readDecisionDocument(t, database, issue.Key, "spec").address("r1")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
 		checkServing("k1", rig.requirement)+"\n"+checkServing("k2", rig.requirement))
 	document := "dispatch://" + issue.Key + "/artifact/" + verification.Artifact.Slug
@@ -438,6 +436,93 @@ func TestAFarEndTheCallerMayNotSeeAnswersAsNoNode(t *testing.T) {
 	}
 	if alicesList[constraint.ID] != graphstore.VisibilityAuthor || len(alicesList) != 2 {
 		t.Errorf("alice's list is %v, want her constraint at author beside bob's", alicesList)
+	}
+}
+
+// TestARisksPreventedByIsACheckOfAnyIssueOfItsProject: the risk route takes a prevented_by at a
+// check of another issue of the risk's project, as the pre-mortem conversion writes one, and the
+// risk route and the pointer route's append and retarget each refuse one at a check of another
+// project with the store's 400 INVALID_POINTER, naming the check by its address, and store nothing
+// (dispatch://INFRA-1950/spec#b-r-constraint-risk). Visibility comes first: a check of another
+// project that the caller may not see, and an address there nobody holds, each answer the one 404
+// an address nobody holds answers, through either route.
+func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
+	rig := newPremortemRig(t)
+	foreign, foreignNode := rig.otherProjectCheck()
+	premortem := rig.invoke(rig.requirement, graphstore.LensKindPreMortem, "alice", nil)
+	riskBody := func(preventedBy string) map[string]any {
+		return map[string]any{
+			"lens": premortem.Address, "heading": "A check of the project covers it.",
+			"early_warning": "A sign.", "prevention": "A guard.", "prevented_by": preventedBy,
+		}
+	}
+	pointer := func(action, to string, from *string) map[string]any {
+		body := map[string]any{"kind": graphstore.TuplePreventedBy, "action": action, "to": to}
+		if from != nil {
+			body["from"] = *from
+		}
+		return body
+	}
+
+	risked := rig.post("/risks", riskBody(rig.otherIssueCheck), "alice")
+	if risked.Code != http.StatusCreated {
+		t.Fatalf("a risk prevented by the second issue's check: status=%d body=%s", risked.Code, risked.Body.String())
+	}
+	risk := decodeBody[riskWritten](t, risked)
+	held := []string{"block/" + rig.otherIssueCheckNode}
+	if !slices.Equal(risk.PreventedBy, []string{rig.otherIssueCheck}) {
+		t.Errorf("the risk answers prevented_by %v, want the second issue's check %s", risk.PreventedBy, rig.otherIssueCheck)
+	}
+	if got := rig.current(graphstore.KindRisk, risk.ID, graphstore.TuplePreventedBy); !slices.Equal(got, held) {
+		t.Errorf("the risk is prevented by %v, want %v", got, held)
+	}
+
+	says := "the prevented_by tuple from a risk of project RSN at the check block " + foreign +
+		" of project FAR breaks its type rule: prevented_by points from a risk at a check block of the same project"
+	risks, preventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy)
+	riskPointers := nodePath("risk/"+risk.ID, "pointers")
+	for _, refused := range []struct {
+		name     string
+		response *httptest.ResponseRecorder
+	}{
+		{"a risk prevented by a check of another project", rig.post("/risks", riskBody(foreign), "alice")},
+		{"an append at a check of another project", rig.post(riskPointers, pointer(pointerAppend, foreign, nil), "alice")},
+		{"a retarget to a check of another project", rig.post(riskPointers, pointer(pointerRetarget, foreign, &rig.otherIssueCheck), "alice")},
+	} {
+		if answer := requireRefused(t, refused.name, refused.response, http.StatusBadRequest, "INVALID_POINTER", foreign); answer.Error != says {
+			t.Errorf("%s is refused %q, want %q", refused.name, answer.Error, says)
+		}
+	}
+	if afterRisks, afterPreventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); afterRisks != risks || afterPreventions != preventions {
+		t.Errorf("the store holds %d risks and %d prevented_by tuples after the refusals, and held %d and %d before",
+			afterRisks, afterPreventions, risks, preventions)
+	}
+	if got := rig.current(graphstore.KindRisk, risk.ID, graphstore.TuplePreventedBy); !slices.Equal(got, held) {
+		t.Errorf("the risk is prevented by %v after the refusals, want %v", got, held)
+	}
+
+	if _, err := rig.database.Pool.Exec(context.Background(), `update graph_nodes set visibility = $1 where kind = $2 and id = $3`,
+		graphstore.VisibilityAuthor, refs.BlockNodeKind, foreignNode); err != nil {
+		t.Fatalf("keep the other project's check to its author: %v", err)
+	}
+	nobodys := strings.TrimSuffix(foreign, "k7") + "k404"
+	notFound := func(address string) string { return fmt.Sprintf("no node %q under %s", address, rig.issue) }
+	for _, address := range []string{foreign, nobodys} {
+		for _, refused := range []struct {
+			name     string
+			response *httptest.ResponseRecorder
+		}{
+			{"bob's append at " + address, rig.post(riskPointers, pointer(pointerAppend, address, nil), "bob")},
+			{"bob's risk prevented by " + address, rig.post("/risks", riskBody(address), "bob")},
+		} {
+			if answer := requireRefused(t, refused.name, refused.response, http.StatusNotFound, "NOT_FOUND", notFound(address)); answer.Error != notFound(address) {
+				t.Errorf("%s is refused %q, want %q", refused.name, answer.Error, notFound(address))
+			}
+		}
+	}
+	if afterRisks, afterPreventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); afterRisks != risks || afterPreventions != preventions {
+		t.Errorf("the store holds %d risks and %d prevented_by tuples after bob's refusals, and held %d and %d before",
+			afterRisks, afterPreventions, risks, preventions)
 	}
 }
 

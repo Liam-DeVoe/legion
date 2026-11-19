@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"maps"
+	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,8 +91,11 @@ var seededLensKinds = []string{
 // Then the catalogue is shown to be data and not code: a further kind is added at runtime through
 // graphstore.AddLensKind, the write `envoy-dispatch lens-kind-add` runs, and in this same process,
 // with no restart and no reload, the same catalogue read answers it with its source and a lens
-// written with a has_kind tuple to it is taken, the edge standing in graph_edges. The schema
-// version the store's type nodes build is one value before and after.
+// written with a has_kind tuple to it is taken, the edge standing in graph_edges. A has_kind tuple
+// to a kind id no lens_kind node holds, written through the route a lens's kind is written by
+// (POST /api/v1/issues/{key}/lenses), is refused 400 INVALID_POINTER naming the kind, and the store
+// holds no lens and no tuple of it after. The schema version the store's type nodes build is one
+// value before and after.
 func TestLensKindCatalogueIsSeededWithItsSources(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
@@ -194,6 +199,38 @@ func TestLensKindCatalogueIsSeededWithItsSources(t *testing.T) {
 	if node, found, err := refs.Node(ctx, database.Pool, model.Actor{}, graphstore.KindLensKind, added.ID, true); err != nil || !found ||
 		node.Ref != "dispatch://lens_kind/"+added.ID {
 		t.Errorf("the added kind resolves as %+v (found %t, %v), want its node at dispatch://lens_kind/%s", node, found, err, added.ID)
+	}
+
+	// A has_kind tuple to a kind id no lens_kind node holds, through the lens route, which writes
+	// a lens's kind: refused, naming the kind, with nothing stored.
+	const unknown = "catalogue-test-unknown-kind"
+	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindLensKind, unknown); err != nil || held {
+		t.Fatalf("read the lens_kind %s before the write: held %t, %v; want no node to hold it", unknown, held, err)
+	}
+	stored := func() (lenses, tuples int) {
+		t.Helper()
+		if err := database.Pool.QueryRow(ctx, `
+			select (select count(*) from graph_nodes where kind = $1),
+			       (select count(*) from graph_tuples where kind = $2 and to_kind = $3 and to_id = $4)`,
+			graphstore.KindLens, graphstore.TupleHasKind, graphstore.KindLensKind, unknown).Scan(&lenses, &tuples); err != nil {
+			t.Fatalf("count the lenses and the has_kind tuples to %s: %v", unknown, err)
+		}
+		return lenses, tuples
+	}
+	issue := createInteractionIssue(t, handler, "LKC", "Lens kind catalogue", "A paragraph a lens stands on.\n")
+	lensesBefore, _ := stored()
+	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/lenses", map[string]any{
+		"on": "dispatch://" + issue.Key + "/spec", "kind": unknown,
+	}, "alice")
+	t.Logf("a lens of the kind %s: status=%d body=%s", unknown, refused.Code, refused.Body.String())
+	if lensesAfter, tuples := stored(); tuples != 0 || lensesAfter != lensesBefore {
+		t.Errorf("the unknown kind %s is stored: %d has_kind tuples point at lens_kind/%s, and the store holds %d lenses after the write, %d before it",
+			unknown, tuples, unknown, lensesAfter, lensesBefore)
+	}
+	if refused.Code != http.StatusBadRequest {
+		t.Errorf("a lens of the kind %s answers status=%d body=%s, want 400 INVALID_POINTER", unknown, refused.Code, refused.Body.String())
+	} else if refusal := decodeBody[refusalAnswer](t, refused); refusal.Code != codeInvalidPointer || !strings.Contains(refusal.Error, unknown) {
+		t.Errorf("a lens of the kind %s is refused %+v, want %s naming the kind", unknown, refusal, codeInvalidPointer)
 	}
 
 	if versionAfter := storeSchemaVersion(t, ctx, database); versionAfter != versionBefore {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // DocumentStamp names one stored state of a document: Version is the head Load folds the stored
@@ -41,29 +42,35 @@ type DocumentStamp struct {
 	Row     string
 }
 
-// documentStampSQL selects the room $1's DocumentStamp, its version and then its row, in one
-// statement, so the version and the xmin of the row standing there are of one snapshot: the head as
-// head reads it (headVersion), then the row at it by its primary key. A load reads it as a subquery
-// of its own statement (readStoredLog), so its stamp is this one.
-const documentStampSQL = `
+// documentStampOf selects the DocumentStamp of the room the uuid SQL expression room names, its
+// version and then its row, in one statement, so the version and the xmin of the row standing
+// there are of one snapshot: the head as head reads it (headVersionOf), then the row at it by its
+// primary key.
+func documentStampOf(room string) string {
+	return `
 		select h.version, coalesce(u.xmin::text, '') as row_xmin
-		from (select ` + headVersion + ` as version) h
-		left join doc_updates u on u.artifact_id = $1 and u.version = h.version`
+		from (select ` + headVersionOf(room) + ` as version) h
+		left join doc_updates u on u.artifact_id = ` + room + ` and u.version = h.version`
+}
 
-// documentRoomStampSQL selects, for the document $1, the room its document_rooms row names, null for
-// a document that is its own room (documentRoomOfStatement reads the same row), beside the
-// DocumentStamp of the stored history named $1 (documentStampSQL), in one statement, so a cold read
-// of a document that is its own room learns both in one round trip (documentReadRoom).
-const documentRoomStampSQL = `
-		select (select moved.room::text from document_rooms moved where moved.artifact_id = $1),
-			s.version, s.row_xmin
-		from (` + documentStampSQL + `
+// documentStampSQL is the DocumentStamp of the room $1 names (documentStampOf). A load reads it as
+// a subquery of its own statement (readStoredLog), so its stamp is this one.
+var documentStampSQL = documentStampOf("$1")
+
+// documentRoomStampSQL selects, for the document $1, the room it is edited in where that is not
+// the document itself - its document_rooms row's room (refs.DocumentRoomSQL, the resolution
+// DocumentRoomOfStatement reads), null for a document that is its own room - beside the
+// DocumentStamp of that room's stored history (documentStampOf), in one statement, so a cold read
+// of any document learns its room and the stamp it reads at in one round trip (documentReadRoom).
+var documentRoomStampSQL = `
+		select nullif(room.id, $1::uuid)::text, s.version, s.row_xmin
+		from (select ` + refs.DocumentRoomSQL("$1::uuid") + ` as id) room
+		cross join lateral (` + documentStampOf("room.id") + `
 		) s`
 
 // readDocumentStamp is, read through q (documentRoomStampSQL), the room artifactID's document is
 // edited in - its document_rooms row's room, else artifactID itself, spelled as the caller spelled
-// it, as roomOf answers it - and the DocumentStamp of the stored history named artifactID, which is
-// that room's stamp where the document is its own room.
+// it, as roomOf answers it - and the DocumentStamp of that room's stored history.
 func readDocumentStamp(ctx context.Context, q Queryer, artifactID string) (string, DocumentStamp, error) {
 	var moved *string
 	var stamp DocumentStamp
@@ -106,10 +113,11 @@ var coldReadTimeout = 60 * time.Second
 // table's size.
 //
 // tree is the tree it was rendered from, kept only for a document holding an ask block: the text
-// an agent reads renders each ask's answer on it from the store (TextWithAnswers), which a read
-// taking the cached rendering would otherwise have to decode the stored history again for. It is
-// shared with every read of the stored head as the rest is, so no reader writes into it; the
-// answers are rendered on a copy of the path to each block they change (withAskBlocks).
+// an agent reads takes the server-owned attributes off each ask block of it and reads each ask
+// block's answer from the store (TextWithAsks), which a read taking the cached rendering would
+// otherwise have to decode the stored history again for. It is shared with every read of the
+// stored head as the rest is, so no reader writes into it; the attributes are taken off a copy of
+// the path to each block that holds one (withoutAskServerAttributes).
 type documentRead struct {
 	artifactID string
 	stamp      DocumentStamp

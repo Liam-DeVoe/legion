@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// A Keep acts on the decision's own node (dispatch://INFRA-1150 R2): it is two appends on the
+// A Keep acts on the decision's own node: it is two appends on the
 // decision, in one write - a kept_by tuple to the person who kept it and a kept_text_sum value
 // holding the decision's text sum at the Keep - and decision_keeps is their projection, written in
 // the same transaction. The text sum covers the decision's own words and leaves the readings it
@@ -148,8 +148,9 @@ func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.
 	for _, tuple := range []graphstore.Tuple{keptBy[0], keptSum[0]} {
 		requireCaused(t, tuple.Kind+" of d1", tuple, "alice", events[0])
 	}
+	// d1's row is keyed by the room choices.md is edited in (its issue's room for a converted one).
 	var changed int
-	if err := database.Pool.QueryRow(ctx, `select changed_version from document_blocks where artifact_id = $1::uuid and block_id = 'd1'`, choices.id).Scan(&changed); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select changed_version from document_blocks where artifact_id = $1::uuid and block_id = 'd1'`, choices.room).Scan(&changed); err != nil {
 		t.Fatalf("read d1's changed version: %v", err)
 	}
 	kept := row()
@@ -183,7 +184,7 @@ func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.
 	// Keep after it records the version the words last changed in, the one alice kept it at, on
 	// the row and in its decision.kept, and not the version the reading's edit wrote.
 	var moved int
-	if err := database.Pool.QueryRow(ctx, `select changed_version from document_blocks where artifact_id = $1::uuid and block_id = 'd1'`, choices.id).Scan(&moved); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select changed_version from document_blocks where artifact_id = $1::uuid and block_id = 'd1'`, choices.room).Scan(&moved); err != nil {
 		t.Fatalf("read d1's row after its reading's edit: %v", err)
 	}
 	if moved == changed {

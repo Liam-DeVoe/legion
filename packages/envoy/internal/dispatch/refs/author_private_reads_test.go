@@ -172,6 +172,86 @@ func TestResolvePrefixAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testi
 	}
 }
 
+// ResolvePrefixes answers each reader what ResolvePrefix answers the same reader: a private
+// comment is no candidate another person's batch names, so a prefix it alone carries names
+// nothing, and one it shares names the public comment alone and is not ambiguous. A private
+// block is no candidate either, of the latest indexed version or of a version a reference pins.
+// Its author reads every one of them, the shared prefix as ambiguous. Each reader asks every id
+// in one call, so the statement of the comments and the two statements of the blocks each bind
+// that reader's credential within one batch.
+func TestResolvePrefixesAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	ctx := context.Background()
+	const (
+		shared       = "6b6b6b6b"
+		publicID     = shared + "-1111-4000-8000-000000000001"
+		privateID    = shared + "-2222-4000-8000-000000000002"
+		privateOnly  = shared + "-2222"
+		privateBody  = "The private body."
+		privateBlock = "cccc2222aa"
+		privateText  = "A private passage."
+	)
+	insertPrefixComment(t, tx, publicID, "CORE-1", "The public body.")
+	insertPrefixComment(t, tx, privateID, "CORE-1", privateBody)
+	document, documentKey := createReferenceArtifact(t, tx, "", "CORE", "batch-md")
+	insertPrefixBlock(t, tx, document, documentKey, privateBlock, privateText, 1)
+	recorded := privateText
+	insertPrefixBlockText(t, tx, document, privateBlock, 1, &recorded)
+	reserveForAuthor(t, tx, "comment", privateID)
+	reserveForAuthor(t, tx, "block", documentKey+"#"+privateBlock)
+
+	ids := []ShortID{
+		{Kind: "comment", Prefix: shared},
+		{Kind: "comment", Prefix: privateOnly},
+		{Kind: "block", Scope: Scope{Document: documentKey}, Prefix: privateBlock[:8]},
+		{Kind: "block", Scope: Scope{Document: documentKey, Version: 1}, Prefix: privateBlock[:8]},
+	}
+	for _, read := range []struct {
+		who model.Actor
+		// named is the item each id names, by its position in ids, and ambiguous the ids two
+		// items carry; an id in neither names nothing.
+		named     map[int]string
+		ambiguous []int
+	}{
+		{privateReader, map[int]string{0: publicID}, nil},
+		{privateAuthor, map[int]string{1: privateID, 2: privateBlock, 3: privateBlock}, []int{0}},
+	} {
+		who := read.who
+		whole, ambiguous, err := ResolvePrefixes(ctx, tx, &who, ids)
+		if err != nil {
+			t.Fatalf("ResolvePrefixes as %s: %v", who.ID, err)
+		}
+		for index, id := range ids {
+			got, found := whole[id]
+			if want, named := read.named[index]; named != found || got.ID != want {
+				t.Errorf("ResolvePrefixes as %s names %#v for the %s prefix %q in %+v; want %q", who.ID, got, id.Kind, id.Prefix, id.Scope, want)
+			}
+			if want := slices.Contains(read.ambiguous, index); ambiguous[id] != want {
+				t.Errorf("ResolvePrefixes as %s marks the %s prefix %q in %+v ambiguous %t; want %t", who.ID, id.Kind, id.Prefix, id.Scope, ambiguous[id], want)
+			}
+			// The same id through ResolvePrefix, as the same reader, names the same item.
+			single, err := ResolvePrefix(ctx, tx, who, id.Kind, id.Scope, id.Prefix, Viewer{Human: true})
+			var many *ErrPrefixAmbiguous
+			switch {
+			case err == nil:
+				if !found || !reflect.DeepEqual(got, single) {
+					t.Errorf("as %s, ResolvePrefix names %#v for the %s prefix %q in %+v and ResolvePrefixes %#v", who.ID, single, id.Kind, id.Prefix, id.Scope, got)
+				}
+			case errors.As(err, &many):
+				if !ambiguous[id] {
+					t.Errorf("as %s, ResolvePrefix refuses the %s prefix %q in %+v as ambiguous and ResolvePrefixes does not mark it", who.ID, id.Kind, id.Prefix, id.Scope)
+				}
+			case errors.Is(err, pgx.ErrNoRows):
+				if found || ambiguous[id] {
+					t.Errorf("as %s, ResolvePrefix names nothing for the %s prefix %q in %+v and ResolvePrefixes %#v, ambiguous %t", who.ID, id.Kind, id.Prefix, id.Scope, got, ambiguous[id])
+				}
+			default:
+				t.Fatalf("ResolvePrefix as %s of the %s prefix %q in %+v: %v", who.ID, id.Kind, id.Prefix, id.Scope, err)
+			}
+		}
+	}
+}
+
 // A private comment belongs to no document another person reads, and nor does a public comment
 // whose document is private. Its author reads both scopes.
 func TestScopeOfAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {

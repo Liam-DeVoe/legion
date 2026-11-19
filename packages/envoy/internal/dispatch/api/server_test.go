@@ -35,8 +35,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -132,6 +134,10 @@ type testServerOptions struct {
 	// testHookTimeout replaces the test hooks' acknowledgement timeout (Deps.TestHookTimeout);
 	// zero keeps the production ten seconds.
 	testHookTimeout time.Duration
+	// tracer is installed on every connection of the server's pool (storetest.Traced), so a test
+	// sees each statement the server runs; nil leaves the pool untraced. The xid window tests
+	// (xid_window_test.go) pass a storetest.XidTracer.
+	tracer pgx.QueryTracer
 	// liveSocketAge is the server's Deps.LiveSocketAge: nil draws each socket's age as
 	// production does.
 	liveSocketAge func() time.Duration
@@ -152,6 +158,13 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
+	// mention's send waits for the earlier events of its owner the outbox still owes its session.
+	// False is the deployment with no outbox, which every test that runs none is.
+	outboxPublishes bool
+	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
+	// none, as every test that reads no gauge leaves it.
+	metrics *metrics.Registry
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -234,6 +247,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if database == nil {
 		database = storetest.Open(t)
 	}
+	if options.tracer != nil {
+		database = &store.Store{Pool: storetest.Traced(t, database.Pool, options.tracer, nil)}
+	}
 	broker := events.NewBroker()
 	var documentPersistence docs.VersionedStore
 	if options.persistence != nil {
@@ -297,6 +313,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:             options.files,
 		DashboardEntry:    options.dashboardEntry,
 		BuildCommit:       options.buildCommit,
+		OutboxPublishes:   options.outboxPublishes,
+		Metrics:           options.metrics,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -747,33 +765,18 @@ func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
 	}
 }
 
+// A document whose store cannot be read answers its text and blocks 503 DOC_SERVICE_UNAVAILABLE.
+// The issue is made through a server whose store works, since an issue is born converted and its
+// create writes the spec's fragment into the issue room it seeds; the reads go through a second
+// server on the same database whose store fails every read (readingServer).
 func TestDocumentTextReportsUnavailableService(t *testing.T) {
-	database := storetest.Open(t)
-	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{
-		Store:       database,
-		Persistence: failingLoadStore{VersionedStore: docs.NewPgVersioned(database)},
-		Events:      broker,
-	})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
-	deps, err := NewDeps(DepsInput{
-		Store:    database,
-		Identity: headerIdentity(database),
-		Docs:     documentService,
-		Events:   broker,
-	})
-	if err != nil {
-		t.Fatalf("new API dependencies: %v", err)
-	}
-	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-
-	if response := dispatchRequest(t, mux, http.MethodPost, "/api/v1/projects", map[string]string{
+	writer, database, _ := newTestServer(t, testServerOptions{})
+	if response := dispatchRequest(t, writer, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	issueResponse := dispatchRequest(t, mux, http.MethodPost, "/api/v1/issues", map[string]string{
+	issueResponse := dispatchRequest(t, writer, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "TEST", "title": "Issue", "spec": "before",
 	}, "alice")
 	if issueResponse.Code != http.StatusCreated {
@@ -782,6 +785,7 @@ func TestDocumentTextReportsUnavailableService(t *testing.T) {
 	issue := decodeBody[struct {
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}](t, issueResponse)
+	mux := readingServer(t, database, failingLoadStore{VersionedStore: docs.NewPgVersioned(database)}, nil)
 
 	response := dispatchRequest(t, mux, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"DOC_SERVICE_UNAVAILABLE"`) {
@@ -1772,9 +1776,8 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 		t.Fatalf("begin status lock: %v", err)
 	}
 	defer func() { _ = lock.Rollback(context.Background()) }()
-	var lockedKey string
-	if err := lock.QueryRow(context.Background(), `select key from issues where key = $1 for update`, child.Key).Scan(&lockedKey); err != nil {
-		t.Fatalf("lock child: %v", err)
+	if err := store.LockOwner(context.Background(), lock, store.IssueOwner(child.Key)); err != nil {
+		t.Fatalf("take the child's owner lock: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
@@ -1851,14 +1854,16 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 		t.Fatalf("create state: status=%d body=%s", initial.Code, initial.Body.String())
 	}
 
+	// The project's owner lock, the one putUserState takes before it reads the row: both writes
+	// queue behind it, and each reads the row only once the write before it has committed, so the
+	// second keeps the field the first wrote.
 	lock, err := database.Pool.Begin(context.Background())
 	if err != nil {
-		t.Fatalf("begin user state lock: %v", err)
+		t.Fatalf("begin the project lock's holder: %v", err)
 	}
 	defer func() { _ = lock.Rollback(context.Background()) }()
-	var login string
-	if err := lock.QueryRow(context.Background(), `select login from user_issue_state where login = 'alice' and issue_key = $1 for update`, issue.Key).Scan(&login); err != nil {
-		t.Fatalf("lock user state: %v", err)
+	if err := store.LockOwner(context.Background(), lock, store.ProjectOwner("TEST")); err != nil {
+		t.Fatalf("hold the project's owner lock: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
@@ -1874,7 +1879,7 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 	}()
 	waitForDatabaseLocks(t, lock, 2)
 	if err := lock.Commit(context.Background()); err != nil {
-		t.Fatalf("release user state lock: %v", err)
+		t.Fatalf("release the project's owner lock: %v", err)
 	}
 	for range 2 {
 		response := awaitResponse(t, responses)
@@ -1948,10 +1953,12 @@ func TestDocumentUploadIndexesDispatchReferences(t *testing.T) {
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload document: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
+	// A document of an issue room is indexed by the room's pass, whose references are keyed by the
+	// room's tree artifact (docs.IndexDocumentReferences).
 	var references int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from refs
-		where from_kind = 'artifact' and from_id = $1 and to_kind = 'artifact' and to_id = 'TEST-1/spec'
+		where from_kind = 'artifact' and from_id = (`+refs.DocumentRoomSQL("$1::uuid")+`)::text and to_kind = 'artifact' and to_id = 'TEST-1/spec'
 	`, artifact.Artifact.ID).Scan(&references); err != nil {
 		t.Fatalf("count uploaded document references: %v", err)
 	}
@@ -1976,10 +1983,12 @@ func TestIssueDocumentCreationIndexesDispatchReferences(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
 	}
+	// The spec is a fragment of the issue room it is born in, whose references are keyed by the
+	// room's tree artifact (docs.IndexDocumentReferences).
 	var references int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from refs
-		where from_kind = 'artifact' and from_id = $1 and to_kind = 'artifact' and to_id = 'TEST-1/spec'
+		where from_kind = 'artifact' and from_id = (`+refs.DocumentRoomSQL("$1::uuid")+`)::text and to_kind = 'artifact' and to_id = 'TEST-1/spec'
 	`, issue.PrimaryArtifactID).Scan(&references); err != nil {
 		t.Fatalf("count created document references: %v", err)
 	}

@@ -971,15 +971,17 @@ async function stateWordOf(page: Page, id: string): Promise<string | null> {
   return rows.find((row) => row.id === id)?.state?.word ?? null;
 }
 
-/** Asserts what a write sends of the tree read: its own refresh's read, and one more where the
- *  event the write raised lands after that read began (`subscribeTreeFreshness`), never more. */
+/** Asserts what a write sends of the tree read: the read its event asks for - with the live feed
+ *  down, its settle's - and one more where that read is still out as the other ask comes
+ *  (`subscribeTreeFreshness`), never more. */
 function expectOneOrTwoReads(reads: number, message: string): void {
   expect(reads, message).toBeGreaterThanOrEqual(1);
   expect(reads, message).toBeLessThanOrEqual(2);
 }
 
-// c-fresh, with its status clause: a status write sends one or two tree reads, its own refresh
-// and its event's, and needs no line at the foot of the outline.
+// c-fresh, with its status clause: a status write sends one or two tree reads - its event's, and
+// one more where the event lands while the settle's read is out - and needs no line at the foot of
+// the outline.
 // SLOW(>=2s): the whole seeded issue, its load waited out, a status written and waited out, and a
 // reply sent and waited for until its row is drawn.
 test("a write is drawn without a reload", async ({ browser }) => {

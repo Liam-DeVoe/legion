@@ -163,8 +163,11 @@ Each page is read once it is drawn.
 
   const specId = (await getIssue(issue)).primary_artifact_id ?? "";
   const shaped = await blockId(specId, "One command, a seeded corpus, a signed-in browser.");
+  // The decision's words cite the block it shaped as well as its `shaped` attribute tying them:
+  // a decision card draws its words, so the card beside the spec draws that block's own words,
+  // which `e2e/review-routes.ts`'s `issue-spec` row waits on to know the reference graph answered.
   await createIssueArtifact(issue, {
-    content: `:::decision{#d1 shaped="dispatch://${issue}/spec#b-${shaped}"}\n### ${DECISION}\n\n${REASON}\n:::\n`,
+    content: `:::decision{#d1 shaped="dispatch://${issue}/spec#b-${shaped}"}\n### ${DECISION}\n\n${REASON} Shapes dispatch://${issue}/spec#b-${shaped}.\n:::\n`,
     name: "choices.md",
   });
 

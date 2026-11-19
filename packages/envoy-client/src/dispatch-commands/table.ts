@@ -32,6 +32,7 @@ import {
   resultsCommand,
   searchCommand,
 } from "./issues";
+import { plansCommand } from "./plans";
 import { prioritiesCommand } from "./priorities";
 import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
 import { readCommand } from "./read";
@@ -50,6 +51,7 @@ import {
 } from "./reasoning";
 import { reviewCommand } from "./reviews";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
+import { stepsCommand } from "./steps";
 
 /** Every command the contract names, so a command added there without a handler here fails to
  *  type-check (`__tests__/dispatch-command-table.test.ts` holds the proof). */
@@ -112,6 +114,8 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_artifact: acting(artifactCommand),
   dispatch_handoff_write: acting(handoffWriteCommand),
   dispatch_handoff_read: acting(handoffReadCommand),
+  dispatch_steps: acting(stepsCommand),
+  dispatch_plans: acting(plansCommand),
   dispatch_read: acting(readCommand),
   dispatch_answers: onSession(answersCommand),
   dispatch_whoami: onSession(whoamiCommand),

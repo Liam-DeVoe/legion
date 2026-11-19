@@ -173,6 +173,7 @@ function DecisionControls({
   const quote = useMemo(() => anchorQuote(decision), [decision]);
   const keep = useKeyedWrite({
     inline: true,
+    issue: issueKey,
     label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
     // The sum of the text this node showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.

@@ -37,11 +37,11 @@ func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing
 	issue := createInteractionIssue(t, handler, "PRIV", "Private blocks with a recorded text", "# Spec\n\nA public passage.\n")
 	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "A second public passage."}})
 	requireIndexedAt(t, database, issue.PrimaryArtifactID, 2)
-	var refKey string
-	if err := database.Pool.QueryRow(ctx,
-		`select ref_key from artifacts where id = $1::uuid`, issue.PrimaryArtifactID).Scan(&refKey); err != nil {
-		t.Fatalf("read the spec's address: %v", err)
-	}
+	// The spec is a document of its issue's room: its blocks' rows, their recorded texts and their
+	// nodes are the room's, keyed by the room's tree artifact, and the room records which of its
+	// documents holds each block (issue_room_blocks).
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	refKey := spec.refKey
 	read := func(reference, login string) *httptest.ResponseRecorder {
 		return dispatchRequest(t, handler, http.MethodGet, "/api/v1/references?to="+url.QueryEscape(reference), nil, login)
 	}
@@ -67,11 +67,14 @@ func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing
 	seedExec(t, database, "the private block's row", `
 		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
 		values ($1::uuid, 'private', $2, 'paragraph', '', $3, 1, now())
-	`, issue.PrimaryArtifactID, refKey+"#private", privateText)
+	`, spec.room, spec.address("private"), privateText)
+	seedExec(t, database, "the room's record of the private block's document", `
+		insert into issue_room_blocks (tree_artifact_id, block_id, document_id) values ($1::uuid, 'private', $2::uuid)
+	`, spec.room, spec.id)
 	seedExec(t, database, "the blocks' recorded texts", `
 		insert into document_block_texts (artifact_id, block_id, version, text) values
 			($1::uuid, 'private', 1, $2), ($1::uuid, 'gone', 1, $3), ($1::uuid, 'gone', 2, null)
-	`, issue.PrimaryArtifactID, privateText, goneText)
+	`, spec.room, privateText, goneText)
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the private nodes' write: %v", err)
@@ -79,9 +82,9 @@ func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing
 	defer tx.Rollback(ctx)
 	madeAt := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
 	if err := graphstoretest.SeedAuthorOnly(ctx, tx,
-		graphstore.Node{Kind: "block", ID: refKey + "#gone", Supertag: "block", State: graphstore.StateGone,
+		graphstore.Node{Kind: "block", ID: spec.address("gone"), Supertag: "block", State: graphstore.StateGone,
 			MadeAt: madeAt, MadeBy: author, SourceEvent: graphstore.NoEvent},
-		graphstore.Node{Kind: "block", ID: refKey + "#private", Supertag: "block", State: graphstore.StateLive,
+		graphstore.Node{Kind: "block", ID: spec.address("private"), Supertag: "block", State: graphstore.StateLive,
 			MadeAt: madeAt, MadeBy: author, SourceEvent: graphstore.NoEvent},
 	); err != nil {
 		t.Fatalf("write the private nodes: %v", err)

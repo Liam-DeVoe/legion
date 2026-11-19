@@ -41,6 +41,16 @@ const codeAnsweredAskKept = "ANSWERED_ASK_KEPT"
 // (decisionsAreNodes): a decision is a `decision` block of the spec. It stays for good.
 const codeDecisionsAreNodes = "DECISIONS_ARE_NODES"
 
+// codeDecisionsQuery refuses an upload or an edit of an issue's decisions query node
+// (decisionsQueryRefusal), whose versions render the issue's decisions and which no fragment of
+// any room holds; docs refuses a socket on it with the same code (refs.DecisionsQuerySQL).
+const codeDecisionsQuery = "DECISIONS_QUERY"
+
+// codeNodeInOtherIssue refuses a document write addressed through one issue that names a node of
+// another issue, naming the node's own issue (refuseNodesOfOtherIssues, D3 of
+// dispatch://INFRA-1253's plan).
+const codeNodeInOtherIssue = "NODE_IN_OTHER_ISSUE"
+
 // documentErrorCode names an error a document operation returns when it could not read or serve
 // the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
 // document error by it, and both in one order, so the two cannot name one error differently.

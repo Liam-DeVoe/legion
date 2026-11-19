@@ -9,14 +9,14 @@ import { liveFeedUp, liveSocketFor, onLiveFeedBack } from "../../../api/live-soc
 
 /**
  * How the tree read asks whether the live feed is up (`liveFeedUp`), which it does on a window
- * focus, on a write the page puts in the cache, and on a refresh, which it holds back while a
- * write is out (`subscribeTreeFreshness`): up only while the client's socket is open and Dispatch
- * has started the event feed's subscription on it (`events_start`) since the page last sent it,
- * so that while Dispatch cannot start the feed with the socket still open - its database not
- * answering - the page reads the feed down and refreshes the tree as it would with no feed at
- * all. And how it hears the feed come back after a gap (`onLiveFeedBack`), with whether Dispatch
- * replayed the gap whole: a whole replay reads a refused tree again. Neither opens a socket. Each
- * case drives the page's own live socket over the fake one the test installs, as Dispatch would.
+ * focus and as the hold of the issue's writes ends (`subscribeTreeFreshness`): up only while the
+ * client's socket is open and Dispatch has started the event feed's subscription on it
+ * (`events_start`) since the page last sent it, so that while Dispatch cannot start the feed with
+ * the socket still open - its database not answering - the page reads the feed down and
+ * refreshes the tree as it would with no feed at all. And how it hears the feed come back after a
+ * gap (`onLiveFeedBack`), with whether Dispatch replayed the gap whole: a whole replay reads a
+ * refused tree again. Neither opens a socket. Each case drives the page's own live socket over
+ * the fake one the test installs, as Dispatch would.
  */
 
 let sockets: FakeLiveSockets;

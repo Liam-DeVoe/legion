@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dispatch://INFRA-1150's c-restore-redirects: no citation of a restored ask dangles. Every citation
+# The check c-restore-redirects: no citation of a restored ask dangles. Every citation
 # it resolves was written by the release before this branch.
 #
 # It drops and creates the database DATABASE_URL names (seed_reset_database: a database on this
@@ -13,6 +13,12 @@
 # of the main shape, dispatch://<A>/spec#b-q-left-format. Through the same server it writes one
 # more citation of the second shape's address, a comment on issue C, whose closure is the one the
 # closure leg reads: an issue's closure leaves its own documents out.
+#
+# BASELINE_SHA, the commit of the release this branch lands after, is required and has no
+# default: only the caller knows which release that is. Once the base server has booted, the
+# commit it is stamped with (the `commit` of its /healthz, the one it registers in
+# server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
+# naming both, so that a binary built from another commit never stands in for that release.
 #
 # Before this head boots it captures, through the base server, what each of R8's three resolvers
 # answers: GET /api/v1/references?to=<old address> (blockReferenceNode), GET
@@ -37,16 +43,23 @@
 # the colliding ask, to its new id; none for an ask of the main shape, whose old spec address now
 # answers the restored ask block. The counter then reads zero in both sets.
 #
+# Then it plants one state, for one census. A healthy run never leaves a citation of the first set
+# dangling, so that set reads zero before the restore and after it, as a counter that watched no
+# citation would. It appends a retraction of the moved_to tuple of the second shape's move, a new
+# row that does not assert it (never an update or a delete), reads the first set equal to the
+# captured citations of the moved address, at least one, and appends the re-assertion, after which
+# the first set reads zero again. Each set is compared with its capture alike: both sorted, both
+# printed on a failure, and an empty one failing.
+#
 # It runs the conversion (`envoy-dispatch convert-decisions --project SEED`) and reads
 # dispatch://<A>/artifact/decisions-md resolving to the issue, and a citation of every section of
 # both decisions documents resolving through one moved_to tuple: a section that cites no ask to the
 # decision node that keeps its heading block id, a section that cites an ask, kept as a reading or
 # dropped by the plain-answer rule, and a section that held an ask block, to that ask's block.
 #
-# Last it reads every migration this branch adds over BASELINE_SHA (default
-# `git merge-base origin/main HEAD`, as lib-baseline.sh's) and the statement with which the
-# backfill marks asks rows (graphcensus/backfill.go): no `create table` names block_moves, and no
-# `update` sets the body of a comment or a message, block_refs.to_id, asks.block_id or
+# Last it reads every migration this branch adds over BASELINE_SHA and the statement with which
+# the backfill marks asks rows (graphcensus/backfill.go): no `create table` names block_moves, and
+# no `update` sets the body of a comment or a message, block_refs.to_id, asks.block_id or
 # asks.block_artifact_id. The same matcher runs first over planted statements of each kind, which
 # it must flag, and one it must not.
 #
@@ -59,10 +72,12 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_restore_redirects?sslmode=disable \
-         [BASELINE_BINARY=$TMPDIR/base-dispatch] [BASELINE_SHA=<the base's commit>] \
-         [HEAD_BINARY=$TMPDIR/bin/envoy-dispatch] bash e2e/acceptance/restore-redirects.sh
+         BASELINE_SHA=<the commit of the release this branch lands after> \
+         [BASELINE_BINARY=$TMPDIR/base-dispatch] [HEAD_BINARY=$TMPDIR/bin/envoy-dispatch] \
+         bash e2e/acceptance/restore-redirects.sh
        (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
-       begins infra_1150_, which this run drops and creates again)
+       begins infra_1150_, which this run drops and creates again. BASELINE_SHA is required and
+       has no default; BASELINE_BINARY must be the server built from it and stamped with it)
 USAGE
 }
 
@@ -73,7 +88,7 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=seed-decisions.sh
 . "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
 
-require_env DATABASE_URL TMPDIR
+require_env DATABASE_URL TMPDIR BASELINE_SHA
 require_commands cmp curl git jq psql sed sort tr
 # shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell sets another
 database_url="$DATABASE_URL"
@@ -95,12 +110,9 @@ checkout="$(git -C "$script_dir" rev-parse --show-toplevel)" || {
   exit 2
 }
 readonly checkout
-base_sha="${BASELINE_SHA:-$(git -C "$checkout" merge-base origin/main HEAD)}" || {
-  printf 'BASELINE_SHA is unset and git merge-base origin/main HEAD found no commit\n' >&2
-  exit 2
-}
-git -C "$checkout" rev-parse --verify --quiet "${base_sha}^{commit}" >/dev/null || {
-  printf 'BASELINE_SHA %s names no commit\n' "$base_sha" >&2
+# The commit BASELINE_SHA names, in full: the one the base server booted below must be stamped with.
+base_sha="$(git -C "$checkout" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" || {
+  printf 'BASELINE_SHA %s names no commit of %s\n' "$BASELINE_SHA" "$checkout" >&2
   exit 2
 }
 readonly base_sha
@@ -168,6 +180,28 @@ census() {
 # counted SET NAME: the citations the counter counted in SET, `kind:id target` a line, sorted.
 counted() {
   sed -nE "s/^census: dangling_citation set=$1 from=([^ ]+) to=([^ ]+)\$/\\1 \\2/p" "$work/$2.out" | LC_ALL=C sort
+}
+
+# same_set SECTION WHAT SET NAME CAPTURED: the citations the counter counted in SET, in
+# $work/NAME.out, equal those the file CAPTURED holds, both sorted alike, with at least one in
+# each: a counter over an empty set would pass on any instance. A failure prints both sets.
+same_set() {
+  local got="$work/$4.$3"
+  counted "$3" "$4" >"$got"
+  [[ -s "$5" ]] || fail "$1" "$2" "the capture recorded no citation of the $3 set"
+  [[ -s "$got" ]] || fail "$1" "$2" "$3=${!3}: the counter counted none, want $(tr '\n' ';' <"$5")"
+  cmp -s "$got" "$5" || fail "$1" "$2" "$3=${!3}: $(tr '\n' ';' <"$got") want $(tr '\n' ';' <"$5")"
+}
+
+# append_move FROM TO ASSERTED: appends one moved_to tuple from the block node FROM to TO, at this
+# time and the event sentinel 0, asserting it or not as ASSERTED (true or false) says. It is the
+# store's own append, a new graph_tuples row, never an update or a delete: the newest row of a
+# move is the one block_moved_to reads.
+append_move() {
+  query planted "append a moved_to tuple from $1 to $2, asserted=$3" \
+    "insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+     values ('block', '$1', 'moved_to', 'block', '$2', now(), '{\"kind\":\"system\",\"id\":\"restore-redirects\"}'::jsonb, 0, null, $3)
+     returning seq"
 }
 
 # wait_settled SECTION: waits, within two minutes, until no document owes a settlement or its block
@@ -255,11 +289,21 @@ DISPATCH_TOKEN=e2e-token
 BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1'
 baseline_start
 unset DISPATCH_TOKEN DATABASE_URL BASELINE_EXTRA_ENV
+printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
+server="$baseline_url"
+# The base server is the release BASELINE_SHA names, as the commit it is stamped with says, before
+# it writes a row.
+send agent GET /healthz
+want_status 200 capture "read the base release's /healthz"
+base_commit="$(jq -r '.commit // ""' "$work/body")"
+readonly base_commit
+[[ "$base_commit" == "$base_sha" ]] ||
+  fail capture "the base release is stamped with the commit BASELINE_SHA names" \
+    "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
+pass capture "the base release serves $base_commit, the commit BASELINE_SHA names"
 # database_url stays writable: lib-baseline.sh's baseline_boot, which boots this head, holds a
 # local of that name.
 seed_decisions
-printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
-server="$baseline_url"
 
 readonly issue_a="${seed_ids[issue_a]}" issue_b="${seed_ids[issue_b]}" issue_c="${seed_ids[issue_c]}"
 readonly notes_a="${seed_ids[notes_a]}"
@@ -275,11 +319,6 @@ want_status 201 capture "a comment on $issue_c cites $moved_address through the 
 field capture "the comment's id" '.id'
 readonly comment_c="$value"
 seed_wait_settled "the comment on $issue_c settles"
-
-send agent GET /healthz
-want_status 200 capture "read the base release's /healthz"
-base_commit="$(jq -r '.commit // ""' "$work/body")"
-readonly base_commit
 
 # The citations of each set, as the base release wrote them.
 printf '%s\n' "comment:${seed_ids[comment_decisions_block]} $moved_node" "artifact:$notes_a $moved_node" \
@@ -344,10 +383,8 @@ for block in q-doc-collide q-left-store; do
 done
 pass before "the tuple kind answers and the collision census lists both colliding ids"
 [[ "$moved" == 0 ]] || fail before "the first set reads zero before the first restore" "moved=$moved"
-counted returning census-before >"$work/returning"
-cmp -s "$work/returning" "$work/capture/returning-set" ||
-  fail before "the second set reads the captured citations of the old spec addresses" \
-    "returning=$returning: $(tr '\n' ';' <"$work/returning") want $(tr '\n' ';' <"$work/capture/returning-set")"
+same_set before "the second set reads the captured citations of the old spec addresses" \
+  returning census-before "$work/capture/returning-set"
 pass before "the counter reads moved=0 and returning=$returning, the captured citation of $returning_address"
 resolve before "$moved_address"
 expect before "the references read answers the block in the decisions document" "\"$moved_node\"" '.node.id'
@@ -420,6 +457,30 @@ census after census-after
 [[ "$returning" == 0 ]] ||
   fail after "the second set reads zero after the restore" "returning=$returning: $(counted returning census-after | tr '\n' ';')"
 pass after "the counter reads moved=0 and returning=0 after the restore, over the $(wc -l <"$work/capture/moved-set") captured citations of the moved address and the $(wc -l <"$work/capture/returning-set") of the old spec address"
+
+# ---------------------------------------------------------------------------------------------
+# A state this run plants: the first set watches the captured citations.
+# ---------------------------------------------------------------------------------------------
+# The first set has read zero throughout, as it does on any healthy instance, and as a counter
+# that watched no citation would. With the moved_to tuple of the second shape's move retracted for
+# one census, the citations of the moved address dangle, and the set must read exactly the ones the
+# capture recorded. The re-assertion is appended at once, so every check below reads the move
+# standing.
+printf 'planted: this run retracts the moved_to tuple from %s to %s for one census, then puts it back\n' \
+  "$moved_node" "$restored_node"
+append_move "$moved_node" "$restored_node" false
+printf 'planted: the moved_to tuple from %s is retracted (row %s)\n' "$moved_node" "$answer"
+census planted census-planted
+same_set planted "the first set reads the captured citations of $moved_address with its move retracted" \
+  moved census-planted "$work/capture/moved-set"
+pass planted "the first set reads moved=$moved, the $(wc -l <"$work/capture/moved-set") captured citations of $moved_address, with its moved_to tuple retracted"
+append_move "$moved_node" "$restored_node" true
+printf 'planted: the moved_to tuple from %s is asserted again (row %s): the planted state is put back\n' \
+  "$moved_node" "$answer"
+census planted census-put-back
+[[ "$moved" == 0 ]] ||
+  fail planted "the first set reads zero once the move is asserted again" "moved=$moved: $(counted moved census-put-back | tr '\n' ';')"
+pass planted "the first set reads zero again once the moved_to tuple from $moved_node is asserted again"
 
 # ---------------------------------------------------------------------------------------------
 # The conversion: the document and every section of it resolve.

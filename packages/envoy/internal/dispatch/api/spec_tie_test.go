@@ -21,9 +21,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// tieTime is one of the two times the spec tie compares (dispatch://INFRA-1150 R5), each read
-// from the store and never from a time a writer passed: the event that wrote it, and where no
-// event names it, the database's clock.
+// tieTime is one of the two times the spec tie compares, read from the
+// store and never from a time a writer passed: the event that wrote it, and the database's clock
+// at that write, which a failure prints and no comparison reads.
 type tieTime struct {
 	event int64
 	at    time.Time
@@ -33,16 +33,18 @@ func (t tieTime) String() string {
 	if t.event != graphstore.NoEvent {
 		return "event " + strconv.FormatInt(t.event, 10)
 	}
-	return "the database's clock at " + t.at.Format(time.RFC3339Nano)
+	return "no event, the database's clock at " + t.at.Format(time.RFC3339Nano)
 }
 
-// after reports whether t is later than other: by the events both carry, or where either carries
-// none, by the database's clock.
-func (t tieTime) after(other tieTime) bool {
-	if t.event != graphstore.NoEvent && other.event != graphstore.NoEvent {
-		return t.event > other.event
+// laterThan reports whether later was written after earlier, by the event sequence alone. Every
+// tie state this test writes carries the event that wrote it, so one that carries none fails the
+// test, printing both, and is never ordered by the clock instead.
+func laterThan(t *testing.T, later, earlier tieTime) bool {
+	t.Helper()
+	if later.event == graphstore.NoEvent || earlier.event == graphstore.NoEvent {
+		t.Fatalf("%s and %s are ordered by the event that wrote each, and one carries none", later, earlier)
 	}
-	return t.at.After(other.at)
+	return later.event > earlier.event
 }
 
 // versionWrittenBy is the event that wrote version number of the document: its artifact.version,
@@ -70,20 +72,21 @@ func versionWrittenBy(t *testing.T, database *store.Store, artifactID string, nu
 }
 
 // textChangedAt is the text-change time of a spec node: the event that wrote the version in which
-// the block's text last changed (document_blocks.changed_version), or where no event names that
-// version, its created_at. No field of the node says whether its text changed since anything.
+// the block's text last changed (document_blocks.changed_version, a version of the block's own
+// document on the row its room keys), with that version's created_at. No field of the node says
+// whether its text changed since anything.
 func textChangedAt(t *testing.T, database *store.Store, document decisionDocument, block string) tieTime {
 	t.Helper()
 	var changed int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select changed_version from document_blocks where artifact_id = $1::uuid and block_id = $2
-	`, document.id, block).Scan(&changed); err != nil {
+	`, document.room, block).Scan(&changed); err != nil {
 		t.Fatalf("read the version %s's text last changed in: %v", document.address(block), err)
 	}
 	return versionWrittenBy(t, database, document.id, changed)
 }
 
-// shapedTime is a shaped tuple's own time: the event it carries, or its at where it carries none.
+// shapedTime is a shaped tuple's own time: the event it carries, with its at.
 func shapedTime(tuple graphstore.Tuple) tieTime {
 	return tieTime{event: tuple.SourceEvent, at: tuple.At}
 }
@@ -166,8 +169,8 @@ func requireShapedBacklinks(t *testing.T, handler http.Handler, what, reference 
 }
 
 // textAtTheTie is the text the store held for the block of document when the tuple was written:
-// the latest document_block_texts row of the block at or before the newest version whose writing
-// event is no later than the tuple's own.
+// the latest document_block_texts row of the block, on the rows its room keys, at or before the
+// newest version of the document whose writing event is no later than the tuple's own.
 func textAtTheTie(t *testing.T, database *store.Store, document decisionDocument, block string, tuple graphstore.Tuple) string {
 	t.Helper()
 	ctx := context.Background()
@@ -181,7 +184,7 @@ func textAtTheTie(t *testing.T, database *store.Store, document decisionDocument
 	}
 	held := 0
 	for _, number := range numbers {
-		if written := versionWrittenBy(t, database, document.id, number); written.event != graphstore.NoEvent && written.event <= tuple.SourceEvent {
+		if !laterThan(t, versionWrittenBy(t, database, document.id, number), shapedTime(tuple)) {
 			held = number
 		}
 	}
@@ -193,7 +196,7 @@ func textAtTheTie(t *testing.T, database *store.Store, document decisionDocument
 		select text from document_block_texts
 		where artifact_id = $1::uuid and block_id = $2 and version <= $3
 		order by version desc limit 1
-	`, document.id, block, held).Scan(&text)
+	`, document.room, block, held).Scan(&text)
 	if errors.Is(err, pgx.ErrNoRows) || text == nil {
 		t.Fatalf("the store holds no text of %s at version %d, the version the tuple %d was written at", document.address(block), held, tuple.SourceEvent)
 	}
@@ -218,8 +221,8 @@ func shapedHistory(t *testing.T, database *store.Store, address string) []graphs
 // agent's. The spec holds five requirements. The answered ask shaped the first and the fourth; the
 // agent's decision d1 shaped the first three. Each reading below is of the store - its tuples, its
 // nodes, its block texts and the events that wrote them - and of the backlink read
-// `GET /api/v1/references?to=`, and every time compared is an event the store holds, or where none
-// names a version the database's clock, never a time a writer passed.
+// `GET /api/v1/references?to=`, and every time compared is an event the store holds: a tie state
+// that carries none fails the test, and no time a writer passed, nor the clock, orders two of them.
 func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
@@ -307,11 +310,7 @@ func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
 
 	// The tie stands across versions, and the text-change time moves with the text alone.
 	changedBefore := textChangedAt(t, database, spec, "r1")
-	if tie.SourceEvent == graphstore.NoEvent || changedBefore.event == graphstore.NoEvent {
-		t.Fatalf("the tie carries the event %d and the first requirement's text-change time is %s, want both events of the store, which this test compares",
-			tie.SourceEvent, changedBefore)
-	}
-	if !shapedTime(tie).after(changedBefore) {
+	if !laterThan(t, shapedTime(tie), changedBefore) {
 		t.Fatalf("the tie's own time %s is not later than the text-change time %s of the requirement it shaped", shapedTime(tie), changedBefore)
 	}
 	untouched := editSpec(t, handler, issue.Key, []map[string]any{{"op": "replace", "find": "Five.", "with": "Five, reworded."}})
@@ -328,7 +327,7 @@ func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
 			tuplesText([]graphstore.Tuple{held[ask], held[d1]}), tuplesText([]graphstore.Tuple{first[ask], tie}))
 	}
 	changedAfter := textChangedAt(t, database, spec, "r1")
-	if want := versionWrittenBy(t, database, spec.id, rewritten.Number); changedAfter != want || !changedAfter.after(shapedTime(tie)) {
+	if want := versionWrittenBy(t, database, spec.id, rewritten.Number); changedAfter != want || !laterThan(t, changedAfter, shapedTime(tie)) {
 		t.Fatalf("version %d rewrote the first requirement, and its text-change time reads %s against the tie's own %s, want %s, the version's own and later than the tie",
 			rewritten.Number, changedAfter, shapedTime(tie), want)
 	}
@@ -338,14 +337,14 @@ func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
 	// alone was written after the decision and holds its tie, and a decision written after that
 	// version ties to no node of it.
 	covered := versionWrittenBy(t, database, spec.id, untouched.Number)
-	if shapedTime(tie).after(covered) {
+	if laterThan(t, shapedTime(tie), covered) {
 		t.Fatalf("the tie's own time %s is later than %s, which wrote version %d the decision covers", shapedTime(tie), covered, untouched.Number)
 	}
 	agentUpload("the agent's later decision", decision("d1", pointer("r1")+" "+pointer("r2")+" "+pointer("r3"), d1Text)+"\n"+
 		decision("d2", pointer("r1"), "gRPC for the streaming service."))
 	d2 := refs.BlockNodeKind + ":" + choices.address("d2")
 	later := requireShapedFrom(t, database, "the first requirement after a later decision", spec.address("r1"), ask, d1, d2)[d2]
-	if !shapedTime(later).after(covered) {
+	if !laterThan(t, shapedTime(later), covered) {
 		t.Fatalf("the later decision's tie carries %s, no later than %s, which wrote version %d: that version would hold a tie written after it",
 			shapedTime(later), covered, untouched.Number)
 	}

@@ -1,4 +1,4 @@
-# What dispatch://INFRA-1150 keeps for one release, for the root's own pull request to delete
+# What this change keeps for one release, for the root's own pull request to delete
 # (the plan's "For the root to delete"; the implement handoff copies this list under that heading).
 #
 # One line for each kept thing: its id, a tab, the thing, a tab, and what holds it - the condition

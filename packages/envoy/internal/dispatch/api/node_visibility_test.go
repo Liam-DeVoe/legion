@@ -33,6 +33,11 @@ const privateNodePhrase = "wolfram tangerine"
 // public block, so a chain of three runs through it; and a public comment answers it, so a walk
 // up from a visible child reaches it. A second private node, a comment its author wrote and
 // keeps to herself, is the comment the person page and a comment's own address are read for.
+// Its id starts with the first characters of the id of her public comment
+// (sharedCommentPrefix), so a short id written as those characters is one both comments carry.
+// The document is the spec of an issue born converted, so its blocks are rows and nodes of its
+// issue's room, keyed by the room's tree artifact, and a reference to one of them at the spec's
+// own address resolves to the room's node.
 type privateNodeFixture struct {
 	handler  http.Handler
 	database *store.Store
@@ -43,14 +48,17 @@ type privateNodeFixture struct {
 	issue    string
 	specID   string
 	refKey   string
-	// first and last are the two public blocks of the chain; private is the block in between,
-	// absent from the fixture seeded without it.
+	// first and last are the room's nodes of the two public blocks of the chain; private is the
+	// node of the block in between, absent from the fixture seeded without it.
 	first, private, last string
+	// privateBlock is the private block's own id inside its document, which a search hit names
+	// as the block it matched (model.SearchResult.BlockID), absent with it.
+	privateBlock string
 	// comment is the public comment that answers the private block, absent with it.
 	comment string
 	// privateComment is the comment its author keeps to herself, absent with the private block;
 	// publicComment is a comment she wrote for everyone, in both fixtures, so her person page
-	// answers in both.
+	// answers in both, and the start of its id is the start of the private comment's too.
 	privateComment, publicComment string
 	// broker is the stub secrets broker the server asks about a DPoP-bound token, so a read can
 	// be made under a session the broker verified as well as under a cookie and a token.
@@ -62,9 +70,24 @@ type privateNodeFixture struct {
 func privateNodeAuthor() model.Actor { return model.Actor{Kind: "user", ID: "alice"} }
 func privateNodeReader() model.Actor { return model.Actor{Kind: "user", ID: "bob"} }
 
-// privateBlockID is the private block's own id inside its document, which a search hit names as
-// the block it matched (model.SearchResult.BlockID).
-const privateBlockID = "private"
+// The paragraphs of the fixture's spec beside its opening one: the first and the last public
+// block of the chain, and the private block between them, whose text holds the phrase.
+const (
+	firstPassage   = "The first passage."
+	privatePassage = "A passage about " + privateNodePhrase + " its author keeps to herself."
+	lastPassage    = "The last passage."
+)
+
+// sharedCommentLength is how many characters of the public comment's id the private comment's id
+// starts with too: eight hex digits, a hyphen and four more, a short id text.IsIDPrefix reads.
+const sharedCommentLength = len("01234567-89ab")
+
+// sharedCommentPrefix is the short id the public comment's id and the private comment's start
+// with, in the fixture seeded with the private node; in the one seeded without it, the public
+// comment alone carries it.
+func (f privateNodeFixture) sharedCommentPrefix() string {
+	return f.publicComment[:sharedCommentLength]
+}
 
 // TestNoReadAnswersANodeTheActingPersonMayNotSee: a node whose `visibility` is `author` is
 // absent from every read a second person makes, and present in each of them for its author.
@@ -112,7 +135,7 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 		reads = append(reads, recordedRead{name: name, statements: held.recorded(t, read)})
 	}
 	document := "dispatch://" + held.refKey
-	blockRef := refs.BlockRef(document, privateBlockID)
+	blockRef := refs.BlockRef(document, held.privateBlock)
 
 	// 1. The list of its kind: every link from a block of the document to a block of it. The
 	// chain runs first -> private -> last, so a reader who may not see the middle sees neither
@@ -190,14 +213,16 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 	// 3. The tuples of each public neighbour, in both directions, through the route a
 	// `dispatch://` address is read by. The author reads the private block among the
 	// neighbours' edges: the first block points at it, it points at the last, and the comment
-	// cites it.
+	// cites it. Each block is read at the spec's own address of it, by its id inside the spec.
+	_, firstBlock, _ := strings.Cut(held.first, "#")
+	_, lastBlock, _ := strings.Cut(held.last, "#")
 	neighbours := []struct {
 		name, ref string
 		// authorFinds is the direction the author reads the private block in.
 		authorFinds string
 	}{
-		{"the first block", refs.BlockRef(document, "first"), "from"},
-		{"the last block", refs.BlockRef(document, "last"), "to"},
+		{"the first block", refs.BlockRef(document, firstBlock), "from"},
+		{"the last block", refs.BlockRef(document, lastBlock), "to"},
 		{"the public comment", "dispatch://" + held.issue + "/comment/" + held.comment, "from"},
 	}
 	for _, neighbour := range neighbours {
@@ -342,8 +367,8 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 	for _, address := range []struct {
 		name, private, nobody, privateID, nobodyID string
 	}{
-		{"the private block's address", blockRef, refs.BlockRef(document, "nosuchblock"), privateBlockID, "nosuchblock"},
-		{"the private block's address at version 1", blockRef + "@v1", refs.BlockRef(document, "nosuchblock") + "@v1", privateBlockID, "nosuchblock"},
+		{"the private block's address", blockRef, refs.BlockRef(document, "nosuchblock"), held.privateBlock, "nosuchblock"},
+		{"the private block's address at version 1", blockRef + "@v1", refs.BlockRef(document, "nosuchblock") + "@v1", held.privateBlock, "nosuchblock"},
 		{"the private comment's address", "dispatch://" + held.issue + "/comment/" + held.privateComment,
 			"dispatch://" + held.issue + "/comment/" + nobodyComment, held.privateComment, nobodyComment},
 	} {
@@ -366,6 +391,66 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 	}
 	if pinned := dispatchReferences(t, held.handler, blockRef+"@v1", "alice"); !strings.Contains(pinned.Body.String(), privateNodePhrase) {
 		t.Errorf("the author's read of the private block at version 1 does not carry the text that version recorded: %s", pinned.Body.String())
+	}
+
+	// 10. The batched read of what references point at. To the second person a reference to
+	// either private node is gone, as a reference nothing addresses is, and a short id that the
+	// private comment alone carries names nothing. A short id that it shares with the public
+	// comment names the public comment alone, and is not ambiguous: the flag would tell the
+	// second person that a node they may not see carries that prefix, though no name of it is
+	// answered. That answer is the one the second person reads where the private nodes were
+	// never written, byte for byte once the short id asked for is substituted. The author reads
+	// both private nodes named, her private comment's own short id resolved to it, and the
+	// shared short id ambiguous between her two comments.
+	commentRef := func(fixture privateNodeFixture, id string) string {
+		return "dispatch://" + fixture.issue + "/comment/" + id
+	}
+	shared := commentRef(held, held.sharedCommentPrefix())
+	// The private comment's id through its fourth group, which carries ten characters of the
+	// uuid drawn for it past the shared short id, so the public comment's id does not start so.
+	privateOnly := commentRef(held, held.privateComment[:len("01234567-89ab-cdef-0123")])
+	targetsQuery := referenceTargetsOf(blockRef, commentRef(held, held.privateComment), privateOnly, shared)
+	batched := asReader("the batched read of the private nodes' references", targetsQuery)
+	if batched.Code != http.StatusOK {
+		t.Fatalf("read the private nodes' references in one batch: status=%d body=%s", batched.Code, batched.Body.String())
+	}
+	members := decodeBody[model.ReferenceTargets](t, batched).Targets
+	if len(members) != 4 {
+		t.Fatalf("the batched read answers %d member for 4 references: %+v", len(members), members)
+	}
+	for _, member := range members[:3] {
+		if !member.Gone || member.Name != "" || member.Ambiguous {
+			t.Errorf("the batched read answers the second person %s as %+v; want it gone with no name, as a reference nothing addresses", member.Ref, member)
+		}
+	}
+	if public := members[3]; public.Ambiguous {
+		t.Errorf("the batched read answers the second person the short id %s, which the private comment shares with the public one, as ambiguous: the flag tells them a node they may not see carries it", public.Ref)
+	} else if public.Gone || public.Name != "A remark its author wrote for everyone." {
+		t.Errorf("the batched read answers the second person the short id %s as %+v; want the public comment's name alone", public.Ref, public)
+	}
+	alone := asReader("the batched read of the shared short id", referenceTargetsOf(shared))
+	absentShared := commentRef(absent, absent.sharedCommentPrefix())
+	never := dispatchRequest(t, absent.handler, http.MethodGet, referenceTargetsOf(absentShared), nil, "bob")
+	if want := bytes.ReplaceAll(never.Body.Bytes(), []byte(absentShared), []byte(shared)); alone.Code != never.Code || !bytes.Equal(alone.Body.Bytes(), want) {
+		t.Errorf("the batched read answers the second person the shared short id as %d\n%s\nand where the private nodes were never written as %d\n%s",
+			alone.Code, alone.Body.Bytes(), never.Code, want)
+	}
+	authoredTargets := dispatchRequest(t, held.handler, http.MethodGet, targetsQuery, nil, "alice")
+	if authoredTargets.Code != http.StatusOK {
+		t.Fatalf("read the private nodes' references in one batch as their author: status=%d body=%s", authoredTargets.Code, authoredTargets.Body.String())
+	}
+	mine := decodeBody[model.ReferenceTargets](t, authoredTargets).Targets
+	if len(mine) != 4 {
+		t.Fatalf("the batched read answers the author %d member for 4 references: %+v", len(mine), mine)
+	}
+	privateRemark := "A private remark about " + privateNodePhrase + "."
+	for index, want := range []string{"A passage about " + privateNodePhrase + ".", privateRemark, privateRemark} {
+		if member := mine[index]; member.Gone || member.Name != want {
+			t.Errorf("the batched read answers the author %s as %+v; want it named %q", member.Ref, member, want)
+		}
+	}
+	if member := mine[3]; !member.Ambiguous || !member.Gone {
+		t.Errorf("the batched read answers the author the short id %s, which both her comments carry, as %+v; want it ambiguous", member.Ref, member)
 	}
 
 	// The predicate sits in the SQL of each read and not in Go.
@@ -470,7 +555,7 @@ func searchCount(t *testing.T, fixture privateNodeFixture, target, login string)
 // namesPrivateBlock reports whether a search hit names the private block as the block it matched,
 // by its id in the document or by its node address.
 func namesPrivateBlock(result model.SearchResult, fixture privateNodeFixture) bool {
-	return result.BlockID != nil && (*result.BlockID == privateBlockID || *result.BlockID == fixture.private)
+	return result.BlockID != nil && (*result.BlockID == fixture.privateBlock || *result.BlockID == fixture.private)
 }
 
 // personNodeOn reports whether a person page holds a row of the node id.
@@ -539,7 +624,7 @@ func requireEveryCredentialReadsAsItsPerson(t *testing.T, fixture privateNodeFix
 	document := "dispatch://" + fixture.refKey
 	nobodyComment := "4c6e7b00-0000-4000-8000-0000000000fe"
 	addresses := []struct{ name, private, nobody, privateID, nobodyID string }{
-		{"the private block's address", refs.BlockRef(document, privateBlockID), refs.BlockRef(document, "nosuchblock"), privateBlockID, "nosuchblock"},
+		{"the private block's address", refs.BlockRef(document, fixture.privateBlock), refs.BlockRef(document, "nosuchblock"), fixture.privateBlock, "nosuchblock"},
 		{"the private comment's address", "dispatch://" + fixture.issue + "/comment/" + fixture.privateComment,
 			"dispatch://" + fixture.issue + "/comment/" + nobodyComment, fixture.privateComment, nobodyComment},
 	}
@@ -627,7 +712,8 @@ func privateNodeIDs(fixture privateNodeFixture, kind string) []string {
 
 // privateNodePeer is the address in the fixture seeded without the private node that answers to
 // the address id in the one seeded with it: the two documents and the two public blocks are the
-// same nodes of two databases, named by the same block ids under each database's own document.
+// same nodes of two databases, each block named by the id its issue's create gave it, under each
+// database's own room.
 func privateNodePeer(held, absent privateNodeFixture, id string) string {
 	switch id {
 	case held.refKey:
@@ -651,9 +737,15 @@ func dispatchReferences(t *testing.T, handler http.Handler, reference, login str
 }
 
 // seedPrivateNode builds the fixture, with the private nodes or without them ever having been
-// written. The two differ in those nodes, the two links that run through the block, the comment
-// that answers it and the version's record of its text, and in nothing else: what the second
-// person reads of the one has to be what they read of the other.
+// written. The two differ in those nodes - the private paragraph the spec is created with, whose
+// text its version 1 records, and the private comment - the two links that run through the
+// block and the comment that answers it, and in nothing else: what the second person reads of
+// the one has to be what they read of the other.
+//
+// The spec's paragraphs are written by the issue's create, which indexes them in its room: their
+// rows, their nodes, their memberships of the spec and their texts at version 1 are the block
+// index's. The links of the chain are rows naming no node, keyed by the room's tree artifact, as
+// the block index of the release before keyed a document's own.
 //
 // The server runs with an embedder configured, and the document's blocks are windowed and
 // embedded, the private block's window among them, so a search runs its meaning body over a
@@ -668,36 +760,40 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	// wired to a stub broker, so a read can present a session the broker verified.
 	rig := newBrokerTokenRigOn(t, testServerOptions{store: database, embedder: embedder})
 	handler := rig.handler
-	issue := createInteractionIssue(t, handler, "PRIV", "A private node in public company",
-		"# Spec\n\nA passage about "+privateNodePhrase+".")
-	fixture := privateNodeFixture{handler: handler, database: database, recorder: recorder, issue: issue.Key,
-		specID: issue.PrimaryArtifactID, broker: rig.broker}
-	if err := database.Pool.QueryRow(ctx,
-		`select ref_key from artifacts where id = $1::uuid`, fixture.specID).Scan(&fixture.refKey); err != nil {
-		t.Fatalf("read the spec's address: %v", err)
+	passages := []string{firstPassage, lastPassage}
+	if private {
+		passages = []string{firstPassage, privatePassage, lastPassage}
 	}
+	issue := createInteractionIssue(t, handler, "PRIV", "A private node in public company",
+		"# Spec\n\nA passage about "+privateNodePhrase+".\n\n"+strings.Join(passages, "\n\n")+"\n")
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	if spec.room == spec.id {
+		t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
+	}
+	fixture := privateNodeFixture{handler: handler, database: database, recorder: recorder, issue: issue.Key,
+		specID: issue.PrimaryArtifactID, refKey: spec.refKey, broker: rig.broker}
 	fixture.publicComment = createThreadComment(t, handler, fixture.issue,
 		map[string]any{"body": "A remark its author wrote for everyone."}, "alice").ID
-	node := func(blockID string) string { return fixture.refKey + "#" + blockID }
-	fixture.first, fixture.private, fixture.last = node("first"), node(privateBlockID), node("last")
-	blocks := []struct{ id, excerpt string }{{"first", "The first passage."}, {"last", "The last passage."}}
-	if private {
-		blocks = []struct{ id, excerpt string }{blocks[0], {privateBlockID, "A passage about " + privateNodePhrase + "."}, blocks[1]}
+	ids := blockIDsByText(t, handler, fixture.specID)
+	blockOf := func(passage string) string {
+		t.Helper()
+		id := ids[passage]
+		if id == "" {
+			t.Fatalf("the spec of %s lists no block holding %q", issue.Key, passage)
+		}
+		return id
 	}
+	fixture.first, fixture.last = spec.address(blockOf(firstPassage)), spec.address(blockOf(lastPassage))
 	var markdown strings.Builder
 	var windowed []model.ArtifactBlock
-	for _, block := range blocks {
-		seedExec(t, database, "a block of the spec", `
-			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
-			values ($1::uuid, $2, $3, 'paragraph', '', $4, 1, now())
-		`, fixture.specID, block.id, node(block.id), block.excerpt)
+	for _, passage := range passages {
 		if markdown.Len() > 0 {
 			markdown.WriteString("\n\n")
 		}
 		windowed = append(windowed, model.ArtifactBlock{
-			ID: block.id, Type: "paragraph", From: markdown.Len(), To: markdown.Len() + len(block.excerpt),
+			ID: blockOf(passage), Type: "paragraph", From: markdown.Len(), To: markdown.Len() + len(passage),
 		})
-		markdown.WriteString(block.excerpt)
+		markdown.WriteString(passage)
 	}
 	// The windows of those blocks, written by the one writer of a document's windows, and
 	// embedded near the query: the private block's window is the meaning body's candidate.
@@ -717,26 +813,24 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	if !private {
 		return fixture
 	}
-	// What version 1 recorded of the private block's text, as the block index records a
-	// version's blocks: the as-of read of that version has a text to answer, which it must
-	// answer only to the block's author.
-	seedExec(t, database, "the private block's text at version 1", `
-		insert into document_block_texts (artifact_id, block_id, version, text) values ($1::uuid, $2, 1, $3)
-	`, fixture.specID, privateBlockID, "A passage about "+privateNodePhrase+".")
+	fixture.privateBlock = blockOf(privatePassage)
+	fixture.private = spec.address(fixture.privateBlock)
 	// The chain of three: a public block points at the private one, and it points at a second
 	// public block.
 	for _, link := range []struct{ from, fromNode, to string }{
-		{"first", fixture.first, fixture.private},
-		{privateBlockID, fixture.private, fixture.last},
+		{blockOf(firstPassage), fixture.first, fixture.private},
+		{fixture.privateBlock, fixture.private, fixture.last},
 	} {
 		seedExec(t, database, "a link of the chain", `
 			insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
 			values ($1::uuid, $2, $3, 'block', $4, 'mentions', 1)
-		`, fixture.specID, link.from, link.fromNode, link.to)
+		`, spec.room, link.from, link.fromNode, link.to)
 	}
 	// The public comment that hangs under the private block, so a walk up from a visible child
 	// reaches it: it answers the block, and its body cites it, which is the edge the graph
 	// holds (a comment's reply to a document's block is no arm of graph_edges; its mention is).
+	// The citation keeps the address a reference writes, the spec's own, which resolves to the
+	// room's node.
 	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (issue_key, author, body, replies_to_block)
 		values ($1, '{"kind":"user","id":"bob"}', 'A public answer.', $2)
@@ -746,15 +840,19 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	}
 	seedExec(t, database, "the comment's citation of the private block", `
 		insert into refs (from_kind, from_id, kind, to_kind, to_id) values ('comment', $1, 'mentions', 'block', $2)
-	`, fixture.comment, fixture.private)
+	`, fixture.comment, spec.pointed(fixture.privateBlock))
 	// The nodes themselves, reserved for their author. The store's writer takes a node reserved
 	// for its author of no kind these reads answer (graphstore.ErrVisibilityNotAdmitted), so the
 	// rows a route that asked for `author` would store are seeded straight into the store
 	// (graphstoretest.SeedAuthorOnly).
 	author := privateNodeAuthor()
-	if err := database.Pool.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&fixture.privateComment); err != nil {
+	// The private comment's id starts as the public comment's does (sharedCommentPrefix), so the
+	// two comments carry that short id, and goes on as a uuid drawn for it.
+	var drawn string
+	if err := database.Pool.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&drawn); err != nil {
 		t.Fatalf("draw the private comment's id: %v", err)
 	}
+	fixture.privateComment = fixture.sharedCommentPrefix() + drawn[sharedCommentLength:]
 	at := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -788,4 +886,73 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 		t.Fatalf("commit the private nodes' write: %v", err)
 	}
 	return fixture
+}
+
+// A meaning hit on a window of a document of an issue room names no block the reader may not
+// see: the covered block is held to the predicate of the node its address resolves to
+// (refs.ResolvedBlockSQL), the room's node `<tree ref_key>#<block>`, where the room keeps the
+// block. The spec, its three paragraphs and their nodes are written by the issue's create and
+// indexed in its room. The store's writers take no block reserved for its author
+// (graphstore.ErrVisibilityNotAdmitted), so the node of the paragraph holding the query's words
+// is reserved for its author, alice, as such a write would store it (graphstoretest.SeedAuthorOnly).
+// Alice's hit names that paragraph; bob's names another of the window.
+//
+// The control is the predicate read at the spec's own address, which names no node of the store:
+// the paragraph reads as visible to bob, and his hit names it.
+func TestMeaningSearchNamesNoBlockOfAnIssueRoomItsReaderMayNotSee(t *testing.T) {
+	const query = "theodolite recalibration"
+	const best = "The theodolite needs recalibration before the survey."
+	ctx := context.Background()
+	embedder := &fakeEmbedder{vectors: map[string][]float32{query: queryVector()}}
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, "RPRIV", "Survey gear",
+		"Alpha notes on the mounting bracket.\n\nBeta notes on the tripod legs.\n\n"+best+"\n")
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	if spec.room == spec.id {
+		t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
+	}
+	private := blockIDsByText(t, handler, issue.PrimaryArtifactID)[best]
+	if private == "" {
+		t.Fatalf("the spec of %s lists no block holding %q", issue.Key, best)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reservation of the paragraph's node: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstoretest.SeedAuthorOnly(ctx, tx, graphstore.Node{
+		Kind: refs.BlockNodeKind, ID: spec.address(private), Supertag: refs.BlockNodeKind, State: graphstore.StateLive,
+		MadeAt: time.Now().UTC(), MadeBy: privateNodeAuthor(), SourceEvent: graphstore.NoEvent,
+	}); err != nil {
+		t.Fatalf("reserve the paragraph's node for its author: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the reservation of the paragraph's node: %v", err)
+	}
+	windowOwedOwners(t, deps)
+	if windows := windowTexts(t, database, "document_block", issue.PrimaryArtifactID); len(windows) != 1 {
+		t.Fatalf("the spec's windows = %v, want one window over its three paragraphs", windows)
+	}
+	embedWindowsAs(t, database, embedder, "document_block", issue.PrimaryArtifactID, angledVector(0.9, 2))
+	processAllPending(t, database, embedder)
+
+	hitOf := func(login string) string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/search?q="+url.QueryEscape(query), nil, login)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s's search: status=%d body=%s", login, response.Code, response.Body.String())
+		}
+		hit := searchHit(t, decodeBody[model.SearchResponse](t, response), "document", issue.PrimaryArtifactID)
+		if hit.BlockID == nil {
+			return ""
+		}
+		return *hit.BlockID
+	}
+	if named := hitOf(privateNodeAuthor().ID); named != private {
+		t.Fatalf("the author's hit names block %q, want %q, her paragraph holding the query's words", named, private)
+	}
+	if named := hitOf(privateNodeReader().ID); named == "" || named == private {
+		t.Fatalf("the second person's hit names block %q, want another paragraph of the window than %q, which he may not see",
+			named, private)
+	}
 }

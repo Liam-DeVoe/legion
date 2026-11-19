@@ -805,7 +805,7 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // tuples into a node, the backlink counts, the issue tree (the list of the shape's issue's
 // children, each shape's issue holding predicateCostChildren), GET /api/v1/lenses with its chains,
 // the coverage read and the references panel read, each named with its route. The base build is the
-// commit BASELINE_SHA names, or, where it is unset, `git merge-base origin/main HEAD` (baseBuild),
+// commit BASELINE_SHA names (baseBuild),
 // serving a database of its own (startCostArms). Both builds are read in one loop, one reading on
 // each in each turn, the build that goes first alternating, after one warm-up reading on each that
 // is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the

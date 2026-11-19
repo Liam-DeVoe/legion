@@ -1,6 +1,7 @@
 import { resolve as resolvePath } from "node:path";
 import type { Artifact, ArtifactBlock, EditOp, EditPrecondition } from "@legion/contracts";
 import { ARTIFACT_NAME_EXISTS_RULE, PATH_KEEPS_BYTES, pathKeepsBytesOf } from "@legion/contracts";
+import { goBlankPattern } from "@legion/contracts/go-blank";
 import { actorText } from "../actor-text";
 import type { DispatchClient } from "../dispatch-http";
 import { dispatchDocumentRef, documentLabel, issueTopic } from "../dispatch-owner";
@@ -36,6 +37,7 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
+import { answeredAskLines, liveTextAsks } from "./text-asks";
 
 /**
  * dispatch_doc_read of an uploaded file or image. Dispatch serves a file's content only as the
@@ -247,7 +249,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   const checkLines = decisionBlockLines(edited.advice, {
     project: resolved.artifact.project,
     text: editAskText,
-    configUrl: linkBase,
+    linkBase,
   });
   // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line must
   // stay the result's last line. A project document stands on no issue, and the server sends
@@ -376,10 +378,15 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   if (threadsResult.status === "rejected") throw threadsResult.reason;
   const threads = threadsResult.value;
   const approval = approvalLine(resolved.artifact, typeof resolved.issue?.closed_at === "string");
+  // A live read's markdown holds no ask's state or answer: each answered ask is named beside the
+  // token, from the text's asks (liveTextAsks). A version read prints the stored bytes, which are
+  // the record a person approved, and names none.
+  const answered = version === undefined ? answeredAskLines(liveTextAsks(document)) : [];
   const trailer = [
     ...("token" in document && document.token !== undefined
       ? [`Document token: ${document.token}`]
       : []),
+    ...answered,
     ...("sha256" in document && document.sha256 !== undefined
       ? [`Content: sha256:${document.sha256}`]
       : []),
@@ -644,36 +651,6 @@ function roundTripRouteAbsent(error: unknown): boolean {
 function withoutFinalLineFeed(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
-
-/**
- * Text Go's `strings.TrimSpace` empties: no characters at all, or only characters Go's
- * `unicode.IsSpace` reports - `\t`, `\n`, `\v`, `\f`, `\r`, a space, U+0085 and U+00A0, and the
- * Unicode `White_Space` property above Latin-1, which is U+1680, U+2000 to U+200A, U+2028,
- * U+2029, U+202F, U+205F and U+3000 (`IsSpace` in Go's `unicode/graphic.go`, reading the
- * `_White_Space` table of its `unicode/tables.go`).
- *
- * The set is written out because it is Go's and not JavaScript's: walked over every Unicode
- * scalar, `String.prototype.trim` and `strings.TrimSpace` differ on exactly two characters.
- * `trim` removes U+FEFF, which Go keeps, so `trim` calls U+FEFF blank where the server reads
- * content; Go removes U+0085, which `trim` keeps, so `trim` calls U+0085 content where the
- * server reads blank. This is the one place that pair is written out, and the lines that turn
- * on it cite this comment rather than repeating it.
- *
- * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
- * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
- * set in each language: JavaScript's also matches a vertical tab and U+FEFF"). That pair is the
- * two languages' `\s`, and it differs in a vertical tab and U+FEFF, not in the two characters
- * above.
- *
- * `packages/contracts/fixtures/go-unicode-isspace.json` holds the 25 scalars `unicode.IsSpace`
- * reports. This pattern is held to that list over every scalar by `goBlankPattern` > `calls
- * blank exactly the scalars the committed list holds`, and Go's own predicate by
- * TestUnicodeIsSpaceReportsTheCommittedScalars in
- * `packages/envoy/internal/dispatch/text/whitespace_fixture_test.go`: a character either side
- * gains or loses reddens its test, and the list and this pattern are corrected together.
- */
-export const goBlankPattern =
-  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/u;
 
 /** `dispatch artifact`: upload a document, a picture or a file to an issue or a project. */
 export async function artifactCommand(context: CommandContext): Promise<DispatchToolResult> {

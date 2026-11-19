@@ -30,7 +30,7 @@ import {
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
-import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
+import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
@@ -113,9 +113,11 @@ export function NodeRow({
   body,
   context,
   document,
+  editable = false,
   editing,
   expanded,
   focused,
+  foldable = true,
   folded,
   isClosed,
   level,
@@ -149,6 +151,9 @@ export function NodeRow({
    *  Keep and Change are writes on the decisions document (R7). Undefined for a node that is
    *  no block of a document of this issue. */
   document?: Artifact;
+  /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
+   *  place and draws such a row its own way. False unless the view passes it. */
+  editable?: boolean;
   /** The document this row's own text lives in, while the reader is editing it here: its
    *  editor is drawn in place of the row's words and the caret is in this node's block. */
   editing?: string;
@@ -156,6 +161,10 @@ export function NodeRow({
    *  undefined for a node that holds none. */
   expanded?: boolean;
   focused: boolean;
+  /** Whether the row draws its fold control where it holds children. The row a tree is zoomed
+   *  to, drawn open by definition, draws none, and keeps its `aria-expanded`. True unless the
+   *  view passes it. */
+  foldable?: boolean;
   /** How many nodes it holds while it is folded. */
   folded?: number;
   /** Whether the issue is closed, which the writes a body offers are refused on. */
@@ -216,7 +225,9 @@ export function NodeRow({
     (node.type === "ask"
       ? node.state === "answered" && !node.waiting
       : author.kind !== "person" && node.type !== "issue" && node.type !== "child_issue");
-  const clamp = useClamp(words, cuttable);
+  // What `RowText` draws the words from: a later read that brings other words - a statement's,
+  // which its document's blocks draw before the coverage read brings them - draws them cut.
+  const clamp = useClamp(words, cuttable, node.tree ?? node.text);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
@@ -259,6 +270,7 @@ export function NodeRow({
       aria-expanded={expanded}
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
+      data-editable={editable ? "" : undefined}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
@@ -290,6 +302,7 @@ export function NodeRow({
         <Bullet
           collapsed={collapsed}
           expanded={expanded}
+          foldable={foldable}
           onToggle={onToggle}
           tabStops={tabStops}
           tone={tone}
@@ -323,6 +336,7 @@ export function NodeRow({
                 <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : node.child === undefined ? (
                 <RowText
+                  focused={focused}
                   markdown={node.text}
                   source={node.source}
                   tabStops={tabStops}
@@ -612,12 +626,14 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
 function Bullet({
   collapsed,
   expanded,
+  foldable,
   onToggle,
   tabStops,
   tone,
 }: {
   collapsed: boolean;
   expanded?: boolean;
+  foldable: boolean;
   onToggle: () => void;
   tabStops: boolean;
   tone: Tone;
@@ -628,6 +644,13 @@ function Bullet({
       className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
     />
   );
+  if (!foldable) {
+    return (
+      <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">
+        {dot}
+      </span>
+    );
+  }
   if (expanded === undefined) {
     return (
       <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">
@@ -1340,13 +1363,17 @@ export function MoreWords({
  * before the page is painted, and while it stands within one screen of the viewport but wholly
  * outside the view, and again when its width or its words change or the page's typeface
  * arrives; never for any other row. A row in view keeps its length until a scroll leaves it
- * wholly outside the view. Undefined where the words are drawn whole, or not measured yet; a row
- * the reader scrolled away from keeps the cut it last had, save one measured on the fallback
- * face, which is measured again once the typeface arrives.
+ * wholly outside the view, save where it draws other words: `drawnFrom` is what the words are
+ * drawn from, and where a commit changes it, a row measured before is measured again in that
+ * commit as one that mounts, before the page is painted (`clampRedrawn`). A caller that cannot
+ * say what its words are drawn from passes nothing. Undefined where the words are drawn whole,
+ * or not measured yet; a row the reader scrolled away from keeps the cut it last had, save one
+ * measured on the fallback face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
-  cuttable: boolean
+  cuttable: boolean,
+  drawnFrom?: unknown
 ): Clamp | undefined {
   const [clamp, setClamp] = useState<Clamp | undefined>(undefined);
   useLayoutEffect(() => {
@@ -1357,5 +1384,14 @@ export function useClamp(
     }
     return watchClamp(element, (next) => setClamp((held) => (sameClamp(held, next) ? held : next)));
   }, [cuttable, words]);
+  // After the watch above: in a commit that watches the words anew, the measurer has not
+  // measured them yet, and leaves them to the mount's own pass.
+  const drawn = useRef(drawnFrom);
+  useLayoutEffect(() => {
+    if (drawn.current === drawnFrom) return;
+    drawn.current = drawnFrom;
+    const element = words.current;
+    if (cuttable && element !== null) clampRedrawn(element);
+  }, [cuttable, drawnFrom, words]);
   return cuttable ? clamp : undefined;
 }

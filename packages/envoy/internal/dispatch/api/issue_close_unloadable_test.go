@@ -36,8 +36,10 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 	}](t, uploaded).Artifact.ID
 	plainAsk := createSessionAsk(t, f.handler, issue.Key, "Which region?")
 
-	if corrupted := makeDocumentUnloadable(t, f, notes); corrupted != 1 {
-		t.Fatalf("the notes hold %d stored updates, want the upload's one", corrupted)
+	// The notes are a fragment of the issue's room, so the history that does not load is the
+	// room's: every stored update of it, the upload's among them.
+	if corrupted := makeDocumentUnloadable(t, f, notes); corrupted < 1 {
+		t.Fatalf("the notes' room holds %d stored updates, want the upload's among them", corrupted)
 	}
 
 	closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
@@ -93,7 +95,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	awaitIndexedAskBlock(t, f.handler, notes, "rebuilt-decision", "Ship it?")
 	blockAsk := requireBlockAsk(t, f.handler, issue.Key, notes, "rebuilt-decision")
 	open := `#rebuilt-decision urgency="med" multiple="false" state="open"`
-	awaitDocumentText(t, f.handler, notes, "the open decision in the latest version", contains(open), nil)
+	awaitVersionText(t, f.handler, notes, "the open decision in the latest version", contains(open))
 	awaitSettled(t, f.database, notes)
 
 	makeDocumentUnloadable(t, f, notes)
@@ -114,7 +116,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	if strings.Contains(live, open) {
 		t.Fatalf("the rebuilt notes' live tree:\n%s\nshows the withdrawn ask block open on a closed issue", live)
 	}
-	requireLiveText(t, f.handler, notes, `#rebuilt-decision urgency="med" multiple="false" state="resolved"`)
+	requireLiveText(t, f.handler, notes, `#rebuilt-decision state="resolved"`)
 	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
@@ -124,7 +126,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 		t.Fatalf("ask %s after the reopen = %s %#v, want open with no record", blockAsk, got.State, got.Resolution)
 	}
 	requireLiveTree(t, f.documents, notes, open)
-	requireLiveText(t, f.handler, notes, open)
+	requireLiveText(t, f.handler, notes, `#rebuilt-decision state="open"`)
 }
 
 // Rebuilding a closed issue's document writes the close's final sweep into the rebuilt document as
@@ -137,8 +139,8 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 // (docs' answeredCopyWrite); the settlement the rebuild leaves owed writes them, in step with the
 // row. On a fleet of one build every reader reads them from the store, and the rebuilt document
 // holds none of the seven attributes a version can store, live or in the version its settlement
-// writes (dispatch://INFRA-1150 R3), while the text an agent reads still renders both blocks'
-// states from the store.
+// writes, while the asks member of the text an agent reads still holds
+// both blocks' states from the store.
 func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesOnlyWhileAnotherBuildServes(t *testing.T) {
 	for _, twoBuilds := range []bool{false, true} {
 		name := "a fleet of one build"
@@ -196,8 +198,8 @@ func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesOnlyWhileAnotherBu
 				requireAskAttributesInStep(t, liveTree(t, f.documents, notes), "close-decision", sourceRow, "dispatch://"+issue.Key+"/spec", true)
 			}
 			requireLiveText(t, f.handler, notes,
-				`#rebuilt-decision urgency="med" multiple="false" state="resolved"`,
-				`#close-decision urgency="med" multiple="false" state="answered" answered_by="alice"`,
+				`#rebuilt-decision state="resolved"`,
+				`#close-decision state="answered" answered_by="alice"`,
 			)
 		})
 	}
@@ -250,24 +252,26 @@ func requireAskAttributesInStep(t *testing.T, markdown, blockID string, ask mode
 	}
 }
 
-// makeDocumentUnloadable replaces every stored update of document with bytes that do not decode,
-// with no room holding the document and no settlement owed that the close's own settlement would
-// load it for, and returns how many stored updates it replaced, so a test can check it corrupted
-// the history it expects.
+// makeDocumentUnloadable replaces every stored update of the room document is edited in
+// (documentRoomOf: its issue room, or the document itself) with bytes that do not decode, with no
+// room holding the document and no settlement owed that the close's own settlement would load it
+// for, and returns how many stored updates it replaced, so a test can check it corrupted the
+// history it expects.
 func makeDocumentUnloadable(t *testing.T, f repairFixture, document string) int64 {
 	t.Helper()
 	ctx := context.Background()
-	if err := f.documents.Evict(ctx, document); err != nil {
-		t.Fatalf("evict the notes: %v", err)
+	room, _ := documentRoomOf(t, f.database.Pool, document)
+	if err := f.documents.Evict(ctx, room); err != nil {
+		t.Fatalf("evict the notes' room: %v", err)
 	}
-	if _, err := f.database.Pool.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, document); err != nil {
+	if _, err := f.database.Pool.Exec(ctx, `delete from doc_settlements_pending where artifact_id = any($1::uuid[])`, []string{document, room}); err != nil {
 		t.Fatalf("clear the notes' owed settlement: %v", err)
 	}
-	corrupted, err := f.database.Pool.Exec(ctx, `update doc_updates set update = '\xff'::bytea where artifact_id = $1`, document)
+	corrupted, err := f.database.Pool.Exec(ctx, `update doc_updates set update = '\xff'::bytea where artifact_id = $1`, room)
 	if err != nil {
 		t.Fatalf("corrupt the notes' history: %v", err)
 	}
-	if _, err := docs.NewPgVersioned(f.database).LoadDocument(ctx, document); !errors.Is(err, docs.ErrDocumentUnloadable) {
+	if _, err := docs.NewPgVersioned(f.database).LoadDocument(ctx, room); !errors.Is(err, docs.ErrDocumentUnloadable) {
 		t.Fatalf("load the corrupted notes: %v, want ErrDocumentUnloadable", err)
 	}
 	return corrupted.RowsAffected()

@@ -10,14 +10,21 @@
 # backlinks, the requirement's constraint and its reference, the constraint nobody points at, and
 # GET /api/v1/schema/blocks for the pointers no block type declares. It is refused a risk under an
 # inversion and a constrained_by tuple at a paragraph, reading no tuple stored after either; adds a
-# second prevented_by tuple, retargets the first, and last removes the third check's block in a new
+# second prevented_by tuple, retargets the first, and removes the third check's block in a new
 # version of its document, after which the index pass has marked the block gone, retracted the
-# prevented_by tuple that pointed at it, and the risk answers the second check alone.
+# prevented_by tuple that pointed at it, and the risk answers the second check alone. Last, through
+# the pointer route, it points the second risk at the check of a second issue of the project,
+# retargets it at the check of a third and retracts it, reading the risk's tuples and each check's
+# backlinks after each step; and a prevented_by tuple at the check of an issue of another project,
+# which the run creates, is refused 400 INVALID_POINTER naming that check - a retarget and an
+# append through the pointer route, and a risk the risk route writes - with nothing stored at
+# either end.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed) and PROJECT (an existing project key). Every write is the agent bearer's,
-# acting for a session of this run's own; it closes the issue it wrote when the run ends, also when
-# a check fails. Each unmet input is exit 2.
+# acting for a session of this run's own; it closes the issues it wrote when the run ends, also
+# when a check fails. The other project it creates takes PROJECT's default assignee as its own, and
+# stays on the server, since no route removes a project. Each unmet input is exit 2.
 #
 # The first line is `PASS: premortem-risks.sh the catalogue holds its ten kinds`, read before any
 # lens is written. Each passing check prints `PASS: <section> <what>`; the first failing one prints
@@ -62,9 +69,13 @@ work_dir
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
 key=""
+keys=()
 cleanup() {
   local code=$?
-  [[ -z "$key" ]] || close_issue "$key"
+  local other
+  for other in "${keys[@]}"; do
+    close_issue "$other"
+  done
   rm -rf "$work"
   exit "$code"
 }
@@ -107,6 +118,50 @@ write_risk() {
      + (if $c == "" then {} else {prevented_by: $c} end)')"
 }
 
+# ends SECTION WHEN HELD CHECK…: both ends of the second risk's prevented_by tuples, read after
+# WHEN. Out of the risk, the tuples reach HELD alone, or nothing where HELD is empty; into each
+# CHECK, its backlinks hold the risk where that CHECK is HELD, and no risk where it is not.
+ends() {
+  local section="$1" when="$2" held="$3" check want
+  shift 3
+  references "$section" "read the second risk's prevented_by tuples $when" from "$risk2" prevented_by
+  want="$(jq -cn --arg h "$held" 'if $h == "" then [] else [$h] end')"
+  expect "$section" "$when the second risk is prevented by ${held:-nothing}" "$want" '[.edges[] | .node.ref]'
+  for check in "$@"; do
+    references "$section" "read the backlinks of $check $when" to "$check"
+    if [[ "$check" == "$held" ]]; then
+      want="[[\"prevented_by\",\"$risk2\"]]"
+    else
+      want='[]'
+    fi
+    expect "$section" "$when the backlinks of $check hold $([[ "$want" == '[]' ]] && printf 'no risk' || printf 'the second risk')" \
+      "$want" '[.edges[] | select(.node.kind == "risk") | [.kind, .node.ref]]'
+  done
+}
+
+# refused_far SECTION WHAT WHEN HELD: the pointer write just sent, WHAT, which asked for a
+# prevented_by tuple from the second risk at the check of another project, stored nothing - a
+# tuple the store holds there is printed first - and left both ends as they were, read after WHEN:
+# the risk prevented by HELD alone, or by nothing where HELD is empty, and no risk in the
+# backlinks of any other check. It was refused 400 INVALID_POINTER, naming that check.
+refused_far() {
+  local section="$1" what="$2" when="$3" held="$4" refused_status="$status" stored
+  cp "$work/body" "$work/refusal.json"
+  references "$section" "read the second risk's prevented_by tuples after $what" from "$risk2" prevented_by
+  stored="$(jq -c --arg c "$far_check" --arg r "$risk2" \
+    '[.edges[] | select(.node.ref == $c) | {kind, from: $r, to: .node.ref, block_id: .node.block_id, created_at}]' \
+    "$work/body")" || fail "$section" "read the second risk's prevented_by tuples after $what" "unreadable: $(body)"
+  [[ "$stored" == "[]" ]] ||
+    fail "$section" "$what is refused" \
+      "the tuple at $far_check, a check of $other_project, was stored: $stored (HTTP $refused_status: $(<"$work/refusal.json"))"
+  ends "$section" "$when" "$held" "$second_check" "$third_check" "$far_check"
+  cp "$work/refusal.json" "$work/body"
+  status="$refused_status"
+  want_status 400 "$section" "$what is refused"
+  expect "$section" "the refusal is INVALID_POINTER, naming the check $far_check" \
+    '{"code":"INVALID_POINTER","names_the_check":true}' --arg c "$far_check" '{code, names_the_check: (.error | contains($c))}'
+}
+
 # --- the catalogue ------------------------------------------------------------------------------
 
 seeded_catalogue
@@ -126,6 +181,7 @@ send POST /api/v1/issues "$(jq -cn --arg p "$project" --rawfile s "$work/spec.md
   '{project: $p, title: "Pre-mortem risks check", spec: $s, force: true, actor: $a}')"
 want_status 201 setup "create the issue"
 key="$(jq -er '.key' "$work/body")" || fail setup "create the issue" "no key: $(body)"
+keys+=("$key")
 readonly spec="dispatch://$key/spec"
 readonly requirement="$spec#b-r1"
 pass setup "created $key in $project, whose spec holds the requirement $requirement"
@@ -196,7 +252,7 @@ expect P1 "the first risk's write answers its lens and its check" \
 write_risk P1 "A zone dropped on the way to the store" "$lens"
 want_status 201 P1 "write the second risk, prevented by no check"
 risk2="$(jq -er '.address' "$work/body")" || fail P1 "write the second risk" "no address: $(body)"
-readonly risk2
+readonly risk2 risk2_id="${risk2#dispatch://risk/}"
 expect P1 "the second risk's write answers its lens and no check" \
   "$(jq -cn --arg l "$lens" '{lens: $l, prevented_by: []}')" '{lens, prevented_by}'
 
@@ -420,5 +476,68 @@ expect P7 "the restored third check holds no prevented_by tuple: the index pass 
   '[.edges[] | select(.kind == "prevented_by") | .node.ref]'
 references P7 "read the first risk's prevented_by tuples after the restore" from "$risk1" prevented_by
 expect P7 "the first risk still answers the second check alone" "[\"$check2\"]" '[.edges[] | .node.ref]'
+
+# --- P8: the checks of other issues of the project, and the check of another project -----------
+
+checked_issue P8 "$project" "Pre-mortem risks check: a second issue of $project"
+readonly second_check="$checked_check"
+checked_issue P8 "$project" "Pre-mortem risks check: a third issue of $project"
+readonly third_check="$checked_check"
+[[ -n "$checked_assignee" ]] ||
+  fail P8 "read the default assignee of $project" "the issue $checked_key went to nobody: $(body)"
+another_project P8 "$checked_assignee"
+checked_issue P8 "$other_project" "Pre-mortem risks check: an issue of another project than $project"
+readonly far_check="$checked_check"
+ends P8 "before any write" "" "$second_check" "$third_check" "$far_check"
+
+pointer "risk/$risk2_id" "$(jq -cn --arg t "$second_check" '{kind: "prevented_by", action: "append", to: $t}')"
+want_status 200 P8 "append a prevented_by tuple from the second risk to $second_check, a check of another issue of $project"
+expect P8 "the pointer route answers the second risk's prevented_by tuple to $second_check" \
+  "$(jq -cn --arg n "$risk2" --arg t "$second_check" '{action: "append", node: $n, to: $t}')" \
+  '{action, node: .node.address, to: .to.address}'
+ends P8 "after the append" "$second_check" "$second_check" "$third_check" "$far_check"
+
+pointer "risk/$risk2_id" "$(jq -cn --arg f "$second_check" --arg t "$third_check" \
+  '{kind: "prevented_by", action: "retarget", from: $f, to: $t}')"
+want_status 200 P8 "retarget the second risk's prevented_by tuple from $second_check to $third_check, a check of a third issue"
+expect P8 "the retarget answers the move from the second issue's check to the third's" \
+  "$(jq -cn --arg f "$second_check" --arg t "$third_check" '{action: "retarget", from: $f, to: $t}')" \
+  '{action, from: .from.address, to: .to.address}'
+ends P8 "after the retarget" "$third_check" "$second_check" "$third_check" "$far_check"
+
+pointer "risk/$risk2_id" "$(jq -cn --arg f "$third_check" --arg t "$far_check" \
+  '{kind: "prevented_by", action: "retarget", from: $f, to: $t}')"
+refused_far P8 "a retarget of the second risk's prevented_by tuple to $far_check, a check of $other_project," \
+  "after the refused retarget" "$third_check"
+
+pointer "risk/$risk2_id" "$(jq -cn --arg t "$third_check" '{kind: "prevented_by", action: "retract", to: $t}')"
+want_status 200 P8 "retract the second risk's prevented_by tuple to $third_check"
+ends P8 "after the retract" "" "$second_check" "$third_check" "$far_check"
+
+pointer "risk/$risk2_id" "$(jq -cn --arg t "$far_check" '{kind: "prevented_by", action: "append", to: $t}')"
+refused_far P8 "an append of a prevented_by tuple from the second risk to $far_check, a check of $other_project," \
+  "after the refused append" ""
+
+write_risk P8 "A risk prevented by a check of another project" "$lens" "$far_check"
+cp "$work/body" "$work/refusal.json"
+refused_status="$status"
+references P8 "read the lens's backlinks after the write of a risk prevented by $far_check" to "$lens"
+stored="$(jq -c --arg a "$risk1" --arg b "$risk2" \
+  '[.edges[] | select(.kind == "part_of" and .node.kind == "risk") | .node.ref] - [$a, $b]' "$work/body")" ||
+  fail P8 "read the lens's backlinks" "unreadable: $(body)"
+[[ "$stored" == "[]" ]] ||
+  fail P8 "a risk prevented by $far_check, a check of $other_project, is refused" \
+    "the risk $stored was stored under $lens (HTTP $refused_status: $(<"$work/refusal.json"))"
+expect P8 "after the refusal the lens's backlinks hold its two risks alone" \
+  "$(jq -cn --arg a "$risk1" --arg b "$risk2" '[$a, $b] | sort')" \
+  '[.edges[] | select(.kind == "part_of" and .node.kind == "risk") | .node.ref] | sort'
+references P8 "read the backlinks of $far_check after the write of a risk prevented by it" to "$far_check"
+expect P8 "after the refusal the backlinks of $far_check hold no risk" '[]' \
+  '[.edges[] | select(.node.kind == "risk") | [.kind, .node.ref]]'
+cp "$work/refusal.json" "$work/body"
+status="$refused_status"
+want_status 400 P8 "a risk prevented by $far_check, a check of $other_project, is refused"
+expect P8 "the refusal is INVALID_POINTER, naming the check $far_check" \
+  '{"code":"INVALID_POINTER","names_the_check":true}' --arg c "$far_check" '{code, names_the_check: (.error | contains($c))}'
 
 pass "$driver" complete
