@@ -1339,11 +1339,11 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 	return nil
 }
 
-// addPrimaryDocumentAuthors delivers a person's comment, or its edit, on an issue with no route and
-// no session claimant (takesPrimaryAuthors) to every session the issue's primary document credits,
-// each on its own topic: a session that writes an issue's spec without a claim still hears the
-// comments on it. The comment's own thread does not matter: a comment in an ask's thread, or a
-// reply, reaches those sessions too. The batch reads them
+// addPrimaryDocumentAuthors delivers a person's comment, its edit or its delete, on an issue
+// with no route and no session claimant (takesPrimaryAuthors) to every session the issue's
+// primary document credits, each on its own topic: a session that writes an issue's spec
+// without a claim still hears the comments on it. The comment's own thread does not matter: a
+// comment in an ask's thread, or a reply, reaches those sessions too. The batch reads them
 // for all such events in one query (loadLookups, loadPrimaryDocumentAuthors); when that query
 // failed, its error ends the event's destinations here. The actor is skipped (recipientFilter),
 // and a session whose own mention of the comment delivers it is left to that mention
@@ -1371,18 +1371,20 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // document, directly to the involved sessions' own topics, regardless of the issue's route (which
 // may point at an entirely different reviewer) and regardless of whether the event's owner is an
 // issue or a project document (which has no route at all). Without this, the sessions in a thread
-// never learn of the human's reply, resolution, reopening, or edit, and the agent that wrote a
-// document never learns of a new comment on it or of a person's edit to it.
+// never learn of the human's reply, resolution, reopening, edit or delete, and the agent that
+// wrote a document never learns of a new comment on it or of a person's edit to it.
 //
-// A reply (reply_to set), and its edit, reach every session that wrote a comment in the thread,
-// its root and each reply, and, where the claim below does not leave them out, every session the
-// thread's document credits, which the batch reads for all its replies in one query (loadLookups,
-// loadCommentRecipients); when that query failed, its error ends the event's destinations here. A
-// new comment on a document (no reply_to and no ask_id), and its edit, reach every session that
-// document credits under that same claim (loadDocumentSessionAuthors, whose failed query ends the
-// event's destinations here too); a new comment on an issue's conversation names no document and
-// reaches no author. A resolution or a reopening reaches the thread root's author only, so the
-// reopening a reply makes tells no new session twice.
+// A reply (reply_to set), its edit and its delete reach every session that wrote a comment in
+// the thread, its root and each reply, and, where the claim below does not leave them out, every
+// session the thread's document credits, which the batch reads for all its replies in one query
+// (loadLookups, loadCommentRecipients); when that query failed, its error ends the event's
+// destinations here. A new comment on a document (no reply_to and no ask_id), its edit and its
+// delete reach every session that document credits under that same claim
+// (loadDocumentSessionAuthors, whose failed query ends the event's destinations here too); a new
+// comment on an issue's conversation names no document and reaches no author. A message reply
+// (in_reply_to set), its edit and its delete reach the session that wrote the message it
+// answers. A resolution or a reopening reaches the thread root's author only, so the reopening a
+// reply makes tells no new session twice.
 // artifact.human_edited, which the notice sweep appends once a person's quiet window on a document
 // ends (docs.sendEditNotice), reaches every session the document its payload's artifact_id names
 // credits, read the same way. Ask threads are not walked here: their asker and repliers are the
@@ -1391,7 +1393,7 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // (destinations.addSession, the mention rule); an author whose mention failed is added instead.
 //
 // A session the read names as a credit of a document alone is left out where a person's comment,
-// or its edit, is on an issue a session claims: the credits of a document are
+// its edit or its delete is on an issue a session claims: the credits of a document are
 // not a second reason to deliver what the claimant already hears on its own topic. The conditions
 // are exactly those under which that claimant was added: both read the one predicate
 // (takesClaimantRoute, where the rule is stated) - the event names an issue, its actor is a

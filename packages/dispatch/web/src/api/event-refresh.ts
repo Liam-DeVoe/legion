@@ -406,8 +406,9 @@ function appendAnswersPage(targets: RefreshTarget[], event: DispatchEvent): void
 
 // An ask or comment that is written, re-anchored or edited in a document is an `anchored_to` edge
 // into it, and one a project document owns an `owned_by` edge: that document's backlink panel
-// lists both, each row showing the head of the item's text, which an edit moves. A resolution, a
-// reopen, an answer, a hand-back or a suggestion's verdict moves neither the edge nor its text.
+// lists both, each row showing the head of the item's text, which an edit moves and a comment's
+// delete clears. A resolution, a reopen, an answer, a hand-back or a suggestion's verdict moves
+// neither the edge nor its text.
 function appendDocumentPanel(targets: RefreshTarget[], event: DispatchEvent): void {
   if (
     event.type !== "ask.opened" &&
