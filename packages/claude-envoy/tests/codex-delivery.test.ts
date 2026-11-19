@@ -341,9 +341,10 @@ describe("createCodexDelivery", () => {
     const directory = inbox()
     const { delivery } = harness(directory, true)
     delivery.turnStarted()
-    // The turn's sweep refuses the write while the write has not returned, and the return is held
-    // past one turn of the event loop, as a slow filesystem answer holds it: the refusal comes
-    // before the write waits on its own outcome, and must still be handled, or Bun fails the run.
+    // The turn's sweep refuses the write before the write has returned, and the return is held past
+    // one turn of the event loop. The write then has not yet waited on its own outcome when the
+    // refusal comes, and the handler it put on that outcome first is what keeps Bun from failing
+    // the run with the refusal as an unhandled error.
     const ran = duringPut(true, async () => {
       await delivery.turnEnded()
       await settled()
