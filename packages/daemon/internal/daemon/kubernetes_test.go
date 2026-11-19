@@ -746,9 +746,9 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 			want: "provider_keys names FOO from the providers Secret's key NATS_NKEY_SEED, which the pod mounts as the launch secret NATS_NKEY_SEED: the shim would export that secret into Oh My Pi's environment as FOO",
 		},
 		{
-			// Under dispatch_token_broker each role trades its pod's identity for its own Dispatch
-			// token, so the boot names a shared one among the provider keys, and every role's shim
-			// does not have to refuse it at each start.
+			// The boot refuses this key with or without dispatch_token_broker, since the runtime
+			// owns its pointer, DISPATCH_TOKEN_FILE. Under the setting it gives the broker's own
+			// reason: each role trades its pod's identity for its own Dispatch token.
 			name: "a provider key for the Dispatch token under dispatch_token_broker",
 			change: func(cfg *config.Config) {
 				cfg.DispatchTokenBroker = true

@@ -118,9 +118,9 @@ func (sweep *podUpdateSweep) charge(issue string) {
 // (recordPodUpdateSweep).
 //
 // An entry for this issue always names this round, when there is one: an entry whose pod no
-// claim records a process in is dropped before the walk (podUpdateOpenings), and the walk passes
-// over an issue whose claims run in two pods. So false here means no opening of this daemon's
-// own is in flight for the issue.
+// claim records a process in, nor waits on for its launch (podProcess), is dropped before the
+// walk (podUpdateOpenings), and the walk passes over an issue whose claims run in two pods. So
+// false here means no opening of this daemon's own is in flight for the issue.
 func (sweep *podUpdateSweep) reposts(issue, round string) bool {
 	if sweep.inFlight[issue] != round {
 		return false

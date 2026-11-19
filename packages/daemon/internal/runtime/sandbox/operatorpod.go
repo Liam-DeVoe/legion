@@ -196,11 +196,13 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 // volume and mount path Legion's, and refused; a deployment that names no exchange audience keeps
 // them the operator's, as before the key existed. Only under ExchangeAndBroker, where it sets
 // dispatch_token_broker, is DISPATCH_TOKEN_BROKER (brokerOwned) Legion's and refused in the same
-// way; there a provider key may not be DISPATCH_TOKEN or DISPATCH_TOKEN_FILE either, since each
-// role trades its pod's identity for its own Dispatch token and the providers Secret may hold no
-// shared one. The shim refuses those two keys at each start as well (shim.ReadProviderEnv), as
-// the last check; this refusal names the key before any pod starts. configure runs it, and the
-// daemon before its boot and for `legion config check`.
+// way. CheckPod refuses a provider key DISPATCH_TOKEN or DISPATCH_TOKEN_FILE whatever the
+// exchange, since the runtime owns DISPATCH_TOKEN_FILE, the token's pointer. Under
+// ExchangeAndBroker it gives the broker's own reason for the two keys: each role trades its pod's
+// identity for its own Dispatch token, so the providers Secret may hold no shared one. The shim
+// refuses the two keys at each start under DISPATCH_TOKEN_BROKER=1 as well
+// (shim.ReadProviderEnv), as the last check. configure runs it, and the daemon before its boot
+// and for `legion config check`.
 func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store, exchange PodExchange) error {
 	sessionDSNKey := store.DSNSecretKey()
 	if slices.Contains(providersSecrets, sessionDSNKey) {
