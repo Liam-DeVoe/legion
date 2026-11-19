@@ -676,6 +676,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
+              - 'packages/envoy/listenerwire/*'
               # testnats's Gate reserves its port with internal/testport.
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/listenfd/*'
@@ -792,6 +793,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
@@ -893,6 +895,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
@@ -946,6 +949,7 @@ jobs:
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/verify/*'
               - 'packages/envoy/internal/webhook/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/roleholder/*'
               # internal/bus refuses a nats-server below the floor this package holds.
@@ -1313,6 +1317,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/block-pointer-values.json'
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json'
               - 'packages/envoy/internal/contracts/generated.go'
+              - 'packages/envoy/listenerwire/envelope_generated.go'
               - 'packages/envoy/internal/dispatch/pmdoc/schema_generated.go'
               # src/*.test.ts import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
@@ -1819,6 +1824,7 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
@@ -2123,6 +2129,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
@@ -2160,6 +2167,7 @@ jobs:
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/verify/*'
               - 'packages/envoy/internal/webhook/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/natsversion/*'
@@ -2226,6 +2234,7 @@ jobs:
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/testsocks5/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
@@ -2424,6 +2433,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -2786,6 +2796,7 @@ jobs:
               - '!packages/envoy/cmd/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
@@ -2911,6 +2922,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
@@ -2948,6 +2960,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
@@ -3044,6 +3057,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/outbox_load_steps_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
@@ -3144,6 +3158,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/outbox_load_steps_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
@@ -3259,6 +3274,7 @@ jobs:
               - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
@@ -3597,6 +3613,12 @@ jobs:
               - *bun_install
               - *go_workspace
               - 'packages/envoy/**'
+              # listenerwire/clients_test.go holds the daemon's listener clients to listenerwire,
+              # type-checking them over `go list -deps -export` in packages/daemon (their RULES
+              # entry in .github/scripts/ci_job_reads.py), so a change to one starts this job.
+              - 'packages/daemon/internal/claim/*'
+              - 'packages/daemon/internal/controller/*'
+              - 'packages/daemon/internal/notify/*'
               # `bun run check:go` (packages/contracts/scripts/gen-go.ts) reads contracts' schemas
               # and sources, and renders pmdoc's generated block schema from
               # schemas/block-schema.schema.json (its outputs list, the files the generator owns).
@@ -3636,6 +3658,10 @@ jobs:
               - '.github/actions/**'
               - '.github/scripts/**'
               - 'scripts/**'
+              # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+              # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/daemon/**/*_test.go'
+              # END generated
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache, kvwatch, natscred
             # and the NATS auth service (`go list -deps -test -race` in packages/envoy), and every
@@ -3801,6 +3827,8 @@ jobs:
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
               - '!packages/envoy/internal/weborigin/**/*_test.go'
+              - '!packages/envoy/internal/wirecheck/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
@@ -3950,6 +3978,7 @@ jobs:
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/natsversion/*'
@@ -4037,6 +4066,7 @@ jobs:
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
@@ -4109,6 +4139,7 @@ jobs:
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/stacktest/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
               # internal/dispatch/docs/approval_carry_test.go:26.
               - 'packages/contracts/fixtures/decision-blocks/**'
@@ -4137,6 +4168,7 @@ jobs:
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               # END generated
             # The daemon's `legion` command, `go list -deps ./cmd/legion` in packages/daemon (its
@@ -4235,6 +4267,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
@@ -4360,6 +4393,7 @@ jobs:
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -4369,6 +4403,7 @@ jobs:
               - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsgrant/**/*_test.go'
@@ -4523,6 +4558,8 @@ jobs:
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
               - '!packages/envoy/internal/weborigin/**/*_test.go'
+              - '!packages/envoy/internal/wirecheck/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
@@ -4585,6 +4622,7 @@ jobs:
               - 'packages/envoy/docs/**'
               - 'packages/envoy/going/**'
               - 'packages/envoy/internal/**'
+              - 'packages/envoy/listenerwire/**'
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/loadtest/**'
               - 'packages/envoy/migrationid/**'
