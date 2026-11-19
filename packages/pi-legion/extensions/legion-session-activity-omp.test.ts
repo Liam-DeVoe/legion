@@ -14,11 +14,13 @@ import {
   cleanupHook,
   deliveryFor,
   messageStream,
+  OMP_STARTUP_MS,
   ompNatsGuard,
   ompRoot,
   type Request,
   serveStandin,
   spawnRpc,
+  startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 
@@ -127,13 +129,14 @@ interface Held {
   reply(blocks: readonly Block[]): void;
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
+/** Polls `probe` until it returns a value, failing on `what` at `deadline` (DEADLINE_MS from now
+ *  unless a caller names one) or when omp exits. */
 async function until<T>(
   what: string,
   probe: () => T | undefined | Promise<T | undefined>,
-  closed: { readonly error?: unknown }
+  closed: { readonly error?: unknown },
+  deadline = Date.now() + DEADLINE_MS
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
   for (;;) {
     if (closed.error !== undefined) throw closed.error;
     const value = await probe();
@@ -256,6 +259,7 @@ async function startRolePane(): Promise<RolePane> {
   await writeStandinProfile(home, base, ["  deep: standin/standin-model"]);
 
   const closed: { error?: unknown } = {};
+  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -293,7 +297,9 @@ async function startRolePane(): Promise<RolePane> {
   await until(
     "the pane's registration with the Envoy listener",
     () => requests.find((request) => request.path === "/v1/interests/subscribe"),
-    closed
+    closed,
+    // The registration ends the pane's startup, the host's own cost (startupDeadline).
+    startupDeadline(spawnedAt, DEADLINE_MS)
   );
 
   const taken = new Set<Held>();
@@ -455,5 +461,5 @@ test.skipIf(skip)(
         `across ${pane.reports.length} reports`
     );
   },
-  300_000
+  OMP_STARTUP_MS + 300_000
 );

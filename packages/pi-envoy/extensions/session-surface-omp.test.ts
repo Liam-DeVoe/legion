@@ -15,6 +15,7 @@ import {
   sendRelayFrame,
   serveStandin,
   spawnRpc,
+  startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCodec } from "nats";
@@ -323,7 +324,7 @@ async function startSession(
       return typeof id === "string" && id !== "" ? id : undefined;
     },
     closed,
-    Math.max(Date.now() + DEADLINE_MS, spawnedAt + OMP_STARTUP_MS)
+    startupDeadline(spawnedAt, DEADLINE_MS)
   );
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());

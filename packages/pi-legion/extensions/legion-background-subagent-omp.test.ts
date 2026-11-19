@@ -10,12 +10,14 @@ import {
   cleanupHook,
   deliveryFor,
   messageStream,
+  OMP_STARTUP_MS,
   ompNatsGuard,
   ompRoot,
   type Request,
   sendRelayFrame,
   serveStandin,
   spawnRpc,
+  startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 
@@ -308,13 +310,14 @@ async function natsRelay(
   };
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
+/** Polls `probe` until it returns a value, failing on `what` at `deadline` (DEADLINE_MS from now
+ *  unless a caller names one) or when omp exits. */
 async function until<T>(
   what: string,
   probe: () => T | undefined,
-  closed: { readonly error?: unknown }
+  closed: { readonly error?: unknown },
+  deadline = Date.now() + DEADLINE_MS
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
   for (;;) {
     if (closed.error !== undefined) throw closed.error;
     const value = probe();
@@ -438,6 +441,7 @@ async function startRolePane(): Promise<RolePane> {
   const frames: object[] = [];
   const agentEnds: Moment[] = [];
   const closed: { error?: unknown } = {};
+  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -486,7 +490,9 @@ async function startRolePane(): Promise<RolePane> {
       const id = subscribe?.body.session_id;
       return typeof id === "string" && id !== "" ? id : undefined;
     },
-    closed
+    closed,
+    // The registration ends the pane's startup, the host's own cost (startupDeadline).
+    startupDeadline(spawnedAt, DEADLINE_MS)
   );
   const relay = await natsRelay(nats, closed);
   // The stand-in stream's sequence: one case is one stream, so its frames are ordered by this.
@@ -622,5 +628,5 @@ test.skipIf(skip)(
         `the job woke the role ${woken.arrived.at - released.at} ms after the release`
     );
   },
-  300_000
+  OMP_STARTUP_MS + 300_000
 );

@@ -11,11 +11,13 @@ import {
   deliveryFor,
   isSelfCheck,
   messageStream,
+  OMP_STARTUP_MS,
   ompNatsGuard,
   ompRoot,
   type Request,
   serveStandin,
   spawnRpc,
+  startupDeadline,
   toolResultsIn,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
@@ -98,13 +100,14 @@ interface Held {
   reply(blocks: readonly Block[]): void;
 }
 
-/** Polls `probe` until it returns a value. Fails on `what` at the deadline or when omp exits. */
+/** Polls `probe` until it returns a value. Fails on `what` at `deadline` (DEADLINE_MS from now
+ *  unless a caller names one) or when omp exits. */
 async function until<T>(
   what: string,
   probe: () => T | undefined,
-  closed: { readonly error?: unknown }
+  closed: { readonly error?: unknown },
+  deadline = Date.now() + DEADLINE_MS
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
   for (;;) {
     // The pane is a real process with no event that the case can await, so the case polls it.
     if (closed.error !== undefined) throw closed.error;
@@ -236,6 +239,7 @@ async function startRolePane(role: Role): Promise<RolePane> {
   await writeStandinProfile(home, base, ["  deep: standin/standin-model"]);
 
   const closed: { error?: unknown } = {};
+  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -282,7 +286,14 @@ async function startRolePane(role: Role): Promise<RolePane> {
     home,
     jj,
     async next(what) {
-      const request = await until(what, () => held[taken], closed);
+      // The first request waited for spans the pane's startup, the host's own cost: a wait gets
+      // until the startup's deadline from the spawn (startupDeadline), and each later one its own.
+      const request = await until(
+        what,
+        () => held[taken],
+        closed,
+        startupDeadline(spawnedAt, DEADLINE_MS)
+      );
       taken += 1;
       return request;
     },
@@ -465,6 +476,6 @@ for (const role of ROLES) {
         )
       ).toEqual([]);
     },
-    120_000
+    OMP_STARTUP_MS + 120_000
   );
 }

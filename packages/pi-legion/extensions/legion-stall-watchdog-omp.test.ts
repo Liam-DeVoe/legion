@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdog";
-import { call, cleanupHook } from "@legion/pi-shared/test/omp-harness";
+import { call, cleanupHook, OMP_STARTUP_MS } from "@legion/pi-shared/test/omp-harness";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   ARCHITECT_TOPIC,
@@ -174,7 +174,7 @@ test.skipIf(skip)(
     expect(await pane.restarts()).toEqual([]);
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  OMP_STARTUP_MS + DEADLINE_MS + 60_000
 );
 
 test.skipIf(skip)(
@@ -241,7 +241,7 @@ test.skipIf(skip)(
     expect(ofKind(records, "stopped")).toEqual([]);
     await expect(readFile(exitsFile(state), "utf8")).rejects.toThrow();
   },
-  DEADLINE_MS + 60_000
+  OMP_STARTUP_MS + DEADLINE_MS + 60_000
 );
 
 test.skipIf(skip)(
@@ -318,7 +318,8 @@ test.skipIf(skip)(
       exits: STALL_EXIT_CAP,
     });
   },
-  3 * DEADLINE_MS
+  // Three launches, each with a startup of its own.
+  3 * (OMP_STARTUP_MS + DEADLINE_MS)
 );
 
 test.skipIf(skip)(
@@ -356,7 +357,7 @@ test.skipIf(skip)(
     await Bun.sleep(2 * STEP_MS);
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  OMP_STARTUP_MS + DEADLINE_MS + 60_000
 );
 
 test.skipIf(skip)(
@@ -404,7 +405,7 @@ test.skipIf(skip)(
     expect(pane.running()).toBe(true);
     await expect(readFile(exitsFile(state), "utf8")).rejects.toThrow();
   },
-  DEADLINE_MS + 60_000
+  OMP_STARTUP_MS + DEADLINE_MS + 60_000
 );
 
 test.skipIf(skip)(
@@ -461,7 +462,7 @@ test.skipIf(skip)(
     ]);
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  OMP_STARTUP_MS + DEADLINE_MS + 60_000
 );
 
 test.skipIf(skip)(
@@ -523,7 +524,7 @@ test.skipIf(skip)(
     expect(ends.map((end) => end.pendingMessages)).toEqual([true, false]);
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  OMP_STARTUP_MS + DEADLINE_MS + 60_000
 );
 
 test.skipIf(skip)(
@@ -600,5 +601,5 @@ test.skipIf(skip)(
     expect(pane.publishes()).toEqual([]);
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  OMP_STARTUP_MS + DEADLINE_MS + 60_000
 );

@@ -24,6 +24,7 @@ import {
   serveStandin,
   spawnInteractive,
   spawnRpc,
+  startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import {
@@ -153,13 +154,6 @@ const WAKE_ONE = "1 Envoy message above arrived with no turn to read it";
 
 /** The TUI's busy row while a turn runs (`⎋ Working…`). */
 const BUSY = "Working…";
-
-/**
- * How long after the spawn a wait may last: Oh My Pi's startup, which loads both extensions before
- * `/legion-controller-start` runs, took about 27 s of wall time (9 s of CPU) in a slow but normal
- * pod, so the waits that span it get this much from the spawn.
- */
-const STARTUP_DEADLINE_MS = 150_000;
 
 /** How long one wait for something the started session owes a case may last once startup is over. */
 const STEP_DEADLINE_MS = 30_000;
@@ -580,9 +574,7 @@ async function startController(
     // until the startup deadline: the first wait of every case spans that startup. A case's own
     // bound replaces both.
     const deadline =
-      withinMs === undefined
-        ? Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS)
-        : Date.now() + withinMs;
+      withinMs === undefined ? startupDeadline(spawnedAt, STEP_DEADLINE_MS) : Date.now() + withinMs;
     for (;;) {
       if (exitCode !== undefined) {
         throw new Error(
@@ -724,7 +716,7 @@ async function startDaemonController(
     probe: () => T | undefined | Promise<T | undefined>
   ): Promise<T> => {
     // As in `startController`: the first wait spans Oh My Pi's startup.
-    const deadline = Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS);
+    const deadline = startupDeadline(spawnedAt, STEP_DEADLINE_MS);
     for (;;) {
       if (closed.error !== undefined) throw closed.error;
       // As in `startController`: a refusal a stand-in callback recorded ends this wait at once.

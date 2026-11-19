@@ -6,12 +6,14 @@ import {
   cleanupEndsGroup,
   cleanupHook,
   deliveryFor,
+  OMP_STARTUP_MS,
   OMP_THREADS_ENV,
   ompNatsGuard,
   ompRoot,
   type Request,
   serveStandin,
   spawnRpc,
+  startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 
@@ -233,14 +235,14 @@ function layoutPanes(layout: string): string[] {
   return [...layout.matchAll(/\d+x\d+,\d+,\d+,(\d+)/g)].map(([, id]) => `%${id}`);
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline with what `diagnose`
- *  has to say about the session that owed it. */
+/** Polls `probe` until it returns a value, failing on `what` at `deadline` (DEADLINE_MS from now
+ *  unless a caller names one) with what `diagnose` has to say about the session that owed it. */
 async function until<T>(
   what: string,
   probe: () => T | undefined,
-  diagnose: () => Promise<string>
+  diagnose: () => Promise<string>,
+  deadline = Date.now() + DEADLINE_MS
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
   for (;;) {
     const value = probe();
     if (value !== undefined) return value;
@@ -284,6 +286,7 @@ test.skipIf(skip)(
       // `-P` prints the new pane's pid. Its command `exec`s the binary, which tmux started as the
       // leader of a process group of its own, so the hook ends that group as it ends a spawned
       // omp's: `kill-server` below closes the pane, and a process of the group can outlive that.
+      const spawnedAt = Date.now();
       const panePid = await run([
         "split-window",
         "-d",
@@ -309,7 +312,9 @@ test.skipIf(skip)(
       const first = await until(
         "a registration carrying the session's place",
         () => registrations(requests).find((body) => body.tmux_place !== undefined),
-        said
+        said,
+        // The first registration ends the pane's startup, the host's own cost (startupDeadline).
+        startupDeadline(spawnedAt, DEADLINE_MS)
       );
       // What tmux told the pane, as the pane itself saw it: `TMUX` is
       // `<socket>,<server pid>,<session>`, and a socket path may hold a comma of its own.
@@ -366,7 +371,7 @@ test.skipIf(skip)(
       await tmuxCommand(tmux, socket, ["kill-server"], environment).catch(() => undefined);
     }
   },
-  180_000
+  OMP_STARTUP_MS + 180_000
 );
 
 // The same binary, started the way every other case of this package starts it: no pane, no `TMUX`,
@@ -381,6 +386,7 @@ test.skipIf(skip)(
     const { requests, base } = await standin(home, workspace);
 
     const closed: { error?: unknown } = {};
+    const spawnedAt = Date.now();
     const rpc = spawnRpc(
       binary,
       {
@@ -400,10 +406,12 @@ test.skipIf(skip)(
     const first = await until(
       "the session's first registration with the listener",
       () => registrations(requests)[0],
-      async () => String(closed.error ?? "omp is still running")
+      async () => String(closed.error ?? "omp is still running"),
+      // The first registration ends the session's startup (startupDeadline).
+      startupDeadline(spawnedAt, DEADLINE_MS)
     );
     expect("tmux_place" in first).toBe(false);
     await rpc.end();
   },
-  180_000
+  OMP_STARTUP_MS + 180_000
 );

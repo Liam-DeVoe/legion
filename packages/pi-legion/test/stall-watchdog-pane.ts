@@ -17,6 +17,7 @@ import {
   type Request,
   serveStandin,
   spawnRpc,
+  startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { writtenLines } from "@legion/test-fixtures/transcript-lines";
@@ -475,6 +476,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
   await mkdir(temporary, { recursive: true });
 
   const frames: Record<string, unknown>[] = [];
+  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -555,7 +557,9 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     running: () => running,
     settled: () => awaitSettled(sessions, SETTLED_MS),
     async until(what, probe) {
-      const deadline = Date.now() + DEADLINE_MS;
+      // A wait that may span the pane's startup, the host's own cost, gets until the startup's
+      // deadline from the spawn (startupDeadline); every later wait is its own DEADLINE_MS.
+      const deadline = startupDeadline(spawnedAt, DEADLINE_MS);
       for (;;) {
         const value = await probe();
         if (value !== undefined) return value;

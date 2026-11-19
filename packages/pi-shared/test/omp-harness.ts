@@ -126,10 +126,21 @@ export async function ompRoot(
  * registration with the listener: the host's own cost, which grows with the machine's load and is
  * no step of any case. Measured on a 288-CPU box: 3.5 to 4.1 s at a 1-minute load of 450 to 600,
  * 2.5 to 2.9 s of it loading the extensions; in a run beside a heavier load the same startup was
- * still loading them at 53 s and still creating the session at 74 s. A wait that spans a startup
- * gets this from the spawn, and a case that starts an omp is given this beyond its own steps.
+ * still loading them at 53 s and still creating the session at 74 s. The wait that ends a startup
+ * takes its deadline from `startupDeadline`, and a case that starts an omp is given this beyond its
+ * own steps.
  */
 export const OMP_STARTUP_MS = 150_000;
+
+/**
+ * The deadline of the wait that ends an omp's startup, the Envoy entry's registration with the
+ * listener: OMP_STARTUP_MS from the spawn, or `stepMs` from now when that is later. Every omp file
+ * takes the wait that spans a startup from here, so no step's own bound pays for the startup, and
+ * a startup past OMP_STARTUP_MS still fails, naming what it waited for.
+ */
+export function startupDeadline(spawnedAt: number, stepMs: number): number {
+  return Math.max(Date.now() + stepMs, spawnedAt + OMP_STARTUP_MS);
+}
 
 /**
  * How long an omp the harness started, with every process of its group, gets to be gone once it
@@ -1363,8 +1374,9 @@ export async function runLegionPane(
     // after it, so each wait below is the run's alone and a startup that never ends fails naming
     // itself, not at the case's own timeout. A polled wait: a request reaching the stand-in sends
     // no event a case can await.
+    const deadline = startupDeadline(spawnedAt, 0);
     while (registered() === registeredBefore) {
-      if (Date.now() - spawnedAt > OMP_STARTUP_MS) {
+      if (Date.now() > deadline) {
         throw new Error(
           `the pane's omp did not register with the Envoy listener within ${OMP_STARTUP_MS} ms of its spawn`
         );

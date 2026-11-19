@@ -15,6 +15,7 @@ import {
   sendRelayFrame,
   serveStandin,
   spawnRpc,
+  startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { connect, headers, StringCodec } from "nats";
@@ -66,13 +67,6 @@ const CLAIM_TOKEN = "legion-claim-boot-order-infra-1573-implementer";
 /** The daemon's assignment, written to the worker as one RPC `prompt`, as the shim writes it
  * (packages/daemon/internal/shimwire `Prompt`). */
 const TASK = "Legion task: implement INFRA-1573 and report.";
-
-/**
- * How long after the spawn a wait may last: Oh My Pi's startup, which loads both extensions
- * before it reads any RPC command, took about 27 s of wall time in a slow but normal pod, so the
- * waits that span it get this much from the spawn.
- */
-const STARTUP_DEADLINE_MS = 150_000;
 
 /** How long one wait for something the started session owes a case may last once startup is over. */
 const STEP_DEADLINE_MS = 30_000;
@@ -327,7 +321,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     probe: () => T | undefined | Promise<T | undefined>
   ): Promise<T> => {
     // The first wait spans Oh My Pi's startup, which no case can shorten.
-    const deadline = Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS);
+    const deadline = startupDeadline(spawnedAt, STEP_DEADLINE_MS);
     for (;;) {
       if (closed.error !== undefined) throw closed.error;
       const value = await probe();

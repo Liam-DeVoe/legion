@@ -11,12 +11,14 @@ import {
   deliveryFor,
   isSummarization,
   messageStream,
+  OMP_STARTUP_MS,
   ompNatsGuard,
   ompRoot,
   type Request,
   sendRelayFrame,
   serveStandin,
   spawnRpc,
+  startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
@@ -185,13 +187,14 @@ interface CardSession {
   releaseSetup(): void;
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
+/** Polls `probe` until it returns a value, failing on `what` at `deadline` (DEADLINE_MS from now
+ *  unless a caller names one) or when omp exits. */
 async function until<T>(
   what: string,
   probe: () => T | undefined | Promise<T | undefined>,
-  closed: { readonly error?: unknown }
+  closed: { readonly error?: unknown },
+  deadline = Date.now() + DEADLINE_MS
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
   for (;;) {
     if (closed.error !== undefined) throw closed.error;
     const value = await probe();
@@ -319,6 +322,7 @@ async function startSession(
   const frames: object[] = [];
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
+  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -359,7 +363,9 @@ async function startSession(
       const id = subscribe?.body.session_id;
       return typeof id === "string" && id !== "" ? id : undefined;
     },
-    closed
+    closed,
+    // The registration ends the session's startup, the host's own cost (startupDeadline).
+    startupDeadline(spawnedAt, DEADLINE_MS)
   );
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
@@ -600,7 +606,7 @@ test.skipIf(skip)(
     const request = await probe(session, next.index + 1);
     expect(conversation(request)).not.toMatch(WAKE_TEXT);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 /** How an interrupt case holds the run when it interrupts it. */
@@ -688,7 +694,7 @@ test.skipIf(skip)(
     expect(conversation(request)).toContain(card);
     expect(conversation(request)).not.toMatch(WAKE_TEXT);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 // An aside that reaches the host after the run's last step (here: during the run's automatic
@@ -754,7 +760,7 @@ test.skipIf(skip)(
     expect(agentEndsSince(framesAtWake).some((frame) => !continuing(frame))).toBe(true);
     expect(session.turns.length).toBe(woken.index + 1);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 // Plan mode is the host's other fold with no turn, and no case here reaches it: the pinned build's
@@ -811,7 +817,7 @@ test.skipIf(skip)(
     expect(handOver(first)).toBe("startup");
     expect(handOver(card)).toBe("idle");
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 // The third hand-over an Envoy card can be given (extensions/envoy.ts, `handCard`): the inert
@@ -843,7 +849,7 @@ test.skipIf(skip)(
     expect(written).toHaveLength(1);
     expect(CardEntrySchema.parse(JSON.parse(written[0] as string)).details.handOver).toBe("inert");
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 // Several cards that reach an idle session together. pi-envoy reads `isIdle` when it hands each
@@ -891,7 +897,7 @@ test.skipIf(skip)(
       expect(entries.filter((entry) => entry.includes(card))).toHaveLength(1);
     }
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 // A card that reaches pi-envoy while Oh My Pi starts holds none of the host's RPC input. The
@@ -928,5 +934,5 @@ test.skipIf(skip)(
     woken.reply([text("Read the startup cards.")]);
     await probe(session, woken.index + 1);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
