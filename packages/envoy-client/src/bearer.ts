@@ -62,7 +62,10 @@ export interface RequestCredential {
    * The headers that authenticate `method` on `url`: `Authorization`, and for a key-bound scheme
    * the proof that goes with it. A broker credential trades for a token here when the one in hand
    * is about to lapse, and throws rather than answering headers it cannot make, so a caller that
-   * writes only with what this gave it never writes with no identity.
+   * writes only with what this gave it never writes with no identity. A credential whose bearer a
+   * token file holds (`pointerCredential`) throws `UnreadableBearerFileError` when that file is
+   * gone or blank at the request: the configuration names a bearer, so the caller refuses the
+   * request rather than sending it without one, which it may do for a broker that could not mint.
    *
    * `session` is the session this one call acts for, where it acts for a session that is not
    * whichever one the caller holds now: the Envoy listener binds the session a broker token
@@ -121,20 +124,34 @@ export function bearerCredential(token: string): RequestCredential {
 }
 
 /**
+ * A token file the configuration names (`DISPATCH_TOKEN_FILE`, `ENVOY_TOKEN_FILE`) that cannot be
+ * read, is blank or holds no single bearer at a request. The message names the variable and the
+ * path and never a value. A caller refuses the request it was for: the configuration names a
+ * bearer, and a request without one is never what it asked for.
+ */
+export class UnreadableBearerFileError extends Error {
+  override readonly name = "UnreadableBearerFileError";
+}
+
+/**
  * The bearer the file `pointer` names, read again for every request: a projected Kubernetes
  * service-account token is rewritten in place by the kubelet before it expires (an hour by
  * default), so a process that read it once would present a dead token from then on. `first` is
  * the value the settings read, which `secret` answers until the first request reads the file. A
- * file that cannot be read, is blank or holds no single bearer throws from `headers`, naming the
- * variable and the path and never the value, as `readSecretFile` refuses it at resolution: the
- * request is not sent rather than sent with a stale or empty token.
+ * file that cannot be read, is blank or holds no single bearer throws `UnreadableBearerFileError`
+ * from `headers`, naming the variable and the path and never the value, as `readSecretFile`
+ * refuses it at resolution: the request is not sent rather than sent with a stale or empty token.
  */
 export function pointerCredential(pointer: SecretPointer, first: string): RequestCredential {
   let current = first;
   return {
     scheme: "Bearer",
     headers: () => {
-      current = readSecretFile(pointer.variable, pointer.path);
+      try {
+        current = readSecretFile(pointer.variable, pointer.path);
+      } catch (error) {
+        throw new UnreadableBearerFileError(error instanceof Error ? error.message : String(error));
+      }
       return { Authorization: `Bearer ${current}` };
     },
     secret: () => current,
@@ -143,10 +160,9 @@ export function pointerCredential(pointer: SecretPointer, first: string): Reques
 
 /** The credential a variable source presents: a token file's, read for every request
  * (`pointerCredential`), or a plain variable's, the same on every request. */
-export function variableCredential(source: {
-  readonly token: string;
-  readonly pointer?: SecretPointer | undefined;
-}): RequestCredential {
+export function variableCredential(
+  source: Extract<BearerSource, { kind: "variable" }>
+): RequestCredential {
   return source.pointer === undefined
     ? bearerCredential(source.token)
     : pointerCredential(source.pointer, source.token);

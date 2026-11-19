@@ -7,12 +7,13 @@
 // one that kept the value it resolved with would present a dead token an hour later.
 
 import { afterEach, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import { DispatchClient } from "../dispatch-http";
 import { sessionSettings } from "../session-settings";
+import { createEnvoyClient } from "../transport";
 
 const tempDir = temporaryDirectories("token-file-rereads");
 
@@ -128,4 +129,49 @@ test("a DISPATCH_TOKEN_FILE that is gone or blank at a request sends nothing", a
   writeFileSync(file, "third-projected-not-a-secret\n");
   await client.listAllIssues({});
   expect(dispatch.asked).toEqual(["Bearer third-projected-not-a-secret"]);
+});
+
+// The Envoy transport refuses the same way. ENVOY_TOKEN_FILE names a bearer, so a request whose
+// file is gone or blank is not sent at all, rather than sent with no Authorization header, which
+// the transport does only for a broker that could not mint; the error names the variable and the
+// path and never a token. Control: while the file holds a token the same client sends it, and once
+// the file holds one again the next request carries the new one.
+test("an ENVOY_TOKEN_FILE that is gone or blank at a request sends nothing", async () => {
+  const file = tokenFile("first-listener-not-a-secret");
+  const settings = resolvedOnce({ ENVOY_URL: "http://listener.test", ENVOY_TOKEN_FILE: file });
+  if (!settings.envoy.enabled) throw new Error(`Envoy is off: ${settings.envoy.error}`);
+  const asked: (string | null)[] = [];
+  const client = createEnvoyClient({
+    baseUrl: settings.envoy.url,
+    credential: settings.envoy.credential,
+    fetch: async (_url, init) => {
+      asked.push(new Headers(init?.headers).get("Authorization"));
+      return new Response(null, { status: 200 });
+    },
+  });
+
+  await client.unregisterSession({ sessionID: "ses_rotating" });
+  expect(asked, "control: a readable file sends its token").toEqual([
+    "Bearer first-listener-not-a-secret",
+  ]);
+  for (const [state, change] of [
+    ["blank", () => writeFileSync(file, "  \n")],
+    ["gone", () => rmSync(file)],
+  ] as const) {
+    change();
+    const refused = await client.unregisterSession({ sessionID: "ses_rotating" }).then(
+      () => null,
+      (error: unknown) => String(error)
+    );
+    expect(refused, state).toContain(`ENVOY_TOKEN_FILE names ${file}`);
+    expect(refused, state).not.toContain("first-listener-not-a-secret");
+    expect(asked, `a ${state} file sends nothing`).toHaveLength(1);
+  }
+
+  writeFileSync(file, "second-listener-not-a-secret\n");
+  await client.unregisterSession({ sessionID: "ses_rotating" });
+  expect(asked).toEqual([
+    "Bearer first-listener-not-a-secret",
+    "Bearer second-listener-not-a-secret",
+  ]);
 });

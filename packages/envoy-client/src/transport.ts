@@ -11,7 +11,7 @@ import {
 } from "@legion/contracts";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
-import type { RequestCredential } from "./bearer";
+import { type RequestCredential, UnreadableBearerFileError } from "./bearer";
 import { messageFor, withoutUserinfo } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
@@ -882,10 +882,12 @@ type RequestOptions = {
   readonly actingSession?: string;
 };
 
-/** One attempt's outcome: the listener's status and body, or no answer and why. */
+/** One attempt's outcome: the listener's status and body, no answer and why, or a request this
+ *  client refused to send. */
 type AttemptOutcome =
   | { readonly response: Response; readonly body: string }
-  | { readonly unanswered: unknown };
+  | { readonly unanswered: unknown }
+  | { readonly refused: unknown };
 
 /**
  * The one place the client's call timing resolves: a configuration names a per-attempt timeout
@@ -923,7 +925,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     // no credential answers the same with or without one, so a broker that is down or refused
     // this machine's trade must not take those calls down: the request goes without the headers
     // and stands or falls on the listener's own answer. A listener that did want one answers 401
-    // or 403, and that is reported as the failed trade it really is, below.
+    // or 403, and that is reported as the failed trade it really is, below. A token file the
+    // configuration names that cannot be read now is no such case: the request is refused.
     let unminted: unknown;
     // One deadline for the whole attempt: the credential is given it, so a broker credential
     // waiting on a pod's missing registration stops at it, and the request runs on what is left.
@@ -938,6 +941,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         const ready = credential?.headers(init.method ?? "GET", url, actingSession, deadline);
         presented = ready instanceof Promise ? await ready : ready;
       } catch (error) {
+        // ENVOY_TOKEN_FILE names a bearer, so a request without it is never what was asked for:
+        // it is not sent, and not sent again, as the Dispatch client refuses it.
+        if (error instanceof UnreadableBearerFileError) return { refused: error };
         unminted = error;
       }
       // A credential stopped by the deadline leaves nothing to send: the attempt is unanswered,
@@ -989,6 +995,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         options.timeoutMs ?? timeoutMs,
         options.actingSession
       );
+      if ("refused" in outcome) throw outcome.refused;
       if ("unanswered" in outcome) {
         options.onUnanswered?.();
         if (attempt + 1 < tries) {
