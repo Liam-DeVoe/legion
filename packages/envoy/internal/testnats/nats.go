@@ -646,10 +646,9 @@ const (
 
 // serverOptions parses the configuration at path and serverArgs as nats-server parses its own
 // command line, then imposes what this rig owns: host as the address of every listener the server
-// has, its client and monitoring ports, which it picks, and whichever cluster, gateway, leafnode,
-// websocket and MQTT ports its configuration opens; the test's own store, no signal handlers, path
-// as the configuration file, and the lame duck's timing when the configuration sets none
-// (rigLameDuck). serverArgs replace nats-server's defaults rather than add to them, as the
+// has (ListenOn), its client and monitoring ports, which it picks; the test's own store, no signal
+// handlers, path as the configuration file, and the lame duck's timing when the configuration sets
+// none (rigLameDuck). serverArgs replace nats-server's defaults rather than add to them, as the
 // arguments after the image's own command do.
 func serverOptions(path string, serverArgs []string, store, host string) (*natsserver.Options, error) {
 	flags := flag.NewFlagSet("nats-server", flag.ContinueOnError)
@@ -665,27 +664,9 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 	if err != nil {
 		return nil, err
 	}
-	opts.Host = host
+	ListenOn(opts, host)
 	opts.Port = -1
-	opts.HTTPHost = host
 	opts.HTTPPort = -1
-	// A listener the configuration opens takes the server's address too, whatever the
-	// configuration names, so nothing of a server answers on an address another server of the
-	// process had (NewHost).
-	for _, listener := range []struct {
-		port int
-		host *string
-	}{
-		{opts.Cluster.Port, &opts.Cluster.Host},
-		{opts.Gateway.Port, &opts.Gateway.Host},
-		{opts.LeafNode.Port, &opts.LeafNode.Host},
-		{opts.Websocket.Port, &opts.Websocket.Host},
-		{opts.MQTT.Port, &opts.MQTT.Host},
-	} {
-		if listener.port != 0 {
-			*listener.host = host
-		}
-	}
 	opts.StoreDir = store
 	opts.NoSigs = true
 	opts.ConfigFile = path
@@ -705,6 +686,30 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 		opts.DisableShortFirstPing = true
 	}
 	return opts, nil
+}
+
+// ListenOn makes host the address of every listener opts has: the client and monitoring ports, and
+// whichever cluster, gateway, leafnode, websocket and MQTT ports its configuration opens, whatever
+// host the configuration names for any of them, so nothing of the server answers on an address
+// another server had (NewHost). serverOptions imposes it on every server of the tests, and natsd on
+// the server a script starts.
+func ListenOn(opts *natsserver.Options, host string) {
+	opts.Host = host
+	opts.HTTPHost = host
+	for _, listener := range []struct {
+		port int
+		host *string
+	}{
+		{opts.Cluster.Port, &opts.Cluster.Host},
+		{opts.Gateway.Port, &opts.Gateway.Host},
+		{opts.LeafNode.Port, &opts.LeafNode.Host},
+		{opts.Websocket.Port, &opts.Websocket.Host},
+		{opts.MQTT.Port, &opts.MQTT.Host},
+	} {
+		if listener.port != 0 {
+			*listener.host = host
+		}
+	}
 }
 
 // logCapture is the server's logger: it keeps every line the server logs, for Server.Log.

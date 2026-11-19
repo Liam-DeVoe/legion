@@ -1,11 +1,9 @@
 package testnats
 
 import (
-	"fmt"
-	"math/rand/v2"
 	"net"
-	"runtime"
-	"sync"
+
+	"github.com/sjawhar/envoy/internal/testnats/loopback"
 )
 
 // NewHost is the loopback address a new NATS server of this process listens on, with every
@@ -14,10 +12,12 @@ import (
 // gates and proxies a test puts before it (StartGate, StartProxy); for a nats-server a test runs as
 // a process of its own, every port it gives that process (infra/gcp's live hubs). It is chosen once
 // per server and kept through every stop, start and reload, since the server's configuration and
-// its URL name it. On Linux, where every address of 127.0.0.0/8 is the loopback, it is one at
-// random from 127.1.0.1 through 127.254.255.254, never one this process gave before (serverHosts),
-// so no two servers of one test binary ever share an address. Elsewhere it is 127.0.0.1, the only
-// loopback address such a system brings up by default, and every server there shares it.
+// its URL name it. It is loopback.NewHost's: on Linux, where every address of 127.0.0.0/8 is the
+// loopback, one at random from 127.1.0.1 through 127.254.255.254, never one this process gave
+// before, so no two servers of one test binary ever share an address. Elsewhere it is 127.0.0.1,
+// the only loopback address such a system brings up by default, and every server there shares it.
+// A script's own stack takes its server's address from the same rule: natsd picks one, and
+// cmd/loopbackhost prints one for a nats-server binary or container a script runs.
 //
 // A test counts what its server is sent, and a server answers every client that reaches it. A
 // server's relay holds its port only for its own test's life, and the server picks a new client
@@ -31,26 +31,8 @@ import (
 // whatever port it gets; one of another binary shares its address only by a draw of one in
 // 16,516,096, and then needs the same port too.
 func NewHost() string {
-	if runtime.GOOS != "linux" {
-		return "127.0.0.1"
-	}
-	serverHostsMu.Lock()
-	defer serverHostsMu.Unlock()
-	for {
-		host := fmt.Sprintf("127.%d.%d.%d", 1+rand.IntN(254), rand.IntN(256), 1+rand.IntN(254))
-		if !serverHosts[host] {
-			serverHosts[host] = true
-			return host
-		}
-	}
+	return loopback.NewHost()
 }
-
-// serverHosts is every address NewHost has given in this process, kept for the process's
-// life: an address is never given twice, so a client of an ended test never reaches a later one.
-var (
-	serverHostsMu sync.Mutex
-	serverHosts   = map[string]bool{}
-)
 
 // hostOf is the host of address, a host:port, for a listener put in front of the server there
 // (StartGate, StartProxy), or "" when address is no host:port.
