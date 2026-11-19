@@ -20,7 +20,12 @@ import {
 /** The node view of a host-owned typed block other than `ask`: `renderTypedBlock`'s drawing,
  * under the block's id. It stamps `data-block-id` the way `AskBlockView` does, from the node's
  * attribute, since a value import from the editor library would pull the library out of
- * `editor.ts`'s lazy chunk into every page that loads this module. */
+ * `editor.ts`'s lazy chunk into every page that loads this module. ProseMirror never reads the
+ * block's header back (`ignoreMutation`), as `AskBlockView` never reads its slots: the block's
+ * parse rule reads only its content hole, and a change the page makes in the header - the hover
+ * card naming itself in a pointer link's `aria-describedby` as the link takes the focus - would
+ * otherwise read as a suspect edit, and ProseMirror would draw the block anew, taking the link
+ * that holds the focus out of the page. */
 function typedBlockView(
   node: ProseMirrorNode,
   document: Document,
@@ -31,7 +36,13 @@ function typedBlockView(
   if (typeof blockId === "string" && blockId !== "") {
     (dom as HTMLElement).dataset.blockId = blockId;
   }
-  return { contentDOM, dom };
+  const header = (dom as HTMLElement).querySelector(":scope > [data-proof-block-summary]");
+  return {
+    contentDOM,
+    dom,
+    // Anything else - the content hole - is read as ProseMirror reads a view with one.
+    ignoreMutation: (mutation) => header?.contains(mutation.target) === true,
+  };
 }
 
 /** The next key a mounted node view's host is published under, for React keys. */

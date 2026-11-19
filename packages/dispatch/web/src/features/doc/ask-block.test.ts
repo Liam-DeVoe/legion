@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
-import type { EditorView } from "@milkdown/kit/prose/view";
+import { EditorView } from "@milkdown/kit/prose/view";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
 import type { BlockTypeSchema } from "../../api/types";
-import { askBlockEditingPlugin, editingAskBlockPos } from "./ask-block";
+import { askBlockEditingPlugin, editingAskBlockPos, installTypedBlocks } from "./ask-block";
 import { renderTypedBlock } from "./typed-block-drawing";
 
 const schema = new Schema({
@@ -172,16 +172,18 @@ test("a typed block's header shows the author's attributes and hides the schema'
 // A `check` block, whose `serves` points at the requirements it proves. The drawing printed
 // every array attribute with `JSON.stringify`, so driving the real page showed a reader
 // `serves ["dispatch://VER-1/spec#b-r1"]` - the value's JSON instead of the blocks it names
-// (INFRA-174).
+// (INFRA-174). Each node draws as the Proof schema's `toDOM` draws it, a typed block as its
+// section and content alone, for an editor to draw before its node views are installed.
 const checkSchema = new Schema({
   nodes: {
     doc: { content: "block+" },
-    paragraph: { content: "inline*", group: "block" },
+    paragraph: { content: "inline*", group: "block", toDOM: () => ["p", 0] },
     text: { group: "inline" },
     check: {
       attrs: { blockId: { default: null }, run: { default: null }, serves: { default: null } },
       content: "paragraph+",
       group: "block",
+      toDOM: () => ["section", ["div", { "data-proof-block-content": "" }, 0]],
     },
   },
 });
@@ -245,4 +247,46 @@ test("a block[] attribute pointing at no block is not drawn at all", () => {
   expect(drawn.querySelector('dd[data-proof-block-attribute="run"]')?.textContent).toBe(
     "bun test web/src"
   );
+});
+
+// INFRA-2160: a pointer's link in a typed block's header - a check's `serves`, a plan task's -
+// takes the keyboard focus, and the hover card names itself in the link's `aria-describedby`.
+// ProseMirror read that change in the block's drawing as an edit and drew the block anew, so the
+// link holding the focus left the page and the page's focus rescue sent the focus elsewhere: a
+// Tab into the Plan tab's document went back to the top of the page.
+test("a change the page makes in a typed block's header leaves the block and its focused link in place", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const node = checkSchema.node(
+    "check",
+    { blockId: "c1", run: "bun test web/src", serves: ["dispatch://CORE-1/spec#b-r1"] },
+    [checkSchema.node("paragraph", undefined, [checkSchema.text("The tab lists every check.")])]
+  );
+  const view = new EditorView(mount, {
+    state: EditorState.create({ doc: checkSchema.node("doc", undefined, [node]) }),
+  });
+  try {
+    installTypedBlocks(
+      view,
+      { types: [checkType], version: 1 },
+      () => {},
+      () => () => {}
+    );
+    const block = view.dom.querySelector('[data-proof-block-type="check"]');
+    const link = block?.querySelector<HTMLElement>('dd[data-proof-block-attribute="serves"] a');
+    if (link === null || link === undefined) throw new Error("expected the check's serves link");
+    link.focus();
+    expect(document.activeElement).toBe(link);
+
+    link.setAttribute("aria-describedby", "ref-preview-card");
+    // ProseMirror reads the page's changes in a MutationObserver's callback, a microtask later.
+    await Promise.resolve();
+
+    expect(view.dom.querySelector('[data-proof-block-type="check"]')).toBe(block);
+    expect(link.isConnected).toBe(true);
+    expect(document.activeElement).toBe(link);
+  } finally {
+    view.destroy();
+    mount.remove();
+  }
 });
