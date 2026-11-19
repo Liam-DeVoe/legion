@@ -73,9 +73,8 @@ const (
 // requestYield holds one piece of background work back while the requests press. A service makes
 // one (New), the compaction's, shared by the queue's worker and the sweep, which never fold at the
 // same time: the sweep hands every document it cannot fold to the queue rather than compacting
-// beside it. The settlements were measured against it and are not held back (AGENTS.md, the
-// settlement slots): a settlement that waits is one whose room's generation is likelier to move
-// while it waits, which ends it and arms another, so deferring them multiplies them.
+// beside it. The settlements were measured against it and are not held back (settlementWorkers
+// says why).
 type requestYield struct {
 	// load is the request admission, nil in a service that was handed none.
 	load RequestLoad

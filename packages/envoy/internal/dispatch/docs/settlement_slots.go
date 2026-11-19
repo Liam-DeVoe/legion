@@ -16,6 +16,19 @@ import (
 // connection behind another settlement. Without the bound N owed documents - every one a backlog
 // of resumptions arms at once - ran N settlements, each loading its room and wanting a connection,
 // which is DR-05's collapse.
+//
+// A settlement does not wait for the requests to ease before it takes a slot, as a compaction's
+// fold does (requestYield). That wait was built, measured on the load test and refused
+// (INFRA-592). The execution trace of the span where a burst's recovery keeps failing (30 to 55 s
+// after the drop) puts the settlement timers second only to the collector's mark workers among
+// the work that is not a request handler: 5.4 to 5.6 s of the 75 processor seconds, over 50 to 53
+// settlements (about 105 ms of processor each), against 15 s for the handlers. A settlement that
+// waited out the request pressure before it took its slot, for at most 10 s, made a step's
+// settlement work grow by about 35%: the settlements pool's acquires in the two minutes after the
+// drop went from 791 and 818 to 1,042 to 1,108 over four runs, and the request p99 of the windows
+// that fail did not improve. A settlement that waits is likelier to see its room's generation
+// move, which ends it and arms another (openLiveWrite), so to defer settlements is to multiply
+// them. The slots are what bounds them.
 const settlementWorkers = 4
 
 // settlementTimeout bounds a settlement a timer starts (settleRoom), from its wait for a slot to its
