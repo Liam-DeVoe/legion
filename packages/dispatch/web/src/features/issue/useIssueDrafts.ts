@@ -47,8 +47,10 @@ const routePattern = /^(role:[a-z0-9-]+|session:[0-9a-f-]{16,})$/;
  *  and not sent again, or left unsent because the issue came to hold it; and, while a write is
  *  out, the value out, which a discard, an unchanged end or a keystroke back to it with nothing
  *  queued puts in the draft. A refused end (an empty title, a closed issue) keeps whichever the
- *  draft was. A typed or ended draft is handed back to the issue only as the field's own write
- *  settles, never by another reader's value. */
+ *  draft was. Of the answers (a landing, a refusal, another reader's value), only the settle of
+ *  the field's own write hands a typed or ended draft back to the issue, never another reader's
+ *  value; with nothing out, the reader's own keystroke back to the issue's value with nothing
+ *  queued, an unchanged end and a discard do too. */
 type Own = "issue" | "typed" | "ended";
 
 /** One field's draft (decisions 315 and 332). */
@@ -109,13 +111,27 @@ const fields: readonly Field[] = ["title", "route", "parent"];
  *  the value out while there is one: a reader who types the old value back is undoing the write. */
 const reference = (state: FieldState): string => state.out ?? state.server;
 
-const changed = (rules: FieldRules, state: FieldState): boolean =>
-  rules.normalize(state.draft) !== reference(state);
+/** Whether a text, the draft unless another is given, differs from the reference once
+ *  normalized. */
+const changed = (rules: FieldRules, state: FieldState, text = state.draft): boolean =>
+  rules.normalize(text) !== reference(state);
 
 /** Drops a queued value the reference has become: the issue holds it, or is about to, so there
  *  is nothing left to send. */
 const dropQueuedReference = (state: FieldState): FieldState =>
   state.queued === reference(state) ? { ...state, queued: null } : state;
+
+/** Whose a draft put back to the reference, or typed back to it with nothing queued, is: the
+ *  value out is the reader's ended choice, and with nothing out the reference is the issue's. */
+const ownAtReference = (state: FieldState): Own => (state.out === null ? "issue" : "ended");
+
+/** The draft put back to the reference, asking for nothing: an unchanged end, or a discard. */
+const putBack = (state: FieldState): FieldState => ({
+  ...state,
+  draft: reference(state),
+  own: ownAtReference(state),
+  queued: null,
+});
 
 /** What the end of an edit does with a field's draft: queues it to be sent, finds nothing to
  *  send, or refuses it (a closed issue, or a value Dispatch would not take). */
@@ -178,9 +194,8 @@ function requestOutcome(rules: FieldRules, state: FieldState, closed: boolean): 
 function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): FieldState {
   switch (event.type) {
     case "write": {
-      const back = state.queued === null && rules.normalize(event.text) === reference(state);
-      const own: Own = back ? (state.out === null ? "issue" : "ended") : "typed";
-      return { ...state, draft: event.text, own };
+      const back = state.queued === null && !changed(rules, state, event.text);
+      return { ...state, draft: event.text, own: back ? ownAtReference(state) : "typed" };
     }
     case "request": {
       const outcome = requestOutcome(rules, state, event.closed);
@@ -188,20 +203,10 @@ function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): F
         return { ...state, own: "ended", queued: rules.normalize(state.draft) };
       }
       if (outcome === "refused") return { ...state, queued: null };
-      return {
-        ...state,
-        draft: reference(state),
-        own: state.out === null ? "issue" : "ended",
-        queued: null,
-      };
+      return putBack(state);
     }
     case "discard":
-      return {
-        ...state,
-        draft: reference(state),
-        own: state.out === null ? "issue" : "ended",
-        queued: null,
-      };
+      return putBack(state);
     case "sent":
       return { ...state, out: event.value, queued: null };
     case "server": {
@@ -214,16 +219,13 @@ function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): F
     }
     case "settled": {
       if (state.out === null) return state;
-      const took = event.landed && rules.normalize(state.draft) === state.out;
+      const took = event.landed && !changed(rules, state);
       const next = dropQueuedReference({
         ...state,
         draft: took ? state.server : state.draft,
         out: null,
       });
-      const back =
-        next.queued === null &&
-        rules.normalize(next.draft) === next.server &&
-        (took || state.own === "ended");
+      const back = next.queued === null && !changed(rules, next) && (took || state.own === "ended");
       return back ? { ...next, own: "issue" } : next;
     }
   }

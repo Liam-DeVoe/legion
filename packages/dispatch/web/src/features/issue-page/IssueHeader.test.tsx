@@ -14,6 +14,7 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { titleWrittenElsewhere } from "../../__tests__/title-elsewhere";
 import { ApiError, api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type {
@@ -1332,17 +1333,6 @@ async function endTitleEditByPress(user: UserEvent): Promise<void> {
   );
 }
 
-/** Another reader's write of the issue's title, which reaches the page as an event's refresh
- *  does. */
-function titleWrittenElsewhere(queryClient: QueryClient, title: string): void {
-  act(() => {
-    queryClient.setQueryData<IssueDetails>(
-      ["issue", "CORE-1"],
-      (current) => current && { ...current, title }
-    );
-  });
-}
-
 // A switch to another window or tab blurs the editor with no element for the focus to go to, and
 // the editor stays the page's focused element, which the browser focuses again as the reader comes
 // back. The reader has not left the editor, so it stays open with their draft, and the draft is
@@ -1463,8 +1453,9 @@ test("a title a switch sent and the reader writes back after another write chang
 // The reader opens the title's editor, types a character and takes it back out, and another
 // reader then renames the issue. The keystroke that left the draft on the issue's title handed it
 // back to the issue (decision 332), so the editor follows the rename, and the end of the edit
-// sends nothing. Main's hook does the same on today's page: no write. Kept as text the reader
-// typed, the draft held the issue's old title in the editor and sent it over the rename.
+// sends nothing. Dispatch's hook before this change does the same on today's page: no write. Kept
+// as text the reader typed, the draft held the issue's old title in the editor and sent it over
+// the rename.
 test("a character typed and taken back out leaves the title's editor following another reader's title, and the end of the edit sends nothing", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
@@ -1494,12 +1485,13 @@ test("a character typed and taken back out leaves the title's editor following a
 });
 
 // A switch to another window sends the reader's title and leaves the edit open (decision 295).
-// While that write is out the reader comes back, types a character and takes it back out. The
-// keystroke that left the draft on the title out, with nothing queued, handed it back (decision
-// 332): it is the reader's ended choice, as an Escape would leave it, and the write's landing
-// makes it the issue's. So the editor follows the title another reader sets next, and the end of
-// the edit sends nothing: the title went once. Kept as text the reader typed, the draft held the
-// title the switch sent over the other reader's, and the end of the edit sent it a second time.
+// While that write is out the reader comes back, types a character and takes it back out, which
+// leaves the draft on the title out. The write's settle then hands the draft back to the issue
+// because the write landed with it (decision 332), whatever the keystroke made it, so the editor
+// follows the title another reader sets next, and the end of the edit sends nothing: the title
+// went once. An earlier form of this change's hook handed an ended choice back on another
+// reader's title and kept a typed draft, as the keystroke made this one, so it held the title the
+// switch sent over the other reader's, and the end of the edit sent it a second time.
 test("a character typed and taken back out while a switch's write of the title is out leaves the editor following another reader's title once that write lands, and the end of the edit sends nothing", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
@@ -1542,10 +1534,13 @@ test("a character typed and taken back out while a switch's write of the title i
 
 // A switch to another window sends the reader's title, and Dispatch refuses it, so the title stays
 // in the open editor, the reader's unsent choice. Another reader then sets the issue to that very
-// title, and then to a title of their own. Only the settle of the title's own write hands the
-// editor back to the issue (decision 332), and none has settled since the refusal, so the editor
-// keeps the reader's title through both. Handed back as the other reader's title matched it, the
-// editor took their next title, which the reader never typed.
+// title, and then to a title of their own. Of the answers (a landing, a refusal, another reader's
+// title), only the settle of the title's own write hands a typed or ended editor back to the
+// issue, never another reader's title (decision 332); the reader's own keystroke back to the
+// issue's title, an end that changes nothing or an Escape do too. No title write has settled
+// since the refusal and the reader makes none of those, so the editor keeps the reader's title
+// through both. Handed back as the other reader's title matched it, the editor took their next
+// title, which the reader never typed.
 test("a title a switch sent and Dispatch refused stays in the open editor as another reader sets the issue to it and then to a title of their own", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
