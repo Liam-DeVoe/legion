@@ -43,7 +43,7 @@ type setting struct {
 // server generates text with, the dashboard, and local and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
-		Description: "Postgres connection string. The server migrates the database before serving; `census`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
+		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
 	{Name: "DISPATCH_FILE_STORE_BUCKET", Required: "no",
 		Description: "Bucket uploaded files (images, attachments) are stored in, keyed by their SHA-256. `gs://<bucket>` is a Google Cloud Storage bucket, reached with Application Default Credentials (on GKE the pod's Workload Identity principal), which needs `storage.objects.create` and `storage.objects.get` on it and nothing more; any other value is an S3 bucket's name, and the AWS SDK finds its region and credentials itself (`AWS_*`, the shared config files, the task role). `backfill-files` reads it too and opens the same store. Unset, every upload's bytes stay in Postgres, as before the bucket existed."},
 	{Name: "DISPATCH_AGENT_TOKEN", Required: "yes",
@@ -206,8 +206,12 @@ var settings = []setting{
 		Description: "Set to `1` so the server builds no embedder whatever `DISPATCH_EMBEDDER` and the AWS SDK's own variables would have built: meaning search answers keyword-only and says so, and the embedding queue does nothing, for an end-to-end test process whose AWS variables address a file store rather than a model service. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_RECONCILE_AT_START", Required: "no",
 		Description: "Set to `1` so a test process runs the delivery reconcile's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", Required: "no",
+		Description: "Set to `1` so a test process runs the architecture import's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_CI_RECONCILE_INTERVAL", Default: "`5m`", Required: "no",
 		Description: "How often a test process's CI reconcile pass runs, in place of the five minutes a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_REDELIVERY_INTERVAL", Default: "`2m`", Required: "no",
+		Description: "How often a test process's webhook redelivery sweep runs, in place of the two minutes a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", Default: "`5m`", Required: "no",
 		Description: "How often a test process's delivery reconcile pass runs, in place of the five minutes a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", Default: "`1m`", Required: "no",

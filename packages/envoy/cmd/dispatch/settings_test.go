@@ -940,11 +940,20 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"DISPATCH_NATS_DISABLED": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"}); !boot.NATSDisabled {
+			boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"})
+			if !boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=1: NATS on")
 			}
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"}); boot.NATSDisabled {
+			// No outbox runs without NATS, so no mention's send waits on events nothing will send.
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.OutboxPublishes {
+				t.Error("DISPATCH_NATS_DISABLED=1: the router is handed OutboxPublishes = true, want false")
+			}
+			boot = resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"})
+			if boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=true: NATS off, want only 1 to turn it off")
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.OutboxPublishes {
+				t.Error("NATS on: the router is handed OutboxPublishes = false, want true: the outbox publishes, and a mention's send keeps its order behind the events it still owes")
 			}
 		},
 		"ENVOY_URL": func(t *testing.T) {
@@ -1898,6 +1907,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START unset: ArchitectureImportAtStart true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}); !boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1: ArchitectureImportAtStart false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "true"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=true: ArchitectureImportAtStart true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)
@@ -1915,6 +1936,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_CI_RECONCILE_INTERVAL=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_REDELIVERY_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.RedeliveryInterval != 0 {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL unset: RedeliveryInterval = %v, want 0 (redeliver.Interval's two minutes)", boot.RedeliveryInterval)
+			}
+			const quick = 2 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":               "1",
+				"DISPATCH_TEST_REDELIVERY_INTERVAL": quick.String(),
+			})
+			if boot.RedeliveryInterval != quick {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL: RedeliveryInterval = %v, want %v", boot.RedeliveryInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_REDELIVERY_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_REDELIVERY_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_REDELIVERY_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.DeliveryReconcileInterval != 0 {
