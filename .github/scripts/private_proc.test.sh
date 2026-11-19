@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # Tests for `private_proc.py`: every route a test reads the processes by sees its own namespace's
 # alone, which the same test run without the script does not; the test binary runs beneath a
-# supervisor at PID 1, as its own user, in its own directory, with its environment; and the script
-# fails a run in which no test binary ran in a namespace of its own, a list with no test in it, a
-# namespace it could not make, a supervisor that finds itself in no namespace of its own, and a
-# command that is no go test or that sets -exec itself.
+# supervisor at PID 1, as its own user, in its own directory, with its environment; the script
+# lists the tests that read a process table, each with the root it read, from the record each
+# binary that links its module's internal/hostproc writes; and it says UNKNOWN, and fails, for a
+# run in which no test binary ran in a namespace of its own, a list with no test in it, a package
+# with tests that ran in none while the others did, and a binary that links internal/hostproc and
+# recorded nothing. It also fails a namespace it could not make, a supervisor that finds itself in
+# no namespace of its own, and a command that is no go test or that sets -exec itself.
 #
-# The cases run a real `go test` over a scratch module written here, whose test reads /proc by
-# five routes: a direct directory read, os.DirFS, a joined glob, an opened directory handed to a
-# helper, and pgrep. Each must find a process the test started and must not find one this harness
-# started on the machine before the run; the two are told apart by a marker in their command line,
-# never by a pid, which two namespaces can share. The script needs `sudo -n`, which CI's runners
-# give, and a go on PATH.
+# The cases run a real `go test` over two scratch modules written here. The first's test reads
+# /proc by five routes: a direct directory read, os.DirFS, a joined glob, an opened directory
+# handed to a helper, and pgrep. Each must find a process the test started and must not find one
+# this harness started on the machine before the run; the two are told apart by a marker in their
+# command line, never by a pid, which two namespaces can share. The second module's
+# internal/hostproc stands in for packages/daemon's: it writes the record's lines as that one does
+# (hostproc.RecordEnv), so the list and its UNKNOWNs are read from a binary that links it, one that
+# links it and scans nothing, and one that does not link it. The script needs `sudo -n`, which CI's
+# runners give, and a go on PATH.
 #
 # Run from anywhere: .github/scripts/private_proc.test.sh
 # CI runs it in ci.yaml's test job.
@@ -243,18 +249,19 @@ check "says the one binary ran beneath PID 1 of a namespace of its own" \
   "$(contains "$out" 'private-proc: 1 test binaries ran, each beneath PID 1 of a PID namespace of its own, of the 1 packages with tests')"
 check "the supervisor wrote its record" "$(is "$(printf '%s\n' "$out" | grep -c 'PermissionError')" 0)"
 
-echo "case: a go test that ran no test binary fails"
+echo "case: a go test that ran no test binary says UNKNOWN and fails"
 # go test -c compiles the binary and runs nothing, and exits 0: the record then holds no package,
 # which is what the script must catch. (go never answers a run from its cache while -exec is set.)
 run "$wrapper" go test -c -o "$work/routes.test" .
 check "exits 1" "$(is "$status" 1)"
 check "the binary was built" "$(is "$([ -x "$work/routes.test" ] && echo built)" built)"
-check "names the package that ran in no namespace" "$(contains "$out" 'private-proc: 0 test binaries ran in a namespace of their own, and 1 of the 1 packages with tests did not')"
+check "says UNKNOWN: nothing ran" "$(contains "$out" 'private-proc: UNKNOWN: no test binary ran in a namespace of its own, so nothing was read')"
+check "prints no list" "$(is "$(contains "$out" 'the tests that read a process table')" false)"
 
-echo "case: a list with no test in it fails"
+echo "case: a list with no test in it says UNKNOWN and fails"
 run "$wrapper" go test -count=1 ./notests/
 check "exits 1" "$(is "$status" 1)"
-check "says the list runs nothing" "$(contains "$out" 'has a test file: a list with nothing in it runs nothing, which is no pass')"
+check "says UNKNOWN: the list runs nothing" "$(contains "$out" 'private-proc: UNKNOWN: no package of ./notests/ has a test file, so no test ran and nothing was read')"
 
 echo "case: a namespace that cannot be made fails the binary, and leaves no environment behind"
 mkdir -p "$work/bin" "$work/tmp"
@@ -281,5 +288,118 @@ check "go vet exits 2" "$(is "$status" 2)"
 run "$wrapper" go test -exec /bin/env ./...
 check "a -exec of its own exits 2" "$(is "$status" 2)"
 check "says why" "$(contains "$out" 'sets -exec itself, which would run its test binaries outside a namespace of their own')"
+
+# The second module: a stand-in for packages/daemon's internal/hostproc, which writes the record's
+# lines as that package does, and three packages with tests: reads, whose test records two scans
+# of its own (and, with SCANS_REFUSE=1, a refusal, and ends its binary as a refusal does); quiet,
+# which links the stand-in and scans nothing; and plain, which does not link it.
+scans="$work/scans"
+mkdir -p "$scans/internal/hostproc" "$scans/reads" "$scans/quiet" "$scans/plain"
+printf 'module scans\n\ngo 1.22\n' > "$scans/go.mod"
+cat > "$scans/internal/hostproc/hostproc.go" <<'GO'
+// Package hostproc stands in for packages/daemon's internal/hostproc: it writes the lines of the
+// record HOSTPROC_RECORD names as that package does, a binary line as the binary starts and a
+// scan line for each Scan, and nothing at all with SCANS_SILENT=1.
+package hostproc
+
+import (
+	"os"
+	"strconv"
+	"strings"
+)
+
+func write(fields ...string) {
+	path := os.Getenv("HOSTPROC_RECORD")
+	if path == "" || os.Getenv("SCANS_SILENT") == "1" {
+		return
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(strings.Join(fields, "\t") + "\n"); err != nil {
+		panic(err)
+	}
+}
+
+func init() { write("binary", strconv.Itoa(os.Getpid())) }
+
+// Scan records one scan of test's.
+func Scan(kind, test, scanner, root, reason string) { write("scan", kind, test, scanner, root, reason) }
+GO
+cat > "$scans/reads/reads_test.go" <<'GO'
+package reads
+
+import (
+	"os"
+	"testing"
+
+	"scans/internal/hostproc"
+)
+
+func TestReadsARootOfItsOwn(t *testing.T) {
+	hostproc.Scan("own", "TestReadsARootOfItsOwn", "the stand-in's scanner", "/fixture/proc", "")
+	hostproc.Scan("reason", "TestReadsARootOfItsOwn", "the reasoned stand-in", "/proc", "it takes only its own pid")
+	if os.Getenv("SCANS_REFUSE") == "1" {
+		hostproc.Scan("refused", "TestReadsARootOfItsOwn", "the refused stand-in", "/proc", "")
+		os.Exit(86)
+	}
+}
+GO
+printf 'package quiet\n\nimport (\n\t"testing"\n\n\t_ "scans/internal/hostproc"\n)\n\nfunc TestScansNothing(t *testing.T) {}\n' > "$scans/quiet/quiet_test.go"
+printf 'package plain\n\nimport "testing"\n\nfunc TestLinksNoScanner(t *testing.T) {}\n' > "$scans/plain/plain_test.go"
+
+# run_scans <command...>: run, in the second module.
+run_scans() {
+  set +e
+  out=$(cd "$scans" && "$@" 2>&1)
+  status=$?
+  set -e
+}
+
+echo "case: the list names each test that read a process table, with the root it read, and no UNKNOWN"
+run_scans "$wrapper" go test -count=1 ./...
+check "exits 0" "$(is "$status" 0)"
+check "names the package whose test read one" "$(contains "$out" '^private-proc:   reads: 1 tests read a process table$')"
+check "names its own root" "$(contains "$out" "^private-proc:     TestReadsARootOfItsOwn: .*the stand-in's scanner, own /fixture/proc")"
+check "names the host's, with its reason" "$(contains "$out" "^private-proc:     TestReadsARootOfItsOwn: the reasoned stand-in, host /proc, by its reason: it takes only its own pid")"
+check "says the package that scanned nothing read none" "$(contains "$out" '^private-proc:   quiet: no test read a process table$')"
+check "says the package with no scanner has none" "$(contains "$out" '^private-proc:   plain: no scanner of the module is in its test binary (it does not link internal/hostproc)$')"
+check "says no UNKNOWN" "$(is "$(contains "$out" 'UNKNOWN')" false)"
+check "says the three binaries ran" "$(contains "$out" 'private-proc: 3 test binaries ran, each beneath PID 1 of a PID namespace of its own, of the 3 packages with tests')"
+
+echo "case: a refusal is named in the list, and the binary's failure is the step's"
+run_scans env SCANS_REFUSE=1 "$wrapper" go test -count=1 ./...
+check "exits 1, go's own status" "$(is "$status" 1)"
+check "names the refusal and the binary's exit" "$(contains "$out" "refused: the refused stand-in, host /proc, with no reason (the package's binary exited 86)")"
+
+echo "case: binaries that link internal/hostproc and recorded nothing say UNKNOWN and fail"
+run_scans env SCANS_SILENT=1 "$wrapper" go test -count=1 ./...
+check "exits 1" "$(is "$status" 1)"
+check "names both binaries" "$(contains "$out" 'private-proc: UNKNOWN: the test binary of quiet, reads links internal/hostproc and recorded nothing, so what its tests read is not known')"
+check "prints no success line" "$(is "$(contains "$out" 'test binaries ran, each beneath PID 1')" false)"
+
+echo "case: a package that ran outside the namespace while the others ran in theirs says UNKNOWN and fails"
+# A stand-in for sudo runs plain's binary on the machine, outside the namespace and so outside the
+# supervisor's record, and removes the environment file as the supervisor would, so its wrapper
+# takes it for a binary that ran; every other binary goes to the real sudo. go exits 0.
+real_sudo=$(command -v sudo)
+mkdir -p "$work/escape"
+cat > "$work/escape/sudo" <<SH
+#!/usr/bin/env bash
+args=("\$@")
+for i in "\${!args[@]}"; do [ "\${args[\$i]}" = --init ] && at=\$i; done
+if [ "\${args[at+5]##*/}" = plain ]; then
+  rm -f "\${args[at+1]}"
+  cd "\${args[at+5]}" && exec "\${args[@]:at+8}"
+fi
+exec $real_sudo "\$@"
+SH
+chmod +x "$work/escape/sudo"
+run_scans env PATH="$work/escape:$PATH" "$wrapper" go test -count=1 ./...
+check "exits 1" "$(is "$status" 1)"
+check "names the package that ran in no namespace" "$(contains "$out" 'private-proc: UNKNOWN: 1 of the 3 packages with tests ran in no namespace of their own, so what their tests read is not known: plain')"
+check "prints no success line" "$(is "$(contains "$out" 'test binaries ran, each beneath PID 1')" false)"
 
 summary "private_proc.py"

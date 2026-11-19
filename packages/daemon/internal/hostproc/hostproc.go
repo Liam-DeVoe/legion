@@ -5,9 +5,10 @@
 // share another user's git is one such process.
 //
 // Each scanner of this module that lists processes calls Check, or lists through PIDs, with the root
-// it resolved, at its own boundary: the launcher's sweep and its reaper (internal/launcher), the
-// memory guard, its guest watch and their common scan (internal/memoryguard), and every test helper
-// that lists processes itself. In a test binary the call ends the binary when that root is a /proc
+// it resolved, at its own boundary: the launcher's sweep, its reaper and the cache trimmer's
+// used-path read (internal/launcher), the memory guard, its guest watch and their common scan
+// (internal/memoryguard), the repo cache's reaper, and every test helper that lists processes
+// itself. In a test binary the call ends the binary when that root is a /proc
 // and the scanner has neither a root of the test's own nor a Reason. A test gives a scanner a root
 // of its own (a directory of links to the processes it started, a directory it wrote, a fake pod),
 // or a Reason that says why what the scanner reads there depends on no process the test did not
@@ -21,7 +22,10 @@
 // does. A listing that reaches /proc by a route that calls no scanner of this module (a program in
 // another language, a raw read of the directory) is out of this package's sight; CI runs every test
 // binary of this module in a PID namespace of its own, whose /proc lists that binary's processes and
-// none of the machine's (.github/scripts/private_proc.py), which is what holds those routes.
+// none of the machine's (.github/scripts/private_proc.py, which ci.yaml's daemon steps and the e2e
+// proofs' scripts/e2e/lib/live-daemon-proof.sh run their binaries through), which is what holds
+// those routes. Each scan Check judges there goes to the binary's record (RecordEnv, record.go), from
+// which the wrapper lists the tests that read a process table.
 package hostproc
 
 import (
@@ -81,8 +85,16 @@ var inTest = testing.Testing
 // log and pass over an error, and a background goroutine has no test to fail, so neither an error
 // nor a panic a caller might recover is enough. It writes Refusal, the scanner, the root and the
 // stack of the goroutine that reached it, and exits with RefusalStatus.
+//
+// Each call it judges in a test binary, the ones it lets list and the one it refuses, goes to the
+// binary's record of scans when the binary has one (RecordEnv), with the test that made it.
 func Check(scanner, root string, reason Reason) {
-	if !inTest() || reason.why != "" || !isProc(root) || namespaceOwn(root) {
+	if !inTest() {
+		return
+	}
+	refused := reason.why == "" && isProc(root) && !namespaceOwn(root)
+	record(scanner, root, reason, refused)
+	if !refused {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s %s would list %s, a /proc of the machine, in a test that gave it neither a /proc of its "+
