@@ -1353,6 +1353,84 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
   }
 });
 
+// The same answer from elsewhere in the list layout, with the Inbox's keys mounted as well: the
+// card's hand-off target is its row, so the loss moves the focus into no row, and from where the
+// rescue leaves it the Inbox's `j` still steps onto a row - the first one, as `j` does from no
+// row - rather than being typed into a text box the rescue landed on.
+test("in the list, an ask answered elsewhere under the reader's focus moves it into no row, and j then focuses the first row", async () => {
+  const user = userEvent.setup();
+  const askA = issueAsk({ id: "ask-a" });
+  const askB = issueAsk({
+    id: "ask-b",
+    issue: { assignee: "alice", key: "CORE-2", title: "Other issue" },
+    issue_key: "CORE-2",
+    question: "Which format?",
+  });
+  const answeredB: InboxRow = {
+    ...askB,
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "JSON, always.", user: "bob" },
+    state: "answered",
+  };
+  let threadB = askB;
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: id === askA.id ? askA : threadB,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>
+            <Inbox />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const card = await screen.findByTestId("ask-ask-b");
+    const field = within(card).getByLabelText("Your answer");
+    await user.click(field);
+    await afterRescue();
+    expect(field).toHaveFocus();
+
+    // Bob answers it in his own tab: the server drops it from the inbox and the thread records
+    // the answer, and the card swaps to its record with the focus in its form.
+    threadB = answeredB;
+    await act(async () => {
+      queryClient.setQueryData<InboxRow[]>(["inbox"], [askA]);
+      await queryClient.invalidateQueries({ queryKey: ["ask-thread", "ask-b"] });
+    });
+    expect(within(await screen.findByTestId("ask-ask-b")).getByText("JSON, always.")).toBeTruthy();
+    expect(field).not.toBeInTheDocument();
+    await afterRescue();
+    expect(document.activeElement?.closest("[data-inbox-row]") ?? null).toBeNull();
+    expect(selectedIds()).toEqual([]);
+
+    await user.keyboard("j");
+    expect(rowIds()[0]).toBe("ask-a");
+    expect(shortRow("ask-a")).toHaveFocus();
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    scrolls.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("the reader's own answer leaves the Inbox at once, even though their focus and pointer were on the row", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });
@@ -3634,6 +3712,80 @@ test("a question the reader was answering keeps its text in the column, closed, 
   } finally {
     unmount();
     narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// The same withdrawal with the page's focus rescue mounted as the app shell mounts it
+// (`RescuedMain`), and no press of the reader's live when it lands. The card's hand-off target
+// in the column is the column's own focus stop, which is in no row, so the card hands the focus
+// to it whoever caused the loss, with no scroll, and the Inbox's `j` answers from there. Left to
+// the rescue, the focus would land on a control of the record drawn in the form's place, and a
+// text box there would take the `j` as text.
+test("in the reading column, a question withdrawn under the reader's focus hands it to the column's focus stop, and j then selects the next row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const first = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const second = inboxIssue("ask-b", "CORE-2", "Which format?");
+  let served = [first, second];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads([first, second]);
+  const getIssue = mockIssueReads();
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>
+            <Inbox />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    expect(selectedIds()).toEqual(["ask-a"]);
+    const draft = within(pane).getByLabelText("Your answer");
+    await user.clear(draft);
+    await user.click(draft);
+    await user.paste("Only on a cold start, and only back to the last lease.");
+    await afterRescue();
+    expect(draft).toHaveFocus();
+    // The opening selection keeps its row in sight (`pane-selection.ts`); what follows is the
+    // loss, which scrolls nothing.
+    scrolls.mockClear();
+
+    // The server withdraws the question the reader is answering: it leaves the list, its own
+    // read says it is closed, and the card swaps to its record with the focus in its form.
+    served = [second];
+    await act(async () => {
+      queryClient.setQueryData<AskRead>(["ask-thread", "ask-a"], retracted(first));
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    expect(rowIds()).toEqual(["ask-b"]);
+    const kept = within(screen.getByTestId("inbox-pane"));
+    expect(kept.getByTestId("ask-resolution-badge").textContent).toBe("Retracted");
+    expect(draft).not.toBeInTheDocument();
+    await afterRescue();
+
+    expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
+    expect(document.activeElement?.closest("[data-inbox-row]") ?? null).toBeNull();
+    expect(scrolls).not.toHaveBeenCalled();
+
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    expect(within(screen.getByTestId("inbox-pane")).getByTestId("ask-ask-b")).toBeTruthy();
+  } finally {
+    view.unmount();
+    narrow();
+    scrolls.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();

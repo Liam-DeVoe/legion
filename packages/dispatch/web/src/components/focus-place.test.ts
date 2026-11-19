@@ -1,10 +1,11 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 
-import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
+import { KeymapProvider } from "../features/shell/KeymapProvider";
+import { PANEL_ATTRIBUTE, takesText, useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
-import { useFocusRescue } from "./focus-place";
+import { inRow, useFocusRescue } from "./focus-place";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
 // away fires a `focusout` in Chromium while it is still in the page, and none at all in Firefox
@@ -606,9 +607,10 @@ test("the Inbox drawer, losing its last rows, keeps the focus inside it", async 
 });
 
 // (v) The main content, losing a block of controls at its end, hands the focus to the nearest
-// control before the block, however many went together - here its filter trigger, then its search
-// box, then its first control as each is taken in turn - and to itself once it draws none, never
-// to a control outside it, the sidebar's here. Changed by the tree's architect in round 9
+// control before the block, however many went together - here its filter trigger, then, past its
+// search box, which takes typed text and so is no landing for a loss the reader did not cause, its
+// first control as each is taken in turn - and to itself once it draws none, never to a control
+// outside it, the sidebar's here. Changed by the tree's architect in round 9
 // (2026-11-15T08:03Z): this case once expected the search box first, which only Chromium's path
 // gave; the nearest earlier control is the one landing every engine agrees on, and the one a
 // keyboard reader expects, where the block was rather than at the top of the page.
@@ -636,7 +638,8 @@ test("the main content losing a block at its end goes to the nearest control bef
       expect(trigger).toHaveFocus();
       trigger.remove();
       await loseThree();
-      expect(search).toHaveFocus();
+      expect(first).toHaveFocus();
+      expect(search).not.toHaveFocus();
       search.remove();
       await loseThree();
       expect(first).toHaveFocus();
@@ -650,6 +653,37 @@ test("the main content losing a block at its end goes to the nearest control bef
     });
   } finally {
     aside.remove();
+  }
+});
+
+// (be) The edge of (v): a loss the reader did not cause, where every control before the lost
+// place takes typed text - the page's search box and a note field - lands on none of them, nor
+// on the body: the main content itself takes the focus, as its tabindex="-1" stop, and nothing
+// scrolls, so the page's single keys answer from there. With Chromium's `focusout` and without.
+test("an uncaused loss whose every earlier control takes text lands on the main content itself", async () => {
+  for (const withFocusout of [true, false]) {
+    const scrolls = spyOn(Element.prototype, "scrollIntoView");
+    try {
+      await withRescue(async () => {
+        const { main } = mainOf();
+        const search = pageSearchIn(main);
+        const note = document.createElement("textarea");
+        note.setAttribute("aria-label", "Note");
+        main.append(note);
+        const gone = buttonIn(main, "Gone");
+        gone.focus();
+        if (withFocusout) lose(gone);
+        else gone.remove();
+        await settled();
+        expect(main).toHaveFocus();
+        expect(search).not.toHaveFocus();
+        expect(note).not.toHaveFocus();
+        expect(document.activeElement).not.toBe(document.body);
+      });
+      expect(scrolls).not.toHaveBeenCalled();
+    } finally {
+      scrolls.mockRestore();
+    }
   }
 });
 
@@ -1304,7 +1338,7 @@ test("a second press inside a control its first press holds keeps the first pres
   });
 });
 
-// (bd) A press in a menu or a list counts as one on the trigger that names it (`openerOf`) - the
+// (bf) A press in a menu or a list counts as one on the trigger that names it (`openerOf`) - the
 // selection bar's Snooze, whose menu the focus entered from the row the bar's key was pressed on.
 // A trigger already held when the press is made - an earlier write of the bar's still out - is no
 // doing of that press, as in (ay): the press is live a frame and a task after it and its release,
@@ -1695,14 +1729,16 @@ test("a click on the page's text that ends a field's edit leaves the focus on th
 
 // (ap) The same field taken away while it holds the focus is still a loss to answer, however late
 // its commit comes: Chromium fires the `focusout` during the removal itself, so the field has gone
-// by the rescue's microtask, and Firefox and WebKit fire none. The focus lands on the heading
-// drawn in the field's place.
+// by the rescue's microtask, and Firefox and WebKit fire none. The commit is the reader's Enter's,
+// as the issue title's is, so the loss is theirs, and the focus lands on the heading drawn in the
+// field's place (a loss the reader did not cause lands on nothing drawn in its place: (bd)).
 test("the same field taken away while focused, a microtask after the event, hands the focus to the heading", async () => {
   for (const withFocusout of [true, false]) {
     await withRescue(async () => {
       const { buttons, main } = mainOf("Before", "After");
       const { field, heading, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
       field.focus();
+      field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
       queueMicrotask(() => (withFocusout ? lose(field, replace) : replace()));
       await settled();
       expect(heading).toHaveFocus();
@@ -1762,6 +1798,70 @@ test("Tab off a control a pick's write holds ends the pick as the cause of anoth
         expect(box).toHaveFocus();
         expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
         expect(rows[2]?.mark).not.toHaveFocus();
+      });
+      expect(scrolls).not.toHaveBeenCalled();
+    } finally {
+      scrolls.mockRestore();
+    }
+  }
+});
+
+// (bd) A loss the reader did not cause takes the walk back alone, whatever the page drew in the
+// lost control's place. A live update withdraws the question whose answer form holds the focus and
+// draws a Reply form where that card stood, its text box first. The focus lands on no control of
+// that form - not its text box, where the reader's next key would be typed and a Reply could be
+// sent, nor its Send - but on the control before the place, where the walk lands, in no row and
+// with no scroll, by Chromium's `focusout` as by none. The page's keys answer there: `j` runs the
+// page's binding.
+test("an uncaused loss whose place now holds a form leaves the focus out of its text box", async () => {
+  for (const withFocusout of [true, false]) {
+    const scrolls = spyOn(Element.prototype, "scrollIntoView");
+    try {
+      await withRescue(async () => {
+        const walked: string[] = [];
+        const next = { id: "next", keys: "j", label: "Next row", run: () => walked.push("j") };
+        const keys = renderHook(() => useKeymap("global", [next]), { wrapper: KeymapProvider });
+        try {
+          const { buttons, main } = mainOf("Pin");
+          const pin = buttons[0] as HTMLButtonElement;
+          const asked = document.createElement("article");
+          const answer = document.createElement("form");
+          const choice = document.createElement("input");
+          choice.type = "radio";
+          choice.name = "choice";
+          answer.append(choice);
+          buttonIn(answer, "Send answer");
+          asked.append(answer);
+          main.append(asked);
+          const withdrawn = document.createElement("article");
+          const reply = document.createElement("form");
+          const box = document.createElement("textarea");
+          box.setAttribute("aria-label", "Reply");
+          reply.append(box);
+          buttonIn(reply, "Send");
+          withdrawn.append(reply);
+          choice.focus();
+          // The update takes the asked card away and draws the withdrawn one where it stood.
+          const replace = () => {
+            asked.remove();
+            main.append(withdrawn);
+          };
+          if (withFocusout) lose(choice, replace);
+          else replace();
+          await settled();
+          expect(box).not.toHaveFocus();
+          expect(reply.contains(document.activeElement)).toBe(false);
+          expect(pin).toHaveFocus();
+          const landed = document.activeElement as HTMLElement;
+          expect(takesText(landed)).toBe(false);
+          expect(inRow(landed)).toBe(false);
+          landed.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "j" })
+          );
+          expect(walked).toEqual(["j"]);
+        } finally {
+          keys.unmount();
+        }
       });
       expect(scrolls).not.toHaveBeenCalled();
     } finally {
