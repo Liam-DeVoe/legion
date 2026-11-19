@@ -4195,9 +4195,11 @@ Each item below names a path with its method and identity, then its purpose.
   `outbox_publisher` says whether this process publishes the events outbox now:
   `true` while it holds the outbox's publisher hold and the hold's deadline has not passed, `false` while it stands by for another process's, after it lost the hold, and with NATS disabled.
   One process of a deployment publishes at a time, so a healthy process may report `false`, and the field never decides `ok` or the status.
-  `degraded` is `["private_project_unprovisioned"]` while the database holds a private project that `DISPATCH_PRIVATE_PROJECTS` does not name, as the last of the reads `privateProjectsState` makes every 30 seconds found it, and is absent when there is none;
-  it is a fixed reason, with no key and no count, because `/healthz` answers a caller with no credential: the project's key is in the ERROR line the boot and every maintenance pass log.
-  It never decides `ok` or the status, since such a project stays private and the server serves every other one (Required configuration, above).
+
+  - `degraded` is `["private_project_unprovisioned"]` while the database holds a private project that `DISPATCH_PRIVATE_PROJECTS` does not name, as the last of the reads `privateProjectsState` makes every 30 seconds found it, and is absent when there is none;
+    it is a fixed reason, with no key and no count, because `/healthz` answers a caller with no credential: the project's key is in the ERROR line the boot and every maintenance pass log.
+    It never decides `ok` or the status, since such a project stays private and the server serves every other one (Required configuration, above).
+
   `github` names each GitHub read Dispatch makes under a lease with its newest attempt (`githubreads`, `gitHubReads` in `main.go`), and it never decides `ok` or the status:
   a process serves everything but those reads while GitHub fails, so failing the probe would take every server process out of service for an outage each of them serves through.
   It is `null` where no GitHub App is configured (neither the `DISPATCH_APP_*` settings nor `app.json` name one, `loadAppCredentials`), and otherwise holds `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and `ci_reconcile`, in that order, each `{state, at, cause}`:
