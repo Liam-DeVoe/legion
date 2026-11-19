@@ -1253,7 +1253,10 @@ func writeCredential(path, content string) error {
 // own pgx client, which spells a unix socket differently from the client the agent runs
 // (ompsessions.Endpoint); with no session database it is "", and the launcher looks a resume up
 // through the pointer the child's environment carries instead. A failure leaves nothing bound and
-// names the generation; its caller removes the directory.
+// names the generation; its caller removes the directory. A proxy that could not reach the database
+// (sessionproxy.ErrUnreachable) is shimwire.SessionStoreUnreachable, a store that did not answer,
+// as the resume's own lookup is (resumable); a proxy refused over its configuration or its socket
+// is not.
 //
 // In an issue pod's container the launcher and the role see the generation's directory at two
 // paths: the launcher binds the socket at dir, under the role's own private directory of the roles
@@ -1283,6 +1286,9 @@ func (m *manager) startSession(ctx context.Context, generation uint64, dir strin
 		ImpersonateServiceAccount: m.cfg.SessionDatabase.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
 		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
 	})
+	if errors.Is(err, sessionproxy.ErrUnreachable) {
+		return nil, "", fmt.Errorf("the session database proxy for generation %d: %w: %v", generation, shimwire.SessionStoreUnreachable, err)
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("the session database proxy for generation %d: %v", generation, err)
 	}

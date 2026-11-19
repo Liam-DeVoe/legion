@@ -163,10 +163,10 @@ type Runtime interface {
 var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 
 // ErrSessionStore is a Resume whose session store could not be asked: the table does not exist, or
-// the store did not answer. It says nothing about the claim's session, so it is neither a missing
-// session nor the claim's own failure: the caller keeps the session, charges nothing, and starts
-// again every minute until the store answers (supervise's startWaitsForStore). Nothing was
-// started.
+// the store did not answer, a sessions folder the tmux runtime cannot read among them. It says
+// nothing about the claim's session, so it is neither a missing session nor the claim's own
+// failure: the caller keeps the session, charges nothing, and starts again every minute until the
+// store answers (supervise's startWaitsForStore). Nothing was started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act

@@ -438,7 +438,9 @@ func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Lo
 // holds whether or not take_over is set: the folders searched are the same, and a session no
 // folder holds is gone whichever runtime last wrote it — under the key most such sessions are the
 // taken-over runtime's, which neither the recorded path nor the previous incarnation tells from
-// this host's own.
+// this host's own. A folder the search cannot look in starts nothing and wraps
+// runtime.ErrSessionStore, a store that did not answer, which the claim's machine waits out with
+// the session kept, charged nothing, starting it again every minute.
 func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if spec.ResumeSessionFile == "" {
 		return runtime.Locator{}, fmt.Errorf("resume %s: no session file to resume from", spec.Claim)
@@ -494,7 +496,9 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // same search either way, and a session nothing holds is the same fact however the daemon is
 // configured. The caller starts a fresh agent in its place, charged nothing and reported
 // (supervise's start), which is also what a taken-over runtime's session gets, since nothing tells
-// it from this host's own (sessionfile.go).
+// it from this host's own (sessionfile.go). A folder the search cannot look in is
+// runtime.ErrSessionStore instead: nothing says the session is not there, so the caller keeps it
+// and tries the same session again a minute later (supervise's startWaitsForStore).
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err

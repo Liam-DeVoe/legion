@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // SavedMarkerSuffix names the file the launcher writes beside a fresh Claude Code transcript once
@@ -254,7 +255,10 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 // transcript the keeper names from the start, then restores each file from its row (restore), so
 // the child starts on the session the table holds, and the transcript's marker is written: the
 // table already holds what the claim records. parent's end (the container's stop) ends the wait as
-// the timeout does. A nil keeper, a generation that keeps nothing, closes conn.
+// the timeout does. A nil keeper, a generation that keeps nothing, closes conn. A table it cannot
+// dial and ready, or whose rows it cannot read back, is shimwire.SessionStoreUnreachable, a store
+// that did not answer, as the resume's own lookup is (resumable); a file of the session it cannot
+// write on the pod's disk is not.
 func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	if k == nil {
 		closeSessions(conn)
@@ -269,7 +273,7 @@ func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	if conn == nil {
 		var err error
 		if conn, err = k.sessions.dial(ctx, ompsessions.CreateTables); err != nil {
-			return fmt.Errorf("keep Claude Code session %s: %v", k.session, err)
+			return fmt.Errorf("keep Claude Code session %s: %w: %v", k.session, shimwire.SessionStoreUnreachable, err)
 		}
 	}
 	k.conn = conn
@@ -278,7 +282,7 @@ func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	}
 	for _, f := range [...]*keptFile{k.transcript, k.record} {
 		if err := k.restore(ctx, f); err != nil {
-			return fmt.Errorf("keep Claude Code session %s: restore %s: %v", k.session, f.path, err)
+			return fmt.Errorf("keep Claude Code session %s: restore %s: %w", k.session, f.path, err)
 		}
 	}
 	return writeMarker(k.transcript.path)
@@ -304,11 +308,15 @@ func (k *claudeKeeper) connect(ctx context.Context) error {
 // restore writes f's row to f's path, making its directories, when the file there is missing or a
 // strict prefix of the row. It never shortens a longer file: a relaunch into the same pod keeps
 // what the last save missed, which the first save then appends. A file that is neither a prefix
-// nor an extension of the row is left as it is, and the first save rewrites the row from it.
+// nor an extension of the row is left as it is, and the first save rewrites the row from it. A row
+// the table could not be asked for is shimwire.SessionStoreUnreachable.
 func (k *claudeKeeper) restore(ctx context.Context, f *keptFile) error {
 	row, ok, err := ompsessions.Read(ctx, k.conn, f.path)
-	if err != nil || !ok {
-		return err
+	if err != nil {
+		return fmt.Errorf("%w: %v", shimwire.SessionStoreUnreachable, err)
+	}
+	if !ok {
+		return nil
 	}
 	f.saved, f.tail = int64(len(row)), lastWindow(row)
 	local, err := readNoFollow(f.path)

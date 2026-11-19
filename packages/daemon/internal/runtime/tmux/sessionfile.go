@@ -2,11 +2,14 @@ package tmux
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
+	"syscall"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // sessionFileOf is the file a resume continues the claim's recorded session from, and the
@@ -22,12 +25,14 @@ import (
 // looks one level below a sessions directory for a file of the recorded name, or, for Oh My Pi's
 // name, of any timestamp with the recorded session id. Of several in one directory, the one written
 // last is taken. found is "" when no directory holds the session; err is a failure to look, never
-// the session's absence.
+// the session's absence: a folder that cannot be looked in is runtime.ErrSessionStore, a store
+// that did not answer, which the claim's machine waits out a minute at a time with the session
+// kept, and a pane sessions directory that cannot be resolved is the launch's own failure.
 func sessionFileOf(recorded string, paneSessions func() (string, error)) (found string, searched []string, err error) {
 	if _, err := os.Stat(recorded); err == nil {
 		return recorded, nil, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", nil, err
+		return "", nil, fmt.Errorf("%w: %v", runtime.ErrSessionStore, err)
 	}
 	searched = []string{filepath.Dir(filepath.Dir(recorded))}
 	if paneSessions != nil {
@@ -50,34 +55,51 @@ func sessionFileOf(recorded string, paneSessions func() (string, error)) (found 
 
 // newestSession is the regular file written last among those one folder below sessions named name
 // or, for Oh My Pi's `<timestamp>_<session id>.jsonl`, of any timestamp with name's session id; ""
-// for none. A directory or name holding a glob character is searched nowhere: it would match other
-// sessions.
+// for none. On equal times a file of the recorded name is taken before one of the session id alone.
+// A directory or name holding a glob character is searched nowhere: it would match other sessions.
+// A sessions directory that is not there holds no session, and nor does an entry of it that is no
+// folder; a folder that is there and cannot be read, or a session in it that cannot be looked at,
+// is runtime.ErrSessionStore, since the session may be in it.
 func newestSession(sessions, name string) (string, error) {
 	if strings.ContainsAny(sessions+name, `*?[\`) {
 		return "", nil
 	}
-	patterns := []string{filepath.Join(sessions, "*", name)}
+	ofID := ""
 	if stem, ok := strings.CutSuffix(name, ".jsonl"); ok {
 		if _, id, ok := strings.Cut(stem, "_"); ok && id != "" {
-			patterns = append(patterns, filepath.Join(sessions, "*", "*_"+id+".jsonl"))
+			ofID = "_" + id + ".jsonl"
 		}
 	}
-	var candidates []string
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
+	folders, err := sessionEntries(sessions)
+	if err != nil {
+		return "", err
+	}
+	var named, identified []string
+	for _, folder := range folders {
+		dir := filepath.Join(sessions, folder.Name())
+		entries, err := sessionEntries(dir)
 		if err != nil {
 			return "", err
 		}
-		for _, match := range matches {
-			if !slices.Contains(candidates, match) {
-				candidates = append(candidates, match)
+		for _, entry := range entries {
+			switch {
+			case entry.Name() == name:
+				named = append(named, filepath.Join(dir, entry.Name()))
+			case ofID != "" && strings.HasSuffix(entry.Name(), ofID):
+				identified = append(identified, filepath.Join(dir, entry.Name()))
 			}
 		}
 	}
 	newest, newestAt := "", time.Time{}
-	for _, candidate := range candidates {
+	for _, candidate := range append(named, identified...) {
 		info, err := os.Stat(candidate)
-		if err != nil || !info.Mode().IsRegular() {
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("%w: %v", runtime.ErrSessionStore, err)
+		}
+		if !info.Mode().IsRegular() {
 			continue
 		}
 		if newest == "" || info.ModTime().After(newestAt) {
@@ -85,6 +107,19 @@ func newestSession(sessions, name string) (string, error) {
 		}
 	}
 	return newest, nil
+}
+
+// sessionEntries is what dir, a sessions directory or a folder of one, holds: nothing when it is
+// not there or is no directory, and runtime.ErrSessionStore when it is there and cannot be read.
+func sessionEntries(dir string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", runtime.ErrSessionStore, err)
+	}
+	return entries, nil
 }
 
 // searchedIn is the sessions directories a search for a session found nothing in (sessionFileOf),

@@ -478,6 +478,55 @@ func TestStartRefusesWhenSomethingHoldsTheSocket(t *testing.T) {
 	_ = conn.Close()
 }
 
+// A refusal over the database itself, a dialer that could not be built or a proof dial the instance
+// refused or never answered, is ErrUnreachable, which the launcher answers as a session store that
+// did not answer; a refusal over the proxy's own configuration or socket is not.
+func TestOnlyARefusalOverTheDatabaseIsErrUnreachable(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg         func(t *testing.T, socket string) Config
+		unreachable bool
+	}{
+		"a dialer that cannot be built": {unreachable: true, cfg: func(_ *testing.T, socket string) Config {
+			return Config{Socket: socket, Instance: testInstance, ProofTimeout: testProofTimeout,
+				NewDialer: func(context.Context, string) (Dialer, error) {
+					return nil, errors.New("google: could not find default credentials")
+				}}
+		}},
+		"a proof dial the instance refused": {unreachable: true, cfg: func(t *testing.T, socket string) Config {
+			dialer := &fakeDialer{addr: newUpstream(t).listener.Addr().String()}
+			dialer.failWith(errors.New("the instance refused the login"))
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
+		}},
+		"a proof dial the instance never answered": {unreachable: true, cfg: func(t *testing.T, socket string) Config {
+			dialer := &stallingDialer{addr: silentUpstream(t)}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: 200 * time.Millisecond}
+		}},
+		"a socket something else holds": {cfg: func(t *testing.T, socket string) Config {
+			held, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatalf("listen as the address's holder: %v", err)
+			}
+			t.Cleanup(func() { _ = held.Close() })
+			dialer := &fakeDialer{addr: newUpstream(t).listener.Addr().String()}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
+		}},
+		"an unbounded proof dial": {cfg: func(t *testing.T, socket string) Config {
+			dialer := &fakeDialer{addr: newUpstream(t).listener.Addr().String()}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Start(context.Background(), tc.cfg(t, socketPath(t)))
+			if err == nil {
+				t.Fatal("Start served")
+			}
+			if got := errors.Is(err, ErrUnreachable); got != tc.unreachable {
+				t.Fatalf("Start = %v, which is ErrUnreachable %t, want %t", err, got, tc.unreachable)
+			}
+		})
+	}
+}
+
 func TestConnectionIsClosedWhenItsUpstreamDialFails(t *testing.T) {
 	up := newUpstream(t)
 	dialer := &fakeDialer{addr: up.listener.Addr().String()}

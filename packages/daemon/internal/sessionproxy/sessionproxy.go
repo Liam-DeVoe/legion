@@ -37,6 +37,18 @@ type Dialer interface {
 	Close() error
 }
 
+// ErrUnreachable is what a refusal of Start is (errors.Is) when the database could not be
+// reached: the dialer could not be built, or the proof dial failed or never answered. Every other
+// refusal is over the proxy's own configuration or socket.
+var ErrUnreachable = errors.New("sessionproxy: the database could not be reached")
+
+// unreachable is a refusal of Start that is ErrUnreachable and reads as its own error alone.
+type unreachable struct{ error }
+
+func (u unreachable) Unwrap() error { return u.error }
+
+func (unreachable) Is(target error) bool { return target == ErrUnreachable }
+
 // Config is one proxy's whole configuration. A proxy serves exactly one generation, so every field
 // is fixed for that generation's lifetime.
 type Config struct {
@@ -114,10 +126,12 @@ type Proxy struct {
 // ctx bounds the start alone: a start whose ctx ends before the proof dial succeeds fails and
 // leaves nothing bound. The proof dial is bounded besides by cfg.ProofTimeout, so a start against
 // an instance that never answers fails within that bound however long ctx lives, with an error
-// naming the instance and the bound that wraps the dial's own (context.DeadlineExceeded). Once
-// Start returns, ctx no longer matters: the proxy serves until Close, so its owner can keep it
-// serving after ctx ends, as the launcher does through a child's stop grace when the container is
-// told to stop.
+// naming the instance and the bound that wraps the dial's own (context.DeadlineExceeded). A start
+// refused because the database could not be reached, its dialer unbuilt or its proof dial failed,
+// is ErrUnreachable, which the launcher answers the daemon as a session store that did not answer;
+// a refusal over the configuration or the socket is not. Once Start returns, ctx no longer
+// matters: the proxy serves until Close, so its owner can keep it serving after ctx ends, as the
+// launcher does through a child's stop grace when the container is told to stop.
 func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	if !filepath.IsAbs(cfg.Socket) {
 		return nil, fmt.Errorf("sessionproxy: Socket %q is not an absolute path", cfg.Socket)
@@ -155,7 +169,7 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	if err != nil {
 		cancel()
 		_ = listener.Close()
-		return nil, fmt.Errorf("sessionproxy: build the dialer for %s: %w", cfg.Instance, err)
+		return nil, unreachable{fmt.Errorf("sessionproxy: build the dialer for %s: %w", cfg.Instance, err)}
 	}
 	proofCtx, cancelProof := context.WithTimeout(ctx, cfg.ProofTimeout)
 	proof, err := dialer.Dial(proofCtx, cfg.Instance)
@@ -167,9 +181,9 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		_ = listener.Close()
 		_ = dialer.Close()
 		if timedOut {
-			return nil, fmt.Errorf("sessionproxy: dial %s: no answer within %s: %w", cfg.Instance, cfg.ProofTimeout, err)
+			return nil, unreachable{fmt.Errorf("sessionproxy: dial %s: no answer within %s: %w", cfg.Instance, cfg.ProofTimeout, err)}
 		}
-		return nil, fmt.Errorf("sessionproxy: dial %s: %w", cfg.Instance, err)
+		return nil, unreachable{fmt.Errorf("sessionproxy: dial %s: %w", cfg.Instance, err)}
 	}
 	_ = proof.Close()
 	// Once the start has succeeded, closing the listener never unlinks the socket. Go's unlink goes

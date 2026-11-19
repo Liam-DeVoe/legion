@@ -7,6 +7,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // writeSession writes a session file at path, its parents made, last modified at.
@@ -165,6 +167,26 @@ func TestSessionFileOfResolvesThePanesSessionsDirectoryOnlyWhenItSearches(t *tes
 	}
 	if _, _, err := sessionFileOf(filepath.Join(filepath.Dir(here), "gone_ses-gone.jsonl"), refused); err == nil || err.Error() != "no home to resolve under" {
 		t.Fatalf("sessionFileOf with an unresolvable pane directory = %v, want its error", err)
+	}
+}
+
+// A session the search finds by its name and cannot look at may be the one it is after, so it is a
+// store that did not answer (runtime.ErrSessionStore), never the session's absence. The pane
+// sessions directory that cannot be resolved, above, is no store, and stays the search's own error.
+func TestSessionFileOfAnswersASessionItCannotLookAtAsAStoreFault(t *testing.T) {
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	looped := filepath.Join(sessions, "--pod-work--", filepath.Base(recorded))
+	if err := os.MkdirAll(filepath.Dir(looped), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A link to itself: its folder lists it by name, and no look at it answers, root's included.
+	if err := os.Symlink(looped, looped); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane-sessions")))
+	if !errors.Is(err, runtime.ErrSessionStore) || got != "" {
+		t.Fatalf("sessionFileOf over a session it cannot look at = %q, %v; want runtime.ErrSessionStore", got, err)
 	}
 }
 
