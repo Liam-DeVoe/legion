@@ -68,7 +68,7 @@ heavy run goes where your deployment's instructions say.
   (`runtime.kubernetes.test_postgres_disk`), the launcher's 15-second check resets the cluster
   when that disk has fewer than 2 GiB free. Every database in it is gone, and every session on it
   ends. A new empty cluster serves the same DSN, and no role's turn ends. So make your suite drop
-  each database it makes. A reset writes one line, `legion-testpg: reset the cluster in …`, with
+  each database it makes. A reset writes one line, `legion-testpg: reset of the cluster in …`, with
   the disk's use and the databases the cluster held, each with its owner and size. It goes to the
   pod's log: `kubectl logs <pod> -n legion -c roles | grep 'legion-testpg: reset'` shows it. The
   server's log (`$LEGION_TEST_PG_LOG`) carries the same line, after the new cluster's first lines,

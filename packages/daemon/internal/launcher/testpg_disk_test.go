@@ -28,6 +28,11 @@ const (
 	pgDiskUnder = 512 << 20
 )
 
+// pgDiskInitName is where, in the cluster's directory, the script's start makes a new cluster
+// before it renames it to the data directory (legion-testpg's init). The launcher never names it:
+// only a start, under the script's lock, touches it.
+const pgDiskInitName = "data.init"
+
 // pgDiskWait bounds a wait on one reset, whose own bound is testPGResetBound: a reset that waits
 // on the lock or on a process in the cluster waits once more for its stop, its initdb and its
 // start after that wait ends. It is that bound as the package starts, before any test shortens it.
@@ -93,29 +98,25 @@ func newPGDiskRig(t *testing.T) *pgDiskRig {
 	if err := makeTestPGLog(r.cfg.RolesDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := runTestPG(context.Background(), r.cfg, r.roleLog(), &pidGuard{}, "ensure", testPGBound); err != nil {
+	if err := runTestPG(context.Background(), r.cfg, r.roleLog(), &pidGuard{}, ensureRun()); err != nil {
 		t.Fatalf("the first ensure: %v\n%s", err, r.log)
 	}
 	return r
 }
 
-// pgDiskScript is the worker image's legion-testpg in this repository, found from the test's
-// working directory up.
+// pgDiskScript is the worker image's legion-testpg in this repository, at the relative path from
+// this package every test that reads packages/daemon/docker takes, made absolute because the
+// link to it (newPGDiskRig) is read from a directory of its own.
 func pgDiskScript(t *testing.T) string {
 	t.Helper()
-	wd, err := os.Getwd()
+	script, err := filepath.Abs(filepath.Join("..", "..", "docker", testPGProgram))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for dir := wd; ; dir = filepath.Dir(dir) {
-		script := filepath.Join(dir, "packages", "daemon", "docker", testPGProgram)
-		if _, err := os.Stat(script); err == nil {
-			return script
-		}
-		if filepath.Dir(dir) == dir {
-			t.Fatalf("no packages/daemon/docker/%s in %s or any directory above it", testPGProgram, wd)
-		}
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("the worker image's %s: %v", testPGProgram, err)
 	}
+	return script
 }
 
 // pgDiskServerBin is the server bin directory the script picks: PGBIN, or the newest
@@ -330,8 +331,14 @@ func TestPGDiskUnderTheFloorResetsAServerThatAnswersAndNamesWhatItHeld(t *testin
 	r := newPGDiskRig(t)
 	r.makeDatabases(t, "tpg_one", "tpg_two")
 	r.check(pgDiskUnder)
-	line := r.assertReset(t)
-	for _, name := range []string{"tpg_one", "tpg_two", "legion_test"} {
+	assertHeld(t, r.assertReset(t), "tpg_one", "tpg_two", "legion_test")
+}
+
+// assertHeld holds that a reset's line names each database with its owner, legion_test, and its
+// size.
+func assertHeld(t *testing.T, line string, names ...string) {
+	t.Helper()
+	for _, name := range names {
 		held := regexp.MustCompile(`\b` + name + ` \(owner legion_test, [0-9]+ (bytes|kB|MB|GB|TB)\)`)
 		if !held.MatchString(line) {
 			t.Errorf("the reset line %q does not name %s with its owner, legion_test, and its size", line, name)
@@ -349,6 +356,21 @@ func TestPGDiskUnderTheFloorResetsAServerThatDoesNotAnswer(t *testing.T) {
 	line := r.assertReset(t)
 	if !strings.Contains(line, "read no databases") || strings.Contains(line, "tpg_one") {
 		t.Errorf("the reset line %q, of a server that did not answer, does not say it read no databases", line)
+	}
+}
+
+// A role names its own databases, and a name may hold a newline. The reset's line writes each
+// control character of a name as ?, so such a name neither splits the line nor forges a second
+// `legion-testpg: reset` line after it: the reset writes one line, which names the database with
+// its newline replaced.
+func TestPGDiskTheResetLineReplacesANewlineInADatabaseName(t *testing.T) {
+	r := newPGDiskRig(t)
+	name := "tpg_one\n" + testPGProgram + ": reset forged"
+	r.makeDatabases(t, `"`+name+`"`)
+	r.check(pgDiskUnder)
+	line := r.assertReset(t)
+	if want := "tpg_one?" + testPGProgram + ": reset forged (owner legion_test, "; !strings.Contains(line, want) {
+		t.Errorf("the reset line %q does not name the database %q as %q…", line, name, want)
 	}
 }
 
@@ -553,24 +575,29 @@ func (r *pgDiskRig) running(t *testing.T) map[int]string {
 }
 
 // assertCutAfterTheRename holds what a reset cut after its rename, at its initdb, leaves: the old
-// cluster set aside whole, no cluster in the data directory, and no reset line.
-func (r *pgDiskRig) assertCutAfterTheRename(t *testing.T) {
+// cluster set aside whole, no cluster in the data directory, and the reset's one line in the
+// container's log, which the reset writes before its rename, so that a reset whose new cluster
+// never starts still says what the old one held. It answers that line.
+func (r *pgDiskRig) assertCutAfterTheRename(t *testing.T) string {
 	t.Helper()
 	aside := filepath.Join(r.dir, testPGSetAsideName)
 	if !pgDiskExists(t, filepath.Join(aside, "PG_VERSION")) || !pgDiskExists(t, filepath.Join(aside, "base")) {
 		t.Fatalf("the cut reset left no whole cluster at %s\n%s", aside, r.log)
 	}
 	if data := filepath.Join(r.dir, "data"); pgDiskExists(t, filepath.Join(data, "PG_VERSION")) {
-		t.Fatalf("the cut reset left a cluster in %s\n%s", data, r.log)
+		t.Fatalf("the cut reset left a PG_VERSION in %s, past which no later start makes a cluster\n%s", data, r.log)
 	}
-	if lines := r.resetLines(); len(lines) != 0 {
-		t.Fatalf("the cut reset wrote its line %q", lines)
+	lines := r.resetLines()
+	if len(lines) != 1 {
+		t.Fatalf("the container's log holds %d reset lines after the cut reset, want the one it writes before its rename:\n%s", len(lines), r.log)
 	}
+	return lines[0]
 }
 
 // assertNextCheckServesAnEmptyCluster runs the check that follows a cut reset, over the floor and
-// with the real PGBIN, and holds what it leaves: the old cluster set aside deleted, as the
-// container's log says, and an empty cluster served on the DSN.
+// with the real PGBIN, which finds no server and so starts one, and holds what it leaves: the old
+// cluster set aside deleted, as the container's log says, no part of a cluster left where a start
+// makes one, and an empty cluster served on the DSN.
 func (r *pgDiskRig) assertNextCheckServesAnEmptyCluster(t *testing.T) {
 	t.Helper()
 	t.Setenv("PGBIN", r.bin)
@@ -581,6 +608,9 @@ func (r *pgDiskRig) assertNextCheckServesAnEmptyCluster(t *testing.T) {
 	}
 	if pgDiskExists(t, aside) {
 		t.Errorf("the check that followed the cut left %s", aside)
+	}
+	if init := filepath.Join(r.dir, pgDiskInitName); pgDiskExists(t, init) {
+		t.Errorf("the check that followed the cut left %s", init)
 	}
 	if made := r.made(t); len(made) != 0 {
 		t.Errorf("after the cut and a check the cluster holds %v, want an empty one", made)
@@ -598,7 +628,41 @@ func TestPGDiskACheckAfterAResetCutAtItsRenameDeletesTheOldClusterAndServesAnEmp
 	initdb := "#!/bin/sh\n# The reset's own shell runs initdb: killing it here cuts the reset right after its rename.\nkill -KILL \"$PPID\"\nexit 1\n"
 	t.Setenv("PGBIN", r.binWithInitdb(t, initdb))
 	r.check(pgDiskUnder)
-	r.assertCutAfterTheRename(t)
+	assertHeld(t, r.assertCutAfterTheRename(t), "tpg_one", "tpg_two")
+	r.assertNextCheckServesAnEmptyCluster(t)
+}
+
+// A reset cut in the middle of its initdb, after initdb wrote PG_VERSION, which it does early, and
+// before it made the rest of the cluster, leaves that part in data.init and no cluster in the data
+// directory, and the next check that starts a server, here a plain ensure that finds none, deletes
+// the part, makes a whole cluster and serves it empty on the DSN. An initdb run in the data
+// directory itself would leave there a PG_VERSION that no later start makes a cluster past, and
+// the pod's test database down for the pod's life. The cut is an initdb that runs the real one on
+// the same arguments, waits until it has written PG_VERSION in the directory --pgdata names, and
+// then kills it and the reset's own shell, which runs initdb.
+func TestPGDiskAResetCutDuringItsInitdbLeavesNoClusterAndTheNextCheckServesAnEmptyOne(t *testing.T) {
+	r := newPGDiskRig(t)
+	r.makeDatabases(t, "tpg_one", "tpg_two")
+	initdb := "#!/bin/sh\n" +
+		"pgdata= previous=\n" +
+		"for arg in \"$@\"; do\n" +
+		"\t[ \"$previous\" != --pgdata ] || pgdata=$arg\n" +
+		"\tprevious=$arg\n" +
+		"done\n" +
+		"'" + filepath.Join(r.bin, "initdb") + "' \"$@\" &\n" +
+		"real=$!\n" +
+		"while [ ! -f \"$pgdata/PG_VERSION\" ]; do\n" +
+		"\tkill -0 \"$real\" 2> /dev/null || exit 1\n" +
+		"\tsleep 0.01\n" +
+		"done\n" +
+		"kill -KILL \"$real\" \"$PPID\"\n" +
+		"exit 1\n"
+	t.Setenv("PGBIN", r.binWithInitdb(t, initdb))
+	r.check(pgDiskUnder)
+	assertHeld(t, r.assertCutAfterTheRename(t), "tpg_one", "tpg_two")
+	if init := filepath.Join(r.dir, pgDiskInitName); !pgDiskExists(t, filepath.Join(init, "PG_VERSION")) {
+		t.Fatalf("the cut initdb left no PG_VERSION in %s, so the cut did not come after initdb wrote it\n%s", init, r.log)
+	}
 	r.assertNextCheckServesAnEmptyCluster(t)
 }
 

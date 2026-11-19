@@ -33,14 +33,19 @@
 # place of `ensure`, telling it the free bytes, the disk's size and the floor in
 # LEGION_TESTPG_FREE_BYTES, LEGION_TESTPG_SIZE_BYTES and LEGION_TESTPG_FLOOR_BYTES. A reset takes
 # the lock a start takes, reads each database's name, owner and size where the server answers,
-# stops the server, waits until no process holds the data directory, moves the cluster aside to
-# data.reset in one rename, makes and starts a new empty cluster, deletes what it moved aside, and
-# writes one line starting `legion-testpg: reset` to its stdout, the container's log, and to the
-# server's log, with the disk's use and every database the old cluster held. Because the rename
-# comes first, a reset cut at any later step — its own bound, a restart of the roles container, a
-# kill — leaves a data directory with no PG_VERSION, or none at all, which the next check's
-# `ensure` rebuilds as it builds a pod's first cluster, and a data.reset that the next check
-# deletes before it reads the free bytes.
+# stops the server, waits until no process holds the data directory, writes one line starting
+# `legion-testpg: reset` to its stdout, the container's log, with the disk's use and every
+# database the old cluster held, moves the cluster aside to data.reset in one rename, makes and
+# starts a new empty cluster, deletes what it moved aside, and appends the same line to the
+# server's log. start makes a cluster whole or not at all: it runs initdb in data.init, beside the
+# data directory, and renames the result into place only once initdb has made it whole, because
+# initdb writes PG_VERSION early (measured on 18: 145 ms into a 3.1 s run), and a data directory
+# holding the PG_VERSION of a cut initdb is one no start ever builds again. So a reset cut at any
+# step after its rename — its own bound, a restart of the roles container, a kill, in its initdb
+# as anywhere else — leaves a data.reset that the next check deletes before it reads the free
+# bytes, at most a part of a cluster in data.init, which the next start deletes before its
+# initdb, and in the data directory either no cluster, which the next check's `ensure` builds as
+# it builds a pod's first, or the new cluster whole, whose start that `ensure` finishes.
 #
 # initdb's superuser is the OS user (`id -un`, legion). The DSN names another role, created after
 # the server is up with LOGIN CREATEDB CREATEROLE NOSUPERUSER, because a superuser can run
@@ -65,11 +70,20 @@ name=legion-testpg
 dir=${LEGION_TESTPG_DIR:-/var/run/legion/roles/testpg}
 data=$dir/data
 sockets=$dir/sockets
-# aside is where a reset moves the cluster it replaces, in one rename, before it makes the new one.
-# The launcher names the same path (testPGSetAsideName, internal/launcher/testpg.go) and deletes
+# aside is where a reset moves the cluster it replaces, in one rename, before it makes the new one,
+# and init is where start makes a new cluster, before it renames it to the data directory. The
+# launcher names aside's path (testPGSetAsideName, internal/launcher/testpg.go) and deletes
 # whatever it finds there before it reads the disk's free bytes, so the old cluster a reset cut
-# after its rename leaves there is gone at the next check.
+# after its rename leaves there is gone at the next check. The launcher may do that without this
+# script's lock because only a reset makes aside, and the launcher runs its resets one at a time,
+# from its check alone, and kills each one's whole process group at its bound, so no run of this
+# script still uses aside when the next check deletes it. init is touched under the lock alone:
+# start deletes what an earlier start left there before its own initdb, which is only the part of
+# a cluster a cut initdb made, and the launcher never touches it, because the bound of an `ensure`
+# kills the script's own process and not its flock (runTestPG, ensureRun), so a start may still
+# be filling init, or renaming it into place, while the next check runs.
 aside=$dir/data.reset
+init=$dir/data.init
 # The launcher names the log (LEGION_TESTPG_LOG), so the file role-init binds into every role's
 # namespace is the one this script and the server write; the default serves the image build's
 # self-check, the daemon's image probe (`legion probe-image --test-postgres`,
@@ -251,17 +265,25 @@ start() {
 	# the postmaster is launched only when nothing accepts connections on the port — `pg_ctl
 	# start` against a running server fails, which would turn a repair into a refusal.
 	if ! listening; then
-		# An interrupted initdb leaves a directory with no PG_VERSION, which no server starts on.
+		# The data directory holds a whole cluster or none. initdb writes PG_VERSION early
+		# (measured on 18: 145 ms into a 3.1 s run), so an initdb cut in the data directory
+		# itself would leave a PG_VERSION that no later start builds past and no server starts
+		# on. So initdb runs in $init, where a cut one's part is deleted first, and its whole
+		# cluster is renamed to the data directory, which holds no cluster here, once it is
+		# made: a start cut before that rename leaves no PG_VERSION in the data directory, and
+		# the next start makes the cluster again.
 		if [ ! -f "$data/PG_VERSION" ]; then
-			rm -rf "${data:?}"/* "${data:?}"/.[!.]* 2> /dev/null || true
+			rm -rf -- "$init" || die "removing $init, which an earlier start left, failed"
 			# --locale-provider=icu with en-US sorts text the way CI's en_US.utf8 databases
 			# do: a suite whose ORDER BY output is a fixture would otherwise pass here and
 			# fail there on C collation. --username keeps the OS user as the superuser; the
 			# DSN's role is made below, with no superuser rights.
-			"$bin/initdb" --pgdata "$data" --username "$superuser" --auth-local=trust \
+			"$bin/initdb" --pgdata "$init" --username "$superuser" --auth-local=trust \
 				--auth-host=trust --encoding=UTF8 --locale-provider=icu --icu-locale=en-US \
 				--no-sync > "$log" 2>&1 ||
 				die "initdb failed; $log holds its output"
+			rm -rf -- "$data" || die "removing $data, which holds no cluster, failed"
+			mv -- "$init" "$data" || die "moving the new cluster in $init to $data failed"
 		fi
 		# initdb's own pg_hba.conf trusts every user on every address this server listens on.
 		# This one keeps the superuser on the socket alone and rejects it on every host line,
@@ -448,19 +470,24 @@ reset() {
 # reset_locked is a reset, under the lock. Its steps run in this order so that a reset cut at any
 # of them leaves what the next check repairs, never a cluster half deleted beside a server: up to
 # the rename the old cluster is whole where it was, and the next check serves it or resets it
-# again; from the rename on, the data directory holds no PG_VERSION, or is not there at all, which
-# the next check's ensure rebuilds as it builds a pod's first cluster (start), and $aside holds the
-# old cluster whole, which the next check deletes before it reads the disk's free bytes.
+# again; from the rename on, $aside holds the old cluster whole, which the next check deletes
+# before it reads the disk's free bytes, and the data directory holds either no cluster, which
+# the next check's ensure makes as it makes a pod's first, or the new one whole, whose start that
+# ensure finishes: start makes the new cluster in $init and renames it into place once its initdb
+# is done, so an initdb cut midway leaves its part in $init, which the next start deletes before
+# its own initdb.
 reset_locked() {
 	bin=$(bindir)
 	# What the old cluster held, for the line below, so a role whose database went with the reset
 	# reads why, and which harness filled the disk. The superuser reads it over the socket, which a
 	# login out of connections leaves open to it (superuser_reserved_connections). A server that
 	# does not answer is read as holding nothing, and the line says so: waiting for it would let a
-	# disk already full crash the server on every WAL write it cannot make.
+	# disk already full crash the server on every WAL write it cannot make. Every control character
+	# of a name or an owner is read as ?: a role names its own databases and roles, and a newline in
+	# one would split the line in two, the second of which could be a forged `legion-testpg: reset`.
 	if ! listening; then
 		held="the server did not answer, so it read no databases"
-	elif listed=$(PGCONNECT_TIMEOUT=5 super -tA -d postgres -c "select string_agg(format('%s (owner %s, %s)', datname, pg_get_userbyid(datdba), pg_size_pretty(pg_database_size(oid))), ', ' order by datname) from pg_database where not datistemplate"); then
+	elif listed=$(PGCONNECT_TIMEOUT=5 super -tA -d postgres -c "select string_agg(format('%s (owner %s, %s)', regexp_replace(datname, '[[:cntrl:]]', '?', 'g'), regexp_replace(pg_get_userbyid(datdba), '[[:cntrl:]]', '?', 'g'), pg_size_pretty(pg_database_size(oid))), ', ' order by datname) from pg_database where not datistemplate"); then
 		held="it held $listed"
 	else
 		held="the server answered but the list of its databases failed, so it read none"
@@ -496,20 +523,27 @@ reset_locked() {
 			die "reset: process $holder ($(tr '\0' ' ' 2> /dev/null < "/proc/$holder/cmdline")) still runs in $data 60 s after the server stopped, so the cluster is left where it is and nothing is renamed"
 		sleep 1
 	done
+	# The line goes to the container's log here, once the databases are read and the server is
+	# stopped and before anything is moved, so a reset whose new cluster then fails to start, as
+	# its initdb does on a disk that went from 2 GiB free to nearly full within one check, still
+	# tells the roles what the old cluster held. It names the reset and not its outcome: a step
+	# that fails after it says so in a line of its own. printf, not echo: a database's name may
+	# hold a backslash.
+	line="$name: reset of the cluster in $data: $(human "${LEGION_TESTPG_FREE_BYTES:-}") free of $(human "${LEGION_TESTPG_SIZE_BYTES:-}") on its disk, under the floor of $(human "${LEGION_TESTPG_FLOOR_BYTES:-}"); $held"
+	printf '%s\n' "$line"
 	# The one rename: from here on the old cluster is out of the server's path, whole.
 	rm -rf -- "$aside" || die "reset: removing $aside, which an earlier reset left, failed"
 	if [ -e "$data" ]; then
 		mv -- "$data" "$aside" || die "reset: moving $data aside to $aside failed"
 	fi
-	# start runs initdb, since no PG_VERSION is there, writes the hba file, starts the server and
-	# makes the DSN's role, vector in template1 and the DSN's database, as at a pod's first start.
+	# start runs initdb, since no PG_VERSION is there, renames its cluster into place, writes the
+	# hba file, starts the server and makes the DSN's role, vector in template1 and the DSN's
+	# database, as at a pod's first start.
 	start
 	rm -rf -- "$aside" ||
 		echo "$name: reset: deleting $aside, the cluster it replaced, failed; the launcher's next check deletes it" >&2
-	# initdb truncated the server's log, so the line is appended after it, where a role reading the
-	# log finds why its databases are gone. printf, not echo: a database's name may hold a backslash.
-	line="$name: reset the cluster in $data: $(human "${LEGION_TESTPG_FREE_BYTES:-}") free of $(human "${LEGION_TESTPG_SIZE_BYTES:-}") on its disk, under the floor of $(human "${LEGION_TESTPG_FLOOR_BYTES:-}"); $held"
-	printf '%s\n' "$line"
+	# initdb truncated the server's log, so the same line is appended after it, where a role reading
+	# the log finds why its databases are gone.
 	printf '%s\n' "$line" >> "$log" || die "appending the reset's line to $log failed"
 }
 

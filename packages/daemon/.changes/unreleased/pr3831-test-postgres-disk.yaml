@@ -16,8 +16,8 @@ body: |-
   the cluster aside in one rename, starts a new empty cluster on the same DSN and deletes the old
   one. A reset cut after the rename is finished by the next check. Every database in the cluster
   is lost and every session on it ends, but no role's turn ends. The reset writes one line,
-  `legion-testpg: reset the cluster in …`, with the disk's use and each database the cluster held,
-  to the `roles` container's log and to the server's log.
+  `legion-testpg: reset of the cluster in …`, with the disk's use and each database the cluster
+  held, to the `roles` container's log and to the server's log.
 
   The key lands only with a `daemonImage` and a worker image that both carry this release: an
   earlier daemon refuses the key at boot, and an earlier image's launcher refuses the new

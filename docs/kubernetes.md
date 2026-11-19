@@ -446,6 +446,9 @@ Then:
   With `--test-postgres-disk`, the launcher's first `ensure` stays a plain `ensure`, run before any role starts and bounded at 60 s, since the daemon's boot of the pod waits on it.
   Right after it, and then at each 15-second tick in place of the plain `ensure`, the launcher runs a check of the disk (`checkTestPGDisk`, `packages/daemon/internal/launcher/testpg.go`), which no role's start waits on.
   Each check first deletes `data.reset` in the cluster's directory where it finds one: the old cluster a reset cut after its rename set aside, which would otherwise hold its bytes for the pod's life.
+  It deletes it without the script's lock, because only a reset makes `data.reset`, and the launcher runs its resets one at a time, from this check alone, each under a bound that kills its whole process group, so no run of the script still uses it.
+  It never touches `data.init`, where every start makes a new cluster before it renames it into place (next bullet):
+  the bound of an `ensure` kills the script's own process and not its `flock`, so a start may still be filling that directory under the lock, and every start deletes what a cut `initdb` left there before its own `initdb`.
   It then reads the disk with `statfs`: the bytes free to a process that is not root (`f_bavail`), as the server finds them, and the disk's size.
   Under 2 GiB free it resets the cluster, whether the server answers or not; at 2 GiB or more, and where the disk cannot be read, it runs the plain `ensure` and changes nothing else.
   The floor is far above what the server needs to keep working, and it is set there on purpose:
@@ -460,16 +463,21 @@ Then:
   It stops the server, fast and then immediate, and only where the pid `postmaster.pid` names is a process in the data directory, since a stale file may name any process of the container, a role's among them.
   It waits up to 60 s until no process has the data directory as its working directory;
   a process still there at that bound is named and the cluster is left where it is, so the next check under the floor tries again and a reset never moves or deletes what a process still holds.
+  It then writes its line to the `roles` container's log (next bullet), so a reset whose new cluster fails to start, as its `initdb` does on a disk that went from 2 GiB free to nearly full within one check, still names what the old cluster held.
   It deletes a `data.reset` an earlier reset left, and moves the data directory aside to `data.reset` in one rename.
   It makes and starts a new empty cluster as a pod's first `ensure` does, with the DSN's login, `vector` in `template1` and the DSN's database.
+  Like every start, it runs `initdb` in `data.init`, beside the data directory, deleting first what a cut `initdb` left there, and renames the new cluster to the data directory only once `initdb` is done.
+  That rename is what makes a cluster whole or absent: `initdb` writes `PG_VERSION` early (measured on PostgreSQL 18: 145 ms into a 3.1 s run), and a data directory holding the `PG_VERSION` of a cut `initdb` is one no later start makes a cluster in again.
   It deletes `data.reset`, and where that fails the next check deletes it.
-  It then writes its line (next bullet).
-  Because the rename comes before any of the old cluster is deleted, a reset cut at any later step, by its own bound, a restart of the `roles` container or a kill, leaves a data directory with no `PG_VERSION`, or none at all, which the next check rebuilds as `ensure` builds a pod's first cluster, and a `data.reset` that the next check deletes before it reads the free bytes.
+  It then appends its line to the server's log.
+  Because the rename comes before any of the old cluster is deleted, and a new cluster reaches the data directory only whole, a reset cut at any later step, by its own bound, a restart of the `roles` container or a kill, in its `initdb` as anywhere else, leaves a `data.reset` that the next check deletes before it reads the free bytes, at most a part of a cluster in `data.init`, which the next start deletes before its own `initdb`, and in the data directory either no cluster, which the next check's `ensure` makes as it makes a pod's first, or the new cluster whole, whose start that `ensure` finishes.
   A reset cut before the rename leaves the old cluster whole where it was, which the next check serves, or resets again while the disk is still under the floor.
 
 - **The reset's line.**
-  A reset writes one line to the `roles` container's log, behind the launcher's own `legion-testpg: ` prefix, and appends the same line to the server's log, after the new cluster's first lines, since the new cluster's `initdb` starts that log over:
-  `legion-testpg: reset the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, and each amount in GiB to a tenth, or in MiB below one GiB.
+  A reset writes one line to the `roles` container's log, behind the launcher's own `legion-testpg: ` prefix, once it has read the databases and stopped the server and before its rename.
+  Once the new cluster has started, it appends the same line to the server's log, after the new cluster's first lines, since the new cluster's `initdb` starts that log over:
+  `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, and each amount in GiB to a tenth, or in MiB below one GiB.
+  Each control character of a database's name or of its owner's is written `?`, since a role names its own databases, and a newline in a name would otherwise split the line and could forge a second `legion-testpg: reset` line.
   Where the server did not answer, the line ends `the server did not answer, so it read no databases`, and where the list failed, `the server answered but the list of its databases failed, so it read none`.
   `kubectl logs <pod> -c roles | grep 'legion-testpg: reset'` finds it, and a role reads it there or in `$LEGION_TEST_PG_LOG`;
   `skills/legion-worker/references/tools.md` ("The database your tests use") tells a role what a reset is and where its line is.
@@ -4124,7 +4132,7 @@ When the wait ends, the kills that the watch named no process for have one `kill
   The default `Cancel` sends it to `legion gh`'s reads of `gh` and `git` at their timeout, in a role's tree (`readGhHelp` in `packages/daemon/cmd/legion/gh.go`, `gitLines` in `packages/daemon/cmd/legion/gh_selectors.go`);
   to the shim's agent-secrets `keygen` at its timeout, and to that `keygen` and the secrets renewer at the end of the shim's loop, which every exit of the shim brings (`identity` and `startRenewer`, `packages/daemon/internal/shim/agentsecrets.go`);
   and to the launcher's test-database script at an `ensure`'s bound (`runTestPG` and `CheckTestPostgres`, `packages/daemon/internal/launcher/testpg.go`).
-  A reset's bound has a `Cancel` of its own, which sends SIGKILL to the script's whole process group, its `flock`, `reset-locked`, `initdb` and `pg_ctl` among them, and not to the postmaster, which `pg_ctl` starts in a session of its own (`runTestPG`).
+  A reset's bound has a `Cancel` of its own, which sends SIGKILL to the script's whole process group, its `flock`, `reset-locked`, `initdb` and `pg_ctl` among them, and not to the postmaster, which `pg_ctl` starts in a session of its own (`killGroupAtBound`, which `runTestPG` applies to the run `resetRun` makes).
   `WaitDelay` sends it to the CodeGraph warm-up's `codegraph` (`runCodegraph`, `packages/daemon/internal/workspace/codegraph.go`) once the shim has stopped the warm-up, which it does while its agent still runs: that process is a direct child of the shim, so a session process, and it is named with the `kernel-protected` cause with no departure to set it aside.
 
 - The same limit leaves a kill unnamed, and names no process wrongly, where a pass counts a process that no kill of the wait reached.
