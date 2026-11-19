@@ -107,8 +107,9 @@ export function IssueTree({
   /** Which following of the address `reveal` comes from: the location's own key
    *  (`useLocation().key`), a new one at each link followed - one followed again to the address
    *  the reader is at among them - the entry's own one again at Back and Forward, and the same
-   *  one at every render of it. The tree lands on the address's node once per following
-   *  (`slots/body.tsx`); left out, once per node. */
+   *  one at every render of it. The tree lands on the address's node once per key it has not
+   *  landed on last (`slots/body.tsx`; left out, once per node): Back to an entry past a link
+   *  that named another node lands again, and Back past one that named no node does not. */
   addressKey?: string;
   /** Each artifact of the issue by its slug, which is how a node names the document it is or
    *  belongs to (`issue-artifacts.ts`). */
@@ -145,8 +146,9 @@ export function IssueTree({
    *  (`useTreeKeymap.ts`). Held unless the page says otherwise. */
   readsHeld?: boolean;
   /** Whether every read the tree's rows come from has answered, with its data or its failure
-   *  (`outline-reads.ts`): the page's first focus waits for it, so it lands once, on a row no
-   *  later read draws others above. Settled unless the page says otherwise. */
+   *  (`outline-reads.ts`): the page's first focus waits for it, so it lands once, where every
+   *  read the rows come from has drawn them; a later read that draws rows above it takes no
+   *  focus from it. Settled unless the page says otherwise. */
   readsSettled?: boolean;
   /** What the Contents list last asked of the outline (`outline-request.tsx`): go to a node, and
    *  draw that node's branch alone while Focus branch is on, or the whole outline again once it
@@ -828,9 +830,10 @@ export function IssueTree({
     // that unfolded the path to it (`unfoldTo`): it is the row the opening focused.
     if (questionRow?.contains(active) === true) held.row = questionRow;
     // Until its frame, the landing on the question is what tells whether the focus is still the
-    // page's (`landOnRow`): nothing holds it, or it is where the landing found it - on the row
-    // the opening focused before - or on the question's row. A focus a script put on anything
-    // else meanwhile ends the opening, as it would have once the row held it.
+    // page's (`landOnRow`): nothing holds it, or it is where the landing found it - the app's
+    // main element, which the page's change of address focuses - or on the question's row. A
+    // focus a script put on anything else meanwhile ends the opening, as it would have once the
+    // row held it.
     const landingWaits = held.landing?.signal.aborted === false;
     const mayFocus = landingWaits
       ? focusIsLoose(body.current) ||
