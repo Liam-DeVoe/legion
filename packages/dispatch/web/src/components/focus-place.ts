@@ -191,6 +191,13 @@ function present(region: Element): boolean {
   return region.isConnected && rendered(region);
 }
 
+/** Whether `element` stands as a control the reader can use: not disabled, and drawn. A focus
+ *  lost from one that does not was taken from the reader (`taken`); the reader leaves one that
+ *  still does (`left`). */
+function stands(element: Element): boolean {
+  return !element.matches(":disabled") && rendered(element);
+}
+
 /** How many of `controls` come before `node` in the page. */
 function countBefore(controls: readonly Element[], node: Node): number {
   let index = 0;
@@ -342,9 +349,17 @@ const RELEASE: Readonly<Record<string, "keyup" | "pointerup">> = {
   pointerdown: "pointerup",
 };
 
+/** The nearest of `opener` and the openers before it whose region is still in the page and drawn
+ *  (`present`), else null: where a focus lost from a region that has gone goes back to. */
+function drawnOpener(opener: Loss | null): Loss | null {
+  let from = opener;
+  while (from !== null && !present(from.region)) from = from.opener;
+  return from;
+}
+
 /** The elements `press` reads as now: the one it landed on, and - once that element has left the
  *  page with the dialog or panel it landed in (`present`) - the control that region was opened
- *  from too, else the nearest opener before it whose region is still drawn, as `handOn` walks. A
+ *  from too, else the nearest opener before it whose region is still drawn (`drawnOpener`). A
  *  list's pick or a dialog's confirm takes its region away and hands the focus back to the
  *  trigger that opened it; a write the press made that takes that trigger, or the row around it,
  *  away only once the server answers is still the press's doing while the trigger is held. The
@@ -353,8 +368,7 @@ const RELEASE: Readonly<Record<string, "keyup" | "pointerup">> = {
 function pressedOn(press: Press): Element[] {
   const { opener, region, target } = press;
   if (target.isConnected || region === null || present(region)) return [target];
-  let from = opener;
-  while (from !== null && !present(from.region)) from = from.opener;
+  const from = drawnOpener(opener);
   return from === null ? [target] : [target, from.element];
 }
 
@@ -364,34 +378,52 @@ function pressedOn(press: Press): Element[] {
  *  press did and run its effects, and longer only while a control it reads as (`pressedOn`) is
  *  held (`HELD`), its write out, and then until a frame and a task after that hold ends: the
  *  control taken away, or its `aria-disabled` or `disabled` gone. The hold's end is watched rather
- *  than polled, since its write's latency is the server's. A press past that is no cause, so an
- *  update after it - a live update taking the row away, a refetch emptying the selection bar - is
- *  a loss the reader did not cause. */
+ *  than polled, since its write's latency is the server's, and the watch ends at the write
+ *  deadline (`RESCUE_WAIT_MS`) as the rescue's own wait does, so a control refused for good - the
+ *  pager's Next on its last page - keeps no watch over the page and no press live past it. A press
+ *  past that is no cause, so an update after it - a live update taking the row away, a refetch
+ *  emptying the selection bar - is a loss the reader did not cause. */
 function answerPress(press: Press): void {
   press.stop();
   press.live = true;
-  const held = () =>
-    pressedOn(press).some((pressed) => pressed.isConnected && pressed.closest(HELD) !== null);
+  // Once the press's target and its region have left the page, which they never come back to,
+  // what the press reads as is kept rather than walked again at every change the watch sees.
+  let kept: Element[] | null = null;
+  const pressed = (): Element[] => {
+    if (kept !== null) return kept;
+    const now = pressedOn(press);
+    const { region, target } = press;
+    if (!target.isConnected && (region === null || !region.isConnected)) kept = now;
+    return now;
+  };
+  const held = () => pressed().some((each) => each.isConnected && each.closest(HELD) !== null);
   press.stop = afterComponents(() => {
     if (!held()) {
       press.live = false;
       return;
     }
-    // The whole document is watched, so that the control going with a parent of it, a fieldset
-    // around it enabled again, or the region the press landed in going, ends the hold too.
-    const watcher = new MutationObserver(() => {
-      if (held()) return;
+    const end = () => {
       watcher.disconnect();
+      window.clearTimeout(bound);
       press.stop = afterComponents(() => {
         press.live = false;
       });
+    };
+    // The whole document is watched, so that the control going with a parent of it, a fieldset
+    // around it enabled again, or the region the press landed in going, ends the hold too.
+    const watcher = new MutationObserver(() => {
+      if (!held()) end();
     });
+    const bound = window.setTimeout(end, RESCUE_WAIT_MS);
     watcher.observe(document.body, {
       attributeFilter: ["aria-disabled", "disabled"],
       childList: true,
       subtree: true,
     });
-    press.stop = () => watcher.disconnect();
+    press.stop = () => {
+      watcher.disconnect();
+      window.clearTimeout(bound);
+    };
   });
 }
 
@@ -746,8 +778,7 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
     }
     candidates = placesFrom(drawn, loss.index);
   } else {
-    let opener = loss.opener;
-    while (opener !== null && !present(opener.region)) opener = opener.opener;
+    const opener = drawnOpener(loss.opener);
     if (opener !== null && opener.path === loss.path) {
       candidates = [opener.element, ...placesFrom(drawnIn(opener.region, main), opener.index)];
       answerRegion = opener.region;
@@ -861,12 +892,13 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * the last read before it went saw stands. Nothing scrolls and no control the reader did not
  * pick takes the focus, so neither a list nor the page is pulled back to a row the reader
  * scrolled away from - a live update taking that row away, say - and their next key acts on
- * nothing they did not choose. The focus stays on the body, except in a dialog, which takes it
- * itself without a scroll, so the page behind a modal one is never reached (`leaveUnseen`). The
- * record is the page's one (`outOfSight`), which the component hand-offs read too, so none of
- * them answers such a loss before the rescue's check. Only an element a read has found in sight
- * since it took the focus can be read out of it (`readSight`): one focused below the fold, which
- * a scroll the page made before the engine's own left there, was never in the reader's sight.
+ * nothing they did not choose. The focus stays on the body, except in a dialog or a panel
+ * (`DIALOG`), which takes it itself without a scroll, so the page behind a modal one is never
+ * reached (`leaveUnseen`). The record is the page's one (`outOfSight`), which the component
+ * hand-offs read too, so none of them answers such a loss before the rescue's check. Only an
+ * element a read has found in sight since it took the focus can be read out of it (`readSight`):
+ * one focused below the fold, which a scroll the page made before the engine's own left there,
+ * was never in the reader's sight.
  */
 export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
   useEffect(() => {
@@ -875,8 +907,8 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
      *  as it took the focus (`spotsOf`), until it loses the focus by a `focusout`; one still noted
      *  here once it has left the page went with no `focusout` at all. */
     let focused: Pick<Loss, "element" | "path" | "region" | "spots"> | null = null;
-    /** The loss each dialog the focus has entered was opened from, or null for one it entered
-     *  from the body. */
+    /** The loss each dialog or panel (`DIALOG`) the focus has entered was opened from, or null for
+     *  one it entered from the body. */
     const openedFrom = new Map<Element, Loss | null>();
     /** Where a `focusout` is handing the focus, and the loss it leaves in another region. */
     let moving: { from: Loss | null; to: Element } | null = null;
@@ -1025,7 +1057,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         opener: openedFrom.get(region) ?? null,
         path,
         region,
-        taken: element.matches(":disabled") || !rendered(element),
+        taken: !stands(element),
       };
       // A focus going straight to another region is kept only as the place it left: the opener
       // of the dialog it is entering, whose spots and arrivals the hand-off never reads.
@@ -1045,7 +1077,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       // itself, so by this microtask it has gone, and its loss stays one to answer.
       if (!loss.taken) {
         queueMicrotask(() => {
-          loss.left = element.isConnected && !element.matches(":disabled") && rendered(element);
+          loss.left = element.isConnected && stands(element);
         });
       }
     };
@@ -1134,10 +1166,10 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       };
       answerPress(lastPress);
     };
-    /** The release of the reader's latest press - its pointer's `pointerup`, its key's `keyup` -
-     *  which is what a click answers: a control pressed by the pointer, or by Space, acts on the
-     *  release, however long the reader held it down. The press is live again from there, as if
-     *  made then, on the control it was made on. */
+    /** The release of the reader's latest press - the next `pointerup` after a pointer's press,
+     *  the next `keyup` after a key's (`RELEASE`) - which is what a click answers: a control
+     *  pressed by the pointer, or by Space, acts on the release, however long the reader held it
+     *  down. The press is live again from there, as if made then, on the control it was made on. */
     const noteRelease = (event: Event) => {
       if (lastPress?.release === event.type) answerPress(lastPress);
     };

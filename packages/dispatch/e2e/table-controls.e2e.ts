@@ -5872,8 +5872,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // trigger opens no Keyboard shortcuts, since the trigger takes a page's single keys as the select
 // or the text box it replaced did (`isEditableTarget` in `features/shell/keymap.ts`), and Enter
 // picks the option the word left - the trigger shows it with the focus back on it, or where the
-// pick takes the trigger away the panel hands the focus on. A list that holds no text box is named and the row goes on, so
-// one run names every such list.
+// pick takes the trigger away the panel hands the focus on. A list that holds no text box is named
+// and the row goes on, so one run names every such list.
 // It runs in Chromium alone. What an engine decides here is one component's, the same in every
 // list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
 // list's text box takes, as each engine delivers them, in `keyboard-agents-picker`'s rows of the

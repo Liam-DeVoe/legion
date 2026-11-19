@@ -2715,58 +2715,43 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
 // Inside `NoTooltips` the repository's clear control carries no `title`: its name stays `main`'s,
 // and its description, in the page's mark, says what the `title` said, that the issue then
 // inherits a repository. A value that is not owner/name, written with Enter, draws `main`'s
-// refusal in the page's failed red, with the page's mark. Outside, the control keeps `main`'s
-// `title` and no description, and the refusal `main`'s red and no mark.
+// refusal in the page's failed red, with the page's mark. Outside `NoTooltips` the repository is
+// the shared list (#3729), whose own behaviour `features/issue/RepoControl.test.tsx` holds.
 test("inside NoTooltips the repository's clear control is described by what its title said, and a refusal is the page's failed red", async () => {
   const user = userEvent.setup();
   const clearExplains = "Clear it, and the issue inherits a repository again";
-  // Outside `NoTooltips` the repository is the shared list (#3729), whose own behaviour
-  // `features/issue/RepoControl.test.tsx` holds.
-  const surfaces: readonly Surface[] = ["inside"];
-  for (const surface of surfaces) {
-    const view = draw(
-      <>
-        <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
-        <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
-      </>,
-      surface
-    );
-    try {
-      const scope = within(view.container);
-      const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
-      const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
-      if (surface === "inside") {
-        expect(clear.getAttribute("title")).toBeNull();
-        expect(
-          scope.getByRole("button", {
-            description: clearExplains,
-            name: "Clear the repository of CORE-1",
-          })
-        ).toBe(clear);
-        expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
-      } else {
-        expect(clear.getAttribute("title")).toBe(clearExplains);
-        expect(description).toBeNull();
-      }
+  const view = draw(
+    <>
+      <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
+      <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
+    </>,
+    "inside"
+  );
+  try {
+    const scope = within(view.container);
+    const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
+    const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
+    expect(clear.getAttribute("title")).toBeNull();
+    expect(
+      scope.getByRole("button", {
+        description: clearExplains,
+        name: "Clear the repository of CORE-1",
+      })
+    ).toBe(clear);
+    expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
 
-      // The focus starts the mappings' read, which lands before the refusal is read.
-      await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
-      await settleReads();
-      const refusal = scope.getByRole("alert");
-      expect(refusal.textContent).toBe("Write the repository as owner/name.");
-      if (surface === "inside") {
-        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
-        expect(
-          classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))
-        ).toEqual([]);
-        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
-      } else {
-        expect(refusal.getAttribute("class")).toBe(theme.dangerText);
-        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(false);
-      }
-    } finally {
-      undraw(view);
-    }
+    // The focus starts the mappings' read, which lands before the refusal is read.
+    await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
+    await settleReads();
+    const refusal = scope.getByRole("alert");
+    expect(refusal.textContent).toBe("Write the repository as owner/name.");
+    expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
+    expect(classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))).toEqual(
+      []
+    );
+    expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  } finally {
+    undraw(view);
   }
 });
 

@@ -78,7 +78,7 @@ export function CorrectTitle({
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
       setCorrecting(false);
-      refreshArtifact(queryClient, artifact);
+      void refreshArtifact(queryClient, artifact);
     },
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {

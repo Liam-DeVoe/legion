@@ -9,6 +9,10 @@ import { CONTROL } from "./control-names";
  *  it as in that table, not only in its box (`useRowKeymap`'s `moveFrom`). */
 export const TABLE_FRAME_ATTRIBUTE = "data-table-frame";
 
+/** The frame's mark, spread on the element that holds the table's control row, box and pager
+ *  (`TABLE_FRAME_ATTRIBUTE`). */
+export const TABLE_FRAME_MARK = { [TABLE_FRAME_ATTRIBUTE]: "" };
+
 /** One key a reader walks the table with, as the page that draws the table names it: the
  *  palette and the shortcut help read these words, so they are the caller's and not the
  *  table's. */
@@ -141,12 +145,13 @@ export function useRowKeymap<TData>({
     keymap.moveFrom === "row"
       ? () => focusedRow() !== null
       : () => {
-          const other = closestMatching(
+          const around = closestMatching(
             document.activeElement,
             `[${TABLE_FRAME_ATTRIBUTE}], [data-control="${CONTROL.dataTable}"]`
           );
           return (
-            (other === null || (scrollRef.current !== null && other.contains(scrollRef.current))) &&
+            (around === null ||
+              (scrollRef.current !== null && around.contains(scrollRef.current))) &&
             displayRows.some(({ row }) => !row.getIsGrouped())
           );
         };

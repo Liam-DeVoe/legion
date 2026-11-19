@@ -244,12 +244,26 @@ function listPanel(): ListPanel {
   return { box, option, panel };
 }
 
+/** A list opened from `trigger`: the trigger focused, then the list's text box, as the list's own
+ *  open puts the focus there, so the rescue notes the trigger as the panel's opener. */
+function openListFrom(trigger: HTMLElement): ListPanel {
+  trigger.focus();
+  const list = listPanel();
+  list.box.focus();
+  return list;
+}
+
+/** A pointer press on `element`: its `pointerdown`, then its `pointerup`. */
+function pointerPress(element: Element): void {
+  element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+}
+
 /** A pointer pick on the list's option, which keeps the focus in its text box (the option's
  *  `mousedown` is prevented), and the pick's commit taking the list's panel away, with the
  *  `focusout` Chromium fires for the box or with none, as Firefox and WebKit do. */
 function pickAway(list: ListPanel, withFocusout: boolean): void {
-  list.option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  list.option.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  pointerPress(list.option);
   if (withFocusout) lose(list.box, () => list.panel.remove());
   else list.panel.remove();
 }
@@ -271,9 +285,7 @@ test("a list's panel that a pointer pick takes away hands the focus back to its 
     for (const withFocusout of [true, false]) {
       await withRescue(async () => {
         const [trigger, after] = mainOf("Filter Status", "After").buttons;
-        const list = listPanel();
-        trigger?.focus();
-        list.box.focus();
+        const list = openListFrom(trigger as HTMLButtonElement);
         pickAway(list, withFocusout);
         await settled();
         expect(trigger).toHaveFocus();
@@ -302,9 +314,7 @@ test("a list opened from inside a filter panel, taken away by a pick, hands the 
       );
       document.body.append(filterPanel);
       filters?.focus();
-      trigger?.focus();
-      const list = listPanel();
-      list.box.focus();
+      const list = openListFrom(trigger as HTMLButtonElement);
       pickAway(list, withFocusout);
       await settled();
       expect(trigger).toHaveFocus();
@@ -1052,8 +1062,7 @@ test("a row removed by a live update after the reader's press on it was answered
       second.mark.focus();
       placeAt(second.mark, 200);
       box.dispatchEvent(new Event("scroll"));
-      second.mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-      second.mark.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      pointerPress(second.mark);
       await settled();
       second.row.remove();
       await settled();
@@ -1067,13 +1076,10 @@ test("a row removed by a live update after the reader's press on it was answered
   }
 });
 
-/** A row's Dismiss, pressed by the pointer and then held while its write is out, as `heldPress`
- *  holds it: the press on it, its release, and the click's commit setting `aria-disabled`, then
- *  several frames of the write being out. */
-async function pressAndHold(dismiss: HTMLButtonElement): Promise<void> {
-  dismiss.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  dismiss.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
-  dismiss.setAttribute("aria-disabled", "true");
+/** A press's write holding `control` while it is out, as `heldPress` holds it: the click's commit
+ *  setting `aria-disabled`, then several frames of the write being out. */
+async function holdFor(control: HTMLElement): Promise<void> {
+  control.setAttribute("aria-disabled", "true");
   for (const _ of [0, 1, 2]) await settled();
 }
 
@@ -1089,7 +1095,8 @@ test("a row removed in the commit that ends its pressed control's hold keeps tod
     dismiss.focus();
     placeAt(dismiss, 200);
     box.dispatchEvent(new Event("scroll"));
-    await pressAndHold(dismiss);
+    pointerPress(dismiss);
+    await holdFor(dismiss);
     expect(dismiss).toHaveFocus();
     second.row.remove();
     await waitFor(() => expect(third.mark).toHaveFocus());
@@ -1109,7 +1116,8 @@ test("a row removed after its pressed control's hold ended hands the focus to no
       dismiss.focus();
       placeAt(dismiss, 200);
       box.dispatchEvent(new Event("scroll"));
-      await pressAndHold(dismiss);
+      pointerPress(dismiss);
+      await holdFor(dismiss);
       dismiss.removeAttribute("aria-disabled");
       await settled();
       second.row.remove();
@@ -1124,29 +1132,63 @@ test("a row removed after its pressed control's hold ended hands the focus to no
   }
 });
 
-/** A row's list - an Inbox row's `Hand this question to` - opened from its trigger in the row:
- *  the trigger focused, then the list's text box, as the list's own open puts the focus there, so
- *  the rescue notes the trigger as the panel's opener. The trigger is laid out in the row box's
- *  sight. */
+// (ax) The hold ends at the write deadline (`RESCUE_WAIT_MS`), as the rescue's own wait does: a
+// control that stays held past it - a pager's Next on its last page, a standing refusal - keeps
+// its press live no longer, so a live update taking its row away after that is no doing of the
+// reader's: the focus goes into no other row and nothing scrolls (ag).
+test("a row removed after its pressed control stayed held past the write deadline hands the focus to no row", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  jest.useFakeTimers();
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const dismiss = buttonIn(second.row, "Dismiss");
+      dismiss.focus();
+      placeAt(dismiss, 200);
+      box.dispatchEvent(new Event("scroll"));
+      pointerPress(dismiss);
+      dismiss.setAttribute("aria-disabled", "true");
+      // A frame and a task after the release the press finds its control held, and watches it.
+      await frame();
+      jest.advanceTimersByTime(0);
+      // The deadline passes with the control still held; the press stops a frame and a task on.
+      jest.advanceTimersByTime(SEND_DEADLINE_MS);
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(dismiss).toHaveFocus();
+      second.row.remove();
+      // The rescue's check, a frame and a task after the removal its watcher reads.
+      await frame();
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(box).toHaveFocus();
+      expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+      expect(rows[2]?.mark).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+    scrolls.mockRestore();
+  }
+});
+
+/** A row's list - an Inbox row's `Hand this question to` - opened from its trigger in the row
+ *  (`openListFrom`), the trigger laid out in the row box's sight. */
 function rowList(row: HTMLElement): { list: ListPanel; trigger: HTMLButtonElement } {
   const trigger = buttonIn(row, "Hand this question to");
   placeAt(trigger, 200);
-  trigger.focus();
-  const list = listPanel();
-  list.box.focus();
-  return { list, trigger };
+  return { list: openListFrom(trigger), trigger };
 }
 
 /** A pointer pick on the list's option, as a single pick makes it (`MultiSelect`'s `choose`): the
  *  focus put back on the trigger, the list's panel taken away, and the pick's write holding the
  *  trigger (`aria-disabled`) for several frames while it is out. */
 async function pickAndHold(list: ListPanel, trigger: HTMLButtonElement): Promise<void> {
-  list.option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  list.option.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  pointerPress(list.option);
   trigger.focus();
   list.panel.remove();
-  trigger.setAttribute("aria-disabled", "true");
-  for (const _ of [0, 1, 2]) await settled();
+  await holdFor(trigger);
 }
 
 // (av) A pick in a list's panel that has gone counts as a press on the trigger the list was opened

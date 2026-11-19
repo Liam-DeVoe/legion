@@ -13,9 +13,9 @@ import { api, type WriteBounds } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type { Issue, IssueDetails, UpdateIssueInput } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
+import { idlePriorityWrite, mockHeaderReads } from "./header-fixture";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
-import type { IssuePriorityWrite } from "./useIssuePriority";
 
 // The issue title's editor, read with the real header and the page's focus rescue mounted around
 // it as the app shell mounts it (`RescuedMain`).
@@ -67,14 +67,6 @@ const details: IssueDetails = {
   takeable_at: null,
 };
 
-/** These rows are about the title, not the priority: the header's priority write never runs. */
-const idlePriorityWrite: IssuePriorityWrite = {
-  failed: false,
-  pending: false,
-  retry: () => undefined,
-  submit: () => undefined,
-};
-
 /** The text of the page outside the header, which a reader can click on. */
 const PAGE_TEXT = "The issue's description";
 
@@ -105,8 +97,7 @@ function header(): { patches: Patches; unmount: () => void; user: UserEvent } {
   client.setQueryData(issueQuery(base.key).queryKey, details);
   // The header reads the project's repository mappings, its architecture sources and the issue's
   // subscribers at once; none of them is what these rows are about.
-  const mappings = spyOn(api, "listRepoProjects").mockResolvedValue([]);
-  const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
+  const restoreReads = mockHeaderReads();
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const patches = answerIssuePatches().mockImplementation(async (_key, input) => ({
     ...base,
@@ -130,8 +121,7 @@ function header(): { patches: Patches; unmount: () => void; user: UserEvent } {
     patches,
     unmount: () => {
       view.unmount();
-      mappings.mockRestore();
-      architectureSources.mockRestore();
+      restoreReads();
       subscribers.mockRestore();
     },
     user,

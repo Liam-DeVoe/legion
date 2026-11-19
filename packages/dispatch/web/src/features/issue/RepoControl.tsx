@@ -92,7 +92,9 @@ export function repoControlName(issueKey: string): string {
  * The issue's repository. It has two shapes, one per surface: the shared list
  * (`RepositoryList`) on every page today, and `main`'s box (`RepositoryBox`) inside `NoTooltips`,
  * the new issue page's design, which that page's own tree (INFRA-1196) decides. `inRow` acts
- * inside `NoTooltips` alone, so only the box reads it.
+ * inside `NoTooltips` alone, so only the box reads it. `RepositoryBox` is `main`'s text
+ * unchanged: its arms for outside `NoTooltips` cannot run here, and it stays apart from
+ * `RepositoryList` until INFRA-1196 decides the new page's repository.
  */
 export function RepoControl({
   disabled = false,

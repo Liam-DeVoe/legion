@@ -635,9 +635,9 @@ export function AskCard({
   // render. Inside it is this one callback, stable across renders as `useFormRef`'s is, which
   // focuses it once as well: a focus taken at each render would move the reader's focus while a
   // write is out - from Answer with it anyway, say, whose answer is out. The choice leaves the
-  // page, and the button with it, once the ask is read again after the clarification lands; a
-  // focus the button still holds then goes where the form's own hand-off puts it, not to the
-  // body.
+  // page, and the button with it, as the clarification lands outside `NoTooltips`, and inside
+  // once the ask is read again after it. Only inside does a focus the button still holds then go
+  // where the form's own hand-off puts it, not to the body.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;

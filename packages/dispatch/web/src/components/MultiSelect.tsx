@@ -134,7 +134,8 @@ interface SharedProps {
    *  a bare count. Defaults to that text. */
   readonly optionDetailLabel?: (value: string) => string;
   readonly searchLabel: string;
-  /** How much room the default trigger takes; a `triggerClassName` decides for itself. */
+  /** How much room the default trigger takes outside `NoTooltips`; a `triggerClassName` decides
+   *  for itself. */
   readonly size?: ControlSize;
   /** A multi-select trigger's accessible name in place of its text; a single pick's trigger's
    *  name starts with it in place of `label`, before what the trigger shows. */

@@ -107,8 +107,8 @@ function RemoveCross(): ReactNode {
  * advance is the shared list's single pick (`MultiSelect`), whose text box narrows the priorities
  * as the reader types, and a pick stages the priority there; Add writes it, and Cancel drops it.
  * The press takes the focus away with the `+`, and the form lands it on its first control, the
- * list's trigger, with no scroll, since the form stands where the `+` stood; the page's focus
- * rescue lands it there too (`components/focus-place.ts`). The list says the priorities are
+ * list's trigger, with no scroll, since the form stands where the `+` stood, where the page's
+ * focus rescue would land it too (`components/focus-place.ts`). The list says the priorities are
  * loading while their read is out, and that they could not be loaded where it failed.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their

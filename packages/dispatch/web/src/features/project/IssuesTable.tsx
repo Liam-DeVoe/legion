@@ -12,7 +12,7 @@ import type { FilterChip } from "../../components/filter-chips";
 import { useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
-import { TABLE_FRAME_ATTRIBUTE } from "../../components/table-keys";
+import { TABLE_FRAME_MARK } from "../../components/table-keys";
 import { useTableLayout } from "../../components/table-layout";
 import {
   addressPath,
@@ -426,7 +426,7 @@ export function IssuesTable({
     <section
       aria-label={name}
       className="space-y-3 sm:pb-24"
-      {...{ [TABLE_FRAME_ATTRIBUTE]: "" }}
+      {...TABLE_FRAME_MARK}
       onFocus={noteFocus}
       ref={sectionRef}
     >

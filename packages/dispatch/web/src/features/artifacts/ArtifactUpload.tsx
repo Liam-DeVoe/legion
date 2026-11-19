@@ -170,7 +170,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
     // Stored either way; with no answer to give, its reference cannot be added to the draft, and
     // the field says so (`upload.unanswered`).
     onSuccess: (landed, { file, owner }) => {
-      refreshOwnerArtifacts(queryClient, owner);
+      void refreshOwnerArtifacts(queryClient, owner);
       if (landed !== null) insert(uploadedFileText(owner, file, landed.result));
     },
     onSettled: () => {
@@ -291,7 +291,7 @@ export function useArtifactUpload(
       // with no answer to give, the row says so (`upload.unanswered`).
       setPendingFile(null);
       setSummary("");
-      refreshOwnerArtifacts(queryClient, owner);
+      void refreshOwnerArtifacts(queryClient, owner);
       if (result !== null) {
         void queryClient.invalidateQueries({ queryKey: ["artifact", result.artifact.id] });
       }
