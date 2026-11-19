@@ -447,16 +447,6 @@ const (
 	noRouteMessagePrefix = "no route for "
 )
 
-// PlanInput and PlanOtherIssue are Dispatch's own spellings of two refusals of a plan record's
-// write, each final: a value outside what the route takes (400) and an id that is a plan of
-// another issue (409). A writer that is not the session of the issue's project's daemon is refused
-// as a step record's writer is (steprecord.CodeWriter, 403). No mechanism shares these two values
-// between this module and Dispatch's, so the spellings change together.
-const (
-	PlanInput      = "PLAN_INPUT"
-	PlanOtherIssue = "PLAN_OTHER_ISSUE"
-)
-
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal
 // Dispatch itself made counts, which is a 4xx carrying one of its error codes.

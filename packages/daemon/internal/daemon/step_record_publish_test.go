@@ -503,10 +503,10 @@ func TestAStepRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 		err  *dispatch.Error
 	}{
 		{name: "404 ISSUE_NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no issue LEGION-1"}},
-		{name: "400 STEP_INPUT", err: &dispatch.Error{Status: http.StatusBadRequest, Code: steprecord.CodeInput, Message: "result must be one of passed failed stopped"}},
+		{name: "400 " + steprecord.CodeInput, err: &dispatch.Error{Status: http.StatusBadRequest, Code: steprecord.CodeInput, Message: "result must be one of passed failed stopped"}},
 		{name: "400 INVALID_JSON", err: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: "invalid JSON body: unexpected EOF"}},
-		{name: "403 STEP_WRITER", err: &dispatch.Error{Status: http.StatusForbidden, Code: steprecord.CodeWriter, Message: "only the session legion-daemon:LEGION writes a step record of LEGION-1"}},
-		{name: "409 STEP_OTHER_ISSUE", err: &dispatch.Error{Status: http.StatusConflict, Code: steprecord.CodeOtherIssue, Message: "the step belongs to LEGION-9"}},
+		{name: "403 " + steprecord.CodeWriter, err: &dispatch.Error{Status: http.StatusForbidden, Code: steprecord.CodeWriter, Message: "only the session legion-daemon:LEGION writes a step record of LEGION-1"}},
+		{name: "409 " + steprecord.CodeOtherIssue, err: &dispatch.Error{Status: http.StatusConflict, Code: steprecord.CodeOtherIssue, Message: "the step belongs to LEGION-9"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newStepRecordRig(t, answersInTurn(tc.err))

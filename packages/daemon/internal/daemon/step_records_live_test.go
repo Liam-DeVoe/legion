@@ -37,6 +37,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -230,8 +231,8 @@ func (l *stepRecordsLive) writerRefused() {
 		}
 	}
 	status, answer := l.putStep(l.dispatch.token, id, write("ses_step_agent"))
-	if status != http.StatusForbidden || !strings.Contains(string(answer), "STEP_WRITER") {
-		t.Fatalf("PUT /api/v1/issues/%s/steps/%s as ses_step_agent = %d %s, want 403 STEP_WRITER", l.key, id, status, answer)
+	if status != http.StatusForbidden || !strings.Contains(string(answer), steprecord.CodeWriter) {
+		t.Fatalf("PUT /api/v1/issues/%s/steps/%s as ses_step_agent = %d %s, want 403 %s", l.key, id, status, answer, steprecord.CodeWriter)
 	}
 	if read, err := l.readSteps(); err != nil || l.holdsID(read, id) {
 		t.Fatalf("after the refused write the steps of %s read %v (%v), want no record %s", l.key, read, err, id)

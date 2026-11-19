@@ -1,10 +1,10 @@
 // Package steprecord holds the words and the form of a Dispatch step record, for a caller outside
 // this module: the kinds of a run, the results of a run that ended, the codes of the step write's
-// refusals that no retry changes, and the form of the agent, the session and the model a record
-// names (printable ASCII with no space, from 1 to 128 characters). Each is the one generated from
-// packages/contracts (internal/contracts), which Dispatch's store and route use, so a word the
-// Legion daemon writes is the word Dispatch holds, and the daemon never sends a record Dispatch
-// would refuse whole for a word or a text.
+// refusals and the plan write's refusals that no retry changes, and the form of the agent, the
+// session and the model a record names (printable ASCII with no space, from 1 to 128 characters).
+// Each is the one generated from packages/contracts (internal/contracts), which Dispatch's store
+// and routes use, so a word the Legion daemon writes or reads is the word Dispatch holds, and the
+// daemon never sends a record Dispatch would refuse whole for a word or a text.
 //
 // It exists because the Legion daemon (packages/daemon, module github.com/sjawhar/legion/daemon)
 // is a Go module of its own, and Go's internal rule bars it from
@@ -45,6 +45,14 @@ const (
 	CodeInput      = contracts.StepInputCode
 	CodeWriter     = contracts.StepWriterCode
 	CodeOtherIssue = contracts.StepOtherIssueCode
+)
+
+// The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
+// whose plan is the plan of another issue. A writer that is not the daemon's session is refused
+// CodeWriter, as a step write is.
+const (
+	CodePlanInput      = contracts.PlanInputCode
+	CodePlanOtherIssue = contracts.PlanOtherIssueCode
 )
 
 var agentText = regexp.MustCompile(contracts.StepAgentTextPattern)

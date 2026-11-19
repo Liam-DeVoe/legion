@@ -321,6 +321,16 @@ const (
 	StepOtherIssueCode = "STEP_OTHER_ISSUE"
 )
 
+// The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
+// whose plan is the plan of another issue (a writer that is not the daemon's session is refused
+// StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
+// Dispatch's plan route answers them, and the Legion daemon reads them through
+// github.com/sjawhar/envoy/steprecord.
+const (
+	PlanInputCode      = "PLAN_INPUT"
+	PlanOtherIssueCode = "PLAN_OTHER_ISSUE"
+)
+
 // StepAgentTextPattern is the form of the agent, the session and the model a step record names:
 // printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
 // packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through

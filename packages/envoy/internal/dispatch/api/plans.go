@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -23,14 +24,15 @@ import (
 // it (readScopeRoutes).
 
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
-// error and 404 ISSUE_NOT_FOUND.
+// error and 404 ISSUE_NOT_FOUND, each the code contracts gives it, which the Legion daemon reads to
+// end a row on.
 const (
 	// codePlanInput is a plan value outside its form, or a plan that does not name its
 	// generation, its source and its tasks; the message names the field
 	// (workflowstore.ErrPlanInput).
-	codePlanInput = "PLAN_INPUT"
+	codePlanInput = contracts.PlanInputCode
 	// codePlanOtherIssue is an id whose plan is the plan of another issue.
-	codePlanOtherIssue = "PLAN_OTHER_ISSUE"
+	codePlanOtherIssue = contracts.PlanOtherIssueCode
 )
 
 // planRecordInput is the body PUT /api/v1/issues/{key}/plans/{id} takes: the writer, the run the

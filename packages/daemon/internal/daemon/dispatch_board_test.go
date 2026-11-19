@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
 
@@ -270,12 +271,18 @@ func (b *liveDispatch) daemonWrite(key, what string, req *http.Request, w http.R
 	project, _, _ := strings.Cut(key, "-")
 	actor, _ := write["actor"].(map[string]any)
 	if actor["kind"] != "session" || actor["id"] != dispatch.DaemonSession(key) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = fmt.Fprintf(w, `{"code":"STEP_WRITER","error":"only the session legion-daemon:%s writes %s of %s"}`, project, what, key)
+		answerRefusal(w, http.StatusForbidden, steprecord.CodeWriter, fmt.Sprintf("only the session legion-daemon:%s writes %s of %s", project, what, key))
 		return nil, false
 	}
 	delete(write, "actor")
 	return write, true
+}
+
+// answerRefusal answers status with the body of Dispatch's refusals, its code and its message, as
+// Dispatch's routes answer one.
+func answerRefusal(w http.ResponseWriter, status int, code, message string) {
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": message})
 }
 
 // writeStep writes the fields of write onto the step record id of key, each field once, and
@@ -286,7 +293,7 @@ func (b *liveDispatch) daemonWrite(key, what string, req *http.Request, w http.R
 func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates bool, w http.ResponseWriter) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	stored, refused := nodeOf(b.steps, "step", key, id, w)
+	stored, refused := nodeOf(b.steps, "step", steprecord.CodeOtherIssue, key, id, w)
 	if refused {
 		return
 	}
@@ -296,8 +303,7 @@ func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates boo
 			kind = stored["kind"]
 		}
 		if kind != "retro" {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = fmt.Fprintf(w, `{"code":"STEP_INPUT","error":"a rating belongs to a retro's record; this record is of kind %v"}`, kind)
+			answerRefusal(w, http.StatusBadRequest, steprecord.CodeInput, fmt.Sprintf("a rating belongs to a retro's record; this record is of kind %v", kind))
 			return
 		}
 	}
@@ -327,14 +333,13 @@ func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates boo
 
 // nodeOf is the node id of nodes as Dispatch's store finds it before a write under key
 // (workflowstore's putNode): nil where none is made yet, and refused where the id is a node of
-// another issue, which is answered 409 under the code of what, the node's kind ("step" answers
-// STEP_OTHER_ISSUE, "plan" PLAN_OTHER_ISSUE), and keeps nothing of the write. The caller holds
-// b.mu.
-func nodeOf(nodes map[string]map[string]any, what, key, id string, w http.ResponseWriter) (stored map[string]any, refused bool) {
+// another issue, which is answered 409 under code, the refusal of the kind of node what names
+// (steprecord.CodeOtherIssue for a step, steprecord.CodePlanOtherIssue for a plan), and keeps
+// nothing of the write. The caller holds b.mu.
+func nodeOf(nodes map[string]map[string]any, what, code, key, id string, w http.ResponseWriter) (stored map[string]any, refused bool) {
 	stored = nodes[id]
 	if stored != nil && stored["issue"] != key {
-		w.WriteHeader(http.StatusConflict)
-		_, _ = fmt.Fprintf(w, `{"code":"%s_OTHER_ISSUE","error":"%s %s is part of %v, and this write names %s"}`, strings.ToUpper(what), what, id, stored["issue"], key)
+		answerRefusal(w, http.StatusConflict, code, fmt.Sprintf("%s %s is part of %v, and this write names %s", what, id, stored["issue"], key))
 		return nil, true
 	}
 	return stored, false
@@ -374,21 +379,19 @@ func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.Respons
 	}
 	tasks, _ := write["tasks"].([]any)
 	if len(tasks) == 0 {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"code":"PLAN_INPUT","error":"a plan has at least one task"}`)
+		answerRefusal(w, http.StatusBadRequest, steprecord.CodePlanInput, "a plan has at least one task")
 		return
 	}
 	for _, task := range tasks {
 		named, _ := task.(map[string]any)
 		if steps, _ := named["steps"].([]any); len(steps) == 0 {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, `{"code":"PLAN_INPUT","error":"a task has at least one step"}`)
+			answerRefusal(w, http.StatusBadRequest, steprecord.CodePlanInput, "a task has at least one step")
 			return
 		}
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, refused := nodeOf(b.plans, "plan", key, id, w); refused {
+	if _, refused := nodeOf(b.plans, "plan", steprecord.CodePlanOtherIssue, key, id, w); refused {
 		return
 	}
 	stored := setOnce(b.plans, key, id, write)
@@ -506,18 +509,18 @@ func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 	// rating is the one rating write the control and the two refused ratings send: a fresh map each
 	// time, since put names the writer in the map it is given.
 	rating := func() map[string]any { return map[string]any{"rating": 4, "rating_reason": "The plan fit the work."} }
-	if status, answer := put(first, "/steps/"+step+"/rating", rating()); status != http.StatusBadRequest || !strings.Contains(answer, `"code":"STEP_INPUT"`) {
-		t.Errorf("control: a rating of %s's step record under %s = %d %s, want 400 STEP_INPUT, the rating refused for the record's kind", first, first, status, strings.TrimSpace(answer))
+	if status, answer := put(first, "/steps/"+step+"/rating", rating()); status != http.StatusBadRequest || !strings.Contains(answer, `"code":"`+steprecord.CodeInput+`"`) {
+		t.Errorf("control: a rating of %s's step record under %s = %d %s, want 400 %s, the rating refused for the record's kind", first, first, status, strings.TrimSpace(answer), steprecord.CodeInput)
 	}
 	for _, refused := range []struct {
 		what, path string
 		write      map[string]any
 		code       string
 	}{
-		{"a write of " + first + "'s step record", "/steps/" + step, map[string]any{"model": "claude-opus"}, "STEP_OTHER_ISSUE"},
-		{"a rating of " + first + "'s retro record", "/steps/" + retro + "/rating", rating(), "STEP_OTHER_ISSUE"},
-		{"a rating of " + first + "'s step record", "/steps/" + step + "/rating", rating(), "STEP_OTHER_ISSUE"},
-		{"a write of " + first + "'s plan", "/plans/" + plan, map[string]any{"generation": 2, "source": "default", "tasks": []any{map[string]any{"id": "default", "steps": []any{"tester"}}}}, "PLAN_OTHER_ISSUE"},
+		{"a write of " + first + "'s step record", "/steps/" + step, map[string]any{"model": "claude-opus"}, steprecord.CodeOtherIssue},
+		{"a rating of " + first + "'s retro record", "/steps/" + retro + "/rating", rating(), steprecord.CodeOtherIssue},
+		{"a rating of " + first + "'s step record", "/steps/" + step + "/rating", rating(), steprecord.CodeOtherIssue},
+		{"a write of " + first + "'s plan", "/plans/" + plan, map[string]any{"generation": 2, "source": "default", "tasks": []any{map[string]any{"id": "default", "steps": []any{"tester"}}}}, steprecord.CodePlanOtherIssue},
 	} {
 		if status, answer := put(other, refused.path, refused.write); status != http.StatusConflict || !strings.Contains(answer, `"code":"`+refused.code+`"`) {
 			t.Errorf("%s under %s = %d %s, want 409 %s", refused.what, other, status, strings.TrimSpace(answer), refused.code)
@@ -528,8 +531,8 @@ func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 		"a task with no step": {map[string]any{"id": "default", "steps": []any{}}},
 	} {
 		write := map[string]any{"generation": 2, "source": "default", "tasks": tasks}
-		if status, answer := put(other, "/plans/"+plan, write); status != http.StatusBadRequest || !strings.Contains(answer, `"code":"PLAN_INPUT"`) {
-			t.Errorf("%s under %s's id = %d %s, want 400 PLAN_INPUT, the input refused before the node of the id is found", what, first, status, strings.TrimSpace(answer))
+		if status, answer := put(other, "/plans/"+plan, write); status != http.StatusBadRequest || !strings.Contains(answer, `"code":"`+steprecord.CodePlanInput+`"`) {
+			t.Errorf("%s under %s's id = %d %s, want 400 %s, the input refused before the node of the id is found", what, first, status, strings.TrimSpace(answer), steprecord.CodePlanInput)
 		}
 	}
 	if after := held(); after != before {

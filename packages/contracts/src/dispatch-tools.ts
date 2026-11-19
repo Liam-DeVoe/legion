@@ -489,6 +489,13 @@ export const STEP_INPUT_CODE = "STEP_INPUT";
 export const STEP_WRITER_CODE = "STEP_WRITER";
 export const STEP_OTHER_ISSUE_CODE = "STEP_OTHER_ISSUE";
 
+/** The codes of the plan write's refusals that no retry changes: a value outside its form, and an
+ *  id whose plan is the plan of another issue. A writer that is not the daemon's session is refused
+ *  `STEP_WRITER`, as a step write is. Generated into Go as `contracts.PlanInputCode` and
+ *  `contracts.PlanOtherIssueCode`, which the route answers and the daemon ends a row on. */
+export const PLAN_INPUT_CODE = "PLAN_INPUT";
+export const PLAN_OTHER_ISSUE_CODE = "PLAN_OTHER_ISSUE";
+
 /** The form of the agent, the session and the model a step record names: printable ASCII with no
  *  space, from 1 to 128 characters. The session and the model come from the agent's own frames,
  *  and `dispatch steps` joins a record's fields with spaces, so a space or a control character in

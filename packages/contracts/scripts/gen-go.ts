@@ -52,6 +52,8 @@ import {
   DISPATCH_ITEM_BLOCKS,
   HANDOFF_PHASE_PATTERN,
   HANDOFF_PHASE_RULE_WORDS,
+  PLAN_INPUT_CODE,
+  PLAN_OTHER_ISSUE_CODE,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   SEARCH_KIND_DEPTH,
@@ -554,6 +556,16 @@ const (
 	StepInputCode      = ${JSON.stringify(STEP_INPUT_CODE)}
 	StepWriterCode     = ${JSON.stringify(STEP_WRITER_CODE)}
 	StepOtherIssueCode = ${JSON.stringify(STEP_OTHER_ISSUE_CODE)}
+)
+
+// The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
+// whose plan is the plan of another issue (a writer that is not the daemon's session is refused
+// StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
+// Dispatch's plan route answers them, and the Legion daemon reads them through
+// github.com/sjawhar/envoy/steprecord.
+const (
+	PlanInputCode      = ${JSON.stringify(PLAN_INPUT_CODE)}
+	PlanOtherIssueCode = ${JSON.stringify(PLAN_OTHER_ISSUE_CODE)}
 )
 
 // StepAgentTextPattern is the form of the agent, the session and the model a step record names:

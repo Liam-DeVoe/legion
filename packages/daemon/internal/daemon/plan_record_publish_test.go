@@ -171,10 +171,10 @@ func TestAPlanRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 		err  *dispatch.Error
 	}{
 		{name: "404 ISSUE_NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no issue LEGION-1"}},
-		{name: "400 PLAN_INPUT", err: &dispatch.Error{Status: http.StatusBadRequest, Code: dispatch.PlanInput, Message: "source must be one of default owner"}},
+		{name: "400 " + steprecord.CodePlanInput, err: &dispatch.Error{Status: http.StatusBadRequest, Code: steprecord.CodePlanInput, Message: "source must be one of default owner"}},
 		{name: "400 INVALID_JSON", err: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: "invalid JSON body: unexpected EOF"}},
-		{name: "403 STEP_WRITER", err: &dispatch.Error{Status: http.StatusForbidden, Code: steprecord.CodeWriter, Message: "only the session legion-daemon:LEGION writes a plan of LEGION-1"}},
-		{name: "409 PLAN_OTHER_ISSUE", err: &dispatch.Error{Status: http.StatusConflict, Code: dispatch.PlanOtherIssue, Message: "the plan belongs to LEGION-9"}},
+		{name: "403 " + steprecord.CodeWriter, err: &dispatch.Error{Status: http.StatusForbidden, Code: steprecord.CodeWriter, Message: "only the session legion-daemon:LEGION writes a plan of LEGION-1"}},
+		{name: "409 " + steprecord.CodePlanOtherIssue, err: &dispatch.Error{Status: http.StatusConflict, Code: steprecord.CodePlanOtherIssue, Message: "the plan belongs to LEGION-9"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newStepRecordRigOf(t, planRecordOf(), answersInTurn(tc.err))
