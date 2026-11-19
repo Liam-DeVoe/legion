@@ -43,6 +43,23 @@ func FallBackEmailLinks(doc *Node) (tree *Node, changed bool, read WrittenReadBa
 	if err != nil {
 		return doc, false, WrittenReadBack{}, err
 	}
+	return fallBackEmailLinksRead(doc, read)
+}
+
+// FallBackEmailLinksRendered is FallBackEmailLinks of doc whose rendering, as Render writes it, is
+// rendering, for a caller that rendered doc already: it reads that rendering back rather than
+// rendering doc again.
+func FallBackEmailLinksRendered(doc *Node, rendering string) (tree *Node, changed bool, read WrittenReadBack, err error) {
+	back, err := ParseRendering(rendering)
+	if err = renderedNesting(doc, err); err != nil {
+		return doc, false, WrittenReadBack{}, err
+	}
+	return fallBackEmailLinksRead(doc, WrittenReadBack{Markdown: rendering, Tree: back})
+}
+
+// fallBackEmailLinksRead is FallBackEmailLinks of doc, whose rendering read reads back as it
+// does, otherwise or not.
+func fallBackEmailLinksRead(doc *Node, read WrittenReadBack) (*Node, bool, WrittenReadBack, error) {
 	if readDifference(asWritten(doc), read.Tree, skip{}) == "" {
 		return doc, false, read, nil
 	}

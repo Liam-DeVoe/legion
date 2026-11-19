@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"weak"
@@ -337,6 +338,66 @@ func rewriteLive(doc *crdt.Doc, origin any, edit func(live *pmdoc.Node) bool) (*
 		return nil, err
 	}
 	return live, nil
+}
+
+// fallBackEmailLinks is tree as a write stores it where the renderer cannot write tree's email
+// links so that they read back (pmdoc.FallBackEmailLinks), and whether that is another tree: the
+// same blocks and text, each address whose links read back otherwise holding the base's reading.
+// rendered is tree's rendering where the caller has one, or "" for the fallback to render tree
+// itself. The email rule reads an address only from text, and every address holds an `@`, so a
+// tree whose text holds none (textHoldsAt) is answered itself, with no render and no read-back. So
+// is a tree whose rendering or read-back is refused, which is stored as it is: the version's own
+// render meets the first. Any other error is pmdoc's bug, and is the error.
+func fallBackEmailLinks(tree *pmdoc.Node, rendered string) (*pmdoc.Node, bool, error) {
+	if !textHoldsAt(tree) {
+		return tree, false, nil
+	}
+	var fallen *pmdoc.Node
+	var changed bool
+	var err error
+	if rendered != "" {
+		fallen, changed, _, err = pmdoc.FallBackEmailLinksRendered(tree, rendered)
+	} else {
+		fallen, changed, _, err = pmdoc.FallBackEmailLinks(tree)
+	}
+	switch {
+	case errors.Is(err, pmdoc.ErrSchema):
+		return tree, false, nil
+	case err != nil:
+		return tree, false, err
+	}
+	return fallen, changed, nil
+}
+
+// fallBackEmailLinksLive gives doc's tree as it stands the base's email links where its own do not
+// read back (fallBackEmailLinks), in one transaction tagged with origin (rewriteLive), and writes
+// nothing where the tree reads back or no fallback does. Its caller decides from a read of its own
+// whether the tree needs it, so a document that does not opens no transaction.
+func fallBackEmailLinksLive(doc *crdt.Doc, origin any) error {
+	var fallErr error
+	_, err := rewriteLive(doc, origin, func(live *pmdoc.Node) bool {
+		fallen, changed, err := fallBackEmailLinks(live, "")
+		if err != nil || !changed {
+			fallErr = err
+			return false
+		}
+		*live = *fallen
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	return fallErr
+}
+
+// textHoldsAt reports whether a text node of tree holds an `@`.
+func textHoldsAt(tree *pmdoc.Node) bool {
+	holds := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		holds = node.Type == "text" && strings.IndexByte(node.Text, '@') >= 0
+		return !holds
+	})
+	return holds
 }
 
 func renderTree(tree *pmdoc.Node) (string, error) {

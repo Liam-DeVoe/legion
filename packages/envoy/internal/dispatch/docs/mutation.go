@@ -2439,6 +2439,25 @@ type renderedTree struct {
 // transaction whose writes are queued runs them in its write phase, and the ledger records the
 // version as it will stand (latestVersion).
 func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID string, rendered renderedTree, actor model.Actor, spec *versionWrite) (versionWriteResult, error) {
+	if spec != nil && !spec.settlement {
+		// A version taken from a live document between a browser's edit and its settlement (a
+		// snapshot, a named version) can hold email links the renderer cannot write so that they
+		// read back, as the settlement repairs them in the room (planRepairs): it is stored as
+		// that repair leaves it, so its markdown, its token and its index name one tree. The room
+		// keeps its own until its settlement, which that edit has armed. A settlement's own version
+		// was checked and repaired in the room already.
+		fallen, changed, err := fallBackEmailLinks(rendered.tree, rendered.markdown)
+		if err != nil {
+			return versionWriteResult{}, err
+		}
+		if changed {
+			markdown, offsets, err := renderTreeWithOffsets(fallen)
+			if err != nil {
+				return versionWriteResult{}, err
+			}
+			rendered = renderedTree{tree: fallen, markdown: markdown, offsets: offsets, head: rendered.head}
+		}
+	}
 	markdown, tree := rendered.markdown, rendered.tree
 	if spec == nil {
 		return versionWriteResult{}, s.refreshAnchors(ctx, tx, artifactID, tree, actor)

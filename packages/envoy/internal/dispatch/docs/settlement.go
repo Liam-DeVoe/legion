@@ -94,6 +94,10 @@ type settlement struct {
 	reconciled     *pmdoc.Node
 	versioned      *pmdoc.Node
 	reconciliation settlementReconciliation
+	// baseEmailLinks is whether the tree the ask blocks are reconciled on, as the reconciliation
+	// left it, holds email links the renderer cannot write so that they read back, which take the
+	// base's reading instead (fallBackEmailLinks): commitRepairs writes that into the room.
+	baseEmailLinks bool
 	// snapshotCursor is the head the version records (doc_update_version), through which every one
 	// of the room's updates it holds is stored.
 	snapshotCursor int64
@@ -164,9 +168,10 @@ func skipUnreadableSettlement(room string, err error) bool {
 // the step and outcome it ends on otherwise: it takes the room's live instance (take), reads the
 // document under the document's locks (readLocked), stamps the block ids the document lacks
 // (applyStamp) and commits that stamp alone when the document moved under its read (commitStamp),
-// reconciles the ask blocks (planRepairs), writes the repairs into the room and stores what it
-// wrote (commitRepairs), and commits, with the document's version when the document reads
-// differently from the latest one (commitVersion).
+// reconciles the ask blocks and finds whether the document's email links read back
+// (planRepairs), writes the repairs into the room and stores what it wrote (commitRepairs), and
+// commits, with the document's version when the document reads differently from the latest one
+// (commitVersion).
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
 	settle := &settlement{service: s, room: room, generation: generation}
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
@@ -534,6 +539,12 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 // system actor's event notifies nobody (events.Broker.Notify), and a closed issue's settlement
 // wakes nobody. The person is still named in the event's payload (DisturbedBy) and in the
 // version's authors.
+//
+// It then finds whether the tree as the reconciliation left it holds email links that do not read
+// back (fallBackEmailLinks), which a browser's edit leaves where a person types or pastes an
+// address the renderer cannot write as the email rule reads it: no markdown stands behind a live
+// document's tree to fall back from, so the settlement gives those addresses the base's reading in
+// the room (commitRepairs). A tree whose text holds no `@` is not rendered for it.
 func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s := st.service
 	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.markdown, st.issueClosed)
@@ -549,15 +560,25 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 		}
 	}
 	st.reconciliation = reconciliation
+	// The settlement rendered its read already (readLocked): a tree the stamp and the
+	// reconciliation left as that read is checked against that rendering, as commitVersion reuses it.
+	rendered := ""
+	if st.reconciled == st.read && !reconciliation.changedTree() && st.renderErr == nil {
+		rendered = st.markdown
+	}
+	if _, st.baseEmailLinks, err = fallBackEmailLinks(st.reconciled, rendered); err != nil {
+		return settleDone, st.abandon(err)
+	}
 	if s.afterSettleReconcile != nil {
 		s.afterSettleReconcile(st.room)
 	}
 	return settleOn, settleOutcome{}
 }
 
-// commitRepairs writes the reconciled repairs into the room and stores what the settlement holds,
-// in the room's commit order, and reads the document again when it wrote any: that read is what
-// its version is rendered from, and whom that version credits is taken over it.
+// commitRepairs writes the reconciled repairs into the room, then the base's email links where the
+// document's own do not read back (planRepairs), and stores what the settlement holds, in the
+// room's commit order, and reads the document again when it wrote any: that read is what its
+// version is rendered from, and whom that version credits is taken over it.
 func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, tx, ledger := st.service, st.room, st.tx, st.ledger
 	// What the settlement stores, it stores from here on, in the room's commit order: the room's
@@ -583,6 +604,21 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 		if slot != nil {
 			if err := ledger.storeRepair(ctx, tx, room, st.cursor, update); err != nil {
 				return settleDone, st.abandon(fmt.Errorf("store reconciled typed blocks: %w", err))
+			}
+		}
+	}
+	if st.baseEmailLinks {
+		// The base's email links are given to the document as it stands too
+		// (fallBackEmailLinksLive), after the reconciliation's repairs, so the version rendered from
+		// the read below holds them and reads back as the room's tree.
+		slot, update, err := s.applySuppressed(ctx, room, st.doc, fallBackEmailLinksLive)
+		st.keep(slot, update)
+		if err != nil {
+			return settleDone, st.abandon(fmt.Errorf("write the base's email links: %w", err))
+		}
+		if slot != nil {
+			if err := ledger.storeRepair(ctx, tx, room, st.cursor, update); err != nil {
+				return settleDone, st.abandon(fmt.Errorf("store the base's email links: %w", err))
 			}
 		}
 	}
