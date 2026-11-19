@@ -682,11 +682,18 @@ func (r *kindTreeRig) send(session, message string) {
 }
 
 // writeRecord writes issue's word handoff record as session, as `dispatch handoff-write` of that
-// session writes one, and returns it as Dispatch answers it.
+// session writes one, and returns it as Dispatch answers it. Dispatch takes a handoff body only as
+// one JSON object (handoffs.go's HANDOFF_INPUT), the shape every role's prompt spells.
 func (r *kindTreeRig) writeRecord(issue, session, word string) handoffRecord {
 	r.t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"schemaVersion": 1, "phase": word, "issue": issue, "summary": "The " + word + " of " + issue + ": one Markdown file under smoke/.",
+	})
+	if err != nil {
+		r.t.Fatalf("encode %s's %s record: %v", issue, word, err)
+	}
 	status, answer := r.dispatch.agentPost("/api/v1/issues/"+issue+"/handoffs/"+word, map[string]any{
-		"actor": map[string]string{"kind": "session", "id": session}, "body": "The " + word + " of " + issue + ": one Markdown file under smoke/.",
+		"actor": map[string]string{"kind": "session", "id": session}, "body": string(body),
 	})
 	if status != http.StatusCreated {
 		r.t.Fatalf("the write of %s's %s record as %s = %d %s", issue, word, session, status, answer)
