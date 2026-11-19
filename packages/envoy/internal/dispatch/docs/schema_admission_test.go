@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -471,16 +472,14 @@ const writeStalledAfter = 100 * time.Millisecond
 
 // documentStall is the server's writer stopped inside the document it owes a page that reads
 // nothing: write is the index, in the socket's record, of the write that has not returned, since
-// when it began, before is what the writes ahead of it put on the wire, and took is how long
-// after the dial the stall was seen.
+// when it began, and took is how long after the dial the stall was seen.
 type documentStall struct {
-	write  int
-	since  time.Time
-	before serverStream
-	took   time.Duration
+	write int
+	since time.Time
+	took  time.Duration
 }
 
-// revokeInFlightBound is how soon after the write in flight began the test below must take the
+// revokeInFlightBound is how soon after the write seen stalled began the test below must take the
 // revoke: a quarter of ygoPeerWriteTimeout, the deadline ygo set on that write, so an end the test
 // accepts is the revoke's work and not that deadline's.
 const revokeInFlightBound = ygoPeerWriteTimeout / 4
@@ -505,7 +504,7 @@ func waitForAStalledDocumentWrite(t *testing.T, socket *serverSocket, dialed tim
 		read, err := readServerStream(streamOf(writes))
 		if last >= 0 && writes[last].returnedAt.IsZero() && time.Since(writes[last].startedAt) >= writeStalledAfter &&
 			err == nil && read.documentFrames > 0 && !read.answered {
-			return documentStall{write: last, since: writes[last].startedAt, before: read, took: time.Since(dialed)}
+			return documentStall{write: last, since: writes[last].startedAt, took: time.Since(dialed)}
 		}
 		if took := time.Since(dialed); took > roomWait(t) {
 			t.Fatalf("%v after the dial the server's writer had not stalled inside the document it owes the page: %d writes, the last of them returned=%t, %d whole frames of the document, its SyncStep2 among them=%t, reading the stream gave %v. This test needs a frame of the document in flight when the revoke arrives",
@@ -525,8 +524,15 @@ func waitForAStalledDocumentWrite(t *testing.T, socket *serverSocket, dialed tim
 // of ygo's one-second wait, so the revoke has that frame stalled in front of it, and then reads:
 // every frame whole, that one included, and the close with the admission-revoked code after them -
 // never a protocol error from a frame cut in half, and never the bare 1006 of a connection closed
-// without a frame. The socket's record shows the revoke did arrive while that frame was going out:
-// the write carrying it began before the revoke and returned after it.
+// without a frame. The socket's record shows the revoke did arrive while a frame was going out:
+// a write began before the revoke and returned after it.
+//
+// A write seen stalled is not stalled for good: the page's kernel goes on taking bytes the page
+// never reads, so that write can return a while later and the writer stall again on a later one.
+// Run 44440769170 saw it: the write seen stalled returned while the fleet's new process was being
+// written to the database, 618 ms before the revoke. So the database work is done before the
+// stall is waited for, the revoke is taken the moment the stall is seen, and the write in flight
+// at the revoke is read off the record afterwards rather than taken to be the one seen stalled.
 func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	// Both buffers are read back before anything is seeded, and the document is sized from them.
 	sendGrant := sendBufferGrant(t)
@@ -553,17 +559,27 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	// admitted writable; it reads nothing, so the server's writer stops inside the document.
 	dialed := time.Now()
 	reader, serverConn := server.dialUnreadPage(t, artifactID, page(version-1, creatable), inFlightPageReceiveBuffer)
-	stall := waitForAStalledDocumentWrite(t, serverConn, dialed)
 
 	// A process of the build after this one, which creates up to version, what this page cannot
-	// represent, joins, and the re-check revokes it.
+	// represent, joins, and the re-check's read of the live fleet sees it. Both are database work,
+	// done while the server's writer runs into the page's buffers, so none of it stands between
+	// the stall and the revoke.
 	fleetProcess(t, service, version+1, version, 0)
+	fleet, err := readSchemaFleet(context.Background(), service.store.Pool)
+	if err != nil {
+		t.Fatalf("read the live fleet: %v", err)
+	}
+	stall := waitForAStalledDocumentWrite(t, serverConn, dialed)
+
+	// The re-check's own revoke (recheckSchemaAdmissions), taken here as the slow page's row below
+	// takes it: the page's socket is the only one open, so it is the one this fleet closes.
 	revokedAt := time.Now()
-	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
-		t.Fatalf("re-check the sockets' admission: %v", err)
+	revoked := service.schemaAdmissions.revokeUnless(fleet)
+	if len(revoked) != 1 || revoked[0].key.room != artifactID {
+		t.Fatalf("the re-check revoked %d sockets, want the page's alone", len(revoked))
 	}
 	if took := revokedAt.Sub(stall.since); took > revokeInFlightBound {
-		t.Fatalf("the revoke came %v after the server began the write in flight, past %v: a run this slow cannot tell the revoke's close from ygo's own %v deadline on that write",
+		t.Fatalf("the revoke came %v after the server began the write seen stalled, past %v: a run this slow cannot tell the revoke's close from ygo's own %v deadline on that write",
 			took, revokeInFlightBound, ygoPeerWriteTimeout)
 	}
 	// The page reads nothing a while longer, so the frame stays stalled with the revoke waiting on
@@ -587,16 +603,25 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 		}
 	}
 	writes, _ := serverConn.record()
-	if inFlight := writes[stall.write]; !inFlight.returnedAt.After(revokedAt) {
-		t.Fatalf("the write the server had in flight on the page's socket, stalled %v after the dial, returned=%t at %v, not after the revoke at %v: the revoke came between two frames, and this test needs it to arrive while one is going out",
-			stall.took, !inFlight.returnedAt.IsZero(), inFlight.returnedAt, revokedAt)
+	// The write in flight at the revoke, which began before it and returned after it. gorilla
+	// serialises every write to the socket, so at most one write spans the revoke.
+	inFlight := slices.IndexFunc(writes, func(write socketWrite) bool {
+		return write.startedAt.Before(revokedAt) && write.returnedAt.After(revokedAt)
+	})
+	if inFlight < 0 {
+		t.Fatalf("no write to the page's socket began before the revoke at %v and returned after it, though write %d of %d was seen stalled %v after the dial: the revoke came between two frames, and this test needs it to arrive while one is going out",
+			revokedAt, stall.write+1, len(writes), stall.took)
 	}
-	if want := stall.before.documentFrames + 1; documentFrames < want {
-		t.Fatalf("the page read %d whole frames of the document before the close, want at least %d: the %d the server had written before the revoke and the one it had in flight",
-			documentFrames, want, stall.before.documentFrames)
+	before, err := readServerStream(streamOf(writes[:inFlight]))
+	if err != nil {
+		t.Fatalf("read the bytes the server wrote to the page before the write in flight at the revoke: %v", err)
 	}
-	t.Logf("the server's writer stalled %v after the dial and the revoke came %v after the write in flight began, with %d frames of the document written whole and %d bytes of the next recorded on the wire; the page read %d frames of the document whole, then the admission-revoked close",
-		stall.took, revokedAt.Sub(stall.since), stall.before.documentFrames, stall.before.cutHeld, documentFrames)
+	if want := before.documentFrames + 1; documentFrames < want {
+		t.Fatalf("the page read %d whole frames of the document before the close, want at least %d: the %d the server had written before the write in flight at the revoke and the one that write carries",
+			documentFrames, want, before.documentFrames)
+	}
+	t.Logf("the server's writer stalled %v after the dial and the revoke came %v after the write seen stalled began; the write in flight at the revoke is write %d of %d (the one seen stalled: %t), begun %v before the revoke, with %d frames of the document written whole before it; the page read %d frames of the document whole, then the admission-revoked close",
+		stall.took, revokedAt.Sub(stall.since), inFlight+1, len(writes), inFlight == stall.write, revokedAt.Sub(writes[inFlight].startedAt), before.documentFrames, documentFrames)
 }
 
 // ygoHandshakeTimeout is the deadline ygo's ServeHTTP sets on a new socket's first read, after
