@@ -497,7 +497,7 @@ func recordRefusal(cause string, issue record.Issue, gate record.TreeGate, fact 
 		closed, _ := HeldByDesignGate(issue, fact.Role, gate)
 		return &intake.Refusal{Status: 409, Code: "WAIT_HELD_BY_DESIGN_GATE", Message: fmt.Sprintf(
 			"the design gate of %s holds this merger: version %d of its %s document (%s) is with its reviewer, and %s merges "+
-				"nothing until every gated step stands open again. The daemon tells this merger when the gate opens, so the hold "+
+				"nothing until every gated step that someone registered stands open again. The daemon tells this merger when the gate opens, so the hold "+
 				"needs no wait of its own; this declaration recorded nothing",
 			issue.Tree, closed.LatestVersion, closed.Step.OrSpec(), closed.ArtifactID, issue.Key)}
 	case cause == WaitEndCompleted:

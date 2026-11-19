@@ -61,14 +61,15 @@ func openBackstops(t *testing.T, pool *store.Pool, issue string) []armedBackstop
 	return armed
 }
 
-// releasesAt runs one idle release of the tester's pod to its end at at: its mark and rows
-// (markRelease), then the save, the tester's stop and the teardown, which arms the backstop.
+// releasesAt runs one idle release of the pod of the rig's role (the tester's) to its end at at:
+// its mark and rows (markRelease), then the save, the role's stop and the teardown, which arms the
+// backstop.
 func (r *waitDeliveryRig) releasesAt(at time.Time) {
 	r.t.Helper()
 	r.markRelease()
 	r.drainAt(at, record.OutboxKindIssueBundle, record.OutboxKindSupervise, record.OutboxKindIssueRelease)
 	if got := r.machine.Claim(); !got.Released() {
-		r.t.Fatalf("the tester = %s by %s after the release, want it released", got.State, got.SuspendedBy)
+		r.t.Fatalf("the %s = %s by %s after the release, want it released", r.role, got.State, got.SuspendedBy)
 	}
 	if r.releaseMarked() {
 		r.t.Fatal("the release is still in progress after its rows ran, want it over")

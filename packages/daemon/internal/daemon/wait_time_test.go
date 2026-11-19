@@ -142,17 +142,17 @@ func (r *waitDeliveryRig) resumes() []string {
 	return found
 }
 
-// markRelease marks an idle release of the tester's pod in progress, as the daemon's idle pass
-// marks one (store.ReleaseIdleIssue, idleReleaseRows): the save of the workspace, the stop of the
-// tester, which is the release's boundary, and the teardown, queued on the issue's lifecycle lane
-// with the release's mark, none of them run yet.
+// markRelease marks an idle release of the pod of the rig's role (the tester's) in progress, as the
+// daemon's idle pass marks one (store.ReleaseIdleIssue, idleReleaseRows): the save of the
+// workspace, the stop of the role, which is the release's boundary, and the teardown, queued on
+// the issue's lifecycle lane with the release's mark, none of them run yet.
 func (r *waitDeliveryRig) markRelease() {
 	r.t.Helper()
 	marked, err := r.st.ReleaseIdleIssue(r.ctx, "legion", r.issue.Key, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Roles: []claim.Role{claim.RoleTester}}, time.Now().UTC())
+		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Roles: []claim.Role{r.role}}, time.Now().UTC())
 	})
 	if err != nil || !marked {
-		r.t.Fatalf("mark the release of the tester's pod = %t, %v; want it marked", marked, err)
+		r.t.Fatalf("mark the release of the %s's pod = %t, %v; want it marked", r.role, marked, err)
 	}
 }
 

@@ -73,6 +73,9 @@ type waitDeliveryRig struct {
 	api     http.Handler
 	issue   record.Issue
 	token   claim.Token
+	// role is the role whose worker the rig runs on issue: the tester, unless a case builds the
+	// rig for another role (newWaitDeliveryRigOf).
+	role    claim.Role
 	machine *supervise.Machine
 	// conns is every connection a process of the tester was given, oldest first: a restarted
 	// daemon's process speaks over one of its own.
@@ -80,6 +83,16 @@ type waitDeliveryRig struct {
 }
 
 func newWaitDeliveryRig(t *testing.T) *waitDeliveryRig {
+	t.Helper()
+	return newWaitDeliveryRigOf(t, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U",
+		HandedOver: true}, claim.RoleTester, config.DesignGateRootIssues.Steps())
+}
+
+// newWaitDeliveryRigOf is the rig with role's worker on issue, a tree root the rig records, under a
+// deployment that gates steps. The issue holds the admission slot only in a phase that keeps one
+// (record.PhaseKeepsSlot): a phase past the review holds none.
+func newWaitDeliveryRigOf(t *testing.T, issue record.Issue, role claim.Role, steps []record.DesignStep) *waitDeliveryRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -89,16 +102,15 @@ func newWaitDeliveryRig(t *testing.T) *waitDeliveryRig {
 	}
 	t.Cleanup(st.Close)
 	records := record.NewStore()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true}
 	putOutboxIssue(t, pool, records, issue)
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", issue.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("admit the tree: %v", err)
 	}
-	holdSlot(t, pool, issue.Key)
+	if record.PhaseKeepsSlot(issue.Phase) {
+		holdSlot(t, pool, issue.Key)
+	}
 	logs := &testlog.Buffer{}
 	log := slog.New(slog.NewTextHandler(logs, nil))
-	steps := config.DesignGateRootIssues.Steps()
 	// The engine reads the pod tables of the idle release through the store's own view of the
 	// project, as the daemon hands it under either runtime (openWorkflow): a wait's time wakes a
 	// claim a release took (workflow's waitDue).
@@ -113,7 +125,7 @@ func newWaitDeliveryRig(t *testing.T) *waitDeliveryRig {
 		handlers: factHandlers(records, issue.Project, engine, admission), gatedSteps: steps,
 		dispatchProject: issue.Project, bootID: "test-boot", log: log}
 	r := &waitDeliveryRig{t: t, ctx: ctx, pool: pool, st: st, records: records, logs: logs, log: log, w: w, issue: issue,
-		token: mustClaimToken(t, issue.Key, claim.RoleTester)}
+		token: mustClaimToken(t, issue.Key, role), role: role}
 	r.runner = &outbox{log: log, dispatchProject: issue.Project, pool: pool, records: records, trees: st,
 		tokens: outboxTokens{}, notices: &outboxPublisher{}, project: "legion", stateDir: t.TempDir(), handlers: w.handlers,
 		gatedSteps: steps, now: func() time.Time { return time.Now().Add(time.Minute) },
@@ -165,20 +177,21 @@ func (r *waitDeliveryRig) restart() {
 	r.supervise(sup)
 }
 
-// enter writes the tester's phases row on entry with task as that entry's work, as a transition
-// that hands the tester an entry writes it (workflow's enter), and queues the start row that
-// carries the task at that entry, as the transition's start does (workflow's started).
+// enter writes the phases row of the rig's role (the tester's) on entry with task as that entry's
+// work, as a transition that hands the role an entry writes it (workflow's enter), and queues the
+// start row that carries the task at that entry, in the phase the issue stands in, as the
+// transition's start does (workflow's started).
 func (r *waitDeliveryRig) enter(entry int64, task string) {
 	r.t.Helper()
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		if err := r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.issue.Key, Role: claim.RoleTester, Claim: r.token,
+		if err := r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.issue.Key, Role: r.role, Claim: r.token,
 			Entry: entry, EntryTask: task}); err != nil {
 			return err
 		}
 		return r.records.Enqueue(r.ctx, tx, mustOutboxRow(r.t, r.issue.Key, record.SuperviseRequest{Op: "start", Tree: r.issue.Tree,
-			Role: claim.RoleTester, Generation: r.issue.Generation, Phase: phase.Testing, Task: task, Entry: entry}, time.Now()))
+			Role: r.role, Generation: r.issue.Generation, Phase: r.issue.Phase, Task: task, Entry: entry}, time.Now()))
 	}); err != nil {
-		r.t.Fatalf("hand the tester entry %d: %v", entry, err)
+		r.t.Fatalf("hand the %s entry %d: %v", r.role, entry, err)
 	}
 }
 

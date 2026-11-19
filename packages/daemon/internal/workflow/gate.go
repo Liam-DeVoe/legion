@@ -993,16 +993,18 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	}
 	// The step and its own document, never "spec version": under more than one gated step the
 	// version this event carries is that step's document's, and a message naming the spec would
-	// send a reader to the wrong one (INFRA-1272).
+	// send a reader to the wrong one (INFRA-1272). Both texts speak of every gated step that someone
+	// registered, because that is what moves the standing gate (standingGateOpen): a gated step
+	// nobody registered names no document and holds no merger (R9 of dispatch://INFRA-2040).
 	var body string
 	if open {
 		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
+			"and every gated step that someone registered now stands open, so the design you are working to is the approved one. "+
 			"A merge the closed gate held is released.", root.Tree, version, step, document)
 	} else {
 		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-			"stands open again.", root.Tree, version, step, document)
+			"that someone registered stands open again.", root.Tree, version, step, document)
 	}
 	for _, to := range told {
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {

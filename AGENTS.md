@@ -1240,7 +1240,8 @@ The machinery's notices to a stopped tree (a child's status or close, a dead wor
 **Gate:** the design gate is the list of steps `gates.design` names in `legion.yaml`, each step one document of the root issue a human approves at a version in Dispatch:
 `decisions` the issue's decisions document, `criteria` its Verification document, `spec` its primary document.
 The default is the single step `spec`, which the word `root-issues` also means, and the empty list, which the word `off` also means, gates nothing.
-The daemon keeps one gate record per step, and every configured step holds the tree's work, the merger's start and the start of a released child until a person approves that step's document.
+The daemon keeps one gate record per step, and every configured step holds the tree's work and the start of a released child until a person approves that step's document.
+A step holds the merger's start once someone registers it, until a person approves its document: a configured step that nobody registered names no document, so it holds no merger.
 Once the spec's decision blocks are settled and the human has agreed to every point in it, the architect requests the approval with `dispatch request-approval` and a summary of what the human is approving, and registers the step, the document id and the version with the daemon, and the daemon opens that step on the `artifact.approved` event for that document at its current version
 — or at registration itself, when Dispatch already shows the human approved that version before the architect registered (the daemon reads the approval; it never writes one).
 One request with `--include-verification` covers the spec and the Verification document, so it opens the `criteria` and the `spec` step together, each registered on its own document.
