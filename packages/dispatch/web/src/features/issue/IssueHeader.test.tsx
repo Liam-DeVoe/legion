@@ -190,6 +190,8 @@ test("a click on the page's text saves the title and closes its editor, and the 
     const editor = await editTitle(user, "Renamed");
     const text = screen.getByText(PAGE_TEXT);
     await pressAsBrowser(() => {
+      // The press goes out as a browser's, its events in one act that React commits after them
+      // all (`pressAsBrowser`): user-event's click commits inside each event it sends.
       fireEvent.pointerDown(text);
       fireEvent.mouseDown(text);
       // The engine's answer to a press on no control, which happy-dom leaves to the page.
@@ -198,6 +200,34 @@ test("a click on the page's text saves the title and closes its editor, and the 
       fireEvent.mouseUp(text);
       fireEvent.click(text);
     });
+    await afterRescue();
+    await expectNextKeyEditsNoTitle(user, patches, "Renamed");
+  } finally {
+    unmount();
+  }
+});
+
+// An Enter that ends or moves an input method's composition commits the composed text into the
+// editor and is not the reader's save, nor is an Escape that cancels the composition their
+// discard: the editor stays open on what they wrote, with nothing saved, and the plain Enter after
+// them saves it. user-event has no form for a composing key, so each is fired with `isComposing`.
+test("Enter and Escape that end an IME composition in the title's editor save nothing and keep it open", async () => {
+  const { patches, unmount, user } = header();
+  try {
+    const editor = await editTitle(user, "Renamed");
+    for (const key of ["Enter", "Escape"]) {
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      await pressAsBrowser(() => fireEvent.keyDown(editor, { isComposing: true, key }));
+      await afterRescue();
+      expect(screen.getByRole("textbox", { name: "Issue title" }), `${key} composing`).toBe(editor);
+      expect(editor, `${key} composing`).toHaveFocus();
+      expect(editor, `${key} composing`).toHaveValue("Renamed");
+    }
+    expect(patches).not.toHaveBeenCalled();
+
+    // The plain Enter goes out as a browser's, in one act that React commits after it
+    // (`pressAsBrowser`): user-event commits inside each event it sends.
+    await pressAsBrowser(() => fireEvent.keyDown(editor, { key: "Enter" }));
     await afterRescue();
     await expectNextKeyEditsNoTitle(user, patches, "Renamed");
   } finally {

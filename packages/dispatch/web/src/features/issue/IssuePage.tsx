@@ -107,17 +107,19 @@ const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = 'select[aria-label="Status"]';
 const TITLE_HEADING = 'h1[tabindex="0"]';
 
-/** The header control `selector` names, or `null` when it is absent or refuses input (a closed
- *  issue, a save in flight): the one fact both the key's `run` and the `when` that offers it read,
- *  so a shortcut is listed exactly while its control would take a click. */
+/** The header control `selector` names, or `null` when it is absent or refuses input: disabled
+ *  (a closed issue, a save in flight), or held with `aria-disabled` (the labels' trigger while
+ *  their save is out, `IssueLabels`). It is the one fact both the key's `run` and the `when` that
+ *  offers it read, so a shortcut is listed exactly while its control would take a click. */
 function usableControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {
     return null;
   }
-  const disabled =
-    (node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled;
-  return disabled ? null : node;
+  const refused =
+    node.getAttribute("aria-disabled") === "true" ||
+    ((node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled);
+  return refused ? null : node;
 }
 
 /**

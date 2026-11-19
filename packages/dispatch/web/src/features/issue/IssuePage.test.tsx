@@ -36,6 +36,7 @@ import type {
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { IssuePage } from "./IssuePage";
 
 const issue = {
@@ -781,6 +782,53 @@ test("IssuePage returns focus to the label trigger when Escape closes an unchang
     expect(screen.queryByRole("listbox", { name: "Label options" })).not.toBeInTheDocument();
     expect(document.activeElement === trigger).toBe(true);
     expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    listIssues.mockRestore();
+    restore();
+  }
+});
+
+// A single key whose header control is held does nothing and is not offered: while the labels'
+// save is out their trigger is held (`aria-disabled`, `IssueLabels`), so `l` opens no labels
+// list, the shortcut help lists `Edit labels` as not applying now, and the palette offers no row
+// for it. Once the save lands the key is offered again.
+test("IssuePage offers no `l` while the labels trigger is held by its save, and `l` opens nothing", async () => {
+  const user = userEvent.setup();
+  const labeledIssue = { ...issue, labels: ["bug"] };
+  const restore = stubIssuePage(labeledIssue);
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
+    { ...labeledIssue, open_asks: 0 },
+  ]);
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockReturnValue(save.promise);
+  const view = renderIssuePage();
+  const labelsKey = () =>
+    appKeymap.describe().find((entry) => entry.scope === "issue" && entry.id === "labels");
+
+  try {
+    const trigger = await screen.findByRole("button", { name: "Edit labels" });
+    expect(labelsKey()?.enabled).toBe(true);
+    await user.click(trigger);
+    await screen.findByRole("combobox", { name: "Search or create label" });
+    await user.click(screen.getByRole("option", { name: "bug" }));
+    await user.click(trigger);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { labels: [] }, keyedAttempt)
+    );
+    await waitFor(() => expect(trigger).toHaveAttribute("aria-disabled", "true"));
+
+    await user.keyboard("l");
+    expect(
+      screen.queryByRole("combobox", { name: "Search or create label" })
+    ).not.toBeInTheDocument();
+    expect(labelsKey()?.enabled).toBe(false);
+    expect(appKeymap.actions().some((action) => action.id === "labels")).toBe(false);
+
+    await act(async () => save.resolve({ ...labeledIssue, labels: [] }));
+    await waitFor(() => expect(trigger).not.toHaveAttribute("aria-disabled"));
+    expect(labelsKey()?.enabled).toBe(true);
   } finally {
     view.unmount();
     patchIssue.mockRestore();
