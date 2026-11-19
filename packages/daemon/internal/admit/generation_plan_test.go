@@ -256,7 +256,7 @@ func personsTodo(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 func assertChildStarted(t *testing.T, pool *pgxpool.Pool, first phase.Phase) {
 	t.Helper()
 	want := []string{pathsChild + " is todo; it runs again under " + pathsRoot,
-		fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", pathsChild, first, pathsRoot)}
+		fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", pathsChild, first, pathsRoot) + childStartedOwnership}
 	if got := joinedNotices(t, pool, pathsChild); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the child-status notices of %s = %q, want %q", pathsChild, got, want)
 	}

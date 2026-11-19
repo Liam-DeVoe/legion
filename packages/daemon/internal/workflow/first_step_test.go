@@ -179,7 +179,7 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 		}
 		// The child's architect is told the phase the child starts, its plan's first step.
 		started := []record.Notice{{Kind: "child-status", Role: claim.RoleArchitect,
-			Reason: "LEGION-209 starts implementing under LEGION-208: it reached the front of the waiting line and took an admission slot"}}
+			Reason: "LEGION-209 starts implementing under LEGION-208: it reached the front of the waiting line and took an admission slot" + childStartedOwnership}}
 		if got := noticesOf(t, pool, "LEGION-209", "child-status"); !reflect.DeepEqual(got, started) {
 			t.Fatalf("the child-status notices = %+v, want %+v", got, started)
 		}
@@ -228,7 +228,7 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 			t.Fatalf("LEGION-209 after its first step stands at %+v, want %+v", got, want)
 		}
 		started := []record.Notice{{Kind: "child-status", Role: claim.RoleArchitect,
-			Reason: "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot"}}
+			Reason: "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot" + childStartedOwnership}}
 		if got := noticesOf(t, pool, "LEGION-209", "child-status"); !reflect.DeepEqual(got, started) {
 			t.Fatalf("the child-status notices = %+v, want %+v", got, started)
 		}
