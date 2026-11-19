@@ -126,14 +126,16 @@ func changedAtOf(t *testing.T, q Querier, key string) *time.Time {
 }
 
 // TestTheChannelsTimeMovesOnlyWhenTheListChanges: slack_channels_changed_at is when a project's
-// Slack channels last changed, null until a write changes the list. A write that changes it sets
-// it to the write's own statement time (statement_timestamp()), which comes after every lock the
-// write waited for, never to the transaction's start: here each transaction sleeps before it
-// writes, as one queued behind another's locks waits. A write of the same list, in another order
-// and over a stored list in another order, leaves it. The write's answer and event, ReadProject
-// and the membership answer carry it. Controls: set the time on every write, and the second row
-// fails naming the project; stamp the transaction's now(), and the first row fails naming the
-// time before the write.
+// Slack channels last changed, null until a write changes the list, so a write of the empty list
+// over the empty list a project starts with leaves it null. A write that changes it sets it to the
+// write's own statement time (statement_timestamp()), which comes after every lock the write
+// waited for, never to the transaction's start: here each transaction sleeps before it writes, as
+// one queued behind another's locks waits. A write of the same list, in another order and over a
+// stored list in another order, leaves it. The write's answer and event, ReadProject and the
+// membership answer carry it. Controls: set the time on every write, and the empty list's row and
+// the same list's row fail naming the project; set it on a write of the empty list over the empty
+// list alone, and the empty list's row alone fails naming the project; stamp the transaction's
+// now(), and the first change's row fails naming the time before the write.
 func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -162,6 +164,12 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 	}
 	if read, err := ReadProject(ctx, database.Pool, "PUB"); err != nil || read.SlackChannelsChangedAt != nil {
 		t.Fatalf("ReadProject of PUB before any write = %+v, %v; want its channels time null", read, err)
+	}
+
+	// The empty list over the empty list PUB starts with: the same list, so the time stays null.
+	write([]string{}...)
+	if got := changedAtOf(t, database.Pool, "PUB"); got != nil {
+		t.Errorf("a write of the empty list over PUB's empty list set PUB's channels time to %v, want it left null", got)
 	}
 
 	before, after, answer, event := write("GABCDEFGH1", "C012345678")

@@ -32,9 +32,10 @@ type Leases interface {
 // admission's (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
 // lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite),
-// the rename graph's own (api's refuseRepoRenameChain) and the Slack channels' (access's
-// lockSlackChannels), each a first key of its own, so a lease's second key, its name's hashtext,
-// separates the leases from each other and from nothing else.
+// the rename graph's own (api's refuseRepoRenameChain), the Slack channels' (access's
+// lockSlackChannels) and the delivery change log's (store migration 0100's delivery_change_log),
+// each a first key of its own, so a lease's second key, its name's hashtext, separates the leases
+// from each other and from nothing else.
 const leaseNamespace int32 = 0x4C4F4F50
 
 // takeLease tries for a lease without queueing behind its holder, and freeLease gives it back. Both

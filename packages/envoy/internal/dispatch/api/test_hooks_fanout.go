@@ -50,9 +50,10 @@ const (
 	// admission's (docs.conditionalEditQueueLockNamespace, "QUEU"), the issue dependencies'
 	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
 	// (lockDeploymentIssueDependencies), one repository mapping's write (lockRepoProjectWrite), the
-	// rename graph's own (refuseRepoRenameChain) and the Slack channels' (access's
-	// lockSlackChannels). The second key is the listening connection's backend pid, which no other
-	// live connection has, so two processes' keys never meet.
+	// rename graph's own (refuseRepoRenameChain), the Slack channels' (access's lockSlackChannels)
+	// and the delivery change log's (store migration 0100's delivery_change_log). The second key is
+	// the listening connection's backend pid, which no other live connection has, so two
+	// processes' keys never meet.
 	testHookLockNamespace int32 = 0x484F4F4B
 	// testHookTimeout bounds a call: the wait for this process's own listener, and then for every
 	// other process's acknowledgement. A hook's own work - closing streams, or quiesce's flush of
