@@ -1441,6 +1441,31 @@ test("a project document's event refreshes the names reads naming that document,
   }
 });
 
+// A page can cite a document before it exists: the names read answers that address with nothing
+// until the document is created, and the creation is what gives the address words. So a
+// document's creation refreshes the names reads that cite it, of an issue and of a project, and
+// leaves a read naming another owner alone.
+test("an artifact.created event refreshes the names read that cites that document", () => {
+  const citesPlan = [[`dispatch://${KEY}/artifact/${PLAN}`]];
+  expect(
+    refreshedNames(feedEvent("artifact.created", { artifact: plan }), [
+      ...citesPlan,
+      ...NAMING_ELSEWHERE,
+    ])
+  ).toEqual(citesPlan);
+  const citesRoadmap = [["dispatch://CORE/artifact/roadmap-md"]];
+  expect(
+    refreshedNames(
+      feedEvent(
+        "artifact.created",
+        { artifact: roadmap },
+        { artifact_id: roadmap.id, issue_key: null }
+      ),
+      [...citesRoadmap, ["dispatch://ACME/artifact/roadmap-md"], [`dispatch://${KEY}`]]
+    )
+  ).toEqual(citesRoadmap);
+});
+
 // The same rule on the page: every read of the tree is kept fresh by events, so a comment a
 // node's words cite, edited under the same address, is named anew only by the feed's rule for
 // the edit. The edit reads the names once more, and the page publishes the comment's new words

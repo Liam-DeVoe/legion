@@ -1591,9 +1591,10 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * naming none, as an older server sends it) renames the issue's own address, since a names read
  * names an issue by its title, so it refreshes the reads naming that address, and only those
  * (`eventAddresses`).
- * A document's rename (`artifact.renamed`) moves the name the read answers for an address to the
- * document, and its removal (`artifact.removed`) makes every address to it and to its blocks
- * name nothing (`gone`), so each refreshes them too.
+ * A document's creation (`artifact.created`) gives words to an address a page cited before the
+ * document existed, its rename (`artifact.renamed`) moves the name the read answers for an
+ * address to the document, and its removal (`artifact.removed`) makes every address to it and to
+ * its blocks name nothing (`gone`), so each refreshes them too.
  *
  * Of the names reads the app holds, each event refreshes those whose key holds an address it can
  * change, of the issue or the project document it is on (`namesReadsNaming`). The test reads the
@@ -1630,6 +1631,7 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
+    case "artifact.created":
     case "artifact.removed":
     case "artifact.renamed":
     case "artifact.version":
