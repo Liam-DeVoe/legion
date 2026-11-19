@@ -22,9 +22,9 @@ const (
 	planRatingsVersion = 20261117023932
 	// planRatingsWayBackSection is the heading of the guide's section that gives the way back.
 	planRatingsWayBackSection = "Rolling back the release that rates each plan"
-	// planRatingsWayBackMark is the line that deletes the plan records, which no other
-	// rollback's block carries.
-	planRatingsWayBackMark = "delete from outbox where kind = 'plan_record';"
+	// planRatingsWayBackMark is the line that deletes the plan records of the project that rolls
+	// back, which no other rollback's block carries.
+	planRatingsWayBackMark = "delete from outbox where kind = 'plan_record' and split_part(issue, '-', 1) = '<PROJECT>';"
 )
 
 // The guide's way back of the release that rates each plan is the block the migration's header

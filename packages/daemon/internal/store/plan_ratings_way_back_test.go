@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,21 @@ import (
 // package's CI filter: a test that read the guide would start the whole daemon Go lane on an edit
 // of the guide alone.
 const planRatingsRelease = "the release that rates each plan"
+
+// rollingBackProject is what the way back's two deletes name the project that rolls back by, and
+// what an operator replaces with that project's key: legion.yaml's project, the part of each of
+// its issue keys before the hyphen. projectScope is the predicate each delete carries with it.
+const (
+	rollingBackProject = "<PROJECT>"
+	projectScope       = " and split_part(issue, '-', 1) = '" + rollingBackProject + "'"
+)
+
+// planRatingsWayBackFor is the block the header of planRecordKindVersion carries, as an operator
+// who rolls project back runs it: with project's key in place of rollingBackProject.
+func planRatingsWayBackFor(t *testing.T, project string) string {
+	t.Helper()
+	return strings.ReplaceAll(wayBackOf(t, planRecordKindVersion, planRatingsRelease), rollingBackProject, project)
+}
 
 // stepRecordBeforeTheRating is record.StepRecord as the release that records each step declares
 // it (commit aa36bcbe4e), the release this rollback goes back to: every field of this release's
@@ -217,7 +233,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		}
 	}
 
-	if _, err := store.Pool().Exec(ctx, wayBackOf(t, planRecordKindVersion, planRatingsRelease), pgx.QueryExecModeSimpleProtocol); err != nil {
+	if _, err := store.Pool().Exec(ctx, planRatingsWayBackFor(t, "LEGION"), pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("run the way back the header of migration %d carries: %v", planRecordKindVersion, err)
 	}
 
@@ -288,5 +304,71 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			values ($1, 'LEGION-209', '{}', 0, now(), '')`, kind); err != nil {
 			t.Errorf("the release before queues a %s row after the way back: %v", kind, err)
 		}
+	}
+}
+
+// The way back deletes the plans and the ratings of the project that rolls back, and no other
+// project's. Several projects' daemons can share one database, and the outbox is one table for all
+// of them: each daemon runs only its own project's rows (DueRows' split_part scope), so one project
+// can roll back while another stays on this release, whose daemon still owes its own rows to
+// Dispatch. Each project here has a pending plan and a pending rating, as this release queues them
+// (record.NewOutboxRow). The block runs for LEGION as an operator runs it: LEGION's two rows go,
+// and OTHER's two stand.
+//
+// The control runs the same block with the project's predicate cut out of both deletes, over the
+// same rows queued again: it leaves none of OTHER's rows, so the predicate is what keeps them.
+func TestThePlanRatingsWayBackDeletesOnlyTheRowsOfTheProjectThatRollsBack(t *testing.T) {
+	ctx := context.Background()
+	at := time.Date(2026, 11, 17, 3, 0, 0, 0, time.UTC)
+	steps := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
+	queued := []struct {
+		issue   string
+		payload record.OutboxPayload
+	}{
+		{issue: "LEGION-1", payload: record.PlanRecord{ID: "4d5e6f70-8192-5cad-9e0f-3a4b5c6d7e8f", Generation: 1, Source: "default",
+			Tasks: []record.PlanRecordTask{{ID: "default", Steps: steps}}}},
+		{issue: "LEGION-1", payload: record.StepRecord{ID: "7a1b2c3d-4e5f-5a6b-8c7d-9e0f1a2b3c4d", Task: "default", Kind: "retro",
+			Role: "implementer", Agent: "legion-legion-legion-1-implementer", Generation: 1,
+			PlanRating: &record.PlanRating{Rating: 4, Reason: "The plan put the tests after the review."}}},
+		{issue: "OTHER-7", payload: record.PlanRecord{ID: "6e7f8091-a2b3-5c4d-9e5f-6a7b8c9d0e1f", Generation: 1, Source: "default",
+			Tasks: []record.PlanRecordTask{{ID: "default", Steps: steps}}}},
+		{issue: "OTHER-7", payload: record.StepRecord{ID: "2b3c4d5e-6f70-5a8b-9c0d-1e2f3a4b5c6d", Task: "default", Kind: "retro",
+			Role: "implementer", Agent: "legion-other-other-7-implementer", Generation: 1,
+			PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan was late."}}},
+	}
+	// leftBy is the issue of each row a fresh store's outbox holds after block ran over queued, in
+	// the order the rows were queued.
+	leftBy := func(block string) []string {
+		store := emptyStore(t)
+		if _, err := store.Migrate(ctx); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		for _, q := range queued {
+			row, err := record.NewOutboxRow(q.issue, q.payload, at)
+			if err != nil {
+				t.Fatalf("queue a %T of %s: %v", q.payload, q.issue, err)
+			}
+			if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+				values ($1, $2, $3, 0, $4, '')`, string(row.Kind), row.Issue, row.Payload, row.NextAt); err != nil {
+				t.Fatalf("insert a %T of %s: %v", q.payload, q.issue, err)
+			}
+		}
+		if _, err := store.Pool().Exec(ctx, block, pgx.QueryExecModeSimpleProtocol); err != nil {
+			t.Fatalf("run the way back:\n%s\n%v", block, err)
+		}
+		return rowsAsText(t, store, `select issue from outbox order by id`)
+	}
+
+	if left, want := leftBy(planRatingsWayBackFor(t, "LEGION")), []string{"OTHER-7", "OTHER-7"}; !reflect.DeepEqual(left, want) {
+		t.Errorf("the way back for LEGION leaves the rows of %v, want OTHER's plan and rating %v: another project's daemon, still on this release, never sends a row the block deleted",
+			left, want)
+	}
+
+	block := wayBackOf(t, planRecordKindVersion, planRatingsRelease)
+	if scoped := strings.Count(block, projectScope); scoped != 2 {
+		t.Errorf("the way back scopes %d of its two deletes to the project that rolls back (%q), want both:\n%s", scoped, projectScope, block)
+	}
+	if left := leftBy(strings.ReplaceAll(block, projectScope, "")); len(left) != 0 {
+		t.Errorf("the control, the way back with no project predicate, leaves the rows of %v; want none, or this test cannot see a block that deletes another project's rows", left)
 	}
 }

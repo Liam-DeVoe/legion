@@ -16,17 +16,23 @@
 -- an earlier release writes, so it refuses nothing that release writes (docs/kubernetes.md,
 -- "Rolling back the release that rates each plan").
 --
--- A rollback to an earlier image deletes two kinds of row first, with the daemon stopped: every
--- plan_record row, and every step_record row that carries the rating a retro gave the plan, which
--- the release that records each step decodes strictly and refuses at every attempt. The way back is
--- the last paragraph of this header (migrations.WayBack). docs/kubernetes.md carries the same block
--- under that heading, as the step an operator runs, and the two say the same thing:
--- internal/textcheck's TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide holds them to one
--- text, and internal/store's TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads runs this one.
+-- A rollback of one project to an earlier image first deletes two kinds of that project's row,
+-- with its daemon stopped: its plan_record rows, and its step_record rows that carry the
+-- rating a retro gave the plan, which the release that records each step decodes strictly and
+-- refuses at every attempt. Daemons of several projects can share the database, and each runs only
+-- its own project's rows (split_part(issue, '-', 1)), so one project can roll back while another
+-- stays on this release: each delete names the project, <PROJECT>, which the operator replaces
+-- with its key, and leaves the rows another project's daemon still sends. The way back is the last
+-- paragraph of this header (migrations.WayBack). docs/kubernetes.md carries the same block under
+-- that heading, as the step an operator runs, and the two say the same thing: internal/textcheck's
+-- TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide holds them to one text, and
+-- internal/store's TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads and
+-- TestThePlanRatingsWayBackDeletesOnlyTheRowsOfTheProjectThatRollsBack run this one.
 --
--- -- The writes of the runs' plans and of the retros' ratings onto Dispatch.
--- delete from outbox where kind = 'plan_record';
--- delete from outbox where kind = 'step_record' and payload->>'rating' is not null;
+-- -- The writes of the runs' plans and of the retros' ratings onto Dispatch, of one project.
+-- delete from outbox where kind = 'plan_record' and split_part(issue, '-', 1) = '<PROJECT>';
+-- delete from outbox where kind = 'step_record' and payload->>'rating' is not null
+--   and split_part(issue, '-', 1) = '<PROJECT>';
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
