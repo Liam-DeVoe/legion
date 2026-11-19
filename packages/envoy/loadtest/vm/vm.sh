@@ -741,15 +741,15 @@ on_vm_for() {
   timeout "$seconds" "${SSH[@]}" "$(vm_ssh "$vm")" "$(remote_argv "$@")"
 }
 
-# remote_kill WHAT FILE: the process whose pid FILE holds on the load machine ended there and gone
-# from that machine's process table, and FILE removed. TERM first; KILL when the pid is still
-# there REMOTE_TERM_SECONDS later; then a wait, of up to REMOTE_GONE_SECONDS, for the pid to leave
-# the table. The wait is what a kill that only sends signals lacks: SIGKILL ends a process when the
-# kernel next runs it, and its pid answers kill -0 until its parent -- the machine's init, or the
-# sshd of the ssh that started it, never the sh below -- has reaped it. A caller that starts the
-# next process on the same port, or reads the table, at once meets that moment: vm.test.sh found a
-# stopped step's tunnel still there that way, on a loaded machine. Gone from the table is dead and
-# reaped.
+# remote_kill WHAT FILE [started]: the process whose pid FILE holds on the load machine ended there
+# and gone from that machine's process table, and FILE removed. TERM first; KILL when the pid is
+# still there REMOTE_TERM_SECONDS later; then a wait, of up to REMOTE_GONE_SECONDS, for the pid to
+# leave the table. The wait is what a kill that only sends signals lacks: SIGKILL ends a process
+# when the kernel next runs it, and its pid answers kill -0 until its parent -- the machine's init,
+# or the sshd of the ssh that started it, never the sh below -- has reaped it. A caller that starts
+# the next process on the same port, or reads the table, at once meets that moment: vm.test.sh
+# found a stopped step's tunnel still there that way, on a loaded machine. Gone from the table is
+# dead and reaped.
 #
 # It returns 1 when the pid is still there at that bound, naming WHAT and the pid, and keeps FILE,
 # which still names a live process. Any other end of the remote command -- the machine not
@@ -758,16 +758,33 @@ on_vm_for() {
 # to NOT_GONE, and STOPPING names WHAT while the kill runs; step_interrupt reads both. The command
 # that adds WHAT to NOT_GONE also clears STOPPING, so no interrupt finds WHAT in both.
 #
+# With `started`, the kill follows a start of WHAT whose ssh this pod has not seen return -- a start
+# a signal cut short, or an ssh this stop has just ended -- while the command it carried may still
+# run on the load machine and not yet have written FILE. A kill that read no FILE then would say
+# WHAT is gone, and the start would go on and leave it running. So the kill first waits for FILE to
+# name a pid, up to REMOTE_GONE_SECONDS by that machine's clock, and a FILE that names none by then
+# is a start that nothing shows gone: the kill returns 1 for it, naming WHAT and FILE.
+#
 # It needs nothing of this pod but the ssh. What the ssh says goes into the kill's own output,
 # beside the line `pid=N` with which the script on the load machine names a pid still there at its
 # bound, and that line is found by its mark wherever the ssh's own lines fall around it. So a run
 # directory that takes no new file -- a full disk, no free inode, no write permission -- never
 # stops a kill before it signals, and an interrupt that ends the script during one leaves no file.
 remote_kill() {
-  local what=$1 file=$2 out said rc=0 left=$'\n''pid=([0-9]+)'$'\n'
+  local what=$1 file=$2 started=${3:-} out said rc=0 left=$'\n''pid=([0-9]+)'$'\n' none=$'\n''no-pid'$'\n'
   STOPPING=$what
   # shellcheck disable=SC2016 # expanded by the load machine's sh
   out=$(on_vm "$LOAD_VM" sh -c '
+    if [ -n "$4" ]; then
+      end=$(($(date +%s) + $3))
+      until [ -s "$1" ]; do
+        if [ "$(date +%s)" -gt "$end" ]; then
+          echo no-pid
+          exit 4
+        fi
+        sleep 1
+      done
+    fi
     pid=$(cat "$1" 2>/dev/null)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill -TERM "$pid" 2>/dev/null
@@ -789,13 +806,15 @@ remote_kill() {
       fi
     fi
     rm -f "$1"
-    exit 0' sh "$file" "$REMOTE_TERM_SECONDS" "$REMOTE_GONE_SECONDS" 2>&1) || rc=$?
+    exit 0' sh "$file" "$REMOTE_TERM_SECONDS" "$REMOTE_GONE_SECONDS" "$started" 2>&1) || rc=$?
   if ((rc == 0)); then
     STOPPING=""
     return 0
   fi
   if ((rc == 3)) && [[ $'\n'$out$'\n' =~ $left ]]; then
     note "$what (pid ${BASH_REMATCH[1]}) is still in the $LOAD_VM VM's process table $REMOTE_GONE_SECONDS s after its SIGKILL; $file there still names it"
+  elif ((rc == 4)) && [[ $'\n'$out$'\n' =~ $none ]]; then
+    note "the start of $what on the $LOAD_VM VM recorded no pid in $file there within $REMOTE_GONE_SECONDS s of its kill, so nothing shows it gone"
   else
     said=${out//$'\n'/ }
     note "ending $what ($file on the $LOAD_VM VM) failed: its ssh exited $rc and said '${said:-nothing}', so nothing shows it gone"
@@ -2179,10 +2198,11 @@ pprof_tunnel_url() { printf 'http://127.0.0.1:%s\n' "$(pprof_tunnel_port)"; }
 pprof_tunnel_pid_file() { printf '%s/pprof-tunnel.pid\n' "$(remote_work)"; }
 pprof_tunnel_log() { printf '%s/pprof-tunnel.log\n' "$(remote_work)"; }
 
-# tunnel_kill: whatever the pid file on the load machine names, ended there and gone, and the file
-# removed (remote_kill), so no step leaves an ssh of its own behind holding the port the next step
-# needs. It returns 1 when that ssh is not shown gone.
-tunnel_kill() { remote_kill "the profiling tunnel" "$(pprof_tunnel_pid_file)"; }
+# tunnel_kill [started]: whatever the pid file on the load machine names, ended there and gone, and
+# the file removed (remote_kill), so no step leaves an ssh of its own behind holding the port the
+# next step needs; `started` when the start of that ssh may not yet have recorded it. It returns 1
+# when that ssh is not shown gone.
+tunnel_kill() { remote_kill "the profiling tunnel" "$(pprof_tunnel_pid_file)" "${1:-}"; }
 
 # tunnel_identity: the run's own OS Login private key on the load machine, in a file of mode 600
 # under the run's directory there, its path there printed. The tunnel is the generator's own
@@ -2212,7 +2232,11 @@ tunnel_identity() {
 # with TUNNEL_REFUSAL saying what went wrong, which run_step turns into the step's refusal: a
 # step whose sampler cannot read the profiling port measures no pool acquire waiters, and
 # criterion (e) is then FAIL for want of a measurement (curves.go passCriteria), so the step is
-# refused before it sends any load rather than run for nothing.
+# refused before it sends any load rather than run for nothing. TUNNEL_OPEN is `started` from
+# before the ssh that starts the tunnel until that ssh has returned 0, which it does once the load
+# machine has recorded the tunnel's pid: a signal that cuts that ssh short, or an ssh that fails,
+# leaves a command on the load machine that may still start the tunnel and record it, so the stop
+# that follows waits for that record (tunnel_stop).
 tunnel_start() {
   local name=$1 port remote_port probe raw cmd=() identity waited=0
   TUNNEL_REFUSAL=""
@@ -2235,7 +2259,7 @@ tunnel_start() {
     TUNNEL_REFUSAL="the profiling tunnel an earlier step left on the $LOAD_VM VM is not shown gone (the line above says why), and while it runs it holds port $port there."
     return 1
   fi
-  TUNNEL_OPEN=1
+  TUNNEL_OPEN=started
   # shellcheck disable=SC2016 # expanded by the load machine's sh
   if ! on_vm "$LOAD_VM" sh -c 'pid_file=$1 log=$2; shift 2; rm -f "$pid_file"; nohup "$@" >"$log" 2>&1 </dev/null & echo "$!" >"$pid_file"' \
     sh "$(pprof_tunnel_pid_file)" "$(pprof_tunnel_log)" \
@@ -2245,6 +2269,7 @@ tunnel_start() {
     TUNNEL_REFUSAL="starting the profiling tunnel on the $LOAD_VM VM failed (its output is $(pprof_tunnel_log) there)."
     return 1
   fi
+  TUNNEL_OPEN=1
   probe="$(pprof_tunnel_url)/debug/pprof/goroutine?debug=1"
   until on_vm "$LOAD_VM" curl -fsS --max-time 10 "$probe" >/dev/null 2>&1; do
     if ((waited >= TUNNEL_SECONDS)); then
@@ -2261,11 +2286,14 @@ tunnel_start() {
 # trap before it opens one, so a refusal, an interrupt and a failure anywhere below all close it;
 # it does nothing when no tunnel is open, and it never changes the exit status it runs under. The
 # flag is cleared in the one command that names the stop in STOPPING, so no interrupt finds the
-# one done without the other.
+# one done without the other. A start not shown to have recorded its tunnel (TUNNEL_OPEN is
+# `started`) has its kill wait for that record first.
 tunnel_stop() {
   [ -n "${TUNNEL_OPEN:-}" ] || return 0
+  local started=""
+  [ "$TUNNEL_OPEN" != started ] || started=started
   TUNNEL_OPEN="" STOPPING="the profiling tunnel"
-  tunnel_kill || true
+  tunnel_kill "$started" || true
   return 0
 }
 
@@ -2396,24 +2424,28 @@ load_wait() {
 # running on that machine, and the remote kill alone leaves this pod waiting on an ssh with
 # nothing left to carry. It does each thing once, so a step that ends normally and then runs its
 # EXIT trap kills no pid twice; each flag is cleared in the one command that names its stop in
-# STOPPING.
+# STOPPING. An ssh this stop ends is one that had not returned, so the sh it carried may not yet
+# have recorded the loadgen's pid on the load machine, or may only now be starting it: the kill
+# then waits for that record first (load_kill started).
 load_stop() {
-  local pid=${LOAD_SSH_PID:-}
+  local pid=${LOAD_SSH_PID:-} started=""
   if [ -n "$pid" ]; then
     LOAD_SSH_PID="" STOPPING="the ssh that carries the step's load (pid $pid)"
+    started=started
     kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
     STOPPING=""
   fi
   [ -n "${LOAD_REMOTE:-}" ] || return 0
   LOAD_REMOTE="" STOPPING="the step's loadgen run"
-  load_kill || true
+  load_kill "$started" || true
   return 0
 }
 
-# load_kill: whatever the step's pid file on the load machine names, ended there and gone, and the
-# file removed (remote_kill). It returns 1 when that process is not shown gone.
-load_kill() { remote_kill "the step's loadgen run" "$(load_pid_file)"; }
+# load_kill [started]: whatever the step's pid file on the load machine names, ended there and
+# gone, and the file removed (remote_kill); `started` when the start of that loadgen may not yet
+# have recorded it. It returns 1 when that process is not shown gone.
+load_kill() { remote_kill "the step's loadgen run" "$(load_pid_file)" "${1:-}"; }
 
 # step_cleanup: everything a step started, ended, whatever ended the step -- the load on the load
 # machine with the ssh that carries it, the sampler, Postgres's collector, the step's credential
@@ -2617,6 +2649,16 @@ run_step() {
   trap step_cleanup EXIT
   trap 'step_interrupt INT' INT
   trap 'step_interrupt TERM' TERM
+  # A load an earlier step left on the load machine, whose kill could not show it gone, goes on
+  # loading the deployment this step measures, and this step's load_start would write the pid file
+  # that names it anew, so that no later kill could reach it. So whatever that file names is ended
+  # first, as tunnel_start ends an earlier tunnel, and a step whose earlier load is not shown gone
+  # is refused before it starts anything.
+  if ! load_kill; then
+    step_cleanup
+    rm -rf -- "$dir"
+    die "step $name is refused: the step's loadgen run an earlier step left on the $LOAD_VM VM is not shown gone (the line above says why), and while it runs it loads the deployment this step would measure, and this step's load would take the pid file that names it. Its directory is removed, so the step runs again under its own name once that run is ended."
+  fi
   if ! tunnel_start "$name"; then
     step_cleanup
     rm -rf -- "$dir"

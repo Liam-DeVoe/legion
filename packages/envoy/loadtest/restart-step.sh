@@ -104,7 +104,10 @@ sleep_until() {
 }
 
 # kill_and_restart: SIGKILL the stack's listener, keep it down, start it again with the same
-# binary, arguments and environment, and write restart.json.
+# binary, arguments and environment, and write restart.json. The killed listener is down once it
+# has ended (proc_wait_ended): its main thread a zombie is not enough, since its other threads
+# still hold its port until they too have gone. A listener not ended 60 s after its SIGKILL, or a
+# /proc entry that is there and cannot be read, fails this script, naming it.
 kill_and_restart() {
   local pidf=$RUN/listener.pid pid port token envs cmd
   pid=$(cat -- "$pidf")
@@ -113,10 +116,18 @@ kill_and_restart() {
   mapfile -d '' cmd <"/proc/$pid/cmdline"
   port=$(jq -er .ports.listener "$ROOT/stack.json")
   token=$(jq -er .listener_token "$ROOT/stack.json")
-  local kill_ns first_ns restart_ns ready_ns attempts=0 new up
+  local kill_ns first_ns restart_ns ready_ns attempts=0 new up start new_start rc
+  start=$(proc_start "$pid") || die "the start of the stack's listener (pid $pid) could not be read, so nothing could show it ended once killed"
   kill_ns=$(date +%s%N)
+  # no-wait: proc_wait_ended below waits for it, every thread of it (common.sh).
   kill -KILL "$pid"
-  while [ -e "/proc/$pid" ] && ! grep -q '^State:.*Z' "/proc/$pid/status" 2>/dev/null; do sleep 0.05; done
+  rc=0
+  proc_wait_ended "$pid" "$start" "$((EPOCHSECONDS + 60))" || rc=$?
+  case $rc in
+  0) ;;
+  1) die "the killed listener (pid $pid) has not ended 60 s after its SIGKILL" ;;
+  *) die "the killed listener's /proc entry (pid $pid) is there and could not be read, so nothing shows it ended" ;;
+  esac
   note "killed the listener (pid $pid); it stays down $down s"
   sleep "$down"
   first_ns=$(date +%s%N)
@@ -131,8 +142,12 @@ kill_and_restart() {
       "$pidf" "${cmd[@]}" >>"$LOGS/listener.out" 2>&1 </dev/null 9>&-
     until [ -s "$pidf" ]; do sleep 0.02; done
     new=$(cat -- "$pidf")
+    new_start=$(proc_start "$new") || die "the start of the restarted listener (pid $new) could not be read"
     up=false
-    while [ -e "/proc/$new" ] && ! grep -q '^State:.*Z' "/proc/$new/status" 2>/dev/null; do
+    while :; do
+      rc=0
+      proc_ended "$new" "$new_start" || rc=$?
+      ((rc == 1)) || { ((rc == 0)) || die "the restarted listener's /proc entry (pid $new) is there and could not be read"; break; }
       if printf 'Authorization: Bearer %s' "$token" | curl -fsS --max-time 1 -H @- "http://127.0.0.1:$port/v1/sessions" >/dev/null 2>&1; then
         up=true
         break
@@ -151,16 +166,57 @@ kill_and_restart() {
     >"$out/restart.json"
 }
 
+# step_loadgen: the pid of this step's `loadgen run`: the process below the run-step.sh this
+# script started ($step) whose command is loadgen -- the binary, or a script of that name its
+# interpreter runs -- with the arguments `run -name NAME -out OUT`, read in that process tree
+# alone, so that no process of another run or session is taken for it whatever its command line.
+# It prints nothing when none is there.
+step_loadgen() {
+  local walked=("$step") i=0 j file kid found=() args=()
+  while ((i < ${#walked[@]})); do
+    for file in "/proc/${walked[i]}"/task/*/children; do
+      found=()
+      { read -r -a found <"$file"; } 2>/dev/null || true
+      for kid in "${found[@]}"; do
+        walked+=("$kid")
+        { mapfile -d '' args <"/proc/$kid/cmdline"; } 2>/dev/null || continue
+        for ((j = 0; j < 2 && j < ${#args[@]}; j++)); do
+          if [ "${args[j]##*/}" = loadgen ] && [ "${args[*]:j+1:5}" = "run -name $name -out $out" ]; then
+            printf '%s\n' "$kid"
+            return 0
+          fi
+        done
+      done
+    done
+    i=$((i + 1))
+  done
+}
+
 # end_step: on a failure of this script, end the step that is still running, so that it frees the
 # root's lock instead of measuring on alone. SIGTERM goes to `loadgen run`, not to run-step.sh, so
-# the step renders its tables, stops Dispatch and releases the lock as it does for any failed run.
+# the step renders its tables, stops Dispatch and releases the lock as it does for any failed run:
+# to the `loadgen run` below the step this script started, by its pid (step_loadgen), which the
+# stop waits for, every thread of it, before it waits for the step itself.
 end_step() {
-  local rc=$?
+  local rc=$? lg lg_start ended
   if ((rc != 0)) && [ -n "${step:-}" ] && kill -0 "$step" 2>/dev/null; then
     note "ending the step: this script failed with $rc"
-    # no-wait: the wait below is on the step itself, the run-step.sh whose loadgen run this ends,
-    # which returns once it has handled that run's end.
-    pkill -TERM -f "loadgen run -name $name -out $out" || true
+    lg=$(step_loadgen)
+    lg_start=""
+    [ -z "$lg" ] || lg_start=$(proc_start "$lg") || lg_start=""
+    if [ -n "$lg_start" ]; then
+      # no-wait: proc_wait_ended below waits for it, every thread of it (common.sh), up to 120 s.
+      kill -TERM "$lg" 2>/dev/null || true
+      ended=0
+      proc_wait_ended "$lg" "$lg_start" "$((EPOCHSECONDS + 120))" || ended=$?
+      case $ended in
+      0) ;;
+      1) note "the step's loadgen run (pid $lg) has not ended 120 s after its SIGTERM; the wait goes on with the step itself" ;;
+      *) note "the /proc entry of the step's loadgen run (pid $lg) is there and could not be read, so nothing shows it ended" ;;
+      esac
+    else
+      note "no loadgen run of step $name runs below its run-step.sh (pid $step), so it is sent nothing, and the step goes on to its own end"
+    fi
     wait "$step" || true
   fi
 }

@@ -305,10 +305,10 @@ PG_DISK_POLL_SECONDS=30
 PG_DISK_STOP_SECONDS=300
 # The last reading of the volume (pg_disk_sample), in bytes, each empty when that read failed,
 # the pid of the step's watcher while one runs, with the step it watches, for the line
-# pg_disk_watch_stop writes when it has to kill it, and the watcher that stop is ending while it
-# runs.
+# pg_disk_watch_stop writes when it has to kill it, the watcher that stop is ending while it
+# runs, and the processes it has stopped on their way to its SIGKILL, each as PID:START.
 PG_DISK_SIZE="" PG_DISK_USED="" PG_DISK_FREE=""
-PG_DISK_WATCHER="" PG_DISK_WATCH_STEP="" PG_DISK_STOPPING=""
+PG_DISK_WATCHER="" PG_DISK_WATCH_STEP="" PG_DISK_STOPPING="" PG_DISK_FROZEN=""
 # The LINUX replay: INFRA-639's manifest, the template database replay-prepare makes,
 # where the dump goes in the Postgres pod (on its claim), and the outage's Dispatch figures that
 # loadgen codepaths sets a replay beside (production profile §5: 11.1-13.8 cores, 13.8 GiB).
@@ -747,34 +747,6 @@ lock_issue() {
   jq -r '.data.issue // "?"' <<<"$lock"
 }
 
-# proc_start PID: the process's start time (field 22 of /proc/PID/stat, read after the command name,
-# which may hold spaces), so a pid the kernel reused for another process is told apart. For a pid
-# that has left the table -- its /proc entry gone -- it prints nothing and succeeds:
-# pg_disk_watch_stop reads the start of each child of the watcher's act, and one of those can end
-# between the read of the children and the read of its start. Any other read that fails -- an
-# entry there with no stat read from it, for want of a file descriptor, say -- fails, so no caller
-# takes a read it could not make for a process that has gone.
-proc_start() {
-  local stat fields
-  if ! read -r stat 2>/dev/null <"/proc/$1/stat"; then
-    [ ! -e "/proc/$1" ] || return 1
-    return 0
-  fi
-  read -r -a fields <<<"${stat##*) }" && [ -n "${fields[19]:-}" ] || return 1
-  printf '%s\n' "${fields[19]}"
-}
-
-# proc_ended PID START: the process that PID named when it started at START (proc_start) has
-# ended: PID has left the table, names a process that started at another time, or names a zombie,
-# which has ended and which only its parent can reap. A START that was never read is no process.
-proc_ended() {
-  local stat fields
-  [ -n "$2" ] || return 0
-  read -r stat 2>/dev/null <"/proc/$1/stat" || return 0
-  read -r -a fields <<<"${stat##*) }"
-  [ "${fields[0]}" = Z ] || [ "${fields[19]:-}" != "$2" ]
-}
-
 # register_command: this command of RUN (never one of its daemons) is alive: its pid in
 # <run>/commands/, holding its start time. The heartbeat renews the lock only while one is.
 register_command() {
@@ -785,17 +757,33 @@ register_command() {
 
 # run_command_alive: the run is being driven: some command of RUN that registered itself is still
 # the same live process, or a hold (--keep-for, cluster.sh hold) has not expired yet. The file of
-# each command that is not that live process any more is removed.
+# each command that is not that live process any more is removed. A read that fails -- of the
+# file, or of the command's start (proc_start) -- says nothing of the command: its file is kept,
+# the command is counted alive at this pass, and the read is named, since a read it could not make
+# is no sign that the command has gone, and a heartbeat that stopped on one would let a live run's
+# lock go stale.
 run_command_alive() {
-  local f pid until alive=1
+  local f pid until want now alive=1
   for f in "$RUN_DIR"/commands/*; do
     [ -f "$f" ] || continue
-    pid=${f##*/}
-    if [[ $pid =~ ^[0-9]+$ ]] && [ -n "$(<"$f")" ] && [ "$(proc_start "$pid")" = "$(<"$f")" ]; then
-      alive=0
-    else
-      rm -f -- "$f"
+    pid=${f##*/} want=""
+    if [[ $pid =~ ^[0-9]+$ ]] && { { read -r want || [ -n "$want" ]; } 2>/dev/null <"$f" || [ -s "$f" ]; }; then
+      if [ -z "$want" ]; then
+        note "the file $f of a command of run $RUN could not be read, so that command (pid $pid) is counted alive and its file kept"
+        alive=0
+        continue
+      fi
+      if ! now=$(proc_start "$pid"); then
+        note "the start of a command of run $RUN (pid $pid) could not be read, so it is counted alive and its file $f kept"
+        alive=0
+        continue
+      fi
+      if [ "$now" = "$want" ]; then
+        alive=0
+        continue
+      fi
     fi
+    rm -f -- "$f"
   done
   if ((alive != 0)); then
     until=$(hold_until)
@@ -930,9 +918,15 @@ copy_is_ours() {
 # for ever. Step names, job names and pods repeat across runs, so such an orphan would later
 # record a failure in a dead step's directory or TERM a new run's job of the same name. Each poll
 # of pg_disk_watch and runner_wait asks this, and ends, recording nothing and stopping nothing,
-# once it is true.
+# once it is true (0). It is 1 while the step shell is still the process it was, and 2 when that
+# shell's start could not be read with its /proc entry there (proc_start): a read it could not
+# make is no sign that the step has gone, so the poll names it and goes on as for a step that
+# runs, and the next poll reads again.
 step_gone() {
-  [ "$(proc_start "$1")" != "$2" ] || [ ! -d "$RUN_DIR" ]
+  local now
+  [ -d "$RUN_DIR" ] || return 0
+  now=$(proc_start "$1") || return 2
+  [ "$now" != "$2" ]
 }
 
 # heartbeat_age RFC3339: seconds since it, or "unknown".
@@ -1015,24 +1009,45 @@ ensure_daemons() {
 }
 
 # stop_daemon NAME: NAME's daemon of this run ended, its process group sent TERM, and its pidfile
-# removed once its pid has left the process table. It returns 1, naming the daemon, and keeps the
-# pidfile, which still names it, when the pid is still there more than 10 s after the TERM, read
-# on the clock rather than counted in naps, which a loaded machine makes longer than they say.
+# removed once every process of that group has left the process table: the TERM reaches each of
+# them, and a member can outlive the daemon itself, a role loop of the sampler with its kubectl
+# exec, say. It returns 1 when any of them is still there more than 10 s after the TERM, read on the
+# clock rather than counted in naps, which a loaded machine makes longer than they say: it names the
+# daemon, and keeps the pidfile, which still names it, or, once the daemon itself has left, names
+# the members of its group still there. A daemon that leads no process group gets the TERM, and is
+# waited for, alone.
 stop_daemon() {
-  local name=$1 pid deadline
+  local name=$1 pid target deadline
   if daemon_alive "$name"; then
     pid=$(<"$RUN_DIR/$name.pid")
-    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    target=-$pid
+    kill -0 -- "$target" 2>/dev/null || target=$pid
+    kill -TERM -- "$target" 2>/dev/null || true
     deadline=$((EPOCHSECONDS + 10))
-    while kill -0 "$pid" 2>/dev/null && ((EPOCHSECONDS <= deadline)); do
+    while kill -0 -- "$target" 2>/dev/null && ((EPOCHSECONDS <= deadline)); do
       sleep 0.1
     done
-    if kill -0 "$pid" 2>/dev/null; then
-      note "the $name daemon (pid $pid) is still in the process table 10 s after its SIGTERM; $RUN_DIR/$name.pid still names it"
+    if kill -0 -- "$target" 2>/dev/null; then
+      if kill -0 "$pid" 2>/dev/null; then
+        note "the $name daemon (pid $pid) is still in the process table 10 s after its SIGTERM; $RUN_DIR/$name.pid still names it"
+      else
+        note "the $name daemon (pid $pid) has left, but its process group still holds $(group_pids "$pid") in the process table 10 s after the group's SIGTERM"
+      fi
       return 1
     fi
   fi
   rm -f -- "$RUN_DIR/$name.pid"
+}
+
+# group_pids PGID: "pid N" for each process of this pod in process group PGID, joined with ", ".
+group_pids() {
+  local stat fields dir out=""
+  for dir in /proc/[0-9]*; do
+    read -r stat 2>/dev/null <"$dir/stat" || continue
+    read -r -a fields <<<"${stat##*) }" || continue
+    [ "${fields[2]:-}" != "$1" ] || out+="${out:+, }pid ${dir#/proc/}"
+  done
+  printf '%s\n' "${out:-no process this pod can name}"
 }
 
 # The heartbeat: every 60 s, the lock's heartbeat, by a JSON patch that first tests that the lock
@@ -1419,7 +1434,7 @@ pg_disk_write() {
 # acting again; a TERM during the volume read leaves it without acting at all; and the step leaves
 # no sleep of its own behind.
 pg_disk_watch() {
-  local name=$1 dir=$2 job=$3 file=$4 pid=$5 start=$6 nap="" guard stopped=0 committed=0 recorded=0
+  local name=$1 dir=$2 job=$3 file=$4 pid=$5 start=$6 nap="" guard gone stopped=0 committed=0 recorded=0
   # no-wait: the nap is this watcher's own sleep, which takes TERM at its default and which
   # nothing reads again; the watcher leaves at its next check.
   trap 'stopped=1; [ -z "$nap" ] || kill -- "$nap" 2>/dev/null' TERM
@@ -1433,10 +1448,14 @@ pg_disk_watch() {
     wait "$nap" || true
     nap=""
     ((stopped == 0)) || return 0
-    if step_gone "$pid" "$start"; then
+    gone=0
+    step_gone "$pid" "$start" || gone=$?
+    if ((gone == 0)); then
       note "step $name: the step that started this disk watcher is gone; it stops, recording nothing and stopping no job"
       return 0
     fi
+    ((gone == 1)) ||
+      note "step $name: the start of the step shell (pid $pid) could not be read, so nothing shows whether that step is gone; the disk watcher watches on and reads it again at its next poll"
     if ((committed == 0)); then
       pg_disk_sample "$file" || continue
       pg_disk_low || continue
@@ -1475,27 +1494,79 @@ pg_disk_watch() {
   done
 }
 
+# pg_disk_freeze PID NAME: the disk watcher PID of step NAME stopped (SIGSTOP) with every process
+# below it, for pg_disk_watch_stop's SIGKILL: the tree read through each thread's children file,
+# each process stopped before its own children are read, and read again until a reading finds no
+# process it had not read. Each process it found goes, with its start, into the caller's kids and
+# kid_starts, and all of them, the watcher first, into PG_DISK_FROZEN; one whose start cannot be
+# read is named and left out.
+pg_disk_freeze() {
+  local walked=("$1") seen=" $1 " more=1 at file kid start found=()
+  start=$(proc_start "$1" 2>/dev/null) || start=""
+  PG_DISK_FROZEN=${start:+$1:$start}
+  kill -STOP -- "$1" 2>/dev/null || true
+  while ((more)); do
+    more=0
+    for at in "${walked[@]}"; do
+      for file in "/proc/$at"/task/*/children; do
+        found=()
+        read -ra found <"$file" 2>/dev/null || true
+        for kid in "${found[@]}"; do
+          [[ $seen != *" $kid "* ]] || continue
+          seen+="$kid " more=1
+          if ! start=$(proc_start "$kid"); then
+            note "step $2: the start of a process of the disk watcher's act (pid $kid) could not be read, so it is not killed, and nothing shows it ended"
+            continue
+          fi
+          [ -n "$start" ] || continue
+          PG_DISK_FROZEN+=" $kid:$start"
+          kill -STOP -- "$kid" 2>/dev/null || true
+          kids+=("$kid") kid_starts+=("$start") walked+=("$kid")
+        done
+      done
+    done
+  done
+}
+
 # pg_disk_watch_stop: the step's disk watcher ended and reaped, with the nap it is in; nothing
 # when none runs, so every path out of a step may call it. A watcher that is acting takes the
 # TERM as a flag and leaves at the end of that act, so this waits PG_DISK_STOP_SECONDS for it --
-# longer than the longest act -- and then kills it, and the children of its act with it, so no
+# longer than the longest act -- and then kills it, and every process of its act with it, so no
 # path out of a step hangs on a watcher that is stuck. The line it writes names the step, since
-# a watcher killed there left whatever it was doing in the copy half done. Those children are
-# the watcher's, not this shell's, so no wait here reaps them: each is waited until it has ended
-# (proc_ended), for PG_DISK_STOP_SECONDS more, and one that has not is named. A child that has left
-# the table before its start is read is no process to kill or wait on, since its pid may name
-# another process by then; one whose start cannot be read for another reason is named and left
-# alone, since nothing tells it from another process that took its pid.
+# a watcher killed there left whatever it was doing in the copy half done.
+#
+# The processes of the act are not the watcher's children alone: each kubectl runs under timeout
+# (kube, kube_for), most inside a command substitution, so the kubectl a stuck watcher waits on
+# is a grandchild or further below it, and a SIGKILL of timeout or of a subshell leaves the
+# process below it running, its bound gone. So the stop reads the watcher's whole tree, every
+# thread's children file, and reads it again until a reading finds no process it had not read.
+# It stops the watcher with SIGSTOP before the first reading, and each process it finds before
+# that process's own children are read, so no process of the tree starts another the reading
+# misses; then one SIGKILL goes to the watcher and to every process it read. PG_DISK_FROZEN holds
+# those processes, each with its start, until that SIGKILL, so a stop cut short in between kills
+# them rather than leave them stopped. They are the watcher's, not this shell's, so no wait here
+# reaps them: each is waited until it has ended (proc_ended, which waits out every thread of a
+# kubectl), for PG_DISK_STOP_SECONDS more, and one that has not, or whose entry could not be read,
+# is named. A process that has left the table before its start is read is no process to kill or
+# wait on, since its pid may name another process by then; one whose start cannot be read for
+# another reason is named and left alone, since nothing tells it from another process that took
+# its pid.
 #
 # PG_DISK_STOPPING names the stop while it runs, set in the one command that clears the watcher's
 # pid. A signal that ends the step shell inside the stop runs the EXIT trap, whose call of this
 # finds that pid gone; it names the watcher as not shown gone, rather than returning as though
 # it had stopped it.
 pg_disk_watch_stop() {
-  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline found=() kids=() kid_starts=() kid start i
+  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline kids=() kid_starts=() frozen i rc
   if [ -n "$PG_DISK_STOPPING" ]; then
     note "the stop of $PG_DISK_STOPPING was cut short, so nothing shows it gone"
-    PG_DISK_STOPPING=""
+    for frozen in $PG_DISK_FROZEN; do
+      # no-wait: the stop that stopped these was cut short, and the line above names it as not
+      # shown gone; each is killed so that none is left stopped, and nothing here waits on a frozen
+      # one.
+      [ "$(proc_start "${frozen%:*}" 2>/dev/null)" != "${frozen#*:}" ] || kill -KILL -- "${frozen%:*}" 2>/dev/null || true
+    done
+    PG_DISK_STOPPING="" PG_DISK_FROZEN=""
   fi
   [ -n "$pid" ] || return 0
   PG_DISK_WATCHER="" PG_DISK_WATCH_STEP="" PG_DISK_STOPPING="step $name's disk watcher (pid $pid)"
@@ -1503,16 +1574,16 @@ pg_disk_watch_stop() {
   deadline=$((EPOCHSECONDS + PG_DISK_STOP_SECONDS))
   while kill -0 -- "$pid" 2>/dev/null; do
     if ((EPOCHSECONDS >= deadline)); then
-      read -ra found <"/proc/$pid/task/$pid/children" 2>/dev/null || true
-      for kid in "${found[@]}"; do
-        if ! start=$(proc_start "$kid"); then
-          note "step $name: the start of a child of the disk watcher's act (pid $kid) could not be read, so it is not killed, and nothing shows it ended"
-          continue
-        fi
-        [ -z "$start" ] || { kids+=("$kid"); kid_starts+=("$start"); }
-      done
+      pg_disk_freeze "$pid" "$name"
+      # no-wait: the watcher is reaped by the wait on it below, and each of kids[@] is waited for
+      # after that, every thread of it, by proc_wait_ended (common.sh).
       kill -KILL -- "$pid" "${kids[@]}" 2>/dev/null || true
-      note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed"
+      PG_DISK_FROZEN=""
+      if ((${#kids[@]})); then
+        note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed, with the ${#kids[@]} processes of its act below it (pids ${kids[*]})"
+      else
+        note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed"
+      fi
       break
     fi
     sleep 1
@@ -1520,12 +1591,13 @@ pg_disk_watch_stop() {
   wait "$pid" 2>/dev/null || true
   deadline=$((EPOCHSECONDS + PG_DISK_STOP_SECONDS))
   for i in "${!kids[@]}"; do
-    while [ -e "/proc/${kids[i]}" ] && ! proc_ended "${kids[i]}" "${kid_starts[i]}"; do
-      ((EPOCHSECONDS <= deadline)) || break
-      sleep 0.1
-    done
-    [ ! -e "/proc/${kids[i]}" ] || proc_ended "${kids[i]}" "${kid_starts[i]}" ||
-      note "step $name: a child of the disk watcher's act (pid ${kids[i]}) has not ended $PG_DISK_STOP_SECONDS s after its SIGKILL"
+    rc=0
+    proc_wait_ended "${kids[i]}" "${kid_starts[i]}" "$deadline" || rc=$?
+    case $rc in
+    0) ;;
+    1) note "step $name: a process of the disk watcher's act (pid ${kids[i]}) has not ended $PG_DISK_STOP_SECONDS s after its SIGKILL" ;;
+    *) note "step $name: the /proc entry of a process of the disk watcher's act (pid ${kids[i]}) is there and could not be read, so nothing shows it ended" ;;
+    esac
   done
   PG_DISK_STOPPING=""
 }
@@ -1807,11 +1879,17 @@ runner_wait() {
   # KILL. Each signal gets one grace from due before the wait gives up on it. Once both have left
   # this pod, due is the end itself: a grace after the KILL, when the wait gives up on the exit
   # status.
-  local signal=TERM due=$deadline sent=0
+  local signal=TERM due=$deadline sent=0 gone
   while :; do
-    if [ -n "$pid" ] && step_gone "$pid" "$start"; then
-      note "job $name: the step that started this wait is gone; the wait ends, stopping no job"
-      return 1
+    if [ -n "$pid" ]; then
+      gone=0
+      step_gone "$pid" "$start" || gone=$?
+      if ((gone == 0)); then
+        note "job $name: the step that started this wait is gone; the wait ends, stopping no job"
+        return 1
+      fi
+      ((gone == 1)) ||
+        note "job $name: the start of the step shell (pid $pid) could not be read, so nothing shows whether that step is gone; the wait goes on and reads it again at its next poll"
     fi
     if rc=$(kube_read exec runner -c runner -- cat "/work/logs/$name.rc" 2>/dev/null) && [[ $rc =~ ^[0-9]+$ ]]; then
       ((sent == 0)) || rc=timeout
