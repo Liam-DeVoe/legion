@@ -43,7 +43,7 @@ import (
 // dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), which
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list. The
-// last of them was the last word of outbox_kind_check until the three kind lists below stood above
+// last of them was the last word of outbox_kind_check until the kind lists below stood above
 // it: the upgrade applies it after 20261029120800 has deleted main's merge-lane rows, and it
 // names every other kind main's daemon writes (mainsOutboxKinds), with update_ask and the two
 // merge-queue kinds besides, which main's daemon
@@ -85,11 +85,11 @@ import (
 //
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit: it names every kind the merge-queue list names and its own.
-// The two kind lists above it are named here too: the step record's (20261117000528) restates
+// The kind lists above it are named here too: the step record's (20261117000528) restates
 // 20261116165926's kinds with step_record, and the plan record's (20261117023932) restates those
 // with plan_record. They stand above every other version of the list that rewrites
-// outbox_kind_check but this branch's 20261119003157, so an upgrade applies them after all the
-// others and before that one. The count of starts of each step (20261117004117) creates tables
+// outbox_kind_check but dispatch://INFRA-4374's 20261119003157, so an upgrade applies them after
+// all the others and before that one. The count of starts of each step (20261117004117) creates tables
 // and a function of its own, and its roll forward (20261117064152) changes nothing on a database
 // no rollback touched; neither touches outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
