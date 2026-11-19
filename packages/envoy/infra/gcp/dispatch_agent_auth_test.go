@@ -44,15 +44,13 @@ func TestDispatchAgentAuthOIDCRendersNoStaticToken(t *testing.T) {
 			}
 			keys := secretDataKeys(dispatchSecretData(t, m))
 			env := appEnv(t, m)
+			has := require.NotContains
 			if row.token {
-				require.Contains(t, passwords, "example-dispatch-agent-token")
-				require.Contains(t, keys, "DISPATCH_AGENT_TOKEN")
-				require.Contains(t, env, "DISPATCH_AGENT_TOKEN")
-			} else {
-				require.NotContains(t, passwords, "example-dispatch-agent-token")
-				require.NotContains(t, keys, "DISPATCH_AGENT_TOKEN")
-				require.NotContains(t, env, "DISPATCH_AGENT_TOKEN")
+				has = require.Contains
 			}
+			has(t, passwords, "example-dispatch-agent-token")
+			has(t, keys, "DISPATCH_AGENT_TOKEN")
+			has(t, env, "DISPATCH_AGENT_TOKEN")
 			require.Contains(t, passwords, "example-dispatch-signing-key", "the signing key stays in both modes")
 			require.Contains(t, keys, "DISPATCH_SIGNING_KEY")
 			require.Equal(t, azureIssuer, env["DISPATCH_OIDC_ISSUER"])

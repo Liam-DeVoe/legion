@@ -2025,7 +2025,7 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	}
 	comp.DatabaseInstance = database.instance.ConnectionName
 	comp.Principal = database.principal
-	if database.agentToken != nil {
+	if !s.agentAuthOIDC {
 		comp.AgentToken = database.agentToken.Result
 	} else {
 		// Under agentAuth oidc there is no shared token: the output is an explicit "", as

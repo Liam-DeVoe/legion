@@ -25,54 +25,54 @@ const (
 // boot with neither, naming all three settings, so a deployment can run with no static shared
 // token at all. The token alone is production's boot, unchanged: the shared token parsed, no
 // service-account verifier. The pair alone leaves the shared token unset (AgentTokens nil). Half
-// the pair with no token is refused as half the pair always was. Control: the refused
-// environment and the pair-alone one differ only by the pair, so the pair is what lets it boot.
+// the pair with no token is refused as half the pair always was. Each row is one environment over
+// bootEnvironment, whose DISPATCH_AGENT_TOKEN is "agent-token". Control: "neither" and "the pair
+// alone" differ only by the pair, so the pair is what lets it boot.
 func TestDispatchBootsWithTheSharedTokenTheOIDCPairOrBoth(t *testing.T) {
-	pair := map[string]string{"DISPATCH_OIDC_ISSUER": "https://issuer.example", "DISPATCH_OIDC_AUDIENCE": oidcAgentsAudience}
-	with := func(overrides ...map[string]string) map[string]string {
-		values := map[string]string{"DISPATCH_AGENT_TOKEN": ""}
-		for _, set := range overrides {
-			for name, value := range set {
-				values[name] = value
+	const issuer = "https://issuer.example"
+	const neither = "DISPATCH_AGENT_TOKEN required, or DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE"
+	for _, row := range []struct {
+		name string
+		set  map[string]string
+		// token is whether the shared token is parsed, and pair whether the issuer and audience
+		// resolve and a service-token verifier is built; refusal, when set, is the text the boot
+		// is refused with instead.
+		token, pair bool
+		refusal     string
+	}{
+		{name: "the shared token alone", token: true},
+		{name: "the pair alone", set: map[string]string{"DISPATCH_AGENT_TOKEN": "", "DISPATCH_OIDC_ISSUER": issuer, "DISPATCH_OIDC_AUDIENCE": oidcAgentsAudience}, pair: true},
+		{name: "the token and the pair", set: map[string]string{"DISPATCH_OIDC_ISSUER": issuer, "DISPATCH_OIDC_AUDIENCE": oidcAgentsAudience}, token: true, pair: true},
+		{name: "neither", set: map[string]string{"DISPATCH_AGENT_TOKEN": ""}, refusal: neither},
+		{name: "a blank token and no pair", set: map[string]string{"DISPATCH_AGENT_TOKEN": " \n "}, refusal: neither},
+		{name: "the issuer alone", set: map[string]string{"DISPATCH_AGENT_TOKEN": "", "DISPATCH_OIDC_ISSUER": issuer},
+			refusal: "DISPATCH_OIDC_AUDIENCE is required when DISPATCH_OIDC_ISSUER is set"},
+		{name: "the audience alone", set: map[string]string{"DISPATCH_AGENT_TOKEN": "", "DISPATCH_OIDC_AUDIENCE": oidcAgentsAudience},
+			refusal: "DISPATCH_OIDC_ISSUER is required when DISPATCH_OIDC_AUDIENCE is set"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			boot, err := resolveBootConfig(bootEnvironment(row.set))
+			if row.refusal != "" {
+				if err == nil || !strings.Contains(err.Error(), row.refusal) {
+					t.Fatalf("err = %v, want a refusal holding %q", err, row.refusal)
+				}
+				return
 			}
-		}
-		return values
-	}
-
-	tokenOnly := resolveWith(t, map[string]string{"DISPATCH_AGENT_TOKEN": "agent-token"})
-	if tokenOnly.AgentTokens == nil || tokenOnly.OIDCIssuer != "" || tokenOnly.OIDCAudience != "" {
-		t.Errorf("the shared token alone: AgentTokens=%v OIDC=%q,%q, want the token parsed and no verifier", tokenOnly.AgentTokens, tokenOnly.OIDCIssuer, tokenOnly.OIDCAudience)
-	}
-	if serviceTokenVerifier(tokenOnly) != nil {
-		t.Errorf("the shared token alone builds a service-token verifier")
-	}
-
-	pairOnly := resolveWith(t, with(pair))
-	if pairOnly.AgentTokens != nil || pairOnly.OIDCIssuer != "https://issuer.example" || pairOnly.OIDCAudience != oidcAgentsAudience {
-		t.Errorf("the pair alone: AgentTokens=%v OIDC=%q,%q, want no shared token and the pair", pairOnly.AgentTokens, pairOnly.OIDCIssuer, pairOnly.OIDCAudience)
-	}
-	if serviceTokenVerifier(pairOnly) == nil {
-		t.Errorf("the pair alone builds no service-token verifier")
-	}
-
-	both := resolveWith(t, with(pair, map[string]string{"DISPATCH_AGENT_TOKEN": "agent-token"}))
-	if both.AgentTokens == nil || both.OIDCAudience != oidcAgentsAudience {
-		t.Errorf("the token and the pair: AgentTokens=%v OIDCAudience=%q, want both", both.AgentTokens, both.OIDCAudience)
-	}
-
-	for _, blank := range []string{"", " \n "} {
-		_, err := resolveBootConfig(bootEnvironment(map[string]string{"DISPATCH_AGENT_TOKEN": blank}))
-		if err == nil {
-			t.Fatalf("DISPATCH_AGENT_TOKEN=%q and no pair: booted, want a refusal", blank)
-		}
-		for _, name := range []string{"DISPATCH_AGENT_TOKEN", "DISPATCH_OIDC_ISSUER", "DISPATCH_OIDC_AUDIENCE"} {
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("DISPATCH_AGENT_TOKEN=%q and no pair: err = %v, want it to name %s", blank, err, name)
+			if err != nil {
+				t.Fatalf("resolve boot config: %v", err)
 			}
-		}
+			wantIssuer, wantAudience := "", ""
+			if row.pair {
+				wantIssuer, wantAudience = issuer, oidcAgentsAudience
+			}
+			if (boot.AgentTokens != nil) != row.token || boot.OIDCIssuer != wantIssuer || boot.OIDCAudience != wantAudience {
+				t.Errorf("AgentTokens=%v OIDC=%q,%q, want the shared token parsed=%t and the pair %q,%q", boot.AgentTokens, boot.OIDCIssuer, boot.OIDCAudience, row.token, wantIssuer, wantAudience)
+			}
+			if (serviceTokenVerifier(boot) != nil) != row.pair {
+				t.Errorf("a service-token verifier built = %t, want %t", serviceTokenVerifier(boot) != nil, row.pair)
+			}
+		})
 	}
-	refusedWith(t, with(map[string]string{"DISPATCH_OIDC_ISSUER": "https://issuer.example"}), "DISPATCH_OIDC_AUDIENCE")
-	refusedWith(t, with(map[string]string{"DISPATCH_OIDC_AUDIENCE": oidcAgentsAudience}), "DISPATCH_OIDC_ISSUER")
 }
 
 // oidcAgentsRouter is the router main builds for boot, with the service-token verifier main gives

@@ -394,9 +394,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// The sign-in client secret is one key of this Secret only where sign-in is on: without the
 	// sign-in inputs signInClientSecret is nil, which refuseDispatchSeedInSecret cannot take, and
 	// the app reads no such variable anyway. The shared agent token is one key only in the token
-	// mode: under agentAuth oidc there is none, and the app is given none.
+	// mode (s.agentAuthOIDC false, where newDispatchDatabase generated it): under agentAuth oidc
+	// there is none, and the app is given none.
 	dispatchData := pulumi.StringMap{"DATABASE_URL": databaseURL, "DISPATCH_SIGNING_KEY": signingKey}
-	if database.agentToken != nil {
+	if !s.agentAuthOIDC {
 		dispatchData["DISPATCH_AGENT_TOKEN"] = database.agentToken.Result
 	}
 	if s.signInOn {
@@ -698,7 +699,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// The app's container alone carries the broker relay and the GitHub App: the listener and the
 	// front door take neither.
 	appEnv := corev1.EnvVarArray{valueEnv("HOME", "/home/envoy"), secretEnv("DATABASE_URL", dispatchSecretName, "DATABASE_URL")}
-	if database.agentToken != nil {
+	if !s.agentAuthOIDC {
 		appEnv = append(appEnv, secretEnv("DISPATCH_AGENT_TOKEN", dispatchSecretName, "DISPATCH_AGENT_TOKEN"))
 	}
 	appEnv = append(appEnv, secretEnv("DISPATCH_SIGNING_KEY", dispatchSecretName, "DISPATCH_SIGNING_KEY"))

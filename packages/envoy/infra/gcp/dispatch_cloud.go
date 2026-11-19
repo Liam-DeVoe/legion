@@ -42,7 +42,8 @@ type dispatchDatabase struct {
 	// signingKeyGenerations and in that order: the first signs every new cookie, every one
 	// verifies.
 	signing []*random.RandomPassword
-	// agentToken is the shared agent token, nil under agentAuth oidc, which generates none.
+	// agentToken is the shared agent token, generated in the token mode alone: nil under agentAuth
+	// oidc. Every reader branches on s.agentAuthOIDC, the mode, and reads this only for its value.
 	agentToken    *random.RandomPassword
 	listenerToken *random.RandomPassword
 	principal     pulumi.StringOutput

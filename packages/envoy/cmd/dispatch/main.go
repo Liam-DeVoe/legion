@@ -1301,11 +1301,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	// AgentTokens stays nil, which matches no bearer (auth.MatchesSharedAgentToken): no empty or
 	// placeholder value is ever accepted in its place.
 	if agentTokens := env.get("DISPATCH_AGENT_TOKEN"); strings.TrimSpace(agentTokens) != "" {
-		tokens, err := auth.ParseSharedAgentTokens(agentTokens)
-		if err != nil {
+		if boot.AgentTokens, err = auth.ParseSharedAgentTokens(agentTokens); err != nil {
 			return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_TOKEN %w", err)
 		}
-		boot.AgentTokens = tokens
 	} else if boot.OIDCIssuer == "" {
 		return bootConfig{}, errors.New("DISPATCH_AGENT_TOKEN required, or DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE, which make a projected service-account token an agent's credential in its place")
 	}
