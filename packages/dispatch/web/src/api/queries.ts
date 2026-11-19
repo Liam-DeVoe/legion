@@ -289,6 +289,18 @@ export const ownerSubscribersQuery = (owner: ListOwner | undefined) =>
     },
   });
 
+/** The step records Legion wrote of one issue (`GET /api/v1/issues/{key}/steps`), which the Steps
+ *  tab draws. A step write appends no event of its own, so the event feed refreshes this key on
+ *  the issue's events that come with a phase moving (`changesSteps` in `event-refresh.ts`), each
+ *  naming it exactly as it names every issue target. The tab reads it through its catch-up,
+ *  which every refresh that reaches the key starts, and through Retry
+ *  (`features/steps/StepsTab.tsx`). */
+export const issueStepsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["issue", key, "steps"],
+    queryFn: () => api.listSteps(key),
+  });
+
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
  *  reference panel, the Plan tab's task list and the Spec tab's marks of what changed since the
  *  reader's last visit (`features/doc/spec-marks.ts`) read the same key, so a tab opened after

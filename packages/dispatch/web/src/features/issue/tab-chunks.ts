@@ -40,6 +40,9 @@ export const planTabChunk = chunk(() => import("../plan/PlanTab").then((module) 
 export const artifactsTabChunk = chunk(() =>
   import("../artifacts/ArtifactRoutePanel").then((module) => module.ArtifactRoutePanel)
 );
+export const stepsTabChunk = chunk(() =>
+  import("../steps/StepsTab").then((module) => module.StepsTab)
+);
 
 /** The chunk of the panel `tab` draws, or `undefined` for the Spec, whose panel is in the issue
  *  page's own chunk: it is the tab a bare `/issues/<key>` opens on. */
@@ -63,5 +66,7 @@ export function issueTabChunk(tab: IssueTab): (() => Promise<unknown>) | undefin
       return planTabChunk.load;
     case "artifacts":
       return artifactsTabChunk.load;
+    case "steps":
+      return stepsTabChunk.load;
   }
 }
