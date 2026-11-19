@@ -3075,9 +3075,10 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 // with nothing to merge, which moves no ref, so a row that runs again changes nothing. A merge
 // GitHub refuses as a conflict is no refusal: the branch stands on the needs that joined, and the
 // id of each need that conflicted is written on the task's row (record.Store.SetJoinConflicts), in
-// place of what an earlier start wrote, for the first step to repair. A row of a task its plan no
-// longer holds, of a generation the issue has left, or of a tree that lingers finishes without
-// acting, as issueBranch's does: the starts it held back meet their own fences.
+// place of what an earlier start wrote, for the first step to repair, once the task is judged
+// again as the row read it (writeJoinConflicts). A row of a task its plan no longer holds, of a
+// generation the issue has left, or of a tree that lingers finishes without acting, as
+// issueBranch's does: the starts it held back meet their own fences.
 func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload record.TaskBranch) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -3123,14 +3124,72 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	if err != nil {
 		return fmt.Errorf("make the branch %s of task %s of %s, which its first step waits for: %w", branch, task.Task, issue.Key, err)
 	}
+	return r.writeJoinConflicts(ctx, row, task, conflicts)
+}
+
+// writeJoinConflicts writes conflicts, what the join of the needs of joined found, onto the task as
+// it stands now. joined is the task as the row read it, at the generation the row serves, before
+// the GitHub calls of the join, which hold no transaction, so a fact can land while they run: the
+// owner's stop of the task and a later version that changes it, or admission's re-admission of the
+// issue, which carries its run to a new generation. The write therefore runs in a transaction of
+// its own that first takes the lock every fact applies under (intake.SerializeFacts), and judges
+// there the issue's generation and the task at it, by its branch, its version and its needs:
+//   - The task as joined: the conflicts are written onto it. At the row's own generation that is
+//     the task the row read. At a later one it is the task of the run admission carried there
+//     (record.Store.CarryPlan, carried), in the same branch at the same version: the run goes on
+//     at that generation, and nothing joins its task again, since this row's retry would serve a
+//     generation the issue has left and finish without acting.
+//   - At the row's own generation, a task a later version changed: nothing is written, and the row
+//     waits (wait.ErrWaiting), so its next run joins the needs the task holds then.
+//   - Any other: nothing is written, and the row finishes. The plan no longer holds the task, or a
+//     later generation holds a task that is not the one joined (a plan carried from its start, or
+//     a task a version changed there), whose start joins its needs itself (startTaskCopy).
+func (r *outbox) writeJoinConflicts(ctx context.Context, row record.OutboxRow, joined record.PlanTask, conflicts []string) error {
+	var generation uint64
+	var written bool
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.SetJoinConflicts(ctx, tx, issue.Key, payload.Generation, task.Task, conflicts)
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize the write with every fact: %w", err)
+		}
+		issue, err := r.records.Issue(ctx, tx, joined.Issue)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			return fmt.Errorf("workflow issue %s is not recorded", joined.Issue)
+		}
+		generation = issue.Generation
+		stored, err := r.records.Plan(ctx, tx, joined.Issue, generation)
+		if err != nil {
+			return err
+		}
+		now, holds := planTaskOf(stored, joined.Task)
+		switch {
+		case holds && sameJoin(now, joined):
+			written = true
+			return r.records.SetJoinConflicts(ctx, tx, joined.Issue, generation, joined.Task, conflicts)
+		case holds && generation == joined.Generation:
+			return wait.Errorf("the task changed while its needs were joined, to version %d needing %v from version %d needing %v; the row joins again",
+				now.PlanVersion, now.Needs, joined.PlanVersion, joined.Needs)
+		}
+		return nil
 	}); err != nil {
-		return err
+		return fmt.Errorf("write the join's conflicts of task %s of %s: %w", joined.Task, joined.Issue, err)
 	}
-	r.log.Info("outbox task branch joined its needs", "row", row.ID, "issue", issue.Key, "task", task.Task, "branch", branch,
-		"needs", task.Needs, "conflicts", conflicts)
+	if !written {
+		r.log.Info("outbox task branch joined the needs of a task its run no longer holds as joined; finished without writing its conflicts", "row", row.ID,
+			"issue", joined.Issue, "task", joined.Task, "joined_at", joined.Generation, "generation", generation)
+		return nil
+	}
+	r.log.Info("outbox task branch joined its needs", "row", row.ID, "issue", joined.Issue, "task", joined.Task, "branch", joined.BranchOf(joined.Issue),
+		"needs", joined.Needs, "conflicts", conflicts, "generation", generation, "joined_at", joined.Generation)
 	return nil
+}
+
+// sameJoin says whether task now is the task joined as the join read it: the same branch, at the
+// same version of its plan, with the same needs in the same order.
+func sameJoin(now, joined record.PlanTask) bool {
+	return now.Branch == joined.Branch && now.PlanVersion == joined.PlanVersion && slices.Equal(now.Needs, joined.Needs)
 }
 
 // joinBranch makes branch of issue on GitHub at the head of the first of needs, or at the issue's
