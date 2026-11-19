@@ -1325,7 +1325,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 // settlement holds the copy's owner row, which the answer's mark of the copy's pending row reaches
 // only through a foreign key's `for key share`. Both finish, nothing is owed once the settlement
 // after the answer has run, and the copy shows its source's answer as an agent reads it, rendered
-// from the source's ask, while no byte of the copy holds it (dispatch://INFRA-1150 R3).
+// from the source's ask, while no byte of the copy holds it.
 func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *testing.T) {
 	for _, order := range []string{"answer first", "settlement first"} {
 		t.Run(order, func(t *testing.T) {

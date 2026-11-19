@@ -22,7 +22,7 @@ import (
 )
 
 // DecisionStep is the step of this release's boot and of a tick of its own that brings what the
-// release before wrote onto the store (dispatch://INFRA-1150, "The step"). Its phases run in
+// release before wrote onto the store. Its phases run in
 // order:
 //
 //  1. The backfill (graphcensus.BackfillAsks): the object nodes of every row written before its

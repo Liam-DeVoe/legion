@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// The two shapes of the restore of dispatch://INFRA-1150 R6, which returns each answered ask to
+// The two shapes of the restore, which returns each answered ask to
 // the spec it came from and moves every ask block of a decisions document into its spec. In the
 // main shape, RestoreReturns, the answered ask's block left its spec and its row still names that
 // spec, so the restore writes the block back under its old address. In the second, RestoreMoves,
@@ -119,7 +119,7 @@ var restoreWorkRead = `
 	join artifacts spec on spec.id = work.spec_id
 	order by work.issue_key, work.shape, work.address, work.ask_id`
 
-// ReadRestoreWork answers every ask the restore of dispatch://INFRA-1150 R6 owes, in one read of
+// ReadRestoreWork answers every ask the restore owes, in one read of
 // q, ordered by issue, shape and address. It is the one finder of that work: the census's
 // dangling-citation counter and collision lines read it here, and the restore, its dry run and
 // the step's test for work read the same function.
@@ -173,7 +173,7 @@ func CollisionsOf(work []RestoreWork) []Collision {
 	return collisions
 }
 
-// The two sets of the dangling-citation counter (dispatch://INFRA-1150 R8, E4).
+// The two sets of the dangling-citation counter.
 const (
 	// DanglingMoved is the citations whose target is a moved_to source, or a block address a
 	// decisions document held - the document a move of the second shape and the conversion empty,
@@ -276,7 +276,7 @@ var danglingRead = `
 	) cited
 	order by d.counted, d.address, cited.kind, cited.id`
 
-// DanglingCitations is the dangling-citation counter of dispatch://INFRA-1150 R8: the citations
+// DanglingCitations is the dangling-citation counter: the citations
 // of the moved set and of the returning set (DanglingMoved, DanglingReturning), read in q over the
 // restore's work as ReadRestoreWork finds it. Both sets answer before the restore moves anything.
 func DanglingCitations(ctx context.Context, q graphstore.Queryer) (DanglingReport, error) {
@@ -329,8 +329,8 @@ func writeMoves(w io.Writer, dangling DanglingReport, collisions []Collision, ve
 	}
 }
 
-// DecisionsCensus is what the census prints of the decisions step's third phase
-// (dispatch://INFRA-1150 R6, R9): the decisions documents that stand (decisions_documents()), the
+// DecisionsCensus is what the census prints of the decisions step's third phase: the decisions
+// documents that stand (decisions_documents()), the
 // sections they still hold, each one no rule has converted yet, and each spec the restore owes an
 // ask - an answered ask that left it, or an ask block of the decisions document, which moves into
 // it - with those asks. docs' ReadDecisionsCensus reads it, since only docs reads a decisions

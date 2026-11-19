@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// A Keep of a heading of an issue's decisions document (dispatch://INFRA-1150 F3) takes the
+// A Keep of a heading of an issue's decisions document takes the
 // issue's owner row before it writes, as the decisions step takes it for the whole of its
 // conversion and retirement of the document, and reads under it whether the document still
 // stands. A Keep that starts while the step holds the row - the person read the heading while the

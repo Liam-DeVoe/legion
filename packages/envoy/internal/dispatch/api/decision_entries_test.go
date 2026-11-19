@@ -25,7 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The Decisions read's entries (dispatch://INFRA-1150 R4): one entry for each node that holds a
+// The Decisions read's entries: one entry for each node that holds a
 // question the issue asked or a decision of one of its documents, read from the store.
 
 // readEntries is the entries member of GET /api/v1/issues/{key}/decisions, as alice reads it.
@@ -1058,7 +1058,7 @@ func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
 	}
 }
 
-// INFRA-1150, test round 1: the same ask, whose block left, after a block of another type took
+// Test round 1: the same ask, whose block left, after a block of another type took
 // its block id in the same document. The ask's row still names that document and that id, but no
 // block there holds the ask: the entry names no document, as it does when the id stands nowhere,
 // and never the callout. Measured on a real server of this head: a person's edit of SEED-1's spec
@@ -1087,7 +1087,7 @@ func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *test
 	}
 }
 
-// INFRA-1150, test round 1, the case Verification v41 gives c-attribute-removal: once the fleet
+// Test round 1, the case Verification v41 gives c-attribute-removal: once the fleet
 // is one build, the text `dispatch doc-read` prints (GET /api/v1/artifacts/{id}/text) holds none
 // of the eight server-owned ask attributes, and that text sent back unchanged is what the store
 // writes: the round trip the CLI's upload check asks answers it byte for byte, and the agent's

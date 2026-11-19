@@ -587,7 +587,7 @@ func askLines(entries []model.TextAsk) string {
 // awaitTextShows polls document's text as an agent reads it (agentText: its markdown and the
 // entries of its asks member) until it holds, and answers that text; it fails the test after ten
 // seconds, or at once when the text shows refused (nil refuses nothing). A person's answer is held
-// on the ask's node alone (dispatch://INFRA-1150 R3), so no stored version of a document written
+// on the ask's node alone, so no stored version of a document written
 // on a fleet of one build shows it: the asks member is where a test reads it.
 func awaitTextShows(t *testing.T, handler http.Handler, document, what string, holds, refused func(string) bool) string {
 	t.Helper()

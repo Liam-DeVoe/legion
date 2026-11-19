@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dispatch://INFRA-1150 keeps some things for one release, for the root's own pull request to
+# Some things are kept for one release, for the root's own pull request to
 # delete: packages/dispatch/e2e/acceptance/root-deletes.txt lists them, one line each, its id, a
 # tab, the thing, a tab, and what holds it. Every place in the repository that serves a kept thing
 # carries one marker comment, the words "kept for one release", a colon, a space and the id, with

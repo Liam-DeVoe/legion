@@ -42,7 +42,7 @@ function askOpeners(lines: readonly string[], blockId: string): string[] {
  * and moves no request. The live document's `ask` blocks are judged against the latest version,
  * the one the request would name; a block not yet in that version counts as open.
  *
- * A person's answer is held once, on the ask's node (dispatch://INFRA-1150 R3), so a version this
+ * A person's answer is held once, on the ask's node, so a version this
  * release writes records no state on a block's opening line, and such a block is judged by the
  * server's read of its ask: it is open while its ask is open. A block copied from another
  * document's ask has no ask of its own and is judged by that source, whose state, id and document

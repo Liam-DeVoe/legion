@@ -304,7 +304,7 @@ func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 	}
 }
 
-// The reading case (dispatch://INFRA-1150 R2) over the two versions: N carries the approval of A
+// The reading case over the two versions: N carries the approval of A
 // when the two differ only in the readings their decisions and their answered asks close with -
 // one added, edited or removed - and the case composes with R10's, so one version that drops the
 // server-owned attributes and adds a reading carries, naming both changes. A case names only what
@@ -633,7 +633,7 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 // version, and the version an agent's edit takes at once - stores none of the seven attributes a
 // version can store, though the live tree still holds what the release before wrote into an ask
 // block: here state="open" on an ask bob has answered since, which the answer leaves in place,
-// since on one build it changes no byte of the document (dispatch://INFRA-1150 R3). The named
+// since on one build it changes no byte of the document. The named
 // version differs from the one alice approved, which the release before's settlement wrote with
 // that state, in those attributes alone, and every ask of it agrees with its node, so her approval
 // is carried to it by the case that compares the two without them (attributeRemovalCase, R10).

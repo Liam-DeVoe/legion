@@ -1130,8 +1130,8 @@ func refuseLostAskBlocks(lost map[string]struct{}) error {
 
 // ErrAnsweredAskKept refuses a write that is not a person's own (writtenByPerson) when it would
 // take the block of an answered ask out of its document, or retype that block: a person's answered
-// decision stays in the document they decided it in, and only a person's own write moves it
-// (dispatch://INFRA-1150 R6). Nothing of the write is written.
+// decision stays in the document they decided it in, and only a person's own write moves it.
+// Nothing of the write is written.
 type ErrAnsweredAskKept struct {
 	// Asks are the answered asks the write would lose, in the order of their block ids.
 	Asks []KeptAsk
@@ -2061,7 +2061,7 @@ func editTree(current pmdoc.ValidDocument, read func() (*pmdoc.Node, error)) (*b
 // for, by what one upload may hold (answerHasRoom), is written without its words - the block says
 // who answered and when (rollWindowAskAttributesWithheld) - and the ask keeps it whole, as the
 // release before writes such a block. Once the fleet is one build it writes nothing, and the
-// answer changes no byte of the document (dispatch://INFRA-1150 R3). An ask with no block, and a
+// answer changes no byte of the document. An ask with no block, and a
 // block the document no longer holds as an ask, are written nothing.
 func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error {
 	if ask.BlockID == nil {

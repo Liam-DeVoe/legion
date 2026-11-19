@@ -669,7 +669,7 @@ func specVersions(t *testing.T, database *store.Store, document string) int {
 	return count
 }
 
-// A tick runs no pass of phase 3 after a catch-up that failed (dispatch://INFRA-1150, "The step"):
+// A tick runs no pass of phase 3 after a catch-up that failed:
 // the restore's finder reads an ask's answer from its node, which an answer of another build that
 // the catch-up did not state there leaves unanswered, so the restore waits for a tick whose
 // catch-up went through, as RunByHand refuses to run it after one that failed.
@@ -716,8 +716,8 @@ func TestATickRunsNoRestoreAfterACatchUpThatFailed(t *testing.T) {
 }
 
 // A booting process waits for the step's lock while phase 1 owes a row, so every process has
-// phase 1 behind it before it serves, and for nothing else of the step's (dispatch://INFRA-1150,
-// "The step"; cmd/dispatch's boot): a pass of phase 3 - every issue the restore and the conversion
+// phase 1 behind it before it serves, and for nothing else of the step's (cmd/dispatch's boot):
+// a pass of phase 3 - every issue the restore and the conversion
 // owe, one transaction each - holds a lock of its own (decisionRestoreLock) and not the step's,
 // which a tick lets go of once phases 1 and 2 are behind it.
 //
@@ -785,8 +785,8 @@ func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
 	}
 }
 
-// A booting process waits for the step's lock only while phase 1 owes a row (dispatch://INFRA-1150,
-// "The step"; cmd/dispatch's boot). A tick holds that lock while it runs phases 1 and 2, and a
+// A booting process waits for the step's lock only while phase 1 owes a row (cmd/dispatch's
+// boot). A tick holds that lock while it runs phases 1 and 2, and a
 // process stopped or stalled while its tick holds it keeps it for as long as its session stays
 // open. Where phase 1 owes nothing, such a holder keeps no boot waiting. Where phase 1 owes a row,
 // the boot waits for the lock, so every process has phase 1 behind it before it serves.

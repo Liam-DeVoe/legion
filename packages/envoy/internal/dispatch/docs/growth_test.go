@@ -154,9 +154,9 @@ func seedByWriter(t *testing.T, service *Service, artifactID string, client crdt
 // The asks of a document already past what one upload may hold - stored before the bound, or grown
 // by a browser - can still be answered and resolved, and none of it grows the document: an answer,
 // a choice and its words, and a resolution are held on the ask's node and its row alone
-// (asks.Settle), and on a fleet of one build the routes write no byte of any document
-// (dispatch://INFRA-1150 R3, "Once the whole fleet runs this build, a person's answer changes no
-// byte of any document"). An agent reads each ask's state and answer beside the text, in the asks
+// (asks.Settle), and on a fleet of one build the routes write no byte of any document: once the
+// whole fleet runs this build, a person's answer changes no byte of any document. An agent reads
+// each ask's state and answer beside the text, in the asks
 // member of the text routes (TextWithAsks), whole: no answer is text of the document's, so none is
 // weighed against what one upload may hold.
 func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.T) {

@@ -18,8 +18,7 @@ import (
 // of those steps named on one issue, so Dispatch's `superseded_approval` advice prints a
 // design-gate clause for a document a gate really records and stays quiet about every other
 // document. A row of the retired `decisions` step, which a daemon of the release before wrote,
-// stays until the root's pull request deletes it, and every read of the rows leaves it out
-// (dispatch://INFRA-1150 R11).
+// stays until the root's pull request deletes it, and every read of the rows leaves it out.
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
 // no personal scope — routeScopes names it nowhere (routes_table.go): the daemon presents the
@@ -65,8 +64,8 @@ type issueDesignGatesInput struct {
 // check would raise, a step named twice is refused as the project's own publish refuses it (one
 // record per step is all the gate keeps), and a gate naming no document is refused because the
 // document is the whole of what the row says. A gate of the retired `decisions` step, which a
-// daemon of the release before still publishes, is admitted and dropped (dispatch://INFRA-1150
-// R11, ruling F2), so the delete takes that issue's stored row of the step away.
+// daemon of the release before still publishes, is admitted and dropped, so the delete takes
+// that issue's stored row of the step away.
 func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	var input issueDesignGatesInput
 	if err := decodeJSON(r, &input); err != nil {

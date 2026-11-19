@@ -289,7 +289,7 @@ func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {
 		t.Fatalf("render retyped paragraph: %v", err)
 	}
 	// A server attribute has no written default, so the retyped block's markdown holds no answer
-	// state: an ask's state is its node's (dispatch://INFRA-1150 R3), never its block's.
+	// state: an ask's state is its node's, never its block's.
 	want := ":::ask{#" + blockID + " urgency=\"high\" multiple=\"true\"}\nWhich transport should we expose?\n:::\n"
 	if got != want {
 		t.Fatalf("retyped markdown = %q, want %q", got, want)
@@ -323,7 +323,7 @@ func TestApplyOperationLabelsInvalidRetypeFields(t *testing.T) {
 // The answer route's write into an ask's block (KeepAskBlockInStep) puts the ask's state and
 // answer into the block while another build serves, whose pages read them there, as the release
 // before wrote them; on a fleet of one build it writes nothing, and the answer, held on the ask's
-// node and its row, changes no byte of the document (dispatch://INFRA-1150 R3).
+// node and its row, changes no byte of the document.
 func TestKeepAskBlockInStepWritesTheAnswerOnlyWhileAnotherBuildServes(t *testing.T) {
 	const block = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	for _, twoBuilds := range []bool{false, true} {
@@ -744,7 +744,7 @@ func TestApplyOperationExplainsRenderedQuoteMatching(t *testing.T) {
 }
 
 // askFixture is an open ask's block as a document holds it: no attribute of the block holds the
-// ask's state, which its node and its asks row hold (dispatch://INFRA-1150 R3).
+// ask's state, which its node and its asks row hold.
 const askFixture = ":::ask{#decision urgency=\"high\" multiple=\"false\"}\nWhich transport?\n:::\n"
 
 func TestApplyOperationDeletesABlockByID(t *testing.T) {
@@ -3463,8 +3463,8 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 		t.Fatalf("ask events after move = %d, want no retract, reopen, or repair", got)
 	}
 
-	// An agent cannot take the person's answered decision out of the document (dispatch://INFRA-1150
-	// R6): its delete is refused, and the document and its versions stay as they were.
+	// An agent cannot take the person's answered decision out of the document: its delete is
+	// refused, and the document and its versions stay as they were.
 	before, err := service.Text(context.Background(), artifactID)
 	if err != nil {
 		t.Fatal(err)

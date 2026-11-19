@@ -113,16 +113,16 @@ var storeWriteCallSites = map[string]string{
 	// create would have written, for a document an earlier build made with none, then
 	// WriteUncaused, then Caused).
 	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	// A document's retirement (dispatch://INFRA-1150 R11), in the same order under the document's
+	// A document's retirement, in the same order under the document's
 	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
 	// document.retired and the node's facts under it.
 	"docs/retire.go#RetireDocument":   "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
 	"docs/retire.go#writeRetiredNode": "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
-	// A person's Keep of an agent's decision (dispatch://INFRA-1150 R2): under the issue's owner
+	// A person's Keep of an agent's decision: under the issue's owner
 	// row, the person's node, then the decision_keeps row that projects the Keep, then
 	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.
 	"api/decisions.go#keepDecisionNode": "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
-	// The decisions step's restore and conversion of an issue (dispatch://INFRA-1150 R6 to R9),
+	// The decisions step's restore and conversion of an issue,
 	// under the issue's owner row and its asks' rows: each document's version and its event, the
 	// index pass's facts under that event through Caused, then the moves, the restored asks'
 	// relations and the carried Keeps, with the person node a Keep names, under the spec's event.
@@ -166,7 +166,7 @@ var storeWriteCallSites = map[string]string{
 	"graphstore/people.go#Authored":        "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#Reached":         "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#SessionRecorded": "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
-	// The one writer of an ask's answer state (dispatch://INFRA-1150): asks.Settle states the answer
+	// The one writer of an ask's answer state: asks.Settle states the answer
 	// on the ask's node, appended at once under the event it is given or held for the caller's, and
 	// then writes the row; the catch-up of a follow another build recorded states it on the node.
 	// Each site that appends what a transition held under the event it appends after it, through
@@ -196,7 +196,7 @@ var storeWriteCallSites = map[string]string{
 	// event that recorded the version (the sites of Caused above), driven inside the tick and the
 	// settlement that run it.
 	"refs/blocks.go#IndexBlocks": "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-	// The typed-node pass (dispatch://INFRA-1150): the decision and reading nodes of a version and
+	// The typed-node pass: the decision and reading nodes of a version and
 	// their authors' nodes, in the transaction that accepts it, under the document's owner row its
 	// caller holds, after the block index's own nodes where that runs and on its own above the
 	// deferral bound, its tuples and cause waiting for the same event (the sites of Caused above).

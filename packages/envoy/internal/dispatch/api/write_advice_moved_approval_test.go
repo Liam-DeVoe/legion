@@ -249,7 +249,7 @@ func TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument(t *testing.T)
 // first, in the route's own transaction, so its version holds the text he approved, carries his
 // approval (docs.carryApproval) and answers the request. The request is answered, not moved onto
 // the agent's turn, so the edit's answer names it nowhere. (A person's answer writes no version,
-// dispatch://INFRA-1150 R3, so the carry is the restore's.)
+// so the carry is the restore's.)
 func TestMovedApprovalRequestIsAbsentWhenTheWritesOwnCarryAnsweredIt(t *testing.T) {
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "Context\n")

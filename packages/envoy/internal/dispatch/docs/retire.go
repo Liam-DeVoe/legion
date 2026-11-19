@@ -36,8 +36,8 @@ var errRetirementReason = errors.New("docs: a retirement needs a reason")
 // its own broker after its commit.
 var retirementEvents = events.NewBroker()
 
-// RetireDocument retires the document artifactID, any document, inside tx (dispatch://INFRA-1150
-// R11): it sets artifacts.retired_at and clears the document's role, states the document's
+// RetireDocument retires the document artifactID, any document, inside tx: it sets
+// artifacts.retired_at and clears the document's role, states the document's
 // artifact node gone, appends one document.retired event naming the reason, and supersedes the
 // approval the document holds, which it reports. The document keeps its row, its versions, its
 // reviews, its comments, its block texts and its slug, so its versions stay readable and a

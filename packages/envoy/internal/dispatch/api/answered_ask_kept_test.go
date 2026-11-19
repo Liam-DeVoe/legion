@@ -21,7 +21,7 @@ const (
 	keptAskContext  = "Context.\n"
 )
 
-// R6 of dispatch://INFRA-1150, as the middle paragraph of c-answers-restored states it: no agent
+// As the middle paragraph of c-answers-restored states it: no agent
 // takes a person's answered decision out of a spec or moves it. Each of an agent's three writes -
 // an edit that drops the ask's block, a whole-document replacement that leaves the block out, and
 // a retype of the block - is refused 409 ANSWERED_ASK_KEPT, quoting the ask's question and naming

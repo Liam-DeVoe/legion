@@ -36,8 +36,8 @@ import (
 // A write that leaves the document no bigger and no heavier than it was passes, so a document
 // already past the bound - stored before it, or grown by browser edits, which no server write
 // carries - can still be trimmed or split. Each refusal is ErrDocumentTooLarge, served as 413
-// CAP_EXCEEDED. An answer is no text of the document's: it is held on its ask's node alone
-// (dispatch://INFRA-1150 R3), and while another build serves the server keeps a copy of it in the
+// CAP_EXCEEDED. An answer is no text of the document's: it is held on its ask's node alone, and
+// while another build serves the server keeps a copy of it in the
 // block for that build's pages (rollWindowAskAttributes), whose words the answer route and
 // settlement each leave out of a block the document has no room for, as the release before does
 // (KeepAskBlockInStep, withholdAnswersWithoutRoom). The text routes serve no answer in the

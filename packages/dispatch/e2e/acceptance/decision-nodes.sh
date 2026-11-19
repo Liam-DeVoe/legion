@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dispatch://INFRA-1150's c-census: the child's census over a corpus half of which the release
+# The check c-census: the child's census over a corpus half of which the release
 # before wrote, the conversion of every section of the old decisions document, and the node read
 # set beside the document read it replaces.
 #

@@ -126,7 +126,7 @@ func approveAndCapture(t *testing.T, ctx context.Context, p *dispatchProcess, da
 }
 
 // One version whose only change is the removal of the server-owned ask attributes carries a
-// person's approval, and nothing wider does (dispatch://INFRA-1150 R10, c-attribute-removal). The
+// person's approval, and nothing wider does (c-attribute-removal). The
 // base release writes the documents and a person approves them; this head writes a document
 // holding a reading; the base release serves again beside this head and leaves that document be;
 // while both serve, the roll window keeps the attributes; once the base release is gone, the first

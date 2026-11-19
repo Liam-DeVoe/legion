@@ -1286,8 +1286,8 @@ func censusBlockRefTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []p
 
 // ───── the census ─────────────────────────────────────────────────────────
 
-// kindCensus is one kind's line of the census report. A kind held triple by triple
-// (dispatch://INFRA-1150's ties) prints the store's side as tuples= and its differences as
+// kindCensus is one kind's line of the census report. A kind held triple by triple (the ties of
+// decisions, readings and asks) prints the store's side as tuples= and its differences as
 // rows_without_a_tuple= and tuples_without_a_row=, read here into the same fields.
 type kindCensus struct {
 	kind               string
@@ -1392,7 +1392,7 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 		switch {
 		case slices.Contains(censusKinds, kind.kind):
 		case slices.Contains(decisionCensusKinds, kind.kind):
-			// dispatch://INFRA-1150's kinds, which this run writes no decision for and which a store
+			// The decision tie kinds, which this run writes no decision for and which a store
 			// may hold none of: no row and no node of one is no refusal, and a difference is.
 			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
 				t.Errorf("kind %s reads %d row(s) without a node and %d node(s) without a row",

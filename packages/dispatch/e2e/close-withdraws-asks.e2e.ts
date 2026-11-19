@@ -33,7 +33,7 @@ const decisionBlock =
   ':::ask{#decision urgency="high" multiple="false" state="open"}\nShip now?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n';
 
 /** The decision block as every stored version holds it: the first write took the seed's `state`
- *  off it, since an ask's state lives on the ask alone (dispatch://INFRA-1150 R3, R10). */
+ *  off it, since an ask's state lives on the ask alone. */
 const storedDecision = ':::ask{#decision urgency="high" multiple="false"}\n';
 
 /** The decision block's state as the text routes answer it, in their `asks` member, read from
@@ -185,7 +185,7 @@ test("a person's Close withdraws the issue's asks and writes no byte of the docu
 
     // That version's stored text holds the decision as it was written, with none of the
     // server-owned attributes: an ask's state lives on the ask alone, and on a fleet of one build
-    // a close's withdrawal changes no byte of a document (dispatch://INFRA-1150 R3, R10).
+    // a close's withdrawal changes no byte of a document.
     const savedMarkdown = (await getArtifactVersion(seeded.artifactId, before)).markdown;
     expect(savedMarkdown).toContain(storedDecision);
     expect(savedMarkdown).not.toContain("state=");

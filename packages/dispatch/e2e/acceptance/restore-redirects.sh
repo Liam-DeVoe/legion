@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dispatch://INFRA-1150's c-restore-redirects: no citation of a restored ask dangles. Every citation
+# The check c-restore-redirects: no citation of a restored ask dangles. Every citation
 # it resolves was written by the release before this branch.
 #
 # It drops and creates the database DATABASE_URL names (seed_reset_database: a database on this

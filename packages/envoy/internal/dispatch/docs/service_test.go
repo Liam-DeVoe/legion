@@ -1918,7 +1918,7 @@ func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *te
 		})
 		settleCurrentGeneration(t, service, artifactID)
 		before := liveTree(t, service, artifactID)
-		// The holder is decided on its ask, which holds its answer state (dispatch://INFRA-1150 R3);
+		// The holder is decided on its ask, which holds its answer state;
 		// no attribute of its block in the document does.
 		if state := blockAskOn(t, service, artifactID, "ask-lists").State; state != "answered" {
 			t.Fatalf("the decision holding it is %v, want it answered", state)
@@ -3411,7 +3411,7 @@ func answerIndexedAsk(t *testing.T, service *Service, artifactID, blockID string
 
 // A decided ask given a second list is marked invalid and keeps its decided row; once the second
 // list is gone, settlement clears invalid and the block carries its decided wording again. Its
-// decided state is its ask's, on its node and its row (dispatch://INFRA-1150 R3), and no attribute
+// decided state is its ask's, on its node and its row, and no attribute
 // of the block holds it.
 func TestSettlementMarksADecidedAskWithASecondBulletListInvalid(t *testing.T) {
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")

@@ -609,7 +609,7 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 }
 
 // RetiredDecisionsSlug is the slug of an issue's decisions document, which the decisions step
-// retires (dispatch://INFRA-1150 R11): the address `dispatch://KEY/artifact/<this slug>` of a
+// retires: the address `dispatch://KEY/artifact/<this slug>` of a
 // retired one resolves to the issue KEY, as every retired document's address does
 // (loadArtifactNodes). It is the one place the server spells that slug: api refuses a new
 // document that would take it.
@@ -621,7 +621,7 @@ const RetiredDecisionsSlug = "decisions-md"
 //
 // The address of a retired document of an issue (artifacts.retired_at, docs.RetireDocument),
 // `dispatch://KEY/artifact/<slug>` read by its ref_key, resolves to the issue KEY, whose node it
-// answers in the document's place (dispatch://INFRA-1150 R8, R11): the document plays no part in
+// answers in the document's place: the document plays no part in
 // its issue any more, and a citation of it stays valid and reaches what took its place, the issue
 // and its reads. The document read by its uuid is the document still, so its versions, its blocks
 // and its own edges stay readable.

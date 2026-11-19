@@ -17,7 +17,7 @@ import (
 )
 
 // The block types the typed-node pass reads: a decision and a reading, whose blocks are nodes of
-// their own type's supertag (dispatch://INFRA-1150 R1 and R2), and an ask, whose block's shaped
+// their own type's supertag, and an ask, whose block's shaped
 // hangs on the ask's node and whose answer is the decision a reading in it reads.
 const (
 	decisionType = "decision"
@@ -46,7 +46,7 @@ const (
 	ValueReplaced          = "replaced"
 )
 
-// The two appends of a person's Keep on a decision's node (dispatch://INFRA-1150 R2), each under
+// The two appends of a person's Keep on a decision's node, each under
 // its attribute's store name: kept_by ties the decision to the person who kept it, and
 // kept_text_sum holds the decision's text sum at the Keep, a value of its own because a tuple
 // holds one far end and nothing beside it. decision_keeps is their projection.
@@ -320,8 +320,8 @@ func HoldsTypedBlocks(blocks []model.ArtifactBlock) bool {
 	return false
 }
 
-// DecisionWords is a decision's own words, the text its text sum covers (dispatch://INFRA-1150
-// R2): decision, a decision block node, rendered alone with the readings it closes with left out
+// DecisionWords is a decision's own words, the text its text sum covers: decision, a decision
+// block node, rendered alone with the readings it closes with left out
 // (pmdoc.TypedContent). A reading never changes the decision it reads, so the decision's words,
 // and the sum a Keep records over them, are the same whether readings hang under it or not. The
 // attributes a markdown rendering never carries - decided_by, kept_by, kept_text_sum - are none
@@ -664,7 +664,7 @@ func (f TypedFacts) typedScope() *pairScope {
 // reading node the store places in the document that the version no longer holds as one
 // (unheldTypedNodes): gone where the version holds no such block, and a node of the supertag block
 // where it holds the block under another type. So a decision a deferred version removes leaves the
-// Decisions read in that version's transaction (dispatch://INFRA-1150 R4). The block-index
+// Decisions read in that version's transaction. The block-index
 // reconciliation indexes the document later with the same facts, and its pairs hold these same
 // ties, so it moves none of them (TestTheReconcilerMovesNoRowTheTypedPassWrote).
 func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, facts TypedFacts, indexed bool) ([]Target, graphstore.Uncaused, error) {

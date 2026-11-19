@@ -154,7 +154,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  16. the latest approved review the request carries (docs.LatestApprovedReview); the new ask's
 //     id is drawn in the process (openApprovalAsk), so it costs no round trip;
 //  17. the ask's node, in its document's project, written before the ask row that holds it
-//     (graphstore.WriteUncaused, dispatch://INFRA-3862); the project is the document's, read with
+//     (graphstore.WriteUncaused); the project is the document's, read with
 //     it, so it costs no round trip of its own;
 //  18. the ask row (openApprovalAsk);
 //  19. the question's references, none of which it names (refs' replaceItemRefs);

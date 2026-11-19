@@ -1,6 +1,6 @@
 /** Every run that boots the base release names that release: BASELINE_SHA has no default.
  *
- *  Verification version 39 of dispatch://INFRA-1150 holds that BASELINE_SHA, the release this
+ *  Version 39 of this change's Verification document holds that BASELINE_SHA, the release this
  *  branch lands after, has no default, and that a run which leaves it unset is refused, naming the
  *  variable. A default lets an unset run boot or read some other base, such as main's merge base
  *  or whatever binary $TMPDIR/base-dispatch holds, and pass on that base without being able to

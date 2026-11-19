@@ -389,8 +389,8 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 // issue's row - when the issue is closed: the close waits for it on that row, so the settlement
 // indexes the block as an ask credited to its writer, and the close then withdraws that ask,
 // naming the closer. The close's own settlement, behind it, finds the document settled. The
-// withdrawal is held on the ask's node and its row and changes no byte of the document
-// (dispatch://INFRA-1150 R3), so the edit's own version is the only one written since the block,
+// withdrawal is held on the ask's node and its row and changes no byte of the document, so the
+// edit's own version is the only one written since the block,
 // it holds none of the block's state, and the text an agent reads shows the block resolved.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
 	var documents *docs.Service

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dispatch://INFRA-1150's c-answers-restored: the restore returns every answered ask the release
+# The check c-answers-restored: the restore returns every answered ask the release
 # before let leave its spec, in both shapes, over rows that release wrote, and an agent can no
 # longer take an answered ask's block out of a document.
 #

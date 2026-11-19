@@ -285,7 +285,7 @@ type Project struct {
 // GatedStepCriteria and GatedStepSpec are the two design-gate steps Project.GatedSteps names,
 // each one a document of the root issue: its Verification document and its primary document.
 // GatedStepsKnown is the set in the order the gate runs them, which the route checks a published
-// list against. The `decisions` step is gone (dispatch://INFRA-1150 R11): no write of this build
+// list against. The `decisions` step is gone: no write of this build
 // stores it, and a stored list that holds it reads without it (api's gatedStepsWithout).
 const (
 	GatedStepCriteria = "criteria"
@@ -590,7 +590,7 @@ type Issue struct {
 	PlanArtifactID         string `json:"plan_artifact_id"`
 	// DecisionsArtifactID is the id of the issue's decisions document while it stands
 	// (decisions_documents()), "" once it is retired or where the issue holds none. A page of the
-	// release before reads it (dispatch://INFRA-1150 R11).
+	// release before reads it.
 	// kept for one release: compat-objects
 	DecisionsArtifactID string `json:"decisions_artifact_id"`
 	LastSeq             int    `json:"last_seq"`
@@ -1208,7 +1208,7 @@ type Artifact struct {
 	// "" for every other document. It is set from the document's slug when the row is created, as
 	// Primary is, and no request field sets it; the one write that clears it is the document's
 	// retirement. A decisions document an earlier release stored answers its stored role,
-	// `decisions`, until the decisions step retires it (dispatch://INFRA-1150 R11).
+	// `decisions`, until the decisions step retires it.
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
@@ -3413,8 +3413,8 @@ type DecisionKeep struct {
 // (internal/dispatch/decisionread). FromBlock is the decision's own block, To the node it names,
 // CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it,
 // TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
-// last changed in, and Stale true when that text changed after the tuple was written
-// (dispatch://INFRA-1150 R5). The three are absent where the store holds none.
+// last changed in, and Stale true when that text changed after the tuple was written. The three
+// are absent where the store holds none.
 //
 // kept for one release: compat-objects
 type DecisionLink struct {
@@ -3434,7 +3434,7 @@ type DecisionLink struct {
 // Unsure is true where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the
 // node. ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is
 // the sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
-// old `decisions` member answers it for one release (dispatch://INFRA-1150 R11).
+// old `decisions` member answers it for one release.
 //
 // kept for one release: compat-objects
 type Decision struct {

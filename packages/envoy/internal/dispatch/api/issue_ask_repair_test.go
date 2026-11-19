@@ -442,7 +442,7 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 	}
 	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision state="open"`)
 
-	// The restoration writes no block on a fleet of one build (dispatch://INFRA-1150 R3) and marks
+	// The restoration writes no block on a fleet of one build and marks
 	// the document owing the settlement that reconciles the restored ask's block, which it arms
 	// nothing to run (docs.MarkReopenOwedAskDocuments): the resumption runs it, before the second
 	// repair's snapshot, which counts that repair's events alone.

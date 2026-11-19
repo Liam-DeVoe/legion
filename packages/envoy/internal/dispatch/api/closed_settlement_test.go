@@ -191,7 +191,7 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 		t.Fatalf("the issue has %d asks after the settlement, want the %d the close left", got, asks)
 	}
 	requireWithdrawn(t, handler, issue.Key, withdrawn, alice)
-	// An ask's state is held on its node, not in the document (dispatch://INFRA-1150 R3): the
+	// An ask's state is held on its node, not in the document: the
 	// newest version holds none of the seven attributes, and the asks member of the text an agent
 	// reads holds the withdrawn decision resolved and the answered one answered from their rows,
 	// and the block with no row resolved from the issue's close, since it opens no ask while the

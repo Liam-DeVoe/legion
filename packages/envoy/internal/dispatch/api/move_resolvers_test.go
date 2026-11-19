@@ -15,7 +15,7 @@ import (
 )
 
 // plantMovedTo appends one moved_to tuple for each pair of block addresses, from the first to the
-// second, as the restore and the conversion state a move (dispatch://INFRA-1150 R8), in one
+// second, as the restore and the conversion state a move, in one
 // transaction it commits.
 func plantMovedTo(t *testing.T, database *store.Store, pairs ...[2]string) {
 	t.Helper()
@@ -93,7 +93,7 @@ func closureRefKeys(t *testing.T, handler http.Handler, key string) []string {
 	return keys
 }
 
-// Each of the three resolvers of dispatch://INFRA-1150 R8 follows a planted chain of moved_to
+// Each of the three resolvers of a moved block follows a planted chain of moved_to
 // tuples from an address no block stands at, and answers the block it reached: GET
 // /api/v1/references?to= names that block with its whole current text, the text a reference of the
 // block's own address reads (blockReferenceNode); GET /api/v1/block-links lists the citing block's

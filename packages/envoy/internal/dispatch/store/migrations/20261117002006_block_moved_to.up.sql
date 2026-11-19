@@ -6,7 +6,7 @@
 -- citation of the old address would dangle. No stored pointer is rewritten for it. Each move
 -- appends one `moved_to` tuple instead, from the old address to the block it moved to
 -- (graphstore.TupleMovedTo), and a reader that meets an address no document_blocks row holds
--- follows those tuples (dispatch://INFRA-1150 R8).
+-- follows those tuples.
 --
 -- moved_to_reach(address) is that one reading, for the three resolvers that reach a block:
 -- refs.Closure and refs.BlockLinks call it in their own statements, and graphstore.MovedTo, the

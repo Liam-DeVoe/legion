@@ -652,8 +652,8 @@ func TestAPinnedBlockCarriesItsFacts(t *testing.T) {
 
 // R12: a block ask belongs to its document at the version that added its block, the version
 // current when it was written. A later edit of the document leaves it there, and so does the
-// ask's answer, which is held on the ask's node and changes no byte of the document
-// (dispatch://INFRA-1150 R3), so it leaves the block's changed version where it was too.
+// ask's answer, which is held on the ask's node and changes no byte of the document, so it
+// leaves the block's changed version where it was too.
 func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()

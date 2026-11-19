@@ -8,8 +8,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The relations and values an ask's node holds beside its base attributes (dispatch://INFRA-1150
-// R3). The three relations to artifacts are what the asks row's block_artifact_id, anchor and
+// The relations and values an ask's node holds beside its base attributes. The three relations
+// to artifacts are what the asks row's block_artifact_id, anchor and
 // artifact_id say of the ask: the document holding its block or the document its anchor quotes
 // (anchored_to, TupleAnchoredTo), the document an ask on no issue belongs to (owned_by,
 // TupleOwnedBy), and the document holding its block (part_of, TuplePartOf), which is where a copy

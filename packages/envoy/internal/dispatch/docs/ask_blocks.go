@@ -263,7 +263,7 @@ func (r *settlementReconciliation) causeSettledAnswers(ctx context.Context, tx p
 }
 
 // claimCopies states, for each ask block of the tree settlement read whose block node the store
-// holds, the copied_from of that node (dispatch://INFRA-1150 R3): the source ask where
+// holds, the copied_from of that node: the source ask where
 // copiedAskSources resolved one, and none where it resolved none, so a block that stopped being a
 // copy - its source retracted, its wording changed, its own ask opened - retracts the copied_from
 // it held. Each is a claim (graphstore.WriteArms), which appends only where the node holds another

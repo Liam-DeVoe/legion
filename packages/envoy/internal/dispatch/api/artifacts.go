@@ -2172,7 +2172,7 @@ func artifactSlug(name string) string {
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
 // documentRoleOf, which names the part one row plays. The `decisions` role is gone from every
-// write (dispatch://INFRA-1150 R11): a decisions document is found through decisions_documents(),
+// write: a decisions document is found through decisions_documents(),
 // and a new one is refused (decisionsAreNodes).
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: "verification-md",
@@ -2264,7 +2264,7 @@ var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerif
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
 
 // decisionsAreNodes is the 409 refusing an upload or a create named name, on an issue, whose slug
-// is the slug of a decisions document (dispatch://INFRA-1150 R11, ruling D12): a decision is a
+// is the slug of a decisions document: a decision is a
 // `decision` block of the spec, and a document of that name would be stored where nothing reads
 // it. The refusal stays: a route keeps a thing it stops taking declared and refuses it by name.
 // It reads the name and not the issue, so a document of any other name is taken. An upload that

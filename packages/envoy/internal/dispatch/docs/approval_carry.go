@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// A person's answer is held once, on the ask's node (dispatch://INFRA-1150 R3), so answering an
+// A person's answer is held once, on the ask's node, so answering an
 // ask changes no byte of a document and supersedes no approval of it. What changes the bytes is
 // the answer's old second copy leaving the document: the server-owned attributes of every ask
 // block (askServerAttributeNames), which the release before wrote into every version and this
@@ -54,7 +54,7 @@ import (
 // (restoreCase): the restore changes where an ask's block stands and not its words. The decisions
 // the conversion of an issue's decisions document writes into that part, and the links it gives
 // an answered ask as `shaped` pointers, are R9's (conversionCase): a decision and its ties are
-// outside what a spec's approval covers (dispatch://INFRA-1098 R4). Those two hold for the
+// outside what a spec's approval covers. Those two hold for the
 // decisions step's own write alone (decisionStepCases), and take out only what that write added:
 // an agent's upload or edit that makes the same change carries nothing by them, and neither does
 // an agent's change the step's version keeps - a decision whose words it rewrote, a pointer it gave
@@ -167,7 +167,7 @@ var restoreCase = carryCase{
 // conversion of the issue's decisions document writes in place of the part's pointer line to that
 // document, and the `shaped` pointers an answered ask's restored or present block takes from the
 // section that restated it. A decision, and an answered ask's ties, are outside what an approval
-// of a spec covers (dispatch://INFRA-1098 R4); the readings the conversion writes inside answered
+// of a spec covers; the readings the conversion writes inside answered
 // asks are readingCase's. It takes out of N only the decisions and the pointers the conversion's
 // own write added (decisionStepCases.decisions, decisionStepCases.shaped), and out of A only the
 // pointer line that write took out (pointerLinesTaken): a decision A held, whose words an agent

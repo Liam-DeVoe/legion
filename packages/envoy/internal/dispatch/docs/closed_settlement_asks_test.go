@@ -455,8 +455,8 @@ func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Ac
 		t.Fatalf("resume the closed issue's owed settlement: %v", err)
 	}
 	waitForNoPendingSettlement(t, service, artifactID, "the closed issue's document to settle the returned block")
-	// On a fleet of one build no attribute of an ask block holds a state (dispatch://INFRA-1150
-	// R10): the closed issue's settlement saves the returned block, whose ask it leaves retracted,
+	// On a fleet of one build no attribute of an ask block holds a state: the closed issue's
+	// settlement saves the returned block, whose ask it leaves retracted,
 	// with none of the seven attributes a version can store, where the release before saved it
 	// resolved. The block is saved whole, its question included.
 	const saved = "\n" + block

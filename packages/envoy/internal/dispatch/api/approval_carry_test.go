@@ -20,8 +20,8 @@ import (
 // with an earlier approval names that approval's version, time and approver in its approval
 // (approval.approved: version, at, by), so the human reads what he is approving since the version
 // he approved rather than from nothing; a first request names none. A person's answer to an
-// ask block is held once, on the ask's node, and changes no byte of the document
-// (dispatch://INFRA-1150 R3), so it writes no version and an approval stands through it; the
+// ask block is held once, on the ask's node, and changes no byte of the document,
+// so it writes no version and an approval stands through it; the
 // carries that remain are those of a version restoring the approved text, of R2's readings
 // (reading_approval_test.go) and of R10's case (docs.carryApproval).
 
@@ -385,7 +385,7 @@ func decodePayload[T any](t *testing.T, event carryEvent) T {
 
 // storedAnswerAttributes are the seven server-owned attributes of an ask block a stored version
 // could hold, as their markdown spells them. A version written on a fleet of one build holds
-// none (dispatch://INFRA-1150 R10).
+// none.
 var storedAnswerAttributes = []string{` state="`, ` answered_by="`, ` answered_at="`, ` selected="`, ` answer="`, ` copied_from="`, ` copied_from_document="`}
 
 // requireNoAnswerAttributes fails t unless markdown, a stored version's, holds none of the seven
@@ -401,7 +401,7 @@ func requireNoAnswerAttributes(t *testing.T, what, markdown string) {
 
 // requireNoVersionPast fails t unless, once the document owes no settlement, its latest version is
 // still number: what the test wrote since - an answer, a resolution - is held on the asks' nodes
-// and rows and changed no byte of the document (dispatch://INFRA-1150 R3).
+// and rows and changed no byte of the document.
 func requireNoVersionPast(t *testing.T, handler http.Handler, database *store.Store, artifactID string, number int) {
 	t.Helper()
 	awaitSettled(t, database, artifactID)
@@ -411,9 +411,9 @@ func requireNoVersionPast(t *testing.T, handler http.Handler, database *store.St
 	}
 }
 
-// A person's answer is held once, on the ask's node, and changes no byte of the document
-// (dispatch://INFRA-1150 R3: "Once the whole fleet runs this build, a person's answer changes no
-// byte of any document, and an approval of that document stands through it"). So his answer to a
+// A person's answer is held once, on the ask's node, and changes no byte of the document: once
+// the whole fleet runs this build, a person's answer changes no byte of any document, and an
+// approval of that document stands through it. So his answer to a
 // block the agent wrote since his approval writes no version and carries nothing: the approval
 // stays where it stood, stale. Once he approves the version holding the block, his change of the
 // answer and the resolution of the other block write no version either, and his approval stands
@@ -632,8 +632,7 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 // browser's socket edit does: a document-socket peer sets them on the block in its own tree, which
 // no route's checks hold, and stays connected for the rest of the test, as an open editor does. No
 // server write puts a block's attributes on it alone any more: an answer is held on the ask's node
-// (dispatch://INFRA-1150 R3), and the roll window's copy is settlement's (docs'
-// rollWindowAskAttributes).
+// alone, and the roll window's copy is settlement's (docs' rollWindowAskAttributes).
 func setLiveBlockAttributes(t *testing.T, documents *docs.Service, artifactID, blockID string, attributes map[string]any) {
 	t.Helper()
 	peer := connectBrowserPeer(t, documents, artifactID)
@@ -713,8 +712,8 @@ func TestAParagraphEditBeforeTheAnswerDoesNotCarry(t *testing.T) {
 
 // Approved: answers by humans other than the approver - here alice's answer to one block and bob's
 // own to the other, on a document only bob approved - write no version, so his approval stands
-// at the latest version through both (dispatch://INFRA-1150 R3: "a person's answer changes no
-// byte of any document, and an approval of that document stands through it"), whoever answered.
+// at the latest version through both - a person's answer changes no byte of any document, and an
+// approval of that document stands through it - whoever answered.
 func TestAnswersByHumansOtherThanTheApproverWriteNoVersionAndTheApprovalStands(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved by another", "Context\n\n"+waveAsk+"\n"+regionAsk)
@@ -772,8 +771,8 @@ func TestAnAnswerAfterAnotherHumanRequestedChangesDoesNotCarry(t *testing.T) {
 // his approval (docs.restoresApprovedText). An agent reading the text reads his answer on the
 // block again, rendered from the store, and settlement writes nothing back into the block, so no
 // version follows; the delete's version carried nothing. The agent cannot make the delete
-// itself: no agent takes a person's answered decision out of a document (dispatch://INFRA-1150
-// R6), so its delete is refused and writes no version.
+// itself: no agent takes a person's answered decision out of a document, so its delete is refused
+// and writes no version.
 func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "TEST", "Answered block restored", "Context\n\n"+regionAsk)

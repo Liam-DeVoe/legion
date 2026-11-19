@@ -5,11 +5,11 @@ import (
 	"fmt"
 )
 
-// TupleMovedTo points from a block address that no longer stands to the block it moved to
-// (dispatch://INFRA-1150 R8): a move of a block from one document to another is a delete and an
+// TupleMovedTo points from a block address that no longer stands to the block it moved to: a
+// move of a block from one document to another is a delete and an
 // insert, which changes the block's address, so the move appends one of these, from the old
 // address to the new one, with the time of the move, and rewrites no stored pointer. The restore
-// and the conversion of that issue write it; dispatch://INFRA-1253 moves blocks through it again.
+// and the conversion of that issue write it; a later change moves blocks through it again.
 // The conversion also points a section's heading at an ask node, where the section cites an
 // answered ask a person removed from its spec: the chain ends at that ask. No table projects it.
 const TupleMovedTo = "moved_to"

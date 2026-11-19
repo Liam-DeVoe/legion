@@ -121,11 +121,11 @@ func storeCensusOf(t *testing.T, database *store.Store) *StoreReport {
 	return report
 }
 
-// seededKinds are the kinds seedAgreeingStore writes rows of, which are every kind of
-// dispatch://INFRA-1149 the census reads, each of which must count rows and live nodes: a kind
+// seededKinds are the kinds seedAgreeingStore writes rows of, which are every earlier kind the
+// census reads, each of which must count rows and live nodes: a kind
 // that read zero of either compared nothing, and its zero differences would prove nothing. The
-// kinds of dispatch://INFRA-1150 (KindReport.EmptyAgrees) are none of them: the fixture writes no
-// decision and no ask, and those kinds read empty on both sides, which is no refusal.
+// tie kinds of decisions, readings and asks (KindReport.EmptyAgrees) are none of them: the fixture
+// writes no decision and no ask, and those kinds read empty on both sides, which is no refusal.
 var seededKinds = []string{"comment", "block", "block_ref", graphstore.KindPerson, graphstore.KindSession,
 	graphstore.KindRole, graphstore.KindPage}
 
@@ -165,11 +165,12 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 
 // The census passes only where it checked more than zero rows of every kind it covers and found
 // zero differences (R19): a total over the kinds is no such proof, because two empty sides of one
-// kind agree. The census of the agreeing store, which checked rows of every kind of
-// dispatch://INFRA-1149, passes. The same report with any one of those kinds' rows and nodes taken
+// kind agree. The census of the agreeing store, which checked rows of every earlier kind,
+// passes. The same report with any one of those kinds' rows and nodes taken
 // out, which still reads zero differences and still holds rows of every other kind, must refuse
-// and name that kind in its verdict. A kind of dispatch://INFRA-1150 is a kind a deployment holds
-// none of until somebody writes one, and the agreeing store holds none: no row and no node of it
+// and name that kind in its verdict. A tie kind of decisions, readings and asks is a kind a
+// deployment holds none of until somebody writes one, and the agreeing store holds none: no row
+// and no node of it
 // is no refusal, and the report says so on that kind's own line.
 func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	database := storetest.Open(t)

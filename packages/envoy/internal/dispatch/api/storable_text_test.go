@@ -558,7 +558,7 @@ func TestABlockIDTheEditorKeepsFromAPasteSurvivesSettlement(t *testing.T) {
 // ask block it pastes holds each of them as undefined, and y-prosemirror writes every attribute a
 // new node holds into the live document, an undefined one too, which the room reads as null: the
 // pasted block arrives with `state` null although the schema's default for it is `open`. The
-// server writes a server attribute into a block or nobody does (dispatch://INFRA-1150 R3), so such
+// server writes a server attribute into a block or nobody does, so such
 // a null reads as the block not holding the attribute: the room takes the paste, every read serves
 // the block with none of the server's attributes, and settlement opens its ask and stores a version
 // holding none of them either.

@@ -579,7 +579,7 @@ func (s *server) supersededApprovalAdvice(
 // model.GatedStepsKnown), the order the issue read lists an issue's own gates in. A row of a step
 // outside that list, the retired `decisions` step a daemon of the release before wrote, is left
 // out, and a project's stored list of that step alone reads as [spec], as every read of a stored
-// list does (gatedStepsWithout, dispatch://INFRA-1150 R11).
+// list does (gatedStepsWithout).
 func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID string) ([]supersededApprovalGate, error) {
 	// kept for one release: design-gate-rows
 	rows, err := q.Query(ctx, `

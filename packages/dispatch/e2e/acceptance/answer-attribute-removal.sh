@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dispatch://INFRA-1150's c-attribute-removal-count: the three measurements this child takes
+# The check c-attribute-removal-count: the three measurements this child takes
 # before it writes a migration, read over a seeded corpus the release before this branch wrote,
 # and the pull request body that must hold them.
 #
@@ -45,7 +45,7 @@
 # A reading at or above the limit fails the run.
 #
 # Then the pull request body, from the file PR_BODY_FILE names or, without it,
-# `gh pr list --repo cybermonklabs/legion --head legion/INFRA-1150 --json body --jq '.[0].body'`.
+# `gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body`, this branch's pull request.
 # An empty body fails. It must hold exactly one line of each of these forms, a carriage return
 # before the line's end aside, and leading and trailing spaces allowed:
 #     - measurement documents_holding_an_ask=<n> at=<YYYY-MM-DDTHH:MM:SSZ>
@@ -335,10 +335,10 @@ if [[ -n "${PR_BODY_FILE:-}" ]]; then
   body_source="the file $PR_BODY_FILE"
 else
   require_commands gh
-  gh pr list --repo cybermonklabs/legion --head legion/INFRA-1150 --json body --jq '.[0].body' \
+  gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body \
     >"$work/body.raw" 2>"$work/gh" || fail body "read the pull request body" "gh: $(<"$work/gh")"
   tr -d '\r' <"$work/body.raw" >"$work/body.md"
-  body_source="the pull request of legion/INFRA-1150"
+  body_source="pull request #4173"
 fi
 body_text="$(tr -d '[:space:]' <"$work/body.md")"
 [[ -n "$body_text" && "$body_text" != null ]] ||

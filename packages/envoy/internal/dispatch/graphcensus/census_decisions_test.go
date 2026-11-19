@@ -15,11 +15,11 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// unmarkedAskKinds are the ask kinds of dispatch://INFRA-1150 whose rows the earlier release
+// unmarkedAskKinds are the ask tie kinds whose rows the earlier release
 // wrote with no node, in the order the census reads them.
 var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_anchor", "ask_answer"}
 
-// The rule that a kind of dispatch://INFRA-1150 holding no row and no node is no refusal is for a
+// The rule that a tie kind holding no row and no node is no refusal is for a
 // store nothing of that kind was written to. An asks table and an ask_followers table whose rows
 // the earlier release wrote, and which no backfill has marked, hold rows all the same: their kinds
 // read no row and no node, since the row side reads marked rows alone, while each counts its own
@@ -27,8 +27,8 @@ var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_a
 // and answered by bob - and one follower row of it, every ask kind counts its unmarked row, none
 // prints that nothing of it is written yet, each prints that it checked no row, and the census
 // refuses with those four kinds as the kinds that checked no row. (The project census refuses the
-// unmarked asks row as well, as a row with no node; that refusal is INFRA-1149's and not this
-// rule's, so the test reads the kinds the census names unpopulated.)
+// unmarked asks row as well, as a row with no node; that refusal is the project census's own and
+// not this rule's, so the test reads the kinds the census names unpopulated.)
 func TestTheCensusRefusesAskRowsNoBackfillMarked(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -73,7 +73,7 @@ func TestTheCensusRefusesAskRowsNoBackfillMarked(t *testing.T) {
 }
 
 // statedMovedTo appends one moved_to tuple from the block address from to the block address to,
-// as the restore and the conversion state one (dispatch://INFRA-1150 R8).
+// as the restore and the conversion state one.
 func statedMovedTo(t *testing.T, database *store.Store, from, to string) {
 	t.Helper()
 	ctx := context.Background()
@@ -105,7 +105,7 @@ func storeOnlyKind(t *testing.T, report *StoreReport, name string) StoreOnlyRepo
 	return StoreOnlyReport{}
 }
 
-// The census leaves out documents that still owe their block index (dispatch://INFRA-1150 R4): a
+// The census leaves out documents that still owe their block index: a
 // moved_to whose far end is a block of such a document, which holds no row yet for a block its
 // latest version holds, is counted apart and is no unresolved far end. The agreeing store's
 // document owes its index, since its version was written with no block index, and a moved_to into

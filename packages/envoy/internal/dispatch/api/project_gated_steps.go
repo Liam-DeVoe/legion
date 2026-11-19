@@ -40,7 +40,7 @@ type projectGatedSteps struct {
 // order it cannot keep, and the database's check admits it (it holds the shape, not the route's
 // input rules).
 //
-// The `decisions` step is gone (dispatch://INFRA-1150 R11, ruling F2), and a page of the release
+// The `decisions` step is gone, and a page of the release
 // before still sends it, so the write admits it and stores the list without it; a list of that
 // step alone is stored as [spec], so the publish gates the design still (gatedStepsWithout).
 
@@ -55,7 +55,7 @@ type projectGatedStepsInput struct {
 }
 
 // retiredDecisionsStep is the design-gate step the release before gated, a root issue's
-// decisions document. This build stores it nowhere (dispatch://INFRA-1150 R11).
+// decisions document. This build stores it nowhere.
 const retiredDecisionsStep = "decisions"
 
 // gatedStepsWithout is a list of gated steps without retiredDecisionsStep: the list the write

@@ -148,8 +148,8 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insert into ask_followers (ask_id, session_id) values ($1::uuid, 'session-backlink')
 	`, anchoredAsk)
 
-	// The same three relations as the store holds them for an ask whose row names its node
-	// (dispatch://INFRA-1150): an ask on the notes document, anchored on it and owned by it, and a
+	// The same three relations as the store holds them for an ask whose row names its node: an
+	// ask on the notes document, anchored on it and owned by it, and a
 	// session that follows it, each stated on the ask's node, the rows marked. graph_edges' old
 	// arms leave these rows to the tuple arm, and the count reads the store's tuples for them.
 	// The answered ask's tie to a block, its shaped, is the store's alone: a block_refs row of the

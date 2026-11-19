@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dispatch://INFRA-1150's c-spelling-gone: the decisions document and the `decisions` design step
+# The check c-spelling-gone: the decisions document and the `decisions` design step
 # are gone from every file that writes or asks for them, read outside the server's own tests. It
 # needs no server and no database: it reads this checkout and runs this branch's own `legion`.
 #
@@ -17,8 +17,8 @@
 #                                      `kept for one release: <id>`, an id root-deletes.txt lists
 #                                      (the plan's "For the root to delete"), printed with its
 #                                      thing; or the reading of a retired document's slug
-#                                      (refs.RetiredDecisionsSlug), or the citation
-#                                      dispatch://INFRA-1368/artifact/decisions-md in
+#                                      (refs.RetiredDecisionsSlug), or a citation
+#                                      dispatch://KEY/artifact/decisions-md in
 #                                      packages/envoy/cmd/listener/api.go
 #     hit <path>:<n>: <line>           a production line that still spells one, which fails
 # The step's Go code calls decisions_documents() and spells no slug, so no line under the id
@@ -48,11 +48,14 @@
 #
 # The second sweep is about meaning. decisions-inventory.txt holds one line for each skill and
 # prompt file: its path, a tab, and whether it tells an agent to move a person's decision out of a
-# spec (`yes` or `no`). The run fails when one file of skills/, docs/ or
+# spec (`yes` or `no`). A path that names an issue key of the private tracker stands there as
+# `sha256:` and the SHA-256 of the path, so the run looks a file up by its path and then by that
+# hash. The run fails when one file of skills/, docs/ or
 # packages/daemon/internal/prompts/, the root AGENTS.md, an AGENTS.md or README.md under packages/,
 # packages/pi-envoy/test/decisions-materiality.eval.md,
 # packages/pi-legion/scripts/skill-scenarios/judge-prompts.ts or
-# deploy/kubernetes/daemon/legion.yaml.example is missing from it, and when a line says `yes`.
+# deploy/kubernetes/daemon/legion.yaml.example is missing from it under either, and when a line
+# says `yes`.
 #
 # It then reads the route descriptions of the Decisions read and its Keep in
 # packages/envoy/internal/dispatch/api/routes_table.go and the published page
@@ -90,7 +93,7 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-require_commands bun git go grep sed
+require_commands bun git go grep sed sha256sum
 require_env TMPDIR
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
@@ -138,6 +141,9 @@ sweep_grep() {
 readonly literal='decisions\.md|decisions-md|ArtifactRoleDecisions|GatedStepDecisions|DesignStepDecisions'
 readonly catalog_migration=packages/envoy/internal/dispatch/store/migrations/20261117093337_decisions_documents.up.sql
 readonly applied_migration=packages/envoy/internal/dispatch/store/migrations/20261101162254_decision_records.up.sql
+# The citation packages/envoy/cmd/listener/api.go carries: a retired decisions document's address
+# under any issue key.
+readonly retired_citation='dispatch://[A-Z][A-Z0-9]*-[0-9]+/artifact/decisions-md'
 
 # The ids the root's list holds, with their things.
 declare -A kept_items=()
@@ -216,9 +222,8 @@ literal_sweep() {
       admitted=$((admitted + 1))
       continue
     fi
-    if [[ "$path" == packages/envoy/cmd/listener/api.go &&
-      "$text" == *"dispatch://INFRA-1368/artifact/decisions-md"* ]]; then
-      printf 'admitted %s:%s serves the citation dispatch://INFRA-1368/artifact/decisions-md, a valid citation of a retired document\n' "$path" "$number"
+    if [[ "$path" == packages/envoy/cmd/listener/api.go && "$text" =~ $retired_citation ]]; then
+      printf 'admitted %s:%s serves a citation dispatch://KEY/artifact/decisions-md, a valid citation of a retired document\n' "$path" "$number"
       admitted=$((admitted + 1))
       continue
     fi
@@ -439,6 +444,9 @@ listed=0
 while IFS= read -r file; do
   listed=$((listed + 1))
   [[ -z "${answers[$file]:-}" ]] || continue
+  path_sum="$(printf '%s' "$file" | sha256sum)" ||
+    fail meaning "hash the path of $file" "sha256sum failed"
+  [[ -z "${answers[sha256:${path_sum%% *}]:-}" ]] || continue
   printf 'missing from the inventory: %s\n' "$file"
   missing=$((missing + 1))
 done <"$work/instruction-files"

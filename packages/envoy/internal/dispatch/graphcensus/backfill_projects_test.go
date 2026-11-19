@@ -103,7 +103,7 @@ func TestTheBackfillGivesEveryRowItsNodeAndProject(t *testing.T) {
 	// The control: a row whose node is taken away is named again, by its kind and its id. The
 	// erase deletes the tuples it is handed by seq and no others, so it is handed every tuple of
 	// either side of the ask's node, read in its own transaction. The asks pass marked the ask's
-	// row and its followers' rows with the node (dispatch://INFRA-1150), and a mark is a foreign key
+	// row and its followers' rows with the node, and a mark is a foreign key
 	// into graph_nodes, so the control first takes the marks off, leaving the rows as a build before
 	// the store wrote them.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {

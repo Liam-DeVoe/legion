@@ -398,8 +398,8 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	return node, nil
 }
 
-// movedBlockNode is the block an address no current version holds moved to (dispatch://INFRA-1150
-// R8): the block the address's moved_to tuples reach (graphstore.MovedTo), named by its own
+// movedBlockNode is the block an address no current version holds moved to: the block the
+// address's moved_to tuples reach (graphstore.MovedTo), named by its own
 // address and carrying its whole current text, so a citation written before the block moved reads
 // the block where it stands now. A chain that ends at an ask - the heading of a decisions
 // document's section that cites an answered ask a person removed from its spec - answers that

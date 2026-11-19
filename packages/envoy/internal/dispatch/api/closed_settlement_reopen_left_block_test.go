@@ -136,7 +136,7 @@ const rewordedDecisionSpec = "Context\n\n" +
 // document owed (docs.MarkReopenOwedAskDocuments), and the resumption after the reopen settles it
 // on the open issue, which takes the block's question into the open ask, as settlement takes the
 // rewording of any open ask's block. The newest version holds the person's question and, as every
-// version written on a fleet of one build, none of the ask's state (dispatch://INFRA-1150 R3),
+// version written on a fleet of one build, none of the ask's state,
 // which the text an agent reads shows open.
 func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen(t *testing.T) {
 	f := rewordWithdrawnDecisionWhileClosed(t)

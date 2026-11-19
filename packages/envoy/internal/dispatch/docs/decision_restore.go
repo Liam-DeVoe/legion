@@ -27,7 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// The decisions step's third phase (dispatch://INFRA-1150, "The step"): for each issue, in one
+// The decisions step's third phase: for each issue, in one
 // transaction, the restore of every answered ask an agent moved out of the issue's spec (R6, R7),
 // then the conversion of every section of the issue's decisions document (R9), and the retirement
 // of that document once it holds no section (R11). Both are the server's own writes, made in
@@ -1435,7 +1435,7 @@ func readingOf(body []*pmdoc.Node) (*pmdoc.Node, error) {
 	return readings[0], nil
 }
 
-// readingType is the type of an agent's reading block (dispatch://INFRA-1150 R2).
+// readingType is the type of an agent's reading block.
 const readingType = "reading"
 
 // parsedTypedBlock is node, a typed block of typ built here, as the document's own markdown

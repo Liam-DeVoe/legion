@@ -158,7 +158,7 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 			return report, err
 		}
 	}
-	// The asks and their followers (dispatch://INFRA-1150), after the object pass above wrote the
+	// The asks and their followers, after the object pass above wrote the
 	// node of every ask: the rest of the boot step's first phase (BackfillAsks), so a database the
 	// command fills reads as one the boot fills.
 	for _, write := range askPasses {
@@ -1299,12 +1299,12 @@ func writeSessionBatch(ctx context.Context, database *store.Store, batch []sessi
 	return int64(len(nodes)), 2 * int64(len(nodes)), nil
 }
 
-// The asks and their followers (dispatch://INFRA-1150 R3). An ask's node holds the documents it is
+// The asks and their followers. An ask's node holds the documents it is
 // anchored to, owned by and part of, who asked it, its answer and the sessions that follow it, and
 // asks and ask_followers are the projection of those tuples from the moment a row names its node
 // (20261116094058's node_kind and node_address). A row a build before this release wrote names
 // none, and graph_edges' old arms answer it until these two passes state the row on the node and
-// mark it, on INFRA-1149's backfill contract: each walks only the rows its marker does not mark,
+// mark it, on the store's backfill contract: each walks only the rows its marker does not mark,
 // states every fact of a row in the transaction that marks it, and reads no marked row, so a run
 // after another, or beside a live server, does only the rows still owed. They are the boot step's
 // first phase after the object nodes (docs' decision step), and `backfill-graph-store` runs them

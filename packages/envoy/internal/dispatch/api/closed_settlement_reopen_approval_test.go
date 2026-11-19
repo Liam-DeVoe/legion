@@ -19,8 +19,8 @@ import (
 // A close withdraws the spec's approval request and a reopen restores it with the turn it had, so
 // a person who was asked to approve the spec is asked again after the reopen, as before the close
 // (restoreIssueAsksTx). The settlements the closed period and the reopen leave owed write no
-// version: the close's withdrawal and the reopen's restoration change no byte of a document
-// (dispatch://INFRA-1150 R3), and neither is a change the request's agent made to the text it
+// version: the close's withdrawal and the reopen's restoration change no byte of a document,
+// and neither is a change the request's agent made to the text it
 // handed the person. So after both have run, the request still waits on the person, the spec
 // still reads awaiting approval from the person, and the request is still in the person's Inbox.
 // The browser suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose "Waiting on you
@@ -580,8 +580,8 @@ const reopenDecisionSpec = "Context\n\n" +
 // A person's approval of a document given after its issue reopens, before the settlement the
 // reopen leaves owed has run, still stands once that settlement has run. The spec holds a
 // decision; the close withdraws it and the reopen restores it, on the ask's node and its row, and
-// neither changes a byte of the spec (dispatch://INFRA-1150 R3: "a close's withdrawal and a
-// reopen's restoration change no byte of any document"), so the settlement on the closed issue
+// neither changes a byte of the spec - a close's withdrawal and a reopen's restoration change no
+// byte of any document - so the settlement on the closed issue
 // writes no version. The reopen through PATCH leaves the spec owed the settlement that reconciles
 // the restored ask's block (docs.MarkReopenOwedAskDocuments), and alice approves the spec from its
 // header before that settlement runs: there is no approval request, and her review pins the

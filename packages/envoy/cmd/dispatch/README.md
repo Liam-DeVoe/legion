@@ -2997,7 +2997,7 @@ The kinds are:
   The refusal line names the same cures.
   An address past the store's bound is left out, as its writer leaves it out of the store.
 
-- The kinds of dispatch://INFRA-1150, each but `ask_answer` held triple by triple — the triple of holding node, tuple kind and far end — so a tuple that reaches the wrong node is a difference and not a count that still matches:
+- The tie kinds of decisions, readings and asks, each but `ask_answer` held triple by triple — the triple of holding node, tuple kind and far end — so a tuple that reaches the wrong node is a difference and not a count that still matches:
   `shaped`, `from_ask` and `decided_by` against `block_refs`, each row as the triple of the node it names (`node_kind`, `node_address`: a decision's block node, or for an ask block's `shaped` the ask's node), its kind and its far end, against every such tuple a live node states now;
   `followed_by` against `ask_followers`, `ask_parent` (the ask's `part_of` and `owned_by`) and `ask_anchor` (its `anchored_to`) against `asks`, each marked row by the ask's node;
   `reading_parent`, the `document_blocks.parent_block_id` of every reading's node against its `part_of`;
@@ -3015,7 +3015,7 @@ The kinds are:
   An unresolved far end refuses the census; a count does not, and neither does a far end left out.
   The read takes the three kinds' tuples through `graph_tuples_store_only` (`store/migrations/20261116220307_graph_tuples_store_only_index.up.sql`), a partial index of those three kinds alone, rather than reading `graph_tuples` whole.
 
-- The restore of dispatch://INFRA-1150 R6, before it moves anything, over the work `graphcensus.ReadRestoreWork` finds: each answered `question` ask whose row names its issue's spec and whose block the spec does not hold as an ask block (it returns under its old address), and each ask block a decisions document holds, whatever its ask's state (it moves into the spec), leaving out a document that still owes its block index.
+- The restore of answered asks to their specs, before it moves anything, over the work `graphcensus.ReadRestoreWork` finds: each answered `question` ask whose row names its issue's spec and whose block the spec does not hold as an ask block (it returns under its old address), and each ask block a decisions document holds, whatever its ask's state (it moves into the spec), leaving out a document that still owes its block index.
   An answered ask whose node's newest `removed_by` asserts is none of that work: a person took its block out of the spec, and the restore never writes it back.
   `census: dangling_citations moved=<n> returning=<n>` counts the nodes whose text cites a block address that resolves to no block, through `refs`, `block_refs`, `ask_block_refs`, `comment_block_refs` and `message_block_refs`: `moved` over the `moved_to` sources the store states and every block address a decisions document held at an indexed version, retired or not, so a move that wrote no `moved_to` leaves citations that count; `returning` over the old spec addresses of the asks that return.
   An address resolves as the three resolvers read it (`moved_to_reach`, `store/migrations/20261117002006_block_moved_to.up.sql`), to a block or to an ask whose row stands, and an address in a document that still owes its block index is left out.
@@ -3025,7 +3025,7 @@ The kinds are:
   Neither line refuses the census: the returning set counts before the restore by design, and a citation of the moved set is a finding the driver that watches it holds to zero, since a decisions document may hold a citation of a section an edit deleted before this release.
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
-A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a kind of dispatch://INFRA-1150 that holds no row, no node and no unmarked row.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a tie kind of decisions, readings and asks that holds no row, no node and no unmarked row.
 A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
 
 Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, and of a kind held triple by triple each relation the store states now once, never tuple rows.
@@ -3085,7 +3085,7 @@ A document's statements are caused by its own `artifact.created` event where the
 A filled project is stated at the node's own `made_at`, by its `made_by`, under its cause (`graphstore.FillScopes`); and the fill of a block's project takes its document's revision fence first, as every writer of a block's node does.
 The report prints a `kind=` line for each of `issue`, `artifact`, `ask`, `message`, `comment_project` and `block_project`; `envoy-dispatch census --store` then reads `missing=0 gone=0 differs=0 unscoped=0` for every project-owned kind, and `orphaned=0` unless an earlier build removed a document whose node this one wrote, which the erase removes (Erasing a node, below).
 
-It then states every `asks` and `ask_followers` row that names no node on its ask's node and marks it (dispatch://INFRA-1150): an ask's `anchored_to`, `owned_by`, `part_of` and `authored_by` dated at its `created_at` under the `ask.opened` that recorded it, and its answer state (`answer_state`, `answer`, `selected`, `answered_at`, `answered_by`, `decided_by` and `resolution`) dated at the answer's or the resolution's own time under the newest event that wrote it; a follower's `followed_by` dated at its `since`.
+It then states every `asks` and `ask_followers` row that names no node on its ask's node and marks it: an ask's `anchored_to`, `owned_by`, `part_of` and `authored_by` dated at its `created_at` under the `ask.opened` that recorded it, and its answer state (`answer_state`, `answer`, `selected`, `answered_at`, `answered_by`, `decided_by` and `resolution`) dated at the answer's or the resolution's own time under the newest event that wrote it; a follower's `followed_by` dated at its `since`.
 Each batch of 200 rows takes the owner row of every ask it holds first, in ascending owner key, then locks its rows and reads them again, so an answer this release writes on such a row waits for the batch and then states itself on the node, and the batch waits for a writer of the same issue or document holding nothing it wants.
 The report prints a `kind=asks` and a `kind=ask_followers` line, and `remaining=` is how many rows of each still name no node, leaving out an ask a document of which has an address past the store's bound and a follower whose session's has.
 These two passes, after the object nodes, are also the first phase of the decisions step, which every process runs at boot before it serves and stops its boot on a failure, and again on its own tick while a row stands unmarked (`docs.DecisionStep`).
@@ -4823,7 +4823,7 @@ Each item below names a path with its method and identity, then its purpose.
   - A document stored under one of those names before its role existed carries no role, and a reader finds it by its slug instead;
     the next upload of that name sets the role on the row it already has.
 
-  - A decision is a `decision` block in the spec (dispatch://INFRA-1150 R11), so a new document on an issue whose name gives the slug of a decisions document is `409 DECISIONS_ARE_NODES`, with a message that says to write a `decision` block in the spec.
+  - A decision is a `decision` block in the spec, so a new document on an issue whose name gives the slug of a decisions document is `409 DECISIONS_ARE_NODES`, with a message that says to write a `decision` block in the spec.
     An upload of that name once the issue's decisions document is retired is refused the same way, and so is a rename of another document to that name, since a later upload of the name would find it.
     The refusal stays: a route keeps a thing it stops taking declared and refuses it by name (Request bodies).
     Where the issue still holds a decisions document an earlier release stored, an upload of its name is that document's next version, as a client of that release writes it, and the decisions step converts it; the write gives the document no role.
@@ -4932,7 +4932,7 @@ Each item below names a path with its method and identity, then its purpose.
   a version a route writes (a named version, an upload, an edit) moves it to the agent whatever its bytes.
   Only the first move since the request was opened or handed back notifies, even when a thread reply had already left it waiting on the agent;
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.
-  A human's answer to an ask block writes no version and carries no approval (dispatch://INFRA-1150 R10): the answer is the ask node's alone, so it neither moves the row nor answers it.
+  A human's answer to an ask block writes no version and carries no approval: the answer is the ask node's alone, so it neither moves the row nor answers it.
   A second call does one of two things, by what the row waits on:
 
   - Calling this route again while the row waits on the agent - moved, or a thread reply newer than its last hand-back holds the turn - hands it back to the human:
@@ -5272,7 +5272,7 @@ Each item below names a status and code, then its meaning.
 
 - `409 ANSWERED_ASK_KEPT`
 
-  A document write that is not a person's own would take the block of an answered ask out of its document, or retype that block (`docs.ErrAnsweredAskKept`, dispatch://INFRA-1150 R6).
+  A document write that is not a person's own would take the block of an answered ask out of its document, or retype that block (`docs.ErrAnsweredAskKept`).
   A person's own write is one at a browser, or one through a credential of theirs that holds the `person` scope;
   any other - an agent's session, a pod's service account, the deployment's shared token - is refused, and nothing of it is written.
   The message names each such ask's node (`dispatch://KEY/ask/<id>`), quotes its question, and names its block's address and, for a retype, the type the write gave it.

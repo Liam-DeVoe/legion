@@ -515,7 +515,7 @@ var indexPasses = map[string]string{
 	// follow made onto the last event the renewal appended, or leaves it at the sentinel when
 	// the renewal appended none.
 	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
-	// The one writer of an ask's answer state (asks.Settle, dispatch://INFRA-1150): the answer on
+	// The one writer of an ask's answer state (asks.Settle): the answer on
 	// the ask's node, then its row, from the transition its caller names; and each site that
 	// appends what a transition held under the event it appended after it (graphstore.Caused).
 	"asks/settle.go#Settle":                            "the transition its caller names",
@@ -557,7 +557,7 @@ var indexPasses = map[string]string{
 	// person read. It reads the kept_by the node holds only to retract one naming another person,
 	// so the node holds the one Keep the row projects: what moved, never a side mended.
 	"api/decisions.go#keepDecisionNode": "the Keep request, the decision the person read, and the kept_by its node holds",
-	// The decisions step's restore and conversion of an issue (dispatch://INFRA-1150 R6 to R9):
+	// The decisions step's restore and conversion of an issue:
 	// each version it writes appends its index pass's facts under the version's event, and the
 	// moves, the ask nodes' relations and the Keeps it carries onto a decision's node are drawn
 	// from what it read of the issue's documents and asks under their locks, mending nothing.

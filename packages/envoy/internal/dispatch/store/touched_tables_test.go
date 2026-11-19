@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// thisChildsMigrations names every migration dispatch://INFRA-1150 adds, by its .up.sql file in
+// thisChildsMigrations names every migration this change adds, by its .up.sql file in
 // migrations/. A migration of this child joins the list in the commit that adds it: the
 // measurement driver (packages/dispatch/e2e/acceptance/answer-attribute-removal.sh) reads a
 // pg_total_relation_size of every table this test prints from the pull request body, so a

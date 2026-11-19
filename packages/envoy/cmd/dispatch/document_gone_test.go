@@ -164,7 +164,7 @@ func keepAnswer(t *testing.T, p *dispatchProcess, document, block, sum string) h
 	return p.send(t, http.MethodPost, "/api/v1/artifacts/"+document+"/blocks/"+block+"/keep", string(body), asUser(dispatchTestLogin))
 }
 
-// c-document-gone (dispatch://INFRA-1150 R11): no read answers from an issue's decisions document.
+// c-document-gone: no read answers from an issue's decisions document.
 //
 // Through the base release, the test seeds an issue whose decisions.md holds two `##` sections
 // that cite no ask, one of which links a block of the spec, and no decision node, and publishes

@@ -47,8 +47,8 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 // process restart between the close and the reopen, where the old service's room state is
 // unavailable. The restarted service's resumption settles the document on the closed issue, unless
 // the old service's shutdown drain already did: either way the block gets no ask, the version
-// holds it with no state, as a fleet of one build saves every ask block (dispatch://INFRA-1150
-// R10), and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen marks the
+// holds it with no state, as a fleet of one build saves every ask block, and
+// doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen marks the
 // document owed (MarkReopenOwedAskDocuments), and the resumption after it opens the block's ask,
 // credited to that recorded author.
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {

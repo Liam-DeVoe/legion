@@ -522,7 +522,7 @@ func standsAtVersion(ctx context.Context, tx pgx.Tx, artifactID string, version 
 // the owed versions from which every version up to this one holds a block of that same text, as
 // the renderer cuts the version's stored markdown (versionBlockTexts). So a version that rewrote
 // a block and a later one that left it alone, indexed in one pass, date the change to the first,
-// and the text-change time a reader takes from the row (dispatch://INFRA-1150 c-spec-tie) is that
+// and the text-change time a reader takes from the row (c-spec-tie) is that
 // version's. The owed versions are read newest first and only while some block still matches, and
 // not at all on the request path.
 func textSince(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, indexedBefore int, bodies []*string) ([]int32, []time.Time, error) {

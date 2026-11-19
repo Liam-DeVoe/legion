@@ -23,7 +23,7 @@ import (
 
 // Closing an issue withdraws every open ask it holds, whoever closes it: each is recorded resolved
 // as withdrawn by the close, naming the closer, and stops reading open in the documents' text too,
-// which renders each ask's state from the store (dispatch://INFRA-1150 R3). Reopening the issue
+// which renders each ask's state from the store. Reopening the issue
 // opens exactly those asks again.
 
 // closeDecision is the ask block the closing tests' spec holds, and a copy of it a second
@@ -160,9 +160,9 @@ func sessionCloser(name, id string) closer {
 
 // Closing an issue withdraws its open asks, on each ask's node and its row, and the documents'
 // text, which renders each ask's state from the store, shows their blocks resolved; on a fleet of
-// one build the close changes no byte of any document (dispatch://INFRA-1150 R3: "a close's
-// withdrawal and a reopen's restoration change no byte of any document"), so the settlement
-// after it, on the closed issue, saves no version and changes no ask row, no answer or review, and
+// one build the close changes no byte of any document, nor does a reopen's restoration, so the
+// settlement after it, on the closed issue, saves no version and changes no ask row, no answer or
+// review, and
 // appends no ask event. Reopening restores exactly the withdrawn asks, the text shows their blocks
 // open again, and the settlement after the reopen saves no version either. The settle delay is an
 // hour, so the test runs each settlement itself (SettleIssueDocuments, as the timer, the room's

@@ -76,7 +76,7 @@ func isLifecycleWrite(ctx context.Context) bool {
 // asks, their copies, a block under one of asks' block ids that asks something else - and so is a
 // block settlement could not read. Classification reads the database as it stands now: the caller
 // writes the asks' rows after this for a close, and before it for a reopen. Once the fleet is one
-// build no block holds an ask's state (dispatch://INFRA-1150 R10): every reader reads it off the
+// build no block holds an ask's state: every reader reads it off the
 // ask, and this writes nothing.
 //
 // A document outside the Proof schema is left as it is, as settlement leaves it, and so is one

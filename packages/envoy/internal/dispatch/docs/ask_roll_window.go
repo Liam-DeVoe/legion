@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 )
 
-// A person's answer is held once, on the ask's node (dispatch://INFRA-1150 R3), and no attribute
+// A person's answer is held once, on the ask's node, and no attribute
 // of an ask block in a document holds it. The release before this one kept a second copy in the
 // block: the ask's state, who answered it, when, what they chose and wrote, and, on a copy of an
 // ask on another document, the ask and the document it was copied from. A page of that release
@@ -64,7 +64,7 @@ func anotherBuildServes(ctx context.Context, q processes.Querier) (bool, error) 
 // answersLeftTheMarkdown is the schema version from which no build reads an ask's answer from
 // its block: the version that introduced the `decision` type, read off the installed schema
 // (its since), which is the version this release, the one that took the answer out of the
-// markdown (dispatch://INFRA-1150 R3 and R10), introduced. At this release it is this build's own
+// markdown, introduced. At this release it is this build's own
 // version, so the rule reads as R10 and H5 word it - no process below this build's schema version
 // - and a later schema keeps that since as it keeps every element's, so the number does not move
 // with the build reading it. A manifest that declares no `decision` type - only one a test

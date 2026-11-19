@@ -1,5 +1,5 @@
-// Package decisionread answers a decision node of the store in model.Decision's shape
-// (dispatch://INFRA-1150 R1, R2, R4 and R5, ruling H1). A decision is one node: an agent's is a
+// Package decisionread answers a decision node of the store in model.Decision's shape. A
+// decision is one node: an agent's is a
 // `decision` block node, and a person's is the answered ask's own `ask` node. This package is the
 // one reader of what every read of a decision answers about it - its words, their text sum, the
 // spec nodes it shaped with each link's `stale`, its review state, and the version it last changed
@@ -10,7 +10,7 @@
 //   - the Keep (api's keepDecision), which compares the posted `text_sha256` with TextSum of the
 //     words this package reads, so a Keep holds the sum the read served;
 //   - the Decisions read's old `decisions` member once it answers from the store;
-//   - dispatch://INFRA-1253's tree read, which calls Decisions for each decision node it draws.
+//   - the tree read a later change adds, which calls Decisions for each decision node it draws.
 //
 // It is a package of its own because api's readers are unexported and neither docs nor refs may
 // import api. It imports graphstore, refs and model, and neither api nor docs.
@@ -43,7 +43,7 @@ type Node struct{ Kind, ID string }
 // TextSum is a decision's text sum: the sha256, in hex, of its words. A Keep records it as the
 // node's kept_text_sum and posts it back as `text_sha256`, and an agent's decision waits for review
 // until a Keep's sum is its sum as it stands. It is the one sum of a decision's text: this
-// package's reads, the Keep and dispatch://INFRA-1253's tree read all call it.
+// package's reads, the Keep and the tree read a later change adds all call it.
 func TextSum(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:])
@@ -72,12 +72,12 @@ func TextSum(text string) string {
 //     decision's first paragraph; Ref, the node's own address; Asks, the ask an agent's decision
 //     settles (from_ask) or the ask itself; Unsure, true where its uncertainty is `high`.
 //   - Replaced, Kept and WaitingReview from the node: the newest kept_by tuple and the
-//     kept_text_sum value (dispatch://INFRA-1150 R2), beside decision_keeps' changed_version,
+//     kept_text_sum value, beside decision_keeps' changed_version,
 //     and waiting_review true for an agent's decision unless it is replaced or the kept sum is its
 //     sum as it stands.
 //   - ChangedVersion, the version that last changed the decision's own words (refs.DecisionWords),
-//     which a reading added, changed or removed under it does not move (dispatch://INFRA-1150
-//     R11, at spec version 40): the block's document_blocks.changed_version, walked back over its
+//     which a reading added, changed or removed under it does not move: the block's
+//     document_blocks.changed_version, walked back over its
 //     stored texts while the words' sum is unchanged (an ask's, its block's row); ChangedAt is that
 //     version's created_at. A decision whose document owes its block index is walked over the
 //     markdown of the versions the index has not recorded, newest first (walker.changed), and an
@@ -560,8 +560,7 @@ type changedWords struct {
 // changed is the walk that answers node's block - a decision, or the ask block of an ask (typ) -
 // as it stands: its own words (ownWords) and the version of its document that last changed them,
 // which a reading written, edited or removed under it, and for an ask a write of its block's
-// attributes alone - the server's, or the `shaped` pointers - never moves (dispatch://INFRA-1150
-// R2 and R11).
+// attributes alone - the server's, or the `shaped` pointers - never moves.
 //
 // It reads the document as the block index left it and as it stands past that index. A document
 // that owes its block index (document_block_versions holds no version) stands at its newest

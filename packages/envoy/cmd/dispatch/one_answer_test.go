@@ -417,7 +417,7 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 	t.Logf("%s: the document reads %s before and after the answer, its newest review %+v", what, approvalState(approvedAfter), reviewAfter)
 }
 
-// A person's answer is held once, on the ask's node (dispatch://INFRA-1150 R3, c-one-answer). Over
+// A person's answer is held once, on the ask's node (c-one-answer). Over
 // a fleet of this build alone the answer route appends the answer to the node, the asks row is
 // its projection, and the document's bytes do not move, so an approval stands through it. While
 // a process of the base release is registered, the roll window keeps the block in step for that

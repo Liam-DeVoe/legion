@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# The seeded corpus of dispatch://INFRA-1150, which its four drivers that read rows an earlier
+# The seeded corpus of the decision checks, which their four drivers that read rows an earlier
 # release wrote share: answer-attribute-removal.sh, answered-decisions.sh, restore-redirects.sh
 # and decision-nodes.sh. Every row of it is written by the base release, the server lib-baseline.sh
 # boots (BASELINE_BINARY, built and stamped from BASELINE_SHA), through that server's own HTTP

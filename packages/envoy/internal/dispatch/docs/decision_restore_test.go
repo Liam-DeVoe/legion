@@ -260,7 +260,7 @@ func (issue *restoreIssue) askRow(ask string) (string, string) {
 	return block, document
 }
 
-// The conversion of a decisions document (dispatch://INFRA-1150 R9), after the restore of the
+// The conversion of a decisions document, after the restore of the
 // answered asks its sections restate (R6): a section that cites an answered ask gives that ask's
 // restored block its links as `shaped` and its body as a reading, whose author is the author of
 // the section's newest version; one whose body is the ask's answer and nothing more, in other case
@@ -339,7 +339,7 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 	}
 }
 
-// A standing Keep the conversion carries onto a decision's node (dispatch://INFRA-1150 F3) is
+// A standing Keep the conversion carries onto a decision's node is
 // written by the actor the Keep's own decision.kept event recorded, so the kept_by and the
 // kept_text_sum it becomes keep the Proven mark the Keep's credential gave it: a row derived from
 // an earlier write carries that write's actor, and so its mark (model.Actor.Proven). A Keep whose
@@ -419,7 +419,7 @@ func TestTheConversionWritesAKeepAsTheActorItsEventRecorded(t *testing.T) {
 	}
 }
 
-// The collision of each shape of the restore (dispatch://INFRA-1150 R6): an answered ask whose
+// The collision of each shape of the restore: an answered ask whose
 // block left the spec, where a callout of the spec now holds its block id, and an answered ask
 // block of the decisions document whose id a callout of the spec holds too, each take a block id
 // no document of the issue holds, recorded on the ask's row. The main shape writes no moved_to;
@@ -464,7 +464,7 @@ func TestTheRestoreGivesACollidingAskAFreshBlockIDInEachShape(t *testing.T) {
 	}
 }
 
-// A spec that holds no `## Decisions` part (dispatch://INFRA-1150 R6): the restore adds the
+// A spec that holds no `## Decisions` part: the restore adds the
 // heading, at the end of the spec, and the restored ask block under it.
 func TestTheRestoreAddsADecisionsPartToASpecThatHoldsNone(t *testing.T) {
 	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n\n:::ask{#q-b urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n")
@@ -481,7 +481,7 @@ func TestTheRestoreAddsADecisionsPartToASpecThatHoldsNone(t *testing.T) {
 	}
 }
 
-// A closed issue's spec (dispatch://INFRA-1150 R6): the restore writes it as the version a
+// A closed issue's spec: the restore writes it as the version a
 // settlement of a closed issue's document is written, through SnapshotVersion under the
 // owner-verified mark, and the issue stays closed.
 func TestTheRestoreWritesAClosedIssuesSpec(t *testing.T) {
@@ -534,8 +534,8 @@ func (issue *restoreIssue) restoreWith(work []graphcensus.RestoreWork, convert b
 }
 
 // Every ask block a decisions document holds moves into the spec in the second shape of the
-// restore, whatever its ask's state (dispatch://INFRA-1150 D1: "In shape (b), an ask block present
-// in decisions.md moves, with one moved_to tuple"), and the section that held it converts (R9). An
+// restore, whatever its ask's state: in that shape an ask block present in decisions.md moves,
+// with one moved_to tuple, and the section that held it converts (R9). An
 // open ask, a declined one and one the release before answered on its row alone - whose node no
 // catch-up has stated answered yet - each move: the finder reads it as the restore's work, its row
 // names its block in the spec, its node's part_of names the spec, a moved_to goes from its block's
@@ -629,7 +629,7 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndTheSectionThatHeldItConverts(t
 }
 
 // A section converted into a reading of an ask block the spec held already, which is not the
-// spec's first ask block (dispatch://INFRA-1150 R9): the restore alone gives the answered ask whose
+// spec's first ask block: the restore alone gives the answered ask whose
 // block left the spec a fresh block id, since a callout holds its old one, and writes it into the
 // `## Decisions` part after the spec's other answered ask; the conversion then turns the section
 // that cites it into a reading of that block and another section into a decision in one version.
@@ -717,8 +717,8 @@ func TestThePassRefusesASectionWhoseReadingItWroteIntoNoBlock(t *testing.T) {
 	}
 }
 
-// The restore replaces the spec's one pointer line to the decisions document (dispatch://INFRA-1150
-// R6, R7): the first paragraph of the `## Decisions` part that cites the document itself. A
+// The restore replaces the spec's one pointer line to the decisions document: the first
+// paragraph of the `## Decisions` part that cites the document itself. A
 // paragraph of the part that cites a section of the document is the person's prose, which the
 // restore keeps, so the restore that changed nothing else carries the person's approval, which
 // names the restore's case.
@@ -756,7 +756,7 @@ func TestTheRestoreKeepsAParagraphCitingASectionOfTheDecisionsDocument(t *testin
 	}
 }
 
-// The restore reads the finder's work again under the issue's lock (dispatch://INFRA-1150 R6):
+// The restore reads the finder's work again under the issue's lock:
 // a returning ask whose block a person put back in the spec since the finder read it is left as
 // it stands, and no second block of it is written, so the person's block keeps the ask's row.
 func TestTheRestoreLeavesAReturningAskWhoseBlockItsSpecHoldsAgain(t *testing.T) {
@@ -783,7 +783,7 @@ func TestTheRestoreLeavesAReturningAskWhoseBlockItsSpecHoldsAgain(t *testing.T) 
 }
 
 // An answered ask the restore moves out of the decisions document moves from the address the
-// finder read (dispatch://INFRA-1150 R6, R8), whether or not the document still holds the block
+// finder read, whether or not the document still holds the block
 // once the issue is locked: a person who took the block out of the document since leaves the
 // ask's row naming it, and the restore writes the ask into the spec, its row, one moved_to from
 // the old address to the new one, and its node's relations, which name the spec.

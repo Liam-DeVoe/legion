@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// tieTime is one of the two times the spec tie compares (dispatch://INFRA-1150 R5), read from the
+// tieTime is one of the two times the spec tie compares, read from the
 // store and never from a time a writer passed: the event that wrote it, and the database's clock
 // at that write, which a failure prints and no comparison reads.
 type tieTime struct {

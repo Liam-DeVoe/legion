@@ -7,7 +7,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// The restore's and the conversion's carry cases (dispatch://INFRA-1150 R7 and R9; restoreCase,
+// The restore's and the conversion's carry cases (restoreCase,
 // conversionCase) over the two versions, as carryNewestApproval feeds carryVerdict: the restore's
 // answered asks in the spec's `## Decisions` part, in place of its pointer line to the issue's
 // decisions document, under the heading the restore adds, and under a new block id, carry the

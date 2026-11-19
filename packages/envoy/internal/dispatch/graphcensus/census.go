@@ -33,9 +33,9 @@ const reportedDifferences = 20
 // (presentNodes). The census holds the two against each other in both directions, so a row with
 // no node and a node with no row are each a difference.
 //
-// The ties of dispatch://INFRA-1150 - a decision's, a reading's and an ask's - are held triple by
-// triple instead (tuples), so a relation that reaches the wrong node or the wrong far end reads as
-// a row and a tuple, each named, and every other row of that node reads nothing.
+// The ties of decisions, readings and asks are held triple by triple instead (tuples), so a
+// relation that reaches the wrong node or the wrong far end reads as a row and a tuple, each
+// named, and every other row of that node reads nothing.
 //
 // A kind with no projection table takes the set of actors the projected tables name as its rows
 // (people and agents below), which is the side that exists for it; a role takes the roles the
@@ -55,7 +55,7 @@ type projection struct {
 	// nodes is the kind's nodes at any state. It names no state: presentNodes wraps it.
 	nodes string
 	// tuples, where it is set, holds the kind triple by triple, over the triple of holding node,
-	// tuple kind and far end (dispatch://INFRA-1150 c-census), and nodes is unused. It is a
+	// tuple kind and far end, and nodes is unused. It is a
 	// select of (from_kind, from_id, kind, to_kind, to_id): one row per relation of the kind a
 	// live node states now (heldTuples). rows then answers (row_label, node_kind, node_address,
 	// kind, to_kind, to_id): one row per relation a projection row states, of the node it names.
@@ -86,8 +86,8 @@ type projection struct {
 	pastBound string
 	// unmarked counts the rows of the kind's table that name no node and are no difference: an
 	// asks or ask_followers row a process of the release before wrote, which graph_edges' old
-	// arms answer until the decisions step's backfill or catch-up marks it (dispatch://INFRA-1150
-	// R3). It is a full `select count(*)` of the rows of the kind's own population - an ask's
+	// arms answer until the decisions step's backfill or catch-up marks it. It is a full
+	// `select count(*)` of the rows of the kind's own population - an ask's
 	// anchor counts the unmarked asks that name a document to anchor to, and its answer those
 	// that hold one - so a kind whose every row is unmarked is no empty kind (KindReport.Empty).
 	// The row side reads marked rows alone, and the census reports the count as a class of its
@@ -100,9 +100,9 @@ type projection struct {
 	// a kind whose every node has its row from the write that stated it.
 	owed string
 	// emptyAgrees says a kind that holds no row, no live node and no unmarked row is no refusal:
-	// one of the kinds of dispatch://INFRA-1150, a decision's, a reading's and an answered or
+	// one of the tie kinds, a decision's, a reading's and an answered or
 	// followed ask's, which a deployment holds none of until an agent writes a decision or a
-	// person answers an ask. A kind of INFRA-1149's is one every store holds rows of, and checking
+	// person answers an ask. Every other kind is one every store holds rows of, and checking
 	// none of it refuses.
 	emptyAgrees bool
 }
@@ -163,7 +163,7 @@ type StoreReport struct {
 	// Dangling is the dangling-citation counter over the restore's work (DanglingCitations), and
 	// Collisions the collision census of the same work (CollisionsOf), the block ids the restore
 	// must change for each issue: both read the census's snapshot, so both answer before the
-	// restore of dispatch://INFRA-1150 moves anything. Neither refuses the census. The returning
+	// restore moves anything. Neither refuses the census. The returning
 	// set counts before the restore by design, and the moved set is a finding the driver that
 	// watches it holds to zero: a decisions document may hold a citation of a section an edit
 	// deleted before this release, which no move made and no deploy should wait on.
@@ -180,7 +180,7 @@ type StoreReport struct {
 // StoreOnlyReport is one tuple kind no table projects: how many relations of it the store states
 // now, how many of those reach a far end that does not resolve, and how many the census leaves
 // out, because the far end they reach is in a document that still owes its block index, which
-// holds no row yet for a block its latest version holds (dispatch://INFRA-1150 R4).
+// holds no row yet for a block its latest version holds.
 type StoreOnlyReport struct {
 	Kind                        string
 	Tuples, Unresolved, LeftOut int64
@@ -239,7 +239,7 @@ func (r *StoreReport) Unpopulated() []string {
 // far end of a kind no table projects resolves. A total over the kinds is no such proof: two
 // empty sides of one kind agree, and one kind's rows say nothing about another's, so a census
 // whose comments carried every row would pass while it proved nothing of the blocks, the roles or
-// the sessions. A kind of dispatch://INFRA-1150 is the one exception: no row, no node and no
+// the sessions. One of the tie kinds is the one exception: no row, no node and no
 // unmarked row of it is a store nothing of that kind was written to yet, and is no refusal
 // (projection.emptyAgrees). A table of the earlier release whose rows no backfill has marked yet
 // is not that store: its kind checked no row while rows stand, and it refuses.
@@ -259,7 +259,7 @@ func (r *StoreReport) Refused() bool {
 
 // The kinds the census holds the store to. The first three are the kinds a table projects, each
 // with that table; the four after them are the people and the agents, which no table projects;
-// and the eight after those are dispatch://INFRA-1150's, the ties of decisions, readings and asks
+// and the eight after those are the ties of decisions, readings and asks
 // that block_refs, document_blocks, asks and ask_followers project.
 //
 // Each of the first three holds a row to the tuples that answer it as well as to its node row.
@@ -679,7 +679,7 @@ var typedNodeOwed = `exists (
 		  and typed.supertag in ('` + refs.DecisionSupertag + `', '` + refs.ReadingSupertag + `')
 		  and owed.version is null)`
 
-// tieProjection is the kind of one tie of dispatch://INFRA-1150 that block_refs projects - a
+// tieProjection is the kind of one tie that block_refs projects - a
 // decision's shaped, from_ask or decided_by, and an ask's shaped - held triple by triple
 // (projection.tuples): each row is the triple of the node that states its tie (node_kind,
 // node_address: the decision's block node, or for an ask block's shaped the ask's node,
@@ -892,7 +892,7 @@ var commentWriterPeople = `
 // pass, and an event of a comment the erase took names an author whose node was written when the
 // comment was stored.
 //
-// An ask whose row names its node names people too (dispatch://INFRA-1150): its author, read as a
+// An ask whose row names its node names people too: its author, read as a
 // comment's is (graphstore.AskFacts states its authored_by), and the person whose answer it holds,
 // whose node its answered_by and decided_by point at (asks.Settle). A node is history and never
 // goes, as a session that once followed an ask still owes its node (recordedSessions), so a person
@@ -947,7 +947,7 @@ func commentPeople(authors string) string {
 // writes beside the tie that names it (refs.IndexDecisionNodes and graphstore.AskFacts, through
 // graphstore.AuthorFacts). A decision's author is the far end of its decided_by, which its
 // block_refs row projects, and that row is what is read for it. A reading's author is the far end
-// of its authored_by, which no table projects (the tuple table of dispatch://INFRA-1150), so the
+// of its authored_by, which no table projects (the tuple table), so the
 // row read for it is the tuple itself, the authored_by each live reading's node states now, as
 // graph_edges' tuple arm would answer it. An ask's author is read the same way, off the
 // authored_by every ask node states now: an ask one of whose documents is past the store's bound
@@ -1353,8 +1353,7 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 // still owes its block index (document_block_versions.version null, as typedNodeOwed reads it) is
 // left out, a class of its own and not an unresolved far end: such a document holds no row yet for
 // a block its latest version holds - one past the deferral bound, or one a build before wrote
-// during the roll - and the block-index reconciliation writes it (dispatch://INFRA-1150 R4, "the
-// census leaves out documents that still owe their block index").
+// during the roll - and the block-index reconciliation writes it.
 //
 // The read walks graph_tuples_store_only (migration 20261116220307), the partial index of these
 // three kinds, in its own column order, so it reads their tuples and no other, and a store that

@@ -240,7 +240,7 @@ export type ExternalLink = z.output<typeof ExternalLinkSchema>;
 /** A design-gate step a Legion deployment gates, as Dispatch stores it: `criteria` names the root
  *  issue's Verification document, `spec` its primary document. `decisions`, the step that named
  *  its decisions document, is still read from a Dispatch of the release before; this build
- *  writes it nowhere (dispatch://INFRA-1150 R11). */
+ *  writes it nowhere. */
 export type GatedStep = (typeof GATED_STEPS)[number];
 
 /** `project.created` and `project.updated` carry the project row itself. */
