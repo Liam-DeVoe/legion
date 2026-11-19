@@ -53,8 +53,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -136,8 +138,13 @@ import {
   type Unjudged,
   volumesOf,
 } from "./harness-postgres-leftover-fixtures";
-import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
-import { type HostileMark, hostileMarkKept, plantHostileMark } from "./planted-marks";
+import { claimEventMs, rowMs, rowOf, until, type Waits } from "./harness-postgres-removal-fixtures";
+import {
+  type HostileMark,
+  hostileMarkKept,
+  plantHostileMark,
+  untilParentEnds,
+} from "./planted-marks";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
 const file = "e2e/__tests__/harness-postgres-leftover.test.ts";
@@ -417,6 +424,112 @@ test.skipIf(skipBinaries)(
   // What the row waits for, summed by the fixtures' program (`rowMs`): one start of the pool at
   // its bound.
   rowMs(oneStartOfMarks)
+);
+
+/** Each process whose working directory is in `dir`, as `<program> <pid>`, and each listening TCP
+ *  socket, IPv4 or IPv6, that one of them holds, as `<pid> <local address>`: the sockets of state
+ *  `0A` in /proc/net/tcp and /proc/net/tcp6, by the inode each of the process's descriptors names.
+ *  A process that ends while it is read holds nothing here. */
+function listenersUnder(dir: string): { processes: string[]; listening: string[] } {
+  const listeners = new Map<string, string>();
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    for (const line of readFileSync(table, "utf8").split("\n").slice(1)) {
+      const [, local = "", , state = "", , , , , , inode = ""] = line.trim().split(/\s+/);
+      if (state === "0A") listeners.set(inode, local);
+    }
+  }
+  const inside = `${realpathSync(dir)}/`;
+  const processes: string[] = [];
+  const listening: string[] = [];
+  for (const pid of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
+    try {
+      if (!`${readlinkSync(`/proc/${pid}/cwd`)}/`.startsWith(inside)) continue;
+      processes.push(`${basename(readlinkSync(`/proc/${pid}/exe`))} ${pid}`);
+      for (const fd of readdirSync(`/proc/${pid}/fd`)) {
+        const inode = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/${pid}/fd/${fd}`))?.[1];
+        const local = inode === undefined ? undefined : listeners.get(inode);
+        if (local !== undefined) listening.push(`${pid} ${local}`);
+      }
+    } catch {
+      // A process that ended, or whose links this user may not read, holds nothing here.
+    }
+  }
+  return { processes, listening };
+}
+
+/** What the next row waits for (`Waits`): the start of a child that listens on a TCP port, the
+ *  control of the row's read, at most `claimEventMs`; one start of the binaries provider in this
+ *  process, at the provider's own bounds (`ownStart`); and, in its `finally`, its stop
+ *  (`ownStop`). */
+const portless: Waits = {
+  children: 1,
+  reads: 0,
+  bounds: [],
+  parts: [ownStart(pgBinVariable)],
+  ends: [ownStop(pgBinVariable)],
+};
+
+// The binaries provider once chose a port, released it and had Postgres bind it, so another
+// program that took that port in between failed the stack's start or answered in its server's
+// place. Its server now listens on no TCP port and serves on a unix socket alone, in a directory
+// of mode 0700 that the start makes (e2e/harness-postgres.ts), which no other program can take.
+// The row reads every listening TCP socket of each process whose working directory is in the
+// stack's directory: the stack's Postgres holds none, and serves at the socket directory its URL
+// names. The control that the read sees one: a child of the row in that directory that listens on
+// a port the kernel chooses is read.
+test.skipIf(skipBinaries)(
+  "binaries provider: a stack's Postgres listens on no TCP port, so no program can take its port before it binds it or answer in its place",
+  async () => {
+    const row = rowOf(portless);
+    const named = requirePostgres([pgBinVariable]);
+    const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
+    const dir = mkdtempSync(join(tmp, "portless-"));
+    const env = childEnv(tmp, named);
+    const provider = stackPostgres({ dir, run: `leftover-${runTag}-portless`, env });
+    if (provider === undefined) throw new Error(`${pgBinVariable} named no provider`);
+    let database: StackDatabase | undefined;
+    row.child("the listener of the read's control");
+    const listener = Bun.spawn(
+      [
+        process.execPath,
+        "--eval",
+        `require("node:net").createServer().listen(0, "127.0.0.1"); ${untilParentEnds}`,
+      ],
+      { cwd: dir, stdout: "ignore", stderr: "ignore" }
+    );
+    try {
+      await until(
+        row,
+        () => listenersUnder(dir).listening.some((each) => each.startsWith(`${listener.pid} `)),
+        "the listener of the read's control",
+        claimEventMs
+      );
+      listener.kill("SIGKILL");
+      await listener.exited;
+
+      database = await startOwn(row, provider, pgBinVariable, 0, "the stack's start");
+
+      expect(await answers(row, database.url)).toBe(true);
+      // A URL with no host, which `URL` refuses, so its query is read alone.
+      expect(new URLSearchParams(database.url.split("?")[1] ?? "").get("host")).toBe(
+        database.address
+      );
+      const read = listenersUnder(dir);
+      expect(read.processes.filter((each) => each.startsWith("postgres ")).length).toBeGreaterThan(
+        0
+      );
+      expect(read.listening).toEqual([]);
+    } finally {
+      if (listener.exitCode === null && listener.signalCode === null) listener.kill("SIGKILL");
+      await removeAll(
+        () => database !== undefined && stopOwn(row, database, pgBinVariable),
+        () => rmSync(tmp, { recursive: true, force: true })
+      );
+    }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): the control's listener, the
+  // stack's start at the provider's own bounds, and its stop in its finally.
+  rowMs(portless)
 );
 
 /** What the next row waits for (`Waits`): two starts of the image provider in this process, the

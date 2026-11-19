@@ -36,6 +36,7 @@ import {
   harnessScript,
   holding,
   leaveData,
+  lifeOf,
   neverAnswering,
   owners,
   readsAfterRename,
@@ -52,7 +53,7 @@ import {
   waitsMs,
   writeMark,
 } from "./harness-postgres-removal-fixtures";
-import { type StandIn, standIn } from "./planted-marks";
+import { type StandIn, standIn, untilParentEnds, untilThisEnds } from "./planted-marks";
 
 const { marksDirectory } = marks;
 
@@ -147,7 +148,7 @@ for (const { title, link, spell } of pgCtlSpellings) {
       const [named, namedSockets] = [join(own, "worker-0", "pgdata"), join(own, basename(sockets))];
       const mark = join(own, marksDirectory, "worker-0.json");
       const spelt = spell(run, alias);
-      startingPgCtl(bin, go);
+      startingPgCtl(bin, go, lifeOf(row));
       row.child("the stack's harness");
       const harness = Bun.spawn([process.execPath, "--eval", harnessScript], {
         env: {
@@ -164,11 +165,12 @@ for (const { title, link, spell } of pgCtlSpellings) {
       let postmaster: { pid: number; start: string } | undefined;
       const startOfPid = (pid: number) => marks.startOf(readFileSync(`/proc/${pid}/stat`, "utf8"));
       try {
-        const pid = Number(await firstLineOf(harness));
+        const pid = Number(await firstLineOf(row, harness, "the stack's harness"));
         // The harness's child runs pg_ctl once it has its arguments, which name the data
         // directory as the stack spells it.
         const argument = spelt.HARNESS_DATA ?? data;
         await until(
+          row,
           () => readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes(argument),
           "the start of the stack's pg_ctl",
           claimEventMs
@@ -198,6 +200,7 @@ for (const { title, link, spell } of pgCtlSpellings) {
         writeFileSync(go, "");
         const ended = pgCtl;
         await until(
+          row,
           () => !marks.stillRuns(ended.pid, ended.start),
           "the end of the stack's pg_ctl",
           claimEventMs
@@ -264,11 +267,12 @@ test.skipIf(!onLinux)(
     leaveData(data);
     const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
     const sockets = socketsOf(mark);
-    // `tail -f /dev/null` names only absolute paths outside the directory: its working directory
-    // alone holds it.
+    // `tail` with no file reads its standard input, a pipe this process holds, to its end, which
+    // comes as this process ends: it names no path, so its working directory alone holds the
+    // directory.
     const tail = Bun.which("tail");
     if (tail === null) throw new Error("no tail on PATH to hold a directory");
-    const holder = standIn(data, [tail, "-f", "/dev/null"]);
+    const holder = standIn(data, [tail], "pipe");
     try {
       const before = entriesChangedAt(dirname(data));
       const first = await sweep(row, tmp);
@@ -281,7 +285,7 @@ test.skipIf(!onLinux)(
       ]);
 
       holder.stop();
-      await until(() => !holder.alive(), "the end of the holder", claimEventMs);
+      await until(row, () => !holder.alive(), "the end of the holder", claimEventMs);
       const second = await sweep(row, tmp);
 
       expect([existsSync(data), existsSync(mark)]).toEqual([false, false]);
@@ -310,7 +314,7 @@ test.skipIf(!onLinux)(
     const opened = openSync(join(data, "PG_VERSION"), "r");
     let holder: StandIn | undefined;
     try {
-      holder = standIn(tmp, ["sleep", "600"], opened);
+      holder = standIn(tmp, untilThisEnds(), opened);
       closeSync(opened);
 
       const first = await sweep(row, tmp);
@@ -323,7 +327,7 @@ test.skipIf(!onLinux)(
 
       const ended = holder;
       ended.stop();
-      await until(() => !ended.alive(), "the end of the holder", claimEventMs);
+      await until(row, () => !ended.alive(), "the end of the holder", claimEventMs);
       const second = await sweep(row, tmp);
 
       expect([existsSync(data), existsSync(mark)]).toEqual([false, false]);
@@ -366,7 +370,7 @@ test.skipIf(!onLinux)(
     let holder: StandIn | undefined;
     try {
       removal = await removingInChild(row, data);
-      holder = standIn(join(removal.claimed, "d0"), [tail, "-f", "/dev/null"]);
+      holder = standIn(join(removal.claimed, "d0"), [tail], "pipe");
 
       const lines = await startSweep(row, tmp, {
         reader: readsAfterRename(data, removal.claimed),
@@ -409,15 +413,10 @@ test.skipIf(!onLinux)(
     const sockets = socketsOf(mark);
     const mount = `type=bind,source=${sockets},target=/var/run/postgresql`;
     row.child("the holder");
-    const holder = standIn(tmp, [
-      process.execPath,
-      "--eval",
-      "setTimeout(() => {}, 600_000)",
-      "--mount",
-      mount,
-    ]);
+    const holder = standIn(tmp, [process.execPath, "--eval", untilParentEnds, "--mount", mount]);
     try {
       await until(
+        row,
         () => readFileSync(`/proc/${holder.pid}/cmdline`, "utf8").includes(mount),
         "the holder's arguments",
         claimEventMs
@@ -433,7 +432,7 @@ test.skipIf(!onLinux)(
       ]);
 
       holder.stop();
-      await until(() => !holder.alive(), "the end of the holder", claimEventMs);
+      await until(row, () => !holder.alive(), "the end of the holder", claimEventMs);
       const second = await sweep(row, tmp);
 
       expect([existsSync(sockets), existsSync(mark)]).toEqual([false, false]);
@@ -470,6 +469,7 @@ test.skipIf(!onLinux)(
     try {
       const lines = await sweep(row, tmp);
       await until(
+        row,
         () => existsSync(saw) && readFileSync(saw, "utf8") !== "",
         "the last process's look at the data directory",
         claimEventMs
@@ -539,15 +539,11 @@ for (const holder of [
       const never = holder.never === "" ? hung : join(hung, holder.never);
       const clock = join(tmp, "never-answers-clock");
       row.child("the holder");
-      const holds = standIn(tmp, [
-        process.execPath,
-        "--eval",
-        "setTimeout(() => {}, 600_000)",
-        ...named,
-      ]);
+      const holds = standIn(tmp, [process.execPath, "--eval", untilParentEnds, ...named]);
       let sweeping: Subprocess | undefined;
       try {
         await until(
+          row,
           () => readFileSync(`/proc/${holds.pid}/cmdline`, "utf8").includes(named.at(-1) ?? ""),
           "the holder's arguments",
           claimEventMs
@@ -646,17 +642,12 @@ for (const mounts of [
       symlinkSync(data, link);
       const clock = join(tmp, "never-answers-clock");
       row.child("the holder of the two hung paths");
-      const holds = standIn(tmp, [
-        process.execPath,
-        "--eval",
-        "setTimeout(() => {}, 600_000)",
-        ...named,
-      ]);
+      const holds = standIn(tmp, [process.execPath, "--eval", untilParentEnds, ...named]);
       row.child("the holder of the data directory through a link");
       const healthy = standIn(tmp, [
         process.execPath,
         "--eval",
-        "setTimeout(() => {}, 600_000)",
+        untilParentEnds,
         join(link, "PG_VERSION"),
       ]);
       let sweeping: Subprocess | undefined;
@@ -666,6 +657,7 @@ for (const mounts of [
           [healthy, link],
         ] as const) {
           await until(
+            row,
             () => readFileSync(`/proc/${holder.pid}/cmdline`, "utf8").includes(last),
             "a holder's arguments",
             claimEventMs
@@ -766,17 +758,12 @@ test.skipIf(!onLinux)(
     symlinkSync(data, link);
     const clock = join(tmp, "readers-clock");
     row.child("the holder of a path on the binfmt_misc mount");
-    const onMount = standIn(tmp, [
-      process.execPath,
-      "--eval",
-      "setTimeout(() => {}, 600_000)",
-      named,
-    ]);
+    const onMount = standIn(tmp, [process.execPath, "--eval", untilParentEnds, named]);
     row.child("the holder of the data directory through a link");
     const healthy = standIn(tmp, [
       process.execPath,
       "--eval",
-      "setTimeout(() => {}, 600_000)",
+      untilParentEnds,
       join(link, "PG_VERSION"),
     ]);
     let sweeping: Subprocess | undefined;
@@ -786,6 +773,7 @@ test.skipIf(!onLinux)(
         [healthy, link],
       ] as const) {
         await until(
+          row,
           () => readFileSync(`/proc/${holder.pid}/cmdline`, "utf8").includes(last),
           "a holder's arguments",
           claimEventMs

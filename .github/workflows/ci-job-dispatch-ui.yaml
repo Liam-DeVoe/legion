@@ -99,8 +99,24 @@ jobs:
       # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
       # reproduced with its file alone and that seed, as docs/testing.md ("A Dispatch unit test runs
       # in random order") says; it also says what a row that failed from the lane's load needs.
+      #
+      # The rows of harness-postgres-removal.test.ts, harness-postgres-holders.test.ts and
+      # harness-postgres-marks.test.ts in this lane may wait, within their parts' own bounds, far
+      # longer than this job runs (their limits are the sums of those bounds,
+      # e2e/__tests__/harness-postgres-removal-fixtures.ts's `rowMs`). So the step has a limit of
+      # its own and exports when it ends (DISPATCH_E2E_STEP_ENDS_AT, in ms since the epoch): a row
+      # whose step ends first ends there, naming what it waited for, and removes what it made,
+      # where the step's own clock would name no row (harness-postgres-removal.test.ts reads every
+      # workflow for such a step). The limit is dispatch-browser.yaml's rule, the measured maximum
+      # plus 15 per cent rounded up to a whole minute: this step took 116 to 148 s in the 28 green
+      # runs of the 40 newest green ci.yaml runs on 2026-11-19, and 129, 138 and 227 s in the
+      # branch's three green runs that added those rows' newest forms (44342655660, 44390012817,
+      # 44443452775), so 227 x 1.15 = 261 s, 5 minutes.
       - name: Test dispatch dashboard
-        run: bun run test
+        timeout-minutes: 5
+        run: |
+          export DISPATCH_E2E_STEP_ENDS_AT=$(( ($(date +%s) + 5 * 60) * 1000 ))
+          bun run test
         working-directory: packages/dispatch
         env:
           LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable

@@ -34,10 +34,39 @@ export interface StandIn {
   stop(): void;
 }
 
+/** The command of a stand-in that lives until this process, the process of the row that starts
+ *  it, ends, and sets no length of its own: GNU `tail`, which follows `/dev/null` until the
+ *  process `--pid` names ends, and reads whether it still runs once a second; neither `/dev/null`
+ *  nor the pid is a path of a directory a row plants. The row ends it sooner (`StandIn.stop`). A
+ *  stand-in that a row gave a fixed 600 s (`sleep 600`) ended inside the row's waits on a shared
+ *  Linux machine on 2026-11-19: the third start of the pool that the row waited for took 620 s
+ *  inside its own bounds, and the row then read the live process of its hostile mark as gone. */
+export function untilThisEnds(): string[] {
+  const tail = Bun.which("tail");
+  if (tail === null) throw new Error("no tail on PATH for a stand-in that lives as its row does");
+  return [tail, `--pid=${process.pid}`, "-f", "/dev/null"];
+}
+
+/** A script for `bun --eval` that keeps its process alive until its parent, the process that
+ *  started it, ends, and then ends it, with no length of its own: it reads its parent's pid once a
+ *  second, which changes once the kernel gives the process to another parent. It names no path,
+ *  since a start's holder read reads each word of a process's arguments as one. */
+export const untilParentEnds =
+  "const parent = process.ppid; setInterval(() => { if (process.ppid !== parent) process.exit(1); }, 1_000);";
+
+/** A test in bash builtins alone, so it forks no process: whether the shell's parent is still the
+ *  process that started it, which it is not once that process ended (`untilParentEnds`). The
+ *  stand-ins that run it are named `postgres`, so the second field of `/proc/<pid>/stat`, the
+ *  name, holds no space. */
+export const parentLives = 'read -r _ _ _ ppid _ </proc/$$/stat && [ "$ppid" = "$PPID" ]';
+
 /** Starts `command` in `cwd`, with `stdin` for its standard input where it is given: a file
- *  descriptor of this process, which the child then holds open. */
-export function standIn(cwd: string, command = ["sleep", "600"], stdin?: number): StandIn {
-  const child: Subprocess = Bun.spawn(command, {
+ *  descriptor of this process, which the child then holds open, or "pipe", a pipe whose other end
+ *  this process holds, which a stand-in that reads it to its end reads until this process ends.
+ *  `command` lives as long as the row needs it (`untilThisEnds`), never for a fixed time, which
+ *  the source check of `harness-postgres-removal.test.ts` refuses (`fixedLives`). */
+export function standIn(cwd: string, command: readonly string[], stdin?: number | "pipe"): StandIn {
+  const child: Subprocess = Bun.spawn([...command], {
     cwd,
     stdin: stdin ?? "ignore",
     stdout: "ignore",
@@ -95,12 +124,13 @@ export interface HostileMark {
 /** The mark of stack 0 in `run`, whose owner is `owner` and whose postmaster is a program of the
  *  planter's (`plantedBin`) serving from `worker-0/pgdata`, where `worker-0` is a link to a
  *  directory of `tmp` outside the run, in which a live stand-in has that data directory for its
- *  working directory and is named by its `postmaster.pid`. */
+ *  working directory and is named by its `postmaster.pid`. That stand-in lives until this process
+ *  ends (`untilThisEnds`), so it outlives every wait of the row. */
 export function plantHostileMark(run: string, tmp: string, owner: unknown): HostileMark {
   const marker = join(mkdtempSync(join(tmp, "marker-")), "the-planted-program-ran");
   const outside = mkdtempSync(join(tmp, "outside-"));
   mkdirSync(join(outside, "pgdata"));
-  const live = standIn(join(outside, "pgdata"));
+  const live = standIn(join(outside, "pgdata"), untilThisEnds());
   writeFileSync(join(outside, "pgdata", "PG_VERSION"), "18\n");
   writeFileSync(join(outside, "pgdata", "postmaster.pid"), `${live.pid}\n`);
   symlinkSync(outside, join(run, "worker-0"));

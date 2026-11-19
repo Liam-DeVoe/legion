@@ -57,6 +57,7 @@ import { removalBounds, removeContainer } from "../harness-postgres-container-re
 import * as marks from "../harness-postgres-marks";
 import { claimWaitMs, servingPostmasters, stopPostmaster } from "../harness-postgres-removal";
 import {
+  boundOf,
   claimAndDie,
   claimEventMs,
   claimInChild,
@@ -66,9 +67,11 @@ import {
   leaveContainerMark,
   leaveData,
   leaveElsewhere,
+  neverEnds,
   owners,
   type Part,
   partOf,
+  type Row,
   removeInChild,
   rowMachine,
   rowMs,
@@ -80,6 +83,7 @@ import {
   standInDocker,
   standInPostmaster,
   startSweep,
+  stepEndsVariable,
   sweep,
   sweepInChild,
   type Tick,
@@ -94,6 +98,7 @@ import {
   plantHostileMark,
   type StandIn,
   standIn,
+  untilThisEnds,
 } from "./planted-marks";
 
 const { runDirectoryPrefix } = marks;
@@ -134,7 +139,7 @@ test.skipIf(!onLinux)(
     const marker = join(tmp, "the-planted-program-ran");
     const data = join(run, "worker-0", "pgdata");
     mkdirSync(data, { recursive: true });
-    const live = standIn(data);
+    const live = standIn(data, untilThisEnds());
     try {
       leaveData(data, live.pid);
       const file = writeMark(run, owners().gone, data, plantedBin(tmp, marker));
@@ -354,6 +359,7 @@ const settleMs = 60_000;
  *  waits for another start's claim of it, and that at most one says this start removed it: none
  *  says it left it. */
 async function removedByAStart(
+  row: Row,
   lines: readonly string[],
   plant: {
     readonly postmaster?: StandIn;
@@ -364,6 +370,7 @@ async function removedByAStart(
   named = plant.data
 ): Promise<void> {
   await until(
+    row,
     () =>
       plant.postmaster?.alive() !== true &&
       [plant.data, plant.claimed, plant.file].every(
@@ -392,7 +399,7 @@ test.skipIf(!onLinux)(
     const { tmp } = scratch();
     const left = leaveElsewhere(owners().gone);
     try {
-      await removedByAStart(await sweep(row, tmp), left);
+      await removedByAStart(row, await sweep(row, tmp), left);
     } finally {
       left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
@@ -415,7 +422,7 @@ test.skipIf(!onLinux)(
     try {
       const lines = await sweep(row, gone, programs);
 
-      await removedByAStart(lines, left);
+      await removedByAStart(row, lines, left);
       expect(holding(lines, `left what it cannot read: ${gone} (ENOENT`)).toHaveLength(1);
     } finally {
       left.postmaster?.stop();
@@ -583,7 +590,7 @@ test.skipIf(!onLinux)(
   async () => {
     const row = rowOf(oneRemoval);
     const { tmp } = scratch();
-    const docker = standInDocker(tmp, ['exec -a "$0" sleep 600']);
+    const docker = standInDocker(tmp, [neverEnds(row)]);
     try {
       const { removal } = await removeInChild(row, docker.bin, standInId, rowBounds);
 
@@ -592,8 +599,9 @@ test.skipIf(!onLinux)(
         reason: "Docker answered no docker ps within 10 s while this start removed it",
       });
       // Each `docker` the start ran ends with the start's removal: the stand-in's `sleep`, which
-      // keeps its path for a name, runs on where no signal reached it.
+      // keeps its path for a name, runs on to the row's end where no signal reached it.
       await until(
+        row,
         () => docker.running().length === 0,
         "the end of each docker the start ran",
         claimEventMs
@@ -619,7 +627,7 @@ test.skipIf(!onLinux)(
       "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
     const docker = standInDocker(tmp, [
       'case "$1" in',
-      '  rm) exec -a "$0" sleep 600 ;;',
+      `  rm) ${neverEnds(row)} ;;`,
       `  ps) echo ${JSON.stringify(refused)} >&2; exit 1 ;;`,
       "esac",
     ]);
@@ -631,6 +639,7 @@ test.skipIf(!onLinux)(
         reason: `docker ps failed (${refused}) while this start removed it`,
       });
       await until(
+        row,
         () => docker.running().length === 0,
         "the end of each docker the start ran",
         claimEventMs
@@ -658,8 +667,8 @@ const slowAsk: Waits = { children: 1, reads: 0, bounds: [slowAskBounds.answerMs,
 // ask's 180 s, and the bound is 10 s. Its clock times the start's end, the last end of a call it
 // ran: a start that gave the ask its own limit ends at the answer, 150 s after the bound.
 for (const docker of [
-  { removal: "never ends", rm: '  rm) exec -a "$0" sleep 600 ;;' },
-  { removal: "is refused as already in progress", rm: inProgress },
+  { removal: "never ends", rm: (row: Row) => `  rm) ${neverEnds(row)} ;;` },
+  { removal: "is refused as already in progress", rm: () => inProgress },
 ] as const) {
   test.skipIf(!onLinux)(
     `v-no-leftover-postgres: a start whose removal of a dead stack's container ${docker.removal} ends it at its bound while its ask of Docker is still out: no ask carries the removal past its bound`,
@@ -668,7 +677,7 @@ for (const docker of [
       const { tmp } = scratch();
       const standIn = standInDocker(tmp, [
         'case "$1" in',
-        docker.rm,
+        docker.rm(row),
         `  ps) sleep 150 & wait $!; echo "\${6#id=}" ;;`,
         "esac",
       ]);
@@ -678,11 +687,12 @@ for (const docker of [
         expect(removal).toEqual({
           kind: "failed",
           reason:
-            docker.rm === inProgress
+            docker.removal === "is refused as already in progress"
               ? `Error response from daemon: removal of container ${standInId} is already in progress, and Docker had not answered whether it still lists it when the 10 s bound of this start's removal came`
               : "Docker did not end the removal within 10 s, and it had not answered the last ask when that bound came",
         });
         await until(
+          row,
           () => standIn.running().length === 0,
           "the end of each docker the start ran",
           claimEventMs
@@ -1027,13 +1037,85 @@ const summedFiles = [
   "harness-postgres-removal.test.ts",
 ];
 
+/** The files that start the stand-ins of these rows: the rows' own files and their fixtures. */
+const standInFiles = [
+  ...summedFiles,
+  "harness-postgres-leftover-fixtures.ts",
+  "harness-postgres-removal-fixtures.ts",
+  "planted-marks.ts",
+];
+
+/** The ways a script's text gives a process a life of a number it writes: a `sleep` of a number
+ *  that the process `exec`s into, a deadline of bash's `SECONDS` plus a number, and a timer of a
+ *  number whose callback does nothing or ends the process, which keeps it alive or ends it. */
+const fixedLifeForms = [
+  /\bexec\b[^;\n]*\bsleep\s+\d+/,
+  /\bSECONDS\s*\+\s*\d+/,
+  /setTimeout\(\s*\(\)\s*=>\s*(?:\{\s*\}|process\.exit\([^)]*\))\s*,\s*[\d_]+\s*\)/,
+];
+
+/** The stand-ins of `source`, a file named `file` that starts some, whose life is a number the
+ *  file writes, one line each, with the line and the text that states it: an argument of a command
+ *  that is a number alone (`["sleep", "600"]`, or a copy of `sleep` run with `"600"`), in a script
+ *  one of `fixedLifeForms`, and a program run in a script with a number alone for its argument
+ *  just after a substitution that names it (`${postgres} 600 </dev/null &`). A stand-in waits for
+ *  the row instead: for the end of its parent, the row's process, or of a pipe that process holds
+ *  (`untilThisEnds`, `untilParentEnds`, `parentLives` of `planted-marks.ts`), or, where it must
+ *  outlive the process that started it, for the time its row has left (`lifeOf`). A poll's step
+ *  under a second and the time a stand-in takes to answer a call, which a row sets as what it
+ *  tests, are no such life, and none of the forms reads them. */
+function fixedLives(file: string, source: string): string[] {
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  const found: string[] = [];
+  const at = (node: ts.Node, what: string) =>
+    found.push(
+      `${file}:${parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1}: ${what}`
+    );
+  const visit = (node: ts.Node): void => {
+    if (ts.isArrayLiteralExpression(node)) {
+      for (const element of node.elements) {
+        if (ts.isStringLiteral(element) && /^\d+$/.test(element.text)) {
+          at(element, `"${element.text}" in ${node.getText(parsed)}`);
+        }
+      }
+    }
+    if (
+      ts.isStringLiteral(node) ||
+      ts.isNoSubstitutionTemplateLiteral(node) ||
+      ts.isTemplateHead(node) ||
+      ts.isTemplateMiddle(node) ||
+      ts.isTemplateTail(node)
+    ) {
+      for (const form of fixedLifeForms) {
+        const match = form.exec(node.text);
+        if (match !== null) at(node, match[0]);
+      }
+      // A number, a space and then a redirection or `&`: not a descriptor's own `2>`.
+      const after = /^\s+\d+\s+[<>&]/.exec(node.text);
+      if (after !== null && (ts.isTemplateMiddle(node) || ts.isTemplateTail(node))) {
+        at(node, after[0].trim());
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+  return found;
+}
+
 // A row's limit is Bun's clock, which no fixture sees: a limit written as a number beside a row
 // that counts its waits fires inside the bounds of what the row waits for, as a start of the pool
 // given a fixed 600 s did on 2026-11-19 while its removal of one container could wait 600 s. So
 // each row of these files states `rowMs` of the waits it counts. The controls are rows planted
 // in a copy of a file: one that counts its waits and states a number, and one that states the sum
 // of waits it does not count, each of which the check must name.
-test("every row that counts its waits states its limit as the program's sum of those waits", () => {
+//
+// The same holds of a stand-in's life: the hostile mark's stand-in, given a fixed 600 s, ended
+// inside the bounds of the row's third start of the pool, which took 620 s, on 2026-11-19. So no
+// stand-in of these files lives a number those files write (`fixedLives`). Its controls are
+// stand-ins planted in a copy of a file: one of each form with a fixed life, which the check must
+// name by line, and stand-ins that wait for the row, which it must pass. Each planted number comes
+// through a substitution, so this file's own text holds none.
+test("every row that counts its waits states its limit as the program's sum of those waits, and no stand-in lives a fixed time", () => {
   for (const name of summedFiles) {
     const text = readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), "utf8");
     expect({ name, found: limitsNotSummed(name, text) }).toEqual({ name, found: [] });
@@ -1050,7 +1132,211 @@ test("every row that counts its waits states its limit as the program's sum of t
     "planted.test.ts:5: counts rowOf(waits), states rowMs(other)",
     "planted.test.ts:8: states rowMs(waits), counts no rowOf(waits)",
   ]);
+
+  for (const name of standInFiles) {
+    const text = readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), "utf8");
+    expect({ name, found: fixedLives(name, text) }).toEqual({ name, found: [] });
+  }
+  const fixed = 600;
+  const plantedLives = [
+    `const held = standIn(tmp, ["sleep", "${fixed}"]);`,
+    `const docker = standInDocker(tmp, ['exec -a "$0" sleep ${fixed}']);`,
+    `const script = "end=$((SECONDS + ${fixed}))";`,
+    `const claimer = "setTimeout(() => process.exit(1), ${fixed}_000);";`,
+    `const holder = [process.execPath, "--eval", "setTimeout(() => {}, ${fixed}_000)"];`,
+    `const pgCtl = \`\${JSON.stringify(postgres)} ${fixed} </dev/null &\`;`,
+    "const lives = standIn(tmp, untilThisEnds());",
+    "const outlives = standInDocker(tmp, [neverEnds(row)]);",
+    `const pgCtlOfRow = \`end=$((SECONDS + \${lifeOf(row)}))\\n\${postgres} "$((end - SECONDS))" &\`;`,
+    "const child = [process.execPath, '--eval', untilParentEnds];",
+    "const answers = standInDocker(tmp, ['  ps) sleep 150 & wait $!; echo \"$4\" ;;']);",
+  ].join("\n");
+  expect(fixedLives("planted.ts", plantedLives)).toEqual([
+    `planted.ts:1: "${fixed}" in ["sleep", "${fixed}"]`,
+    `planted.ts:2: exec -a "$0" sleep ${fixed}`,
+    `planted.ts:3: SECONDS + ${fixed}`,
+    `planted.ts:4: setTimeout(() => process.exit(1), ${fixed}_000)`,
+    `planted.ts:5: setTimeout(() => {}, ${fixed}_000)`,
+    `planted.ts:6: ${fixed} <`,
+  ]);
 });
+
+/** The workflows of the repository, by file name. */
+const workflowsDirectory = fileURLToPath(new URL("../../../../.github/workflows", import.meta.url));
+
+/** A step of a workflow as `Bun.YAML` reads it, with the fields the next check reads. */
+interface WorkflowStep {
+  readonly name?: string;
+  readonly run?: unknown;
+  readonly "working-directory"?: unknown;
+  readonly "timeout-minutes"?: unknown;
+}
+
+/** Each step of `workflows` that runs a row of these files (`summedFiles`), named by its file,
+ *  its job and its name, with the files of rows it runs (`steps`), and each such step that gives
+ *  those rows no end of its own, one line each (`faults`): one with no `timeout-minutes` of its
+ *  own, one whose script does not export `stepEndsVariable` as the time its own limit ends it,
+ *  counted from its start, and one whose limit is above its job's. A step runs a row of a file
+ *  that its script names, and of each file of `lane`, the files of these the package's harness
+ *  lane runs (`test:harness`), where it runs that lane (`bun run test`, `test:harness` or
+ *  `test:repeat`) in `packages/dispatch`. A row then ends inside its step (`Row.cut`) and not at
+ *  the step's own clock, which names no row. */
+function stepsThatCutNoRow(
+  workflows: readonly { readonly file: string; readonly text: string }[],
+  lane: readonly string[]
+): { steps: string[]; faults: string[] } {
+  const steps: string[] = [];
+  const faults: string[] = [];
+  const exports = new RegExp(
+    `export ${stepEndsVariable}=\\$\\(\\( \\(\\$\\(date \\+%s\\) \\+ (.+?) \\* 60\\) \\* 1000 \\)\\)`
+  );
+  for (const { file, text } of workflows) {
+    const parsed = Bun.YAML.parse(text) as {
+      jobs?: Record<string, { "timeout-minutes"?: unknown; steps?: WorkflowStep[] }>;
+    };
+    for (const [job, body] of Object.entries(parsed.jobs ?? {})) {
+      for (const [index, step] of (body.steps ?? []).entries()) {
+        if (typeof step.run !== "string") continue;
+        const run = step.run;
+        const runsLane =
+          step["working-directory"] === "packages/dispatch" &&
+          /\bbun run (?:test|test:harness|test:repeat)\b/.test(run);
+        const rows = summedFiles.filter(
+          (name) => run.includes(name) || (runsLane && lane.includes(name))
+        );
+        if (rows.length === 0) continue;
+        const where = `${file}: ${job}, step ${JSON.stringify(step.name ?? `${index + 1}`)}, which runs ${rows.join(", ")}`;
+        steps.push(where);
+        const minutes = step["timeout-minutes"];
+        const jobMinutes = body["timeout-minutes"];
+        const exported = exports.exec(run)?.[1];
+        if (minutes === undefined) {
+          faults.push(`${where}, has no timeout-minutes of its own, so it gives its rows no end`);
+        } else if (exported === undefined) {
+          faults.push(`${where}, exports no ${stepEndsVariable}`);
+        } else if (exported !== String(minutes)) {
+          faults.push(
+            `${where}, exports an end ${exported} minutes from its start, and its limit is ${String(minutes)}`
+          );
+        }
+        if (typeof minutes === "number" && typeof jobMinutes === "number" && minutes > jobMinutes) {
+          faults.push(`${where}, gives itself ${minutes} minutes, above its job's ${jobMinutes}`);
+        }
+      }
+    }
+  }
+  return { steps, faults };
+}
+
+// The largest row of these files may wait hours within its parts' own bounds, and the CI steps
+// that run them give them minutes, by the measured budget of dispatch-browser.yaml's rule. So
+// each such step exports when its own limit ends it, and a row whose step ends first ends at that
+// end (`Row.cut`), naming the wait it was in, and still removes what it made. This row reads every
+// workflow for a step that runs a row of these files and exports no such end. Its controls are
+// planted steps: one with no export, one with no limit of its own, one whose export is not its
+// limit, and one as the head's steps are.
+test("every CI step that runs these rows exports when its own limit ends it", () => {
+  const manifest = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")
+  ) as { scripts: Record<string, string> };
+  const ignored = [
+    ...(manifest.scripts["test:harness"] ?? "").matchAll(/--path-ignore-patterns[ =](\S+)/g),
+  ].map((match) => basename(match[1] ?? ""));
+  const lane = summedFiles.filter((name) => !ignored.includes(name));
+  const workflows = readdirSync(workflowsDirectory)
+    .filter((name) => name.endsWith(".yaml") || name.endsWith(".yml"))
+    .map((name) => ({ file: name, text: readFileSync(join(workflowsDirectory, name), "utf8") }));
+  const head = stepsThatCutNoRow(workflows, lane);
+  // The control that the read saw the steps: the dispatch-ui job's harness lane, the visual and
+  // alone jobs' provider steps, and the weekly repeat's lanes.
+  expect(lane.length).toBeGreaterThan(0);
+  expect(head.steps.length).toBeGreaterThanOrEqual(4);
+  expect(head.faults).toEqual([]);
+
+  const step = (lines: readonly string[]) =>
+    [
+      "jobs:",
+      "  visual:",
+      "    timeout-minutes: 14",
+      "    steps:",
+      "      - name: rows",
+      ...lines.map((line) => `        ${line}`),
+      "        working-directory: packages/dispatch",
+      "",
+    ].join("\n");
+  const rows = "bun test e2e/__tests__/harness-postgres-leftover.test.ts";
+  const export2 = `export ${stepEndsVariable}=$(( ($(date +%s) + 2 * 60) * 1000 ))`;
+  const where = 'planted.yaml: visual, step "rows", which runs harness-postgres-leftover.test.ts';
+  const planted = (lines: readonly string[]) =>
+    stepsThatCutNoRow([{ file: "planted.yaml", text: step(lines) }], lane).faults;
+  expect(planted(["timeout-minutes: 2", "run: |", `  ${rows}`])).toEqual([
+    `${where}, exports no ${stepEndsVariable}`,
+  ]);
+  expect(planted(["run: |", `  ${export2}`, `  ${rows}`])).toEqual([
+    `${where}, has no timeout-minutes of its own, so it gives its rows no end`,
+  ]);
+  expect(planted(["timeout-minutes: 3", "run: |", `  ${export2}`, `  ${rows}`])).toEqual([
+    `${where}, exports an end 2 minutes from its start, and its limit is 3`,
+  ]);
+  expect(planted(["timeout-minutes: 2", "run: |", `  ${export2}`, `  ${rows}`])).toEqual([]);
+});
+
+/** What the next row waits for (`Waits`): a child, a holder read, an `until`, and in its `finally`
+ *  the bound of a removal, so its own limit is minutes. */
+const stepCut: Waits = {
+  children: 1,
+  reads: 1,
+  bounds: [claimEventMs],
+  ends: [removalBounds.boundMs],
+};
+
+// A row whose CI step ends before the row's own limit takes the step's end for its own: its waits
+// and its `finally` share what the step leaves in the proportion of their bounds, and a wait that
+// reaches the row's deadline ends there, naming what it waited for and the step's end. Off CI, no
+// step sets an end, and the row keeps its own limit. The control: the same waits with no step's
+// end keep their own deadline, and a wait of theirs keeps its own bound. The step's end is a
+// moment from now on the real clock, since a row's deadline is on it (`machine`).
+test(
+  "a row whose CI step ends before its own limit ends inside the step, and its waits name what they waited for and the step's end",
+  async () => {
+    const saved = process.env[stepEndsVariable];
+    let free: Row;
+    let cut: Row;
+    const stepEnd = Date.now() + 500;
+    try {
+      delete process.env[stepEndsVariable];
+      free = rowOf(stepCut);
+      process.env[stepEndsVariable] = String(stepEnd);
+      cut = rowOf(stepCut);
+    } finally {
+      if (saved === undefined) delete process.env[stepEndsVariable];
+      else process.env[stepEndsVariable] = saved;
+    }
+    const own = rowMs(stepCut);
+    expect([free.end - free.deadline, free.ms, free.cut]).toEqual([
+      own - waitsMs(stepCut),
+      waitsMs(stepCut),
+      undefined,
+    ]);
+    expect(boundOf(free, claimEventMs)).toEqual({
+      ms: claimEventMs,
+      named: `within ${claimEventMs / 1000} s`,
+    });
+    const start = cut.deadline - cut.ms;
+    expect(cut.end).toBe(stepEnd);
+    expect(cut.ms).toBe(Math.floor((waitsMs(stepCut) * (stepEnd - start)) / own));
+    expect(cut.cut).toContain(
+      `the end of the CI step that runs it, at ${new Date(stepEnd).toISOString()} (${stepEndsVariable})`
+    );
+    await expect(until(cut, () => false, "a planted event", claimEventMs)).rejects.toThrow(
+      new RegExp(
+        `^a planted event did not come by the row's deadline, [\\d.]+ s after this wait began, which the end of the CI step that runs it, at .+ set, before its own ${claimEventMs / 1000} s$`
+      )
+    );
+    expect(Date.now()).toBeLessThan(stepEnd + 1_000);
+  },
+  rowMs(stepCut)
+);
 
 /** What the charge of a row whose limit counts `counted` says of its waits for `waited`, one after
  *  another (`Row.part`): "counted" where the limit counts each of them, and else the refusal of
@@ -1112,7 +1398,7 @@ test.skipIf(!onLinux)(
       const docker = standInDocker(tmp, [
         'made="$(dirname "$0")/made"',
         'case "$1" in',
-        `  create) : >"$made"; exec -a "$0" sleep 600 ;;`,
+        `  create) : >"$made"; ${neverEnds(row)} ;;`,
         `  ps) if [ -e "$made" ] && [[ " $* " == *" name=^/?${name}$ "* ]] && [[ " $* " == *" label=${label} "* ]]; then echo ${standInId}; fi ;;`,
         `  rm) rm -f "$made"; echo "$4" ;;`,
         "esac",
@@ -1147,6 +1433,7 @@ test.skipIf(!onLinux)(
       expect(listed - created).toBeGreaterThan(ranOutMs / 1000 - 1);
       expect(listed - created).toBeLessThan(ranOutMs / 1000 + clockRoomS);
       await until(
+        row,
         () => docker.running().length === 0,
         "the end of the docker create the row stopped",
         claimEventMs
@@ -1242,7 +1529,7 @@ test.skipIf(!onLinux)(
       const docker = standInDocker(tmp, [
         'made="$(dirname "$0")/made"',
         'case "$1" in',
-        `  create) : >"$made"; exec -a "$0" sleep 600 ;;`,
+        `  create) : >"$made"; ${neverEnds(row)} ;;`,
         `  ps) if [[ " $* " == *" --format "* ]]; then printf '%s %s\\n' ${killedId} ${JSON.stringify(mark)}; elif [ -e "$made" ]; then echo ${standInId}; fi ;;`,
         `  rm) rm -f "$made"; echo "$4" ;;`,
         "esac",
@@ -1271,6 +1558,7 @@ test.skipIf(!onLinux)(
         Number.NaN;
       expect(listed - created).toBeGreaterThan((ranOutMs + endStopMs) / 1000 - 1);
       await until(
+        row,
         () => docker.running().length === 0,
         "the end of the docker create the row stopped",
         claimEventMs
@@ -1324,7 +1612,7 @@ test.skipIf(!onLinux)(
     const docker = standInDocker(tmp, [
       'case "$1" in',
       lists,
-      `  rm) if [ "$4" = ${stuck.id} ]; then exec -a "$0" sleep 600; fi; echo "$4" ;;`,
+      `  rm) if [ "$4" = ${stuck.id} ]; then ${neverEnds(row)}; fi; echo "$4" ;;`,
       "esac",
     ]);
     try {
@@ -1351,6 +1639,7 @@ test.skipIf(!onLinux)(
       ).toHaveLength(1);
       expectEndedAtBound(docker.clock(), rowBounds.boundMs);
       await until(
+        row,
         () => docker.running().length === 0,
         "the end of each docker the start ran",
         claimEventMs
@@ -1522,12 +1811,14 @@ test.skipIf(!onLinux)(
       const first = startSweep(row, tmp);
       // The signal comes after the first sweep's start and its holder read before the claim.
       await until(
+        row,
         () => signalled().length > 0,
         "the first start's signal",
         waitsMs({ children: 1, reads: 1, bounds: [] })
       );
       const second = startSweep(row, tmp);
       await until(
+        row,
         () =>
           second.stderr().includes(`waits for another start's claim of ${data}`) ||
           signalled().length > 1,
@@ -1565,7 +1856,7 @@ test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start says it stopped a postmaster only where its own signal reached it: a postmaster that ended before the signal got none",
   async () => {
     const sleeper = () => {
-      const child = Bun.spawn(["sleep", "600"], { stdout: "ignore", stderr: "ignore" });
+      const child = Bun.spawn(untilThisEnds(), { stdout: "ignore", stderr: "ignore" });
       return { child, start: marks.startOf(readFileSync(`/proc/${child.pid}/stat`, "utf8")) };
     };
     const ended = sleeper();
@@ -1584,7 +1875,7 @@ test.skipIf(!onLinux)(
       }
     }
   },
-  // The stop polls `/proc` every 50 ms until the sleep that got SIGQUIT has ended, which takes
+  // The stop polls `/proc` every 50 ms until the stand-in that got SIGQUIT has ended, which takes
   // well under a second; 60 s holds a machine under heavy load.
   60_000
 );
@@ -1650,6 +1941,7 @@ test.skipIf(!onLinux)(
       // A line that names that stack says a start removed it: none says it was left. The start
       // prints the run directory's one spelling, the one its data directory is written in.
       await removedByAStart(
+        row,
         lines,
         { postmaster, data: left.data, claimed, file: left.file },
         dirname(dirname(left.data))
@@ -1713,6 +2005,7 @@ test.skipIf(!onLinux)(
       const first = startSweep(row, startTmp);
       // The first start's wait comes after its start, and the first stack it reads is the held one.
       await until(
+        row,
         () => first.stderr().includes(`waits for another start's claim of ${held.data}`),
         "the first start's wait for the claim the claimer holds",
         waitsMs({ children: 1, reads: 0, bounds: [] })
@@ -1721,6 +2014,7 @@ test.skipIf(!onLinux)(
       const otherServes = otherPostmaster;
       // The second start's stop comes after its start and its holder read before the claim.
       await until(
+        row,
         () => !otherServes.alive(),
         "the second start's stop",
         waitsMs({ children: 1, reads: 1, bounds: [] })
@@ -1732,12 +2026,12 @@ test.skipIf(!onLinux)(
       const unmarked = "serves it from a run directory this start does not list";
       expect(holding(holding(firstLines, other.data), unmarked)).toEqual([]);
       for (const lines of [firstLines, secondLines]) {
-        await removedByAStart(lines, {
+        await removedByAStart(row, lines, {
           ...held,
           claimed: claim.claimed,
           postmaster: heldPostmaster,
         });
-        await removedByAStart(lines, { ...other, postmaster: otherPostmaster });
+        await removedByAStart(row, lines, { ...other, postmaster: otherPostmaster });
       }
     } finally {
       if (claimer !== undefined) await endChild(claimer);

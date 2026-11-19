@@ -38,7 +38,13 @@ import {
   statStartMs,
 } from "../harness-postgres-processes";
 import { stopMs } from "../harness-postgres-removal";
-import { type StandIn, standIn } from "./planted-marks";
+import {
+  parentLives,
+  type StandIn,
+  standIn,
+  untilParentEnds,
+  untilThisEnds,
+} from "./planted-marks";
 
 const { marksDirectory, runDirectoryPrefix, stackOwner } = marks;
 
@@ -115,23 +121,23 @@ function postmasterProgram(bin: string, program: string, seen: Seen): string {
   return postgres;
 }
 
-/** A stand-in postmaster of the cluster in `data`: a copy of `sleep` in `bin`
- *  (`postmasterProgram`), run with `data` for its working directory, which `data`'s
- *  `postmaster.pid` names. */
+/** A stand-in postmaster of the cluster in `data`: a copy of `tail` in `bin`
+ *  (`postmasterProgram`) that lives until this process ends (`untilThisEnds`), run with `data` for
+ *  its working directory, which `data`'s `postmaster.pid` names. */
 export function standInPostmaster(bin: string, data: string, seen: Seen): StandIn {
-  const sleep = Bun.which("sleep");
-  if (sleep === null) throw new Error("no sleep on PATH to stand in for a postmaster");
-  const postgres = postmasterProgram(bin, sleep, seen);
+  const [tail = "", ...until] = untilThisEnds();
+  const postgres = postmasterProgram(bin, tail, seen);
   mkdirSync(data, { recursive: true });
-  const postmaster = standIn(data, [postgres, "600"]);
+  const postmaster = standIn(data, [postgres, ...until]);
   leaveData(data, postmaster.pid);
   return postmaster;
 }
 
 /** A stand-in postmaster of the cluster in `data` that writes one line to `signals` for each
- *  SIGQUIT it gets, and ends once it got one and `go` exists, or after 600 s: a copy of `bash` in
- *  `bin` that only the row's own starts find (`postmasterProgram`), run with `data` for its
- *  working directory, which `data`'s `postmaster.pid` names. */
+ *  SIGQUIT it gets, and ends once it got one and `go` exists, or once this process, its parent,
+ *  ended (`parentLives`): a copy of `bash` in `bin` that only the row's own starts find
+ *  (`postmasterProgram`), run with `data` for its working directory, which `data`'s
+ *  `postmaster.pid` names. */
 export function signalCountingPostmaster(
   bin: string,
   data: string,
@@ -143,8 +149,7 @@ export function signalCountingPostmaster(
   const postgres = postmasterProgram(bin, bash, "its TMPDIR");
   mkdirSync(data, { recursive: true });
   const script = `quit=; trap 'echo QUIT >>"$1"; quit=1' QUIT
-end=$((SECONDS + 600))
-while [ "$SECONDS" -lt "$end" ]; do
+while ${parentLives}; do
   if [ -n "$quit" ] && [ -e "$2" ]; then exit 0; fi
   sleep 0.05 & wait $!
 done`;
@@ -168,20 +173,26 @@ function fifoAt(path: string): string {
  *  the postmaster ends at once; its child runs 0.5 s more, which is longer than a start's poll of
  *  `/proc` and shorter than its wait for the processes of a postmaster it stopped, then writes
  *  `present` to `saw` where `data` still holds its `PG_VERSION`, or `gone`, and ends. Both wait
- *  with `read -t` on a FIFO beside `saw`, so neither forks a process in `data`. */
+ *  with `read -t` on a FIFO beside `saw`, so neither forks a process in `data`. The postmaster
+ *  lives until this process, its parent, ends, and its child, where no SIGQUIT came, until the
+ *  postmaster ends (`parentLives`). */
 export function slowReleasingPostmaster(bin: string, data: string, saw: string): StandIn {
   const bash = Bun.which("bash");
   if (bash === null) throw new Error("no bash on PATH to stand in for a postmaster");
   const postgres = postmasterProgram(bin, bash, "its TMPDIR");
   mkdirSync(data, { recursive: true });
-  const child = `until [ -e "$1" ]; do read -r -t 0.05 -u 3 _; done
+  // The child reads "$1" again once its parent ended, since the postmaster's SIGQUIT writes it
+  // just before the postmaster ends.
+  const child = `until [ -e "$1" ]; do
+  ${parentLives} || [ -e "$1" ] || exit 0
+  read -r -t 0.05 -u 3 _
+done
 read -r -t 0.5 -u 3 _
 if [ -e PG_VERSION ]; then echo present; else echo gone; fi >>"$2"`;
   const script = `exec 3<>"$3"
 trap 'echo >"$1"; exit 0' QUIT
 "$BASH" -c "$4" child "$1" "$2" &
-end=$((SECONDS + 600))
-while [ "$SECONDS" -lt "$end" ]; do read -r -t 0.05 -u 3 _; done`;
+while ${parentLives}; do read -r -t 0.05 -u 3 _; done`;
   const fifo = fifoAt(`${saw}.fifo`);
   const postmaster = standIn(data, [
     postgres,
@@ -333,11 +344,12 @@ for (const path of paths) {
 /** Another start's removal of `CLAIM_PATH` under its claim, as a child of this file runs it: the
  *  claim's name, `<path>.removing-<pid>-<start>` with the child's own pid and start
  *  (`claimInfix`), is a directory the child makes with a directory `d0` in it, and the child holds
- *  `d0` open, as `rmSync` holds each directory it empties, until it is killed, for at most 600 s.
- *  The path comes in the environment, as a start's own arguments name none. */
+ *  `d0` open, as `rmSync` holds each directory it empties, until it is killed, or until this
+ *  process, its parent, ends (`untilParentEnds`). The path comes in the environment, as a start's
+ *  own arguments name none. */
 const removingScript = `
 const { mkdirSync, openSync, readFileSync } = require("node:fs");
-setTimeout(() => process.exit(1), 600_000);
+${untilParentEnds}
 const stat = readFileSync("/proc/self/stat", "utf8");
 const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
 const claimed = process.env.CLAIM_PATH + ${JSON.stringify(claimInfix)} + process.pid + "-" + start;
@@ -354,7 +366,8 @@ export async function removingInChild(
   row: Row,
   path: string
 ): Promise<{ claimed: string; claimer: Subprocess }> {
-  row.child(`the removal of ${path} under another start's claim`);
+  const what = `the removal of ${path} under another start's claim`;
+  row.child(what);
   const claimer = Bun.spawn([process.execPath, "--eval", removingScript], {
     env: { ...process.env, CLAIM_PATH: path },
     stdout: "pipe",
@@ -362,7 +375,7 @@ export async function removingInChild(
   });
   try {
     const claimed = `${path}${claimInfix}${claimer.pid}-${marks.startOf(readFileSync(`/proc/${claimer.pid}/stat`, "utf8"))}`;
-    expect((await firstLineOf(claimer)).trim()).toBe(claimed);
+    expect((await firstLineOf(row, claimer, what)).trim()).toBe(claimed);
     return { claimed, claimer };
   } catch (error) {
     await endChild(claimer);
@@ -520,6 +533,25 @@ export function rowMs(waits: Waits): number {
   return waitsMs(waits) + ends + rowRoomMs;
 }
 
+/** The variable through which a CI step that runs these rows gives the time at which its own
+ *  limit (`timeout-minutes`) ends it, in milliseconds since the epoch: the step exports it as it
+ *  starts, from that same limit, and a row of `harness-postgres-removal.test.ts` reads every
+ *  workflow of the repository for a step that runs a row of these files and exports none
+ *  (`stepsThatCutNoRow`). */
+export const stepEndsVariable = "DISPATCH_E2E_STEP_ENDS_AT";
+
+/** When the CI step that runs this process ends it (`stepEndsVariable`), or undefined where no
+ *  step said so, as in a run on a machine of one's own. */
+export function stepEnds(): number | undefined {
+  const value = process.env[stepEndsVariable];
+  if (value === undefined || value === "") return undefined;
+  const at = Number(value);
+  if (!Number.isSafeInteger(at) || at <= 0) {
+    throw new Error(`${stepEndsVariable} is ${JSON.stringify(value)}, which is no time`);
+  }
+  return at;
+}
+
 /** What a row started so far, held to what its limit counts (`Waits`): each fixture that starts a
  *  `bun` child charges the row for it (`child`), each sweep charges the holder reads it made, as
  *  the reader it ran counted them (`reads`), each fixture call that makes a container or an image
@@ -527,42 +559,110 @@ export function rowMs(waits: Waits): number {
  *  part before the wait (`part`). A row that starts more than its limit counts fails there, naming
  *  what the limit left out, whatever the load: its limit is below what it waits for. A part counts
  *  where the row's waits hold one of its kind whose bound reaches the part's, before the deadline
- *  (`Waits.parts`) or in the `finally` (`Waits.ends`), and each counted part serves one wait.
- *  `ms` is `waitsMs` of the row's waits, the limit of a child it ends itself, and `deadline` is
+ *  (`Waits.parts`) or in the `finally` (`Waits.ends`), and each counted part serves one wait; the
+ *  charge answers when that wait must end by where the row's step cut its limit (`cut`): the
+ *  deadline, or `stops` for a wait of the `finally`.
+ *  `ms` is how long the row's waits may take, `waitsMs` of them, and `deadline` is
  *  when those waits end, from the row's start, on the machine's clock (`machine` of
  *  `e2e/harness-postgres-container-removal.ts`): a fixture call of Docker or Postgres waits until
  *  then and no longer, so it ends within the row's own limit with a reason that names it.
- *  `cleanup` is when a fixture call that removes what the row made waits until: after the
- *  deadline, the waits of the row's `finally` (`Waits.ends`) and half the room above them
- *  (`rowRoomMs`), so a removal's line, and not the row's own clock, ends the row. */
+ *  `stops` is when the waits of the row's `finally` (`Waits.ends`), such as the stop of a stack
+ *  it started, end, and `cleanup` when a fixture call that removes what the row made waits until:
+ *  after them, and before half the room above them (`rowRoomMs`), so a removal's line, and not
+ *  the row's own clock, ends the row. `end` is when the row's own limit ends it (`rowMs` from its
+ *  start), until which each stand-in the row needs alive lives (`lifeOf`).
+ *  Where the CI step that runs the row ends before that (`stepEnds`), the step's end is the row's
+ *  end, and `cut` says so: the deadline is that end less the row's own time for its `finally`
+ *  (its stops, and the room above them in which it removes what it made), each scaled by what the
+ *  step leaves of the row's own limit, so the row's waits and its `finally` share that time in the
+ *  proportion of their bounds. Every wait of the row then ends by its share (`boundOf`), naming
+ *  what it waited for and the step's end, so that a row whose parts hang ends inside its step
+ *  with its own reason and still removes what it made, and not by the step's own clock. A run on
+ *  a machine of one's own sets no such end, and its rows keep their own limits. */
 export interface Row {
   readonly ms: number;
   readonly deadline: number;
+  readonly stops: number;
   readonly cleanup: number;
+  readonly end: number;
+  readonly cut: string | undefined;
   child(what: string): void;
   reads(made: number, what: string): void;
   made(what: string): void;
-  part(part: Part): void;
+  part(part: Part): number;
 }
 
-/** The `Row` of a row whose limit is `rowMs(waits)`, which starts now. */
+/** How long a stand-in process that the row `row` needs alive lives, in whole seconds, rounded
+ *  up: until the row ends (`Row.end`), so that no wait of the row, inside its bounds, outlives it,
+ *  and it ends by itself where the row did not end it. A stand-in a row gave a fixed 600 s died
+ *  inside the row's waits on a shared Linux machine on 2026-11-19, when a start of the pool the
+ *  row waited for took 620 s inside its own bounds. A stand-in whose parent outlives the row waits
+ *  for its parent's end instead (`untilThisEnds`, `untilParentEnds` of `planted-marks.ts`): this is
+ *  for one that must outlive the process that started it, as a `docker` call that hangs in its
+ *  daemon outlives the start that ran it (`neverEnds`). */
+export function lifeOf(row: Row): number {
+  return Math.max(1, Math.ceil((row.end - machine.now()) / 1000));
+}
+
+/** The line of a stand-in `docker`'s body (`standInDocker`) for a call that Docker never ends: it
+ *  becomes `sleep`, with the stand-in's path for its name (`exec -a "$0"`), so `running` finds it,
+ *  until the row `row` ends (`lifeOf`), and so outlives the start that ran it, as a `docker` that
+ *  hangs in its daemon does, and a row reads whether that start stopped it. */
+export function neverEnds(row: Row): string {
+  return `exec -a "$0" sleep ${lifeOf(row)}`;
+}
+
+/** How long a wait of the row `row` whose own bound is `ms` may run from now, and how a wait that
+ *  ran that time out says so: its own bound, or, where the end of the row's CI step cut the row's
+ *  limit (`Row.cut`), the time left until `by`, the row's deadline, or `Row.stops` for a wait of
+ *  the row's `finally`, where that is shorter. A bound of `Infinity` is a wait that sets none of
+ *  its own. */
+export function boundOf(row: Row, ms: number, by = row.deadline): { ms: number; named: string } {
+  const left = by - machine.now();
+  if (row.cut === undefined || left >= ms) return { ms, named: `within ${ms / 1000} s` };
+  const own = Number.isFinite(ms) ? `, before its own ${ms / 1000} s` : "";
+  return {
+    ms: Math.max(0, left),
+    named: `by the row's deadline, ${Math.max(0, left) / 1000} s after this wait began, which ${row.cut} set${own}`,
+  };
+}
+
+/** The `Row` of a row whose limit is `rowMs(waits)`, or the time its CI step leaves
+ *  (`stepEnds`) where that is shorter, which starts now. */
 export function rowOf(waits: Waits): Row {
   let children = 0;
   let reads = 0;
   let makes = 0;
   // Each part the limit counts, before the deadline or in the `finally`, until a wait uses it.
   const counted = [
-    ...(waits.parts ?? []).flatMap((part) => ("atOnce" in part ? part.atOnce : [part])),
-    ...(waits.ends ?? []).filter((end): end is Part => typeof end !== "number"),
+    ...(waits.parts ?? [])
+      .flatMap((part) => ("atOnce" in part ? part.atOnce : [part]))
+      .map((part) => ({ part, inFinally: false })),
+    ...(waits.ends ?? [])
+      .filter((end): end is Part => typeof end !== "number")
+      .map((part) => ({ part, inFinally: true })),
   ];
   const start = machine.now();
-  const ms = waitsMs(waits);
-  const deadline = start + ms;
+  const own = rowMs(waits);
+  const step = stepEnds();
+  const limit = step === undefined ? own : Math.max(0, Math.min(own, step - start));
+  // What the step leaves of the row's own limit: 1 where the step leaves it all, as off CI.
+  const share = limit / own;
+  const deadline = start + Math.floor(waitsMs(waits) * share);
+  // The waits of the `finally` after the deadline: its stops, then the room for its removals.
+  const stops = deadline + Math.floor((own - waitsMs(waits) - rowRoomMs) * share);
+  const cut =
+    step !== undefined && limit < own
+      ? `the end of the CI step that runs it, at ${new Date(step).toISOString()} (${stepEndsVariable}), ${limit / 1000} s after the row began and before its own ${own / 1000} s`
+      : undefined;
   return {
-    ms,
+    ms: deadline - start,
     deadline,
-    // The deadline, the waits of the `finally` and half the room: the row's limit less half the room.
-    cleanup: start + rowMs(waits) - rowRoomMs / 2,
+    stops,
+    // Half the room after the stops: the row's limit less half its share of the room.
+    cleanup: start + limit - (rowRoomMs * share) / 2,
+    end: start + limit,
+    cut,
     child: (what) => {
       children += 1;
       if (children > waits.children) {
@@ -590,17 +690,18 @@ export function rowOf(waits: Waits): Row {
     part: (part) => {
       // The least counted bound that holds the part, so that a longer one stays for a longer wait.
       const fits = counted
-        .filter((each) => each.what === part.what && each.ms >= part.ms)
-        .sort((a, b) => a.ms - b.ms)[0];
+        .filter((each) => each.part.what === part.what && each.part.ms >= part.ms)
+        .sort((a, b) => a.part.ms - b.part.ms)[0];
       if (fits === undefined) {
         const left = counted
-          .filter((each) => each.what === part.what)
-          .map((each) => each.ms / 1000);
+          .filter((each) => each.part.what === part.what)
+          .map((each) => each.part.ms / 1000);
         throw new Error(
           `the row's limit counts ${left.length === 0 ? "nothing" : `${left.join(" s, ")} s`} for ${part.what} it has not waited for yet, and it waits for ${part.what} for up to ${part.ms / 1000} s: its limit is below what it waits for`
         );
       }
       counted.splice(counted.indexOf(fits), 1);
+      return fits.inFinally ? stops : deadline;
     },
   };
 }
@@ -639,7 +740,9 @@ function readsMade(starts: string): number {
  *  program in it, for its `PATH`, so no row changes the environment of this process, and with the
  *  row's `reader` where it gives one, counted (`countedReader`): what it printed so far, the lines
  *  it printed once it ended, and the child, for a row to end. It charges `row` for the child and,
- *  once the child ended, for the holder reads its sweep made (`Row`). */
+ *  once the child ended, for the holder reads its sweep made (`Row`). The sweep sets no bound of
+ *  its own, but where its CI step cut the row's limit (`Row.cut`) the row ends it at the row's
+ *  deadline and throws, naming it (`boundOf`). */
 export function startSweep(
   row: Row,
   tmp: string,
@@ -666,10 +769,16 @@ export function startSweep(
     }
   })();
   const lines = (async () => {
-    const [code] = await Promise.all([child.exited, read]);
+    const { ms, named } = boundOf(row, Number.POSITIVE_INFINITY);
+    const code = await (Number.isFinite(ms)
+      ? Promise.race([child.exited, Bun.sleep(ms).then(() => undefined)])
+      : child.exited);
+    if (code === undefined) await endChild(child);
+    await read;
     const made = readsMade(starts);
     rmSync(counts, { recursive: true, force: true });
     row.reads(made, what);
+    if (code === undefined) throw new Error(`${what} did not end ${named}: ${stderr}`);
     if (code !== 0) throw new Error(`the sweep exited ${code}: ${stderr}`);
     return stderr.split("\n");
   })();
@@ -681,13 +790,15 @@ export function sweep(row: Row, tmp: string, empty?: string): Promise<string[]> 
   return startSweep(row, tmp, { empty }).lines;
 }
 
-/** Waits until `met` holds, and throws naming `what` where it has not after `ms`. What it waits for
- *  is a write of another process (a stand-in's signal line, a child's line), which no event of
- *  this process reports, so it reads again every 50 ms. */
-export async function until(met: () => boolean, what: string, ms: number): Promise<void> {
-  const deadline = Date.now() + ms;
+/** Waits until `met` holds, and throws naming `what` where it has not after `ms`, or by the row's
+ *  deadline where its CI step cut the row's limit (`boundOf`). What it waits for is a write of
+ *  another process (a stand-in's signal line, a child's line), which no event of this process
+ *  reports, so it reads again every 50 ms. */
+export async function until(row: Row, met: () => boolean, what: string, ms: number): Promise<void> {
+  const bound = boundOf(row, ms);
+  const deadline = Date.now() + bound.ms;
   while (!met()) {
-    if (Date.now() >= deadline) throw new Error(`${what} did not come within ${ms / 1000} s`);
+    if (Date.now() >= deadline) throw new Error(`${what} did not come ${bound.named}`);
     await Bun.sleep(50);
   }
 }
@@ -722,11 +833,11 @@ export function leaveContainerMark(run: string, owner: unknown) {
 }
 
 /** A start's claim of `CLAIM_PATH` (`claimForRemoval`) in a child of this file: it prints the
- *  claim, and then waits to be killed, for at most 600 s. No process holds what a row claims so,
- *  so it reads none. */
+ *  claim, and then waits to be killed, or for the end of this process, its parent
+ *  (`untilParentEnds`). No process holds what a row claims so, so it reads none. */
 const claimScript = `
 import { claimForRemoval } from ${JSON.stringify(removalModule)};
-setTimeout(() => process.exit(1), 600_000);
+${untilParentEnds}
 console.log(JSON.stringify(await claimForRemoval(process.env.CLAIM_PATH, process.getuid(), async () => ({ holders: [], unread: [] }))));
 `;
 
@@ -736,17 +847,34 @@ export async function endChild(child: Subprocess): Promise<void> {
   await child.exited;
 }
 
-/** What `child` printed up to its first line feed, or all it printed where it ended first. */
-export async function firstLineOf(child: Subprocess<"ignore", "pipe", "ignore">): Promise<string> {
+/** What `child` printed up to its first line feed, or all it printed where it ended first. It
+ *  waits with no bound of its own, but where its CI step cut the row's limit (`Row.cut`) it throws
+ *  at the row's deadline, naming `what`, the child it waits for (`boundOf`). */
+export async function firstLineOf(
+  row: Row,
+  child: Subprocess<"ignore", "pipe", "ignore">,
+  what: string
+): Promise<string> {
+  const { ms, named } = boundOf(row, Number.POSITIVE_INFINITY);
+  const ends = Date.now() + ms;
   let printed = "";
   const reader = child.stdout.getReader();
   const decoder = new TextDecoder();
-  while (!printed.includes("\n")) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    printed += decoder.decode(chunk.value, { stream: true });
+  try {
+    while (!printed.includes("\n")) {
+      const chunk = await (Number.isFinite(ms)
+        ? Promise.race([
+            reader.read(),
+            Bun.sleep(Math.max(0, ends - Date.now())).then(() => "late" as const),
+          ])
+        : reader.read());
+      if (chunk === "late") throw new Error(`the first line of ${what} did not come ${named}`);
+      if (chunk.done) break;
+      printed += decoder.decode(chunk.value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
   }
-  reader.releaseLock();
   return printed;
 }
 
@@ -758,7 +886,8 @@ export async function claimInChild(
   row: Row,
   path: string
 ): Promise<{ claimed: string; claimer: Subprocess }> {
-  row.child(`the claim of ${path}`);
+  const what = `the claim of ${path}`;
+  row.child(what);
   const claimer = Bun.spawn([process.execPath, "--eval", claimScript], {
     env: { ...process.env, CLAIM_PATH: path },
     stdout: "pipe",
@@ -766,7 +895,7 @@ export async function claimInChild(
   });
   try {
     const claimed = `${path}.removing-${claimer.pid}-${marks.startOf(readFileSync(`/proc/${claimer.pid}/stat`, "utf8"))}`;
-    const printed = await firstLineOf(claimer);
+    const printed = await firstLineOf(row, claimer, what);
     expect(JSON.parse(printed)).toEqual({ kind: "claimed", path: claimed });
     return { claimed, claimer };
   } catch (error) {
@@ -788,15 +917,16 @@ const marksModule = fileURLToPath(new URL("../harness-postgres-marks.ts", import
 /** A stack's harness, as `e2e/harness-postgres.ts` starts stack 0 of the binaries provider: it
  *  marks its Postgres, makes its data directory and runs `HARNESS_BIN`'s `pg_ctl ... start` on it,
  *  with the arguments the provider gives it, and prints that pg_ctl's pid. Then it waits to be
- *  killed, which is the row's own SIGKILL, for at most 600 s. `HARNESS_DATA`, where it is set, is
- *  the data directory as the stack spells it to `pg_ctl -D`, and `HARNESS_CWD` the directory
- *  that `pg_ctl` runs in: a spelling of its own, which the mark does not hold. */
+ *  killed, which is the row's own SIGKILL, or for the end of this process, its parent
+ *  (`untilParentEnds`). `HARNESS_DATA`, where it is set, is the data directory as the stack
+ *  spells it to `pg_ctl -D`, and `HARNESS_CWD` the directory that `pg_ctl` runs in: a spelling of
+ *  its own, which the mark does not hold. */
 export const harnessScript = `
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { markPostgres } from ${JSON.stringify(marksModule)};
-setTimeout(() => process.exit(1), 600_000);
+${untilParentEnds}
 const { HARNESS_RUN: run = "", HARNESS_BIN: bin = "", HARNESS_SOCKETS: sockets = "" } = process.env;
 const data = join(run, "worker-0", "pgdata");
 markPostgres(run, "worker-0", { sockets, postmaster: { bin, data } });
@@ -813,29 +943,33 @@ console.log(ctl.pid);
 `;
 
 /** A stand-in of `pg_ctl -D <data> ... start` in `bin`, beside a stand-in postmaster that only
- *  the row's own starts find (`postmasterProgram`): it waits for `go`, for at most 600 s, and then
- *  starts that postmaster with `<data>` for its working directory, names it in `<data>`'s
- *  `postmaster.pid` and ends, as `pg_ctl -w` ends once its server is up; where `<data>` is gone,
- *  it fails, as `pg_ctl` does. It uses shell builtins and that postmaster alone: it waits with
- *  `read -t` on a FIFO in `bin` (`fifoAt`), so it forks no process while it waits. A wait of
- *  `sleep 0.05` forked a shell that named `<data>` in its arguments until it became `sleep`, and a
- *  start's holder read that met that moment named it as a second holder beside `pg_ctl`: 1 of 20
- *  runs of a row on a shared Linux machine on 2026-11-19, and 2,830 of 301,387 reads of the
- *  stand-in's children in 10 s. */
-export function startingPgCtl(bin: string, go: string): void {
+ *  the row's own starts find (`postmasterProgram`): it waits for `go`, and then starts that
+ *  postmaster with `<data>` for its working directory, names it in `<data>`'s `postmaster.pid` and
+ *  ends, as `pg_ctl -w` ends once its server is up; where `<data>` is gone, it fails, as `pg_ctl`
+ *  does. It uses shell builtins and that postmaster alone: it waits with `read -t` on a FIFO in
+ *  `bin` (`fifoAt`), so it forks no process while it waits. A wait of `sleep 0.05` forked a shell
+ *  that named `<data>` in its arguments until it became `sleep`, and a start's holder read that
+ *  met that moment named it as a second holder beside `pg_ctl`: 1 of 20 runs of a row on a shared
+ *  Linux machine on 2026-11-19, and 2,830 of 301,387 reads of the stand-in's children in 10 s.
+ *  The stack that runs it dies first, as a stack killed hard does, so it outlives its parent, and
+ *  so does the postmaster it starts: both end on their own once `life` seconds have passed, the
+ *  time the row that runs them has left (`lifeOf`); a `pg_ctl` that `go` did not reach by then
+ *  starts nothing. */
+export function startingPgCtl(bin: string, go: string, life: number): void {
   const sleep = Bun.which("sleep");
   if (sleep === null) throw new Error("no sleep on PATH to stand in for a postmaster");
   const postgres = postmasterProgram(bin, sleep, "its TMPDIR");
   const pause = fifoAt(join(bin, "pg_ctl.pause"));
   writeFileSync(
     join(bin, "pg_ctl"),
-    `#!/usr/bin/env bash\nend=$((SECONDS + 600))\nexec 3<>${JSON.stringify(pause)}\n` +
+    `#!/usr/bin/env bash\nend=$((SECONDS + ${life}))\nexec 3<>${JSON.stringify(pause)}\n` +
       `until [ -e ${JSON.stringify(go)} ] || [ "$SECONDS" -ge "$end" ]; do read -r -t 0.05 -u 3 _; done\n` +
+      `[ -e ${JSON.stringify(go)} ] || exit 1\n` +
       // The postmaster gets no descriptor of the FIFO.
       "exec 3<&-\n" +
       // A command that a script runs in the background ignores SIGQUIT unless job control is
       // on, and a start's stop of a postmaster sends SIGQUIT first.
-      `cd "$2" || exit 1\nset -m\n${JSON.stringify(postgres)} 600 </dev/null >/dev/null 2>&1 &\n` +
+      `cd "$2" || exit 1\nset -m\n${JSON.stringify(postgres)} "$((end > SECONDS ? end - SECONDS : 1))" </dev/null >/dev/null 2>&1 &\n` +
       `echo "$!" >postmaster.pid\n`,
     { mode: 0o755 }
   );
@@ -942,10 +1076,12 @@ export function standInDocker(tmp: string, body: readonly string[]): StandInDock
 
 /** Runs `script` in a child of this file with `env` over this process's own, and `bin`, a
  *  directory of stand-ins, first on its `PATH`. Answers what it printed on stdout and stderr and
- *  how many seconds it took; kills the child and throws where it has not ended within `ms`, and
+ *  how many seconds it took; kills the child and throws where it has not ended within everything
+ *  `row` waits for (`Row.ms`), or by its deadline where its CI step cut its limit (`boundOf`), and
  *  where it exits other than 0. */
-async function inChild(script: string, bin: string, env: Record<string, string>, ms: number) {
+async function inChild(script: string, bin: string, env: Record<string, string>, row: Row) {
   const started = Date.now();
+  const { ms, named } = boundOf(row, row.ms);
   const child = Bun.spawn([process.execPath, "--eval", script], {
     env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH ?? ""}` },
     stdout: "pipe",
@@ -958,7 +1094,7 @@ async function inChild(script: string, bin: string, env: Record<string, string>,
   const code = await Promise.race([child.exited, Bun.sleep(ms).then(() => undefined)]);
   if (code === undefined) {
     await endChild(child);
-    throw new Error(`the child did not end within ${ms / 1000} s`);
+    throw new Error(`the child did not end ${named}`);
   }
   const [stdout, stderr] = await printed;
   if (code !== 0) throw new Error(`the child exited ${code}: ${stderr}`);
@@ -975,7 +1111,7 @@ export async function removeInChild(row: Row, bin: string, id: string, bounds: R
     removeScript,
     bin,
     { CONTAINER_ID: id, ...boundsEnv(bounds) },
-    row.ms
+    row
   );
   return { removal: JSON.parse(stdout) as unknown, lines: stderr.split("\n"), seconds };
 }
@@ -1051,7 +1187,7 @@ export async function fixtureDockerInChild(
       ...(before === undefined ? {} : { BEFORE: JSON.stringify(before) }),
       ...(end === undefined ? {} : { RUN: end.run, STOP_MS: String(end.stopMs) }),
     },
-    row.ms
+    row
   );
   return {
     ended: JSON.parse(stdout) as {
@@ -1079,7 +1215,7 @@ export async function sweepInChild(row: Row, tmp: string, bin: string, bounds: R
       sweepScript,
       bin,
       { TMPDIR: tmp, ...boundsEnv(bounds), STAT_READER: JSON.stringify(countedReader(starts)) },
-      row.ms
+      row
     );
     row.reads(readsMade(starts), what);
     return { lines: stderr.split("\n"), seconds };

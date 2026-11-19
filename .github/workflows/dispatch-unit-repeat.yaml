@@ -226,12 +226,16 @@ jobs:
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
-      # new snapshot (Bun's snapshot documentation).
+      # new snapshot (Bun's snapshot documentation). The harness lane's rows of
+      # harness-postgres-removal.test.ts, harness-postgres-holders.test.ts and
+      # harness-postgres-marks.test.ts may wait longer than this step within their parts' own
+      # bounds, so the step exports when its limit ends it (DISPATCH_E2E_STEP_ENDS_AT, as
+      # ci-job-dispatch-ui.yaml's test step does), and such a row ends there, naming its wait.
       - name: Run the lane under one seed with --reruns ${{ matrix.reruns }}
         timeout-minutes: ${{ matrix.step_minutes }}
-        run: >-
-          bun run test:repeat --lane ${{ matrix.lane }} --reruns ${{ matrix.reruns }}
-          --out "$RUNNER_TEMP/unit-repeat"
+        run: |
+          export DISPATCH_E2E_STEP_ENDS_AT=$(( ($(date +%s) + ${{ matrix.step_minutes }} * 60) * 1000 ))
+          bun run test:repeat --lane ${{ matrix.lane }} --reruns ${{ matrix.reruns }} --out "$RUNNER_TEMP/unit-repeat"
         working-directory: packages/dispatch
         env:
           CI: "true"

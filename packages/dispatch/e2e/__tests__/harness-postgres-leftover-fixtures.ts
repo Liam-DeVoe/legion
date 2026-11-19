@@ -60,6 +60,7 @@ import {
 } from "../harness-postgres-marks";
 import { claimWaitMs } from "../harness-postgres-removal";
 import {
+  boundOf,
   claimEventMs,
   inTurn,
   type Part,
@@ -367,31 +368,47 @@ export async function during<T>(what: string, wait: () => Promise<T>): Promise<T
   }
 }
 
+/** A part of a row's waits that the row was charged for (`Row.part`): the row, and when the wait
+ *  must end by where the row's CI step cut the row's limit, its deadline or, in its `finally`, the
+ *  end of its stops. */
+interface Charged {
+  readonly row: Row;
+  readonly by: number;
+}
+
+/** Charges `row` for `part` (`Row.part`), before the wait for it. */
+function charge(row: Row, part: Part): Charged {
+  return { row, by: row.part(part) };
+}
+
 /** Waits for `child` to exit, and kills it and throws, naming `what`, where it has not within the
- *  bound of `part`, the part of its row's waits it is, which the caller charged its row for. */
-function exited(child: Child, part: Part, what: string): Promise<number> {
+ *  bound of `part`, the part of its row's waits it is, which the caller charged its row for, or by
+ *  the time that charge answered where the row's CI step cut its limit (`boundOf`). */
+function exited(child: Child, part: Part, what: string, { row, by }: Charged): Promise<number> {
   return during(what, async () => {
-    const code = await Promise.race([child.process.exited, sleep(part.ms).then(() => undefined)]);
+    const { ms, named } = boundOf(row, part.ms, by);
+    const code = await Promise.race([child.process.exited, sleep(ms).then(() => undefined)]);
     if (code !== undefined) return code;
     kill(child);
-    throw new Error(`${what} did not end within ${part.ms / 1000} s: ${child.output.stderr}`);
+    throw new Error(`${what} did not end ${named}: ${child.output.stderr}`);
   });
 }
 
 /** Waits for the end of `child`, which the row `row` sent SIGKILL, as a part of the row's waits
  *  (`killedEnd`), and answers its exit status; throws, naming `what`, where it has not ended. */
 export function endOfKilled(row: Row, child: Child, what: string): Promise<number> {
-  row.part(killedEnd);
-  return exited(child, killedEnd, what);
+  return exited(child, killedEnd, what, charge(row, killedEnd));
 }
 
 /** Waits for the first line `child` prints on its stdout, and answers it. Throws, naming `what`
  *  and what the child wrote on stderr, where the child exits before it printed one, and kills the
  *  child and throws where it has printed none within the bound of `part`, the part of its row's
- *  waits it is, which the caller charged its row for. */
-function firstLine(child: Child, part: Part, what: string): Promise<string> {
+ *  waits it is, which the caller charged its row for, or by the time that charge answered where
+ *  the row's CI step cut its limit (`boundOf`). */
+function firstLine(child: Child, part: Part, what: string, { row, by }: Charged): Promise<string> {
   return during(what, async () => {
-    const deadline = Date.now() + part.ms;
+    const { ms, named } = boundOf(row, part.ms, by);
+    const deadline = Date.now() + ms;
     while (!child.output.stdout.includes("\n")) {
       const code = await Promise.race([child.process.exited, sleep(200).then(() => undefined)]);
       if (code !== undefined && !child.output.stdout.includes("\n")) {
@@ -400,7 +417,7 @@ function firstLine(child: Child, part: Part, what: string): Promise<string> {
       }
       if (Date.now() > deadline) {
         kill(child);
-        throw new Error(`${what} did not serve within ${part.ms / 1000} s: ${child.output.stderr}`);
+        throw new Error(`${what} did not serve ${named}: ${child.output.stderr}`);
       }
     }
     return child.output.stdout.split("\n")[0] ?? "";
@@ -437,9 +454,12 @@ export async function startStack(
   variable: ProviderVariable
 ): Promise<Stack> {
   const part = stackStart(variable);
-  row.part(part);
+  const charged = charge(row, part);
   const child = spawn(stackScript, { ...env, LEFTOVER_RUN: run });
-  const printed = JSON.parse(await firstLine(child, part, `stack ${run}`)) as Omit<Stack, "child">;
+  const printed = JSON.parse(await firstLine(child, part, `stack ${run}`, charged)) as Omit<
+    Stack,
+    "child"
+  >;
   return { child, ...printed };
 }
 
@@ -455,8 +475,8 @@ export async function stopStack(
   if (stack === undefined) return;
   const part = stackStop(variable);
   stack.child.process.stdin.end();
-  row.part(part);
-  await exited(stack.child, part, `the stack in ${stack.dir}`).catch(() => {});
+  const charged = charge(row, part);
+  await exited(stack.child, part, `the stack in ${stack.dir}`, charged).catch(() => {});
 }
 
 /** Runs the pool's start in a child with `env`, for the row `row`, whose limit counts it as a
@@ -467,10 +487,10 @@ export async function startPool(
   found: Found
 ): Promise<{ readonly pid: number; readonly stdout: string; readonly stderr: string }> {
   const part = poolStart(found);
-  row.part(part);
+  const charged = charge(row, part);
   const child = spawn(startScript, env);
   child.process.stdin.end();
-  const code = await exited(child, part, "a start of the pool");
+  const code = await exited(child, part, "a start of the pool", charged);
   // The pipes end as it exits; their last chunks may still be on the way to `output`.
   await Promise.race([child.drained, sleep(10_000)]);
   if (code !== 0) throw new Error(`a start of the pool exited ${code}: ${child.output.stderr}`);
@@ -499,9 +519,9 @@ export async function startServingPool(
   // A run of one stack against a database the caller named starts no Postgres.
   delete own.DATABASE_URL;
   const part = servingStart(variable, found);
-  row.part(part);
+  const charged = charge(row, part);
   const child = spawn(poolScript, own);
-  const line = await firstLine(child, part, "a start of the pool");
+  const line = await firstLine(child, part, "a start of the pool", charged);
   const { url } = JSON.parse(line) as { url?: string };
   if (url === undefined) throw new Error(`a start of the pool named no database: ${line}`);
   return { child, url };
@@ -518,8 +538,8 @@ export async function stopPool(
   if (start === undefined) return;
   const part = poolStop(variable);
   start.child.process.stdin.end();
-  row.part(part);
-  await exited(start.child, part, "a stop of the pool").catch(() => {});
+  const charged = charge(row, part);
+  await exited(start.child, part, "a stop of the pool", charged).catch(() => {});
 }
 
 /** Runs a shell's start of a stack as `scripts/e2e/lib/leftovers.sh`'s callers run it, its
@@ -531,16 +551,19 @@ export async function shellSweep(
   found: Found
 ): Promise<{ readonly status: number; readonly stderr: string }> {
   const part = shellSweepOf(found);
-  row.part(part);
+  const charged = charge(row, part);
   const child = launch(["bash", "-c", `. "${leftoversLib}"; remove_leftover_postgres`], env);
   child.process.stdin.end();
-  const status = await exited(child, part, "a shell's start");
+  const status = await exited(child, part, "a shell's start", charged);
   await Promise.race([child.drained, sleep(10_000)]);
   return { status, stderr: child.output.stderr };
 }
 
 /** Starts stack `index` of `provider`, of the provider `variable` names, in this process, for the
- *  row `row`, whose limit counts it (`ownStart`), as a wait of the row's named `what` (`during`). */
+ *  row `row`, whose limit counts it (`ownStart`), as a wait of the row's named `what` (`during`).
+ *  The provider bounds its own start, so this sets none; but where the row's CI step cut its limit
+ *  (`boundOf`), the row gives the start up at its deadline and throws, naming it, and stops the
+ *  stack once that start serves after all. */
 export async function startOwn(
   row: Row,
   provider: StackPostgres,
@@ -548,23 +571,42 @@ export async function startOwn(
   index: number,
   what: string
 ): Promise<StackDatabase> {
-  row.part(ownStart(variable));
-  return during(what, () => provider.start(index));
+  const { by } = charge(row, ownStart(variable));
+  const { ms, named } = boundOf(row, Number.POSITIVE_INFINITY, by);
+  const starting = provider.start(index);
+  if (!Number.isFinite(ms)) return during(what, () => starting);
+  return during(what, () =>
+    Promise.race([
+      starting,
+      sleep(ms).then(() => {
+        void starting.then((database) => database.stop()).catch(() => {});
+        throw new Error(`${what} did not end ${named}`);
+      }),
+    ])
+  );
 }
 
 /** Stops `database`, which a start in this process of the provider `variable` names served
  *  (`startOwn`), for the row `row`, whose limit counts it (`ownStop`). The stop begins before the
- *  row is charged for it, as a stack's does in a child (`stopStack`). */
+ *  row is charged for it, as a stack's does in a child (`stopStack`). The provider bounds its own
+ *  stop; where the row's CI step cut its limit (`boundOf`), the row stops waiting for it at the
+ *  end of its stops and throws, naming it, and the stop goes on. */
 export async function stopOwn(
   row: Row,
   database: StackDatabase,
   variable: ProviderVariable
 ): Promise<void> {
-  const stopping = during("the stop of the row's own stack", () => database.stop());
+  const what = "the stop of the row's own stack";
+  const stopping = during(what, () => database.stop());
   // Handled here as well, so a stop that fails after a refused charge is no unhandled rejection.
   stopping.catch(() => {});
-  row.part(ownStop(variable));
-  await stopping;
+  const { by } = charge(row, ownStop(variable));
+  const { ms, named } = boundOf(row, Number.POSITIVE_INFINITY, by);
+  if (!Number.isFinite(ms)) return stopping;
+  const late = sleep(ms).then(() => "late" as const);
+  if ((await Promise.race([stopping, late])) === "late") {
+    throw new Error(`${what} did not end ${named}`);
+  }
 }
 
 /** Why this machine refuses a stack a PID namespace of its own, or undefined where it gives one:
@@ -596,7 +638,7 @@ export async function startNamespacedStack(
   run: string
 ): Promise<Stack> {
   const part = stackStart(pgBinVariable);
-  row.part(part);
+  const charged = charge(row, part);
   // `sudo` resets the environment, so the stack's goes through `env -i`.
   const pairs = Object.entries(env)
     .filter((pair): pair is [string, string] => pair[1] !== undefined)
@@ -626,7 +668,7 @@ export async function startNamespacedStack(
   );
   return {
     child,
-    ...(JSON.parse(await firstLine(child, part, `stack ${run}`)) as Omit<Stack, "child">),
+    ...(JSON.parse(await firstLine(child, part, `stack ${run}`, charged)) as Omit<Stack, "child">),
   };
 }
 
@@ -715,17 +757,16 @@ function usedUp(row: Row, by: number): string {
 
 /** The one line, and the error, of a fixture call `call` of `row` that its time did not let end
  *  (`Unended`), where that time ended at `by`: the row's deadline, or its time for its removals
- *  (`Row.cleanup`). A call that ran out that time names the call, the row's time, and what the
- *  removal of what it made did (`removed`); a call that the time found already passed names the
- *  call, how long before it the time had run out, and the wait that used it up (`usedUp`). */
+ *  (`Row.cleanup`). A call that ran out that time names the call, the row's time, what set it
+ *  where the row's CI step cut it (`Row.cut`), and what the removal of what it made did
+ *  (`removed`); a call that the time found already passed names the call, how long before it the
+ *  time had run out, and the wait that used it up (`usedUp`). */
 function ranOut(row: Row, call: string, how: Unended, by = row.deadline, removed = ""): Error {
-  const time =
-    by === row.deadline
-      ? `the ${row.ms / 1000} s the row waits in all`
-      : "the row's time for its removals";
+  const waits = `the ${row.ms / 1000} s the row waits in all${row.cut === undefined ? "" : `, which ${row.cut} set`}`;
+  const time = by === row.deadline ? waits : "the row's time for its removals";
   const line =
     how === "late"
-      ? `${named}: ${call} did not end within the ${row.ms / 1000} s the row waits in all, so the row stopped it${removed}`
+      ? `${named}: ${call} did not end within ${waits}, so the row stopped it${removed}`
       : `${named}: ${call} did not start: ${time} had run out ${seconds(machine.now() - by)} s before it, ${usedUp(row, by)}`;
   console.error(line);
   return new Error(line);
@@ -1056,7 +1097,7 @@ export async function startUnjudged(
       },
     };
   }
-  row.part(ownContainerServes);
+  const { by } = charge(row, ownContainerServes);
   // In the run directory, or in /tmp where a long TMPDIR leaves no room there for the socket's
   // path, as the provider puts each of its own.
   const own = socketDirectory(beside, "pg-9", join("s", socketFile));
@@ -1112,13 +1153,12 @@ export async function startUnjudged(
       () => rmSync(own, { recursive: true, force: true })
     );
   };
-  const deadline = Date.now() + ownContainerServes.ms;
+  const serves = boundOf(row, ownContainerServes.ms, by);
+  const deadline = Date.now() + serves.ms;
   try {
     while (!((await initialised()) && (await answers(row, url)))) {
       if (Date.now() > deadline) {
-        throw new Error(
-          `the container ${name} did not serve within ${ownContainerServes.ms / 1000} s`
-        );
+        throw new Error(`the container ${name} did not serve ${serves.named}`);
       }
       await sleep(500);
     }
@@ -1303,7 +1343,7 @@ export async function startShellStack(
   image: string,
   name: string
 ): Promise<ShellStack> {
-  row.part(shellStackStart);
+  const charged = charge(row, shellStackStart);
   const child = launch(["bash", "-c", shellStackScript], {
     ...env,
     LEFTOVERS_LIB: leftoversLib,
@@ -1312,6 +1352,6 @@ export async function startShellStack(
   });
   return {
     child,
-    id: (await firstLine(child, shellStackStart, `the shell stack ${name}`)).trim(),
+    id: (await firstLine(child, shellStackStart, `the shell stack ${name}`, charged)).trim(),
   };
 }
