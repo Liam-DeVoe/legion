@@ -328,9 +328,8 @@ func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if past != stoppedStepReported {
 		return nil, nil
 	}
-	// Only stopTask writes a stopped task's hold, on a run with plan rows.
 	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
+	if err != nil || !w.Stored {
 		return nil, err
 	}
 	at, _ := w.PlaceOf(reported)
