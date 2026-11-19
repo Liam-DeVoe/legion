@@ -340,6 +340,20 @@ def setup_go(job, gomod, workflow=""):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 
 
+# The apt cache install (.github/scripts/apt-cache.sh): the step that reads the runner's release for
+# the restore's key and the install step both run the script, and the install reads the pins of
+# .github/apt-packages.txt, whose hash, and the script's, the key carries.
+APT_IMAGE_STEP = "Read the runner's release for the apt cache key"
+
+
+def apt_cache(job, install_step):
+    return reads(
+        (".github/scripts/apt-cache.sh", f"{at(job, APT_IMAGE_STEP)} and {at(job, install_step)} run it"),
+        (".github/apt-packages.txt", f"{at(job, install_step)} installs its pin"),
+    )
+
+
+
 CI_SELF = reads((CI, "a job reads its own definition"))
 
 
@@ -2329,6 +2343,13 @@ SCRIPT_TEST_GATES = [
         (".github/e2e-scripts.json", "its last case runs the selector over this repository's own list"),
         ("scripts/e2e/*.sh", "that same case: the selector names one row per scripts/e2e/*.sh (select-e2e-proofs.sh:175 globs them)"),
     ]),
+    harness("apt_cache_test", "Test the apt cache install the jobs run before their tests",
+            f"{SCRIPTS}/apt-cache.test.sh", [
+        (f"{SCRIPTS}/apt-cache.sh", "the script under test"),
+    ]),
+    harness("package_installs_test", "Test the package install rule", f"{SCRIPTS}/package-installs.test.sh", [
+        (f"{SCRIPTS}/package_installs.py", "the rule under test"),
+    ]),
     harness("go_tagged_tests_test", "Test the build-tag test lister", f"{SCRIPTS}/go-tagged-tests.test.sh", [
         (f"{SCRIPTS}/go-tagged-tests.sh", "the script under test"),
         ("packages/envoy/cmd/listener/*_test.go",
@@ -2545,7 +2566,8 @@ GATES = [
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
-    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
+    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
+      + apt_cache("daemon-go", "Install tmux")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
     # daemon-go race step skips by name - the one that packs the two plugin releases and loads
@@ -2835,7 +2857,7 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
-      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
+      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy") + apt_cache("pi-envoy", "Install tmux")),
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
@@ -2906,7 +2928,7 @@ GATES = [
                          "above import, and packages/dispatch/e2e/read-token-live.ts:37 imports "
                          "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
                          "(check-ts-filters.sh measures it)")
-      + bun_job("dispatch-ui")),
+      + bun_job("dispatch-ui") + apt_cache("dispatch-ui", "Install zsh")),
 
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
     # projects, the two-process job, the visual job and the merge job, all in
@@ -3024,7 +3046,8 @@ GATES = [
 
     gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_JOB + reads(
         (TEST_FIXTURES_SRC, "packages/claude-envoy/tests import @legion/test-fixtures"),
-    ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy")),
+    ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy")
+      + apt_cache("claude-envoy", "Install zsh")),
 
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
