@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, QueryObserver, useQuery } from "@tanstack/react-query";
 import {
   act,
@@ -28,6 +28,18 @@ import {
 
 let sockets: FakeLiveSockets;
 const clients: QueryClient[] = [];
+
+// The feed reads each event through the event-to-queries map, a chunk it loads when it starts
+// (`api/event-refresh-load.ts`), and the refreshes an event asks for wait on that load. The rows
+// here are about the feed, not about that download: in a random order the row that happens to
+// start the feed first would wait for it, and a row that counts refreshes would count too few
+// while it is out (`test:web:cold` holds it for a second). So the map is loaded before the first
+// row. A row about the download itself replaces `loadEventRefresh` with a load of its own, and
+// the row that holds it hands it this map when it lets it land.
+let eventRefreshMap: eventRefreshLoad.EventRefreshMap;
+beforeAll(async () => {
+  eventRefreshMap = await eventRefreshLoad.loadEventRefresh();
+});
 
 beforeEach(() => {
   sockets = installFakeLiveSockets();
@@ -418,6 +430,64 @@ test("a map chunk that fails to download refreshes everything for the event wait
     hook.unmount();
     load.mockRestore();
     wholeCache.restore();
+  }
+});
+
+// What a cold page does with the events that arrive before the map's chunk is in: each is kept
+// in the log at once, so a resume starts after it, and each waits on the one download for its own
+// refresh, which runs once the chunk lands. None is lost and none costs a whole-cache refresh.
+test("events that arrive while the map is downloading each refresh once it lands, and a resume during the download starts after them", async () => {
+  jest.useFakeTimers();
+  const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
+  signIn(queryClient, "41");
+  const keys = ["CORE-1", "CORE-2", "CORE-3"] as const;
+  for (const key of keys) queryClient.setQueryData(["issue", key], { key });
+  const refreshed = (key: string) => queryClient.getQueryState(["issue", key])?.isInvalidated;
+  // A key no event below names: only a whole-cache refresh would reach it.
+  const unnamed = ["github-link-checks", "https://github.com/sjawhar/legion/pull/1", "c0ffee"];
+  queryClient.setQueryData(unnamed, { loaded: true });
+  const wholeCache = countWholeCacheRefreshes(queryClient);
+  const download = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
+  const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
+    () => download.promise
+  );
+  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+  try {
+    const socket = sockets.latest();
+    act(() => socket.open());
+    const { sub } = socket.subscribed("events");
+    expect(socket.subscribed("events").resume).toEqual({ since: "41" });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    receive(
+      socket,
+      { type: "events_start", sub, since: "41", replay_complete: true },
+      ...keys.map((key, index) =>
+        eventFrame(sub, {
+          ...issueUpdated(42 + index),
+          issue_key: key,
+          payload: { key, title: `title-${key}` },
+        } as DispatchEvent)
+      )
+    );
+    // The download is still out: no event has refreshed anything yet, and a resume already
+    // starts after the last of them, so none is asked for again.
+    await advance(1_000);
+    for (const key of keys) expect(refreshed(key)).toBe(false);
+    expect(rotate().subscribed("events").resume).toEqual({ since: "44" });
+
+    download.resolve(eventRefreshMap);
+    await waitFor(() => {
+      for (const key of keys) expect(refreshed(key)).toBe(true);
+    });
+    await advance(150);
+    expect(queryClient.getQueryState(unnamed)?.isInvalidated).toBe(false);
+    expect(wholeCache.count()).toBe(0);
+    expect(load).toHaveBeenCalledTimes(1);
+  } finally {
+    hook.unmount();
+    load.mockRestore();
+    wholeCache.restore();
+    realClock();
   }
 });
 
