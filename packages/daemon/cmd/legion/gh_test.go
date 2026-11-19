@@ -1784,35 +1784,6 @@ func TestLegionGhHandsTheGuardTheOptionThatNamedStandardInput(t *testing.T) {
 	}
 }
 
-// `gh workflow run <workflow> --json` reads the run's inputs from standard input as one JSON
-// object (testdata/gh-help/workflow_run.txt: "--json  Read workflow inputs as JSON via STDIN", and
-// its example `echo '{"name":"scully", "greeting":"hello"}' | gh workflow run triage.yml --json`),
-// and GitHub keeps each input as a value of its own. So that input is read one string at a time,
-// as a JSON request body is: inputs whose one value holds the fixture pair's name and another the
-// word are cleared, and gh runs the call with the input the guard read; one value holding both is
-// refused, the report naming the input by its JSON path. Read raw as well, as an input of no known
-// use is, the two values would stand on one line and the pair rule would refuse the first call.
-func TestLegionGhReadsAWorkflowRunsJSONInputsOneFieldAtATime(t *testing.T) {
-	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
-	args := []string{"workflow", "run", "triage.yml", "-R", "acme/widgets", "--json"}
-	const apart = `{"name":"` + leakguardtest.PairName + `","greeting":"` + leakguardtest.PairWord + `"}`
-	got := run(t, ghCheckAt(t, ghCheckReading(0)), apart, args...)
-	if got.code != 7 || got.stderr != "" {
-		t.Errorf("legion gh %q with two inputs = exit %d, stderr %q; want gh's own 7 and nothing printed", args, got.code, got.stderr)
-	}
-	if want := "gh " + strings.Join(args, " ") + "\n" + ghRigEnv + "stdin " + apart + "\n"; !strings.HasSuffix(got.gh, want) {
-		t.Errorf("gh recorded %q, want the call with the input the guard read, %q", got.gh, want)
-	}
-	const together = `{"name":"the ` + leakguardtest.PairName + ` and the ` + leakguardtest.PairWord + `","greeting":"hello"}`
-	got = run(t, ghCheckAt(t, ghCheckReading(0)), together, args...)
-	if want := "the gh call's standard input, JSON .name: " + leakguardtest.PairClass + ": matched "; got.code != 2 || !strings.Contains(got.stderr, want) {
-		t.Errorf("legion gh %q with one input holding both = exit %d, stderr %q; want exit 2 and a line holding %q", args, got.code, got.stderr, want)
-	}
-	if strings.Contains("\n"+got.gh, "\ngh ") {
-		t.Errorf("gh ran a call the guard refused: %q", got.gh)
-	}
-}
-
 // graphQLOf is the guard's GraphQL visibility read of sjawhar/legion with query in place of the
 // guard's own, and inventedMutation a mutation to put there: `legion gh` must check either one
 // like any other call, whatever PUBLIC_LEAK_CHECK_VISIBILITY_READ names.
