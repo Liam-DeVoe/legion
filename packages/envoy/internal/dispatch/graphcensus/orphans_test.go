@@ -163,7 +163,7 @@ func TestTheOrphanSweepLosesNothingOfACreateItRacesWith(t *testing.T) {
 }
 
 // The sweep of one orphaned document (StateOrphanedGone) takes the store's lock order: the issue's
-// row first, then the node's row, then the state tuple it appends under the removal's event, and
+// owner lock first, then the node's row, then the state tuple it appends under the removal's event, and
 // never the project's row. Each step is held in turn while the sweep's own backend is read at the
 // statement it waits at and the locks it holds.
 func TestTheOrphanSweepTakesTheStoreLockOrder(t *testing.T) {
@@ -175,17 +175,17 @@ func TestTheOrphanSweepTakesTheStoreLockOrder(t *testing.T) {
 	if err := sweeper.Pool.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
 		t.Fatalf("read the sweep's backend: %v", err)
 	}
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue ORPH-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: orphanIssue,
-		Statement: "select closed_at is null from issues where key = $1 for no key update",
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue ORPH-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"graph_nodes", "graph_tuples"},
-	}, `select 1 from issues where key = $1 for update`, orphanIssue)
+	}, store.IssueOwner(orphanIssue))
 	node := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: ref + "'s node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindArtifact, ID: ref,
 		Statement: "select state from graph_nodes where kind = $1 and id = $2 for update",
 		Unlocked:  []string{"graph_tuples"},
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, graphstore.KindArtifact, ref)
-	state := lockstep.Hold{Name: ref + "'s gone tuple", Step: lockstep.StepTuple, Taken: true, Statement: "insert into graph_tuples ("}
+	state := lockstep.Hold{Name: ref + "'s gone tuple", Step: lockstep.StepTuple, Taken: true, Statement: "with written as ("}
 	lockstep.Begin(t, database, &state)
 	if err := graphstore.Write(ctx, state.Tx, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindArtifact, FromID: ref, Kind: graphstore.AttributeState,

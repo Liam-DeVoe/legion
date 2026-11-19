@@ -14,10 +14,10 @@ import (
 
 // The statements the steps of an object batch are read by, lower-cased with their whitespace
 // collapsed, as lockstep reads the statement a writer waits at: graphstore.Write's insert of the
-// node rows, and its append of the base attributes those nodes carry.
+// node rows (queueNodes), and its append of the base attributes those nodes carry (queueAppend).
 const (
-	seedNodeWrite   = "with incoming as ("
-	seedTupleAppend = "insert into graph_tuples ("
+	seedNodeWrite   = "insert into graph_nodes ("
+	seedTupleAppend = "with written as ("
 )
 
 // TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder holds the seed's writes of its issues', its
@@ -63,6 +63,17 @@ func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
 				Parent: -1, Rank: fmt.Sprintf("n%d", number), Status: model.IssueStatuses[0],
 				CreatedAt: baseTime.Add(time.Duration(number) * time.Hour), Primary: -1,
 			}
+		}
+		// The batch is the first write of graphstore's statements on the run's one connection, and
+		// pgx prepares a statement that connection has not cached in a round trip of its own before
+		// the batch runs (QueryExecModeCacheStatement): parsing the tuple append takes its row
+		// exclusive lock on graph_tuples then, before the node insert runs, which no writer's
+		// statement waits on but the tuple hold's share lock does. So an unheld batch of two other
+		// issues writes first, and the batch followed below runs its statements as a deployment's
+		// warm connection does.
+		f.run.plan.issues = []issuePlan{issue(5), issue(4)}
+		if err := f.run.writeIssues(context.Background()); err != nil {
+			t.Fatalf("write two issues to cache the batch's statements: %v", err)
 		}
 		f.run.plan.issues = []issuePlan{issue(3), issue(2)}
 		nodes := make([]graphstore.Node, len(f.run.plan.issues))
