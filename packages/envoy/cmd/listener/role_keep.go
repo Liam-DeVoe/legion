@@ -853,10 +853,12 @@ type keptRoleHandover struct {
 // claim no read answered, so the handover ends at debug, leaving the lane to the role's next claim
 // and to the sweep (sweepKeptRoleLanes). A resolution that did not answer still walks the lane
 // with no holder before the record decides, since a copy whose hour ended needs no holder to end;
-// that walk ends the handover only where it drained the lane. That record is read under
-// roleHolderReadTimeout and not under ctx, since a handover whose window ended inside a read still
-// decides by the record whether that read's failure is carried out; the listener's shutdown, which
-// cancels ctx, is asked before the read and after it.
+// that walk ends the handover only where it drained the lane, and there it writes a WARN line
+// naming the resolution that did not answer, since no read of the record follows to say why the
+// walk had no holder. That record is read under roleHolderReadTimeout and not under ctx, since a
+// handover whose window ended inside a read still decides by the record whether that read's
+// failure is carried out; the listener's shutdown, which cancels ctx, is asked before the read and
+// after it.
 //
 // The one failure carried out of nothing is a read's, or a walk's that forwarded nothing it did
 // not confirm, that this handover's own cancellation ended: the listener is shutting the sweep's
@@ -930,6 +932,9 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			slog.Bool("claim_read_failed", claimErr != nil))
 		return false
 	}
+	// unresolved is the line a pass writes for a resolution of the role's holder that did not
+	// answer (retry), which the line of a walk with no holder that drained the lane names too.
+	const unresolved = "listener kept role message could not resolve the role's holder"
 	for {
 		if ctx.Err() != nil {
 			return ended()
@@ -987,10 +992,21 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			idle, backoff = 0, 0
 		}
 		if holderErr != nil && result.end != roleKeepLaneDrained {
-			if !retry("listener kept role message could not resolve the role's holder", roleKeepHolderWindow, holderErr) {
+			if !retry(unresolved, roleKeepHolderWindow, holderErr) {
 				return ended()
 			}
 			continue
+		}
+		// A walk with no holder that drained the lane ends the handover with no read of the role's
+		// claim record (retry), so this line is the one that says why it had no holder: the dead
+		// letter it sent for a copy whose hour ended can say that no session held the role while
+		// one did.
+		if holderErr != nil {
+			cfg.logger.LogEvent(slog.LevelWarn, "listener kept role drain walked the role's copies with no holder because the holder lookup did not answer",
+				slog.String("role", role),
+				slog.String("unanswered", unresolved),
+				slog.Duration("bound", roleKeepHolderWindow),
+				slog.String("error", holderErr.Error()))
 		}
 		switch result.end {
 		case roleKeepLaneDrained, roleKeepCopyWaits:
