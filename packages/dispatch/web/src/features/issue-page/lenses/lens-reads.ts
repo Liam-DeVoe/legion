@@ -10,12 +10,13 @@ import { useLayoutEffect, useRef } from "react";
 import { type Location, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
 import { api, writeRequest } from "../../../api/client";
+import { issueTreeKey } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import { buildIssuePath, parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { issueAddress } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
-import { dropViews, issueTreeKey } from "../tree-read/tree-read";
+import { dropViews } from "../tree-read/tree-read";
 
 /**
  * The one module of the issue page that names the lens read, the lens catalogue and the

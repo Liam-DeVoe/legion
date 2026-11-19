@@ -17,6 +17,7 @@ import {
 import { realClock, tick } from "../../../__tests__/fake-clock";
 import { answerRequests } from "../../../__tests__/network";
 import { userOnFakeClock } from "../../../__tests__/user";
+import { issueTreeKey } from "../../../api/queries";
 import { trackQueryFetches } from "../../../api/query-refresh";
 import { buildDispatchReference } from "../../refs/routes";
 import { SEND_DEADLINE_MS } from "../../writes/keyed-write";
@@ -29,13 +30,7 @@ import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { TreeRows } from "../TreeRows";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import {
-  issueTreeKey,
-  type TreeAnswer,
-  type TreeAnswerNode,
-  useTreeRead,
-  viewKey,
-} from "../tree-read/tree-read";
+import { type TreeAnswer, type TreeAnswerNode, useTreeRead, viewKey } from "../tree-read/tree-read";
 import { lensActFor } from "./LensMenu";
 
 /**
@@ -166,6 +161,7 @@ function Rows({ isClosed = false, nodes }: { isClosed?: boolean; nodes: readonly
       tabStop={first === undefined ? undefined : rowKeyOf(first)}
       threads={new Map()}
       unplaced={undefined}
+      zoomRoot={undefined}
     />
   );
 }
