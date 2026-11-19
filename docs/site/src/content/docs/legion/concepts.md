@@ -391,16 +391,19 @@ Legion uses GitHub's own review mechanisms rather than labels:
   daemon names each check that failed or was cancelled, with the conclusion GitHub gave it, counts
   the checks that passed and names the `gh pr checks` command that lists them, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
-  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
-  message is `med` for the worker that holds the issue's current phase, which gets it at once, and
-  `low` for each other reader, which reads it at its next turn. Where no worker holds the phase
-  (`admitted`, `accepting`, `held`, `awaiting_person`), it is `med` for the architect. A red is
-  for those roles to decide on — re-run a check that failed on itself, fix code that is at fault,
-  or wait — and for GitHub to hold the merge over, under the base branch's own required
-  checks, which Legion neither reads nor re-implements. The reviewer reads the head's checks on
-  GitHub itself before it approves, and the architect before it accepts; those reads are the ones
-  that decide anything. Two settlements of the same head that name the same checks tell nobody
-  twice, and a lingering tree is told nothing at all.
+  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. It
+  treats the head's commit statuses as it treats its checks, naming each that did not pass with its
+  state and counting the rest: Dispatch reads them from GitHub for each open head where its GitHub
+  App holds Commit statuses, since GitHub's status event names no pull request. The message is
+  `med` for the worker that holds the issue's current phase, which gets it at once, and `low` for
+  each other reader, which reads it at its next turn. Where no worker holds the phase (`admitted`,
+  `accepting`, `held`, `awaiting_person`), it is `med` for the architect. A red is for those roles
+  to decide on — re-run a check that failed on itself, fix code that is at fault, or wait — and for
+  GitHub to hold the merge over, under the base branch's own required checks, which Legion neither
+  reads nor re-implements. The reviewer reads the head's checks on GitHub itself before it
+  approves, and the architect before it accepts; those reads are the ones that decide anything. Two
+  settlements of the same head that name the same checks tell nobody twice, and a lingering tree is
+  told nothing at all.
 - **A head that conflicts with its base** does move the issue. GitHub computes no merge ref for
   such a head and runs no check on it, so no CI result would ever arrive: the daemon takes the
   issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging`,

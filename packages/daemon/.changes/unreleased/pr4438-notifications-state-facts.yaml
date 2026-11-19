@@ -3,7 +3,10 @@ body: |-
   Every task, notice and role message the daemon sends an agent session is now a record of one
   kind on one list (`internal/texts`), rendered as `key: value` lines in one form, with an urgency
   for each reader. A text gives the facts of its event as fields and no step the reader's prompt
-  already gives; a list names what its reader acts on and counts the rest. A text about a person's
+  already gives; a list names what its reader acts on and counts the rest. So a CI settlement, a
+  review round GitHub will not merge and the wake of a settlement name each check that did not
+  pass (`not_passed`) and each commit status in state `failure` or `error`
+  (`not_passed_statuses`), and count the checks and statuses that passed. A text about a person's
   act carries the person's words, up to 4,000 UTF-16 units of one act or 1,000 of each of several,
   in a block of its own after the facts; the intake keeps those words on the rows the texts are
   built from (migration `20261118092930_person_words`). A notice is published with its kind's

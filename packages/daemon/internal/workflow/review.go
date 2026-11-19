@@ -31,8 +31,13 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// The listener settles every commit of the pull request, its head or not, and a settlement
 	// stands only for the commit it names: it is for the head only when it names the head. While a
 	// head run is open the settlement is recorded in it whether it stands or not
-	// (classify.ApplyCheckSettlement).
-	candidate := classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot, Failing: fact.Failing, Cancelled: fact.Cancelled}
+	// (classify.ApplyCheckSettlement). A list of commit statuses the decoder could not read costs
+	// the settlement nothing else: the fact names no status, and the pull request keeps the
+	// statuses it holds for the head, since a settlement's statuses are merged into those per
+	// context and a context it leaves out stays as it is kept (classify.ApplySettlement,
+	// intake.PullRequestChecks.StatusesUnread).
+	candidate := classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
+		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
 	told := settledChecks(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
@@ -170,16 +175,21 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 }
 
 // settledHead is what the CI settlement standing for a pull request's head says: the head it
-// settled on, and each check it reports with the conclusion it reports for it (settledChecks).
+// settled on, each check it reports with the conclusion it reports for it, and each commit status
+// the record keeps for that head, in context order (settledChecks).
 type settledHead struct {
 	head        string
 	conclusions map[string]record.RunConclusion
+	statuses    []record.CommitStatus
 }
 
-// same is whether s and other say the same: one head, and each check with one conclusion. Two
-// settlements that leave it the same say nothing new (tellChecks).
+// same is whether s and other say the same: one head, each check with one conclusion, and each
+// commit status context in one state. Two settlements that leave it the same say nothing new
+// (tellChecks): a newer status of a context in the state the record kept is no news
+// (dispatch://INFRA-1997's R6).
 func (s settledHead) same(other settledHead) bool {
-	return s.head == other.head && maps.Equal(s.conclusions, other.conclusions)
+	return s.head == other.head && maps.Equal(s.conclusions, other.conclusions) &&
+		slices.EqualFunc(s.statuses, other.statuses, func(a, b record.CommitStatus) bool { return a.Context == b.Context && a.State == b.State })
 }
 
 // settledChecks is what the CI settlement standing for the pull request's head says: the head it
@@ -197,11 +207,16 @@ func (s settledHead) same(other settledHead) bool {
 // run ended. A check still running on that head is in no settlement of it - the listener settles
 // a commit only once every check it has seen there is terminal - so this names it not at all: a
 // pending check is no verdict, and never a failure.
+//
+// Beside the check runs it holds each commit status the record keeps for the checked head
+// (keptStatuses), and none where it keeps none. A status is an entry of its own kind, apart from
+// the check runs: a context that shares a check run's name is held in both places.
 func settledChecks(pr record.PullRequest) settledHead {
 	if pr.CheckedHead == "" {
 		return settledHead{}
 	}
-	return settledHead{head: pr.CheckedHead, conclusions: checkConclusions(pr.CheckRuns, pr.Cancelled, pr.Failing)}
+	return settledHead{head: pr.CheckedHead, conclusions: checkConclusions(pr.CheckRuns, pr.Cancelled, pr.Failing),
+		statuses: keptStatuses(pr, pr.CheckedHead)}
 }
 
 // checkConclusions is each check a settlement reports, by name, with what it concluded: a run it
@@ -223,10 +238,12 @@ func checkConclusions(runs []record.AttemptRun, cancelled, failing []string) map
 }
 
 // notPassed is each check of conclusions that did not pass, failed or cancelled, with its
-// conclusion in name order, and the count of the checks that passed. A check run's name is
-// whoever wrote the workflow's text, and it is a field of its own here, which the card's encoder
-// quotes where it must.
-func notPassed(conclusions map[string]record.RunConclusion) ([]texts.CheckConclusion, int) {
+// conclusion in name order, each commit status of statuses that did not pass, in state failure or
+// error (record.CommitStatus.Failed), with its state in context order, and the count of the
+// checks and the statuses that passed. A check run's name and a status's context are whoever wrote
+// the workflow's text, and each is a field of its own here, which the card's encoder quotes where
+// it must.
+func notPassed(conclusions map[string]record.RunConclusion, statuses []record.CommitStatus) ([]texts.CheckConclusion, []texts.StatusState, int) {
 	var red []texts.CheckConclusion
 	passed := 0
 	for _, name := range slices.Sorted(maps.Keys(conclusions)) {
@@ -236,7 +253,16 @@ func notPassed(conclusions map[string]record.RunConclusion) ([]texts.CheckConclu
 			red = append(red, texts.CheckConclusion{Check: name, Conclusion: string(conclusion)})
 		}
 	}
-	return red, passed
+	var redStatuses []texts.StatusState
+	for _, status := range statuses {
+		if status.Failed() {
+			redStatuses = append(redStatuses, texts.StatusState{Context: status.Context, State: string(status.State)})
+		} else {
+			passed++
+		}
+	}
+	slices.SortFunc(redStatuses, func(a, b texts.StatusState) int { return strings.Compare(a.Context, b.Context) })
+	return red, redStatuses, passed
 }
 
 // headRuns is every check run GitHub reported on the pull request's current head with what that
@@ -250,6 +276,33 @@ func headRuns(pr record.PullRequest) map[string]record.RunConclusion {
 	return conclusions
 }
 
+// headStatuses is every commit status the record keeps for the pull request's current head
+// (keptStatuses), when the checked head is the current head (classify.Settled), and none
+// otherwise: a status the record keeps is stamped with the head whose settlement named it, and
+// one of another head says nothing of this one. The texts of a head GitHub will not merge read it
+// beside the head's own check runs (headRuns).
+func headStatuses(pr record.PullRequest) []record.CommitStatus {
+	if !classify.Settled(pr) {
+		return nil
+	}
+	return keptStatuses(pr, pr.HeadSHA)
+}
+
+// keptStatuses is every commit status pr keeps for head (record.PullRequest.Statuses), in context
+// order; none when what pr keeps is another head's. The stamp is what keeps a list out of a text
+// about another head (record.CommitStatus.StampedWith): a daemon of an earlier release moves
+// checked_head after a rollback and leaves the list as this one left it (record.CommitStatus.Head).
+func keptStatuses(pr record.PullRequest, head string) []record.CommitStatus {
+	var kept []record.CommitStatus
+	for _, status := range pr.Statuses {
+		if status.StampedWith(head) {
+			kept = append(kept, status)
+		}
+	}
+	slices.SortFunc(kept, func(a, b record.CommitStatus) int { return strings.Compare(a.Context, b.Context) })
+	return kept
+}
+
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
 // request's head says (CISettledMessage), and moves nothing: the daemon passes the CI result on,
 // and the worker that holds the phase decides whether to re-run, wait or fix
@@ -261,9 +314,10 @@ func headRuns(pr record.PullRequest) map[string]record.RunConclusion {
 // no worker holds the phase, low for the others. A role named twice, the implementer holding the
 // phase, is told once, and a phase no worker holds names none (addressRoles). told is what the
 // settlement standing for the head said before this one, so a second settlement of the same head
-// that leaves the same conclusions tells nobody again, and so does a settlement that stands for no
-// head. Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of
-// the tree is suspended there, so the settlement is recorded and nobody is told.
+// that leaves the same conclusions and each commit status in the same state tells nobody again,
+// and so does a settlement that stands for no head. Linger holds a member of a closed tree where
+// it stood (record.TreeLingers): every role of the tree is suspended there, so the settlement is
+// recorded and nobody is told.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (SettlementWake), and a message about the same settlement
@@ -321,13 +375,15 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 
 // CISettledMessage is the ci-settled message of issue for the settlement standing for pr's head
 // (settledChecks): the pull request, the head it settled on, the issue's phase (at), each check
-// that failed or was cancelled with its conclusion, the count of those that passed, and the
-// command that lists them all.
+// that failed or was cancelled with its conclusion, each commit status the record keeps for that
+// head in state failure or error with its state, the count of the checks and statuses that passed,
+// and the command that lists them all.
 func CISettledMessage(issue string, pr record.PullRequest, at phase.Phase) texts.CISettledRecord {
 	settled := settledChecks(pr)
-	red, passed := notPassed(settled.conclusions)
+	red, redStatuses, passed := notPassed(settled.conclusions, settled.statuses)
 	return texts.CISettledRecord{RoleHead: texts.RoleHead{Kind: texts.CISettled, Issue: issue}, PullRequest: pullRequestRef(pr),
-		Head: settled.head, Phase: at, NotPassed: red, Passed: passed, ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
+		Head: settled.head, Phase: at, NotPassed: red, NotPassedStatuses: redStatuses, Passed: passed,
+		ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
@@ -989,16 +1045,18 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the first names the reason the daemon set a review aside that would otherwise have decided it
 // (setAside), the only thing that says why the round has no decision. A round GitHub will not
 // merge from names the merge state GitHub reports for the head, each check run GitHub reported on
-// that head that failed or was cancelled, the count of those that passed, and the command that
-// lists them: the daemon reads no ruleset, so a check the base requires that never ran is in none
-// of them.
+// that head that failed or was cancelled, each commit status the record keeps for that head in
+// state failure or error, where the checked head is that head (headStatuses), the count of the
+// checks and statuses that passed, and the command that lists them: the daemon reads no ruleset,
+// so a check the base requires that never ran is in none of them.
 func ReviewStuckNotice(issue string, pr record.PullRequest, cause, by, topic, approved, setAside string) texts.ReviewStuckRecord {
 	stuck := texts.ReviewStuckRecord{NoticeHead: texts.NoticeHead{Kind: texts.ReviewStuck, Issue: issue}, Role: claim.RoleReviewer,
 		Phase: phase.Reviewing, Summary: by, Topic: topic, Cause: cause, PullRequest: pullRequestRef(pr), Head: pr.HeadSHA,
 		ApprovedHead: approved, SetAside: setAside}
 	if cause == texts.CauseMergeState {
-		red, passed := notPassed(headRuns(pr))
-		stuck.MergeState, stuck.NotPassed, stuck.Passed, stuck.ListPassed = string(pr.MergeState), red, &passed, texts.ListPassed(pr.Repo, pr.Number)
+		red, redStatuses, passed := notPassed(headRuns(pr), headStatuses(pr))
+		stuck.MergeState, stuck.NotPassed, stuck.NotPassedStatuses = string(pr.MergeState), red, redStatuses
+		stuck.Passed, stuck.ListPassed = &passed, texts.ListPassed(pr.Repo, pr.Number)
 	} else {
 		stuck.EndsRound = texts.EndsRound(pr.HeadSHA)
 	}
@@ -1008,11 +1066,14 @@ func ReviewStuckNotice(issue string, pr record.PullRequest, cause, by, topic, ap
 // ApprovedRoundStuckMessage is the approved-round-stuck message of issue to its reviewer, whose
 // approval of pr's head GitHub will not merge from: the pull request, the head, the merge state
 // GitHub reports for it, each check run GitHub reported on that head that failed or was
-// cancelled, the count of those that passed, and the command that lists them.
+// cancelled, each commit status the record keeps for that head in state failure or error
+// (headStatuses), the count of the checks and statuses that passed, and the command that lists
+// them.
 func ApprovedRoundStuckMessage(issue string, pr record.PullRequest) texts.ApprovedRoundStuckRecord {
-	red, passed := notPassed(headRuns(pr))
+	red, redStatuses, passed := notPassed(headRuns(pr), headStatuses(pr))
 	return texts.ApprovedRoundStuckRecord{RoleHead: texts.RoleHead{Kind: texts.ApprovedRoundStuck, Issue: issue}, PullRequest: pullRequestRef(pr),
-		Head: pr.HeadSHA, MergeState: string(pr.MergeState), NotPassed: red, Passed: passed, ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
+		Head: pr.HeadSHA, MergeState: string(pr.MergeState), NotPassed: red, NotPassedStatuses: redStatuses, Passed: passed,
+		ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
 }
 
 // tellStuckMergeState tells the architect and the reviewer of the one stuck cause a review

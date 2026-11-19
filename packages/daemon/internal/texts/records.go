@@ -5,10 +5,10 @@ import (
 	"strings"
 )
 
-// This file holds the parts that the records of several kinds share: the heads, the row of a
-// check that did not pass, the facts of a relaunch, and the helpers that write a reference the
-// same way in every text. The record of each kind is in records_task.go, records_start.go,
-// records_notice.go, records_controller.go and records_role.go.
+// This file holds the parts that the records of several kinds share: the heads, the rows of a
+// check and of a commit status that did not pass, the facts of a relaunch, and the helpers that
+// write a reference the same way in every text. The record of each kind is in records_task.go,
+// records_start.go, records_notice.go, records_controller.go and records_role.go.
 
 // TaskHead is the first two fields of a task record: the kind and the issue. Render writes them
 // as the first two lines of the task.
@@ -38,6 +38,15 @@ type RoleHead struct {
 type CheckConclusion struct {
 	Check      string `json:"check"`
 	Conclusion string `json:"conclusion"`
+}
+
+// StatusState is one commit status that did not pass on a head: its context and its state as
+// GitHub spells it (failure or error). A list of them is the table of the commit statuses that did
+// not pass, apart from the table of the checks, since a commit status is an entry of its own kind
+// (dispatch://INFRA-1997's R6); the statuses that passed are counted with the checks that passed.
+type StatusState struct {
+	Context string `json:"context"`
+	State   string `json:"state"`
 }
 
 // RelaunchFacts is what the last let-go of a claim's process ended, as the claim's record of it

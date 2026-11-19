@@ -59,8 +59,9 @@ gives them).
 Under the Go daemon a check that settles red on the head moves the issue nowhere: the daemon sends
 one `ci-settled` message each to the architect that owns the issue, the worker of the issue's
 current phase and the implementer, and judges none of the checks.
-The message names each check that did not pass with its conclusion (`not_passed`), counts the
-checks that passed (`passed`) and gives the `gh pr checks` command that lists them (`list_passed`).
+The message names each check that did not pass with its conclusion (`not_passed`) and each commit
+status in `failure` or `error` with its state (`not_passed_statuses`), counts the checks and
+statuses that passed (`passed`) and gives the `gh pr checks` command that lists them (`list_passed`).
 It is `med` for the worker of the phase, and `low` for an implementer that does not work the
 phase, which reads it at its next turn.
 That message is the implementer's to act on while it still works the issue: a red that failed on

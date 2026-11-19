@@ -218,8 +218,9 @@ no CI verdict, and a settlement the daemon reads later — at that head or any a
 issue nowhere. The daemon sends one `ci-settled` message each to the architect that owns the
 issue (the one your `Legion addressing` line names), the worker of the issue's current phase and
 the implementer, and judges none of the checks.
-The message names each check that did not pass with its conclusion (`not_passed`), counts the
-checks that passed (`passed`) and gives the `gh pr checks` command that lists them (`list_passed`).
+The message names each check that did not pass with its conclusion (`not_passed`) and each commit
+status in `failure` or `error` with its state (`not_passed_statuses`), counts the checks and
+statuses that passed (`passed`) and gives the `gh pr checks` command that lists them (`list_passed`).
 It is `med` for the worker of the phase. It is `low` for an implementer that does not work the phase and for the architect while a worker holds the phase, and they read it at their next turn.
 A red is the implementer's to fix or re-run, the architect's to decide on, and GitHub's to hold the
 merge for. So the reviewer's own read before it approves is the only read that decides anything.

@@ -493,17 +493,18 @@ type Notice struct {
 	// Relaunch is what the last let-go of the architect's process ended (catch-up).
 	Relaunch *texts.RelaunchFacts `json:"relaunch,omitempty"`
 	// The head that conflicts with its base (checks-red), and a stuck review round
-	// (review-stuck) with the checks of its head.
-	ConflictsWith string                  `json:"conflicts_with,omitempty"`
-	Head          string                  `json:"head,omitempty"`
-	Cause         string                  `json:"cause,omitempty"`
-	ApprovedHead  string                  `json:"approved_head,omitempty"`
-	EndsRound     string                  `json:"ends_round,omitempty"`
-	SetAside      string                  `json:"set_aside,omitempty"`
-	MergeState    string                  `json:"merge_state,omitempty"`
-	NotPassed     []texts.CheckConclusion `json:"not_passed,omitempty"`
-	Passed        *int                    `json:"passed,omitempty"`
-	ListPassed    string                  `json:"list_passed,omitempty"`
+	// (review-stuck) with the checks and the commit statuses of its head.
+	ConflictsWith     string                  `json:"conflicts_with,omitempty"`
+	Head              string                  `json:"head,omitempty"`
+	Cause             string                  `json:"cause,omitempty"`
+	ApprovedHead      string                  `json:"approved_head,omitempty"`
+	EndsRound         string                  `json:"ends_round,omitempty"`
+	SetAside          string                  `json:"set_aside,omitempty"`
+	MergeState        string                  `json:"merge_state,omitempty"`
+	NotPassed         []texts.CheckConclusion `json:"not_passed,omitempty"`
+	NotPassedStatuses []texts.StatusState     `json:"not_passed_statuses,omitempty"`
+	Passed            *int                    `json:"passed,omitempty"`
+	ListPassed        string                  `json:"list_passed,omitempty"`
 	// The session that wrote a status and the status it wrote (status-reasserted).
 	Session string `json:"session,omitempty"`
 	Wrote   string `json:"wrote,omitempty"`

@@ -1074,8 +1074,8 @@ type StuckRound struct {
 // reviewer, as the reviewer's own review always went. A head that conflicts with its base names
 // the base and the head. A retry names who retried, with the architect's words in the reason
 // block, and a retry of a stuck review round names the round's cause, its head and the review
-// that ends it; for a round GitHub will not merge from, the merge state and the head's checks, as
-// the review-stuck notice names them.
+// that ends it; for a round GitHub will not merge from, the merge state and the head's checks and
+// commit statuses, as the review-stuck notice names them.
 func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, move PhaseMove) texts.PhaseAssignmentRecord {
 	task := texts.PhaseAssignmentRecord{TaskHead: texts.TaskHead{Kind: texts.PhaseAssignment, Issue: issue.Key}, Title: issue.Title,
 		Phase: issue.Phase, HandoffCommit: handoff.HandoffCommit, TesterVerdict: handoff.Verdict}
@@ -1103,8 +1103,9 @@ func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.Pul
 				task.EndsRound = texts.EndsRound(stuck.Head)
 			}
 			if stuck.Cause == texts.CauseMergeState && pr != nil {
-				red, passed := notPassed(headRuns(*pr))
-				task.MergeState, task.NotPassed, task.Passed, task.ListPassed = stuck.MergeState, red, &passed, texts.ListPassed(pr.Repo, pr.Number)
+				red, redStatuses, passed := notPassed(headRuns(*pr), headStatuses(*pr))
+				task.MergeState, task.NotPassed, task.NotPassedStatuses = stuck.MergeState, red, redStatuses
+				task.Passed, task.ListPassed = &passed, texts.ListPassed(pr.Repo, pr.Number)
 			}
 		}
 	}

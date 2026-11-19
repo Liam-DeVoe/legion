@@ -500,24 +500,26 @@ const (
 // StuckBy constant), the reviewer's role topic where the reviewer decides it, the cause (a Cause
 // word), the pull request and the head, the head the reviewer approved where it is not the head,
 // the review that ends the round (EndsRound, which keeps APPROVE of head <sha>), the reason the
-// daemon set a review aside, and, for a head GitHub will not merge, its merge state, the checks of
-// that head that did not pass, the count of those that passed and the command that lists them.
+// daemon set a review aside, and, for a head GitHub will not merge, its merge state, the checks and
+// the commit statuses of that head that did not pass, the count of the checks and statuses that
+// passed and the command that lists them.
 type ReviewStuckRecord struct {
 	NoticeHead
-	Role         claim.Role        `json:"role,omitempty"`
-	Phase        phase.Phase       `json:"phase,omitempty"`
-	Summary      string            `json:"summary,omitempty"`
-	Topic        string            `json:"topic,omitempty"`
-	Cause        string            `json:"cause"`
-	PullRequest  string            `json:"pull_request"`
-	Head         string            `json:"head"`
-	ApprovedHead string            `json:"approved_head,omitempty"`
-	EndsRound    string            `json:"ends_round,omitempty"`
-	SetAside     string            `json:"set_aside,omitempty"`
-	MergeState   string            `json:"merge_state,omitempty"`
-	NotPassed    []CheckConclusion `json:"not_passed,omitempty"`
-	Passed       *int              `json:"passed,omitempty"`
-	ListPassed   string            `json:"list_passed,omitempty"`
+	Role              claim.Role        `json:"role,omitempty"`
+	Phase             phase.Phase       `json:"phase,omitempty"`
+	Summary           string            `json:"summary,omitempty"`
+	Topic             string            `json:"topic,omitempty"`
+	Cause             string            `json:"cause"`
+	PullRequest       string            `json:"pull_request"`
+	Head              string            `json:"head"`
+	ApprovedHead      string            `json:"approved_head,omitempty"`
+	EndsRound         string            `json:"ends_round,omitempty"`
+	SetAside          string            `json:"set_aside,omitempty"`
+	MergeState        string            `json:"merge_state,omitempty"`
+	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
+	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
+	Passed            *int              `json:"passed,omitempty"`
+	ListPassed        string            `json:"list_passed,omitempty"`
 }
 
 // StatusReassertedRecord is the notice that a session wrote a lifecycle status and the daemon set

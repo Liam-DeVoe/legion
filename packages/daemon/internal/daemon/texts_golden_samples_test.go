@@ -409,10 +409,11 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 			want["reviewed_head"] = round.Approved
 		case texts.CauseMergeState:
 			checks := goldenChecks(r, stuck.variant)
-			request.CheckRuns = checks.runs
+			request.CheckRuns, request.CheckedHead, request.Statuses = checks.runs, checks.head, checks.statuses
 			round.MergeState = string([]record.MergeState{record.MergeStateBlocked, record.MergeStateBehind}[r.n-1])
-			want["merge_state"], want["passed"], want["not_passed#"] = round.MergeState, strconv.Itoa(checks.passed), strconv.Itoa(len(checks.notPassed))
+			want["merge_state"], want["not_passed#"] = round.MergeState, strconv.Itoa(len(checks.notPassed))
 			want["list_passed"] = texts.ListPassed(r.repo, request.Number)
+			checks.statusFacts(want)
 		}
 		if stuck.ends {
 			want["ends_round"] = "APPROVE of head " + head
@@ -662,9 +663,9 @@ func (b *goldenBuild) podWakes(r goldenRendering) {
 	issue := r.key(50)
 	checks := goldenChecks(r, "wake")
 	settled := workflow.SettlementWake(issue, phase.Testing, r.repo, intake.PullRequestChecks{Repo: r.repo, Number: 500 + r.n,
-		HeadSHA: r.sha("wake/head"), CheckRuns: checks.runs, Failing: checks.failing, Cancelled: checks.cancelled})
-	want := goldenWant("issue", issue, "wake", pods.WakeChecks, "pull_request", texts.PullRequestRef(r.repo, 500+r.n), "head", r.sha("wake/head"),
-		"phase", phase.Testing, "passed", checks.passed, "list_passed", texts.ListPassed(r.repo, 500+r.n), "not_passed#", len(checks.notPassed))
+		HeadSHA: r.sha("wake/head"), CheckRuns: checks.runs, Failing: checks.failing, Cancelled: checks.cancelled, Statuses: checks.statuses})
+	want := checks.statusFacts(goldenWant("issue", issue, "wake", pods.WakeChecks, "pull_request", texts.PullRequestRef(r.repo, 500+r.n), "head", r.sha("wake/head"),
+		"phase", phase.Testing, "list_passed", texts.ListPassed(r.repo, 500+r.n), "not_passed#", len(checks.notPassed)))
 	b.task(r, "checks", claim.RoleTester, issue, settled, want)
 	token := r.token(b.t, issue, claim.RoleImplementer)
 	b.taskText(r, texts.PodWake, "role-message", claim.RoleImplementer, issue, workflow.WakeTask(issue, pods.WakeRoleMessage, string(token)),
@@ -679,7 +680,10 @@ func (b *goldenBuild) podWakes(r goldenRendering) {
 
 // goldenChecks is a head's 60 check runs: 15 that failed and 10 that were cancelled, the 25 that
 // did not pass, and 35 that passed (the head has no skipped conclusion yet,
-// dispatch://INFRA-4135's R1, so none is skipped). Hostile names are among them.
+// dispatch://INFRA-4135's R1, so none is skipped). Hostile names are among them. Beside them the
+// head carries 30 commit statuses (cybermonklabs/legion#4299, dispatch://INFRA-1997's R7), each
+// stamped with the head as the pull request keeps it: 3 in state failure or error, the ones that
+// did not pass, a hostile context among them, and 27 that passed, in context order.
 type goldenCheckRuns struct {
 	runs               []record.AttemptRun
 	failing, cancelled []string
@@ -687,10 +691,19 @@ type goldenCheckRuns struct {
 	passed             int
 	conclusionOf       map[string]record.RunConclusion
 	head               string
+	statuses           []record.CommitStatus
+	notPassedStatuses  []string
+	statusesPassed     int
+	stateOf            map[string]record.CommitStatusState
 }
 
+// allPassed is the count of the checks and the commit statuses of the head that passed, which
+// each text names as one count (passed).
+func (c goldenCheckRuns) allPassed() int { return c.passed + c.statusesPassed }
+
 func goldenChecks(r goldenRendering, label string) goldenCheckRuns {
-	checks := goldenCheckRuns{head: r.sha(label + "/head"), conclusionOf: map[string]record.RunConclusion{}}
+	checks := goldenCheckRuns{head: r.sha(label + "/head"), conclusionOf: map[string]record.RunConclusion{},
+		stateOf: map[string]record.CommitStatusState{}}
 	hostile := goldenHostile[r.n-1]
 	for i := range 60 {
 		name := fmt.Sprintf("%s-%02d %s", r.words(label+"/check", 4+r.n), i, r.words(fmt.Sprintf("%s/check/%d", label, i), 8))
@@ -718,7 +731,40 @@ func goldenChecks(r goldenRendering, label string) goldenCheckRuns {
 		}
 	}
 	slices.Sort(checks.notPassed)
+	for i := range 30 {
+		statusContext := fmt.Sprintf("status/%s-%02d %s", r.words(label+"/status", 3+r.n), i, r.words(fmt.Sprintf("%s/status/%d", label, i), 6))
+		if i == 3 {
+			statusContext = hostile[4] + fmt.Sprintf(" status %02d", i)
+		}
+		state := record.CommitStatusSuccess
+		switch i {
+		case 3, 23:
+			state = record.CommitStatusFailure
+		case 13:
+			state = record.CommitStatusError
+		}
+		checks.statuses = append(checks.statuses, record.CommitStatus{Context: statusContext, State: state, CreatedAt: r.at(i), Head: checks.head})
+		checks.stateOf[statusContext] = state
+		if state == record.CommitStatusSuccess {
+			checks.statusesPassed++
+		} else {
+			checks.notPassedStatuses = append(checks.notPassedStatuses, statusContext)
+		}
+	}
+	slices.SortFunc(checks.statuses, func(a, b record.CommitStatus) int { return strings.Compare(a.Context, b.Context) })
+	slices.Sort(checks.notPassedStatuses)
 	return checks
+}
+
+// statusFacts is the want of a sample that names the head's commit statuses that did not pass
+// (not_passed_statuses), the first of them with its state, and the count of the checks and the
+// statuses that passed (passed).
+func (c goldenCheckRuns) statusFacts(want map[string]string) map[string]string {
+	want["not_passed_statuses#"] = strconv.Itoa(len(c.notPassedStatuses))
+	want["not_passed_statuses[0].context"] = c.notPassedStatuses[0]
+	want["not_passed_statuses[0].state"] = string(c.stateOf[c.notPassedStatuses[0]])
+	want["passed"] = strconv.Itoa(c.allPassed())
+	return want
 }
 
 // startParts adds the parts a start puts before a task, each a task of its own kind, rendered

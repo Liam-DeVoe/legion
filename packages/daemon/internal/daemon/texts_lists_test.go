@@ -25,11 +25,12 @@ import (
 //   - A tick names its held and blocked lists and its 30 silent workers whole.
 //   - The CI settlement, the review-stuck reason of a head GitHub will not merge, and the
 //     settlement wake of a role the settlement woke (workflow.SettlementWake) each name the 25
-//     checks that failed or were cancelled, count the 35 that passed and name `gh pr checks` with
-//     the pull request and its repository; the settlement and the wake name the phase. The head
-//     has no skipped conclusion yet (dispatch://INFRA-4135's R1), no commit statuses
-//     (cybermonklabs/legion#4299) and no awaiting-children notice (#4017): those parts land with
-//     them.
+//     checks that failed or were cancelled and name `gh pr checks` with the pull request and its
+//     repository; the settlement and the wake name the phase. The head also carries 30 commit
+//     statuses (cybermonklabs/legion#4299), 3 of them in state failure or error: each text names
+//     the 3 with their states and counts the other 27 with the 35 checks that passed, 62 in all.
+//     The head has no skipped conclusion yet (dispatch://INFRA-4135's R1) and no awaiting-children
+//     notice (#4017): those parts land with them.
 //   - An update round ask, and an update-stalled notice of that round, name the image by a short
 //     digest and each of the 30 settings by its key, with no value.
 func TestEveryListNamesWhatNeedsAction(t *testing.T) {
@@ -166,8 +167,18 @@ func TestEveryListNamesWhatNeedsAction(t *testing.T) {
 					t.Errorf("%s #%d names %q %s, want %s", settled.kind, r.n, name, got, want)
 				}
 			}
-			if values["passed"] != "35" || checks.passed != 35 {
-				t.Errorf("%s #%d counts %s that passed, want 35", settled.kind, r.n, values["passed"])
+			statuses := keysOf(values, "not_passed_statuses", "context")
+			if !slices.Equal(statuses, checks.notPassedStatuses) || len(statuses) != 3 {
+				t.Errorf("%s #%d names the commit statuses %v that did not pass, want the 3 %v", settled.kind, r.n, statuses, checks.notPassedStatuses)
+			}
+			for i, context := range statuses {
+				want := string(checks.stateOf[context])
+				if got := values[fmt.Sprintf("not_passed_statuses[%d].state", i)]; got != want {
+					t.Errorf("%s #%d names the commit status %q %s, want %s", settled.kind, r.n, context, got, want)
+				}
+			}
+			if values["passed"] != "62" || checks.passed != 35 || checks.statusesPassed != 27 {
+				t.Errorf("%s #%d counts %s that passed, want the 35 checks and the 27 commit statuses, 62", settled.kind, r.n, values["passed"])
 			}
 			if want := fmt.Sprintf("gh pr checks %d --repo %s", settled.number, r.repo); values["list_passed"] != want {
 				t.Errorf("%s #%d lists them with %q, want %q", settled.kind, r.n, values["list_passed"], want)

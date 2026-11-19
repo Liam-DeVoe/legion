@@ -52,31 +52,33 @@ const (
 // ReviewStuckRecord cause), its head, the head the reviewer approved where that is other code
 // (ReviewedHead), the review that ends it (EndsRound), and why the daemon set aside a review that
 // would otherwise have decided it (SetAside). A round GitHub will not merge from names, as its
-// review-stuck notice does, the merge state GitHub reports for the head, each check of that head
-// that did not pass, the count of those that passed and the command that lists them.
+// review-stuck notice does, the merge state GitHub reports for the head, each check and each commit
+// status of that head that did not pass, the count of the checks and statuses that passed and the
+// command that lists them.
 type PhaseAssignmentRecord struct {
 	TaskHead
-	Title          string            `json:"title"`
-	Phase          phase.Phase       `json:"phase"`
-	HandoffPhase   string            `json:"handoff_phase,omitempty"`
-	HandoffVersion int               `json:"handoff_version,omitempty"`
-	HandoffCommit  string            `json:"handoff_commit,omitempty"`
-	TesterVerdict  string            `json:"tester_verdict,omitempty"`
-	PullRequest    string            `json:"pull_request,omitempty"`
-	MovedBackFrom  phase.Phase       `json:"moved_back_from,omitempty"`
-	ReviewedHead   string            `json:"reviewed_head,omitempty"`
-	ConflictsWith  string            `json:"conflicts_with,omitempty"`
-	Head           string            `json:"head,omitempty"`
-	Retried        string            `json:"retried,omitempty"`
-	StuckRound     string            `json:"stuck_round,omitempty"`
-	EndsRound      string            `json:"ends_round,omitempty"`
-	SetAside       string            `json:"set_aside,omitempty"`
-	MergeState     string            `json:"merge_state,omitempty"`
-	NotPassed      []CheckConclusion `json:"not_passed,omitempty"`
-	Passed         *int              `json:"passed,omitempty"`
-	ListPassed     string            `json:"list_passed,omitempty"`
-	Reason         *Words            `json:"reason"`
-	Body           *Words            `json:"body"`
+	Title             string            `json:"title"`
+	Phase             phase.Phase       `json:"phase"`
+	HandoffPhase      string            `json:"handoff_phase,omitempty"`
+	HandoffVersion    int               `json:"handoff_version,omitempty"`
+	HandoffCommit     string            `json:"handoff_commit,omitempty"`
+	TesterVerdict     string            `json:"tester_verdict,omitempty"`
+	PullRequest       string            `json:"pull_request,omitempty"`
+	MovedBackFrom     phase.Phase       `json:"moved_back_from,omitempty"`
+	ReviewedHead      string            `json:"reviewed_head,omitempty"`
+	ConflictsWith     string            `json:"conflicts_with,omitempty"`
+	Head              string            `json:"head,omitempty"`
+	Retried           string            `json:"retried,omitempty"`
+	StuckRound        string            `json:"stuck_round,omitempty"`
+	EndsRound         string            `json:"ends_round,omitempty"`
+	SetAside          string            `json:"set_aside,omitempty"`
+	MergeState        string            `json:"merge_state,omitempty"`
+	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
+	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
+	Passed            *int              `json:"passed,omitempty"`
+	ListPassed        string            `json:"list_passed,omitempty"`
+	Reason            *Words            `json:"reason"`
+	Body              *Words            `json:"body"`
 }
 
 // PhaseResumeRecord is the task of a worker started for a phase already under way
@@ -285,10 +287,11 @@ type KeptDecision struct {
 // PodWakeRecord is the task of a role whose released pod a wake brought back (workflow's
 // WakeTask). Wake is the wake's word (pods.WakeChecks and the others).
 //
-// A CI settlement names the pull request, the head, the issue's phase, the checks that did not
-// pass, the count of the checks that passed and the command that lists them. A message to the
-// role's topic names the topic and the facts dispatch://INFRA-2846's R7 requires: how long Envoy
-// keeps a role message, the field a kept card shows, that a kept card can come before this task,
+// A CI settlement names the pull request, the head, the issue's phase, the checks and the commit
+// statuses that did not pass, the count of the checks and statuses that passed and the command
+// that lists them. A message to the role's topic names the topic and the facts
+// dispatch://INFRA-2846's R7 requires: how long Envoy keeps a role message, the field a kept card
+// shows, that a kept card can come before this task,
 // that Envoy tells the sender when it drops one, the setting a message that is not kept is sent
 // with, and that its sender sends it again. A message to the session names the session. The
 // backstop names the role it was armed for. A wake of another word gives its detail.
@@ -299,6 +302,7 @@ type PodWakeRecord struct {
 	Head                 string            `json:"head,omitempty"`
 	Phase                phase.Phase       `json:"phase,omitempty"`
 	NotPassed            []CheckConclusion `json:"not_passed,omitempty"`
+	NotPassedStatuses    []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed               *int              `json:"passed,omitempty"`
 	ListPassed           string            `json:"list_passed,omitempty"`
 	Topic                string            `json:"topic,omitempty"`

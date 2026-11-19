@@ -84,7 +84,8 @@ func (s goldenSample) id() string {
 // 1,000 characters (35 done, 5 children not yet released, 3 in accepting), 173 blocked issues and
 // 30 silent workers, a children-first notice of 30 open children, a CI settlement and a
 // review-stuck head of 60 checks with 25 that failed or were cancelled (the head has no skipped
-// conclusion yet, dispatch://INFRA-4135's R1, so none is skipped and the 35 others passed), and an
+// conclusion yet, dispatch://INFRA-4135's R1, so none is skipped and the 35 others passed) and of
+// 30 commit statuses with 3 in state failure or error (cybermonklabs/legion#4299), and an
 // update round with a new image and 30 changed settings. The titles and words carry the hostile
 // values of TOON (true, null, -x, #x, 1e5, 0123, 123456e78901, a comma, a colon, a tab, a quote, a
 // backslash, a character outside the Basic Multilingual Plane, an empty string).

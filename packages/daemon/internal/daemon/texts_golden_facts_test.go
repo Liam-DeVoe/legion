@@ -31,6 +31,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"head", "reviewed_head", "pull_request"}},
 	{kind: texts.PhaseAssignment, variants: []string{"stuck-merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks (the head, the pull request, the merge state, each check)",
 		keys: []string{"head", "pull_request", "merge_state", "not_passed#", "passed", "list_passed"}},
+	{kind: texts.PhaseAssignment, variants: []string{"stuck-merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks, namedStatuses at 1cb6615c (each commit status of the head, with its state)",
+		keys: goldenStatusKeys},
 	{kind: texts.PhaseResume, from: "workflow/effects.go:ResumePhaseTask, continueLine",
 		keys: []string{"issue", "title", "phase"}},
 	{kind: texts.RootResume, from: "workflow/awaiting_reconcile.go:resumeTask (the root, the gate's version, open or closed, armed)",
@@ -73,6 +75,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"kept[1].decision", "approval_step", "approved", "latest"}, links: []string{"kept[1].ref"}},
 	{kind: texts.PodWake, variants: []string{"checks"}, from: "workflow/wake.go:WakeTask, settlementDetail (the head, the checks that did not pass)",
 		keys: []string{"head", "pull_request", "not_passed#"}},
+	{kind: texts.PodWake, variants: []string{"checks"}, from: "workflow/wake.go:settlementDetail at 1cb6615c (each failed commit status)",
+		keys: goldenStatusKeys},
 	{kind: texts.PodWake, variants: []string{"role-message"}, from: "workflow/wake.go:WakeTask (the role topic)",
 		keys: []string{"topic"}},
 	{kind: texts.PodWake, variants: []string{"agent-message"}, from: "workflow/wake.go:WakeTask (the session)",
@@ -194,6 +198,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"approved_head"}},
 	{kind: texts.ReviewStuck, variants: []string{"merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks (the merge state, each check)",
 		keys: []string{"merge_state", "passed"}},
+	{kind: texts.ReviewStuck, variants: []string{"merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks, namedStatuses at 1cb6615c (each commit status of the head, with its state)",
+		keys: goldenStatusKeys},
 	{kind: texts.StatusReasserted, from: "workflow/engine.go:sessionStatusWrite (the session, the status it wrote, the status set back)",
 		keys: []string{"issue", "session", "wrote", "status"}},
 	{kind: texts.SessionLost, from: "workflow/engine.go:sessionLost (the role, the phase, the detail)",
@@ -240,10 +246,14 @@ var goldenMainFacts = []goldenFactsOf{
 	// Role messages.
 	{kind: texts.CISettled, from: "workflow/review.go:tellChecks, namedConclusions (the pull request, each check)",
 		keys: []string{"issue", "pull_request", "head", "not_passed#"}},
+	{kind: texts.CISettled, from: "workflow/review.go:settledChecks, namedStatuses at 1cb6615c (each commit status of the checked head, with its state)",
+		keys: goldenStatusKeys},
 	{kind: texts.GateMoved, from: "workflow/gate.go:tellGateMoved (the gate, the version, the document)",
 		keys: []string{"issue", "gate", "version", "artifact"}, links: []string{"document"}},
 	{kind: texts.ApprovedRoundStuck, from: "workflow/review.go:tellStuckMergeState, stuckMergeStateReason (the head, the pull request, its merge state)",
 		keys: []string{"issue", "pull_request", "head", "merge_state", "passed"}},
+	{kind: texts.ApprovedRoundStuck, from: "workflow/review.go:tellStuckMergeState, headChecks, namedStatuses at 1cb6615c (each commit status of the head, with its state)",
+		keys: goldenStatusKeys},
 	{kind: texts.MemoryKill, from: "workflow/engine.go:memoryGuardNote, kernelKillNote (the process, its pid)",
 		keys: []string{"issue", "cause", "process", "pid"}},
 	{kind: texts.PhaseEnded, from: "record/outbox.go:PhaseEnded.Message; workflow/engine.go:phaseEnded (from, to, the conflict)",
@@ -259,6 +269,12 @@ var goldenMainFacts = []goldenFactsOf{
 	{kind: texts.MergeQueueRemoval, variants: []string{"unread"}, from: "record/outbox.go:MergeQueueRemoval.Message (no read of GitHub)",
 		keys: []string{"unread"}},
 }
+
+// goldenStatusKeys is where a sample of a head's CI names the commit statuses that did not pass
+// (cybermonklabs/legion#4299): their count, and the first with its state. main's text at
+// 1cb6615c names every status with its state; the record names those in state failure or error
+// and counts the others with the checks that passed (passed).
+var goldenStatusKeys = []string{"not_passed_statuses#", "not_passed_statuses[0].context", "not_passed_statuses[0].state", "passed"}
 
 // goldenCutTurnNote is the cut-turn note of a task taken back, word for word as main's
 // interruptedTask wrote it (supervise/delivery.go and relaunch.go's relaunchSentence at b4a566cb,
