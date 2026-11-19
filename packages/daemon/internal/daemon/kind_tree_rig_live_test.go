@@ -360,9 +360,13 @@ github_apps:
 }
 
 // seedRoot files a root issue of the run in Dispatch, in progress and labelled legion, and seeds
-// the daemon's store with it in at, admitted, its lifecycle open and each of mid's claims
-// mid-launch, as a daemon that stopped with them launching leaves it: the boot launches each into
-// the issue's pod, beside the architect every root runs. It returns the issue's key.
+// the daemon's store with it in at, admitted, its lifecycle open, and its architect's claim and
+// each of mid's mid-launch, as a daemon that stopped with them launching leaves it: the boot
+// launches each into the issue's pod. The architect's claim is seeded because nothing else makes
+// it for a root past admitted: admission's promotion of a queued root starts a root's architect
+// (workflow.Engine.StartArchitect), and the entry sweep weighs no root without an architect
+// claim. It leaves out ServingGeneration, which on an architect's claim says it ran before. It
+// returns the issue's key.
 func (r *kindTreeRig) seedRoot(title string, at phase.Phase, mid ...claim.Role) string {
 	t := r.t
 	t.Helper()
@@ -385,6 +389,14 @@ func (r *kindTreeRig) seedRoot(title string, at phase.Phase, mid ...claim.Role) 
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", key, err)
 	}
+	architect := r.token(key, claim.RoleArchitect)
+	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
+		Token: architect, Project: r.project, Tree: key, Issue: key, Role: claim.RoleArchitect, Generation: 1,
+		State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)),
+	}); err != nil {
+		t.Fatalf("record %s's unfinished launch: %v", architect, err)
+	}
+	writePrompt(t, r.cfg, architect)
 	for _, role := range mid {
 		token := r.token(key, role)
 		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
@@ -395,7 +407,7 @@ func (r *kindTreeRig) seedRoot(title string, at phase.Phase, mid ...claim.Role) 
 		}
 		writePrompt(t, r.cfg, token)
 	}
-	r.note("seeded %s in %s, %v mid-launch", key, at, mid)
+	r.note("seeded %s in %s, its architect and %v mid-launch", key, at, mid)
 	return key
 }
 
@@ -748,9 +760,10 @@ func (p kindPod) connect() string {
 	return ""
 }
 
-// kindPodWatch records every Sandbox pod of the run the API server held Running with every
+// kindPodWatch records every issue pod of the run the API server held Running with its roles
 // container ready, by uid, as it last read it then: the record pod-shape judges, deleted pods
-// included.
+// included. The image probe's pod, the repository cache's and the controller's carry the
+// project's label too and run no roles container, so it leaves them out.
 type kindPodWatch struct {
 	mu   sync.Mutex
 	pods map[string]kindPod
@@ -774,8 +787,9 @@ func startKindPodWatch(t *testing.T, r *kindTreeRig) *kindPodWatch {
 			if err == nil && json.Unmarshal([]byte(out), &list) == nil {
 				w.mu.Lock()
 				for _, pod := range list.Items {
-					if pod.Status.Phase == "Running" && len(pod.Status.ContainerStatuses) > 0 &&
-						!slices.ContainsFunc(pod.Status.ContainerStatuses, func(s kindContainerStatus) bool { return !s.Ready }) {
+					if pod.Status.Phase == "Running" && slices.ContainsFunc(pod.Status.ContainerStatuses, func(s kindContainerStatus) bool {
+						return s.Name == runtime.IssuePodContainer && s.Ready
+					}) {
 						if _, seen := w.streams[pod.Metadata.UID]; !seen {
 							w.streams[pod.Metadata.UID] = fmt.Sprintf("tcp://%s:%d", r.kind.Gateway, r.streamPort)
 						}

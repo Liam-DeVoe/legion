@@ -181,7 +181,9 @@ func (r *claudeKindLive) resumesAfterThePodIsDeleted() {
 	t := r.t
 	held := r.claimNow(claim.RoleImplementer)
 	pod, uid, generation := held.Locator.Sandbox.Name, held.Locator.Sandbox.PodUID, held.Generation
-	architect := r.claimNow(claim.RoleArchitect)
+	// Check 1 waits for the implementer alone, so the architect's launch into the same pod may
+	// still be running: the deletion waits until it has registered there.
+	architect := r.awaitLive(r.key, claim.RoleArchitect)
 	size := r.transcriptSize(pod, r.transcript)
 	prefix, err := r.roleExec(pod, claim.RoleImplementer, "sh", "-c", `head -c "$1" "$2" | sha256sum | cut -d' ' -f1`, "prefix", strconv.FormatInt(size, 10), r.transcript)
 	if err != nil {
