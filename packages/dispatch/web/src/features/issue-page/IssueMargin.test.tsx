@@ -160,6 +160,8 @@ function stubIssueApi() {
     spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
     // Details' history reads the issue's log while Details is open (`IssueHistory.tsx`).
     spyOn(api, "getIssueEvents").mockResolvedValue([]),
+    // Details' Steps reads the issue's step records while Details is open (`DetailsSteps.tsx`).
+    spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] }),
   ];
   const pinReads = {
     asks: spyOn(api, "listIssueAsks").mockResolvedValue([]),

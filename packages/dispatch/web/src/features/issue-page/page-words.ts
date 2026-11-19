@@ -662,6 +662,10 @@ export const ANSWER_LINES = freeze({
   loading_history: "Loading activity…",
   history_unreadable: "Could not load the activity.",
   loading_older: "Loading…",
+  /** What Details' list of the runs of the issue's steps says while its read, which Details
+   *  opening asks for, is out, and when it could not be read (`DetailsSteps.tsx`). */
+  loading_steps: "Loading steps…",
+  steps_unreadable: "Could not load the steps.",
   /** What the Spec filter says over its columns when the decisions could not be read, so the
    *  column beside each statement cannot say what shaped it. */
   decisions_unreadable: "Could not load the decisions.",
@@ -954,6 +958,32 @@ export const CONTROL_LABELS = freeze({
    *  written out in the reader's locale (`dayLabel`). */
   history_today: "Today",
   history_yesterday: "Yesterday",
+  /** Details' list of the runs Legion made of the issue's steps, under the history
+   *  (`DetailsSteps.tsx`), where today's page has a Steps tab: its heading, which its count of
+   *  runs follows, "Steps (4)"; the heading of each task's runs, before the task's own name,
+   *  "Task default"; the label of each field of a run, the tab's columns, and of the step a
+   *  failed or stopped run sent its task back to; and how a run ended, or that it runs, in the
+   *  tab's words. */
+  steps: "Steps",
+  steps_task: "Task",
+  step_fields: {
+    agent: "Agent",
+    attempt: "Attempt",
+    ended: "Ended",
+    model: "Model",
+    result: "Result",
+    returned_to: "Returned to",
+    role: "Role",
+    started: "Started",
+    step: "Step",
+    type: "Type",
+  },
+  step_results: {
+    failed: "failed",
+    passed: "passed",
+    running: "running",
+    stopped: "stopped",
+  },
   /** A file's latest version as a download, in the node menu, before that version's number:
    *  the link the Artifacts list drew on each row (R3, c-nothing-lost). */
   download_version: "Download version",

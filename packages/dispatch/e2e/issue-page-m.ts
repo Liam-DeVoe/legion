@@ -8,7 +8,7 @@ import { settledState } from "./settled";
 
 /**
  * What the rows of `e2e/issue-page-m.e2e.ts` read of Details on the new issue page: the
- * history, the facts of the focused row, and the way to them.
+ * history, the steps under it, the facts of the focused row, and the way to them.
  *
  * This file is those rows' own: it imports the readers of `e2e/issue-page.ts`,
  * `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`, and `settledState` of `e2e/settled.ts`, and
@@ -30,6 +30,10 @@ import { settledState } from "./settled";
  *   references the row is `[data-node-references]` (`node-references/NodeReferences.tsx`).
  * - **The people** in the People section: "Subscribers" and the row
  *   `[data-details-row="collaborators"]` (`details-more.tsx`).
+ * - **The steps** `[data-testid="issue-steps"]`, a `section` named "Steps" under the history
+ *   (`DetailsSteps.tsx`): its heading "Steps (<runs>)", each task a `section` "Task <task>" with
+ *   its `h3`, each run `[data-step-run="<record id>"]`, and each of a run's labelled values
+ *   `[data-step-field="<field>"]`, its label the `dt` and its value the `dd`.
  */
 
 /** The issue's history, in Details. */
@@ -171,4 +175,72 @@ export async function focusedRowFacts(page: Page, id: string): Promise<Locator> 
  *  and who it is asked of are there. */
 export function askFacts(page: Page, issueKey: string, askId: string): Promise<Locator> {
   return rowFacts(page, issueKey, askId);
+}
+
+/** The runs of the issue's steps, under the history in Details. */
+export function stepsSection(page: Page): Locator {
+  return marginShell(page).getByTestId("issue-steps");
+}
+
+/** One run of the steps, by its record's id. */
+export function stepRun(page: Page, id: string): Locator {
+  return stepsSection(page).locator(`[data-step-run="${id}"]`);
+}
+
+/** What the steps draw of the instant `at`, worked out in the page from the browser's own locale,
+ *  zone and clock, as the Steps tab draws a run's start and end: the date, with its year where it
+ *  is not this one, and the time of day. */
+export function drawnInstant(page: Page, at: string): Promise<string> {
+  return page.evaluate((iso) => {
+    const date = new Date(iso);
+    const day = new Intl.DateTimeFormat(undefined, {
+      day: "numeric",
+      month: "short",
+      ...(date.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }),
+    });
+    const time = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+    return `${day.format(date)} ${time.format(date)}`;
+  }, at);
+}
+
+/**
+ * What keeps a value of the steps from being read whole, one line each, or none: Details' box,
+ * the nearest box above the section that scrolls it, scrolling sideways; and each run's value
+ * wider than its own box, standing out past a side of Details' box, or cut by an ellipsis or a
+ * line clamp on it or inside it.
+ */
+export function stepsUnread(page: Page): Promise<string[]> {
+  return stepsSection(page).evaluate((section) => {
+    let box: HTMLElement | null = section.parentElement;
+    while (box !== null && !["auto", "scroll"].includes(getComputedStyle(box).overflowY)) {
+      box = box.parentElement;
+    }
+    if (box === null) return ["the steps are in no box that scrolls"];
+    const found: string[] = [];
+    if (box.scrollWidth > box.clientWidth) {
+      found.push(`Details scrolls sideways: ${box.scrollWidth} px in ${box.clientWidth} px`);
+    }
+    const sides = box.getBoundingClientRect();
+    for (const value of section.querySelectorAll<HTMLElement>("[data-step-field] > dd")) {
+      const field = value.parentElement?.getAttribute("data-step-field");
+      const run = value.closest("[data-step-run]")?.getAttribute("data-step-run");
+      const what = `${field} of ${run} ("${value.textContent}")`;
+      if (value.scrollWidth > value.clientWidth) {
+        found.push(`${what} is ${value.scrollWidth} px in ${value.clientWidth} px`);
+      }
+      const at = value.getBoundingClientRect();
+      if (at.left < sides.left - 1 || at.right > sides.right + 1) {
+        found.push(
+          `${what} stands out of Details, ${at.left}-${at.right} in ${sides.left}-${sides.right}`
+        );
+      }
+      for (const part of [value, ...value.querySelectorAll<HTMLElement>("*")]) {
+        const style = getComputedStyle(part);
+        if (style.textOverflow === "ellipsis" || style.webkitLineClamp !== "none") {
+          found.push(`${what} is cut by ${part.tagName}'s ellipsis or line clamp`);
+        }
+      }
+    }
+    return found;
+  });
 }

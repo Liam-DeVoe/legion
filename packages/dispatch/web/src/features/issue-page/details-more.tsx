@@ -19,6 +19,7 @@ import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes"
 import { useKeymap } from "../shell/keymap";
 import { ownScrollMark, rewatch, watchedIn } from "../shell/ViewportAnchor";
 import { outlineItemRoute, useAddressFallback, useAddressTarget } from "./address-target";
+import { DetailsSteps } from "./DetailsSteps";
 import { DetailsErrorLine, useSaidFailure } from "./details-error";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
@@ -329,13 +330,20 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
         />
       ) : null}
       {drawsHistory ? (
-        <IssueHistory
-          activityAddress={route?.kind === "activity" ? panelAddress : undefined}
-          issue={issue}
-          item={item}
-          state={state}
-          visitMark={visitMark.current?.issue === issue.key ? visitMark.current.seq : lastReadSeq}
-        />
+        <>
+          <IssueHistory
+            activityAddress={route?.kind === "activity" ? panelAddress : undefined}
+            issue={issue}
+            item={item}
+            state={state}
+            visitMark={visitMark.current?.issue === issue.key ? visitMark.current.seq : lastReadSeq}
+          />
+          {/* The runs of the issue's steps, read only while Details is open: an address that
+              opens Details draws them a commit before the drawer opens, and they wait for it.
+              Where Details is a column of the page rather than a drawer, it is open wherever
+              it is drawn. */}
+          <DetailsSteps issueKey={issue.key} open={drawer === undefined || drawer.open} />
+        </>
       ) : null}
     </>
   );

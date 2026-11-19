@@ -8,7 +8,7 @@ import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-d
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import { issueResultsQuery, userStateQuery } from "../../api/queries";
+import { issueResultsQuery, issueStepsQuery, userStateQuery } from "../../api/queries";
 import type {
   Comment,
   CommentDelivery,
@@ -86,6 +86,8 @@ function readsHeld(): QueryClient {
   client.setQueryData(["comments", KEY], [OWN_COMMENT]);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["whoami"], { login: "alice" });
+  // Details' Steps reads the issue's step records while Details is open (`DetailsSteps.tsx`).
+  client.setQueryData(issueStepsQuery(KEY).queryKey, { issue: KEY, tasks: [] });
   return client;
 }
 

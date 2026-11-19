@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { type LegionRole, roleToken } from "@legion/contracts";
 
-import type { DispatchEvent } from "../web/src/api/types";
+import type { DispatchEvent, IssueSteps } from "../web/src/api/types";
 import { KEY_REPORTS, PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   ANSWER_LINES,
@@ -40,6 +40,7 @@ import {
   getIssueEvents,
   patchIssue,
   putIssueState,
+  putStep,
   resolveAsk,
   resolveComment,
   uploadIssueFile,
@@ -84,6 +85,7 @@ import { detailsRow, marginSectionDisclosure, pinsList } from "./issue-page-h";
 import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
 import {
   askFacts,
+  drawnInstant,
   focusedNodeFacts,
   focusedRowFacts,
   historyDayOf,
@@ -93,8 +95,12 @@ import {
   newestHistoryEntry,
   rowFacts,
   seededHistoryEntry,
+  stepRun,
+  stepsSection,
+  stepsUnread,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
+import { viewportAt } from "./issue-page-p";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
 import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
@@ -4351,3 +4357,288 @@ for (const [group, places] of READER_PLACE_GROUPS) {
     expect(moved, moved.join("\n")).toEqual([]);
   });
 }
+
+// ---------------------------------------------------------------------------------------------
+// The runs of the issue's steps, under the history in Details: new rows.
+// ---------------------------------------------------------------------------------------------
+
+/** One run the seed writes: the record's id, what the daemon writes of it (`putStep`), each
+ *  labelled value the steps draw of it but its two times, and those two times as written. */
+interface SeededRun {
+  readonly ended: string | null;
+  readonly fields: Readonly<Record<string, string>>;
+  readonly id: string;
+  readonly input: Parameters<typeof putStep>[2];
+  readonly started: string | null;
+}
+
+/** A moment of the day the runs are dated to, as the daemon writes one. */
+const stepAt = (time: string) => `2026-11-16T${time}:00Z`;
+
+/**
+ * An issue whose steps ran in two tasks, written as Legion's daemon writes them (`putStep`, as
+ * `steps.e2e.ts` writes them): in `docs`, one run that passed; in `default`, its implementation,
+ * which passed; a review that failed and sent the task back to step 2; the implementation's
+ * second run, which runs and names no model yet; and a merge GitHub made, which names no type,
+ * agent, model or start. The server reads a run with no start first, so `default`, the merge's
+ * task, comes before `docs`, which no sort by name gives. And an issue no step ran on.
+ */
+async function seedSteps(): Promise<{ key: string; never: string; runs: readonly SeededRun[] }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Runs of two tasks" });
+  const never = await createIssue({ project: "CORE", title: "Never ran in Legion" });
+  const agent = (role: string) => `legion-core-${issue.key.toLowerCase()}-${role}`;
+  const { none, step_results: results } = CONTROL_LABELS;
+  const run = (input: SeededRun["input"], fields: SeededRun["fields"]): SeededRun => ({
+    ended: input.ended_at ?? null,
+    fields,
+    id: crypto.randomUUID(),
+    input,
+    started: input.started_at ?? null,
+  });
+  const implementer = { agent: agent("implementer"), role: "implementer", type: "implementation" };
+  const runs = [
+    run(
+      {
+        ...implementer,
+        ended_at: stepAt("08:30"),
+        generation: 1,
+        kind: "step",
+        model: "anthropic/claude-opus-5",
+        result: "passed",
+        started_at: stepAt("08:00"),
+        step: 1,
+        task: "docs",
+        type: "documentation",
+      },
+      {
+        agent: agent("implementer"),
+        attempt: "1",
+        model: "anthropic/claude-opus-5",
+        result: results.passed,
+        role: "implementer",
+        step: "1",
+        type: "documentation",
+      }
+    ),
+    run(
+      {
+        ...implementer,
+        ended_at: stepAt("09:40"),
+        generation: 1,
+        kind: "step",
+        model: "anthropic/claude-opus-5",
+        result: "passed",
+        started_at: stepAt("09:00"),
+        step: 2,
+        task: "default",
+      },
+      {
+        agent: agent("implementer"),
+        attempt: "1",
+        model: "anthropic/claude-opus-5",
+        result: results.passed,
+        role: "implementer",
+        step: "2",
+        type: "implementation",
+      }
+    ),
+    run(
+      {
+        agent: agent("reviewer"),
+        ended_at: stepAt("10:30"),
+        generation: 1,
+        kind: "step",
+        model: "openai/gpt-6.1-sol",
+        result: "failed",
+        returned_to: 2,
+        role: "reviewer",
+        started_at: stepAt("10:00"),
+        step: 4,
+        task: "default",
+        type: "review",
+      },
+      {
+        agent: agent("reviewer"),
+        attempt: "1",
+        model: "openai/gpt-6.1-sol",
+        result: results.failed,
+        returned_to: "step 2",
+        role: "reviewer",
+        step: "4",
+        type: "review",
+      }
+    ),
+    run(
+      {
+        ...implementer,
+        generation: 1,
+        kind: "step",
+        started_at: stepAt("10:31"),
+        step: 2,
+        task: "default",
+      },
+      {
+        agent: agent("implementer"),
+        attempt: "2",
+        model: none,
+        result: results.running,
+        role: "implementer",
+        step: "2",
+        type: "implementation",
+      }
+    ),
+    run(
+      {
+        ended_at: stepAt("11:00"),
+        generation: 1,
+        kind: "merge",
+        result: "passed",
+        role: "merger",
+        step: 0,
+        task: "default",
+      },
+      {
+        agent: none,
+        attempt: "1",
+        model: none,
+        result: results.passed,
+        role: "merger",
+        step: "Merge",
+        type: none,
+      }
+    ),
+  ];
+  for (const seeded of runs) await putStep(issue.key, seeded.id, seeded.input);
+  return { key: issue.key, never: never.key, runs };
+}
+
+// Details lists every run of the issue's steps under the history, headed by how many it lists:
+// one group per task in the server's order, each run in the order of the server's read, and each
+// run's step, role, type, agent, model, attempt, start, end and result - and the step a failed
+// review sent the task back to - as the record holds them, None where it holds none, as labelled
+// values and never as a table. At 1440 px and at 390 px every value is whole: Details' box
+// scrolls no way but down, and no value is wider than its own box, stands out of Details or is
+// cut. It carries `@phone` for that width claim, a layout claim "Phone acceptance" in
+// `packages/dispatch/AGENTS.md` tags `@phone` for; the phone reads 390 px alone.
+// SLOW(>=2s): five step records written, and the issue loaded and Details opened at two widths.
+test("Steps in Details lists each run of each task as its record holds it, whole at every width @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedSteps, async (page, seeded) => {
+    // The server's own read, whose order of tasks and of runs the section keeps.
+    const read = await page.request.get(`/api/v1/issues/${seeded.key}/steps`);
+    expect(read.status()).toBe(200);
+    const answer = (await read.json()) as IssueSteps;
+    const tasks = (answer.tasks ?? []).map((task) => task.task);
+    const order = (answer.tasks ?? []).flatMap((task) => (task.steps ?? []).map((step) => step.id));
+    expect(
+      tasks,
+      "the server's read does not hold the seed's two tasks, the merge's first"
+    ).toEqual(["default", "docs"]);
+    expect(order, "the server's read holds another set of runs than the seed").toHaveLength(
+      seeded.runs.length
+    );
+    const desktopProject = test.info().project.name !== "iphone";
+    for (const width of desktopProject ? [1440, 390] : [390]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openDetails(page);
+      const section = stepsSection(page);
+      for (const run of seeded.runs) {
+        const drawn = stepRun(page, run.id);
+        await expect(drawn, `Details draws no run ${run.id} at ${width} px`).toHaveCount(1);
+        for (const [field, value] of Object.entries(run.fields)) {
+          await expect(
+            drawn.locator(`[data-step-field="${field}"] > dd`),
+            `the ${field} of run ${run.id} at ${width} px`
+          ).toHaveText(value);
+        }
+        await expect(
+          drawn.locator('[data-step-field="returned_to"]'),
+          `run ${run.id} names a step it went back to that its record does not, at ${width} px`
+        ).toHaveCount(run.fields.returned_to === undefined ? 0 : 1);
+        for (const [field, at] of [
+          ["started", run.started],
+          ["ended", run.ended],
+        ] as const) {
+          const value = drawn.locator(`[data-step-field="${field}"] > dd`);
+          await expect(value, `the ${field} of run ${run.id} at ${width} px`).toHaveText(
+            at === null ? CONTROL_LABELS.none : await drawnInstant(page, at)
+          );
+          await expect(value.locator("time")).toHaveCount(at === null ? 0 : 1);
+          if (at !== null) await expect(value.locator("time")).toHaveAttribute("datetime", at);
+        }
+      }
+      await expect(section.getByRole("heading", { level: 2 })).toHaveText(
+        `${CONTROL_LABELS.steps} (${seeded.runs.length})`
+      );
+      await expect(section.getByRole("heading", { level: 3 })).toHaveText(
+        tasks.map((task) => `${CONTROL_LABELS.steps_task} ${task}`)
+      );
+      expect(
+        await section
+          .locator("[data-step-run]")
+          .evaluateAll((runs) => runs.map((run) => run.getAttribute("data-step-run"))),
+        `the runs are not in the order of the server's read at ${width} px`
+      ).toEqual(order);
+      await expect(section.getByRole("table")).toHaveCount(0);
+      expect(await stepsUnread(page), `a value of the steps is not whole at ${width} px`).toEqual(
+        []
+      );
+      await assertPageFits(page);
+    }
+  });
+});
+
+// The steps are read only once Details opens. A read Dispatch refuses is asked again twice, as
+// every read of Details is, and then Details says so with its Retry under the heading, which has
+// no count yet; Retry reads the steps again and draws every run. An issue no step ran on reads
+// None under its heading.
+// SLOW(>=2s): five step records written, two refused retries 500 ms apart, and two issues loaded.
+test("Steps in Details says a refused read with a Retry that reads it again, and None where no step ran", async ({
+  browser,
+}) => {
+  await phase(browser, seedSteps, async (page, seeded) => {
+    const reads: string[] = [];
+    let refusals = 3;
+    await page.route(`**/api/v1/issues/${seeded.key}/steps`, (route) => {
+      reads.push(route.request().url());
+      if (refusals === 0) return route.fallback();
+      refusals -= 1;
+      return route.fulfill({
+        body: JSON.stringify({ code: "INTERNAL", error: "refused" }),
+        contentType: "application/json",
+        status: 500,
+      });
+    });
+    const settling = watchApiRequests(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectLoadSettled(settling);
+    expect(reads, "the steps were read on a load that left Details shut").toEqual([]);
+
+    await openDetails(page);
+    const section = stepsSection(page);
+    await expect(section.getByRole("alert")).toHaveText(ANSWER_LINES.steps_unreadable);
+    expect(reads, "a refused read was not asked again twice, and no more").toHaveLength(3);
+    await expect(section.getByRole("heading", { level: 2 })).toHaveText(CONTROL_LABELS.steps);
+    await expect(section.locator("[data-step-run]")).toHaveCount(0);
+
+    await section.getByRole("button", { exact: true, name: CONTROL_LABELS.retry }).click();
+    await expect(section.getByRole("heading", { level: 2 })).toHaveText(
+      `${CONTROL_LABELS.steps} (${seeded.runs.length})`
+    );
+    await expect(section.locator("[data-step-run]")).toHaveCount(seeded.runs.length);
+    await expect(section.getByRole("alert")).toHaveCount(0);
+    expect(reads, "Retry did not read the steps once more").toHaveLength(4);
+
+    await gotoIssue(page, `/issues/${seeded.never}`);
+    await openDetails(page);
+    await expect(section.getByRole("heading", { level: 2 })).toHaveText(
+      `${CONTROL_LABELS.steps} (0)`
+    );
+    await expect(section.getByText(CONTROL_LABELS.none, { exact: true })).toBeVisible();
+    await expect(section.locator("[data-step-run]")).toHaveCount(0);
+  });
+});
