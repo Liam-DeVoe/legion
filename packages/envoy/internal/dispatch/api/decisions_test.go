@@ -667,28 +667,29 @@ const calloutDecision = "Ship the notices beside the callout"
 // the spec block it links is out of date. So it does where a paragraph opening with a code span
 // of three backticks, which holds two in a row, stands before the callout and another inside it
 // before the decision: such a line opens no fenced code, and the callout's opening line between
-// them is read.
+// them is read. So it does too where a list item opening with fenced code stands before the
+// callout and another inside it before the decision: each item's code ends at its own closing
+// line, indented two spaces, which read alone would open code, and the parser places the callout
+// and the decision inside it as they stand.
 func TestADecisionKeptOnOneSideOfATypedBlockWaitsOnceItStandsOnTheOther(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		keptInside bool
-		codeSpans  bool
+		// prefix stands before the callout and inside it before the decision.
+		prefix string
 	}{
-		{"kept inside a callout and standing outside it now", true, false},
-		{"kept outside a callout and standing inside it now", false, false},
-		{"kept inside a callout after paragraphs opening with a code span, and standing outside it now", true, true},
+		{"kept inside a callout and standing outside it now", true, ""},
+		{"kept outside a callout and standing inside it now", false, ""},
+		{"kept inside a callout after paragraphs opening with a code span, and standing outside it now", true, "```a``b``` x\n\n"},
+		{"kept inside a callout after list items opening with fenced code, and standing outside it now", true, "- ```\n  code\n  ```\n\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newDecisionsFixture(t)
 			handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 			section := "## " + calloutDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third"
 			kept := strings.Replace(section, "- first\n\n- second", "- first\n- second", 1)
-			codeSpan := ""
-			if test.codeSpans {
-				codeSpan = "```a``b``` x\n\n"
-			}
 			inside := func(text string) string {
-				return codeSpan + ":::callout{#aside kind=\"note\" title=\"\"}\n" + codeSpan + text + "\n\n# Notes\n:::"
+				return test.prefix + ":::callout{#aside kind=\"note\" title=\"\"}\n" + test.prefix + text + "\n\n# Notes\n:::"
 			}
 			outside := func(text string) string { return text + "\n\n# Notes" }
 			now, then := outside(section), inside(kept)
@@ -744,40 +745,74 @@ func TestADecisionKeptOnOneSideOfATypedBlockWaitsOnceItStandsOnTheOther(t *testi
 	}
 }
 
-// A stored version is cut into its decisions line by line (decisionCuts), and a heading inside
-// fenced code is the code's text, so a fence's line is read as pmdoc's parser reads it. A
-// paragraph that opens with a code span of three backticks holding two in a row opens no code: the
-// decision after it is cut, and a callout opened after another such paragraph is open at a
-// decision inside it. A line of backticks that also holds an info string closes no code: a heading
-// after it inside the code opens no decision.
+// A version is cut into its decisions at the headings and typed blocks pmdoc's parser places
+// (decisionCuts), so a heading inside fenced code is the code's text. A paragraph that opens with a
+// code span of three backticks holding two in a row opens no code: the decision after it is cut,
+// and a callout opened after another such paragraph holds a decision inside it. A line of backticks
+// that also holds an info string closes no code: a heading after it inside the code opens no
+// decision. A list item, bullet or ordered, that opens with fenced code ends its code at its own
+// closing line, indented past the item's marker, which read alone would open code: a decision
+// after the item is cut, standing alone, and a callout after another such item holds a decision
+// inside it. A list item's typed block inside a callout ends at its own indented fence, which
+// leaves the callout, whose fence the renderer writes longer, holding the decision after it.
 func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
 	for _, test := range []struct {
-		name, markdown, text string
-		alone                bool
+		name, markdown, heading, text string
+		alone                         bool
 	}{
 		{
 			name:     "a paragraph that opens with a code span",
 			markdown: "```a``b``` x\n\n## D\n\nText.\n",
+			heading:  "D",
 			text:     "## D\n\nText.",
 			alone:    true,
 		},
 		{
 			name:     "a callout after a paragraph that opens with a code span",
 			markdown: "```a``b``` x\n\n:::callout{#aside kind=\"note\" title=\"\"}\n```a``b``` x\n\n## D\n\nText.\n:::\n",
+			heading:  "D",
 			text:     "## D\n\nText.\n:::",
 		},
 		{
 			name:     "a line of backticks with an info string inside code",
 			markdown: "## D\n\n```\ncode\n```go\n## X\n```\n",
+			heading:  "D",
 			text:     "## D\n\n```\ncode\n```go\n## X\n```",
 			alone:    true,
 		},
+		{
+			name:     "a callout after a list item that opens with fenced code",
+			markdown: "- ```\n  code\n  ```\n\n:::callout{#aside kind=\"note\" title=\"\"}\n- ```\n  code\n  ```\n\n## D\n\nText.\n\n# Notes\n:::",
+			heading:  "D",
+			text:     "## D\n\nText.",
+		},
+		{
+			name:     "a decision after a list item that opens with fenced code",
+			markdown: "- ```\n  code\n  ```\n\n## E\n\nText.\n",
+			heading:  "E",
+			text:     "## E\n\nText.",
+			alone:    true,
+		},
+		{
+			name:     "a decision after an ordered list item that opens with fenced code",
+			markdown: "1. ```\n   code\n   ```\n\n## E\n\nText.\n",
+			heading:  "E",
+			text:     "## E\n\nText.",
+			alone:    true,
+		},
+		{
+			name:     "a callout holding a list item whose typed block closes indented",
+			markdown: "::::callout{#aside kind=\"note\" title=\"\"}\n- :::callout{#inner kind=\"note\" title=\"\"}\n  Inner.\n  :::\n\n## D\n\nText.\n::::\n",
+			heading:  "D",
+			text:     "## D\n\nText.\n::::",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			cuts := decisionCuts(test.markdown)
-			cut, ok := cuts[sectionKey{heading: "D"}]
-			if len(cuts) != 1 || !ok || cut.text != test.text || cut.alone != test.alone {
-				t.Fatalf("decisionCuts(%q) = %#v, want the one decision D, alone %t, written %q", test.markdown, cuts, test.alone, test.text)
+			cuts, read := decisionCuts(test.markdown)
+			cut, ok := cuts[sectionKey{heading: test.heading}]
+			if !read || len(cuts) != 1 || !ok || cut.text != test.text || cut.alone != test.alone {
+				t.Fatalf("decisionCuts(%q) = %#v, %t, want the one decision %s, alone %t, written %q",
+					test.markdown, cuts, read, test.heading, test.alone, test.text)
 			}
 		})
 	}
@@ -861,6 +896,86 @@ func TestADecisionAfterAQuotedHeadingOfItsNameMarksItsLinkOnceItsContentChanges(
 	}
 	if got := fmt.Sprint(staleTargets(changed)); got != "[hold-it]" {
 		t.Errorf("after its content changed the decision after the quoted heading marks %v out of date, want hold-it", staleTargets(changed))
+	}
+}
+
+// A decision at the document's level after a list item that opens with fenced code is cut, and
+// read by its cut for its links: the item's code ends at its own closing line, indented two
+// spaces, which read alone would open code that holds the decision's heading. A build of another
+// renderer version stored the version that wrote the decision, its loose list spelled otherwise,
+// and once the decision's content changes, the spec block it links is out of date.
+func TestADecisionAfterAListItemOpeningWithCodeMarksItsLinkOnceItsContentChanges(t *testing.T) {
+	fixture := newDecisionsFixture(t)
+	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
+	section := "## " + listDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third"
+	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
+		"op": "insert", "markdown": "- ```\n  code\n  ```\n\n" + section, "before": "## Replaced",
+	}})
+	written := decisionNamed(t, readIssueDecisions(t, handler, key), listDecision)
+	if written.ChangedVersion != version.Number || written.Text != section || fmt.Sprint(linkTargets(written)) != "[hold-it]" {
+		t.Fatalf("the decision = %#v, want it changed at version %d, written %q and linking hold-it", written, version.Number, section)
+	}
+	another := pmdoc.RendererVersion - 1
+	respellVersion(t, database, id, version.Number, &another)
+
+	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
+		{"op": "replace", "find": "third", "with": "third, after measuring"},
+	})
+	changed := decisionNamed(t, readIssueDecisions(t, handler, key), listDecision)
+	if changed.BlockID != written.BlockID || !strings.Contains(changed.Text, "third, after measuring") {
+		t.Fatalf("the decision after the list item = %#v, want %s holding the changed item", changed, written.BlockID)
+	}
+	if got := fmt.Sprint(staleTargets(changed)); got != "[hold-it]" {
+		t.Errorf("after its content changed the decision after the list item marks %v out of date, want hold-it", staleTargets(changed))
+	}
+}
+
+// A stored version whose markdown this build's parser refuses is one the view could not read, as a
+// version the document does not hold is, not one that holds no decision's text: a link that names
+// it stays as it is. The agent decision links both spec blocks at version 1, and a later version
+// changes another decision. A build of another renderer version stored version 1 with the
+// decision's text unchanged and a link reference definition ahead of it, which pmdoc refuses
+// (refusals.go): neither link is out of date.
+func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
+	fixture := newDecisionsFixture(t)
+	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
+	table := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
+	for _, link := range table.Links {
+		if link.CreatedVersion != 1 {
+			t.Fatalf("the decision's links = %#v, want each created at version 1", table.Links)
+		}
+	}
+	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
+		{"op": "replace", "find": "Replaced by the table above.", "with": "Replaced by the table above, in May."},
+	})
+
+	ctx := context.Background()
+	var stored string
+	if err := database.Pool.QueryRow(ctx, `
+		select markdown from artifact_versions where artifact_id = $1 and number = 1
+	`, id).Scan(&stored); err != nil {
+		t.Fatalf("read version 1: %v", err)
+	}
+	refused := "[spec]: https://example.com/spec\n\n" + stored
+	if !strings.Contains(refused, table.Text+"\n") {
+		t.Fatalf("version 1 = %q; the test needs it to hold the decision as %q", stored, table.Text)
+	}
+	if _, err := pmdoc.ParseRendering(refused); err == nil {
+		t.Fatalf("pmdoc reads %q; the test needs markdown it refuses", refused)
+	}
+	another := pmdoc.RendererVersion - 1
+	if _, err := database.Pool.Exec(ctx, `
+		update artifact_versions set markdown = $2, renderer_version = $3 where artifact_id = $1 and number = 1
+	`, id, refused, another); err != nil {
+		t.Fatalf("store version 1 as markdown this build refuses: %v", err)
+	}
+
+	decision := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
+	if decision.Text != table.Text || len(decision.Links) != 2 {
+		t.Fatalf("the decision = %#v, want %q linking both spec blocks", decision, table.Text)
+	}
+	if stale := staleTargets(decision); len(stale) != 0 {
+		t.Errorf("a link whose version this build refuses marks %v out of date, want it left as it is", stale)
 	}
 }
 

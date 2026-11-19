@@ -396,10 +396,10 @@ func (p fenceClosure) Continue(node ast.Node, reader gmtext.Reader, pc parser.Co
 //
 // OpeningCodeFence and CodeFence.ClosedBy read a fence's line as the parser reads it (goldmark's
 // fenced code parser, which fenceClosure wraps), and they are the one reader of that grammar: a
-// caller outside the document parser - refs.questionBlocks and api's decisionCuts, which scan a
-// stored version's lines for its question blocks and its decisions - reads a line with them
-// rather than with a grammar of its own. A line is passed past its containers' markers, with or
-// without its line ending, and its indentation is measured from there.
+// caller outside the document parser - refs.questionBlocks, which scans a stored version's lines
+// for its question blocks - reads a line with them rather than with a grammar of its own. A line
+// is passed past its containers' markers, with or without its line ending, and its indentation is
+// measured from there.
 type CodeFence struct {
 	char byte
 	run  int

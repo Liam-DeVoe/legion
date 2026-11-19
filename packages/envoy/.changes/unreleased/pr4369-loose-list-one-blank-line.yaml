@@ -16,10 +16,12 @@ body: |-
   typed block then and stands in no container now. A block or a decision whose text holds `[^` is
   not read alone either, because whether that text is a footnote reference depends on the labels its
   document defines. A check result's words read as moved only when the check's sum and its
-  changed version both moved. The decisions view reads a code fence's line as the parser does, so
-  a paragraph that opens with a code span no longer hides the decisions after it from the
-  stale-link check, and each decision is compared by the cut of its own heading, so a heading of
-  the same name inside a quote or a list item no longer shifts it onto another decision's text.
+  changed version both moved. The decisions view cuts a document at the headings and typed blocks
+  the parser places, so a paragraph that opens with a code span, or a list item that opens with
+  fenced code, no longer hides the decisions after it from the stale-link check. Each decision is
+  compared by the cut of its own heading, so a heading of the same name inside a quote or a list
+  item no longer shifts it onto another decision's text, and a stored version the parser refuses
+  leaves the links that name it as they are.
   Dispatch links an email address whole, or not at all. For a link that a reader made from a bare
   address, it takes the run of characters an RFC 5322 local part allows that ends at the `@`, as
   the text decodes: the link is that whole run where GFM links every character of it, and there is

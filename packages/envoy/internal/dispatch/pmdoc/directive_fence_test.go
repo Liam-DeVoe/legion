@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -50,73 +49,6 @@ func TestTypedFencesReadTheSameInTheEngineAndHere(t *testing.T) {
 			}
 			if reason := readDifference(doc, back, shapeOnly); reason != "" || codeText(back) != codeText(doc) {
 				t.Fatalf("Parse(%q): %s, code %q, want the tree's blocks holding %q", test.Markdown, reason, codeText(back), codeText(doc))
-			}
-		})
-	}
-}
-
-// TypedFenceLine reads a typed block's fence line as the parser reads it. Each row is held to
-// Parse: a document opens with a typed block at the row's line exactly where the reader says the
-// line opens one, of the colons the reader gives, and a typed block of three colons ends at the
-// row's line exactly where the reader says the line is colons alone, at least three of them. A line
-// reads alike with its line feed.
-func TestTypedFenceLineReadsALineAsTheParserDoes(t *testing.T) {
-	const opening = `:::callout{kind="note" title=""}`
-	parse := func(t *testing.T, markdown string) *Node {
-		t.Helper()
-		doc, err := Parse(markdown)
-		if err != nil {
-			t.Fatalf("Parse(%q): %v", markdown, err)
-		}
-		return doc
-	}
-	type row struct {
-		name, line    string
-		colons        int
-		closes, opens bool
-	}
-	read := func(t *testing.T, row row) {
-		t.Helper()
-		colons, closes, opens := TypedFenceLine(row.line)
-		if colons != row.colons || closes != row.closes || opens != row.opens {
-			t.Fatalf("TypedFenceLine(%q) = %d, %t, %t, want %d, %t, %t", row.line, colons, closes, opens, row.colons, row.closes, row.opens)
-		}
-		if fed, fedCloses, fedOpens := TypedFenceLine(row.line + "\n"); fed != colons || fedCloses != closes || fedOpens != opens {
-			t.Fatalf("TypedFenceLine(%q) = %d, %t, %t, want it read as without its line feed", row.line+"\n", fed, fedCloses, fedOpens)
-		}
-	}
-	for _, row := range []row{
-		{name: "an opening line", line: opening, colons: 3, opens: true},
-		{name: "an opening line of four colons", line: ":" + opening, colons: 4, opens: true},
-		{name: "indented three columns", line: "   " + opening, colons: 3, opens: true},
-		{name: "indented four columns", line: "    " + opening},
-		{name: "indented by a tab", line: "\t" + opening},
-		{name: "two spaces and a tab, four columns", line: "  \t" + opening},
-	} {
-		t.Run("opening/"+row.name, func(t *testing.T) {
-			read(t, row)
-			markdown := row.line + "\nx\n" + strings.Repeat(":", max(row.colons, 3)) + "\n"
-			if typed := parse(t, markdown).Children[0].Type == "callout"; typed != row.opens {
-				t.Fatalf("Parse(%q) opens a typed block: %t; the reader says the line opens one: %t", markdown, typed, row.opens)
-			}
-		})
-	}
-	for _, row := range []row{
-		{name: "three colons", line: ":::", colons: 3, closes: true},
-		{name: "four colons", line: "::::", colons: 4, closes: true},
-		{name: "trailing spaces", line: ":::  ", colons: 3, closes: true},
-		{name: "a trailing tab", line: ":::\t", colons: 3, closes: true},
-		{name: "fewer colons than the fence", line: "::", colons: 2, closes: true},
-		{name: "indented three columns", line: "   :::", colons: 3, closes: true},
-		{name: "indented four columns", line: "    :::"},
-		{name: "indented by a tab", line: "\t:::"},
-	} {
-		t.Run("closing/"+row.name, func(t *testing.T) {
-			read(t, row)
-			markdown := opening + "\nx\n" + row.line + "\ny\n:::\n"
-			doc := parse(t, markdown)
-			if ended := doc.Children[0].Type == "callout" && len(doc.Children) > 1; ended != (row.closes && row.colons >= 3) {
-				t.Fatalf("Parse(%q) ends the typed block at the row's line: %t; the reader says the line is %d colons alone: %t", markdown, ended, row.colons, row.closes)
 			}
 		})
 	}

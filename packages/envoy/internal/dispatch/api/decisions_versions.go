@@ -24,7 +24,8 @@ import (
 // whether no typed block holds the decision's text there or now; a decision whose heading stands
 // in a list item, a quote or a footnote definition has no cut now. A decision's text read alone
 // loses the list item, quote, footnote definition or typed block it stands in, so two trees can
-// read as one. The decision waits for review otherwise: a version that holds no such text - the
+// read as one. The decision waits for review otherwise: a version the view could not read - the
+// parser refuses its markdown (storedDecisionsAt) - a version that holds no such text - the
 // decision's heading changed since, or a block left the decision after that version - a decision
 // inside a container then or now, kept text that reads otherwise alone, and kept text or text now
 // that holds `[^`, which reads as a footnote reference or as text by the labels the whole document
@@ -96,7 +97,8 @@ func (v storedDecisions) holds(key sectionKey, now decisionCut) bool {
 
 // storedDecisionsAt is each named version's decisions, each one's text and its sum: the version's
 // own stored markdown, cut by the same rule as the document as it stands, read beside the
-// renderer version that stored it.
+// renderer version that stored it. A version whose markdown the parser refuses is left out, as
+// one the view could not read (scanStoredDecisions).
 func (s *server) storedDecisionsAt(
 	ctx context.Context, artifactID string, numbers []int,
 ) (map[int]storedDecisions, error) {
@@ -130,7 +132,10 @@ func (s *server) otherRendererDecisionsAt(
 }
 
 // scanStoredDecisions reads rows of versions' number, renderer_version and markdown into each
-// version's decisions, its markdown cut by decisionCuts, and closes them.
+// version's decisions, its markdown cut by decisionCuts, and closes them. A version whose markdown
+// the parser refuses gives no cuts, and is left out rather than read as a version that holds no
+// decision's text: a link that names it stays as it is, as for a version the document does not
+// hold (staleLink), and a keep that names it waits for review (markKeptAcrossRenderers).
 func scanStoredDecisions(rows pgx.Rows) (map[int]storedDecisions, error) {
 	defer rows.Close()
 	versions := map[int]storedDecisions{}
@@ -141,10 +146,11 @@ func scanStoredDecisions(rows pgx.Rows) (map[int]storedDecisions, error) {
 		if err := rows.Scan(&number, &stamp, &markdown); err != nil {
 			return nil, err
 		}
-		versions[number] = storedDecisions{
-			otherRenderer: pmdoc.OtherRenderer(stamp),
-			decisions:     decisionCuts(markdown),
+		decisions, read := decisionCuts(markdown)
+		if !read {
+			continue
 		}
+		versions[number] = storedDecisions{otherRenderer: pmdoc.OtherRenderer(stamp), decisions: decisions}
 	}
 	return versions, rows.Err()
 }
