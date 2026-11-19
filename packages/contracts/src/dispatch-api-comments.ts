@@ -135,8 +135,8 @@ export const commentEventPayloadFields = {
    *  `api/events.go`), so both are optional here. */
   body: commentFields.body.optional(),
   suggestion: commentFields.suggestion.optional(),
-  /** When the comment's author deleted it, and who they are; both absent on a comment nobody
-   *  deleted and on every event written before the post corrections. The read of a deleted
+  /** When the comment's author deleted it, and who they are; both null on a comment nobody
+   *  deleted, and absent on every event written before the post corrections. The read of a deleted
    *  comment's event stamps these two where the body was. */
   deleted_at: commentFields.deleted_at.optional(),
   deleted_by: commentFields.deleted_by.optional(),
@@ -215,7 +215,7 @@ export const CommentEventPayloadSchema = z
     suggestion: z.object({ replace_with: suggestionFields.replace_with.optional() }).nullish(),
     author: InboundActorSchema.optional(),
     created_at: commentFields.created_at.optional(),
-    // The mark of a post its author deleted: absent on a live post and on every event written
+    // The mark of a post its author deleted: null on a live post, absent on every event written
     // before the post corrections, and set on each event of a deleted one, whose body the read
     // of the event takes out of the payload.
     deleted_at: commentFields.deleted_at.optional(),

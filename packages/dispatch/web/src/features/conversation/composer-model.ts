@@ -88,9 +88,12 @@ export function replyParentOf(
   if (target.parentKind === "comment") {
     return comments.find((comment) => comment.id === target.id);
   }
-  return messages
-    .flatMap((read) => [read.message, ...(read.replies ?? [])])
-    .find((message) => message.id === target.id);
+  for (const read of messages) {
+    if (read.message.id === target.id) return read.message;
+    const reply = read.replies?.find((message) => message.id === target.id);
+    if (reply !== undefined) return reply;
+  }
+  return undefined;
 }
 
 /** One accepted mention: the target, and the span of the body that names it. */

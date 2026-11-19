@@ -33,8 +33,7 @@ func TestSessionAnswersMarksADeletedComment(t *testing.T) {
 	}
 }
 
-// The message arm of the same read carries the time of an edit, which it did not before this
-// change, and the mark of a delete.
+// The message arm of the same read carries the time of an edit and the mark of a delete.
 func TestSessionAnswersCarriesAMessagesEditTimeAndItsDeletedMark(t *testing.T) {
 	f := newAnswersFixture(t)
 	root := f.message(t, map[string]any{"body": "The deploy is blocked on review."}, answersSession)

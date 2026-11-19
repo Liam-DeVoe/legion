@@ -68,8 +68,8 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * One item as both the per-request list and `dispatch answers` print it, in this order: the time
  * the person wrote it, the person (with the agent that wrote it for them, through
  * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
- * that replaced one, `edited <time>` on an edited comment, and the mark every read prints for a
- * post its author withdrew (`deletedMark`), whose words the server sends empty); its
+ * that replaced one, `edited <time>` on an edited comment or message, and the mark every read
+ * prints for a post its author withdrew (`deletedMark`), whose words the server sends empty); its
  * `dispatch://` reference and its issue or document, or that it is a direct message; the ask's
  * question, cut to 200 characters, on an answer, on a decline and on a reply in an ask's thread;
  * on an answer, `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:`
@@ -135,14 +135,15 @@ function windowOf(
  * its kind, id, author and times, the options chosen, the words and its relation.
  * `readSessionAnswers` gives it for every item Dispatch sent inside the read's 72-hour window,
  * the ones its list shows and the ones the character cap left out, so a host comparing two reads
- * (`sessionAnswersChanged`) tells a new item, an answer or comment a person changed, or an item
- * that became or stopped being the session's own, from a list that only lost items to the window
- * or changed what the session or Dispatch says around them (an issue's title, an ask's question,
- * a cached list's header). An item the cap leaves out counts too: a newest item longer than the
- * cap, or a comment an edit made too long to fit, is shown to nobody, and a host that compared
- * only the items shown would go on showing the person's old words as current. Dispatch cuts the
- * list itself (`max_chars`) after the first item that takes its count past the cap, so it sends
- * such an item; the items after its cut, which no list shows, reach the host only as `total`.
+ * (`sessionAnswersChanged`) tells a new item, an answer, comment or message a person changed, or
+ * an item that became or stopped being the session's own, from a list that only lost items to the
+ * window or changed what the session or Dispatch says around them (an issue's title, an ask's
+ * question, a cached list's header). An item the cap leaves out counts too: a newest item longer
+ * than the cap, or a comment an edit made too long to fit, is shown to nobody, and a host that
+ * compared only the items shown would go on showing the person's old words as current. Dispatch
+ * cuts the list itself (`max_chars`) after the first item that takes its count past the cap, so it
+ * sends such an item; the items after its cut, which no list shows, reach the host only as
+ * `total`.
  *
  * The author is the rendered act (`actorActText`), not the person's id alone, so the same words
  * from the person themselves and from an agent acting for them are two different items: a host
@@ -183,9 +184,9 @@ function wordTime(word: string): number {
 
 /**
  * Whether a read whose `words` are `next` shows something that a list with the `words` `shown`
- * did not: an item new to it, an answer or comment a person changed, or an item whose relation to
- * the session changed (a string `shown` lacks); or an item `shown` held that is gone from the read
- * while its time is still inside the read's window, at or after `since`
+ * did not: an item new to it, an answer, comment or message a person changed, or an item whose
+ * relation to the session changed (a string `shown` lacks); or an item `shown` held that is gone
+ * from the read while its time is still inside the read's window, at or after `since`
  * (`SessionAnswersRead.since`), which a person retracted (an answer set back to none) or Dispatch
  * removed. An item gone because its time left the window is no change: the window moved, and
  * nothing a person wrote did. A string whose time cannot be read, or a read with no `since`,
