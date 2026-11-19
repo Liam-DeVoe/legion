@@ -182,6 +182,14 @@ jobs:
       # neither package, reads aws=0 and fails, as the verification's check c8 requires.
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh ./cmd/agent-secrets/ ./internal/broker/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
+      # database-skips.test.sh runs every go command with GOPROXY=off, since a fetch inside a test
+      # fails it whenever the module proxy does, on a change that touched nothing it tests: the
+      # counter's runs of ./internal/broker/api/, ./cmd/broker/ and ./internal/dispatch/api/, and
+      # its listing of ./internal/broker/... for its default table. This step fetches the modules
+      # of those packages and of their tests (-test) first, from the go-envoy-test entry restored
+      # above, tried again on failure.
+      - name: Fetch the modules of the packages the skip counter's test runs
+        run: .github/scripts/go-fetch.sh deps packages/envoy -test ./internal/broker/... ./cmd/broker/ ./internal/dispatch/api/
       # The step below is the one skip counter of the module's database-backed packages, which
       # envoy-go-race-api runs the Dispatch API through too, so its own test runs first:
       # packages/envoy/scripts/database-skips.test.sh plants a skipped test in
@@ -192,6 +200,8 @@ jobs:
       # holds a copy of it with one line of its expected-skip table deleted, in a temporary
       # checkout of this commit, to counting that test's skip. Each control stands beside a run
       # the counter passes, and each run is narrowed with -run to the tests it is about.
+      # go-offline: the counter's packages come from its arguments and its DEFAULT_PACKAGES table,
+      # which check-go-offline.sh does not read; the step above fetches every one of them.
       - name: Test the database skip counter
         timeout-minutes: 15
         run: packages/envoy/scripts/database-skips.test.sh

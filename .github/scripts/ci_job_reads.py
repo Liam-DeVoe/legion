@@ -1661,6 +1661,9 @@ DATABASE_SKIPS_RUN = f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT}"
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
 DATABASE_SKIPS_TEST = "packages/envoy/scripts/database-skips.test.sh"
 DATABASE_SKIPS_TEST_PKGS = ["./internal/broker/api/", "./cmd/broker/", "./internal/dispatch/api/"]
+# The step before it, which fetches the modules of those packages and of their tests: the test
+# runs every go command with GOPROXY=off.
+DATABASE_SKIPS_FETCH_STEP = "Fetch the modules of the packages the skip counter's test runs"
 
 
 def hold_database_skips_packages():
@@ -3098,6 +3101,7 @@ GATES = [
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
         (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
+        (".github/scripts/go-fetch.sh", f"{at('envoy-go', DATABASE_SKIPS_FETCH_STEP)} runs it"),
     ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,

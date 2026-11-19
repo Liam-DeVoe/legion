@@ -14,10 +14,12 @@
 #     GOBIN, which a developer keeps on PATH, so the install replaces no helm or nats-server of
 #     theirs. Each install reads the module cache first, its version lists included, so a cache
 #     that holds the pin's modules installs it with no network (below, at the install).
-#   go-fetch.sh deps DIR PACKAGE...
+#   go-fetch.sh deps DIR [-test] PACKAGE...
 #     Download into the module cache every module a `go build` of PACKAGE... in DIR needs
 #     (`go list -deps`, which compiles nothing), for tests that build those packages while they
-#     run with the module proxy turned off (cmdtest.BuildCommand, testbuild.EnvoyBinary).
+#     run with the module proxy turned off (cmdtest.BuildCommand, testbuild.EnvoyBinary). With
+#     -test, the modules of their tests too, for a test that runs `go test` of them offline
+#     (packages/envoy/scripts/database-skips.test.sh).
 #   go-fetch.sh pulumi-consumer SRC PLUGIN
 #     Copy the Go program SRC into a directory of its own, run `pulumi package add PLUGIN` there
 #     outside any workspace, then `go build ./...`: the resolution host's

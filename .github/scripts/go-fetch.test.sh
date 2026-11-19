@@ -193,6 +193,11 @@ check "exits 0" "$(is "$rc" 0)"
 check "lists the packages' dependencies in that directory" \
   "$(is "$calls" "$work/module go list -deps ./cmd/one ./cmd/two")"
 
+echo "case: deps with -test lists the packages' tests' dependencies too"
+fetch deps "$work/module" -test ./cmd/one
+check "exits 0" "$(is "$rc" 0)"
+check "passes -test to the listing" "$(is "$calls" "$work/module go list -deps -test ./cmd/one")"
+
 echo "case: deps is tried again too"
 FAIL_MATCH=list FAIL_TIMES=1 fetch deps "$work/module" ./cmd/one
 check "exits 0" "$(is "$rc" 0)"

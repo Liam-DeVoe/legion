@@ -3742,6 +3742,8 @@ jobs:
               # the step before it runs (packages/envoy/** names both too).
               - 'packages/envoy/scripts/database-skips.sh'
               - 'packages/envoy/scripts/database-skips.test.sh'
+              # Its fetch step runs this script before the counter's test.
+              - '.github/scripts/go-fetch.sh'
               # internal/dispatch/testlimits/testlimits_test.go holds this script's
               # max_connections to testlimits.ServerConnections.
               - 'packages/daemon/docker/legion-testpg'
