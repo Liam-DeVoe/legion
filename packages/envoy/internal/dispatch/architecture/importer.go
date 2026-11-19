@@ -443,10 +443,9 @@ func scanOneSource(row pgx.Row, name string, extra ...any) (model.ArchitectureSo
 // again from the load, which resolves again.
 func (i *Importer) resolve(ctx context.Context, source *loadedSource) (owner, name, token string, err error) {
 	// The stored `owner/name` is held to the names GitHub allows before its halves go into any
-	// GitHub path (refs.SplitGitHubRepo, the one rule every place that builds a GitHub path
-	// reads), and refused with an error naming it otherwise. The route that saves a source holds
-	// it to that rule already (api's parseSourceRepo); this keeps a row stored before that, or by
-	// direct SQL, from ever reaching GitHub.
+	// GitHub path (refs.SplitGitHubRepo), and refused with an error naming it otherwise. The
+	// route that saves a source holds it to that rule already (api's parseSourceRepo); this keeps
+	// a row stored before that, or by direct SQL, from ever reaching GitHub.
 	owner, name, err = refs.SplitGitHubRepo(source.Repo)
 	if err != nil {
 		return "", "", "", err

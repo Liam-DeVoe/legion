@@ -12,16 +12,16 @@ import (
 )
 
 // githubCouldHoldRepo answers whether GitHub could hold a repository at this canonical
-// `owner/name`, the form parseIssueRepo stores: refs.SplitGitHubRepo's rule, the grammar every
-// reader of a repository name holds it to (copied from the daemon's ghrepo). The rule is put to
-// the stored form, because a reader trims a trailing `.git` once more: `acme/.git.git` is
-// `acme/.git` stored, which every later read refuses. The value it reads is lowercased first
-// (refs.ExternalRepo), so a name GitHub holds is taken however it was typed. Since migration
-// 20261112004945 no repo_projects row stands behind an issue's own repository, so this grammar is
-// the whole gate on the value, and the value goes on to GitHub reads of its own: the CI repair
-// asks GitHub about every distinct repository an issue names (cireconcile's covered), once a
-// pass, and the Legion daemon prepares a working copy from it. A name GitHub's grammar refuses
-// can only answer "no such repository" there, every pass, so it is refused at the write instead.
+// `owner/name`, the form parseIssueRepo stores: refs.SplitGitHubRepo's rule (copied from the
+// daemon's ghrepo). The rule is put to the stored form, because a reader trims a trailing `.git`
+// once more: `acme/.git.git` is `acme/.git` stored, which every later read refuses. The value it
+// reads is lowercased first (refs.ExternalRepo), so a name GitHub holds is taken however it was
+// typed. Since migration 20261112004945 no repo_projects row stands behind an issue's own
+// repository, so this grammar is the whole gate on the value, and the value goes on to GitHub
+// reads of its own: the CI repair asks GitHub about every distinct repository an issue names
+// (cireconcile's covered), once a pass, and the Legion daemon prepares a working copy from it. A
+// name GitHub's grammar refuses can only answer "no such repository" there, every pass, so it is
+// refused at the write instead.
 func githubCouldHoldRepo(canonical string) bool {
 	_, _, err := refs.SplitGitHubRepo(canonical)
 	return err == nil
@@ -29,12 +29,12 @@ func githubCouldHoldRepo(canonical string) bool {
 
 // parseIssueRepo decodes the tri-state `repo` field of an issue write. Absent → (nil, false): leave
 // it alone. JSON null → (nil, true): clear it, so the issue resolves through its parent chain and the
-// project's default again. A string → its canonical `owner/name` (externalRef's canonicalisation,
-// which lowercases and drops a `.git` suffix), provided GitHub could hold a repository of that
+// project's default again. A string → its canonical `owner/name` (refs.ParseExternalRepo, which
+// lowercases and drops a `.git` suffix), provided GitHub could hold a repository of that
 // name (githubCouldHoldRepo); anything else → 400 INVALID_ISSUE. The grammar is checked here and
-// not in externalRef, which this borrows the shape check and the canonicalisation from, because
-// externalRef also resolves a reference to an external issue already linked
-// (resolveIssueRef): a row written before this gate existed is still to be found by the
+// not in that reading, which an issue reference's repository is read by too
+// (refs.ParseExternalRef), because externalRef resolves a reference to an external issue already
+// linked (resolveIssueRef): a row written before this gate existed is still to be found by the
 // reference that names it, and refusing the grammar there would answer INVALID_ISSUE_REF for a
 // link the server itself stored.
 func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error) {
@@ -48,8 +48,8 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" or null`)
 	}
-	canonical, _, err := externalRef(strings.TrimSpace(value) + "#1")
-	if err != nil || !githubCouldHoldRepo(canonical) {
+	canonical, ok := refs.ParseExternalRepo(strings.TrimSpace(value))
+	if !ok || !githubCouldHoldRepo(canonical) {
 		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" (got %q)`, value)
 	}
 	return &canonical, true, nil

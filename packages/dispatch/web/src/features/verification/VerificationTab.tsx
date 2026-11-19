@@ -49,12 +49,34 @@ const PASS_STANDS_TEXT: Record<CheckBlock["pass_stands"]["answer"], string> = {
 
 /** Why a check compared its results with nothing at all, and why one result's commit could not
  *  be placed. A check takes all three and a result all but no_pull_request_or_branch, so the
- *  check's set types this map and answers both. */
-const REASON_WORDS: Record<NonNullable<CheckBlock["compared_nothing"]>, string> = {
-  no_pull_request_or_branch: "This issue holds no pull request and no branch.",
-  read_failed: "A read Dispatch made did not answer.",
-  repository_unreadable: "Dispatch cannot read the repository.",
+ *  check's set types this map and answers both. Each takes the repository the answer is about
+ *  where the server names one (`repo`): a result whose commit is taken to be of a repository the
+ *  issue links a pull request in is decided by that repository, and "the repository" would read
+ *  as the issue's own. Keyed by the reason, so a reason the contract adds is a type error until
+ *  it has words here; `reasonWords` reads it. */
+const REASON_WORDS: Record<
+  NonNullable<CheckBlock["compared_nothing"]>,
+  (repo: string | undefined) => string
+> = {
+  no_pull_request_or_branch: () => "This issue holds no pull request and no branch.",
+  read_failed: (repo) =>
+    repo === undefined
+      ? "A read Dispatch made did not answer."
+      : `A read Dispatch made of ${repo} did not answer.`,
+  repository_unreadable: (repo = "the repository") => `Dispatch cannot read ${repo}.`,
 };
+
+/** Whether a reason the server sent is one this build words. The server gives the reasons its
+ *  own build knows, so a newer Dispatch can send one this build has no words for. */
+function isKnownReason(reason: string): reason is keyof typeof REASON_WORDS {
+  return Object.hasOwn(REASON_WORDS, reason);
+}
+
+/** `reason` in words, naming `repo` where the server names the repository the answer is about,
+ *  or the reason as the server gave it where this build has no words for it. */
+function reasonWords(reason: string, repo?: string): string {
+  return isKnownReason(reason) ? REASON_WORDS[reason](repo) : reason;
+}
 
 /** Which time a basis learned from a pull request carries: when Dispatch last read the pull
  *  request from GitHub, or the pull request's own update time as GitHub gave it. */
@@ -133,18 +155,6 @@ function Basis({ basis }: { basis: CheckBasis }): ReactNode {
   );
 }
 
-/** Why one result's commit could not be placed where the server names `repo`, the repository the
- *  answer is about: a result whose commit is taken to be of a repository the issue links a pull
- *  request in is decided by that repository, and "the repository" would read as the issue's own.
- *  Keyed by the reason, so a reason the server adds is a type error until it has words here. */
-const REPO_REASON_WORDS: Record<
-  NonNullable<ResultCommitStands["reason"]>,
-  (repo: string) => string
-> = {
-  read_failed: (repo) => `A read Dispatch made of ${repo} did not answer.`,
-  repository_unreadable: (repo) => `Dispatch cannot read ${repo}.`,
-};
-
 /** The first fact of each result: where its commit stands against what its check compared
  *  with. At one of those commits, naming which; at another commit; or not known, with the
  *  reason Dispatch could not say. An answer a linked repository decided names it (`repo`). */
@@ -169,11 +179,7 @@ function CommitStands({ stands }: { stands: ResultCommitStands | undefined }): R
   if (stands.reason === undefined) {
     return stands.repo === undefined ? "Not known." : `Not known in ${stands.repo}.`;
   }
-  const reason =
-    stands.repo === undefined
-      ? REASON_WORDS[stands.reason]
-      : REPO_REASON_WORDS[stands.reason](stands.repo);
-  return `Not known. ${reason}`;
+  return `Not known. ${reasonWords(stands.reason, stands.repo)}`;
 }
 
 /** The second fact of each result: whether the check's words moved after the result was
@@ -273,7 +279,7 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
   const bases = check.compared_with ?? [];
   if (bases.length === 0) {
     // compared_nothing is the server's to give: where it holds none, the fact shows its dash.
-    return check.compared_nothing === undefined ? "" : REASON_WORDS[check.compared_nothing];
+    return check.compared_nothing === undefined ? "" : reasonWords(check.compared_nothing);
   }
   return bases.map((basis, index) => (
     <span key={`${basis.kind}-${basis.commit ?? basis.branch ?? index}`}>

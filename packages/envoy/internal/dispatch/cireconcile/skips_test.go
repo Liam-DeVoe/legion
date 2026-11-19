@@ -292,6 +292,11 @@ func TestNoBucketYetNoPass(t *testing.T) {
 // mapping stored under `acme/.git` first.
 func TestARefusedMappedNameIsNamedWithTheRequestThatMendsIt(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
+	if mappingRepairsOf == nil {
+		t.Fatal("no file of the external test package handed this package api.MappingRepairs (UseMappingRepairs)")
+	}
+	// The repairs cmd/dispatch gives its Reconciler (ciReconciler), bound to the harness's pool.
+	h.reconciler.MappingRepairs = mappingRepairsOf(h.pool)
 	h.mapRepository("acme/..")
 	h.mapRepository("acme/.git")
 	h.mapRepository("acme/")

@@ -666,12 +666,33 @@ const BRIEF_READING_CHARACTERS = 200;
 
 /** The three reasons a check compared its results with nothing, and the two a result's commit
  *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
- *  no_pull_request_or_branch, so the check's set types this map and answers both. */
-const COMPARISON_REASONS: Readonly<Record<NonNullable<CheckBlock["compared_nothing"]>, string>> = {
-  no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
-  repository_unreadable: "Dispatch cannot read the repository",
-  read_failed: "a read Dispatch made did not answer",
+ *  no_pull_request_or_branch, so the check's set types this map and answers both. Each takes the
+ *  repository the answer is about where the server names one (`repo`): a result whose commit is
+ *  taken to be of a repository the issue links a pull request in is decided by that repository,
+ *  and "the repository" would read as the issue's own. Keyed by the reason, so a reason the
+ *  contract adds is a type error until it has words here; `reasonText` reads it. */
+const COMPARISON_REASONS: Readonly<
+  Record<NonNullable<CheckBlock["compared_nothing"]>, (repo: string | undefined) => string>
+> = {
+  no_pull_request_or_branch: () => "the issue has no pull request and no branch to compare with",
+  repository_unreadable: (repo = "the repository") => `Dispatch cannot read ${repo}`,
+  read_failed: (repo) =>
+    repo === undefined
+      ? "a read Dispatch made did not answer"
+      : `a read Dispatch made of ${repo} did not answer`,
 };
+
+/** Whether a reason the server sent is one this build words. The server gives the reasons its
+ *  own build knows, so a later server can send one this build has no words for. */
+function isComparisonReason(reason: string): reason is keyof typeof COMPARISON_REASONS {
+  return Object.hasOwn(COMPARISON_REASONS, reason);
+}
+
+/** `reason` in words, naming `repo` where the server names the repository the answer is about,
+ *  or the reason as the server gave it where this build has no words for it. */
+function reasonText(reason: string, repo?: string): string {
+  return isComparisonReason(reason) ? COMPARISON_REASONS[reason](repo) : reason;
+}
 
 /** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
  *  own read of the pull request, `updated_at` is GitHub's update time as a webhook carried it. */
@@ -720,17 +741,6 @@ function basisPlace(basis: CheckBasis): string {
   return "the commit you named";
 }
 
-/** Why a result's commit could not be placed where the server names `repo`, the repository the
- *  answer is about: a result whose commit is taken to be of a repository the issue links a pull
- *  request in is decided by that repository, and "the repository" would read as the issue's own.
- *  Keyed by the reason, so a reason the server adds is a type error until it has words here. */
-const REPO_REASONS: Readonly<
-  Record<NonNullable<NonNullable<CheckResult["commit_stands"]>["reason"]>, (repo: string) => string>
-> = {
-  repository_unreadable: (repo) => `Dispatch cannot read ${repo}`,
-  read_failed: (repo) => `a read Dispatch made of ${repo} did not answer`,
-};
-
 /** The first of R4's two facts: where one result's commit stands against what its check compared
  *  with. A Dispatch server that does not answer it says so rather than reading as another
  *  commit. An answer a linked repository decided names it (`repo`). */
@@ -755,11 +765,7 @@ function commitStandsText(stands: CheckResult["commit_stands"]): string {
       ? "Where that commit stands is not known"
       : `Where that commit of ${stands.repo} stands is not known`;
   }
-  const reason =
-    stands.repo === undefined
-      ? COMPARISON_REASONS[stands.reason]
-      : REPO_REASONS[stands.reason](stands.repo);
-  return `Where that commit stands is not known: ${reason}`;
+  return `Where that commit stands is not known: ${reasonText(stands.reason, stands.repo)}`;
 }
 
 /** R4's other fact: whether the check's words moved after the result was recorded. Both versions
@@ -858,7 +864,7 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
       ? `Compared with ${bases.map(basisText).join(", ")}`
       : reason === undefined
         ? "Compared with nothing, and this Dispatch server does not say why"
-        : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
+        : `Compared with nothing: ${reasonText(reason)}`;
   const results = check.results ?? [];
   return [
     `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,

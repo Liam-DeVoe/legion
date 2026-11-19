@@ -387,6 +387,10 @@ func TestRepoProjectDeleteRemovesOnlyTheMappingItsPathSpells(t *testing.T) {
 	deleteLeaving("acme/a%20b", http.StatusNoContent, "acme/x")
 	deleteLeaving("acme/nothing", http.StatusNoContent, "acme/x")
 	deleteLeaving("acme/no%20thing", http.StatusBadRequest, "acme/x")
+	// Space before the owner is trimmed and space after the name is not, as the route read a path
+	// when it read it as the reference `<path>#1`.
+	deleteLeaving("%20acme/nothing", http.StatusNoContent, "acme/x")
+	deleteLeaving("acme/nothing%20", http.StatusBadRequest, "acme/x")
 }
 
 // A DELETE is the same however often it is sent: the dashboard sends a DELETE again, with no key,

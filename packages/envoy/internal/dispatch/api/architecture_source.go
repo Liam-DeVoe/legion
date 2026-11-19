@@ -379,28 +379,26 @@ func sourcePathRepo(r *http.Request) (owner, name string, err error) {
 
 // parseSourceRepo validates and canonicalizes an owner/name repository input
 // the same way repository mappings are stored (lowercase, .git trimmed), and
-// answers the canonical halves. The input is read as parseIssueRepo reads an
-// issue's repository: externalRef's shape check, one owner and one name with
-// no whitespace, and its canonicalisation. The rule is then
-// refs.SplitGitHubRepo's, the one delivery holds a stored name to before it
-// builds a GitHub path from it: an owner read by the grammar an issue's own
+// answers the canonical halves. The input is read by refs.ParseExternalRepo:
+// one owner and one name with no whitespace, canonicalised. The rule is then
+// refs.SplitGitHubRepo's: an owner read by the grammar an issue's own
 // repository is (the daemon's ghrepo ownerName), a login as GitHub serves it,
 // which is wider than GitHub's sign-up charset, since a managed user's login
 // ends in `_<shortcode>` (`mona-cat_octo`) and a source in such an account is
 // one a project can hold; and a name of 1 to 100 letters, digits, `.`, `-` and
-// `_` that is not `.` or `..`, nor empty, `.` or `..` once a trailing ".git" is
-// trimmed ("legion/...git" canonicalizes to ".."), so a stored repo can never
-// smuggle path segments into an outbound API URL (".." would traverse); an
-// underscore traverses nothing, in either segment. The rule is put to the
+// `_` that is not `.` or `..`, nor empty, `.` or `..` once a trailing ".git"
+// is trimmed ("legion/...git" canonicalizes to ".."), so a stored repo can
+// never smuggle path segments into an outbound API URL (".." would traverse);
+// an underscore traverses nothing, in either segment. The rule is put to the
 // canonical form alone, which is what is stored and what every later read
 // splits and puts into GitHub paths: "acme/<100 characters>.git" is the 100
 // characters stored, and "acme/.git.git", "acme/.git" stored, is refused.
 func parseSourceRepo(raw string) (owner, name string, err error) {
-	canonical, _, err := externalRef(strings.TrimSpace(raw) + "#1")
-	if err == nil {
+	canonical, ok := refs.ParseExternalRepo(strings.TrimSpace(raw))
+	if ok {
 		owner, name, err = refs.SplitGitHubRepo(canonical)
 	}
-	if err != nil {
+	if !ok || err != nil {
 		return "", "", errorf(http.StatusBadRequest, "SOURCE_INPUT", "repository must be owner/name, got %q", raw)
 	}
 	return owner, name, nil

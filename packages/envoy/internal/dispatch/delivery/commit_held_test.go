@@ -56,10 +56,10 @@ func TestPullRequestOpenOrMergedReadsTheStateGitHubAnswers(t *testing.T) {
 	}
 }
 
-// A stored name GitHub's names do not allow never becomes a GitHub path: splitRepo refuses it,
-// naming it, before any request, whichever read of the repository asks. `acme/..` and `acme/`
-// are what a mapping written as `acme/...git` and `acme/.git` was stored as once the trailing
-// `.git` was trimmed, and `..` in a path asks GitHub about the one above the repository's
+// A stored name GitHub's names do not allow never becomes a GitHub path: refs.SplitGitHubRepo
+// refuses it, naming it, before any request, whichever read of the repository asks. `acme/..`
+// and `acme/` are what a mapping written as `acme/...git` and `acme/.git` was stored as once the
+// trailing `.git` was trimmed, and `..` in a path asks GitHub about the one above the repository's
 // (`/repos/acme/../installation`). A renamed_to stored before the settings route held a pair to
 // GitHub's names, or by direct SQL, is the same name reached another way: the reconcile's refresh
 // and the read-through canonicalise the repository they are handed through it, and ask GitHub

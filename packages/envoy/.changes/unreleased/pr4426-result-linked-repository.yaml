@@ -41,8 +41,10 @@ body: |-
 
   `PUT /api/v1/settings/repo-projects/{owner}/{repo}` and
   `GET /api/v1/github/app-installation/{owner}/{repo}` hold the path's repository to the names
-  GitHub allows, as `renamed_to` already is: a path such as `acme/...git` or `acme/.git`, whose
-  name is `..` or empty once `.git` is trimmed, is `400 INVALID_REPO_PROJECT`. `DELETE` removes
+  GitHub allows, and the PUT holds its `renamed_to` to the same rule, which earlier releases read
+  as a reference alone: a path or a `renamed_to` such as `acme/...git` or `acme/.git`, whose name
+  is `..` or empty once `.git` is trimmed, or whose name is longer than 100 characters, is
+  `400 INVALID_REPO_PROJECT`. `DELETE` removes
   the mapping stored under its path's own spelling, so a mapping stored under such a name is
   still removed by that name wherever a path spells it, and the CI reconcile's warning names the
   request that removes it; a mapping stored under an empty name, such as the `acme/` an earlier

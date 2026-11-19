@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -208,14 +209,14 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 //
 // Its path removes the mapping stored under the path's own spelling (deletedRepoProjectSpelling)
 // and no other. The lookup is `repo = $1` on the table's primary key, which compares the stored
-// name with the spelling byte for byte. A path the canonical reading (storedRepoProjectPath,
+// name with the spelling byte for byte. A path the canonical reading (refs.ParseExternalRepo,
 // lower-cased and one trailing `.git` trimmed) reads as itself, `acme/x`, so names the canonical
 // row, and a path that reading reads as another name or refuses, `acme/x.git`, `Acme/X`,
 // `acme/x.git.git` or `acme/a%20b`, names only the mapping stored under that exact spelling, never
 // the row the reading names. So of `acme/x.git` (from a PUT of `acme/x.git.git`) and `acme/x`
 // stored together, each is removed by its own spelling, and the DELETE sent again removes nothing
-// more. A path that names no stored mapping is 204 where the canonical reading takes it, and that
-// reading's 400 where it refuses it.
+// more. A path that names no stored mapping is 204 where the canonical reading takes it, and 400
+// where that reading refuses it (checkRepoProjectPath).
 //
 // The write takes the locks of the path's own spelling (lockRepoProjectWrite), so the mapping
 // stored under it cannot appear or go between the lookup and the removal.
@@ -241,7 +242,7 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if previous == nil {
-		if err := storedRepoProjectPath(spelled); err != nil {
+		if err := checkRepoProjectPath(spelled); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -427,27 +428,33 @@ func repoProjectPath(r *http.Request) (owner, name string, err error) {
 // its two segments as the mux unescapes them, joined by `/`, nothing trimmed and nothing
 // lower-cased, so it names a mapping stored under any name the mux carries in two segments. The
 // mux unescapes each segment after it splits the path, so a `/` in a name is written `%2F`, and a
-// `.` or `..` segment `%2E` or `%2E%2E`; an empty segment reaches no wildcard of the route. A
-// caller that sends the path as it is written keeps such a segment: curl with `--path-as-is`, or
-// a Go client building the path by hand. A browser's URL parser (WHATWG URL) reads `%2E` and
-// `%2E%2E` as dot segments, as it reads `.` and `..`, and resolves them away before the request
-// is sent. The dashboard's DELETE is such a request: it splits the stored name on `/` and puts
-// each half into the path through encodeURIComponent, which leaves a dot as it is
-// (packages/dispatch/web/src/api/paths.ts, repoParams and routeUrl), so its DELETE of a mapping
-// stored under `acme/..` is sent as `/api/v1/settings/repo-projects/`, no path of this route. No
-// GitHub path is built from it here.
+// `.` or `..` segment `%2E` or `%2E%2E`. A caller that sends the path as it is written keeps such
+// a segment: curl with `--path-as-is`, or a Go client building the path by hand. A browser's URL
+// parser (WHATWG URL) reads `%2E` and `%2E%2E` as dot segments, as it reads `.` and `..`, and
+// resolves them away before the request is sent. The dashboard's DELETE is such a request: it
+// splits the stored name on `/` and puts each half into the path through encodeURIComponent,
+// which leaves a dot as it is (packages/dispatch/web/src/api/paths.ts, repoParams and routeUrl),
+// so its DELETE of a mapping stored under `acme/..` is sent as `/api/v1/settings/repo-projects/`,
+// no path of this route. An empty segment, and one that is `/` alone, reaches no wildcard of the
+// route, so a name each of whose `/` leaves nothing or a lone `/` on one side is no path's
+// spelling (spelledPath, which inverts this reading for the CI reconcile's WARN). No GitHub path
+// is built from it here.
 func deletedRepoProjectSpelling(r *http.Request) string {
 	return r.PathValue("owner") + "/" + r.PathValue("repo")
 }
 
-// storedRepoProjectPath reads the spelling of a mapping removal's {owner}/{repo} path as every
-// mapping's path was read before repoProjectPath held it to GitHub's names: canonicalised by
-// externalRef alone, lower-cased and one trailing `.git` trimmed. A removal whose path names no
-// stored mapping answers by it: 204 where it reads the path, and its 400 where it refuses the
-// path. No GitHub path is built from it here.
-func storedRepoProjectPath(spelled string) error {
-	_, _, err := externalRef(spelled + "#1")
-	return err
+// checkRepoProjectPath refuses the spelling of a mapping removal's {owner}/{repo} path where the
+// canonical reading refuses it (refs.ParseExternalRepo), as every mapping's path was read before
+// repoProjectPath held it to GitHub's names: 400 INVALID_ISSUE_REF, and nil where that reading
+// takes it. A removal whose path names no stored mapping answers by it: 204 where it is nil, and
+// its 400 otherwise. Space before the owner is trimmed and space after the name is not, as the
+// route read a path when it read it as the reference `<path>#1`, whose leading space alone a trim
+// of the reference took off. No GitHub path is built from it here.
+func checkRepoProjectPath(spelled string) error {
+	if _, ok := refs.ParseExternalRepo(strings.TrimLeftFunc(spelled, unicode.IsSpace)); !ok {
+		return errorf(http.StatusBadRequest, "INVALID_ISSUE_REF", `the path must name a repository "owner/name" (got %q)`, spelled)
+	}
+	return nil
 }
 
 // parseRepoRename reads the `renamed_to` of a mapping write: nil for an absent or null field,
@@ -456,7 +463,7 @@ func storedRepoProjectPath(spelled string) error {
 // (parseSourceRepo): an owner and a name of the characters GitHub allows, and never a name of
 // `.` or `..`, before or after a trailing `.git` is trimmed, in the form it is stored. The pair
 // becomes the name every comparison of the repository asks GitHub about, and delivery puts its
-// two halves into GitHub paths as they are (delivery's splitRepo), so `acme/..` would ask about
+// two halves into GitHub paths as they are (refs.SplitGitHubRepo), so `acme/..` would ask about
 // a path above the repository's. A pair naming the mapping's own repository is refused here,
 // where the one cycle a single row can hold is cheapest to see; the database refuses it too, so
 // direct SQL is held to it (migration 20261105075455_repo_projects_renamed_to).

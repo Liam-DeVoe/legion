@@ -82,19 +82,16 @@ func CanonicalRepo(ctx context.Context, q Queryer, repo string) (string, error) 
 // The two halves of a repository GitHub could hold, copied from the daemon's own reading of the
 // same grammar (packages/daemon/internal/ghrepo's ownerName and repositoryName): packages/envoy
 // cannot import packages/daemon, and the two gates of one product must hold a repository to one
-// rule, so the rule is written out here with its source named, once for every package of the
-// server that reads a repository name: the API routes that take one (api's parseSourceRepo and
-// githubCouldHoldRepo), and four of the five readers that put a stored name's halves into
-// GitHub paths (delivery's and cireconcile's splitRepo, the architecture importer's resolve, and
-// the results read's CI read, api's readCIRuns); the fifth, the Legion metrics' readMergeTimes,
-// does not, as below. An owner is a letter or digit and then up to 38 letters,
+// rule, so the rule is written out here with its source named, once for the whole server
+// (SplitGitHubRepo names the places that read it, and GitHubOwnerPattern and GitHubNamePattern
+// hold it for a SQL pattern as well). An owner is a letter or digit and then up to 38 letters,
 // digits, hyphens and underscores, which is looser than GitHub's sign-up form on purpose: that
 // form's rule, single hyphens with none leading or trailing, binds new accounts alone, and GitHub
 // still serves a login with a doubled hyphen (`hello--world`, the organisation `foo--bar`), one
 // ending in a hyphen (`ArtOfCode-`) and a managed user's `_<shortcode>` (`mona-cat_octo`), whose
 // repositories an issue has to be able to name. A repository's own name is 1 to 100 letters,
 // digits, `.`, `-` and `_`, the most GitHub allows. The pattern holds the characters alone and
-// GitHubName the 100, where the daemon's pattern holds both: that is where the bound is written,
+// gitHubName the 100, where the daemon's pattern holds both: that is where the bound is written,
 // not a difference in the names either rule takes, since each puts the bound to the name as it is
 // given. A route bounds the name it stores because it lower-cases the name and trims one `.git`
 // off it (ExternalRepo) before it puts the name to this rule: `acme/<100 characters>.git`
@@ -113,24 +110,37 @@ func CanonicalRepo(ctx context.Context, q Queryer, repo string) (string, error) 
 // a name GitHub holds is taken however it was typed. The two names `.` and `..`, which no working
 // copy could hold and which a GitHub path reads as a dot segment, are refused beside the
 // patterns, where a pattern would state them worse.
+//
+// GitHubOwnerPattern and GitHubNamePattern are the owner's and the name's patterns of the grammar
+// above, neither anchored nor grouped, so that a Go regexp and a SQL one are built from one text
+// and cannot hold a name to two rules: this package anchors them for its own reads, and a
+// statement that matches a name in SQL puts them in its own pattern. They are written in what
+// RE2 and Postgres' advanced regular expressions read alike, bracket expressions and a bounded
+// repeat, and hold no quote, so they go into a SQL string literal as they are. The name's bound
+// of 100 and the two names `.` and `..` are no part of them (gitHubName holds those).
+const (
+	GitHubOwnerPattern = `[A-Za-z0-9][A-Za-z0-9_-]{0,38}`
+	GitHubNamePattern  = `[A-Za-z0-9._-]+`
+)
+
 var (
-	repoOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
-	repoNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	repoOwnerPattern = regexp.MustCompile(`^` + GitHubOwnerPattern + `$`)
+	repoNamePattern  = regexp.MustCompile(`^` + GitHubNamePattern + `$`)
 )
 
 // repoNameMax is the most characters GitHub allows in a repository's own name.
 const repoNameMax = 100
 
-// GitHubOwner answers whether owner is a login GitHub serves, by the grammar above.
-func GitHubOwner(owner string) bool {
+// gitHubOwner answers whether owner is a login GitHub serves, by the grammar above.
+func gitHubOwner(owner string) bool {
 	return repoOwnerPattern.MatchString(owner)
 }
 
-// GitHubName answers whether name is a repository name GitHub allows, by the grammar above:
+// gitHubName answers whether name is a repository name GitHub allows, by the grammar above:
 // 1 to 100 letters, digits, `.`, `-` and `_`, and neither `.` nor `..`. It reads one name as it
 // is; SplitGitHubRepo puts a name to it as a GitHub path carries it and once one trailing `.git`
 // is trimmed.
-func GitHubName(name string) bool {
+func gitHubName(name string) bool {
 	return name != "." && name != ".." && len(name) <= repoNameMax && repoNamePattern.MatchString(name)
 }
 
@@ -139,8 +149,8 @@ func GitHubName(name string) bool {
 var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 
 // SplitGitHubRepo splits full, an `owner/name` as a GitHub path is built from it, into the two
-// halves that path takes, each held to the names GitHub allows: the owner to GitHubOwner, and the
-// name to GitHubName twice, as it is and once one trailing `.git` is trimmed. The bound is the
+// halves that path takes, each held to the names GitHub allows: the owner to gitHubOwner, and the
+// name to gitHubName twice, as it is and once one trailing `.git` is trimmed. The bound is the
 // name's as it goes into the path, so `acme/<96 characters>.git` is taken and
 // `acme/<100 characters>.git`, whose name would reach GitHub as 104 characters, is refused. The
 // trimmed name is held to the rule as well because GitHub strips a trailing `.git` from a name at
@@ -153,18 +163,23 @@ var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 // 100 characters. The halves come back as full spells them, so a caller keeps its own case and
 // its own suffix; the refusal is ErrNotGitHubRepo, naming full.
 //
-// It is the rule the routes and these readers read: the API routes that take a repository from a
+// It is the rule the routes and these readers read. The API routes that take a repository from a
 // person put the canonical form they store to it and refuse a name it refuses (api's
-// parseSourceRepo and githubCouldHoldRepo), and delivery's and cireconcile's splitRepo, the
-// architecture importer's resolve and api's readCIRuns each refuse one where they turn a stored
-// name into a GitHub path, so a name stored before the routes held it to the rule, or by direct
-// SQL, reaches GitHub through none of them. One reader does not put the name to it: the Legion
-// metrics' readMergeTimes (legion/metrics/population.go) splits delivery_pull_requests.repo with
-// strings.Cut into delivery.FetchPullRequest's path. Those rows are written from the names GitHub
-// itself gives, so only a name planted there by direct SQL reaches GitHub through that read.
+// parseSourceRepo and githubCouldHoldRepo), and so does the boot seed of the repository mappings
+// (api's ParseRepoProjects). Delivery, wherever it turns a stored name into a
+// GitHub path, cireconcile's splitRepo, the architecture importer's resolve and api's readCIRuns
+// each refuse one there, so a name stored before the routes held it to the rule, or by direct
+// SQL, reaches GitHub through none of them. Delivery's linked pull requests
+// (linkedPullRequestTerms) read a link's owner and name in SQL by the same patterns
+// (GitHubOwnerPattern, GitHubNamePattern), and refuse a name of `.` or `..` there; a read that
+// puts such a repository into a GitHub path splits it here. One reader does not put the name to
+// it: the Legion metrics' readMergeTimes (legion/metrics/population.go) splits
+// delivery_pull_requests.repo with strings.Cut into delivery.FetchPullRequest's path. Those rows
+// are written from the names GitHub itself gives, so only a name planted there by direct SQL
+// reaches GitHub through that read.
 func SplitGitHubRepo(full string) (owner, name string, err error) {
 	owner, name, found := strings.Cut(full, "/")
-	if !found || !GitHubOwner(owner) || !GitHubName(name) || !GitHubName(strings.TrimSuffix(strings.ToLower(name), ".git")) {
+	if !found || !gitHubOwner(owner) || !gitHubName(name) || !gitHubName(strings.TrimSuffix(strings.ToLower(name), ".git")) {
 		return "", "", fmt.Errorf("repository %q is %w: an owner of letters, digits, - and _, and a name of 1 to 100 letters, digits, ., - and _ that is not . or .., nor empty, . or .. once a trailing .git is trimmed", full, ErrNotGitHubRepo)
 	}
 	return owner, name, nil

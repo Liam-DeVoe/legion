@@ -5,10 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -87,7 +85,8 @@ func (repository reconciled) head(number int64, sha string) pullHead {
 // about it, a name that is not owner/name, and a mapped repository the App is not installed on
 // -- is a GitHub read the pass gave up, which it notes on its attempt (githubreads); a name that
 // is not owner/name is the database's, and asks GitHub nothing, and a repository only an issue
-// names that the App is not on is no fault.
+// names that the App is not on is no fault. A mapped name that is not owner/name is named with
+// the requests that mend it (Reconciler.MappingRepairs).
 //
 // read is the repositories this pass has read the heads of already, by the id GitHub gives
 // them, which is this pass's own: two rows naming one repository are read once within a pass,
@@ -97,12 +96,11 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 	owner, name, ok := splitRepo(row)
 	if !ok {
 		c.mappingsSkipped++
-		if mapped {
-			r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows",
-				append([]any{"repository", row}, r.mappingRepairs(ctx, row)...)...)
-			return reconciled{}, nil
+		fields := []any{"repository", row}
+		if mapped && r.MappingRepairs != nil {
+			fields = append(fields, r.MappingRepairs(ctx, row)...)
 		}
-		r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows", "repository", row)
+		r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows", fields...)
 		return reconciled{}, nil
 	}
 	see(&r.seenRows, row)
@@ -403,136 +401,4 @@ func (r *Reconciler) openPullRequests(ctx context.Context, id int64, owner, name
 func splitRepo(full string) (owner, name string, ok bool) {
 	owner, name, err := refs.SplitGitHubRepo(full)
 	return owner, name, err == nil
-}
-
-// mappingRepairs is what the pass names beside its skip of row, a name splitRepo refuses that a
-// mapping names, so the person reading the WARN can mend it. covered names a mapping by its
-// canonical name, which is its renamed_to where it names one, so row is one of two kinds: a
-// mapping stored under row, which its removal mends (`removed_by`, mappingRemoval), or the
-// renamed_to of a mapping stored under another name, which no mapping is stored under, so a
-// removal of row removes nothing, and which that mapping's PUT mends instead, with a renamed_to
-// GitHub allows or `""`, which clears it (`mended_by`, mappingRename). Where that PUT cannot
-// write the mapping's own name, which it refuses or reads as another mapping's, the mapping's
-// removal mends it in the PUT's place (`removed_by`). Both are read from repo_projects here,
-// where the WARN is written, rather than carried through every pass for a row that is almost
-// never refused. A read that fails is named in their place.
-func (r *Reconciler) mappingRepairs(ctx context.Context, row string) []any {
-	rows, err := r.Pool.Query(ctx, `select repo, renamed_to is not null from repo_projects
-		where lower(coalesce(renamed_to, repo)) = lower($1) order by repo`, row)
-	if err != nil {
-		return []any{"error", fmt.Errorf("read the mappings that name it: %w", err)}
-	}
-	defer rows.Close()
-	var removedBy, mendedBy []string
-	for rows.Next() {
-		var repo string
-		var renamed bool
-		if err := rows.Scan(&repo, &renamed); err != nil {
-			return []any{"error", fmt.Errorf("read a mapping that names it: %w", err)}
-		}
-		if renamed {
-			if put, ok := mappingRename(repo); ok {
-				mendedBy = append(mendedBy, put)
-				continue
-			}
-		}
-		removedBy = append(removedBy, mappingRemoval(repo))
-	}
-	if err := rows.Err(); err != nil {
-		return []any{"error", fmt.Errorf("read the mappings that name it: %w", err)}
-	}
-	var repairs []any
-	if len(removedBy) > 0 {
-		repairs = append(repairs, "removed_by", strings.Join(removedBy, ", "))
-	}
-	if len(mendedBy) > 0 {
-		repairs = append(repairs, "mended_by", strings.Join(mendedBy, ", "))
-	}
-	return repairs
-}
-
-// mappingRemoval is the request that removes the mapping stored under repo: the settings route's
-// DELETE of the path that spells repo as it is stored (spelledPath), since that DELETE removes
-// only the mapping stored under its path's own spelling (api's deleteRepoProject). A mapping
-// stored under `acme/..` before the route held names to GitHub's rule is removed by
-// `DELETE /api/v1/settings/repo-projects/acme/%2E%2E`, one stored under `acme/.git` by
-// `DELETE /api/v1/settings/repo-projects/acme/.git`, and one stored under `Zeta/..` by
-// `DELETE /api/v1/settings/repo-projects/Zeta/%2E%2E`. A mapping no path spells (spelledPath),
-// such as one stored under an empty name (`acme/`, `Zeta/`), is removed by no request, and the
-// text says so and that it is removed by SQL.
-func mappingRemoval(repo string) string {
-	if path, ok := spelledPath(repo); ok {
-		return "DELETE " + path
-	}
-	return fmt.Sprintf("no request reaches the mapping stored under %q: remove it by SQL", repo)
-}
-
-// spelledPath is the settings route's path that spells repo as it is stored, and false where the
-// mux cannot carry it: the route's DELETE reads a path's two segments as the mux unescapes them,
-// joined by `/` (api's deletedRepoProjectSpelling). Each half is escaped (rawSegment), so a `/`
-// in the name is written `%2F`, which the mux unescapes only after it splits the path. Neither
-// half may be empty, since the mux cleans an empty owner's `//` away and matches no wildcard to an
-// empty name's trailing slash, and the name may not be `/`, which the mux reads as that trailing
-// slash; a repo with no `/` is no path's spelling.
-func spelledPath(repo string) (string, bool) {
-	owner, name, found := strings.Cut(repo, "/")
-	if !found || owner == "" || name == "" || name == "/" {
-		return "", false
-	}
-	return "/api/v1/settings/repo-projects/" + rawSegment(owner) + "/" + rawSegment(name), true
-}
-
-// mappingRename is the request that mends the renamed_to of the mapping stored under repo: its
-// PUT, which takes the mapping's project and a renamed_to GitHub allows, or `""` to clear it. The
-// PUT reads its path as a reference, as storedName does, and then holds the name it read to the
-// rule splitRepo reads (api's repoProjectPath, through parseSourceRepo), so it writes the mapping
-// stored under repo only where mappingPath has a path for repo and splitRepo takes repo. For any
-// other repo the PUT refuses its path or writes another mapping than repo's, and ok is false.
-func mappingRename(repo string) (put string, ok bool) {
-	path, reached := mappingPath(repo)
-	if _, _, allowed := splitRepo(repo); !reached || !allowed {
-		return "", false
-	}
-	return `PUT ` + path + ` with its project and a renamed_to GitHub allows, or "" to clear it`, true
-}
-
-// mappingPath is a settings route's path its PUT reads as repo (storedName), and false where no
-// path reads so. The reading trims one trailing `.git` off the name, so the name is written as it
-// is where that reads as repo, and otherwise with one `.git` more, which the trim takes off again:
-// a name that ends in `.git`, which as it is would read as another (`acme/.git` as `acme/`), and
-// the empty name, which as it is would end the path in a trailing slash, which no wildcard of the
-// route matches. Whatever path reads as repo, the name with that one `.git` more reads as repo
-// too, so where neither form does, no path reaches the mapping by this reading: a name with a
-// letter the reading lower-cases, a half the reading trims of surrounding space, an empty owner,
-// or ASCII whitespace in either half or a `/` or `#` in the name, which the reading refuses.
-func mappingPath(repo string) (string, bool) {
-	owner, name, _ := strings.Cut(repo, "/")
-	for _, segment := range []string{name, name + ".git"} {
-		if read, valid := storedName(owner, segment); valid && read == repo {
-			return "/api/v1/settings/repo-projects/" + rawSegment(owner) + "/" + rawSegment(segment), true
-		}
-	}
-	return "", false
-}
-
-// storedName is the mapping name the settings route's PUT reads from the path segments owner and
-// name, as the mux unescapes them, before it holds the name to GitHub's rule, and false where it
-// refuses them: api's parseSourceRepo reads them, as api's storedRepoProjectPath does, as the
-// reference `owner/name#1` by the one rule both packages import (refs.ParseExternalRef), and so
-// does this. The route test (mapping_route_test.go) sends the requests mappingRepairs names
-// through the route itself.
-func storedName(owner, name string) (string, bool) {
-	repo, _, ok := refs.ParseExternalRef(owner + "/" + name + "#1")
-	return repo, ok
-}
-
-// rawSegment is segment as a request path carries it: escaped, and `.` and `..` written as `%2E`
-// and `%2E%2E`, which the mux does not clean away as it cleans a `.` or `..` segment. A caller
-// that sends the path as it is written keeps them; a browser's URL parser resolves them away as
-// it does `.` and `..` (api's deletedRepoProjectSpelling names the callers of each kind).
-func rawSegment(segment string) string {
-	if segment == "." || segment == ".." {
-		return strings.ReplaceAll(segment, ".", "%2E")
-	}
-	return url.PathEscape(segment)
 }

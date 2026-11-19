@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -146,7 +145,7 @@ func noBases(reason string) comparison {
 // make is model.ReasonReadFailed and leaves the gate's question open. One nil for both is how
 // a database hiccup came to read as "this work has moved on" (dispatch://INFRA-1522).
 // It holds what one read of the canonical name of the repository a result's row takes its
-// commit to be of said too (linkedRepositoryOf), which names a repository wherever it answered.
+// commit to be of said too (commitRepositoryOf), which names a repository wherever it answered.
 // The row names a repository only where the record route took the commit to be of a linked
 // repository GitHub said holds it (refuseUnknownCommit): a linked read that did not answer,
 // where no repository was shown to hold the commit, and a failed read of the issue's links
@@ -454,20 +453,20 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // whether the repository the commit is taken to be of can be read at all, and a branch check
 // walks the branches of that repository (onNamedBranch). Those two, beside learn's read-through
 // of a `before_merge` result's pull requests (readThroughHead), are the only places here the
-// repository a result's row takes its commit to be of is read: a check that named no basis of
-// its own leaves such a result where its reason leaves every other, as passStandsOf leaves the
-// check. An `other_commit` or `unknown` answer a linked repository decided names it
-// (model.ResultCommitStands.Repo), so a reader can tell it from one about the issue's own
-// repository.
+// repository a result's row takes its commit to be of is read, each through the one resolver
+// (commitRepositoryOf): a check that named no basis of its own leaves such a result where its
+// reason leaves every other, as passStandsOf leaves the check. An `other_commit` or `unknown`
+// answer a linked repository decided names it (model.ResultCommitStands.Repo), so a reader can
+// tell it from one about the issue's own repository.
 //
-// A `before_merge` result whose row names a linked repository (model.CheckResult.CommitRepo) is
-// decided by that repository, as its record and its read-through are: unknown with
-// model.ReasonReadFailed where the read of its canonical name failed, unknown with
+// A `before_merge` result whose commit is taken to be of a linked repository
+// (commitRepositoryOf) is decided by that repository, as its record and its read-through are:
+// unknown with model.ReasonReadFailed where the read of its canonical name failed, unknown with
 // model.ReasonRepositoryUnreadable where the App cannot read it, and another commit otherwise,
 // since a read-through of that repository would have taught Dispatch a pull request headed at
-// the commit (linkedReadThrough, the test readThroughHead makes). The issue's own repository has
-// nothing to say about a commit of another repository: read through it, a result there would
-// stand unknown for good wherever the App cannot read the issue's own.
+// the commit (the test readThroughRepository makes for readThroughHead, from the same memo). The
+// issue's own repository has nothing to say about a commit of another repository: read through
+// it, a result there would stand unknown for good wherever the App cannot read the issue's own.
 //
 // An issue that resolves to no repository is never unknown, whatever the check's `when`, but
 // for a `before_merge` result whose row names a linked repository, which that repository decides
@@ -501,17 +500,18 @@ func (c *comparisonReader) commitStands(
 		// Two answers Dispatch cannot give stand against reading that as another commit: a
 		// repository the App cannot read, where nothing can have taught Dispatch this commit's
 		// pull request, and a read of Dispatch's own that did not answer. The repository is
-		// the one the commit is taken to be of: a linked one the row names, whose reason
-		// linkedReadThrough gives, and else the issue's own, whose reason nothingReason gives
-		// and tells from an issue that resolves to no repository, where the heads Dispatch
-		// holds are every head it will ever hold.
-		if result.CommitRepo != nil {
-			linked, reason := c.linkedReadThrough(ctx, *result.CommitRepo)
-			named := c.linkedNamed(ctx, check.IssueKey, linked)
-			if reason != "" {
-				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: reason, Repo: named}
+		// the one the commit is taken to be of: a linked one, whose own read gives the reason,
+		// and else the issue's own, whose reason nothingReason gives and tells from an issue
+		// that resolves to no repository, where the heads Dispatch holds are every head it will
+		// ever hold.
+		switch owner := c.commitRepositoryOf(ctx, check.IssueKey, result.CommitRepo); {
+		case owner.unread:
+			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed, Repo: owner.linked}
+		case owner.linked != "":
+			if _, readable := c.defaultBranchIn(ctx, owner.linked); !readable {
+				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonRepositoryUnreadable, Repo: owner.linked}
 			}
-			return model.ResultCommitStands{Answer: model.CommitOtherCommit, Repo: named}
+			return model.ResultCommitStands{Answer: model.CommitOtherCommit, Repo: owner.linked}
 		}
 		if reason := c.nothingReason(ctx, check.IssueKey); reason != model.ReasonNoPullRequestOrBranch {
 			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: reason}
@@ -519,19 +519,6 @@ func (c *comparisonReader) commitStands(
 		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 	}
 	return c.onNamedBranch(ctx, check, compared, result)
-}
-
-// linkedNamed is the repository an answer about linked, the repository a result's row takes its
-// commit to be of, names (model.ResultCommitStands.Repo): linked itself, and "" where it is the
-// repository the check's issue resolves to now, compared without case, whose answers name none.
-// A row stored while the issue resolved elsewhere names that repository, and once the issue has
-// come to resolve to it the answer is about the issue's own repository; onNamedBranch walks it
-// there and names nothing, and this keeps every other answer about it in step.
-func (c *comparisonReader) linkedNamed(ctx context.Context, issueKey, linked string) string {
-	if own, answered := c.repositoryOf(ctx, issueKey); answered && own != nil && strings.EqualFold(linked, *own) {
-		return ""
-	}
-	return linked
 }
 
 // basisAt is the basis naming that commit, and nil where none does. A branch basis names no
@@ -552,16 +539,16 @@ func basisAt(bases []model.CheckBasis, sha string) *model.CheckBasis {
 //
 // The walk is of the repository the result's commit is taken to be of. For every result but
 // one, that is the repository the check's issue resolves to, and the branches are the bases the
-// check named. The one is a result whose row names a linked repository, one the issue links a
-// pull request in and does not resolve to, as its commit's (model.CheckResult.CommitRepo, read
-// under its canonical name by linkedRepositoryOf): it walks that repository's branches, chosen
-// by the same rule (linkedBranchBases), and the basis it stands at is a branch of that
-// repository, which names it. The issue's own repository holds no such commit, so its compare
-// read answers 404 and the walk there could only end unknown. A row naming the issue's own
-// repository is one whose issue has since come to resolve to that repository, and it is walked
-// there as every other result of the issue is. A result whose row names none reads nothing more
-// than it did before the row could name one. Every arm below is about the walked repository:
-// its default branch, and whether the App can read it.
+// check named. The one is a result whose commit is taken to be of a linked repository, one the
+// issue links a pull request in and does not resolve to (commitRepositoryOf, from the row's
+// model.CheckResult.CommitRepo): it walks that repository's branches, chosen by the same rule
+// (linkedBranchBases), and the basis it stands at is a branch of that repository, which names it.
+// The issue's own repository holds no such commit, so its compare read answers 404 and the walk
+// there could only end unknown. A row naming the issue's own repository is one whose issue has
+// since come to resolve to that repository, and it is walked there as every other result of the
+// issue is. A result whose row names none reads nothing more than it did before the row could
+// name one. Every arm below is about the walked repository: its default branch, and whether the
+// App can read it.
 //
 // The walk stops at the first branch that carries the commit (delivery.BranchCarries). A yes
 // is the whole answer, and no branch after it is asked about, which is what holds an ordinary
@@ -611,19 +598,15 @@ func (c *comparisonReader) onNamedBranch(
 	// named is the linked repository a walk of it names in an answer it gives, and "" for a
 	// walk of the issue's own repository, whose answers name none.
 	walked, bases, named := *repo, compared.bases, ""
-	if result.CommitRepo != nil {
-		linked, read := c.linkedRepositoryOf(ctx, *result.CommitRepo)
-		if !read {
-			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed,
-				Repo: c.linkedNamed(ctx, check.IssueKey, *result.CommitRepo)}
+	switch owner := c.commitRepositoryOf(ctx, check.IssueKey, result.CommitRepo); {
+	case owner.unread:
+		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed, Repo: owner.linked}
+	case owner.linked != "":
+		linkedCompared := c.linkedBranchBases(ctx, check, owner.linked)
+		if len(linkedCompared.bases) == 0 {
+			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: linkedCompared.reason, Repo: owner.linked}
 		}
-		if !strings.EqualFold(linked, *repo) {
-			linkedCompared := c.linkedBranchBases(ctx, check, linked)
-			if len(linkedCompared.bases) == 0 {
-				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: linkedCompared.reason, Repo: linked}
-			}
-			walked, bases, named = linked, linkedCompared.bases, linked
-		}
+		walked, bases, named = owner.linked, linkedCompared.bases, owner.linked
 	}
 	// The walked repository's own read, from the memo its bases were chosen from: whether the
 	// App can read it, which names the reason below, and the default branch, whose absence
@@ -804,15 +787,14 @@ func (c *comparisonReader) measuredBranches(
 // delivery.CommitPullReadStaleAfter, however many reads ask: server.commitPulls.Claim tests
 // that bound and records the read together, so two reads that ask at once spend one call.
 //
-// The read is against the repository the result's commit is taken to be of: the repository the
-// result's row names (model.CheckResult.CommitRepo, under its canonical name, linkedRepositoryOf)
-// where it names one, and the canonical repository the check's issue resolves to (repositoryOf),
-// the same issue headBases asks the stored rows about, where it names none. Asked of the issue's
-// own repository, a commit only a linked repository holds answers 422 on every read, and a
-// linked pull request whose head reaches that commit after the record would never be learned.
-// The readable test is that repository's own. A read that fails leaves the bases exactly as the
-// stored rows say, which is what a result reads with no read-through at all: a GitHub call that
-// did not land is no evidence either way.
+// The read is against the repository the result's commit is taken to be of (commitRepositoryOf):
+// a linked repository the result's row names, under its canonical name, and else the canonical
+// repository the check's issue resolves to (repositoryOf), the same issue headBases asks the
+// stored rows about. Asked of the issue's own repository, a commit only a linked repository
+// holds answers 422 on every read, and a linked pull request whose head reaches that commit
+// after the record would never be learned. The readable test is that repository's own. A read
+// that fails leaves the bases exactly as the stored rows say, which is what a result reads with
+// no read-through at all: a GitHub call that did not land is no evidence either way.
 func (c *comparisonReader) readThroughHead(ctx context.Context, result model.CheckResult) bool {
 	if c.server.deps.GitHub == nil {
 		return false
@@ -843,41 +825,25 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 }
 
 // readThroughRepository is the repository readThroughHead reads a result's commit through, and
-// whether that read can be made at all: a linked repository the result's row names, where
-// linkedReadThrough gives no reason it cannot be read, and else the repository the check's issue
-// resolves to, where the App answered that repository's default branch, which also answers
-// false for an issue resolving to no repository and for a resolve that did not answer. Each is
-// read from the memo commitStands reads next.
+// whether that read can be made at all, by whose the commit is taken to be (commitRepositoryOf):
+// a linked repository, where the read of its canonical name answered and the App answered its
+// default branch, which is the test commitStands decides a `before_merge` result by, from the
+// same memo; and else the repository the check's issue resolves to, where the App answered that
+// repository's default branch, which also answers false for an issue resolving to no repository
+// and for a resolve that did not answer, the memo commitStands reads next.
 func (c *comparisonReader) readThroughRepository(ctx context.Context, result model.CheckResult) (string, bool) {
-	if result.CommitRepo != nil {
-		linked, reason := c.linkedReadThrough(ctx, *result.CommitRepo)
-		return linked, reason == ""
+	switch owner := c.commitRepositoryOf(ctx, result.CheckIssueKey, result.CommitRepo); {
+	case owner.unread:
+		return "", false
+	case owner.linked != "":
+		_, readable := c.defaultBranchIn(ctx, owner.linked)
+		return owner.linked, readable
 	}
 	if _, readable := c.defaultBranchOf(ctx, result.CheckIssueKey); !readable {
 		return "", false
 	}
 	repo, _ := c.repositoryOf(ctx, result.CheckIssueKey)
 	return *repo, true
-}
-
-// linkedReadThrough is what Dispatch can read of commitRepo, the linked repository a result's
-// row takes its commit to be of: its name, and the reason no read of it can place the commit —
-// model.ReasonReadFailed where the read of its canonical name failed (linkedRepositoryOf), which
-// leaves it under the name the row stores, model.ReasonRepositoryUnreadable where the App
-// answered no default branch of it, and "" where it can be read, under the canonical name. It
-// is the one test of that repository both readThroughHead, which reads the commit's pull
-// requests through it only where the reason is "", and commitStands, which decides a
-// `before_merge` result by the reason, take, so the read and the answer cannot disagree about
-// whether the repository can be read.
-func (c *comparisonReader) linkedReadThrough(ctx context.Context, commitRepo string) (string, string) {
-	linked, read := c.linkedRepositoryOf(ctx, commitRepo)
-	if !read {
-		return commitRepo, model.ReasonReadFailed
-	}
-	if _, readable := c.defaultBranchIn(ctx, linked); !readable {
-		return linked, model.ReasonRepositoryUnreadable
-	}
-	return linked, ""
 }
 
 // headStoredAt is whether Dispatch holds an open or merged pull request whose head is that
@@ -932,7 +898,7 @@ func (c *comparisonReader) defaultBranchOf(ctx context.Context, issueKey string)
 // defaultBranchIn is defaultBranchOf for a repository named outright: the repository's default
 // branch and whether the App answered it, read once per repository per read of the results.
 // defaultBranchOf names the repository the check's issue resolves to, and onNamedBranch names
-// the repository a result's row takes its commit to be of (linkedRepositoryOf). The memo is the
+// the repository a result's row takes its commit to be of (commitRepositoryOf). The memo is the
 // same for both, so a repository that is both is read once.
 func (c *comparisonReader) defaultBranchIn(ctx context.Context, repo string) (string, bool) {
 	if answer, memoized := c.defaults[repo]; memoized {
