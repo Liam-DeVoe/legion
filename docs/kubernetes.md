@@ -6192,8 +6192,8 @@ The release does five things, in this order:
    A role that said it is ready takes its Envoy topic only at its session's first turn, or 30 seconds after it said so, and the release holds every task that would start that turn, so the ask can find no session on the topic.
    The daemon then publishes the ask again, a second later and then up to 64 seconds apart, until a session takes the topic or the bound comes.
    A role counts as asked only once the ask reached its session before the bound, or once it answered.
-   At the bound the pod's line names only the roles the ask reached, so a role whose session never took its topic by then is not named as asked.
-   A pod whose ask reached no session of its roles by the bound is left, and its line names no asked role and gives the reason `the ask reached no session of its running roles by the bound`.
+   Until the bound the pod's line names each role the ask was written to, and at the bound it keeps only the roles the ask reached and those that answered, so a role whose session never took its topic by then is not named as asked.
+   A pod whose ask reached no session of its roles by the bound, and none of whose roles answered, is left, and its line names no asked role and gives the reason `the ask reached no session of its running roles by the bound`.
    An answer that comes after the bound changes nothing, and the pod's line keeps the bound.
    When the ask cannot be written to the daemon's database, the release writes it again, a second after the first try and then up to 10 seconds apart, until the bound, each time to the roles running then.
    A try that finds no role of the pod running asks nobody, and the pod goes on to step 4 with no ask.
@@ -6229,7 +6229,8 @@ Then it prints one line for each Sandbox, `sandbox <name> <kind> <issue> <outcom
 An issue pod's outcome is `deleted_clean` (its last read found no unpushed commit), `deleted_unread` (no role process ran there at any read), `deleted_lost` (deleted with the unpushed commits the line counts), `deleted_read_refused` (its workspace went unread at the end) or `left` (with its reason).
 A `deleted_read_refused` pod's shim refused the last read, and the line gives the refusal, or no role process ran at the last read after an earlier read reached one: the line then gives what that earlier read found, its count `at an earlier read`, and the reason `no role process ran at the last read`.
 Every other Sandbox is `deleted` or `left`.
-The line of an asked pod names each role the ask reached, and when it answered or that the bound passed first.
+Until the bound, the line of an asked pod names each role the ask was written to, and when it answered.
+At the bound it keeps only the roles the ask reached and those that answered, and for each of them that did not answer it says that the bound passed first.
 The line of a claim stored suspended by `project_release` ends `(the next boot starts it)`, and `legion claims list` shows such a claim `suspended:project_release`.
 A claim that failed or retired during the release names that state and ends `(the next boot does not start it)`.
 When the release could not read the claims at its end, each claim's line says that how the claim stands is not known, and names the error.

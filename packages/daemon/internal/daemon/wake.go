@@ -264,6 +264,8 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // A claim the daemon's boot starts after a project release waits as well, and is woken by
 // nothing here (awaitsBootStart, bootStartWait): the delivery waits on its own row's retry, as it
 // waits for a released pod coming back, until the claim's session holds its role again.
+// awaitsBootStart runs first and reads the park of such a claim itself, and launchParked then
+// reads the park of every other claim, so each claim's park is read once.
 //
 // The claim is read from the machine's View, which never waits on the decision in flight: a
 // machine holds its lock through the runtime call its decision makes, so a read that waited
@@ -278,10 +280,10 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 		return nil
 	}
 	held := machine.View()
-	if err := r.launchParked(held, detail); err != nil {
+	if err := r.awaitsBootStart(ctx, held, detail); err != nil {
 		return err
 	}
-	if err := r.awaitsBootStart(ctx, held, detail); err != nil {
+	if err := r.launchParked(held, detail); err != nil {
 		return err
 	}
 	if !held.Released() {
@@ -350,11 +352,12 @@ func releasedPodWait(detail string, held supervise.ClaimView) error {
 //     ready or idle inside the first-turn bound, when the row runs again at the bound's end
 //     (wait.Until).
 //
-// The park is read here as well as in wakeForDelivery because a role message reads only this
-// call (roleMessage). A claim whose session holds its role again waits for nothing and is
-// published to. A claim that failed or retired, or that anything but the release suspended, does
-// not wait either and is delivered as a claim no release stopped is, so no row waits for a start
-// that does not come.
+// The park of a claim coming back is read here, and only here, because a role message reads only
+// this call (roleMessage); wakeForDelivery calls this first and reads the park of every other
+// claim after it. A claim whose session holds its role again waits for nothing and is published
+// to. A claim that failed or retired, or that anything but the release suspended, does not wait
+// either and is delivered as a claim no release stopped is, so no row waits for a start that does
+// not come.
 func (r *outbox) awaitsBootStart(ctx context.Context, held supervise.ClaimView, detail string) error {
 	if until, waits := r.releaseStopped.comingBack(held, r.now); waits {
 		if err := r.launchParked(held, detail); err != nil {

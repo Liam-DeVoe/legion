@@ -773,7 +773,7 @@ func TestProjectReleaseLeavesAPodWhoseAskLandedAtTheBound(t *testing.T) {
 
 // releaseAskWaitsLine is the outbox's line for an ask of the running project release whose role's
 // topic no live session holds before the release's bound, which keeps the row to publish again
-// (updateAsk).
+// (publishReleaseAsk).
 const releaseAskWaitsLine = "outbox update ask of the running project release waits: no live session holds the role yet"
 
 // dispatch://INFRA-3583 R6: a role that said ready holds its Envoy topic only from its session's

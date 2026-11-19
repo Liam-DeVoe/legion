@@ -115,29 +115,28 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 	firstAsks := asks(first, r.issueViews(pod.sandbox.Issue))
 	if firstAsks {
 		asked, err := r.ask(ctx, run, pod)
+		if asked {
+			err = r.wait(ctx, run, pod)
+		}
 		if err != nil {
 			r.leave(ctx, run, pod, err.Error())
-			return
-		}
-		if asked && r.wait(ctx, run, pod) {
-			r.leave(ctx, run, pod, releaseAskUnreached)
 			return
 		}
 	}
 	last := r.read(ctx, pod.sandbox.Issue)
 	if !firstAsks && asks(last, r.issueViews(pod.sandbox.Issue)) {
 		asked, err := r.ask(ctx, run, pod)
-		if err != nil {
+		if asked || err != nil {
 			r.noteRead(run, pod, last)
+		}
+		if asked {
+			err = r.wait(ctx, run, pod)
+		}
+		if err != nil {
 			r.leave(ctx, run, pod, err.Error())
 			return
 		}
 		if asked {
-			r.noteRead(run, pod, last)
-			if r.wait(ctx, run, pod) {
-				r.leave(ctx, run, pod, releaseAskUnreached)
-				return
-			}
 			last = r.read(ctx, pod.sandbox.Issue)
 		}
 	}
@@ -219,7 +218,7 @@ func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *rel
 	line := &run.result.Sandboxes[pod.line]
 	before := len(line.Asked)
 	for i, c := range running {
-		run.asked[c.Token] = releaseAsk{line: pod.line, ask: len(line.Asked), nudge: pod.nudge}
+		run.asked[c.Token] = releaseAsk{line: pod.line, nudge: pod.nudge}
 		line.Asked = append(line.Asked, api.ReleasedAsk{Role: c.Role})
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod.sandbox.PodUID, Text: text}
 	}
@@ -246,24 +245,28 @@ func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *rel
 // ask reached no session of it yet has nothing to answer, so the pod waits for it until the bound:
 // the outbox publishes that role's ask again until then, and the session may take its topic
 // meanwhile. At the bound the bound is passed on the pod's line (atBound), and wait answers
-// whether the ask reached none of the pod's roles by then, which leaves the pod (takePod). A wait
-// that ends before the bound, on answers or on the context's end, answers false.
-func (r *projectReleaser) wait(ctx context.Context, run *releaseRun, pod *releasePod) (unreached bool) {
+// releaseAskUnreached when the line then keeps no role, since the ask reached none of the pod's
+// roles by then and none answered, which leaves the pod (takePod), and nil otherwise. A wait that
+// ends before the bound, on answers or on the context's end, answers nil.
+func (r *projectReleaser) wait(ctx context.Context, run *releaseRun, pod *releasePod) error {
 	bound := time.NewTimer(time.Until(run.bound))
 	defer bound.Stop()
 	reread := time.NewTicker(r.reread)
 	defer reread.Stop()
 	for {
 		if run.answeredAll(pod) && !inTurn(r.issueViews(pod.sandbox.Issue)) {
-			return false
+			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return nil
 		case <-bound.C:
 			reached := r.atBound(run, pod)
 			r.record(ctx, run)
-			return !reached
+			if !reached {
+				return errors.New(releaseAskUnreached)
+			}
+			return nil
 		case <-reread.C:
 		case <-pod.nudge:
 		}
@@ -299,7 +302,8 @@ func (run *releaseRun) reach(token claim.Token, now time.Time) {
 }
 
 // atBound passes the bound on pod's line (passBound) and logs each role it took off the line, one
-// line each, and answers whether the ask reached any role of the pod by the bound.
+// line each, and answers whether the line keeps any role: one the ask reached by the bound, or one
+// that answered.
 func (r *projectReleaser) atBound(run *releaseRun, pod *releasePod) bool {
 	dropped, reached := run.passBound(pod)
 	for _, token := range dropped {
@@ -313,35 +317,33 @@ func (r *projectReleaser) atBound(run *releaseRun, pod *releasePod) bool {
 // then, and that did not answer (releaseAsk.reached), is taken off the line and out of run.asked,
 // since no session of it was asked, and each other one that has not answered records the bound.
 // It answers the claims it took off, in the line's order, and whether any asked role is left on
-// the line, which is whether the ask reached any role of the pod.
+// the line, which is whether the ask reached any role of the pod or any role answered.
 func (run *releaseRun) passBound(pod *releasePod) (dropped []claim.Token, reached bool) {
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	line := &run.result.Sandboxes[pod.line]
-	onLine := make([]claim.Token, len(line.Asked))
+	onLine := map[claim.Role]claim.Token{}
 	for token, asked := range run.asked {
 		if asked.line == pod.line {
-			onLine[asked.ask] = token
+			role, _ := token.Role()
+			onLine[role] = token
 		}
 	}
-	kept := line.Asked[:0]
-	for i, ask := range line.Asked {
-		token := onLine[i]
-		asked := run.asked[token]
-		if !asked.reached && ask.AnsweredAt == nil {
-			delete(run.asked, token)
-			dropped = append(dropped, token)
-			continue
+	line := &run.result.Sandboxes[pod.line]
+	line.Asked = slices.DeleteFunc(line.Asked, func(ask api.ReleasedAsk) bool {
+		token := onLine[ask.Role]
+		if ask.AnsweredAt != nil || run.asked[token].reached {
+			return false
 		}
-		if ask.AnsweredAt == nil {
-			ask.Bound = true
+		delete(run.asked, token)
+		dropped = append(dropped, token)
+		return true
+	})
+	for i := range line.Asked {
+		if line.Asked[i].AnsweredAt == nil {
+			line.Asked[i].Bound = true
 		}
-		asked.ask = len(kept)
-		run.asked[token] = asked
-		kept = append(kept, ask)
 	}
-	line.Asked = kept
-	return dropped, len(kept) > 0
+	return dropped, len(line.Asked) > 0
 }
 
 // stopAndDelete ends one issue pod after its last read: each claim of the stop set in it is asked

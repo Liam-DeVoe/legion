@@ -1115,9 +1115,11 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
-/** `api.ReleasedAsk` — one role a project release asked to push and end its turn: when it
- * answered, or `bound` once the bound passed with no answer; neither while it may still answer,
- * and neither on a dry run, which names the roles a release would ask. */
+/** `api.ReleasedAsk` — one role on a project release's pod line, which until the bound names each
+ * role the release's ask was written to, and from the bound only those the ask reached a session
+ * of before the bound or that answered: when it answered, or `bound` once the bound passed with no
+ * answer; neither while it may still answer, and neither on a dry run, which names the roles a
+ * release would ask. */
 const legionReleasedAsk = z.object({
   role: z.enum(LEGION_ROLES),
   answeredAt: timestamp.optional(),

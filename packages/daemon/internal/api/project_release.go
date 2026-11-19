@@ -132,8 +132,10 @@ var releaseDeletedOutcomes = []ReleaseOutcome{ReleaseDeletedClean, ReleaseDelete
 // left line gives its reason — such as an ask to its roles that could not be written by the bound,
 // so no role of it was asked — and a deleted_read_refused line whose last read found no role
 // process says that as its reason; several reasons are joined by "; ". OtherImage marks an issue
-// pod whose pod runs an image other than the daemon's own. Asked is each role the release asked,
-// or on a dry run would ask, with when it answered or whether the bound passed first.
+// pod whose pod runs an image other than the daemon's own. Asked is, until the bound, each role the
+// release's ask was written to, and from the bound only those of them the ask reached a session of
+// before the bound or that answered; on a dry run it is each role a release would ask. Each carries
+// when it answered or whether the bound passed first.
 type ReleasedSandbox struct {
 	Name               string                     `json:"name"`
 	Kind               runtime.ProjectSandboxKind `json:"kind"`
@@ -151,9 +153,11 @@ type ReleasedSandbox struct {
 // deleted outcomes, any other Sandbox as ReleaseDeleted. A line left, or still waiting, is not.
 func (s ReleasedSandbox) Deleted() bool { return slices.Contains(releaseDeletedOutcomes, s.Outcome) }
 
-// ReleasedAsk is one asked role of a pod: when it answered, or Bound once the bound passed with no
-// answer; neither while it may still answer, and neither on a dry run. An answer that comes once
-// Bound is set is not recorded, so the two are never both set.
+// ReleasedAsk is one role of a pod's line (ReleasedSandbox.Asked): when it answered, or Bound once
+// the bound passed with no answer; neither while it may still answer, and neither on a dry run. The
+// line keeps a role at the bound only when the ask reached a session of it before the bound or it
+// answered, so a role with Bound set is one the ask reached. An answer that comes once Bound is set
+// is not recorded, so the two are never both set.
 type ReleasedAsk struct {
 	Role       claim.Role `json:"role"`
 	AnsweredAt *time.Time `json:"answeredAt,omitempty"`

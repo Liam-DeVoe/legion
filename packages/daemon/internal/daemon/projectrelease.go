@@ -220,14 +220,16 @@ type releaseRun struct {
 	recording sync.Mutex
 }
 
-// releaseAsk is where one asked claim's answer goes: its pod's line and its place among the line's
-// asked roles, and the pod's nudge, which wakes the pod's wait at once. reached is whether the
-// outbox's publish of the ask reached a session of the claim's role before the bound (reach): only
-// such a role, or one that answered, stays on the line at the bound (passBound).
+// releaseAsk is where one asked claim's answer goes: its pod's line, which names the claim's role
+// once, since an issue has one claim per role and a pod is asked once, and the pod's nudge, which
+// wakes the pod's wait at once. A claim is in run.asked exactly while its role is on that line.
+// reached is whether the outbox's publish of the ask reached a session of the claim's role before
+// the bound (reach): only such a role, or one that answered, stays on the line at the bound
+// (passBound).
 type releaseAsk struct {
-	line, ask int
-	nudge     chan struct{}
-	reached   bool
+	line    int
+	nudge   chan struct{}
+	reached bool
 }
 
 // podClass is how a release takes an issue pod (classifyReleasePod).
@@ -295,7 +297,7 @@ func (r *projectReleaser) Start(ctx context.Context, bound time.Duration, dryRun
 	}
 	run := &releaseRun{id: release.ID, bound: release.BoundAt, stop: stop, asked: map[claim.Token]releaseAsk{},
 		heldRefused: newRefusals()}
-	r.mark.recorded(release.ID, releaseAskHook{bound: run.bound, reached: func(token claim.Token) { run.reach(token, r.now()) }})
+	r.mark.recorded(releaseAskHook{id: release.ID, bound: run.bound, reached: func(token claim.Token) { run.reach(token, r.now()) }})
 	r.run = run
 	r.log.Info("project release: recorded; the daemon starts nothing of the project until its next boot",
 		"release", release.ID, "bound", bound.String(), "boundAt", release.BoundAt.Format(time.RFC3339),
@@ -384,12 +386,16 @@ func (r *projectReleaser) Answer(ctx context.Context, token claim.Token, session
 	}
 	run.mu.Lock()
 	asked, ok := run.asked[token]
-	if !ok {
+	entry := -1
+	if ok {
+		entry = slices.IndexFunc(run.result.Sandboxes[asked.line].Asked, func(ask api.ReleasedAsk) bool { return ask.Role == held.Role })
+	}
+	if entry < 0 {
 		run.mu.Unlock()
 		return &supervise.RefusedError{State: held.State, Request: "ready_for_update",
 			Reason: "the project release " + projectReleaseRound(run.id) + " did not ask this claim; it holds no answer from it"}
 	}
-	ask := &run.result.Sandboxes[asked.line].Asked[asked.ask]
+	ask := &run.result.Sandboxes[asked.line].Asked[entry]
 	if ask.Bound {
 		run.mu.Unlock()
 		r.log.Info("project release: an asked role answered after its pod's bound; the release keeps the bound",

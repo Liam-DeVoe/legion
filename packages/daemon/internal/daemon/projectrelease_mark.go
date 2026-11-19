@@ -43,12 +43,11 @@ import (
 // start as free.
 type projectRelease struct {
 	marked atomic.Bool
-	// id is the release's record id once its record has committed (recorded), 0 before: what the
-	// release's own ask round is named by (ownRound).
-	id atomic.Int64
-	// asks is the running release's side of its asks (releaseAskHook), which the outbox reads as
-	// it publishes one: installed once, before id names the release (recorded), nil before.
-	asks atomic.Pointer[releaseAskHook]
+	// hook is the release once its record has committed (recorded), nil before and once unmark
+	// cleared the mark: its record id, which names the release's own ask round (ownRound), and its
+	// side of those asks, which the outbox reads as it publishes one (askHook). One pointer holds
+	// all of it, so a round the mark names always has its hook.
+	hook atomic.Pointer[releaseAskHook]
 	// finishedActs is set once the release finished its acts (finish, finished): its round is then
 	// no round the outbox publishes an ask under without the claim-round read (askRound), while
 	// the mark itself stays held.
@@ -68,36 +67,37 @@ func (r *projectRelease) mark() bool {
 
 // recorded names the release once StartProjectRelease committed its record, so the outbox lets
 // that release's own asks through (ownRound, askRound), and installs hook, the release's side of
-// those asks, before the round, so every ask the outbox publishes under that round finds it.
-func (r *projectRelease) recorded(id int64, hook releaseAskHook) {
-	r.asks.Store(&hook)
-	r.id.Store(id)
+// those asks, with the round, so every ask the outbox publishes under that round finds it.
+func (r *projectRelease) recorded(hook releaseAskHook) {
+	r.hook.Store(&hook)
 }
 
-// releaseAskHook is what the outbox needs of the running release as it publishes one of its asks
-// (outbox.updateAsk): the release's bound, until which an ask whose role's topic no live session
-// holds waits for one, and reached, which tells the release that its ask to a claim reached a
-// session of the claim's role (releaseRun.reach).
+// releaseAskHook is the release of this process once its record committed, as the outbox needs
+// it as it publishes one of its asks (outbox.publishReleaseAsk): id, the release's record id,
+// which names the round of its asks (projectReleaseRound); bound, until which an ask whose role's
+// topic no live session holds waits for one; and reached, which tells the release that its ask to
+// a claim reached a session of the claim's role (releaseRun.reach).
 type releaseAskHook struct {
+	id      int64
 	bound   time.Time
 	reached func(claim.Token)
 }
 
-// reach tells the release that its ask to token's claim reached a session of the claim's role. The
-// zero hook tells nobody.
-func (h releaseAskHook) reach(token claim.Token) {
-	if h.reached != nil {
-		h.reached(token)
+// recordedHook is the release's hook once its record committed (recorded), nil on a nil mark,
+// before the commit and once unmark cleared the mark.
+func (r *projectRelease) recordedHook() *releaseAskHook {
+	if r == nil {
+		return nil
 	}
+	return r.hook.Load()
 }
 
 // askHook is the running release's side of its asks (recorded), and the zero hook on a nil mark and
-// on one no release installed it on: its bound is the zero time, long past, and it tells nobody.
+// on one whose release's record has not committed: its bound is the zero time, long past. The
+// outbox reads a hook only under a round the mark named (askRound), so it never calls the zero
+// hook's reached, which is nil.
 func (r *projectRelease) askHook() releaseAskHook {
-	if r == nil {
-		return releaseAskHook{}
-	}
-	if hook := r.asks.Load(); hook != nil {
+	if hook := r.recordedHook(); hook != nil {
 		return *hook
 	}
 	return releaseAskHook{}
@@ -124,7 +124,7 @@ func (r *projectRelease) finished() bool {
 // releaseHoldSpacing, a launch the launch check refused at its probe-interval retry, and the
 // periodic work at its next tick.
 func (r *projectRelease) unmark() {
-	r.id.Store(0)
+	r.hook.Store(nil)
 	r.marked.Store(false)
 	if r.unmarked != nil {
 		r.unmarked()
@@ -140,14 +140,11 @@ func (r *projectRelease) held() bool {
 // running or finished, "" while no release is marked or its record has not committed yet: the
 // one round of update asks the outbox runs while the mark is held (record.HeldByProjectRelease).
 func (r *projectRelease) ownRound() string {
-	if !r.held() {
+	hook := r.recordedHook()
+	if hook == nil || !r.held() {
 		return ""
 	}
-	id := r.id.Load()
-	if id == 0 {
-		return ""
-	}
-	return projectReleaseRound(id)
+	return projectReleaseRound(hook.id)
 }
 
 // askRound is ownRound while the release runs, and "" once it finished (finish): the round whose

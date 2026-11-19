@@ -360,8 +360,9 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(
 // for any launch the pacing parked (launchParked): the row runs again at the start's turn or
 // parkedWakeBound on, whichever comes first, on a routine wait, rather than climbing its backoff
 // to 64 s and warning at every attempt from the seventh for as long as the park lasts. The
-// negative control is awaitsBootStart without its read of the park: the role message, which reads
-// the claim through awaitsBootStart alone, then waits on its backoff with the start's own sentence.
+// negative control is awaitsBootStart without its read of the park: each delivery, which reads
+// the park of such a claim through awaitsBootStart alone, then waits on its backoff with the
+// start's own sentence.
 func TestADeliveryHeldThroughAProjectReleaseWaitsOutThePacingOfItsStart(t *testing.T) {
 	for _, tc := range releaseDeliveries {
 		t.Run(tc.name, func(t *testing.T) {

@@ -389,7 +389,7 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		if round := release.askRound(); round != "" {
 			t.Fatalf("the round before the record = %q, want none", round)
 		}
-		release.recorded(7, releaseAskHook{})
+		release.recorded(releaseAskHook{id: 7})
 		if round := release.askRound(); round != ownRound {
 			t.Fatalf("the round once release 7 is recorded = %q, want %q", round, ownRound)
 		}
