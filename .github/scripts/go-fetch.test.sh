@@ -123,7 +123,7 @@ fetch() {
   PATH="${PATH_FIRST:+$PATH_FIRST:}$work/bin:$PATH" GO_FETCH_TEST_CALLS="$work/calls" GO_FETCH_TEST_COUNT="$work/count" \
     GO_FETCH_TEST_GOPATH="$work/gopath:$work/other-gopath" GO_FETCH_TEST_GOMODCACHE="${TEST_GOMODCACHE-$work/modcache}" \
     GO_FETCH_TEST_GOPROXY="${TEST_GOPROXY-https://proxy.example|direct}" GO_FETCH_WAIT=0 \
-    GO_FETCH_PROXY="${TEST_GO_FETCH_PROXY:-}" GOPROXY="${TEST_ENV_GOPROXY:-}" GOWORK= \
+    GO_FETCH_PROXY="${TEST_GO_FETCH_PROXY:-}" GOPROXY="${TEST_ENV_GOPROXY:-}" GOWORK='' \
     "${SCRIPT:-$go_fetch}" "$@" > "$work/stdout" 2> "$work/stderr"
   rc=$?
   set -e
