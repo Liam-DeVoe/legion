@@ -1910,9 +1910,18 @@ func (f *w5Fresh) controllerLauncherGone() time.Time {
 	relaunchLines := f.logs(func(rec loggedRecord) bool {
 		return rec.Attrs["claim"] == string(ctl.token) && !rec.at.Before(t0) && strings.HasPrefix(rec.Message, "supervise: relaunching a claim Envoy cannot reach")
 	})
+	// stamped is the moment R6 counts its 20 minutes from: the daemon stamps the claim's last
+	// relaunch (supervise's LastRelaunch) after the relaunch's stop returns and before its launch,
+	// so it falls between the relaunch line and the launch the runtime records (relaunched). The
+	// line is the earliest of the three this rig reads, so a line written 20 minutes after the
+	// stamp is at least 20 minutes after it too, while the launch can be later than the stamp by
+	// the stop's own time, and a sweep that lands within that gap of the 20 minutes would read as
+	// early.
+	stamped := relaunched
 	var relaunchLine string
 	if len(relaunchLines) > 0 {
 		relaunchLine = w5Describe(relaunchLines[0])
+		stamped = relaunchLines[0].at
 	}
 	f.check("controller-relaunched-in-a-replaced-pod-of-its-own", !relaunched.IsZero() && newPod != "" && newPod != before.pod,
 		"relaunched at %s; its pod was %s and its relaunch runs in %s", clockAt(relaunched), before.pod, newPod)
@@ -1924,8 +1933,8 @@ func (f *w5Fresh) controllerLauncherGone() time.Time {
 	envoy := f.envoySessions()[session]
 	f.check("relaunched-controller-blocked-does-not-reach-ready-with-its-role", envoy.state != "live", "Envoy lists the controller's session as %q (last seen %s)", envoy.state, clockAt(envoy.lastSeen))
 	f.recordEmptyReads("relaunched controller", relaunched)
-	f.check("relaunched-controller-r6-once-20m-after-the-relaunch", len(gone) == 1 && gone[0].at.Sub(relaunched) >= w5Unreachable && gone[0].at.Sub(relaunched) <= w5MarkWindow+time.Minute,
-		"R6 controller_unreachable lines: %d, the first at %s (%s after the relaunch at %s)", len(gone), w5FirstAt(gone), durationAfter(gone, relaunched), clockAt(relaunched))
+	f.check("relaunched-controller-r6-once-20m-after-the-relaunch", len(gone) == 1 && gone[0].at.Sub(stamped) >= w5Unreachable && gone[0].at.Sub(stamped) <= w5MarkWindow+time.Minute,
+		"R6 controller_unreachable lines: %d, the first at %s (%s after the relaunch's line at %s; its launch at %s)", len(gone), w5FirstAt(gone), durationAfter(gone, stamped), clockAt(stamped), clockAt(relaunched))
 	for _, rec := range gone {
 		f.record("R6: %s", w5Describe(rec))
 	}
