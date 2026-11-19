@@ -422,14 +422,14 @@ func TestTakeRouteTaskReadAnswersTheValueAndTheFinishedNumber(t *testing.T) {
 // The claim in a turn reads, on its own task route, the takes of its issue's other claims held
 // behind that turn (Supervisor.HeldBehind): each held claim's role and its task's number, so its
 // worker can tell its model that the take waits for this turn's end (dispatch://INFRA-4130 R2).
-// The key is written only for a caller whose claim records TaskHoldsContract, the contract that
+// The key is written only for a caller whose claim records taskHoldsContract, the contract that
 // brought it, or a later one: a plugin before it reads the answer with a schema that knows no
 // `holds`. With nothing held the key is absent.
 func TestTheTaskRouteNamesTheTakesHeldBehindTheCallersTurn(t *testing.T) {
 	h := newHarness(t)
 	c := h.readyClaim("LEGION-209", claim.RoleImplementer)
-	if got := h.stored(c.token).PluginContract; got < TaskHoldsContract {
-		t.Fatalf("the claim records plugin contract %d, below TaskHoldsContract %d: this case proves nothing", got, TaskHoldsContract)
+	if got := h.stored(c.token).PluginContract; got < taskHoldsContract {
+		t.Fatalf("the claim records plugin contract %d, below taskHoldsContract %d: this case proves nothing", got, taskHoldsContract)
 	}
 	var held []claim.HeldTake
 	h.supervisor.holdTakes(func(issue string, holder claim.Token) []claim.HeldTake {
@@ -457,7 +457,7 @@ func TestTheTaskRouteNamesTheTakesHeldBehindTheCallersTurn(t *testing.T) {
 	held = []claim.HeldTake{{Role: claim.RoleTester, Task: 7}}
 	for _, req := range []claim.TaskRequest{byAgent, byBoot} {
 		if got := string(read(req)["holds"]); got != `[{"role":"tester","task":7}]` {
-			t.Fatalf("the read of a caller at or above %d with the tester's take held behind its turn answers holds %s, want the tester's task 7", TaskHoldsContract, got)
+			t.Fatalf("the read of a caller at or above %d with the tester's take held behind its turn answers holds %s, want the tester's task 7", taskHoldsContract, got)
 		}
 	}
 
@@ -466,13 +466,28 @@ func TestTheTaskRouteNamesTheTakesHeldBehindTheCallersTurn(t *testing.T) {
 		t.Fatalf("the read with nothing held answers holds %s, want no key", keys["holds"])
 	}
 
-	h.makeStale(t, c.token, c.session, c.secret, TaskHoldsContract-1)
-	if got := h.stored(c.token).PluginContract; got != TaskHoldsContract-1 {
-		t.Fatalf("the claim records plugin contract %d, want %d: this case proves nothing", got, TaskHoldsContract-1)
+	h.makeStale(t, c.token, c.session, c.secret, taskHoldsContract-1)
+	if got := h.stored(c.token).PluginContract; got != taskHoldsContract-1 {
+		t.Fatalf("the claim records plugin contract %d, want %d: this case proves nothing", got, taskHoldsContract-1)
 	}
 	held = []claim.HeldTake{{Role: claim.RoleTester, Task: 7}}
 	if keys := read(byAgent); keys["holds"] != nil || keys["task"] == nil {
-		t.Fatalf("the read of a caller at %d answers %v, want its task read with no holds key", TaskHoldsContract-1, keys)
+		t.Fatalf("the read of a caller at %d answers %v, want its task read with no holds key", taskHoldsContract-1, keys)
+	}
+}
+
+// taskHoldsContract is the contract whose entry in version.go added `holds`, and this daemon's own
+// contract is never below it: a merge that renumbers this change moves its entry and this
+// constant together, and a later contract bump changes neither.
+func TestTheTaskHoldsContractIsTheContractThatAddedHolds(t *testing.T) {
+	const addedHolds = 179
+	if taskHoldsContract != addedHolds {
+		t.Fatalf("taskHoldsContract = %d, want %d, the contract whose entry in version.go added holds to the task route",
+			taskHoldsContract, addedHolds)
+	}
+	if taskHoldsContract > DaemonAPIVersion {
+		t.Fatalf("taskHoldsContract = %d, above DaemonAPIVersion %d: no caller could be served holds",
+			taskHoldsContract, DaemonAPIVersion)
 	}
 }
 

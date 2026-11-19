@@ -31,18 +31,18 @@ import (
 // leave a worker on an older contract nothing to do but fail its boot while the daemon relaunches
 // it onto the current plugin.
 
-// TaskHoldsContract is the daemon contract that added `holds` to the answer of the task route
+// taskHoldsContract is the daemon contract that added `holds` to the answer of the task route
 // (version.go's 179): the takes of the caller's issue's other claims held behind the caller's turn
 // (Supervisor.HeldBehind, claim.HeldTake). A caller whose claim records this contract or a later
 // one is served the key; a plugin below it reads the answer with a schema that knows no `holds`,
 // so it is served none, as the state route serves a caller only its contract's keys (stateFor).
 // It is pinned, not read from DaemonAPIVersion, so a later contract bump takes the key from no
 // plugin that reads it; a merge that renumbers this change moves it with its version.go entry.
-const TaskHoldsContract = 179
+const taskHoldsContract = 179
 
 // task is the worker reading its claim's value: the value the bucket holds now, null for none,
 // and the number of the last task the claim finished (supervise's Machine.CurrentTask). A caller
-// on TaskHoldsContract or a later one is also answered the takes of its issue's other claims held
+// on taskHoldsContract or a later one is also answered the takes of its issue's other claims held
 // behind its turn, so the worker of that turn can come to a safe point; the key is absent where
 // none is held (claim.TaskResponse). Both reads take the claim as its machine last published it,
 // waiting on no decision.
@@ -63,7 +63,7 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := taskResponseOf(current)
-	if view := m.View(); view.PluginContract >= TaskHoldsContract {
+	if view := m.View(); view.PluginContract >= taskHoldsContract {
 		answer.Holds = s.supervisor.HeldBehind(view.Issue, token)
 	}
 	writeJSON(w, http.StatusOK, answer)

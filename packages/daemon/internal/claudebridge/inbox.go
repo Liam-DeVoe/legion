@@ -181,13 +181,21 @@ type inboxReply struct {
 // arrives, and answers them in the order they came, each once the loop has answered it: a line
 // waits for the answers of the lines ahead of it on its connection, so claude-envoy writes its
 // take-pending query down a connection of its own. The loop answers every line it took before the
-// inbox closes, so those answers are written then too, within inboxFlushTimeout.
+// inbox closes, so those answers are written then too, within inboxFlushTimeout. The watcher of
+// the inbox's close ends with the connection too: claude-envoy dials a connection for every
+// take-pending query, so a watcher left parked on stop would hold one goroutine and one closed
+// connection for each of them until the bridge exits.
 func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger *log.Logger) {
 	defer conn.Close()
+	served := make(chan struct{})
+	defer close(served)
 	go func() {
-		<-stop
-		_ = conn.SetReadDeadline(time.Now())
-		_ = conn.SetWriteDeadline(time.Now().Add(inboxFlushTimeout))
+		select {
+		case <-stop:
+			_ = conn.SetReadDeadline(time.Now())
+			_ = conn.SetWriteDeadline(time.Now().Add(inboxFlushTimeout))
+		case <-served:
+		}
 	}()
 	pending := make(chan owed, inboxPending)
 	go func() {

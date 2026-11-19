@@ -131,8 +131,9 @@ func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token,
 // machine publishes (supervise.ClaimView.HeldTask). Every claim in a turn holds such a take
 // (claimInTurn reads every claim of the issue), so each of them is named it: two roles in a
 // turn at once each read the take on their own task route (api's task) and each worker can come
-// to a safe point (dispatch://INFRA-4130). It reads the published views of the lock-free
-// snapshot of the machines, for the reasons claimInTurn does.
+// to a safe point (dispatch://INFRA-4130). It reads what each machine published of its claim
+// (supervise.Machine.IssueTurn, which copies no claim) over the lock-free snapshot of the
+// machines, for the reasons claimInTurn does.
 func (s *supervisor) HeldBehind(issue string, holder claim.Token) []claim.HeldTake {
 	if issue == "" {
 		return nil
@@ -140,13 +141,13 @@ func (s *supervisor) HeldBehind(issue string, holder claim.Token) []claim.HeldTa
 	var held []claim.HeldTake
 	inTurn := false
 	for _, machine := range s.supervised() {
-		view := machine.View()
+		turn := machine.IssueTurn()
 		switch {
-		case view.Issue != issue:
-		case view.Token == holder:
-			inTurn = view.InTurn()
-		case view.HeldTask != 0:
-			held = append(held, claim.HeldTake{Role: view.Role, Task: view.HeldTask})
+		case turn.Issue != issue:
+		case turn.Token == holder:
+			inTurn = turn.InTurn
+		case turn.HeldTask != 0:
+			held = append(held, claim.HeldTake{Role: turn.Role, Task: turn.HeldTask})
 		}
 	}
 	if !inTurn {

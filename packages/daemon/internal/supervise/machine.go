@@ -2232,6 +2232,26 @@ func (m *Machine) UnseenTaskValue() *UnseenTaskValue {
 	return &UnseenTaskValue{Claim: v.Token, Issue: v.Issue, Role: v.Role, Task: v.UnseenTask.Task, WrittenAt: v.UnseenTask.WrittenAt}
 }
 
+// IssueTurn is what a reader of every claim of an issue needs to name the takes held behind a
+// turn (the daemon's HeldBehind): the claim's token, issue and role, whether it is in a turn
+// (Claim.InTurn), and the task a take of it waits with behind another claim's turn
+// (ClaimView.HeldTask), 0 for none.
+type IssueTurn struct {
+	Token    claim.Token
+	Issue    string
+	Role     claim.Role
+	InTurn   bool
+	HeldTask uint64
+}
+
+// IssueTurn reads the claim's IssueTurn from the published view. It never waits on the decision
+// in flight and copies no claim, as WaitingWake does not, so a reader that walks every machine on
+// each task read allocates nothing.
+func (m *Machine) IssueTurn() IssueTurn {
+	v := m.view.Load()
+	return IssueTurn{Token: v.Token, Issue: v.Issue, Role: v.Role, InTurn: v.InTurn(), HeldTask: v.HeldTask}
+}
+
 // Deciding is the event the decision in flight handles (Handle), or nil when the machine decides
 // nothing. It never waits on the decision.
 func (m *Machine) Deciding() Event {
