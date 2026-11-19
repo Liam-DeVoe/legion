@@ -297,7 +297,7 @@ func tableRunes(table *unicode.RangeTable) []rune {
 // copiesNothing cut each pair 22 times, so a copy fails on whichever of a pair's first 22 calls
 // makes it, and count the allocations of those calls; one of them for each shape of such a pair
 // (shapeOf) cuts every pair of that shape. Two rows cut values at each length from 0 to 8,001
-// bytes, at every 32nd from 8,001 to 32,001 and at every 199th from 32,001 to 128,001, to their
+// bytes, at every 32nd from 8,033 to 32,001 and at every 199th from 32,001 to 128,001, to their
 // own length and to one character short, since an embedding input of any script reaches each of
 // those lengths: one of letters and, for each of é, 界 and U+1F54C, characters of two, three and
 // four bytes, values of letters and one run of the character or the character once (lengthPairs
@@ -772,7 +772,8 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	for n := 0; n <= 8001; n++ {
 		short = append(short, n)
 	}
-	for n := 8001; n <= 32001; n += 32 {
+	// The eighth row starts one step past the seventh's last length, so no pair is in both.
+	for n := 8001 + 32; n <= 32001; n += 32 {
 		long = append(long, n)
 	}
 	for n := 32001 + 199; n <= 128001; n += 199 {
@@ -781,20 +782,20 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	t.Run("a value of letters, or of a run or one of a character of two, three or four bytes first, last or between letters or alone, of each length up to 8,001 bytes, unchanged or cut one short, copies nothing", func(t *testing.T) {
 		answersSlices(t, lengthPairs(short))
 	})
-	t.Run("a value of letters, or of a run or one of a character of two, three or four bytes first, last or between letters or alone, of every 32nd length from 8,001 to 32,001 bytes and of every 199th to 128,001, unchanged or cut one short, copies nothing", func(t *testing.T) {
+	t.Run("a value of letters, or of a run or one of a character of two, three or four bytes first, last or between letters or alone, of every 32nd length from 8,033 to 32,001 bytes and of every 199th to 128,001, unchanged or cut one short, copies nothing", func(t *testing.T) {
 		answersSlices(t, lengthPairs(long))
 	})
 	// The two rows above cut each pair once. This one cuts the values of each kind they hold 22
 	// times, at each edge of the ranges of lengths that the rows of this test hold, and one byte each
 	// side of it: 5 and 6, where the shape rows end and the seeded row starts (4 to 7); 64 and 65,
 	// where the seeded row ends (63 to 66, with 67 and 68 for each remainder by two, three and four);
-	// 2,001 and 2,004, the place row's (2,000 to 2,005); 8,001, where the seventh row ends and the
-	// eighth starts (8,000 to 8,002); 32,001, where the eighth row's step changes (32,000 to 32,002);
-	// and 127,919, its last (127,918 to 127,920). So a copy keyed on how many times a pair was cut
-	// fails it, with or without a key on what the value holds, when its key reaches one of these
-	// lengths, and so does an allocation HeadRunes does not return.
-	t.Run("each kind of value of the two rows above, at each edge of the lengths the rows hold and one byte each side of it (4 to 7, 63 to 68, 2,000 to 2,005, 8,000 to 8,002, 32,000 to 32,002 and 127,918 to 127,920 bytes), unchanged or cut one short, copies nothing on each of 22 calls", func(t *testing.T) {
-		copiesNothing(t, lengthPairs([]int{4, 5, 6, 7, 63, 64, 65, 66, 67, 68, 2000, 2001, 2002, 2003, 2004, 2005, 8000, 8001, 8002, 32000, 32001, 32002, 127918, 127919, 127920}))
+	// 2,001 and 2,004, the place row's (2,000 to 2,005); 8,001, where the seventh row ends (8,000 to
+	// 8,002); 8,033, where the eighth starts (8,032 to 8,034); 32,001, where its step changes (32,000
+	// to 32,002); and 127,919, its last (127,918 to 127,920). So a copy keyed on how many times a pair
+	// was cut fails it, with or without a key on what the value holds, when its key reaches one of
+	// these lengths, and so does an allocation HeadRunes does not return.
+	t.Run("each kind of value of the two rows above, at each edge of the lengths the rows hold and one byte each side of it (4 to 7, 63 to 68, 2,000 to 2,005, 8,000 to 8,002, 8,032 to 8,034, 32,000 to 32,002 and 127,918 to 127,920 bytes), unchanged or cut one short, copies nothing on each of 22 calls", func(t *testing.T) {
+		copiesNothing(t, lengthPairs([]int{4, 5, 6, 7, 63, 64, 65, 66, 67, 68, 2000, 2001, 2002, 2003, 2004, 2005, 8000, 8001, 8002, 8032, 8033, 8034, 32000, 32001, 32002, 127918, 127919, 127920}))
 	})
 
 	shapes := map[string][]pair{}
