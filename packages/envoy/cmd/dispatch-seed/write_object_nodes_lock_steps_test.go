@@ -26,29 +26,32 @@ const (
 // markInboxReadThreads, against a real Postgres. writeIssues writes a batch's issue nodes through
 // graphstore.Write and then copies the batch's issues rows; writeItemNodes writes the nodes of an
 // ask batch (writeAsks) and of a message batch (writeMessages) the same way, before the batch's
-// first asks or messages row. Each batch takes no owner lock: it writes its nodes in ascending
-// (kind, id), whatever order it lists them in, graphstore.Write appends the base attributes those
-// nodes carry right after them, at the sentinel, and only then does the batch write its rows, each
-// of which names its node by its own key. The ask batch appends each ask's opening event after its
-// row; that event causes none of the tuples, which carry the sentinel, and it is appended with no
-// owner lock taken, as the seed numbers it itself.
+// first asks or messages row. The issue batch takes no owner lock; an item batch takes the owner
+// lock of each of its items first, in owner key order, since the window write after its rows takes
+// each item's (refs.WriteItemWindows). Each batch writes its nodes in ascending (kind, id),
+// whatever order it lists them in, graphstore.Write appends the base attributes those nodes carry
+// right after them, at the sentinel, and only then does the batch write its rows, each of which
+// names its node by its own key. The ask batch appends each ask's opening event after its row;
+// that event causes none of the tuples, which carry the sentinel, and the seed numbers it itself.
 //
 // Each batch is followed through one hold of each step, every hold taken before the batch starts
 // (lockstep.Follow), and the test reads where the batch's own backend waits behind each and which
-// tables it holds locks on by then. The owner lock is held for the whole run, and the batch must
-// never queue behind it: the project's for the issue batch, the lock an issue's create allocates
-// its number under and a project's event is appended under, and the issue's for the item batches,
+// tables it holds locks on by then. The owner lock is held for the whole run: the project's for
+// the issue batch, the lock an issue's create allocates its number under and a project's event is
+// appended under, which that batch must never queue behind, and the issue's for the item batches,
 // which every ask and message of the plan belongs to (store.LockOwners, the advisory lock every
-// writer of the server takes first). The two nodes are new, so each is held as a row another
-// transaction inserted and has not committed; they are listed with the higher one first. The
-// tuples carry the sentinel, which no repeat key covers, so the tuple append is held as the table
-// it writes, in share mode, which conflicts with an insert's lock and with no read; the node write
-// is the batch's first write of graph_tuples. The first row the batch writes is held as a row of
-// its key another transaction inserted and has not committed.
+// writer of the server takes first), which they must queue behind first, holding no lock of a
+// node, a tuple or a row. The two nodes are new, so each is held as a row another transaction
+// inserted and has not committed; they are listed with the higher one first. The tuples carry the
+// sentinel, which no repeat key covers, so the tuple append is held as the table it writes, in
+// share mode, which conflicts with an insert's lock and with no read; the node write is the
+// batch's first write of graph_tuples. The first row the batch writes is held as a row of its key
+// another transaction inserted and has not committed.
 //
 // Each run is held to the store's invariants (lockstep.RequireTheStoreLockOrder) and to the order
-// the code takes its steps in: the lower node, the upper node, the tuple append, then the row. What
-// the batch wrote is then read back, so the run followed is the one that committed.
+// the code takes its steps in: the owner lock where it takes one, the lower node, the upper node,
+// the tuple append, then the row. What the batch wrote is then read back, so the run followed is
+// the one that committed.
 func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
 	f := newSeedLockFixture(t)
 
@@ -157,15 +160,17 @@ func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
 	})
 }
 
-// ownerLock is an owner whose lock a batch must not take: how a failure names it, and the owner.
+// ownerLock is the owner whose lock a batch is held to: how a failure names it, the owner, and
+// whether the batch takes it, first, or must never queue behind it.
 type ownerLock struct {
 	name  string
 	owner store.Owner
+	taken bool
 }
 
 // issueOwnerLock is the fixture's issue, the owner of every ask and message the item batches write
-// and of the opening event the ask batch appends for each ask.
-var issueOwnerLock = ownerLock{name: "the issue's owner lock", owner: store.IssueOwner(seedLockIssue)}
+// and of the opening event the ask batch appends for each ask, which those batches lock first.
+var issueOwnerLock = ownerLock{name: "the issue's owner lock", owner: store.IssueOwner(seedLockIssue), taken: true}
 
 // objectBatch is one batch of the seed whose nodes graphstore.Write writes before the batch writes
 // the rows that name them: the batch as a failure names it and the table of its rows, the owner
@@ -186,13 +191,19 @@ type objectBatch struct {
 }
 
 // followObjectBatch holds each step of batch, runs it, and follows it through the holds
-// (lockstep.Follow): no owner lock, the node rows in ascending (kind, id), the tuple append, then
-// the first row, which names the upper node. It then reads back that every row of the batch names
-// a node of the store in the fixture's project with the project the node write stated of it.
+// (lockstep.Follow): the owner lock where the batch takes one, the node rows in ascending (kind,
+// id), the tuple append, then the first row, which names the upper node. It then reads back that
+// every row of the batch names a node of the store in the fixture's project with the project the
+// node write stated of it.
 func (f *seedLockFixture) followObjectBatch(t *testing.T, batch objectBatch) {
 	t.Helper()
 	ctx := context.Background()
-	owner := lockstep.HoldOwner(t, f.database, &lockstep.Hold{Name: batch.owner.name, Step: lockstep.StepOwner}, batch.owner.owner)
+	ownerHold := &lockstep.Hold{Name: batch.owner.name, Step: lockstep.StepOwner}
+	if batch.owner.taken {
+		ownerHold.Taken, ownerHold.Statement = true, lockstep.OwnerLockStatement
+		ownerHold.Unlocked = []string{"graph_nodes", "graph_tuples", batch.table}
+	}
+	owner := lockstep.HoldOwner(t, f.database, ownerHold, batch.owner.owner)
 	node := func(held graphstore.Node) *lockstep.Hold {
 		hold := &lockstep.Hold{
 			Name: "the node row of " + held.Kind + "/" + held.ID, Step: lockstep.StepNode, Taken: true,
@@ -223,8 +234,12 @@ func (f *seedLockFixture) followObjectBatch(t *testing.T, batch objectBatch) {
 	holds := []*lockstep.Hold{owner, upper, lower, tuples, row}
 	pid, done := f.startWrite(t, batch.write)
 	queued := lockstep.Follow(t, f.database, batch.run, pid, done, holds)
-	if want := []*lockstep.Hold{lower, upper, tuples, row}; !slices.Equal(queued, want) {
-		t.Fatalf("%s queued behind %s, want %s: graphstore.Write takes the node rows in ascending (kind, id) and appends their tuples, and the batch writes its rows after it",
+	want := []*lockstep.Hold{lower, upper, tuples, row}
+	if batch.owner.taken {
+		want = append([]*lockstep.Hold{owner}, want...)
+	}
+	if !slices.Equal(queued, want) {
+		t.Fatalf("%s queued behind %s, want %s: the batch takes its items' owner locks first where it takes any, graphstore.Write takes the node rows in ascending (kind, id) and appends their tuples, and the batch writes its rows after it",
 			batch.run, lockstep.HoldNames(queued), lockstep.HoldNames(want))
 	}
 	ids := []string{batch.lower.ID, batch.upper.ID}

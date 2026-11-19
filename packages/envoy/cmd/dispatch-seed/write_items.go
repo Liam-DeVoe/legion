@@ -55,10 +55,28 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		opened := make([][]any, 0, to-from)
 		// Each ask's node goes in before any row of the batch, in its project, as the server's
 		// ask create writes it; the seed records no event of it here, so it takes the sentinel.
+		// The owner lock of every ask of the batch comes first, in owner key order, as the
+		// store's lock order has it: the window write below takes each ask's owner lock
+		// (refs.WriteItemWindows), which a batch holding the asks' nodes would otherwise take
+		// after them.
 		nodes := make([]graphstore.Node, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
 		for index := from; index < to; index++ {
 			ask := r.plan.asks[index]
 			nodes = append(nodes, graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt))
+			var issueKey, artifactID *string
+			if ask.Issue >= 0 {
+				issueKey = &r.plan.issues[ask.Issue].Key
+			}
+			if ask.Document >= 0 {
+				artifactID = &r.plan.documents[ask.Document].ID
+			}
+			if owner := store.OwnerOf(issueKey, artifactID); owner != nil {
+				owners = append(owners, *owner)
+			}
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the asks' owners: %w", err)
 		}
 		if err := writeItemNodes(ctx, tx, nodes); err != nil {
 			return fmt.Errorf("the asks' nodes: %w", err)
@@ -470,11 +488,17 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 	return r.inBatches(ctx, "messages", len(r.plan.messages), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("message")
 		// Each message's node goes in before any row of the batch, in its issue's project, as the
-		// server's message create writes it; every seeded message is on an issue.
+		// server's message create writes it; every seeded message is on an issue. The issues'
+		// owner locks come first, as for the asks (writeAsks): the window write takes them.
 		nodes := make([]graphstore.Node, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
 		for index := from; index < to; index++ {
 			message := r.plan.messages[index]
 			nodes = append(nodes, graphstore.MessageNode(message.ID, r.itemProject(message.Issue, -1), nil, seedAuthor, message.CreatedAt))
+			owners = append(owners, store.IssueOwner(r.plan.issues[message.Issue].Key))
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the messages' owners: %w", err)
 		}
 		if err := writeItemNodes(ctx, tx, nodes); err != nil {
 			return fmt.Errorf("the messages' nodes: %w", err)
