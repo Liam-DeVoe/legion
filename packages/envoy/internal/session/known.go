@@ -107,6 +107,9 @@ type knownSessionsOpts struct {
 	// (withKnownSessionRetry, export_test.go).
 	retryFirst time.Duration
 	retryMax   time.Duration
+	// attemptWindow is a test's bound on one attempt of the background repair
+	// (withKnownSessionAttemptWindow, export_test.go), repairAttemptWindow when zero.
+	attemptWindow time.Duration
 	// watch is what a test adds to the options the store's watcher is built with
 	// (withKnownSessionWatch, export_test.go): a clock to move past the stale bound, or a short
 	// scan idle timeout. No deployment sets it.
@@ -196,15 +199,26 @@ type KnownSessions struct {
 
 	// repairMu serializes the attempts to repair the store, a reconnect hook's own (Rewatch) and
 	// the background retry's, so the watcher is never moved by two callers at once; and it guards
-	// repairing and moveFailed. Exactly one retry runs, or none: it is armed only under this lock
-	// and only while none runs (armRepair), and only the goroutine itself retires it, in the same
-	// hold as the attempt that found nothing left to repair. It is a ctxlock.Mutex so that a
-	// reconnect hook's run waits for it only while the run lasts (LockContext): the retry holds it
-	// through an attempt whose request takes no context, and on a connection that dropped with that
-	// request unanswered the attempt waits out the request's own bound, which would hold every other
-	// hook of the run behind it (TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt).
-	repairMu  ctxlock.Mutex
-	repairing bool
+	// moveFailed. It is a ctxlock.Mutex so that a reconnect hook's run waits for it only while the
+	// run lasts (LockContext): the retry holds it through an attempt whose request takes no
+	// context, and on a connection that dropped with that request unanswered the attempt waits out
+	// the request's own bound, which would hold every other hook of the run behind it
+	// (TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt). The retry's attempt is bounded by
+	// repairAttemptWindow, so it lets the lock go even while nats.go holds its connection lock for
+	// a reconnect's handshake.
+	repairMu ctxlock.Mutex
+	// repairStateMu guards repairing and rearm, and is never held across an attempt, so arming and
+	// retiring the retry wait for no attempt (armRepair, retireRepair). Exactly one retry runs, or
+	// none: it is armed only while none runs, and only the goroutine itself retires it, after an
+	// attempt that found nothing left to repair and while no arm came during that attempt (rearm).
+	repairStateMu sync.Mutex
+	repairing     bool
+	// rearm is an arm that came while the retry ran: the retry makes another attempt rather than
+	// retiring, as it would have had the arm waited for its attempt to end.
+	rearm bool
+	// attemptWindow is a test's bound on one attempt of the retry in place of repairAttemptWindow
+	// (repairWindow); zero outside tests.
+	attemptWindow time.Duration
 	// moveFailed is set by a move to a recovered connection that failed and cleared by the next
 	// that succeeds, whichever caller makes it, which is the move that logs the store back
 	// (attemptRepair).
@@ -224,16 +238,17 @@ type KnownSessions struct {
 // the background goroutines not started.
 func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
 	s := &KnownSessions{
-		now:          opts.now,
-		log:          opts.log,
-		replicas:     opts.replicas,
-		retryFirst:   opts.retryFirst,
-		retryMax:     opts.retryMax,
-		watchOptions: opts.watch,
-		topics:       store.NewTopicMatcher(),
-		conn:         conn,
-		wake:         make(chan struct{}, 1),
-		stopped:      make(chan struct{}),
+		now:           opts.now,
+		log:           opts.log,
+		replicas:      opts.replicas,
+		retryFirst:    opts.retryFirst,
+		retryMax:      opts.retryMax,
+		attemptWindow: opts.attemptWindow,
+		watchOptions:  opts.watch,
+		topics:        store.NewTopicMatcher(),
+		conn:          conn,
+		wake:          make(chan struct{}, 1),
+		stopped:       make(chan struct{}),
 	}
 	s.records = kvwatch.NewCopy(kvwatch.Rows[KnownSession]{
 		Decode:  decodeKnownSession,
@@ -377,7 +392,17 @@ const (
 	// repairMoved is an attempt that moved the watcher, and the handle the store writes through,
 	// to the connection the store holds now.
 	repairMoved
+	// repairAsked is an attempt that found nothing to repair while an arm came during it (rearm):
+	// the retry attempts again.
+	repairAsked
 )
+
+// repairAttemptWindow bounds one attempt of the background retry (retryRepair): the attempt holds
+// repairMu, and its requests end with their ctx, so a reconnect's handshake, which holds nats.go's
+// connection lock for up to its connect timeout, keeps the lock from the hooks and the arms for at
+// most this long. An attempt that runs out is an attempt that failed, and the retry waits and
+// tries again.
+const repairAttemptWindow = 30 * time.Second
 
 // repairUntilStopped is the store's one background repair: it attempts the store again, waiting
 // retryFirst and then twice the wait before it up to retryMax, until an attempt finds nothing
@@ -459,11 +484,27 @@ func (s *KnownSessions) retryRepair() (repairResult, error) {
 	defer s.repairMu.Unlock()
 	ctx, cancel := s.untilStopped()
 	defer cancel()
+	ctx, cancelAttempt := context.WithTimeout(ctx, s.repairWindow())
+	defer cancelAttempt()
 	result, err := s.attemptRepair(ctx)
 	if err == nil && result == repairNothing {
-		s.repairing = false
+		s.repairStateMu.Lock()
+		if s.rearm {
+			s.rearm, result = false, repairAsked
+		} else {
+			s.repairing = false
+		}
+		s.repairStateMu.Unlock()
 	}
 	return result, err
+}
+
+// repairWindow is repairAttemptWindow, or a test's own (attemptWindow).
+func (s *KnownSessions) repairWindow() time.Duration {
+	if s.attemptWindow > 0 {
+		return s.attemptWindow
+	}
+	return repairAttemptWindow
 }
 
 // repairOnce is one attempt a caller of its own makes, the reconnect hook's move (Rewatch), which
@@ -537,25 +578,10 @@ func (s *KnownSessions) cover(asked uint64) {
 // armRepair starts the background repair unless one runs already or the store has stopped. A
 // store that stopped repairs nothing: its watcher is retired and startWatch installs none.
 func (s *KnownSessions) armRepair() {
-	s.repairMu.Lock()
-	defer s.repairMu.Unlock()
-	s.armRepairLocked()
-}
-
-// armRepairWithin is armRepair for a reconnect hook's run, whose wait for repairMu ends with ctx
-// (LockContext). A run that ends first arms nothing: its connection is gone, the run is superseded
-// and leaves the hooks due, and the run the next connection event brings asks again (Rewatch).
-func (s *KnownSessions) armRepairWithin(ctx context.Context) {
-	if s.repairMu.LockContext(ctx) != nil {
-		return
-	}
-	defer s.repairMu.Unlock()
-	s.armRepairLocked()
-}
-
-// armRepairLocked is armRepair's step, for a caller holding repairMu.
-func (s *KnownSessions) armRepairLocked() {
+	s.repairStateMu.Lock()
+	defer s.repairStateMu.Unlock()
 	if s.repairing {
+		s.rearm = true
 		return
 	}
 	select {
@@ -567,12 +593,22 @@ func (s *KnownSessions) armRepairLocked() {
 	go s.repairUntilStopped()
 }
 
+// armRepairWithin is armRepair for a reconnect hook's run. A run that has ended arms nothing: its
+// connection is gone, the run is superseded and leaves the hooks due, and the run the next
+// connection event brings asks again (Rewatch). It waits for no attempt (repairStateMu).
+func (s *KnownSessions) armRepairWithin(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	s.armRepair()
+}
+
 // retireRepair records that no background repair runs, for the goroutine that ended at the stop.
 // A repair armed beside it is refused by the same stop (armRepair).
 func (s *KnownSessions) retireRepair() {
-	s.repairMu.Lock()
-	s.repairing = false
-	s.repairMu.Unlock()
+	s.repairStateMu.Lock()
+	s.repairing, s.rearm = false, false
+	s.repairStateMu.Unlock()
 }
 
 // awaitOpened waits for the watcher an attempt installed to complete its first read, the state

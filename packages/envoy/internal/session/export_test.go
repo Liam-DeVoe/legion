@@ -19,6 +19,12 @@ func withKnownSessionRetry(first, longest time.Duration) KnownSessionsOption {
 	}
 }
 
+// withKnownSessionAttemptWindow bounds each attempt of the background repair at d in place of
+// repairAttemptWindow (retryRepair). It is test-only.
+func withKnownSessionAttemptWindow(d time.Duration) KnownSessionsOption {
+	return func(o *knownSessionsOpts) { o.attemptWindow = d }
+}
+
 // withKnownSessionWatch adds options to the ones the store's watcher is built with: a clock that
 // moves past the stale bound (kvwatch.WithNow), say. It is test-only: no deployment sets them.
 func withKnownSessionWatch(options ...kvwatch.Option) KnownSessionsOption {

@@ -134,18 +134,24 @@ func (c *Client) afterReconnect(nc *nats.Conn) {
 // closeStopped closes nc, the connection a reconnect callback reports once the client has stopped:
 // nats.go has re-sent the subscriptions a drain is draining, and nothing will drain them now, so
 // the connection is closed rather than hand deliveries to a process that is exiting. A reconnect
-// that came before Drain stopped the client is the drain's: nats.go can run its callback only once
-// the drain is under way, and by then the drain itself is draining what nats.go re-sent, so closing
-// there would cut off the deliveries still in their handlers.
+// the drain counted when it stopped the client is the drain's: nats.go can run its callback only
+// once the drain is under way, and by then the drain itself is draining what nats.go re-sent, so
+// closing there would cut off the deliveries still in their handlers. A client Close stopped
+// closes at once. nats.go's Stats waits for its connection lock, so it is read with c.mu let go.
 func (c *Client) closeStopped(nc *nats.Conn) {
 	c.mu.Lock()
-	// A callback reports at least one reconnect, and a client stopped by Close alone leaves the
-	// count at 0, so only a reconnect Drain counted at its stop matches.
-	reconnectedBeforeTheDrain := nc == c.Conn && nc.Stats().Reconnects == c.drainedReconnects
+	counted, current := c.drainCounted, nc == c.Conn
 	c.mu.Unlock()
-	if !reconnectedBeforeTheDrain {
-		nc.Close()
+	if counted != nil && current {
+		<-counted
+		c.mu.Lock()
+		drained := c.drainedReconnects
+		c.mu.Unlock()
+		if nc.Stats().Reconnects == drained {
+			return
+		}
 	}
+	nc.Close()
 }
 
 // AddReconnectHook registers recovery for state that is attached to NATS but not represented by

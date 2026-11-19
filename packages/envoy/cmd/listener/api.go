@@ -2740,6 +2740,14 @@ func (d *listenerDeps) registerPass(
 		return registeredSession{}, false, refusal, nil
 	}
 	registered := registeredSession{plan: plan, delivery: outcome}
+	// The interest row's write and the session's entry write below are made under the session's
+	// lock, on the main client: each asks that client first whether its connection is up
+	// (sessionDelivery.mainLost, within the probe's budget), so a reconnect's handshake there costs
+	// the lock the probe's budget, not the handshake, and the loss goes the way a lost write here
+	// goes, to the caller's registersAgain.
+	if lost := d.consumers.mainLost(); lost != nil {
+		return registered, false, nil, lost
+	}
 	row, err := d.registry.UpsertPlanned(ctx, store.Interest{
 		SessionID: body.SessionID,
 		MachineID: machineID,
@@ -2772,6 +2780,9 @@ func (d *listenerDeps) registerPass(
 	if outcome.relayed() {
 		previous, err := d.sessions.Get(body.SessionID)
 		registered.epochChanged = err != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != outcome.epoch
+	}
+	if lost := d.consumers.mainLost(); lost != nil {
+		return registeredSession{}, false, nil, &sessionEntryWriteError{cause: lost}
 	}
 	if err := d.sessions.PutWithin(ctx, body.SessionID, sessionEntryFromSubscribe(body, machineID, outcome)); err != nil {
 		// The row is stored and nothing tells another reader the session is here, so the

@@ -399,7 +399,7 @@ const (
 // The line names the session, which is what an operator reading a pause in its delivery has to go
 // on.
 func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) error {
-	return fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func() (uint64, filterWriteOutcome, error) {
+	return m.fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func() (uint64, filterWriteOutcome, error) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
 		}
@@ -553,6 +553,9 @@ const (
 // record the bucket does not hold and one that records no consumer delivery are the bucket's
 // answers and no failure, so neither is logged here.
 func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) (registeredConsumer, registeredFinding, error) {
+	if lost := m.mainLost(); lost != nil {
+		return registeredConsumer{}, registeredReadFailed, lost
+	}
 	entry, err := d.sessions.Refresh(ctx, sessionID)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
@@ -575,6 +578,37 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 		start = max(start, ackFloor+1)
 	}
 	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt, nil
+}
+
+// mainLost is the listener's main client's answer to LostNow (bus.Client.LostNow), which reads that
+// client's connection by the probe within its 100 ms budget: a caller that holds a session's lock
+// asks it before each read or write of the session and interest buckets on that client, so a
+// reconnect's handshake there costs the caller the probe's budget with the lock held, not the
+// handshake, and its ErrConnectionLost goes the way every lost call under that lock goes
+// (relockAfterReconnect, storedFilterFailed). A sessionDelivery with no main client (a test's)
+// answers nil.
+func (m *sessionDelivery) mainLost() error {
+	if m == nil || m.stream == nil {
+		return nil
+	}
+	return m.stream.LostNow()
+}
+
+// recordFromLeader is the session's record read from the session bucket's leader, made under the
+// session's lock (deleteConsumer): it asks the main client first whether its connection is up
+// (mainLost), and bounds the read by ctx (bus.Bounded), since the leader read's request asks nats.go
+// for the connection's state before it looks at ctx. A read ctx's end abandoned answers ctx's error.
+func (m *sessionDelivery) recordFromLeader(ctx context.Context, d *listenerDeps, sessionID string) (session.SessionEntry, error) {
+	if lost := m.mainLost(); lost != nil {
+		return session.SessionEntry{}, lost
+	}
+	entry, answered, err := bus.Bounded(ctx, func() (session.SessionEntry, error) {
+		return d.sessions.RefreshFromLeader(ctx, sessionID)
+	})
+	if !answered {
+		return session.SessionEntry{}, ctx.Err()
+	}
+	return entry, err
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a

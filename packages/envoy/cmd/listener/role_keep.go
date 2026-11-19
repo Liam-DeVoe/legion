@@ -781,13 +781,20 @@ func roleKeepDrainBackoff(last time.Duration) time.Duration {
 // being handed over here already without waiting for it (roleKeepGuards.tryHold). A handover
 // whose context ended while it waited gives that wait up and walks nothing (roleKeepGuards.hold).
 func drainKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, now func() time.Time) error {
-	release, taken := cfg.roleKeepDrains.hold(ctx, role)
-	if !taken {
-		return nil
+	for {
+		release, taken := cfg.roleKeepDrains.hold(ctx, role)
+		if !taken {
+			return nil
+		}
+		_, err := handOverKeptRole(ctx, cfg, role, now)
+		release()
+		// A handover that found the main client's connection down gave it up before it waited for
+		// it (handOverKeptRole): the wait for the connection is made here, with the role's guard
+		// let go, and the handover is made again under the guard once the connection is back.
+		if !bus.Reconnected(ctx, err) {
+			return err
+		}
 	}
-	defer release()
-	_, err := handOverKeptRole(ctx, cfg, role, now)
-	return err
 }
 
 // keptRoleHandover is how one handover of a role's kept lane ended (handOverKeptRole): what its
@@ -945,9 +952,15 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		// Past that pause, the read before this pass is behind this handover, answered or not,
 		// and so is what the pass before this one found.
 		readErr, outcome = nil, keptRoleHandover{}
+		if lost := cfg.client.LostNow(); lost != nil {
+			return outcome, lost
+		}
 		headCtx, cancelHead := context.WithTimeout(ctx, roleKeepDrainWindow)
 		head, headErr := readKeptLaneHead(headCtx, cfg.client, role)
 		cancelHead()
+		if errors.Is(headErr, bus.ErrConnectionLost) {
+			return outcome, headErr
+		}
 		if headErr != nil {
 			if !retry("listener kept role message could not read the role's kept lane", headErr) {
 				return ended()
@@ -975,6 +988,9 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		var result roleKeepDrainResult
 		result, err = walkKeptRole(ctx, cfg, role, holder, entry, head, now)
 		outcome.waiting = result.waiting
+		if errors.Is(err, bus.ErrConnectionLost) {
+			return outcome, err
+		}
 		// A walk the listener's shutdown cancelled is as quiet as a read it cancelled (retry),
 		// unless it left a copy it forwarded or sent the dead letter of unconfirmed, which the
 		// next walk forwards or sends again.
@@ -1200,6 +1216,14 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		if scanned >= roleKeepScanMax || result.forwarded >= roleKeepDrainMax {
 			result.end = roleKeepWorkLeft
 			return result, nil
+		}
+		// Each copy's reads and forward are made under the role's guard: the main client is asked
+		// first whether its connection is up, within the probe's budget (bus.Client.LostNow), so a
+		// reconnect's handshake costs the guard that budget, not the handshake, and the handover
+		// gives the guard up while it waits for the connection (drainKeptRole).
+		if lost := cfg.client.LostNow(); lost != nil {
+			result.end = roleKeepDrainFailed
+			return result, lost
 		}
 		if holder != "" {
 			held, err := roleKeepDrainHolds(ctx, cfg, role, holder)

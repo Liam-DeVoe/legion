@@ -136,6 +136,31 @@ func (c *Client) connForRequest(ctx context.Context) error {
 	return c.ensureConnWithContext(ctx)
 }
 
+// LostNow answers ErrConnectionLost, unsent, when the client's connection is down as the probe
+// reads it (upNow), which waits at most heldLockBudget for nats.go's connection lock, and nil when
+// it is up, on any client. A caller that holds a lock - a session's consumer lock, a relay's restart
+// turn - asks it before a call on a client whose own requests ask nats.go directly (requestLife),
+// so it hears that the connection is mid-reconnect within the probe's budget rather than waiting for
+// the handshake with the lock held, and releases the lock before it waits for the connection
+// (Reconnected), as it does for the session consumers' client. Like connForRequest it bounds the
+// question, not the call that follows an "up" answer. A client with no connection yet, one still
+// awaiting its first, and a stopped one answer nil: their own calls answer as they always did.
+func (c *Client) LostNow() error {
+	if c == nil || c.stopped() {
+		return nil
+	}
+	c.mu.Lock()
+	conn, awaiting := c.Conn, c.awaitingConnection
+	c.mu.Unlock()
+	if conn == nil || awaiting {
+		return nil
+	}
+	if up, _ := c.upNow(conn); !up {
+		return &connectionLost{client: c, unsent: true}
+	}
+	return nil
+}
+
 // Request sends one request on c's connection through send and returns its answer. send is handed
 // a context that ends with ctx and also the moment that connection is lost, and passes it on to
 // the nats.go call it makes (RequestWithContext, NextMsgWithContext, a JetStream call's
@@ -264,9 +289,10 @@ func (c *Client) closedUnder(err error, conn *nats.Conn, reconnects uint64) bool
 // connection (a pulled message's acknowledgement, a pull's request, a KV handle's watch), that
 // object's connection while it is still the client's (heldNow), and nil once the client has
 // replaced it. A close answer for a call made on conn comes from conn's close or drain, or from a
-// forced reconnect of it (ForceReconnect, which the keeper of a service's token makes to present a
-// new one, natscred), which answers every pending flush and request nats.ErrConnectionClosed and
-// reconnects in place (nats.go v1.53.1 :2589-2622, :5948-5949): each is a loss of the connection,
+// drop or a forced reconnect of it (ForceReconnect, which the keeper of a service's token makes to
+// present a new one, natscred), each of which answers every pending flush, and a forced reconnect
+// every pending request, nats.ErrConnectionClosed (processOpErr's clearPendingFlushCalls; nats.go
+// v1.53.1 :2589-2622, :5948-5949): each is a loss of the connection,
 // however late the answer is read, so no read of conn's state decides it, and none waits for a
 // reconnect's handshake. A nil conn answers err as it is, so a call on the handle of a connection
 // the client has replaced keeps nats.go's error, which no retry on the client's connection answers
@@ -392,7 +418,12 @@ func (c *Client) requestLife() (context.Context, *nats.Conn, uint64) {
 		defer conn.RemoveStatusListener(lost)
 		gated := false
 		for {
-			if !conn.IsConnected() || conn.Stats().Reconnects != reconnects {
+			// The probe, not IsConnected: a wake at a connection event can come while nats.go holds
+			// its lock for the next reconnect's handshake, and the life's end, which every request
+			// bound to it waits for, must not wait for that. A probe nats.go's lock kept waiting past
+			// heldLockBudget reads as down, which ends the life, as the drop it found does.
+			status, now, answered := c.readConnState(conn, false)
+			if !answered || !statusUp(status) || now != reconnects {
 				c.endLifeNow(end)
 				return
 			}

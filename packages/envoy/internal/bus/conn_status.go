@@ -93,19 +93,6 @@ func (p *connProber) probe() (status nats.Status, reconnects uint64, answered bo
 	}
 }
 
-// upNow reports whether the connection is connected now as nats.go's IsConnected reads it -
-// CONNECTED, or a drain in progress (DRAINING_SUBS, DRAINING_PUBS), which still serves - without a
-// wait for a reconnect's dial or handshake: a read nats.go's lock kept waiting past heldLockBudget
-// reads as down, the connection mid-reconnect. reconnects is nats.go's reconnect count with an up
-// answer.
-func (p *connProber) upNow() (up bool, reconnects uint64) {
-	status, reconnects, answered := p.probe()
-	if !answered || !statusUp(status) {
-		return false, 0
-	}
-	return true, reconnects
-}
-
 // statusUp reports whether status is connected as nats.go's IsConnected reads it.
 func statusUp(status nats.Status) bool {
 	return status == nats.CONNECTED || status == nats.DRAINING_SUBS || status == nats.DRAINING_PUBS

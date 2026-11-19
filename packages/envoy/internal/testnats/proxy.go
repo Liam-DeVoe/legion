@@ -228,8 +228,10 @@ const proxyReadBuffer = 64 << 10
 
 // relay copies src to dst, each chunk written the proxy's delay after it was read and each read
 // held to the proxy's rate, until either ends; then it closes both, which ends the other direction
-// too. Under a hold (hold not nil), toClient says the direction: the server's chunks after the
-// line of its INFO wait for the hold's release, and the client's CONNECT marks the hold held.
+// too. Under a hold (hold not nil), toClient says the direction: the server's bytes after the end
+// of its INFO line wait for the hold's release, and the end of the client's first line, when that
+// line is its CONNECT, marks the hold held. Both are found across reads, since a TCP read need not
+// hold a whole line or its CRLF.
 func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, toClient bool) {
 	defer p.untrack(dst, src)
 	if hold != nil {
@@ -257,31 +259,63 @@ func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, toClient bool) {
 			}
 		}
 	}()
-	infoPassed := false
+	// firstLine is the direction's first protocol line so far (the server's INFO, the client's
+	// CONNECT), firstDone whether its CRLF has passed, and prev the last byte relayed before it ended.
+	var firstLine []byte
+	firstDone, prev := false, byte(0)
 	for c := range queue {
 		time.Sleep(time.Until(c.due))
 		p.pass()
-		if hold != nil && toClient && infoPassed {
+		data := c.data
+		if hold != nil && !firstDone {
+			end := lineEnd(prev, data)
+			if end < 0 {
+				firstLine = append(firstLine, data...)
+				prev = data[len(data)-1]
+				if _, err := dst.Write(data); err != nil {
+					break
+				}
+				continue
+			}
+			firstLine = append(firstLine, data[:end]...)
+			if _, err := dst.Write(data[:end]); err != nil {
+				break
+			}
+			firstDone, data = true, data[end:]
+			if !toClient && bytes.HasPrefix(firstLine, []byte("CONNECT ")) {
+				hold.heldOnce.Do(func() { close(hold.held) })
+			}
+		}
+		if len(data) == 0 {
+			continue
+		}
+		if hold != nil && toClient {
 			select {
 			case <-hold.release:
 			case <-hold.ended:
 			case <-p.done:
 			}
 		}
-		if _, err := dst.Write(c.data); err != nil {
+		if _, err := dst.Write(data); err != nil {
 			// The reader ends once src is closed below.
 			break
-		}
-		if hold != nil && toClient && bytes.Contains(c.data, []byte("\r\n")) {
-			infoPassed = true
-		}
-		if hold != nil && !toClient && bytes.Contains(c.data, []byte("CONNECT ")) {
-			hold.heldOnce.Do(func() { close(hold.held) })
 		}
 	}
 	_ = src.Close()
 	for range queue {
 	}
+}
+
+// lineEnd is the index just past the CRLF that ends a line in data, -1 when data holds none; prev
+// is the byte relayed just before data, so a CRLF a read split ends the line at index 1.
+func lineEnd(prev byte, data []byte) int {
+	if prev == '\r' && len(data) > 0 && data[0] == '\n' {
+		return 1
+	}
+	if i := bytes.Index(data, []byte("\r\n")); i >= 0 {
+		return i + 2
+	}
+	return -1
 }
 
 // pass waits while the proxy is frozen, and returns at once while it is not or once it closes.

@@ -178,7 +178,7 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	for {
-		switch _, err := d.sessions.RefreshFromLeader(ctx, sessionID); {
+		switch _, err := m.recordFromLeader(ctx, d, sessionID); {
 		case errors.Is(err, nats.ErrKeyNotFound):
 		case m.relockAfterReconnect(ctx, sessionID, &unlock, err):
 			continue

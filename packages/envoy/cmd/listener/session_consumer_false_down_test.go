@@ -24,18 +24,6 @@ func requireNoErrorLog(t *testing.T, rig *sweepRig) {
 	}
 }
 
-// registration is the body of a registration of sessionID that asks for its session consumer.
-func registration(sessionID string) string {
-	return `{"session_id":"` + sessionID + `","self_subscribed":true,"topics":[],"delivery":{"consumer":true,"epoch":"e"}}`
-}
-
-// sessionLockTaken reports whether anybody holds or waits for sessionID's lock.
-func sessionLockTaken(l *sessionLocks, sessionID string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.locks[sessionID] != nil
-}
-
 // A registration whose consumer call made under the session's lock reads a false "down" from the
 // probe - the read a loaded box keeps waiting past the probe's budget, made here by the seam for
 // the first read made while the lock is taken - is answered 200 with its consumer: the call answers
@@ -54,7 +42,7 @@ func TestARegistrationWhoseLockedCallReadsAFalseDownRelocksAndLands(t *testing.T
 	locks := &rig.deps.consumers.locks
 	restore := rig.deps.consumers.consumers.ProbeReadsDownForTest(func() bool {
 		reads.Add(1)
-		if sessionLockTaken(locks, sessionID) && lockedDowns.Add(1) == 1 {
+		if lockUsers(locks, sessionID) > 0 && lockedDowns.Add(1) == 1 {
 			time.Sleep(probeBudget)
 			return true
 		}
@@ -69,12 +57,12 @@ func TestARegistrationWhoseLockedCallReadsAFalseDownRelocksAndLands(t *testing.T
 	requireNoErrorLog(t, rig)
 }
 
-// A registration of a session that has a consumer, whose stream read answers and whose every later
-// probe read in its budget reads "down" - the false "down" landing on the create made under the
-// session's lock, for the whole of the registration's budget (sessionConsumerCallTimeout) - ends
-// with the usual refusal, 503 consumer_error, as a registration during a real outage does, logs
-// nothing at ERROR, and does not hold the session back: its next registration, made once the probe
-// answers again, is answered.
+// A registration of a session that has a consumer, whose every probe read made while the session's
+// lock is taken reads "down" for the whole of the registration's budget (sessionConsumerCallTimeout)
+// - the false "down" landing on the create made under the lock, the stream read before the lock
+// answering - ends with the usual refusal, 503 consumer_error, as a registration during a real
+// outage does, logs nothing at ERROR, and does not hold the session back: its next registration,
+// made once the probe answers again, is answered.
 //
 // The controls: the refusal answered 500 fails it; the refusal logged at ERROR fails it; a lost
 // answer starting the no-grant backoff fails the next registration.
@@ -82,17 +70,23 @@ func TestARegistrationWhoseCreateReadsDownForItsWholeBudgetAnswers503(t *testing
 	rig := newSweepRig(t)
 	const sessionID = "ses_false_down_create_budget"
 	rig.register(t, sessionID)
-	var reads atomic.Int64
+	var reads, lockedReads atomic.Int64
+	locks := &rig.deps.consumers.locks
 	restore := rig.deps.consumers.consumers.ProbeReadsDownForTest(func() bool {
-		if reads.Add(1) >= 3 {
+		reads.Add(1)
+		if lockUsers(locks, sessionID) > 0 {
+			lockedReads.Add(1)
 			time.Sleep(probeBudget)
 			return true
 		}
 		return false
 	})
-	refusal := rig.refusedSubscribe(t, registration(sessionID))
+	refusal := rig.refusedSubscribe(t, consumerRegistration(sessionID, "e"))
 	restore()
-	t.Logf("probe reads: %d; answered %d %q", reads.Load(), refusal.status, refusal.Reason)
+	t.Logf("probe reads: %d, %d of them under the session's lock; answered %d %q", reads.Load(), lockedReads.Load(), refusal.status, refusal.Reason)
+	if lockedReads.Load() < 2 {
+		t.Fatalf("%d probe reads were made under the session's lock, want the create and its retries there, so the row shows nothing of the locked path", lockedReads.Load())
+	}
 	if refusal.status != http.StatusServiceUnavailable || refusal.Reason != deliveryReasonConsumerError {
 		t.Fatalf("the registration whose create read down for its whole budget answered %d %q (%s), want 503 %q", refusal.status, refusal.Reason, refusal.raw, deliveryReasonConsumerError)
 	}

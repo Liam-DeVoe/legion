@@ -968,6 +968,9 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 // answered 200 for while keeping the consumer's position, at the cost fenceFilterWrite's doc
 // states. The revision is what the write of this filter is fenced on (settleFilter).
 func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]string, uint64, error) {
+	if lost := m.delivery.mainLost(); lost != nil {
+		return nil, 0, lost
+	}
 	topics, revision, err := storedTopics(ctx, m.registry, sessionID)
 	if err != nil {
 		return nil, 0, err
@@ -1020,7 +1023,7 @@ func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrot
 	// before the fence runs, so that pass answers it as the write it is (filterWriteLanded) and
 	// sends nothing, and the passes after it correct it from the bucket's newest row.
 	restart := true
-	return fenceFilterWrite(ctx, m.logger, m.registry, sessionID, filterAfterRestart, func() (uint64, filterWriteOutcome, error) {
+	return m.delivery.fenceFilterWrite(ctx, m.logger, m.registry, sessionID, filterAfterRestart, func() (uint64, filterWriteOutcome, error) {
 		if restart {
 			restart = false
 			return wrote, filterWriteLanded, nil

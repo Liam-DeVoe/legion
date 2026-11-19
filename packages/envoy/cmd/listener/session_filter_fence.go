@@ -180,7 +180,7 @@ const filterFenceAttempts = 5
 // new connection (storedFilterWrite, confirmRegistered, deleteConsumer, sessionRelays.restart)
 // makes the whole fence again once the connection is back, and each of its passes plans from the
 // bucket's newest row, so the fence made again writes what the lost one would have.
-func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *store.Registry, sessionID, after string, write func() (uint64, filterWriteOutcome, error)) error {
+func (m *sessionDelivery) fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *store.Registry, sessionID, after string, write func() (uint64, filterWriteOutcome, error)) error {
 	// stands is the revision of the row whose filter is on the consumer, and landed says a pass
 	// put one there, which stands alone cannot: a write built for a session the bucket holds no
 	// row for is fenced on revision 0. newest is what the bucket answered after that write.
@@ -220,6 +220,10 @@ func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *sto
 			break
 		}
 		stands, landed = wrote, true
+		if lostNow := m.mainLost(); lostNow != nil {
+			keep(lostNow)
+			return lost
+		}
 		if _, newest, err = storedTopics(ctx, registry, sessionID); err != nil {
 			logger.Warn("session consumer filter written and left unjudged: the interest row could not be read again; the session's next heartbeat sets it",
 				slog.String("session_id", sessionID), slog.Uint64("wrote_revision", stands), slog.String("error", err.Error()))
@@ -326,7 +330,7 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 	unlock := m.locks.lock(sessionID)
 	defer func() { unlock() }()
 	for {
-		lost := fenceFilterWrite(ctx, m.logger, registry, sessionID, after, func() (uint64, filterWriteOutcome, error) {
+		lost := m.fenceFilterWrite(ctx, m.logger, registry, sessionID, after, func() (uint64, filterWriteOutcome, error) {
 			return m.storedFilterStep(ctx, registry, sessionID, after)
 		})
 		if !m.relockAfterReconnect(ctx, sessionID, &unlock, lost) {
@@ -355,6 +359,9 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 // It takes no lock and bounds nothing: the caller holds the session's lock over every pass of
 // the fence and bounds ctx (storedFilterWrite, and sessionRelays.settleFilter under a restart).
 func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.Registry, sessionID, after string) (uint64, filterWriteOutcome, error) {
+	if lost := m.mainLost(); lost != nil {
+		return 0, filterWriteNotMade, lost
+	}
 	topics, revision, err := storedTopics(ctx, registry, sessionID)
 	if err != nil {
 		m.logger.Warn("session consumer filter left unchanged: the session's interests could not be read",

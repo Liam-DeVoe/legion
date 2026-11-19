@@ -98,8 +98,8 @@ func TestADeleteWhoseConnectionIsClosedReleasesTheSessionsLockAndDeletesOnceItIs
 // while the hub holds the reconnect's handshake. The hold lasts until the row restores the proxy,
 // and the client's connect timeout is above the test's deadline (bus.WithConnectTimeout), so a
 // delete that waits for nats.go's connection lock under the session's lock never releases it while
-// the hold lasts; one that reads the connection's status off the client's own record releases it
-// in milliseconds. The wait bounds a row that fails, not the answer of one that passes.
+// the hold lasts; one that asks bus's probe of the connection's status releases it within the
+// probe's 100 ms budget. The wait bounds a row that fails, not the answer of one that passes.
 const heldHandshakeWait = 10 * time.Second
 
 // A delete of a gone session's consumer made while the hub holds the handshake of its connection's

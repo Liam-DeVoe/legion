@@ -401,11 +401,14 @@ type Client struct {
 	// reported with the reason for it.
 	hooksDueSince time.Time
 	lastHookErr   error
-	// drainedReconnects is how many times c.Conn had reconnected in place when Drain stopped the
-	// client, set under mu in the step that stops it, so a reconnect callback can tell a reconnect
-	// before the drain from one during it (closeStopped). Once the client is stopped c.Conn never
-	// changes (ensureConnWithContext), so the count needs no connection beside it.
+	// drainedReconnects is how many times c.Conn had reconnected in place when Drain read it, just
+	// after it stopped the client, so a reconnect callback can tell a reconnect the drain drains
+	// from one after it (closeStopped). drainCounted is made in the step that stops the client for
+	// a drain and closed once drainedReconnects is set, both under mu; nil for a client Close
+	// stopped. Once the client is stopped c.Conn never changes (ensureConnWithContext), so the count
+	// needs no connection beside it.
 	drainedReconnects uint64
+	drainCounted      chan struct{}
 	// awaitingConnection is true, under mu, from the constructor of a client that connects in the
 	// background (WithConnectInBackground) until nats.go has connected its connection for the
 	// first time (onConnect), and false for every other client.
@@ -906,6 +909,13 @@ func (c *Client) proberLocked() *connProber {
 // conn is no longer the client's connection, nats.go's own read of it, which a closed connection
 // answers at once. A test's seam (ProbeReadsDownForTest) can make the probe answer "down".
 func (c *Client) probeConn(conn *nats.Conn) (status nats.Status, reconnects uint64, answered bool) {
+	return c.readConnState(conn, true)
+}
+
+// readConnState is probeConn's read; seamed is whether the test's seam applies, which it does not
+// to a life's own goroutine (requestLife), whose reads a row's count of the caller's reads must
+// not see.
+func (c *Client) readConnState(conn *nats.Conn, seamed bool) (status nats.Status, reconnects uint64, answered bool) {
 	c.mu.Lock()
 	var prober *connProber
 	if conn == c.Conn && conn != nil {
@@ -915,7 +925,7 @@ func (c *Client) probeConn(conn *nats.Conn) (status nats.Status, reconnects uint
 	if prober == nil {
 		return conn.Status(), conn.Stats().Reconnects, true
 	}
-	if down := c.probeDown.Load(); down != nil && (*down)() {
+	if down := c.probeDown.Load(); seamed && down != nil && (*down)() {
 		return 0, 0, false
 	}
 	return prober.probe()
@@ -1534,7 +1544,11 @@ func (c *Client) stopped() bool {
 
 // Close stops any recovery goroutine and the keeper, and closes the underlying NATS connection,
 // and takes the client out of the registry of live clients (forgetClient), since its connection
-// is going. It returns once the keeper has ended (awaitKeeper).
+// is going. It returns once the keeper has ended (awaitKeeper). nats.go's Close waits for its
+// connection lock, which a reconnect's handshake holds, so it is called with c.mu let go: every
+// caller of the client's lock (a probe, Connection) is answered meanwhile. Once the client is
+// stopped c.Conn never changes (ensureConnWithContext), so the connection read under c.mu is the
+// one to close.
 func (c *Client) Close() {
 	forgetClient(c)
 	c.subscriptionsMu.Lock()
@@ -1544,10 +1558,11 @@ func (c *Client) Close() {
 	c.subscriptionsMu.Unlock()
 	c.stop()
 	c.mu.Lock()
-	if c.Conn != nil {
-		c.Conn.Close()
-	}
+	conn := c.Conn
 	c.mu.Unlock()
+	if conn != nil {
+		conn.Close()
+	}
 	c.awaitKeeper()
 }
 
@@ -1581,12 +1596,21 @@ func (c *Client) Drain(timeout time.Duration) error {
 	}
 	c.subscriptionsMu.Unlock()
 	forgetClient(c)
-	// The stop and the reconnect count are one step under mu, so a reconnect callback that finds
-	// the client stopped also finds the count (closeStopped).
+	// The stop and the drain's mark are one step under mu, and the reconnect count is read after
+	// it with mu let go, since nats.go's Stats waits for its connection lock, which a reconnect's
+	// handshake holds. A reconnect callback that finds the client stopped waits for the count
+	// (closeStopped). A reconnect counted here came before the connection's drain below, which
+	// drains what it re-sent.
+	counted := make(chan struct{})
 	c.mu.Lock()
+	c.drainCounted = counted
 	c.stop()
 	conn := c.Conn
-	c.drainedReconnects = conn.Stats().Reconnects
+	c.mu.Unlock()
+	reconnects := conn.Stats().Reconnects
+	c.mu.Lock()
+	c.drainedReconnects = reconnects
+	close(counted)
 	c.mu.Unlock()
 	defer c.awaitKeeper()
 	defer conn.Close()

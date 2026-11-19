@@ -33,9 +33,10 @@ body: |-
   stream read, a consumer call, the resume record and a pull - answers the loss at once too, as one
   made while it reconnects does, so the dial that replaces it is made by the caller's retry with the
   session's lock released, not under it. The same holds while the hub holds a reconnect's
-  handshake, as it does while its auth service has not answered the CONNECT: the client reads its
-  connection's status off a record of its own, kept from nats.go's status reports, rather than off
-  nats.go, which holds its connection lock through the whole handshake. A request that a forced
+  handshake, as it does while its auth service has not answered the CONNECT: on the session
+  consumers' connection, whether the connection is up is read from nats.go on a goroutine of its
+  own and waited for at most 100 ms, since nats.go holds its connection lock through the whole
+  handshake; a read kept waiting longer counts as down. A request that a forced
   reconnect cut off, as the keeper of a service's token makes to present a new token, answers the
   loss even when its answer is read once the connection is back, rather than nats.go's `connection
   closed`. A start that waits for a stream's leader or copies and loses its connection waits for
