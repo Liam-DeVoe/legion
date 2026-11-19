@@ -1171,7 +1171,7 @@ const assignmentsContract = 141
 const entryTimesContract = 146
 
 // waitContract is the daemon contract that added each claim view's `wait`, the wait the claim's
-// worker declared while it stands (version.go's 167, ClaimView.Wait), beside the two routes a
+// worker declared while it stands (version.go's 170, ClaimView.Wait), beside the two routes a
 // worker declares one and reports news through. A plugin below it is served every claim view
 // without the key: one built before sjawhar/legion#2788 reads the state with a strict schema and
 // would refuse the whole body for a key it does not name, and one built after strips the key
@@ -1180,7 +1180,7 @@ const entryTimesContract = 146
 // stateNarrowings between the two, so a caller in a pod at or above entryTimesContract and below
 // this contract is served the entry times and no claim view's `wait`. It is the highest of the
 // bands, this daemon's own contract, so the only caller served the wait is one at it.
-const waitContract = 167
+const waitContract = 170
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

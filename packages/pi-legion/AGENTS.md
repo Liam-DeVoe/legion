@@ -95,10 +95,10 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 167 (dispatch://INFRA-2040:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 170 (dispatch://INFRA-2040:
 a phase worker declares a wait through `POST /legion/v1/claims/wait` and reports news after it
 through `POST /legion/v1/claims/wait-news`, and every claim view carries `wait` while the wait it
-names stands, which a caller below 167 is served without), after contract 146
+names stands, which a caller below 170 is served without), after contract 146
 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of

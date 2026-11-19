@@ -1225,12 +1225,12 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
-// Contract 167: a claim whose worker declared a wait that stands carries it on its view of the
+// Contract 170: a claim whose worker declared a wait that stands carries it on its view of the
 // state, which is what `read_record` reads an issue's record from: the id the daemon minted, what
 // the wait waits on, its time, and when the daemon recorded the declaration, to the microsecond.
 // The schema must name the key, since a key it does not name is stripped and the seat never sees
 // it: the golden carries it on LEGION-208's implementer alone, and this reads it before the parse
-// and after. A daemon narrows it away for a caller below 167 (`api.withoutWait`), so a claim
+// and after. A daemon narrows it away for a caller below 170 (`api.withoutWait`), so a claim
 // without it parses, and a wait with no text — which the daemon never records — is refused.
 test("a claim carries its standing wait", () => {
   const state = fixture("state.json") as {

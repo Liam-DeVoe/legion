@@ -321,7 +321,7 @@ const legionClaimView = z.object({
    * same four keys the declaration's answer named. Absent for a claim with no wait that stands:
    * one that declared none, one whose wait ended, and one whose wait has no end yet but no longer
    * stands — a fresh session, or a phase that moved. A caller in a pod whose plugin declares a
-   * contract below 167 is served the state with no such key at all (the daemon's `withoutWait`),
+   * contract below 170 is served the state with no such key at all (the daemon's `withoutWait`),
    * so every reader takes it as optional. */
   wait: legionWait.optional(),
 });
