@@ -140,8 +140,8 @@ const answer: ProjectPlans = {
 /** The whole answer's lines as `dispatch plans` printed them, and the line of the issue judged. */
 let whole: string[] = [];
 let line42 = "";
-// read runs the script with args against the fake dispatch, which prints out and exits exit, on
-// path, which by default finds the fake first.
+// read runs the script with args against the fake dispatch, which prints err on stderr and out on
+// stdout and exits exit, on path, which by default finds the fake first.
 const read = fakeDispatchRead(script, dir, [project, key]);
 // The same script copied where its checkout's bounds of a rating are a file this test writes, or
 // none: `bounds` is the path the copy reads them from, as the script finds plan-rating.json from its
@@ -202,6 +202,14 @@ describe("plan-ratings-read.sh", () => {
     expect(stdout).toContain(
       `PASS: ${key}: ${plan}, ratings 4/5 "The plan fit the work; the review sent it back once.", time 2h20m, failed steps 1`
     );
+    expect(code).toBe(0);
+  });
+
+  test("a warning the command prints on stderr is no part of its answer: the read passes", () => {
+    const warning = "dispatch: the bearer token expires in 2 days\n";
+    const { code, stdout, stderr } = read(printed(), [project, key], 0, undefined, warning);
+    expect(stdout).toContain(`PASS: ${key}: ${plan}, ratings 4/5`);
+    expect(stderr).toContain(warning.trim());
     expect(code).toBe(0);
   });
 
@@ -303,6 +311,14 @@ describe("plan-ratings-read.sh", () => {
       `UNKNOWN: dispatch plans --project ${project} exited 1, so nothing was read`
     );
     expect(stdout).toContain("is unreachable: ECONNREFUSED");
+    expect(code).toBe(2);
+  });
+
+  test("a failed read's message keeps what it said on stderr and on stdout on lines of their own", () => {
+    const warning = "dispatch: the bearer token expires in 2 days\n";
+    const { code, stdout } = read(printed([whole[0]]), [project, key], 1, undefined, warning);
+    expect(stdout).toContain(`exited 1, so nothing was read: ${warning}${whole[0]}`);
+    expect(stdout).not.toContain(`days${whole[0]}`);
     expect(code).toBe(2);
   });
 
