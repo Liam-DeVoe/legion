@@ -3,11 +3,16 @@
 # window tests run in envoy-go-checks' step on ubuntu-24.04, and delivery's xid window tests and
 # the NATS auth service's restart storm in envoy-go-race's step on ubuntu-24.04-arm. Each runs
 # alone on its runner, against the lane's disposable Postgres, after the go-envoy restore. Four
-# runners of each, five runs each, are the twenty. This file is deleted in the commit after the run
-# it records, so no lane carries it and nothing of main's CI reads it.
+# runners of each, five runs each, are the twenty. A push to this branch that changes this file
+# starts it, since GitHub lists a workflow that is not on the default branch only once a push has
+# run it, and only then can it be dispatched. This file is deleted in the commit after the run it
+# records, so no lane carries it and nothing of main's CI reads it.
 name: INFRA-1075 twenty runs alone
 
 on:
+  push:
+    branches: [legion/INFRA-1075]
+    paths: [.github/workflows/infra-1075-alone20.yaml]
   workflow_dispatch:
 
 permissions:
