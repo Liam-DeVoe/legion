@@ -258,8 +258,8 @@ What a stubbed row may assert, and what only a real-stack row may:
   reads its own write, because a recording answers the second read with the state from before the
   write, so the row would pass and prove nothing; when it needs a frame that the server sends (a
   delivery, a turn that streams, the live document); or when it reads a clock that the server
-  keeps moving. `packages/dispatch/AGENTS.md`, "The stubbed layer", says how a row moves and how its
-  recording is made and checked.
+  keeps moving. `packages/dispatch/AGENTS.md`, "The stubbed layer", says how a stubbed row is
+  declared and recorded, and what a new spec file needs.
 
 The clock of a unit test:
 
