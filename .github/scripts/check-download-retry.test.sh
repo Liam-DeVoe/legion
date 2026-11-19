@@ -11902,7 +11902,12 @@ check "refuses the alias by name at its line" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=11::step 'Fetch through an alias that opens a loop' of job 'build' defines an alias, a form this check does not read")"
 check "refuses the source of a library defining an alias at its line" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=17::step 'Fetch after sourcing a library that defines an alias' of job 'build' sources .github/scripts/r37-aliases.sh, which defines an alias")"
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+# Round 41 refuses `shopt -s expand_aliases` by name, an option that makes an alias's body run in
+# place of the command word, so each step's line 10 and 16 is refused too (dispatch://INFRA-1545,
+# round 41).
+check "refuses each step's expand_aliases by name" \
+  "$(is "$(printf '%s\n' "$out" | grep -cE '^::error file=.github/workflows/case.yaml,line=(10|16)::step .* sets .expand_aliases. \(.shopt -s expand_aliases.\)')" 2)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
 
 # B2. A site an exception leaves unretried is priced at the floor its own options make, and a
 # curl writing no `--max-time` has no figure: the step holding it was compared with nothing, so

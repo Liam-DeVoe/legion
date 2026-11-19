@@ -178,8 +178,11 @@
 #      whatever program, a set with no end, and `ls .github/workflows/*.yaml` and `rm -rf
 #      "$dir"/*` pass (pattern_words; dispatch://INFRA-1545, round 38). In both, a variable the
 #      same text sets once to a literal value, `d=.github/scripts`, `local d=…` or `export d=…`,
-#      is read as that value, so `flock /tmp/l "$d"/x.s[h]` is refused too; one set more than
-#      once or from data stays an expansion (literal_values). A word with no literal `.github/`
+#      is read as that value, so `flock /tmp/l "$d"/x.s[h]` is refused too, and where its `$` is
+#      written unquoted the value is globbed as bash globs it, its `*`, `?` and `[…]` patterns,
+#      so `v='.github/scripts/x.s?'` and then `flock /tmp/l $v` is refused (substituted;
+#      dispatch://INFRA-1545, round 41); one set more than once or from data stays an expansion
+#      (literal_values). A word with no literal `.github/`
 #      names such a file otherwise through a variable, refused where the text sets it to that
 #      file's literal path, `s=.github/scripts/x.sh`, or through a name SCRIPT_CALL reads, `cd
 #      .github && bash scripts/x.sh`; a variable built from data and handed to a program this
@@ -192,7 +195,31 @@
 #      38 SCRIPT_CALL read the first as written, which names no script, and the `$` of the second
 #      was read as written (run_names, ansi_c_escape; dispatch://INFRA-1545, round 38). A quote
 #      around the whole of a path, `"$script_dir/ci-retry.sh"`, leaves the path as written, and
-#      reads as it did. And a route
+#      reads as it did. EVERY PATTERN IS READ AS BASH READS IT WITH ITS DEFAULT OPTIONS, and a
+#      setting that changes how bash expands a word is refused by name rather than read, one class
+#      whatever the option (expansion_settings; dispatch://INFRA-1545, round 41): wherever this
+#      check reads run text, in a step, a composite action's step, a script, the text of a
+#      shell's `-c` and a `trap`'s action, whatever the text holds, a `shopt` setting or unsetting
+#      an option that changes expansion or matching (EXPANSION_SHOPT, read from bash 5.2.37's own
+#      list and manual: nocaseglob, nullglob, dotglob, extglob, globstar and sixteen more), or
+#      naming its options with a word that is no literal text; a `set` of noglob, braceexpand,
+#      histexpand, keyword or posix, by its letter in any cluster, `set -euf` or `set +B`, or after
+#      `-o` or `+o`; a shell started with one of them, `bash -O nocaseglob`, `bash -f`, `sh -o
+#      noglob`, `bash --posix` or `bash -i`, where it runs a `-c` text or a file (one reading its
+#      standard input is refused by that route where the route can hide a fetch); a word setting
+#      or unsetting GLOBIGNORE, BASHOPTS, SHELLOPTS, BASH_COMPAT or POSIXLY_CORRECT, an assignment
+#      anywhere in a command, one through `export`, `declare`, `local`, `readonly`, `typeset`,
+#      `read`, `printf -v` or a loop, or an `unset`; and, in a workflow or an action, an `env:`
+#      naming one of those variables and a `shell:` starting a shell with such a setting. A
+#      command another refusal names already, as `bash -O extglob .github/scripts/x.sh` is named
+#      where x.sh fetches, is named once. A Dockerfile RUN is read for no pattern, so for none of
+#      these. Until round 41 `shopt -s nocaseglob` and then `cd .github/scripts &&
+#      ./R38-FE[T]CH.SH` passed r38-fetch.sh's 1050 s under a 17-minute key. Measured at
+#      de0334a3, this refused two lines of the tree, each a `shopt -s nullglob`:
+#      go-tagged-tests.sh:51 and release-envoy-listener.yaml:480, in `Create the image index`,
+#      each rewritten to test the first name its glob gives with `[ -e … ]`, which runs as it did;
+#      the tree's 14 `shopt -s inherit_errexit` and its `set -euo pipefail` and `set -o pipefail`
+#      are outside the class. And a route
 #      from text to a program is refused whatever the text: `eval`; a shell reading its program
 #      from its standard input, a here-string, a file redirected into it or a process
 #      substitution, and a `.` or `source` of a process substitution; output piped into a shell
@@ -322,7 +349,11 @@
 #      and backslashes removed, as bash reads a word written `\EOF` or `"E"OF`. A heredoc fed to
 #      anything else, to a command piped into a shell on its line, or unquoted with a command
 #      substitution in its body, is refused by name where its body holds a fetch or names a
-#      script that fetches. A body `cat` writes into a file, or `read` takes into a variable, is
+#      script that fetches; and a body a shell reads as its program, its standard input, or that
+#      a `cat` prints into a pipe to a shell, is shell text read for its patterns and for the
+#      settings that change how bash expands a word, from the body's own first line, as the reach
+#      under item 1 reads a step (dispatch://INFRA-1545, round 41). A body `cat` writes into a
+#      file, or `read` takes into a variable, is
 #      data where it is written; the run of that file or that variable is a run whose target is
 #      built from data or written as the step runs, refused where it happens (the reach under
 #      item 1; dispatch://INFRA-1545, round 37).
@@ -363,6 +394,11 @@
 #     Dockerfile RUN: this check reads no fetch and no run of a script after either, and until
 #     round 38 it read the option, or `busybox`, as the program that runs and so the fetch behind
 #     it as none (odd_command; dispatch://INFRA-1545, round 38);
+#   - a setting that changes how bash expands a word, a `shopt`, a `set`, a shell's options, a
+#     variable such as GLOBIGNORE, an `env:` or a `shell:`, wherever written in a step, a
+#     composite action, a script, the text of a shell's `-c` or a `trap`'s action, whatever the
+#     text holds, since every pattern is read as bash reads it with its default options
+#     (expansion_settings, and the reach under item 1; dispatch://INFRA-1545, round 41);
 #   - a `timeout-minutes` of a step or a job written as anything but a whole number with no
 #     leading zero or an expression, and a line of text below a pricing comment that reads as
 #     `timeout-minutes: <n>` and is no key, wherever written;
@@ -1472,25 +1508,31 @@ def without_heredocs(text: str) -> tuple[str, list[tuple[int, str]]]:
     return "\n".join(lines), bodies
 
 
-def unread_heredocs(text: str) -> list[tuple[int, str, str]]:
+def unread_heredocs(text: str) -> list[tuple[int, str, str, bool, list[str]]]:
     """Each heredoc of this body that something may run while this check reads its body as
-    data, as the line of its operator, counted from 0, its body, and what its refusal says. Such
+    data, as the line of its operator, counted from 0, its body, what its refusal says, whether a
+    shell runs the body as its program, and the consumer's words once the wrappers are gone. Such
     a heredoc is refused by name where its body holds a fetch or names a script that fetches
     (dispatch://INFRA-1545, round 37). Three shapes: a consumer that is not one of HEREDOC_DATA,
     read off the operator's line as the last command in front of it once the wrappers
     reduce_words strips are gone, a shell, `"$SHELL"` or `ssh host bash` among them; a command
     whose output a pipe on the operator's line hands to a shell, a `cat` piped into `bash`; and
     an unquoted body holding a command substitution, which the step's own shell runs before any
-    consumer reads the body."""
+    consumer reads the body. A shell runs the body as its program where the consumer is a shell
+    reading its standard input (INTERPRETERS, shell_operand), `bash <<'EOF'` or `bash -s
+    <<'EOF'`, and where a `cat` of it is piped into a shell; such a body is read for patterns and
+    for settings that change how bash expands a word too (dispatch://INFRA-1545, round 41)."""
     found = []
     for number, match, body, quoted in heredocs_of(text):
         commands = Scanner(1).scan(match.string[:match.start()])
         words = reduce_words(commands[-1].words)[0] if commands else []
-        if not words or PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] not in HEREDOC_DATA:
+        head = PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] if words else ""
+        piped = PIPE_INTO_SHELL.search(match.string[match.end():]) is not None
+        if not words or head not in HEREDOC_DATA:
             sentence = HEREDOC_UNREAD.format(
                 consumer=f"`{words[0]}`" if words else "no command",
                 cure="Write the body's commands in the step itself")
-        elif PIPE_INTO_SHELL.search(match.string[match.end():]):
+        elif piped:
             sentence = HEREDOC_UNREAD.format(
                 consumer=f"`{words[0]}`, whose output a pipe on the operator's line hands to a "
                          "shell",
@@ -1504,7 +1546,9 @@ def unread_heredocs(text: str) -> list[tuple[int, str, str]]:
                      "its own before the heredoc")
         else:
             continue
-        found.append((number, "\n".join(body), sentence))
+        program = ((head in INTERPRETERS and shell_operand(words)[0] == "stdin")
+                   or (head == "cat" and piped))
+        found.append((number, "\n".join(body), sentence, program, words))
     return found
 
 
@@ -1540,7 +1584,8 @@ class Command:
     character a pattern is written with, `*`, `?`, `[`, `]`, `{`, `}`, `,`, `.`, `!`, `^` or `-`
     (PATTERN_CHARS), stands unquoted, as bash reads it for a glob or a brace expansion (globs_in;
     dispatch://INFRA-1545, round 38) and for a set's negation and its ranges (plain_set; round
-    40)."""
+    40), and where a `$` opening an expansion stands unquoted, whose value bash globs
+    (substituted; round 41)."""
 
     def __init__(self, words: list[str], line: int, offset: int) -> None:
         self.words = words
@@ -1990,6 +2035,10 @@ class CallScanner(Scanner):
                 else:
                     self.add(char, i)
             elif char == "$" and after == "{":
+                # A `$` written unquoted is kept in `plain` too, so the value substituted for it
+                # is read as bash globs it (substituted; dispatch://INFRA-1545, round 41).
+                if not self.braces:
+                    self.plain.append(len(self.word))
                 self.add(char, i)
                 self.add(after, i + 1)
                 self.braces += 1
@@ -2065,7 +2114,7 @@ class CallScanner(Scanner):
             elif char in " \t":
                 self.end_word()
             else:
-                if char in PATTERN_CHARS and not self.braces:
+                if (char in PATTERN_CHARS or char == "$") and not self.braces:
                     self.plain.append(len(self.word))
                 self.add(char, i)
             i += 1
@@ -2127,6 +2176,9 @@ class Loops:
         self.commands: list[Command] = []
         self.text = ""
         self.first_line = 1
+        # Each heredoc body a shell runs as its program (commands_of; dispatch://INFRA-1545,
+        # round 41).
+        self.programs: list[tuple[int, list[str], int, str]] = []
         # Whether a step runs this body in another directory than the repository's root, its
         # own `working-directory` or its job's or its workflow's default one (runs_elsewhere),
         # which moves where a path of the tree a run names is read from (unread_file;
@@ -2277,8 +2329,9 @@ SHELL_TEXT_REFUSAL = (
     "alias in the text, which is the form this tree writes: it charges a fetch there once for "
     "each time the command runs, and counts no option's effect, no pass of a loop and no call of "
     "a function written there. Write `bash -c '<text>'`, setting any option inside the text "
-    "(`set -o pipefail`, `shopt -s <name>`), and write a loop or a function in the step itself "
-    "or in a script under .github/scripts/ that the step runs, where this check reads it")
+    "(`set -o pipefail`, `shopt -s inherit_errexit`; one that changes how bash expands a word is "
+    "refused wherever it is written), and write a loop or a function in the step itself or in a "
+    "script under .github/scripts/ that the step runs, where this check reads it")
 # What the refusal of a command `odd_command` names says after naming the step or the script
 # (dispatch://INFRA-1545, round 37): a `retry_fetch` behind a wrapper, which runs an executable
 # and cannot run a shell function, and one outside its signature, which the helper refuses with
@@ -3748,7 +3801,7 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
         # of the definition says, and a sentence about the helper's signature would not be true.
         if not (helper and loops.defines_helper):
             shapes.append((line, sentence, waits, set(), set(), set()))
-    for number, body, sentence in unread_heredocs(text):
+    for number, body, sentence, _program, _consumer in unread_heredocs(text):
         held_sites = sites_of(path, body, first_line + number + 1, step)[0]
         shapes.append((first_line + number, sentence, bool(held_sites),
                        {str(SCRIPTS / match.group(1)) for match in SCRIPT_CALL.finditer(body)}
@@ -3781,6 +3834,12 @@ def commands_of(body: str, first_line: int) -> tuple[list[Command], Loops,
                for word, following in zip(command.words, command.words[1:]))
         or (command.words[-1] == "retry_fetch" and command.line in scanner.blank_parens)]
     loops.commands, loops.text, loops.first_line = commands, text, first_line
+    # Each heredoc body a shell runs as its program, as (its operator's line, its consumer's
+    # words, the line its body starts on, the body), which the readings of patterns and of
+    # expansion settings read as shell text (unread_heredocs; dispatch://INFRA-1545, round 41).
+    loops.programs = [(first_line + number, consumer, first_line + number + 1, held)
+                      for number, held, _sentence, program, consumer
+                      in unread_heredocs(EXPRESSION.sub("EXPR", body)) if program]
     return commands, loops, probe_spans(text)
 
 
@@ -4657,6 +4716,11 @@ script_files = set(scripts)
 # (workflow, what a refusal calls the step, the Dockerfile, the step, its job's name, the job),
 # for the key that holds the build once the Dockerfiles are read.
 dockerfile_built: list[tuple[str, str, str, Mapping, str | None, object]] = []
+# Each mapping of a workflow or an action that may hold an `env:` or a `shell:`, the file's own,
+# each job's and each step's, as (the file, what a refusal calls it, the mapping), read for the
+# settings that change how bash expands a word once expansion_settings is defined
+# (dispatch://INFRA-1545, round 41).
+expansion_holders: list[tuple[str, str, Mapping]] = []
 
 
 def local_action(uses: object) -> str | None:
@@ -4877,6 +4941,15 @@ for path in workflows + actions:
                             "other text as no key, so no rule here holds that key at the figure "
                             "GitHub gives it. Write the minutes as a whole number with no leading "
                             "zero, or as an expression (dispatch://INFRA-1545, round 37).")
+    # The file, each job and each step, whose `env:` and `shell:` are read once the readings they
+    # need are defined (expansion_holders; dispatch://INFRA-1545, round 41).
+    jobs_read = document.get("jobs")
+    expansion_holders += [(path, "this file", document)] + [
+        (path, f"job '{job_id}'", job)
+        for job_id, job in (jobs_read.items() if isinstance(jobs_read, Mapping) else ())
+        if isinstance(job, Mapping)] + [
+        (path, f"step '{name}' of job '{job}'" if job is not None else f"step '{name}' of {path}",
+         step) for job, name, step, _shell, _holder in steps_of(path, document)]
     credentialed = credentialed_jobs(path, document)
     for job, name, step, shell, holder in steps_of(path, document):
         cost: int | None = 0
@@ -6009,6 +6082,98 @@ UNREADABLE_PATTERN = ("which holds a pattern bash reads and this check cannot tu
                       "such as a `[…]` range that runs backwards, `[z-c]`, a bracket expression "
                       "other than a plain set, `[[:alpha:]]`, or a brace expansion with a part "
                       "that is no literal text, `{x,y*}`")
+# THE SETTINGS THAT CHANGE HOW BASH EXPANDS A WORD (dispatch://INFRA-1545, round 41). Every
+# pattern above is read as bash reads it with its default options (globs_in, plain_set,
+# word_pattern), so a setting that changes how bash expands a word or matches a pattern makes a
+# reading of it wrong: until round 41 `shopt -s nocaseglob` and then `cd .github/scripts &&
+# ./R38-FE[T]CH.SH`, or `flock /tmp/l .github/scripts/R38-FE[T]CH.SH`, which bash then fills in
+# with r38-fetch.sh, named no file, and each passed that script's 1050 s under a 17-minute key. So
+# the class is refused by name wherever this check reads run text, and no option is translated
+# (expansion_settings). The set is read from bash 5.2.37's own lists, `bash -c shopt` (57
+# options) and `bash -c 'set -o'` (27), each option by its entry in that release's manual
+# (doc/bash.1 of bash-5.2.37.tar.gz): an option is in it where its entry changes one of the
+# expansions the manual's EXPANSION lists (brace, tilde, parameter and variable, command
+# substitution, arithmetic, process substitution, word splitting, pathname expansion and quote
+# removal), the pattern matching they, `case` and `[[` use, the quoting a word is read with, or
+# which words of a command are expanded at all. A compatNN option sets the compatibility level to
+# NN, and a level holds the changes of every level after it (SHELL COMPATIBILITY MODE), so each
+# carries compat42's and compat43's changes to expansion, and bash 5.2's own at every level below
+# 52 (its subst.c).
+EXPANSION_SHOPT = frozenset({
+    "assoc_expand_once",     # how many times arithmetic expansion evaluates a subscript
+    "compat31",              # the quoted right side of `=~`, and every later level's changes
+    "compat32",              # an interrupted list, and every later level's changes
+    "compat40",              # the collation of `[[ < ]]`, and every later level's changes
+    "compat41",              # single quotes in a double-quoted `${…}` in posix mode, and later's
+    "compat42",              # no quote removal in a double-quoted pattern substitution's text
+    "compat43",              # a word expansion error fails its command rather than the shell
+    "compat44",              # level 44, below 52: `$((…))` and `${x:=…}` expanded the older way
+    "dotglob",               # pathname expansion matches a name starting with `.`
+    "expand_aliases",        # an alias's body, shell text this check does not expand, runs in
+                             # place of the command word (round 41's ruling on its alias probe)
+    "extglob",               # `?(…)`, `*(…)`, `+(…)`, `@(…)` and `!(…)` become patterns
+    "extquote",              # `$'…'` and `$"…"` in a double-quoted `${…}` (on by default)
+    "failglob",              # a pattern that matches no file is an expansion error
+    "globasciiranges",       # the collation a range matches by (on by default)
+    "globskipdots",          # `.` and `..` never match (on by default)
+    "globstar",              # `**` matches across directories
+    "nocaseglob",            # pathname expansion matches without case
+    "nocasematch",           # `case`, `[[` and pattern substitution match without case
+    "noexpand_translation",  # the quotes a translated `$"…"` is put in
+    "nullglob",              # a pattern that matches no file expands to nothing
+    "patsub_replacement",    # `&` in a pattern substitution's replacement (on by default)
+})
+# Left out, each by its entry:
+#   autocd, cdspell, checkjobs, dirspell, histreedit, histverify, hostcomplete, huponexit,
+#     complete_fullquote, direxpand, force_fignore, no_empty_cmd_completion, progcomp and
+#     progcomp_alias: an interactive shell's, or its completion's;
+#   interactive_comments: an interactive shell's too, measured: a script with it unset still
+#     reads `echo a #b` as `echo a` and a comment;
+#   cmdhist, histappend and lithist: how history is kept;
+#   checkhash, checkwinsize, execfail, extdebug, gnu_errfmt, mailwarn, shift_verbose and
+#     varredir_close: a command's lookup, a message, a trap or a descriptor, and no word;
+#   login_shell and restricted_shell: read-only;
+#   promptvars: how a prompt expands, which no command runs;
+#   xpg_echo: what `echo` prints, which is data here;
+#   cdable_vars and sourcepath: where `cd` goes and where `.` looks, and a `cd` already makes this
+#     check read a path by its name (unread_file), and a `.` of a bare name is refused
+#     (NO_DIRECTORY_RUN);
+#   localvar_inherit and localvar_unset: the value a variable holds, and a variable set more than
+#     once, or written bare, is read as any text (literal_values);
+#   inherit_errexit and lastpipe: whether a command substitution stops at a failure and which
+#     shell runs a pipeline's last command, and what either makes is read as any text.
+# The `set -o` options of the set, each with the letter `set` and a shell's own options write it
+# as: noglob (`-f`) and braceexpand (`-B`) turn pathname and brace expansion off or on;
+# histexpand (`-H`) expands a `!` history reference in each line read, which a shell started with
+# `-i` turns on too (measured: `bash -i <script>` runs `echo !!` as the line before it); keyword
+# (`-k`) reads every word written as an assignment as one, which bash then neither splits nor
+# fills in as a path; and posix (`--posix` to a shell) changes tilde expansion and the quoting
+# inside a `${…}`, among the rest of posix mode.
+EXPANSION_SET = {"noglob": "f", "braceexpand": "B", "histexpand": "H", "keyword": "k",
+                 "posix": ""}
+EXPANSION_LETTERS = {letter: name for name, letter in EXPANSION_SET.items() if letter}
+# Left out: allexport, emacs, errexit, errtrace, functrace, hashall, ignoreeof,
+# interactive-comments, monitor, noclobber, noexec, nolog, notify, onecmd, physical, pipefail,
+# privileged, verbose, vi and xtrace decide what runs, stops, is exported, traced, edited or
+# overwritten, or where `cd` goes, and expand no word; history keeps lines, and expands none
+# without histexpand; nounset makes an unset parameter's expansion an error, which stops the
+# command rather than name another file.
+# And the variables that set such an option or change expansion themselves: GLOBIGNORE, the
+# patterns of the names pathname expansion leaves out, a non-empty one turning dotglob on; BASHOPTS
+# and SHELLOPTS, read-only in a running bash, each of whose names a bash starting with it in its
+# environment turns on; BASH_COMPAT, the compatibility level; and POSIXLY_CORRECT, which turns
+# posix mode on. Left out: IFS, which splits an expansion's value into words, a reading this
+# check does not make, and which the tree sets 47 times, 44 of them for a `read`; LC_ALL,
+# LC_COLLATE and LC_CTYPE, which change what a class or a collating symbol matches, each no plain
+# set (plain_set), and a range only where globasciiranges is off; and HOME, which tilde expansion
+# reads, and which no path of .github/scripts/ this check reads starts from.
+EXPANSION_VARIABLES = frozenset({"GLOBIGNORE", "BASHOPTS", "SHELLOPTS", "BASH_COMPAT",
+                                 "POSIXLY_CORRECT"})
+# What the refusal says of the setting it found, after naming the step or the script and, inside a
+# shell's `-c` text, that text, and before the cure REASON_CURES writes for it.
+EXPANSION_SETTING = ("{setting}, which {changes} how bash expands a word, and this check reads "
+                     "every pattern as bash does with its default options, so it cannot tell "
+                     "which file a word of this text names")
 REASON_CURES = {
     WRITTEN_RUN: (
         "Run no file this text writes: write its commands in the step itself, or move them "
@@ -6034,6 +6199,10 @@ REASON_CURES = {
         "with what varies as its arguments, or write each `[…]` of the pattern as a plain set, "
         "its characters and its ranges run forwards, `[c-z]` rather than `[z-c]` or "
         "`[[:alpha:]]`, and each part of a brace literally, `{x,y}` rather than `{x,y*}`"),
+    EXPANSION_SETTING: (
+        "Write each path the text runs or names literally, `.github/scripts/<name>.sh`, and "
+        "leave bash's expansion options at their defaults; where a glob may match no file, test "
+        "the name it gives, `[ -e \"$file\" ] || continue`, rather than set `nullglob`"),
 }
 
 
@@ -6497,6 +6666,12 @@ def word_place(words: list[str], at: int | None, start: int) -> str:
 # The commands whose arguments set a shell variable as a word before a command does
 # (literal_values).
 DECLARERS = {"local", "export", "declare", "typeset", "readonly"}
+# The commands whose bare argument sets or unsets a variable, read for those of
+# EXPANSION_VARIABLES (expansion_settings; dispatch://INFRA-1545, round 41), besides an assignment
+# written anywhere in a command, `NAME=…`, `NAME+=…` or `NAME[…]=…`, and a `${NAME=…}` or a
+# `${NAME:=…}`: a declaration (DECLARERS), `unset`, `read`, `mapfile`, `readarray`, `getopts`
+# and `printf -v`, and the name a `for` or a `select` loop sets.
+VARIABLE_SETTERS = DECLARERS | {"unset", "read", "mapfile", "readarray", "getopts", "printf"}
 
 
 def literal_values(commands: list[Command]) -> dict[str, str]:
@@ -6530,7 +6705,13 @@ def substituted(word: str, plain: frozenset[int],
                 values: dict[str, str]) -> tuple[str, frozenset[int]]:
     """`word` with each `$name` or `${name}` of `values` written as its value, and the places of
     its pattern characters written unquoted moved with the text around them (pattern_words;
-    dispatch://INFRA-1545, round 38). The value is written as text, its characters no pattern."""
+    dispatch://INFRA-1545, round 38). A value whose `$` is written in quotes is text, its
+    characters no pattern; one whose `$` is written unquoted (Command.plain) is globbed, as bash
+    globs the result of an unquoted expansion: its `*`, `?` and `[…]` are patterns, with the `!`,
+    `^` and `-` a set is written with, and its braces are text, since bash expands a brace before
+    it substitutes a value (dispatch://INFRA-1545, round 41). Until round 41
+    `v='.github/scripts/r38-fe?ch.sh'` and then `flock /tmp/l $v`, which bash runs as `flock
+    /tmp/l .github/scripts/r38-fetch.sh`, read as naming no file."""
     out, places, shift, at = "", set(), 0, 0
     for begin, end in expansions_in(word):
         name = re.fullmatch(r"\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})", word[begin:end])
@@ -6539,6 +6720,9 @@ def substituted(word: str, plain: frozenset[int],
             continue
         out += word[at:begin] + values[key]
         places |= {place + shift for place in plain if at <= place < begin}
+        if begin in plain:
+            places |= {begin + shift + offset for offset, char in enumerate(values[key])
+                       if char in "*?[]!^-"}
         shift += len(values[key]) - (end - begin)
         at = end
     places |= {place + shift for place in plain if place >= at}
@@ -6681,6 +6865,198 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
                 found += pattern_words(target, command.line, action, elsewhere,
                                        f"in the text `{head} -c` runs, ", depth + 1)
     return found
+
+
+def literal_word(word: str, plain: frozenset[int]) -> bool:
+    """Whether a word CallScanner read is literal text, which bash runs as it is written: it holds
+    no expansion (expansions_in) and no pattern written unquoted (globs_in)."""
+    return not expansions_in(word) and not globs_in(word, plain)
+
+
+def named_settings(settings: list[tuple[str, str]]) -> str:
+    """The settings one command turns on or off, each as (`sets` or `unsets`, its name), as the
+    refusal of expansion_settings says them, such as: sets `extglob` and `dotglob`."""
+    said = []
+    for verb in dict.fromkeys(verb for verb, _name in settings):
+        names = [f"`{name}`" for each, name in dict.fromkeys(settings) if each == verb]
+        said.append(f"{verb} " + (", ".join(names[:-1]) + " and " + names[-1]
+                                  if len(names) > 1 else names[0]))
+    return " and ".join(said)
+
+
+def option_settings(words: list[str], plain: list[frozenset[int]]
+                    ) -> tuple[list[tuple[str, str]], str | None]:
+    """The settings of EXPANSION_SHOPT and EXPANSION_SET a `shopt`, a `set` or a shell's own
+    options turn on or off, its words once the wrappers are gone, as (`sets` or `unsets`, the
+    option's name), and the first word naming an option that is no literal word (literal_word),
+    or None (expansion_settings; dispatch://INFRA-1545, round 41). Each is read by its builtin's
+    own syntax in bash 5.2.37 (builtins/shopt.def, builtins/set.def and shell.c's
+    parse_shell_options):
+      - `shopt`: its options are the words opening with `-` up to the first that does not or a
+        `--`, a cluster such as `-qs` among them; one holding `s` or `u` sets or unsets each name
+        after them, a name of EXPANSION_SET where it holds `o` too (`shopt -s -o noglob`), and
+        one holding neither lists or asks, `shopt -q nullglob`. A `shopt` holding any word that is
+        no literal text is read as naming options this check cannot read, since such a word may
+        expand to options and names at once, `-s nocaseglob`, whatever the words around it.
+      - `set`: its options are the words opening with `-` or `+`, up to a `-`, a `--` or the first
+        word opening with neither, which are its positional parameters, `set -- "$@"`; `-` sets a
+        letter of EXPANSION_LETTERS and `+` unsets it, in any cluster, `set -euf` or `set +B`,
+        and each `o` of a cluster takes the next word as an option's name, `set -euo pipefail`,
+        unless that word opens with `-` or `+` or there is none, which lists the options.
+      - a shell (INTERPRETERS): its options are the words opening with `-` or `+` up to a `-`, a
+        `--` or its operand, `--posix` and the value `--rcfile` and `--init-file` take included;
+        each `o` takes the next word as a `set -o` name and each `O` as a `shopt` name, and
+        `-i` makes the shell interactive, which sets histexpand."""
+    head = PROGRAM.sub("", words[0]).rsplit("/", 1)[-1]
+    plain = plain + [frozenset()] * (len(words) - len(plain))
+    settings: list[tuple[str, str]] = []
+    if head == "shopt":
+        unread = next((word for word, places in zip(words[1:], plain[1:])
+                       if not literal_word(word, places)), None)
+        if unread is not None:
+            return [], unread
+        flags, at = "", 1
+        while at < len(words) and words[at].startswith("-") and len(words[at]) > 1:
+            at += 1
+            if words[at - 1] == "--":
+                break
+            flags += words[at - 1][1:]
+        if "s" in flags or "u" in flags:
+            names = EXPANSION_SET if "o" in flags else EXPANSION_SHOPT
+            settings = [("sets" if "s" in flags else "unsets", name)
+                        for name in words[at:] if name in names]
+        return settings, None
+    at = 1
+    while at < len(words):
+        word = words[at]
+        if head == "set" and not literal_word(word, plain[at]):
+            return settings, word
+        if word in ("-", "--") or word[:1] not in ("-", "+"):
+            break
+        verb = "sets" if word[0] == "-" else "unsets"
+        if head != "set" and word.startswith("--"):
+            if word == "--posix":
+                settings.append((verb, "posix"))
+            at += 2 if word in ("--rcfile", "--init-file") else 1
+            continue
+        taken = 0
+        for letter in word[1:]:
+            if letter in ("o", "O") and (head != "set" or letter == "o"):
+                value = words[at + 1 + taken] if at + 1 + taken < len(words) else None
+                if value is None or (head == "set" and value[:1] in ("", "-", "+")):
+                    continue
+                taken += 1
+                if not literal_word(value, plain[at + taken]):
+                    return settings, value
+                if value in (EXPANSION_SET if letter == "o" else EXPANSION_SHOPT):
+                    settings.append((verb, value))
+            elif letter == "i" and head != "set" and verb == "sets":
+                settings.append((verb, "histexpand"))
+            elif letter in EXPANSION_LETTERS:
+                settings.append((verb, EXPANSION_LETTERS[letter]))
+        at += 1 + taken
+    return settings, None
+
+
+def variable_settings(words: list[str], start: int) -> list[tuple[str, str]]:
+    """The variables of EXPANSION_VARIABLES a command's words set or unset, as (`sets` or
+    `unsets`, the name), `start` being where the command reduce_words reads begins
+    (expansion_settings; dispatch://INFRA-1545, round 41): a word assigning one, anywhere in the
+    command, alone, before a command, after `env`, as a declaration's argument or in the text an
+    `echo` writes into `$GITHUB_ENV` (`NAME=…`, `NAME+=…`, `NAME[…]=…`); a `${NAME=…}` or a
+    `${NAME:=…}`; its bare name as an argument of VARIABLE_SETTERS, after `-v` for `printf`; and
+    the name of a `for` or a `select` loop. A name built from data, `declare "$n=…"` or `printf
+    -v "$n"`, is read by no rule here."""
+    found = []
+    for word in words:
+        assigned = re.match(r"([A-Za-z_]\w*)(?:\+?=|\[)", word)
+        if assigned and assigned.group(1) in EXPANSION_VARIABLES:
+            found.append(("sets", assigned.group(1)))
+        found += [("sets", name) for name in re.findall(r"\$\{([A-Za-z_]\w*):?=", word)
+                  if name in EXPANSION_VARIABLES]
+    reduced = words[start:]
+    head = PROGRAM.sub("", reduced[0]).rsplit("/", 1)[-1] if reduced else ""
+    if head in VARIABLE_SETTERS:
+        named = reduced[1:]
+        if head == "printf":
+            named = [value for option, value in zip(named, named[1:]) if option == "-v"]
+            named += [word[2:] for word in reduced[1:] if word.startswith("-v")]
+        found += [("unsets" if head == "unset" else "sets", name)
+                  for name in named if name in EXPANSION_VARIABLES]
+    if 0 < start < len(words) and words[start - 1] in ("for", "select"):
+        if words[start] in EXPANSION_VARIABLES:
+            found.append(("sets", words[start]))
+    return found
+
+
+def expansion_settings(text: str, first_line: int, within: str = "",
+                       depth: int = 0) -> list[tuple[int, int, str, str]]:
+    """Each command of a body that changes how bash expands a word, as (the first and the last
+    line of the command, what it sets or unsets, `changes` or `may change`), EXPANSION_SETTING's
+    two parts (dispatch://INFRA-1545, round 41). Every pattern this check reads is read as bash
+    reads it with its default options, so each such setting is refused by name wherever it is
+    written and whatever the text holds, rather than read: a `shopt` setting or unsetting an
+    option of EXPANSION_SHOPT, or of EXPANSION_SET with `-o`, or naming its options with a word
+    that is no literal text; a `set` turning on or off an option of EXPANSION_SET, by its letter
+    or after `-o` or `+o`, or holding such a word among its options; a shell started with one of
+    them, by its letter, `-o`, `-O`, `--posix` or `-i`, where it runs text or a file this check
+    reads, its `-c` text or its operand (shell_operand); and a word that sets or unsets a
+    variable of EXPANSION_VARIABLES (variable_settings). Each is read once the wrappers
+    reduce_words strips are gone, `builtin shopt` and `env bash -f` included, in the step, in
+    the text of a shell's `-c` and in a `trap`'s action, text the shell runs when the trap fires,
+    a DEBUG trap's before every command, in turn. A shell reading its program from its standard
+    input is left to the refusals of that route, since this check reads no pattern there: a
+    heredoc's body is data, refused by name where it fetches (unread_heredocs), and a pipe, a
+    here-string, a file or a process substitution is refused whatever it carries (unnamed_runs).
+    Until round 41 `shopt -s nocaseglob` and then `cd .github/scripts && ./R38-FE[T]CH.SH` or
+    `flock /tmp/l .github/scripts/R38-FE[T]CH.SH`, which bash fills in with r38-fetch.sh, passed
+    its 1050 s under a 17-minute key."""
+    commands = CallScanner(first_line).scan(text)
+    reads = {index for index, _command, _after_bar in commands_read(commands, text)}
+    found = []
+    for index, command in enumerate(commands):
+        words = command.words
+        reduced = reduce_words(words)[0]
+        start = len(words) - len(reduced)
+        head = PROGRAM.sub("", reduced[0]).rsplit("/", 1)[-1] if reduced else ""
+        kind, target = shell_operand(reduced) if head in INTERPRETERS else ("", "")
+        settings = variable_settings(words, start)
+        unread = None
+        if index in reads and (head in ("shopt", "set") or kind in ("text", "script")):
+            options, unread = option_settings(reduced, command.plain[start:])
+            settings = options + settings
+        if settings or unread is not None:
+            said = named_settings(settings) if settings else ""
+            if unread is not None:
+                said += (" and " if said else "") + (
+                    f"sets options named by `{unread}`, a word this check cannot read")
+            # A shell's words are shown up to its operand, which may be a whole text.
+            shown = (words[:start + reduced.index(target, 1)] + ["…"] if target in reduced[1:]
+                     else words)
+            ends = [span[1] for span in command.spans if span]
+            last_line = first_line + text.count("\n", 0, max(ends)) if ends else command.line
+            found.append((command.line, max(last_line, command.line),
+                          f"{within}{said} (`{' '.join(shown)}`)",
+                          "may change" if unread is not None else "changes"))
+        if kind == "text" and target and depth < 3:
+            found += expansion_settings(target, command.line,
+                                        f"in the text `{head} -c` runs, ", depth + 1)
+        if head == "trap" and depth < 3:
+            # `trap <action> <signal>…`, after an optional `--`; `trap - <signal>` resets one,
+            # and `trap -p` and `trap -l` print.
+            action = reduced[2:] if reduced[1:2] == ["--"] else reduced[1:]
+            if len(action) > 1 and not action[0].startswith("-"):
+                found += expansion_settings(action[0], command.line, "in the text `trap` runs, ",
+                                            depth + 1)
+    return found
+
+
+def expansion_refusal(setting: str, changes: str) -> str:
+    """What the refusal of a setting expansion_settings finds says after naming the step, the
+    script, the job or the file holding it: EXPANSION_SETTING and its cure (dispatch://INFRA-1545,
+    round 41)."""
+    return (EXPANSION_SETTING.format(setting=setting, changes=changes) + ". "
+            + REASON_CURES[EXPANSION_SETTING] + " (dispatch://INFRA-1545, round 41).")
 
 
 def text_globs(text: str, action: str | None, depth: int = 0) -> tuple[str, str] | None:
@@ -7076,6 +7452,31 @@ for path, line, who, sentence, waits, targets, names, sources in unread_shapes:
             or any(name in library_functions(source) for source in sources for name in names)):
         problem(path, line, f"{who} {sentence} (dispatch://INFRA-1545, round 37).")
 
+# An `env:` setting a variable of EXPANSION_VARIABLES, the file's, a job's or a step's, and a
+# `shell:` starting a shell with a setting that changes how bash expands a word, a step's own or
+# the file's or a job's `defaults.run.shell`, change how each `run:` under them expands its
+# words, and are refused by name as the same settings written in a `run:` are
+# (expansion_settings; dispatch://INFRA-1545, round 41). GitHub runs a step's `run:` as the file
+# its shell's `{0}` names, so the shell's options are read as those of a run of a script. The
+# tree writes no `env:` of them, and no `shell:` but `bash`.
+for path, owner, holder in expansion_holders:
+    env = holder.get("env")
+    for key in env if isinstance(env, Mapping) else ():
+        if key in EXPANSION_VARIABLES:
+            problem(path, env.lines.get(key, 0),
+                    f"{owner} " + expansion_refusal(f"sets `{key}` in its `env:`", "changes"))
+    defaults = holder.get("defaults")
+    for key, shell_holder in (("shell", holder),
+                              ("defaults.run.shell",
+                               defaults.get("run") if isinstance(defaults, Mapping) else None)):
+        shell = shell_holder.get("shell") if isinstance(shell_holder, Mapping) else None
+        if not isinstance(shell, str):
+            continue
+        for line, _last, setting, changes in expansion_settings(shell,
+                                                                shell_holder.lines.get("shell", 0)):
+            problem(path, line,
+                    f"{owner} " + expansion_refusal(f"{setting} in its `{key}:`", changes))
+
 # The library calls each body makes more than once, as (file, step name or "-", the step's
 # Budget or None, what a refusal calls the body, {library: (line, the functions called)}).
 library_calls: list[tuple[str, str, "Budget | None", str, dict[str, tuple[int, list[str]]]]] = []
@@ -7211,15 +7612,56 @@ for path, name, (who, loops, found, called), owner in body_reads:
     # A word that is no literal path and could name a CI script that fetches, or a file this
     # check does not read, is refused by name wherever it stands (pattern_words;
     # dispatch://INFRA-1545, round 38), and so is one whose pattern this check cannot turn into a
-    # match (UNREADABLE_PATTERN; round 39), where no refusal above names its command already.
-    for line, last, does, why in pattern_words(without_arithmetic(loops.text), loops.first_line,
-                                               action, loops.elsewhere):
-        named_at = tuple(f"::error file={path},line={at}::{who} " for at in range(line, last + 1))
-        if not any(earlier.startswith(named_at) for earlier in problems):
-            problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=why,
-                                                               cure=REASON_CURES[why])
-                    + " (dispatch://INFRA-1545, "
-                    + ("round 38" if why == PATTERN_RUN else "rounds 39 and 40") + ").")
+    # match (UNREADABLE_PATTERN; round 39), where no refusal above names its command already. A
+    # heredoc body a shell runs as its program, `bash <<'EOF'` or `cat <<'EOF' | bash`, is shell
+    # text read the same way from its own first line (loops.programs; round 41): until round 41
+    # such a body holding `.github/scripts/r38-fe?ch.sh` ran that script charged nothing.
+    readings = [(without_arithmetic(loops.text), loops.first_line, "")] + [
+        (without_arithmetic(without_heredocs(held)[0]), start,
+         f"in the heredoc `{consumer[0]}` "
+         + ("runs, " if PROGRAM.sub("", consumer[0]).rsplit("/", 1)[-1] in INTERPRETERS
+            else "pipes into a shell, "))
+        for _operator, consumer, start, held in loops.programs]
+    for read_text, read_line, within in readings:
+        for line, last, does, why in pattern_words(read_text, read_line, action,
+                                                   loops.elsewhere, within):
+            named_at = tuple(f"::error file={path},line={at}::{who} "
+                             for at in range(line, last + 1))
+            if not any(earlier.startswith(named_at) for earlier in problems):
+                problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=why,
+                                                                   cure=REASON_CURES[why])
+                        + " (dispatch://INFRA-1545, "
+                        + ("round 38" if why == PATTERN_RUN else "rounds 39 and 40") + ").")
+    # A setting that changes how bash expands a word is refused by name wherever it is written,
+    # whatever the text holds, since every pattern above is read as bash reads it with its
+    # default options (expansion_settings; dispatch://INFRA-1545, round 41), where no refusal
+    # above names its command already: such a command fails this check already, as `bash -O
+    # extglob .github/scripts/x.sh` does where x.sh fetches, as an argument of the shell. So is
+    # one in a heredoc body a shell runs as its program, and the shell's own option where that
+    # body holds a word that is no literal text, which the option may change: `bash -O extglob
+    # <<'EOF'` around `echo "nothing to fetch"` passes.
+    for read_text, read_line, within in readings:
+        for line, last, setting, changes in expansion_settings(read_text, read_line, within):
+            named_at = tuple(f"::error file={path},line={at}::{who} "
+                             for at in range(line, last + 1))
+            if not any(earlier.startswith(named_at) for earlier in problems):
+                problem(path, line, f"{who} " + expansion_refusal(setting, changes))
+    for operator, consumer, _start, held in loops.programs:
+        if PROGRAM.sub("", consumer[0]).rsplit("/", 1)[-1] not in INTERPRETERS or all(
+                literal_word(word, places)
+                for command in CallScanner(1).scan(without_heredocs(held)[0])
+                for word, places in zip(command.words, command.plain)):
+            continue
+        settings, unread = option_settings(consumer, [])
+        said = named_settings(settings) if settings else ""
+        if unread is not None:
+            said += (" and " if said else "") + (
+                f"sets options named by `{unread}`, a word this check cannot read")
+        named_at = f"::error file={path},line={operator}::{who} "
+        if said and not any(earlier.startswith(named_at) for earlier in problems):
+            problem(path, operator, f"{who} " + expansion_refusal(
+                f"{said} (`{' '.join(consumer)} <<…`)",
+                "may change" if unread is not None else "changes"))
     for command, word in variable_calls(loops) if owed else ():
         entry = next((entry for entry in DECLARED_CALLS
                       if name == "-" and (entry.path, entry.word) == (path, word)), None)

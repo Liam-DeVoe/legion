@@ -477,8 +477,8 @@ jobs:
           IMAGE: ${{ needs.targets.outputs.envoy_image }}
           SHA: ${{ github.sha }}
         run: |
-          shopt -s nullglob
           files=("$RUNNER_TEMP"/digests/*)
+          [ -e "${files[0]}" ] || files=()
           if [ "${#files[@]}" -ne 2 ]; then
             echo "::error::expected 2 digests from the docker legs, found ${#files[@]}"
             exit 1
