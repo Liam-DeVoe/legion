@@ -18,7 +18,7 @@ import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildGenerated, GENERATED, gateSearch } from "./gate-search";
-import { roleTexts } from "./rule-search";
+import { roleTexts } from "./role-texts";
 
 const checkout = process.env.GATE_SEARCH_CHECKOUT ?? path.resolve(import.meta.dir, "../../../..");
 const scratch = mkdtempSync(path.join(tmpdir(), "gate-search-test-"));

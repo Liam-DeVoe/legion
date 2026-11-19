@@ -7,7 +7,7 @@
 //
 //   bun gate-search.ts <checkout> [--generated <dir>]
 //
-// <checkout> is a tree of cybermonklabs/legion. The texts are those that rule-search.ts gives the
+// <checkout> is a tree of cybermonklabs/legion. The texts are those that role-texts.ts gives the
 // reviewer, the root architect and the architect of a child (the closure of the links of each one's
 // prompt parts and skill), and each `.md` file of `packages/claude-envoy/legion/`, the plugin that a
 // Claude Code pane loads. That plugin is generated, never committed: the program builds it with the
@@ -37,7 +37,8 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Reader, roleTexts, type Sentence, sentences } from "./rule-search";
+import { type Reader, roleTexts } from "./role-texts";
+import { type Sentence, sentences } from "./sentences";
 
 type Kind = "reviewer" | "architect" | "merge";
 
