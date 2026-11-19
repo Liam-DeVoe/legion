@@ -139,3 +139,48 @@ printf '      - name: Test the web package\n        run: bun test\n        worki
 run_check "$root"
 check "TypeScript under a bun test run's directory: refused" \
   "$(contains "$out" 'packages/web/src/build.ts:1: a go-offline-file reason, which this file may not carry: a step of a required workflow reaches it')"
+
+# outside_reason <name> <listed command>: a fixture whose tools/build.sh holds this harness's stdin
+# and whose .github/go-offline-reasons.yaml gives tools/build.sh's <listed command> a reason; run.
+outside_reason() {
+  root=$(fixture "$1")
+  put "$root" tools/build.sh
+  printf -- '- path: tools/build.sh\n  command: %s\n  reason: a person builds this by hand.\n' "$2" |
+    put "$root" .github/go-offline-reasons.yaml
+  run_check "$root"
+}
+
+echo "case: an entry of .github/go-offline-reasons.yaml covers the site it names, counted as a reason"
+outside_reason outside-listed 'go build ./cmd/app' <<'EOF'
+#!/usr/bin/env bash
+  go build ./cmd/app
+EOF
+check "exits 0" "$(is "$status" 0)"
+check "counts it as a reason" "$(contains "$out" 'runs with GOPROXY=off (0), carries a reason (1)')"
+
+echo "case: a listed site whose command changed is refused, and so is the entry, which names no site"
+outside_reason outside-changed 'go build ./cmd/app' <<'EOF'
+#!/usr/bin/env bash
+go build ./cmd/other
+EOF
+refused tools/build.sh 2
+check "refuses the entry at its line" \
+  "$(contains "$out" '.github/go-offline-reasons.yaml:1: the reason for tools/build.sh names `go build ./cmd/app`, which is no go command of that file that needs a reason')"
+
+echo "case: a site the list does not name, in a file it names, is refused"
+outside_reason outside-unlisted 'go build ./cmd/app' <<'EOF'
+#!/usr/bin/env bash
+go build ./cmd/app
+go list -deps ./...
+EOF
+refused tools/build.sh 3
+check "and that site alone, over the two" "$(contains "$out" '^1 problems over the 2 go commands')"
+
+echo "case: an entry with no reason is refused"
+root=$(fixture outside-malformed)
+printf '#!/usr/bin/env bash\ngo build ./cmd/app\n' | put "$root" tools/build.sh
+printf -- '- path: tools/build.sh\n  command: go build ./cmd/app\n' | put "$root" .github/go-offline-reasons.yaml
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry" \
+  "$(contains "$out" '.github/go-offline-reasons.yaml:1: an entry that is no {path, command, reason}, each one set')"

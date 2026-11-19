@@ -149,8 +149,6 @@ cli_script=$src/packages/envoy-client/scripts/build-dispatch-cli.sh
   fail "$sha has no packages/envoy-client/scripts/build-dispatch-cli.sh. This script builds the dispatch command only with that script."
 bash "$cli_script" "$out" || fail "the dispatch command bundle of $sha failed to build."
 
-# go-offline: dispatch-two-builds' steps run this before the tests, to build an earlier release
-# with the toolchain its go.mod names, and no test runs it.
 (cd -- "$src/packages/envoy" &&
   GOTOOLCHAIN=auto go build -ldflags "-X main.buildCommit=$sha" -o "$out/envoy-dispatch" ./cmd/dispatch) ||
   fail "go build ./cmd/dispatch of $sha failed."

@@ -11,8 +11,11 @@
 # statement or a spread of other options undoes, an export in another function, in a pipeline or
 # in the background); what starts nothing starts nothing (a comment, a quoted command, a heredoc's
 # body, a skipped directory, a file with no shebang); a reason six lines up is too far, and a
-# Python file that does not parse is refused. The header's limits are not planted: they are what
-# the check does not read. Its file reason: counted within the first 40 lines and not on line 41;
+# Python file that does not parse is refused. A site an entry of .github/go-offline-reasons.yaml
+# names passes as reasoned; an entry whose command changed, and a malformed one, are refused, and
+# so is a site of a listed file the list does not name. The header's limits are not planted: they
+# are what the check does not read. Its file reason: counted within the first 40 lines and not on
+# line 41;
 # refused in a test file, in a file ci.yaml or a workflow ci.yaml calls names, and in one a step of
 # those reaches (through another script, as a program a script hands to python3, or as TypeScript
 # under a test run's directory), but not in one only a workflow outside that set or a comment

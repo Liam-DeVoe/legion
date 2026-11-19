@@ -76,7 +76,11 @@
 #        counts for nothing;
 #      a reason: a comment holding `go-offline: <why>` on its line or within the 5 lines above
 #        it, saying why the command reads no module, why it is no test, or which job alone runs
-#        it, for a reader to judge;
+#        it, for a reader to judge; or, for a site whose file a comment may not change (a file a
+#        cache key hashes), an entry of .github/go-offline-reasons.yaml naming that file, the
+#        site's line as the file has it, and the reason, counted as a line reason. An entry that
+#        names no site needing it (its command changed, or its file is gone) is refused, so the
+#        list cannot go stale silently;
 #      a file reason: a comment holding `go-offline-file: <why>` within the file's first 40
 #        lines, which this refuses in a test file, in any file a required workflow names
 #        (ci.yaml and every local workflow it calls, whose jobs ci-ok judges), and in any file
@@ -183,6 +187,8 @@ offline_count = reason_count = file_reason_count = 0
 # lines, the go commands it would cover). Rule 2's walk decides it: refused in a file a step of a
 # required workflow reaches.
 file_reasons = []
+# The reasons .github/go-offline-reasons.yaml holds for sites whose file a comment may not change.
+outside = sites.OutsideReasons(errors)
 workflows = walk.required_workflows()
 if not workflows:
     scan.unknown("no .github/workflows/ci.yaml here, so no workflow is known to be required")
@@ -215,7 +221,7 @@ for path, lang in scan.sources(shebang=True):
         counts[lang] += 1
         if is_offline:
             offline_count += 1
-        elif sites.reasoned(raw, index, lang):
+        elif sites.reasoned(raw, index, lang) or outside.covers(path, raw[index]):
             reason_count += 1
         elif file_reason:
             covered.append(index)
@@ -247,6 +253,7 @@ for path, lang, raw, covered in file_reasons:
                             f"workflow reaches it ({where}); give each of its go commands its own"))
     errors += [(path, index + 1, "a go command with no GOPROXY=off and no go-offline reason: " + raw[index].strip())
                for index in covered]
+outside.stale(errors)
 summary = (f"{sum(counts.values())} go commands of {sum(read.values())} files read (Go {counts['go']}, "
            f"TypeScript {counts['ts']}, Python {counts['py']}, shell {counts['sh']})")
 clauses = [f"every one of the {summary} runs with GOPROXY=off ({offline_count}), carries a reason ({reason_count}) "

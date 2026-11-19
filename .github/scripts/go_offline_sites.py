@@ -6,7 +6,10 @@ Imported with PYTHONPATH naming the directory this file lives in. Its test is
 check-go-offline.test.sh, with the cases it sources.
 """
 import ast
+import os
 import re
+
+import yaml
 
 import source_scan as scan
 from source_env import env_elements, go_cmd_env, ts_options_env
@@ -419,3 +422,51 @@ def sites_of(path, text, lang):
 
 def reasoned(raw, index, lang):
     return scan.reasoned(raw, lang, REASON, [index])
+
+
+# The reasons that stand outside their file: for a site whose file a comment may not change, since
+# a cache key hashes its bytes. Read from the tree the check reads, as its other files are.
+OUTSIDE = ".github/go-offline-reasons.yaml"
+
+
+class OutsideReasons:
+    """OUTSIDE's entries, each {path, command, reason}: a site of path whose line, stripped, is
+    command carries the reason, as a line reason would. Each entry no site needed (its command
+    changed, or its file is gone) is refused by stale(), so the list cannot go stale silently."""
+
+    def __init__(self, errors):
+        self.entries, self.used = {}, set()
+        if not os.path.isfile(OUTSIDE):
+            return
+        text = scan.read(OUTSIDE)
+        try:
+            data, node = yaml.safe_load(text), yaml.compose(text)
+        except yaml.YAMLError as error:
+            errors.append((OUTSIDE, 1, f"a list this check cannot read as YAML ({type(error).__name__}); fix it"))
+            return
+        if data is None:
+            return
+        if not isinstance(data, list):
+            errors.append((OUTSIDE, 1, "no list of {path, command, reason} entries"))
+            return
+        for item, entry in zip(node.value, data):
+            line = item.start_mark.line + 1
+            if not (isinstance(entry, dict) and set(entry) == {"path", "command", "reason"}
+                    and all(isinstance(v, str) and v.strip() for v in entry.values())):
+                errors.append((OUTSIDE, line, "an entry that is no {path, command, reason}, each one set"))
+                continue
+            self.entries[(entry["path"], entry["command"].strip())] = line
+
+    def covers(self, path, line):
+        """Whether an entry names this site: its file, and its line as the file has it."""
+        key = (path, line.strip())
+        if key in self.entries:
+            self.used.add(key)
+        return key in self.entries
+
+    def stale(self, errors):
+        for (path, command), line in self.entries.items():
+            if (path, command) not in self.used:
+                errors.append((OUTSIDE, line, f"the reason for {path} names `{command}`, which is no go command of "
+                                              "that file that needs a reason (its command changed, or the file is "
+                                              "gone); update the entry or remove it"))
