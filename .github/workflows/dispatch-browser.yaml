@@ -16,6 +16,12 @@ name: Dispatch browser suite
 # answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
 # run pay for the rest, each of which has the wall time for them.
 #
+# The quarantine (packages/dispatch/e2e/quarantine.ts, whose head says what reads it) is the
+# rows that still run and gate nothing, each owned by an issue. The shard job's browser step
+# leaves them out of both lanes, and a call with `quarantine: true` - the nightly's, and no
+# other - runs them in the `quarantine` job, whose summary reports how each one ended and which
+# fails nothing, so a quarantined row's owner sees whether a fix worked.
+#
 # A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 # gives: `services:` is a job-level key and a composite action's step keys do not include
 # timeout-minutes, and this file needs both. That is also why the shard and alone jobs repeat
@@ -72,6 +78,13 @@ on:
           job. Empty for the nightly workflow, which reports no check.
         type: string
         default: ""
+      quarantine:
+        description: >-
+          Run the quarantined rows (packages/dispatch/e2e/quarantine.ts) in the `quarantine`
+          job, which reports how each ended and fails nothing. The nightly workflow's call
+          alone: ci.yaml's call gates a change, and the rows it runs leave the quarantine out.
+        type: boolean
+        default: false
 
 env:
   # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
@@ -579,6 +592,14 @@ jobs:
           # reports keep their own names when the merge job downloads them into one directory.
           export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
           export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-${{ matrix.shard }}.zip"
+          # The quarantined rows (packages/dispatch/e2e/quarantine.ts) leave both lanes here:
+          # `exclude` adds to each project a `grepInvert` pattern that matches exactly those rows
+          # (e2e/playwright.config.ts passes every project through `quarantined`). They run in the
+          # `quarantine` job of the nightly's call instead, where they gate nothing. With the
+          # quarantine empty the pattern is not added at all, and each lane selects the rows it
+          # did before. Exported here, not set in this step's `env:`, for the reason the job's
+          # head gives.
+          export DISPATCH_E2E_QUARANTINE=exclude
           # The lane's projects, named rather than left to the config, and the one place either
           # lane's list is written. An unknown lane ends the step here rather than running the
           # default set under a name nobody meant, and this is the one place that refuses it now
@@ -1531,6 +1552,207 @@ jobs:
             ${{ runner.temp }}/dispatch-e2e-run-*/worker-*/log/*.log
           if-no-files-found: ignore
 
+  # How many rows the quarantine holds (packages/dispatch/e2e/quarantine.ts), read for the
+  # `quarantine` job below, which runs only where it holds one. The quarantine ships empty and
+  # stays short, and that job pulls the browser image, downloads the binaries, installs and builds
+  # the dashboard before its first row: minutes of a machine for no row at all. So the count is
+  # read first, on the arm runner the merge job takes and for the reason that job's comment
+  # gives, with Bun and the module alone: the module imports nothing, so it needs no install.
+  #
+  # The nightly's call alone (`inputs.quarantine`): ci.yaml's call gates a change, its shard legs
+  # leave the quarantined rows out, and nothing of that call runs them.
+  #
+  # The budget. No step carries one, so by this file's rule the job's is the measured maximum of
+  # every step. Its steps are the merge job's first two and the count: Set up job 2 s, checkout
+  # 9 s, setup-bun 3 s, Post setup-bun 1 s, Post checkout 1 s and Complete job 1 s over the merge
+  # job's sample, and the count, which reads one module in under a second in this issue's pod.
+  # That is 18 s, and two minutes is the floor the rule gives.
+  quarantine-rows:
+    if: inputs.quarantine
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 2
+    outputs:
+      rows: ${{ steps.rows.outputs.rows }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Count the quarantined rows
+        id: rows
+        run: |
+          rows=$(bun -e 'import { quarantine } from "./e2e/quarantine.ts"; console.log(quarantine.length)')
+          case "$rows" in
+            '' | *[!0-9]*)
+              echo "::error::e2e/quarantine.ts answered '$rows' for its row count, not a whole number"
+              exit 1
+              ;;
+          esac
+          echo "rows=$rows" >> "$GITHUB_OUTPUT"
+          echo "::notice title=dispatch-browser quarantine::the quarantine holds $rows rows"
+        working-directory: packages/dispatch
+
+  # The quarantined rows (packages/dispatch/e2e/quarantine.ts), run where they gate nothing: the
+  # nightly's call alone, and only when the count above found one. The shard job's browser step
+  # leaves these rows out of both lanes (`DISPATCH_E2E_QUARANTINE=exclude`), and this job runs
+  # them and no other (`only`), so whoever owns a row reads here whether its fix worked.
+  #
+  # It fails nothing. Its browser step carries `continue-on-error: true`, so a quarantined row
+  # that fails marks that step and leaves this job, the nightly's `full` job and the run green;
+  # the reading after it writes how each row ended into the summary, and one notice per row. No
+  # job needs this one, the merge job among them: it writes no blob report, so its rows are in no
+  # merged report, no flake rate and no verdict, and the nightly's quarantine check
+  # (packages/dispatch/e2e/tools/quarantine-check.ts) reads the merge job's notices alone.
+  #
+  # Its steps are the shard job's, in the same image, for the reasons that job's head and steps
+  # give, with four differences: no matrix and no `--shard`, since at most ten rows run here; no
+  # project named, since `only` leaves each project nothing but its quarantined rows and every
+  # quarantined row is in a project a run that names none selects
+  # (packages/dispatch/e2e/__tests__/quarantine.test.ts holds the list to those projects); a JSON
+  # report in place of the blob, which the reading after the browser step reads; and no sampler
+  # and no PostgreSQL reading, which are readings of a lane rather than of these rows. The
+  # container, the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here too.
+  #
+  # The budget. The browser step takes the shard job's 9 minutes, which this leg's rows fit:
+  # at most ten rows over four workers is three to a worker, and three rows that each reach the
+  # 60 s row budget and then fail their retry as well are 360 s, leaving 180 s of the nine
+  # minutes for the four stacks' start, which every shard leg pays inside its own 283 to 419 s.
+  # The job takes the shard job's 22 minutes: its steps are that job's less three, with the same
+  # two download attempts and the same image pull, and one more, the reading, a jq over one
+  # report, which is 1 s where the merge job's one-command steps are measured.
+  quarantine:
+    needs: [binaries, quarantine-rows]
+    if: inputs.quarantine && needs.quarantine-rows.outputs.rows != '0'
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      options: --user 1001 --ipc=host --init
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The shard job's four steps of the binaries, for the reasons that job gives above them.
+      - id: binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-1
+      - name: Download the binaries again, after a first attempt that did not complete
+        if: steps.binaries.outcome != 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-2
+      - name: Place the binaries of the attempt that completed
+        env:
+          FIRST: ${{ steps.binaries.outcome }}
+        run: |
+          attempt=1
+          [ "$FIRST" = success ] || attempt=2
+          mkdir -p packages/envoy/out/dispatch-e2e-broker
+          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        run: bun run build:dispatch
+        working-directory: packages/contracts
+      - name: Build dispatch dashboard
+        run: |
+          bun run build:web
+          ls -l web/dist/THIRD_PARTY_NOTICES.txt
+        working-directory: packages/dispatch
+      # The shard job's file store and its readiness wait, for the reasons given there.
+      - name: Start an S3-compatible server for uploaded files
+        run: |
+          mkdir -p "$RUNNER_TEMP/weed"
+          nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 \
+            -volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024 \
+            > "$RUNNER_TEMP/weed.log" 2>&1 &
+      - name: Wait for the S3-compatible server
+        run: |
+          for attempt in $(seq 1 60); do
+            curl -sf -o /dev/null http://127.0.0.1:18333/ && break
+            [ "$attempt" -lt 60 ] || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
+            sleep 1
+          done
+          store=http://127.0.0.1:18333/dispatch-e2e-files
+          curl -sf -X PUT -o /dev/null "$store" || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          for attempt in $(seq 1 60); do
+            printf 'ready' | curl -sf -X PUT --data-binary @- -o /dev/null "$store/readiness" && break
+            [ "$attempt" -lt 60 ] || { echo "::error::the file store took no object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+            sleep 1
+          done
+          [ "$(curl -sf "$store/readiness")" = ready ] || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          curl -sf -X DELETE -o /dev/null "$store/readiness"
+      # The shard job's browser step, with this job's differences (its head above). Its status
+      # is Playwright's own, since nothing pipes it; `continue-on-error` is what keeps a red row
+      # here from failing the job, and the step is marked failed all the same, for a reader.
+      - name: Browser-test the quarantined rows
+        continue-on-error: true
+        timeout-minutes: 9
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/quarantine"
+          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          export PLAYWRIGHT_JSON_OUTPUT_NAME="$RUNNER_TEMP/quarantine/report.json"
+          export DISPATCH_E2E_QUARANTINE=only
+          bunx playwright test --config e2e/playwright.config.ts --workers 4 --reporter=list,json,./e2e/failure-reporter.ts
+        working-directory: packages/dispatch
+        env:
+          DISPATCH_E2E_FILE_STORE_ENDPOINT: http://127.0.0.1:18333
+          DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
+      # How each quarantined row ended, read from the JSON report the step above wrote, and named
+      # as the merge job's flaky-row notice names a row: `<file>:<line> [<project>] <title>`,
+      # the title with its `describe` titles before it, so the line reads as the entry does.
+      - name: Reading the quarantined rows
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/quarantine/report.json"
+          if [ ! -f "$report" ]; then
+            echo "::warning title=dispatch-browser quarantined rows::the quarantine leg wrote no" \
+              "report, so how its rows ended is unknown; the browser step above says why"
+            exit 0
+          fi
+          jq -r 'def rows($path):
+              (.specs[]? as $spec | $spec.tests[]
+                | "\(.status)\t\($spec.file):\($spec.line) [\(.projectName)] \(($path + [$spec.title]) | join(" › "))"),
+              (.suites[]? | rows($path + [.title]));
+            [.suites[]? | rows([])] | sort | .[]' "$report" > "$RUNNER_TEMP/quarantine/rows.tsv"
+          {
+            echo "### The quarantined rows"
+            echo
+            echo "How each row of packages/dispatch/e2e/quarantine.ts ended in this run, which" \
+              "gates nothing: \`expected\` passed, \`flaky\` failed and then passed its retry," \
+              "\`unexpected\` failed, \`skipped\` did not run."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS="$(printf '\t')" read -r status row; do
+            echo "- \`$status\` $row" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=dispatch-browser quarantined row::$status $row"
+          done < "$RUNNER_TEMP/quarantine/rows.tsv"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-quarantine-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/quarantine
+          if-no-files-found: ignore
+      # The failed rows' traces, as the shard job uploads its own.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-quarantine-test-results-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+          if-no-files-found: ignore
+
   # What the legs together ran. It joins every shard's and every alone leg's blob report into one
   # report, publishes three readings of it - the rows, the flake rate and the legs that did not
   # succeed - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
@@ -1549,10 +1771,12 @@ jobs:
   # own jobs for the same reason. The step-level `if: always()` inside this job are a different
   # thing and stay: a step's condition is about the steps before it, not about the run.
   merge:
-    # Every job of this workflow, the binaries job among them: a build that failed leaves the
-    # shard and alone jobs skipped and no blob report anywhere, and without it in this list the
-    # run would be reported as legs that uploaded nothing rather than as the build that never
-    # handed them anything. The verdict step below names it as it names the rest.
+    # Every job of this workflow, the binaries job among them, but the nightly's quarantine leg
+    # and its count, which gate nothing and so are in no verdict (their head says why): a build
+    # that failed leaves the shard and alone jobs skipped and no blob report anywhere, and
+    # without it in this list the run would be reported as legs that uploaded nothing rather
+    # than as the build that never handed them anything. The verdict step below names it as it
+    # names the rest.
     needs: [binaries, shard, alone, multiprocess, embedder, visual]
     if: ${{ !cancelled() }}
     # arm64, for the reason the comment on ci.yaml's `changes` job gives (INFRA-4222). This job
@@ -1589,6 +1813,10 @@ jobs:
     # one-command steps measure. 180 + 37 = 217 s, which is 3 min 37 s, so 4 min. The job's
     # budget is above the step's, so the step's own budget fires first and names the step,
     # which is the reason this file's head gives for putting budgets on steps.
+    #
+    # Reading four's two calls of e2e/tools/check-slow-rows.ts --p95, which read each class's
+    # 95th percentile against the slow-row bar, are not in that sample: each took 0.2 to 1.0 s in
+    # this issue's pod, loaded, so the two fit in the 23 s the rounding up to 4 minutes leaves.
     #
     # What that sample does not hold: no browser step failed in any of those runs, so no blob
     # report in them carries a failed row's trace, and the download, the merge and reading
@@ -1831,6 +2059,15 @@ jobs:
           fi
       # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row
       # that failed and passed on its retry, which only the report of the whole run holds.
+      #
+      # A row is named `<file>:<line> [<project>] <title>`, and the title is the row's full one:
+      # its `describe` titles first, each followed by ` › `, as a listing names a row
+      # (packages/dispatch/e2e/configurations.ts, `rowsOfListing`). The spec's own title alone
+      # would read two rows of one file as one where two blocks hold a row of the same title, and
+      # this line is what the quarantine names a row by (packages/dispatch/e2e/quarantine.ts) and
+      # what the nightly's quarantine check counts (e2e/tools/quarantine-check.ts). The walk keeps
+      # each suite's path to its specs, which `..` would lose: a report's top-level suites are
+      # files, so their titles are left out and every suite below them is a `describe`.
       - name: Reading two, the flake rate
         if: always()
         run: |
@@ -1842,9 +2079,11 @@ jobs:
           total=$(jq '.stats.expected + .stats.unexpected + .stats.flaky + .stats.skipped' "$report")
           flaky=$(jq '.stats.flaky' "$report")
           rate=$(awk -v f="$flaky" -v t="$total" 'BEGIN { printf "%.2f", t ? 100 * f / t : 0 }')
-          rows=$(jq -r '[.. | objects | select(has("specs")) | .specs[] as $spec | $spec.tests[]
-            | select(.status == "flaky")
-            | "\($spec.file):\($spec.line) [\(.projectName)] \($spec.title)"] | sort | .[]' "$report")
+          rows=$(jq -r 'def rows($path):
+              (.specs[]? as $spec | $spec.tests[] | select(.status == "flaky")
+                | "\($spec.file):\($spec.line) [\(.projectName)] \(($path + [$spec.title]) | join(" › "))"),
+              (.suites[]? | rows($path + [.title]));
+            [.suites[]? | rows([])] | sort | .[]' "$report")
           {
             echo "### The flake rate"
             echo
@@ -1950,6 +2189,14 @@ jobs:
       # e2e/playwright.config.ts is: a failed row's duration is the time it took to fail or to
       # reach its timeout, which says nothing about what the row costs, and a skipped row's is
       # not a run at all. A retried row contributes each attempt it passed, which is one.
+      #
+      # Each class's 95th percentile is read against the bar one row is held to, which is R2's
+      # p95 target for the lane (dispatch://INFRA-983, decisions item 25): the 2,000 ms of
+      # `slowRowMs` in packages/dispatch/e2e/tools/check-slow-rows.ts, which this step asks
+      # rather than writing the figure a second time (`--p95`, whose exit 1 is a figure at or
+      # above the bar). It is a target and gates nothing: the comparison goes into the table and
+      # the notice, a figure over the bar adds a warning, and nothing here fails the job - a
+      # comparison that could not be made is a warning too.
       - name: Reading four, the row durations
         if: always()
         run: |
@@ -1968,8 +2215,8 @@ jobs:
           {
             echo "### The row durations"
             echo
-            echo "| class | rows | median ms | 95th percentile ms |"
-            echo "| --- | ---: | ---: | ---: |"
+            echo "| class | rows | median ms | 95th percentile ms | against the bar |"
+            echo "| --- | ---: | ---: | ---: | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
           for class in stubbed real-stack; do
             # The nearest-rank percentile of the sorted durations, which is the reading the
@@ -1984,9 +2231,28 @@ jobs:
             # `bash -e {0}` would take but `sh` would not.
             # shellcheck disable=SC2086
             set -- $stats
-            echo "| $class | $1 | $2 | $3 |" >> "$GITHUB_STEP_SUMMARY"
+            over=0
+            if [ "$1" -eq 0 ]; then
+              against="no row to read"
+            else
+              against=$(bun packages/dispatch/e2e/tools/check-slow-rows.ts --p95 "$3") || over=$?
+            fi
+            case "$over" in
+              0) ;;
+              1)
+                echo "::warning title=dispatch-browser row durations::$class: the 95th" \
+                  "percentile row duration is $against, R2's target for the lane" \
+                  "(packages/dispatch/e2e/tools/check-slow-rows.ts)"
+                ;;
+              *)
+                echo "::warning title=dispatch-browser row durations::$class: check-slow-rows.ts" \
+                  "--p95 $3 exited $over, so the 95th percentile was read against no bar"
+                against="not read"
+                ;;
+            esac
+            echo "| $class | $1 | $2 | $3 | $against |" >> "$GITHUB_STEP_SUMMARY"
             echo "::notice title=dispatch-browser row durations::$class: $1 rows," \
-              "median $2 ms, 95th percentile $3 ms"
+              "median $2 ms, 95th percentile $3 ms, $against"
           done
       # The verdict, which the three readings above do not give: they report, and this fails. Two
       # of the job's three failures are here - an upstream job that neither succeeded nor was

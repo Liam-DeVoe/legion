@@ -16,7 +16,16 @@ name: Dispatch browser nightly
 # `ci-ok-changes`, so the merge job's report step does not run and the run posts no check, files
 # no issue and sends no message. dispatch://INFRA-1066's R22 owns a reader for nightly results,
 # and this workflow deliberately builds no second one: a reader written here is the thing R22
-# would then have to replace.
+# would then have to replace. The quarantine check below is not that reader: it reads the one
+# thing R4 of dispatch://INFRA-983 decides the quarantine from, the merge jobs' flaky-row
+# notices, and it posts nothing either - it fails the run, and its summary says why.
+#
+# The quarantine (packages/dispatch/e2e/quarantine.ts) has two parts here. The `full` job's call
+# passes `quarantine: true`, so dispatch-browser.yaml runs the quarantined rows in a leg of their
+# own, which reports how each ended and fails nothing, while its shard legs leave them out as on
+# every other call. And the `quarantine-check` job does the checks that depend on the date, which
+# no pull request does: it fails the run on a row flaky in two runs of 14 days that is not
+# quarantined, and on an entry held longer than 14 days.
 #
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
 # this file and of the workflow it calls, never a pull request's (e2e.yaml's head comment states
@@ -62,6 +71,9 @@ jobs:
   # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
   # same file). No `checks: write`, which the ci-ok report would need: this call passes no
   # `ci-ok-changes`, so that step does not run and this workflow posts no check.
+  #
+  # `quarantine: true` is this call's alone: the quarantined rows run in dispatch-browser.yaml's
+  # `quarantine` job, which gates nothing, so their owner sees on main's tip whether a fix worked.
   full:
     permissions:
       contents: read
@@ -69,6 +81,51 @@ jobs:
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
       lane: full
+      quarantine: true
+  # The quarantine's checks that depend on the date (R4 of dispatch://INFRA-983):
+  # packages/dispatch/e2e/tools/quarantine-check.ts reads the `dispatch-browser flaky row` notices
+  # of the merge jobs of the last 14 days of scheduled runs of this workflow and merge-group runs
+  # of ci.yaml, and fails on a row flaky in two of them that packages/dispatch/e2e/quarantine.ts
+  # does not hold, and on an entry of that file held longer than 14 days, each named in its
+  # summary with the runs and the lines to add or to remove. A pull request's runs are not read,
+  # since a pull request's head can carry its own defect; the tool's head says the rest. It needs
+  # no other job of this run: what it reads is runs that have already ended, this one's not among
+  # them, so a flaky row of tonight's full lane is counted by tomorrow's check.
+  #
+  # The 02:17 schedule and a workflow_dispatch alone, not the 13:41 one: a second reading of the
+  # same 14 days half a day later says nothing the first did not, and each reading spends about
+  # 2,100 calls of the repository's API budget (the measurement below).
+  #
+  # `actions: read` is the run listing of the two workflows, `checks: read` the merge jobs' check
+  # runs and their annotations, and `contents: read` the checkout. The tool writes nothing to
+  # GitHub. It runs with Bun and no install: it imports the quarantine module and nothing else.
+  #
+  # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states. The check step
+  # was measured once, in this issue's pod against the history of 2026-11-05 to 2026-11-19: 212 s
+  # for 1,653 runs (20 scheduled, 1,633 merge-group) in 2,071 calls, four at a time. 212 x 1.15
+  # = 244 s, so 5 minutes. The steps without a budget are the merge job's measured checkout
+  # 9 s, setup-bun 3 s, Set up job 2 s and the three post and completion steps 3 s: 17 s, and
+  # 300 + 17 = 317 s rounds up to 6 minutes. The step's time grows with the merge queue's runs,
+  # one call each, so a busier fortnight moves it: a step that outran its budget names itself.
+  quarantine-check:
+    if: github.event_name != 'schedule' || github.event.schedule == '17 2 * * *'
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Check the quarantine against 14 days of flaky rows
+        timeout-minutes: 5
+        run: bun e2e/tools/quarantine-check.ts
+        working-directory: packages/dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
   # The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3). A recording is a
   # snapshot of a server that keeps moving: this re-records every stubbed row against the real
   # harness and fails when a route no longer answers as its recording holds.

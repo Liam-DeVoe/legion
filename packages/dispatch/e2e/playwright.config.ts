@@ -13,6 +13,7 @@ import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
+import { quarantine, quarantined, quarantineRun } from "./quarantine";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
 
@@ -108,6 +109,16 @@ function refuseUnknownReuseServers(): void {
 }
 
 refuseUnknownReuseServers();
+
+// What this run asks of the quarantine (e2e/quarantine.ts), read once here so that a value
+// outside the three is refused in every run, a listing included, as the reuse-servers value
+// above is. The shard job of .github/workflows/dispatch-browser.yaml sets `exclude`, which takes
+// the quarantined rows out of the pull-request lane and the merge queue's full lane, and the
+// nightly's quarantine leg sets `only`, which runs those rows and nothing else. A run that sets
+// nothing - a person's, and every listing the bun tests under e2e/__tests__ read the suite from -
+// runs every row, so each project below is passed through `quarantined` unchanged. The
+// workers re-evaluate this file with the same environment, so they select the same rows.
+const quarantineSelection = quarantineRun(process.env.DISPATCH_E2E_QUARANTINE);
 
 // THE PORTS ARE UNSET WHEN THIS EVALUATES, AND THAT IS THE DESIGN. Playwright loads this config
 // before it runs `globalSetup`, which is what starts the stacks (e2e/global-setup.ts), so in this
@@ -783,13 +794,17 @@ export default defineConfig({
   // and builds no `web/dist` to serve. `stub.declared` is that answer, and `holdsStubRow`
   // above is built on the same one, so a server can never start for a project this list leaves
   // out, nor a project be declared with no server to answer it.
-  projects:
-    harnessProcessCount === 2
-      ? multiprocessProjects
-      : [
-          ...parallelProjects,
-          ...aloneProjects,
-          ...visualProjects,
-          ...(stub.declared ? stubProjects : []),
-        ],
+  //
+  // Every project, whichever list it is in, passes through `quarantined`, which adds the one
+  // `grepInvert` pattern this run's quarantine selection asks for, beside the project's own
+  // (e2e/quarantine.ts says how the pattern reads a row).
+  projects: (harnessProcessCount === 2
+    ? multiprocessProjects
+    : [
+        ...parallelProjects,
+        ...aloneProjects,
+        ...visualProjects,
+        ...(stub.declared ? stubProjects : []),
+      ]
+  ).map((project) => quarantined(project, quarantine, quarantineSelection)),
 });

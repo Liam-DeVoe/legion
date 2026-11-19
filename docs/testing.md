@@ -233,11 +233,14 @@ When a row may be added to the browser suite:
   `.github/workflows/dispatch-browser.yaml` names each one in the run's summary. A row that the
   scheduled run of `.github/workflows/dispatch-browser-nightly.yaml` names, flaky in two runs of 14
   days or held in the quarantine longer than 14 days, is a defect: it goes to the controller, and
-  the controller files the issue that owns it. The row's entry in `e2e/quarantine.ts` names that
-  issue and the date the row was added. A quarantined row leaves the pull-request lane and the
-  merge queue, and it keeps running in the scheduled run, where it gates nothing.
-  `e2e/__tests__/quarantine.test.ts` holds the file to at most 10 rows, each with its issue and
-  its date.
+  the controller files the issue that owns it. The check counts a flaky run only when it was made
+  after the last change to the row's own lines. `e2e/quarantine.ts` holds two kinds of entry, each
+  naming the row and the issue that owns it. A quarantine entry, with the date it was added, takes
+  the row out of the pull-request lane and the merge queue, and the row keeps running in the
+  scheduled run, where it gates nothing. A fix entry names the commit on `main` that fixed the row
+  elsewhere than in its own lines: the row stays in every lane, and the check counts only its
+  flaky runs made after that commit. `e2e/__tests__/quarantine.test.ts` holds the file to at most
+  10 quarantine entries, each with its issue and its date.
 
 What a stubbed row may assert, and what only a real-stack row may:
 
