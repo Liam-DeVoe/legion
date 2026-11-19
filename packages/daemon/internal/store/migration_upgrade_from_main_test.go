@@ -48,7 +48,7 @@ import (
 // dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), which
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list. The
-// last of them was the last word of outbox_kind_check until the two kind lists below stood above
+// last of them was the last word of outbox_kind_check until the three kind lists below stood above
 // it: the upgrade applies it after 20261029120800 has deleted main's merge-lane rows, and it
 // names every other kind main's daemon writes (mainsOutboxKinds), with update_ask and the two
 // merge-queue kinds besides, which main's daemon
@@ -64,9 +64,10 @@ import (
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
-// that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
-// so an upgrade of a database main migrated applies it just before that one, which adds
-// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
+// that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337
+// and dispatch://INFRA-4374's 20261119003157, so an upgrade of a database main migrated applies it
+// just before those two. It adds pull_requests.statuses at its default, the empty list, and it
+// touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
@@ -79,21 +80,25 @@ import (
 // outbox_kind_check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit: it names every kind the merge-queue list names and its own.
-// The kind list with the step record (20261117000528) is named here too: it stands above every
-// other version of the list, the role-holders publication's included, and above the reviewer's
-// reviewed commit, so an upgrade applies it last, and it restates 20261116165926's kinds with
-// step_record and the two reach notice kinds of the unreachable claims' 20261116082000, so it is
-// the last word of outbox_kind_check and names every kind. That list of 20261116082000 names the
-// role-holders publication and the step record too, so a database that recorded 20261116165926 and
-// 20261117000528 before it keeps its pending rows of both when it applies it. The count of starts
-// of each step (20261117004117) creates tables and a function of its own, and its roll forward
-// (20261117064152) changes nothing on a database no rollback touched; neither touches
-// outbox_kind_check.
+// The two kind lists above it are named here too: the step record's (20261117000528) restates
+// 20261116165926's kinds with step_record, and the plan record's (20261117023932) restates those
+// with plan_record, each with the two reach notice kinds of the unreachable claims'
+// 20261116082000. That list of 20261116082000 names the role-holders publication, the step record,
+// the plan record and the conflict's two kinds too, so a database that recorded the later lists
+// before it keeps its pending rows of each when it applies it. The count of starts of each step
+// (20261117004117) creates tables and a function of its own, and its roll forward (20261117064152)
+// changes nothing on a database no rollback touched; neither touches outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued. The fleet alert lines (20261118133133) and the activity report's sent time
-// (20261118134019) are applied last and touch no outbox_kind_check either: the first creates a
-// table of its own and the second adds a column to claims.
+// (20261118134019) touch no outbox_kind_check either: the first creates a table of its own and
+// the second adds a column to claims.
+// dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
+// (20261119003157) stands above every other version of this list, and it is the last of them to
+// rewrite outbox_kind_check: it is now that constraint's last word, and it names every kind the
+// plan-record list names and its own two, phase_ended among them. The same migration deletes the
+// queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
+// and pull_requests.merge_forward, both null on every row it finds.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -102,8 +107,8 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116012459, 20261116082000, 20261116092312, 20261116144907, 20261116164153,
-	20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117064152, 20261117112334,
-	20261117200337, 20261118133133, 20261118134019,
+	20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117064152,
+	20261117112334, 20261117200337, 20261118133133, 20261118134019, 20261119003157,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -117,8 +122,9 @@ var thisBranchsMigrations = []int{
 // 20261116012459, 20261116082000, 20261116092312 and 20261116164153, t-e-54's 20261116144907, the
 // role-holders publication's 20261116165926, the reviewer's reviewed commit, 20261116234034, the
 // step records' three: the kind list with the step record (20261117000528), the count of starts of
-// each step (20261117004117) and its roll forward (20261117064152), dispatch://INFRA-1997's
-// 20261117112334 and dispatch://INFRA-4109's 20261117200337. That is why the loop below holds the
+// each step (20261117004117) and its roll forward (20261117064152), the kind list with the plan
+// record (20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
+// 20261117200337 and dispatch://INFRA-4374's 20261119003157. That is why the loop below holds the
 // list rather than counting it, so that a version added above any of them is named here rather
 // than read as main's.
 const mainsNewestMigration = 20261111212544
@@ -237,50 +243,62 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	if merged != 0 {
 		t.Fatalf("merge-lane rows after the upgrade = %d, want 20261029120800 to have deleted every one", merged)
 	}
+	var ended int
+	if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = 'phase_ended'`).Scan(&ended); err != nil {
+		t.Fatalf("count the phase-ended rows the upgrade left: %v", err)
+	}
+	if ended != 0 {
+		t.Fatalf("phase_ended rows after the upgrade = %d, want 20261119003157 to have deleted the one main's daemon queued", ended)
+	}
 }
 
-// mainsLatestMigration is the newest version main carries now, the update ask's mark cutover. A
-// database a deployment of main migrated has recorded every embedded version up to it but for the
-// ones migrationsMainLacks names.
-const mainsLatestMigration = 20261117200337
+// mainsLatestMigration is the newest version main carries now, the conflict's second read and the
+// merge forward. A database a deployment of main migrated has recorded every embedded version up
+// to it but for the ones migrationsMainLacks names.
+const mainsLatestMigration = 20261119003157
 
 // migrationsMainLacks are the versions this branch adds that a database at main's newest
-// migration (mainsLatestMigration) has not recorded: the unreachable claims' four, each of which
-// stands below that version, and the fleet alert lines and the activity report's sent time above
-// it. Every embedded version above main's newest has to be named here too, as
-// thisBranchsMigrations does for the older main, so the test below holds the list against the
-// embedded set.
+// migration (mainsLatestMigration) has not recorded: the unreachable claims' four, the fleet alert
+// lines and the activity report's sent time, each of which stands below that version. Every
+// embedded version above main's newest has to be named here too, as thisBranchsMigrations does
+// for the older main, so the test below holds the list against the embedded set.
 var migrationsMainLacks = []int{20261116012459, 20261116082000, 20261116092312, 20261116164153, 20261118133133, 20261118134019}
 
-// mainsStepRecordKindCheck is the constraint main's own 20261117000528 wrote, the last of main's
-// kind lists, which is what a database at main's newest migration carries. The embedded copy of
-// that migration is the merged one, which names the two reach notice kinds as well, so main's own
-// text is written here and put back over the database the test below upgrades, as mainsKindCheck
-// is for 20261110235320.
-const mainsStepRecordKindCheck = `alter table outbox drop constraint if exists outbox_kind_check;
+// mainsNewestKindCheck is the constraint main's own 20261119003157 wrote, the last of main's kind
+// lists, which is what a database at main's newest migration carries. The embedded copy of that
+// migration is the merged one, which names the two reach notice kinds as well, so main's own text
+// is written here and put back over the database the test below upgrades, as mainsKindCheck is
+// for 20261110235320.
+const mainsNewestKindCheck = `alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record'))`
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
+  'conflict_confirm', 'merge_forward'))`
+
+// mainsRowKinds are the kinds of row main's daemon queues whose kind main's kind lists add after
+// the merge-queue list: a publication per issue, a record per start and end of a step and per run's
+// plan, a second read of a conflicting head and a message of a merge forward.
+var mainsRowKinds = []string{"role_holders_publish", "step_record", "plan_record", "conflict_confirm", "merge_forward"}
 
 // A daemon of this release is deployed over a database main migrated through its newest version
-// (mainsLatestMigration), after its role-holders publication (20261116165926) and its step
-// records' kind list (20261117000528), and that database's outbox can hold a role_holders_publish
-// row and a step_record row main's daemon queued: a publication per issue, queued at each ready and
-// each end of a claim, and a record per start and end of a step, each run again on its backoff
-// while Dispatch lacks the route. The upgrade applies the versions of migrationsMainLacks, the four
-// of them below those two first, so on that database 20261116082000 rewrites outbox_kind_check
-// last, and its list has to name both kinds: a list that leaves one out is refused over its
-// pending row (SQLSTATE 23514), which fails Migrate and leaves the daemon unable to boot. The
-// negative control is the list without a kind, which this branch carried before it merged each of
-// main's: with it the Migrate below fails.
+// (mainsLatestMigration), after main's kind lists with the role-holders publication
+// (20261116165926), the step record (20261117000528), the plan record (20261117023932) and the
+// conflict's two kinds (20261119003157), and that database's outbox can hold a row of each kind
+// those lists add (mainsRowKinds), each run again on its backoff while its destination lacks the
+// route or the time. The upgrade applies the versions of migrationsMainLacks, all below those, so on
+// that database 20261116082000 rewrites outbox_kind_check last, and its list has to name every one
+// of those kinds: a list that leaves one out is refused over its pending row (SQLSTATE 23514), which
+// fails Migrate and leaves the daemon unable to boot. The negative control is the list without a
+// kind, which this branch carried before it merged each of main's: with it the Migrate below
+// fails.
 func TestADatabaseAtMainsNewestMigrationUpgradesWithItsPendingRows(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateAsMain(t, ctx, store, migrationsMainLacks)
-	if _, err := store.pool.Exec(ctx, mainsStepRecordKindCheck); err != nil {
+	if _, err := store.pool.Exec(ctx, mainsNewestKindCheck); err != nil {
 		t.Fatalf("put main's own kind constraint back: %v", err)
 	}
 
@@ -289,7 +307,7 @@ func TestADatabaseAtMainsNewestMigrationUpgradesWithItsPendingRows(t *testing.T)
 			values ($1, $2, '{}', 0, now(), '')`, kind, issue)
 		return err
 	}
-	for _, kind := range []string{"role_holders_publish", "step_record"} {
+	for _, kind := range mainsRowKinds {
 		if err := queue(kind, "LEGION-208"); err != nil {
 			t.Fatalf("queue the %s row main's daemon writes: %v", kind, err)
 		}
@@ -304,7 +322,7 @@ func TestADatabaseAtMainsNewestMigrationUpgradesWithItsPendingRows(t *testing.T)
 		t.Fatalf("upgrade the database at main's newest migration: %v", err)
 	}
 
-	for _, kind := range []string{"role_holders_publish", "step_record"} {
+	for _, kind := range mainsRowKinds {
 		var pending int
 		if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = $1`, kind).Scan(&pending); err != nil {
 			t.Fatalf("count the %s rows the upgrade left: %v", kind, err)
@@ -318,12 +336,12 @@ func TestADatabaseAtMainsNewestMigrationUpgradesWithItsPendingRows(t *testing.T)
 			t.Fatalf("queue a %s row after the upgrade: %v", kind, err)
 		}
 	}
-	for _, kind := range []string{"role_holders_publish", "step_record"} {
+	for _, kind := range mainsRowKinds {
 		if err := queue(kind, "LEGION-209"); err != nil {
 			t.Fatalf("queue a %s row of another issue after the upgrade: %v", kind, err)
 		}
 	}
-	t.Logf("after the upgrade the outbox keeps the pending publication and step record, and takes reach_notice, reach_controller_notice, role_holders_publish and step_record")
+	t.Logf("after the upgrade the outbox keeps the pending rows of %v, and takes reach_notice, reach_controller_notice and each of those kinds", mainsRowKinds)
 }
 
 // migrateAsMain migrates store as a deployment of main did: every embedded migration in version
@@ -367,9 +385,16 @@ func migrateAsMain(t *testing.T, ctx context.Context, store *Store, skip []int) 
 // before #4220 landed has not recorded.
 const thisBranchsClaimSessions = 20261116144907
 
+// mainsNewestBefore4220 is the newest version a deployment of main before #4220 recorded, the update
+// ask's mark cutover, and mainsAfter4220 are the versions main took after it, which such a
+// deployment has not recorded either: the plan record's kind list and the conflict's.
+const mainsNewestBefore4220 = 20261117200337
+
+var mainsAfter4220 = []int{20261117023932, 20261119003157}
+
 // A database a deployment of main before #4220 migrated has recorded every migration up to main's
-// newest, 20261117200337, but claim_sessions, which is numbered below it, and this branch's own
-// migrationsMainLacks. Store.Migrate applies every migration that database has not recorded,
+// newest then, 20261117200337, but claim_sessions, which is numbered below it, and this branch's
+// own migrationsMainLacks. Store.Migrate applies every migration that database has not recorded,
 // whatever version stands highest (apply asks each migration whether its own version is recorded),
 // so the upgrade applies 20261116144907 below that newest: claim_sessions is created, and its
 // backfill holds the session a claim of main's daemon recorded for that claim. So the migration
@@ -392,9 +417,10 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	for _, migration := range all {
 		newest = max(newest, migration.Version)
 	}
-	migrateAsMain(t, ctx, store, append([]int{thisBranchsClaimSessions}, migrationsMainLacks...))
-	if version, err := store.SchemaVersion(ctx); err != nil || version != mainsLatestMigration {
-		t.Fatalf("the database main migrated reports version %d (%v), want main's newest, %d", version, err, mainsLatestMigration)
+	skip := append(append([]int{thisBranchsClaimSessions}, mainsAfter4220...), migrationsMainLacks...)
+	migrateAsMain(t, ctx, store, skip)
+	if version, err := store.SchemaVersion(ctx); err != nil || version != mainsNewestBefore4220 {
+		t.Fatalf("the database main migrated reports version %d (%v), want main's newest before #4220, %d", version, err, mainsNewestBefore4220)
 	}
 	const token, session = "legion-legion-legion-901-implementer", "ses_main"
 	if _, err := store.pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
@@ -408,8 +434,8 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	if err != nil {
 		t.Fatalf("upgrade the database today's main migrated: %v", err)
 	}
-	if applied != 1+len(migrationsMainLacks) {
-		t.Errorf("the upgrade applied %d migrations, want %d: claim_sessions and this branch's %d", applied, 1+len(migrationsMainLacks), len(migrationsMainLacks))
+	if applied != len(skip) {
+		t.Errorf("the upgrade applied %d migrations, want %d: claim_sessions, main's %d after it and this branch's %d", applied, len(skip), len(mainsAfter4220), len(migrationsMainLacks))
 	}
 	var recorded int
 	if err := store.pool.QueryRow(ctx, `select count(*) from schema_version where version = $1::bigint`, thisBranchsClaimSessions).Scan(&recorded); err != nil {

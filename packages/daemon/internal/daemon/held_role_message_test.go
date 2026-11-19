@@ -467,19 +467,3 @@ func TestARoleMessageToARoleNoClaimKeepsEndsAsToday(t *testing.T) {
 		t.Fatalf("outbox rows left = %d, want the role message finished undelivered", left)
 	}
 }
-
-// A phase-ended message keeps today's end: the role's next task names its phase, so nothing is
-// held for it, a claim that keeps its session included.
-func TestAPhaseEndedMessageIsNotHeldForAClaimThatKeepsItsSession(t *testing.T) {
-	publisher := &holderPublisher{}
-	runner, sup, pool := hookRunner(t, publisher)
-	implementer := sessionKeptClaim(t, sup, claim.RoleImplementer, supervise.StateWorking)
-	publisher.setAbsent(notify.RoleTopicPrefix + string(implementer.Claim().Token))
-	ended := record.PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.Reviewing, Reason: "the head's checks went red"}
-	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ended, time.Now().Add(-time.Minute)))
-
-	drain(t, runner)
-	if left := outboxRows(t, pool); left != 0 {
-		t.Fatalf("outbox rows left = %d, want the phase-ended message finished as today", left)
-	}
-}

@@ -93,7 +93,7 @@ func TestTheControllersRelaunchNamesEachRefusal(t *testing.T) {
 				status = http.StatusServiceUnavailable
 			}
 			body := recorder.Body.String()
-			assertFailure(t, recorder, status, tc.code)
+			refused(t, recorder, status, tc.code)
 			if says := strings.Contains(body, "case for a person"); says != tc.person {
 				t.Fatalf("the refusal %s says a case for a person: %t, want %t", body, says, tc.person)
 			}
@@ -112,12 +112,12 @@ func TestTheControllersRelaunchNeedsAControllerGrantAndAnotherClaim(t *testing.T
 		SessionID: "ses_implementer", Secret: registered.Secret, Tree: "LEGION-208", Issue: "LEGION-209",
 	}, nil), &worker)
 
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/relaunch",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/relaunch",
 		RelaunchRequest{GrantID: worker.GrantID, Claim: string(token)}, nil), http.StatusForbidden, "CONTROLLER_REQUIRED")
 	grant := controllerGrant(t, h).GrantID
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/relaunch",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/relaunch",
 		RelaunchRequest{GrantID: grant, Claim: string(claim.ControllerToken(testProject))}, nil), http.StatusConflict, "CLAIM_IS_CONTROLLER")
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/relaunch",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/relaunch",
 		RelaunchRequest{GrantID: controllerGrant(t, h).GrantID, Claim: "legion-legion-legion-777-tester"}, nil), http.StatusNotFound, "NO_CLAIM")
 	if len(*reached) != 0 {
 		t.Fatalf("a refused request reached the daemon's relaunch for %v", *reached)

@@ -1,7 +1,7 @@
 kind: Added
 body: |-
     Work in flight survives the end of a worker's process, of its connection and of the daemon.
-    Daemon API contract 168.
+    Daemon API contract 178.
     A claim that is ready, idle or working and whose session has not registered with Envoy for
     more than 20 minutes is marked unreachable. The daemon reads Envoy's session list once a
     minute, unresponsive sessions included. The mark is `unreachable`, `{since, lastSeen?}`, on
