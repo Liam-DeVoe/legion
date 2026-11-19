@@ -1543,6 +1543,8 @@ With `answers` set, the daemon mirrors that record into the Envoy listener's age
 the listener hands a project's messages off while that record last said `answering`, whatever its age, so a daemon that stops still gets its agents' messages and answers them when it returns, and one that loses `answers` or is taken down states `answering: false` at its next boot, which gives its agents' messages the listener's own answers again at once:
 a send stored for a session Envoy still knows or a `404`, a role message kept for the role's next holder.
 A listener too old for these routes answers `404`, which the daemon logs once per boot and tries again every minute.
+The daemon writes these routes with its Envoy bearer (`envoy_token_file`, sent as `Authorization: Bearer`), which names no session.
+The listener refuses every registry write that presents a secrets-broker access token with `403`, since such a token always names a session, and a session that could write an entry or `answering: true` could have another session's messages answered by a daemon instead of stored for it.
 
 Each entry carries `finished`, whether its issue has left the workflow
 — closed or done, parked, or its tree retired or lingering past its close — so no next holder of that role is coming.

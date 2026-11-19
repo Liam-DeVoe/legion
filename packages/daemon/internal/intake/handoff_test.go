@@ -52,7 +52,7 @@ func TestAHandoffIsAcknowledgedOnlyOnceTheLoopRecordedIt(t *testing.T) {
 	spec := HandoffSpec{Project: "legion", NakDelay: 7 * time.Second}
 	data := handoffJSON(t, "legion", "ses_tester")
 
-	failing := &fakeDelivery{subject: HandoffSubject("legion", "ses_tester"), data: data}
+	failing := &fakeDelivery{subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: data}
 	ConsumeHandoff(context.Background(), failing, spec, func(context.Context, Handoff, []byte) error {
 		return errors.New("the store is down")
 	})
@@ -62,7 +62,7 @@ func TestAHandoffIsAcknowledgedOnlyOnceTheLoopRecordedIt(t *testing.T) {
 
 	var got Handoff
 	var raw []byte
-	recorded := &fakeDelivery{subject: HandoffSubject("legion", "ses_tester"), data: data}
+	recorded := &fakeDelivery{subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: data}
 	ConsumeHandoff(context.Background(), recorded, spec, func(_ context.Context, h Handoff, published []byte) error {
 		got, raw = h, published
 		return nil
@@ -80,10 +80,10 @@ func TestAHandoffIsAcknowledgedOnlyOnceTheLoopRecordedIt(t *testing.T) {
 func TestAHandoffTheDaemonCannotTrustIsTerminated(t *testing.T) {
 	spec := HandoffSpec{Project: "legion"}
 	for name, delivery := range map[string]*fakeDelivery{
-		"not JSON":        {subject: HandoffSubject("legion", "ses_tester"), data: []byte("{")},
-		"another project": {subject: HandoffSubject("legion", "ses_tester"), data: handoffJSON(t, "other", "ses_tester")},
-		"another session": {subject: HandoffSubject("legion", "ses_other"), data: handoffJSON(t, "legion", "ses_tester")},
-		"no envelope id": {subject: HandoffSubject("legion", "ses_tester"),
+		"not JSON":        {subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: []byte("{")},
+		"another project": {subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: handoffJSON(t, "other", "ses_tester")},
+		"another session": {subject: listenerwire.LegionHandoffSubject("legion", "ses_other"), data: handoffJSON(t, "legion", "ses_tester")},
+		"no envelope id": {subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"),
 			data: []byte(`{"original_topic":"t","target_session":"ses_tester","role_token":"r","project":"legion","envelope":{"source":"agent"}}`)},
 	} {
 		ConsumeHandoff(context.Background(), delivery, spec, func(context.Context, Handoff, []byte) error {
@@ -126,7 +126,7 @@ func TestAHandoffReachesTheLoopWhateverItsExpectsReply(t *testing.T) {
 		}
 		var got Handoff
 		reached := false
-		delivery := &fakeDelivery{subject: HandoffSubject("legion", "ses_tester"), data: data}
+		delivery := &fakeDelivery{subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: data}
 		ConsumeHandoff(context.Background(), delivery, spec, func(_ context.Context, h Handoff, _ []byte) error {
 			got, reached = h, true
 			return nil

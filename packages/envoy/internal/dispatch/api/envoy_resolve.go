@@ -163,7 +163,7 @@ func resolveThenLock[R, T any](
 // One such role is a target all the same: a role whose newest registry entry is released and not
 // finished. Its daemon released the role's idle issue pod and resumes that session on the next
 // wake of the role, so a holder of the role is coming. Its target is the role itself, kept for
-// that next holder (deliveryTarget.keepForRole, unheldRoleTarget), whatever its project's
+// that next holder (registryRedirect.keepForRole, unheldRoleTarget), whatever its project's
 // answering flag says, since no daemon answers for it: the delivery publishes on the role's topic
 // and the listener keeps the message on the role's kept lane and raises the role's wake, which no
 // send to a session does for it.
@@ -171,9 +171,9 @@ func resolveThenLock[R, T any](
 // The registry is read before the send and the listener decides at the send, so it may still hand
 // the send to no daemon: it refuses it, or, for a project that said it stopped answering in
 // between, only stores it for the stopped session. The registry's target therefore keeps the
-// listener's own answer beside it (listenerAnswer), and an attempt whose send the listener refuses
-// or only stores records that answer, exactly what it recorded before the registry existed
-// (sendResolvedDelivery).
+// listener's own answer beside it (registryRedirect.listenerAnswer), and an attempt whose send
+// the listener refuses or only stores records that answer, exactly what it recorded before the
+// registry existed (sendResolvedDelivery).
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) deliveryTarget {
 	if s.deps.Envoy == nil {
 		return deliveryTarget{resolveError: listenerNotConfiguredText}
@@ -207,15 +207,27 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 }
 
 // deliveryTarget is what resolveDeliveryTarget found for a route: the session a delivery goes to,
-// what the listener calls it, and why it cannot receive this mode. keepForRole is set only on a
-// role the listener holds no live holder for and whose daemon released its idle pod
-// (unheldRoleTarget): it names the role token the delivery is published on and kept for, and the
-// target then names no session. listenerAnswer is set only on a target the Legion agent registry
-// named in place of the listener's own answer - a stopped agent's session, or a role kept for its
-// next holder - and is that answer.
+// what the listener calls it, and why it cannot receive this mode. redirect is set only on a
+// target the Legion agent registry named in place of the listener's own answer - a stopped
+// agent's session, or a role kept for its next holder, which then names no session.
 type deliveryTarget struct {
-	sessionID, title, resolveError, keepForRole string
-	listenerAnswer                              *deliveryTarget
+	sessionID, title, resolveError string
+	redirect                       *registryRedirect[deliveryTarget]
+}
+
+// registryRedirect is a route's target as the Legion agent registry named it in place of the
+// listener's own answer for that route (registeredTarget, unheldRoleTarget). listenerAnswer is
+// that answer, which an attempt records when the listener refuses the send or only stores it.
+// keepForRole names the role token of a role no live session holds whose daemon released its
+// idle pod: the delivery is published on that role's topic and kept for its next holder. It is
+// empty for a stopped agent's session, which the target carrying the redirect names. The two are
+// one value so that no target names a role to keep for without the answer a refusal records:
+// redirect != nil is the one check a reader of either makes. A is the answer's own shape:
+// deliveryTarget where the registry is read, ResolvedMention once a mention carries it
+// (resolvedMention).
+type registryRedirect[A any] struct {
+	keepForRole    string
+	listenerAnswer A
 }
 
 // registeredTarget is the session the Legion agent registry names for a route the listener
@@ -226,7 +238,7 @@ func (s *server) registeredTarget(ctx context.Context, route model.Route, answer
 	if !ok {
 		return answer
 	}
-	return deliveryTarget{sessionID: agent.SessionID, title: agent.Title, listenerAnswer: &answer}
+	return deliveryTarget{sessionID: agent.SessionID, title: agent.Title, redirect: &registryRedirect[deliveryTarget]{listenerAnswer: answer}}
 }
 
 // unheldRoleTarget is the target of a role route the listener answered with no live holder
@@ -249,9 +261,9 @@ func (s *server) unheldRoleTarget(ctx context.Context, route model.Route, answer
 	newest, ok := s.newestRoleAgent(ctx, route.ID)
 	switch {
 	case ok && newest.Released && !newest.Finished:
-		return deliveryTarget{keepForRole: route.ID, listenerAnswer: &answer}
+		return deliveryTarget{redirect: &registryRedirect[deliveryTarget]{keepForRole: route.ID, listenerAnswer: answer}}
 	case ok && answersForRole(newest):
-		return deliveryTarget{sessionID: newest.SessionID, title: newest.Title, listenerAnswer: &answer}
+		return deliveryTarget{sessionID: newest.SessionID, title: newest.Title, redirect: &registryRedirect[deliveryTarget]{listenerAnswer: answer}}
 	}
 	return answer
 }

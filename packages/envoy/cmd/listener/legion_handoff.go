@@ -19,17 +19,13 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// legionHandoffPrefix and legionHandoffAgents frame the subject a hand-off is published on,
-// notifications.legion.<legion_project>.agents.<session> (legionAgentHandoffSubject in
-// packages/contracts, intake.HandoffSubject in packages/daemon).
+// legionHandoffPrefix and legionHandoffAgents frame the subject isLegionHandoffSubject reads, the
+// one listenerwire.LegionHandoffSubject builds: notifications.legion.<legion_project>.agents.
+// <session>.
 const (
 	legionHandoffPrefix = bus.NotificationTopicPrefix + "legion."
 	legionHandoffAgents = ".agents."
 )
-
-func legionHandoffSubject(project, sessionID string) string {
-	return legionHandoffPrefix + project + legionHandoffAgents + sessionID
-}
 
 // isLegionHandoffSubject reports whether subject is a hand-off's: notifications.legion.<project>.
 // agents.<session>. The notification stream retains it for the daemon's consumer, so it reaches
@@ -64,6 +60,15 @@ type legionHandoff struct {
 	logger   *logging.Logger
 }
 
+// legionHandedOff is a hand-off handOffToLegion published: the body, and whether the stream
+// already held a copy under its MsgId (bus.Client.PublishRetained), so it stored nothing new. A
+// send repeated under one idempotency key, a role publish repeated under one key, and every
+// listener's copy of one bus message after the first all find one.
+type legionHandedOff struct {
+	listenerwire.LegionHandoff
+	duplicate bool
+}
+
 // handOffToLegion publishes target to its agent's daemon in place of the answer a message no
 // session took gets, when all of these hold:
 //
@@ -88,12 +93,13 @@ type legionHandoff struct {
 //     answered in its name from a conversation it has moved past.
 //
 // It answers the hand-off it published (listenerwire.LegionHandoff, the body the daemon's hand-off
-// reader decodes), or nil when one of those does not hold, in which case the caller answers as it
-// did before hand-off. A registry it cannot read is logged and answered nil the same way. The error
-// is a publish that failed. The publish carries a MsgId built from the envelope's dedupe key, so
-// the copies every listener's durable hands off for one bus message, and a send repeated under one
-// idempotency key, are stored once.
-func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandoffTarget) (*listenerwire.LegionHandoff, error) {
+// reader decodes) with the stream's verdict on it, or nil when one of those does not hold, in
+// which case the caller answers as it did before hand-off. A registry it cannot read is logged and
+// answered nil the same way. The error is a publish that failed. The publish carries a MsgId built
+// from the envelope's dedupe key, so the copies every listener's durable hands off for one bus
+// message, and a send repeated under one idempotency key, are stored once, and every copy after
+// the first is answered duplicate.
+func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandoffTarget) (*legionHandedOff, error) {
 	if h == nil || target.optedOut || target.envelope.Source == "envoy" {
 		return nil, nil
 	}
@@ -116,26 +122,28 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 	default:
 		return nil, nil
 	}
-	handoff := listenerwire.LegionHandoff{
+	handoff := legionHandedOff{LegionHandoff: listenerwire.LegionHandoff{
 		OriginalTopic: target.envelope.Topic,
 		TargetSession: agent.SessionID,
 		RoleToken:     agent.RoleToken,
 		Project:       agent.LegionProject,
 		Envelope:      target.envelope,
-	}
+	}}
 	if target.stampSender {
 		handoff.Envelope.Sender = senderStamp(ctx, h.registry, h.sessions, handoff.Envelope.SourceSession)
 	}
-	data, err := json.Marshal(handoff)
+	data, err := json.Marshal(handoff.LegionHandoff)
 	if err != nil {
 		return nil, fmt.Errorf("encode legion hand-off: %w", err)
 	}
-	subject := legionHandoffSubject(agent.LegionProject, agent.SessionID)
-	if _, err := h.client.PublishRetained(ctx, subject, data, "legion.handoff."+handoff.Envelope.DedupeKey+":"+subject); err != nil {
+	subject := listenerwire.LegionHandoffSubject(agent.LegionProject, agent.SessionID)
+	handoff.duplicate, err = h.client.PublishRetained(ctx, subject, data, "legion.handoff."+handoff.Envelope.DedupeKey+":"+subject)
+	if err != nil {
 		return nil, fmt.Errorf("publish legion hand-off to %s: %w", subject, err)
 	}
 	h.logger.Info("listener handed a message to its legion daemon",
-		slog.String("session_id", agent.SessionID), slog.String("topic", handoff.OriginalTopic), slog.String("event_id", handoff.Envelope.EventID), slog.String("subject", subject))
+		slog.String("session_id", agent.SessionID), slog.String("topic", handoff.OriginalTopic), slog.String("event_id", handoff.Envelope.EventID), slog.String("subject", subject),
+		slog.Bool("duplicate", handoff.duplicate))
 	return &handoff, nil
 }
 
@@ -214,7 +222,8 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 //
 //   - a hand-off that was published is the whole answer: handed_off, the dedupe key recorded and
 //     the message ACKed, with no exception - the daemon answers it from the agent's own
-//     conversation;
+//     conversation. Its line says whether the stream already held that hand-off (duplicate),
+//     as another listener's durable that handed off the same message first leaves it;
 //   - a hand-off whose publish failed is NAKed and tried again rather than answered, since the
 //     give-up's own answer would publish the very notice the hand-off replaces. Its attempt-cache
 //     entry is cleared with it, or the redelivery this NAK asks for is swallowed as an
@@ -243,7 +252,8 @@ func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliv
 			sessionID:    sessionID,
 			metricStatus: "handed_off",
 			log: func(logger *logging.Logger) {
-				logger.DeliveryLog(slog.LevelInfo, "listener agent handed off to its legion daemon", sessionID, item.Topic, item.EventID, "handed_off", slog.String("project", handed.Project))
+				logger.DeliveryLog(slog.LevelInfo, "listener agent handed off to its legion daemon", sessionID, item.Topic, item.EventID, "handed_off",
+					slog.String("project", handed.Project), slog.Bool("duplicate", handed.duplicate))
 			},
 			recordDedupe: true,
 		})

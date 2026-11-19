@@ -114,7 +114,7 @@ func envelopeFor(topic, dedupeKey, source string) contracts.Envelope {
 // handoffs is how many hand-offs the stream holds for sessionID, and the last one's bytes.
 func handoffs(t *testing.T, client *bus.Client, sessionID string) (uint64, []byte) {
 	t.Helper()
-	subject := legionHandoffSubject("infra", sessionID)
+	subject := listenerwire.LegionHandoffSubject("infra", sessionID)
 	info, err := client.JS().StreamInfo(bus.Stream, &nats.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {
 		t.Fatalf("stream info: %v", err)
@@ -191,7 +191,8 @@ func TestLegionProjectRouteStoresTheAnsweringRecord(t *testing.T) {
 // A send to a stopped Legion agent whose project last said it answers, and a role publish whose
 // role is finished, are handed to that project's daemon on the retained subject, carrying the
 // envelope whole. Two hand-offs of one envelope - the copies two listeners' durables make, and a
-// send repeated under one idempotency key - collapse on their MsgId, so the stream stores one.
+// send repeated under one idempotency key - collapse on their MsgId, so the stream stores one, and
+// the second is answered duplicate.
 func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	rig := newHandoffRig(t, 0)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
@@ -214,10 +215,18 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	if wire.OriginalTopic != item.Topic || wire.TargetSession != handoffAgent || wire.Project != "infra" {
 		t.Fatalf("the stored hand-off is %#v, want the message's topic and the agent's session", wire)
 	}
+	if handed.duplicate {
+		t.Fatal("the first hand-off of an envelope answered duplicate; the stream held nothing")
+	}
 	// The same envelope handed off again - another listener's durable, a repeated send - is one
-	// stored message, because every listener derives the MsgId from the envelope's dedupe key.
-	if _, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent}); err != nil {
-		t.Fatalf("the second hand-off of one envelope: %v", err)
+	// stored message, because every listener derives the MsgId from the envelope's dedupe key, and
+	// the repeat answers that the stream already held it.
+	again, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
+	if err != nil || again == nil {
+		t.Fatalf("the second hand-off of one envelope = %v, %v; want it handed off", again, err)
+	}
+	if !again.duplicate {
+		t.Fatalf("the second hand-off of one envelope answered %+v, want duplicate: the stream already held it", *again)
 	}
 	if count, _ := handoffs(t, rig.client, handoffAgent); count != 1 {
 		t.Fatalf("the stream holds %d copies of one hand-off, want 1", count)
@@ -227,11 +236,68 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	// the role token's newest session.
 	role := envelopeFor(contracts.RoleTopicPrefix+handoffRoleToken, "publish.k2", "agent")
 	handedRole, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: role, roleToken: handoffRoleToken})
-	if err != nil || handedRole == nil || handedRole.TargetSession != handoffArchitect {
-		t.Fatalf("a role publish with no live holder = %v, %v; want it handed to %s", handedRole, err, handoffArchitect)
+	if err != nil || handedRole == nil || handedRole.TargetSession != handoffArchitect || handedRole.duplicate {
+		t.Fatalf("a role publish with no live holder = %v, %v; want it handed to %s, not a duplicate", handedRole, err, handoffArchitect)
 	}
 	if count, _ := handoffs(t, rig.client, handoffArchitect); count != 1 {
 		t.Fatalf("the stream holds %d hand-offs for the architect, want 1", count)
+	}
+}
+
+// A send repeated under one idempotency key to a stopped Legion agent, and a role publish repeated
+// under one key to a finished Legion role, are each one hand-off on the stream, and the repeat is
+// answered as a live session's repeat is (TestSendHandler_ReportsAJetStreamDuplicate): the same
+// 200 with duplicate set, naming the envelope the repeat minted. The controls are the first of
+// each and a send under another key, which are hand-offs of their own and answer no duplicate.
+func TestARepeatedHandOffIsAnsweredDuplicate(t *testing.T) {
+	rig := newHandoffRig(t, 0)
+	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
+	rig.beat(t, true, time.Now())
+	send := func(key string) listenerwire.SendResponse {
+		t.Helper()
+		recorder := rig.do(t, http.MethodPost, "/v1/messages/send",
+			fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"can you answer this?","idempotency_key":%q}`, handoffAgent, key))
+		var answer listenerwire.SendResponse
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil || answer.Recipient != handoffAgent {
+			t.Fatalf("a send to the stopped agent %s under %s = %d %s, want 200 handed off to it", handoffAgent, key, recorder.Code, recorder.Body.String())
+		}
+		return answer
+	}
+	if first := send("message-1:steer"); first.Duplicate {
+		t.Fatalf("the first send under its key answered %+v, want no duplicate: the stream held nothing", first)
+	}
+	repeat := send("message-1:steer")
+	if !repeat.Duplicate || repeat.EventID == "" {
+		t.Fatalf("the repeat under one idempotency key answered %+v, want duplicate, naming the envelope it minted", repeat)
+	}
+	if count, _ := handoffs(t, rig.client, handoffAgent); count != 1 {
+		t.Fatalf("the stream holds %d hand-offs for %s after a send and its repeat, want 1", count, handoffAgent)
+	}
+	if other := send("message-2:steer"); other.Duplicate {
+		t.Fatalf("a send under another key answered %+v, want no duplicate", other)
+	}
+
+	d, client := keptRoleDeps(t)
+	withFinishedHandoff(t, d)
+	publish := func() listenerwire.PublishResponse {
+		t.Helper()
+		recorder, _ := publishThrough(d, `{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+
+			`","source":"agent","source_session":"ses-architect","message":"what did the review find?","idempotency_key":"ask-1"}`)
+		var answer listenerwire.PublishResponse
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil || answer.Recipient != finishedRoleSession {
+			t.Fatalf("a publish to the finished role %s = %d %s, want 200 handed off to %s",
+				finishedLegionRole, recorder.Code, recorder.Body.String(), finishedRoleSession)
+		}
+		return answer
+	}
+	if first := publish(); first.Duplicate {
+		t.Fatalf("the first publish under its key answered %+v, want no duplicate: the stream held nothing", first)
+	}
+	if again := publish(); !again.Duplicate || again.EventID == "" {
+		t.Fatalf("the publish repeated under one key answered %+v, want duplicate, naming the envelope it minted", again)
+	}
+	if count, _ := handoffs(t, client, finishedRoleSession); count != 1 {
+		t.Fatalf("the stream holds %d hand-offs for %s after a publish and its repeat, want 1", count, finishedRoleSession)
 	}
 }
 
@@ -244,7 +310,7 @@ func TestHandOffToLegionKeysOnTheLastStatedAnsweringFlag(t *testing.T) {
 	rig := newHandoffRig(t, 0)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
 
-	hand := func(key string) *listenerwire.LegionHandoff {
+	hand := func(key string) *legionHandedOff {
 		t.Helper()
 		item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+key, "agent")
 		handed, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
@@ -577,15 +643,15 @@ func TestARolePublishWhoseNewestSessionIsReleasedIsNotHandedOff(t *testing.T) {
 // treats no other retained message as one.
 func TestIsLegionHandoffSubjectNamesTheHandOffSubjectAlone(t *testing.T) {
 	for subject, want := range map[string]bool{
-		"notifications.legion.infra.agents.ses-impl":       true,
-		legionHandoffSubject("infra", handoffAgent):        true,
-		"notifications.legion.infra.agents":                false,
-		"notifications.legion.infra.agents.":               false,
-		"notifications.legion.infra.agents.a.b":            false,
-		"notifications.legion..agents.ses-impl":            false,
-		"notifications.legion.wake":                        false,
-		"notifications.agent.ses-impl":                     false,
-		"notifications.role.legion-infra-infra-204-tester": false,
+		"notifications.legion.infra.agents.ses-impl":             true,
+		listenerwire.LegionHandoffSubject("infra", handoffAgent): true,
+		"notifications.legion.infra.agents":                      false,
+		"notifications.legion.infra.agents.":                     false,
+		"notifications.legion.infra.agents.a.b":                  false,
+		"notifications.legion..agents.ses-impl":                  false,
+		"notifications.legion.wake":                              false,
+		"notifications.agent.ses-impl":                           false,
+		"notifications.role.legion-infra-infra-204-tester":       false,
 	} {
 		if got := isLegionHandoffSubject(subject); got != want {
 			t.Errorf("isLegionHandoffSubject(%q) = %t, want %t", subject, got, want)

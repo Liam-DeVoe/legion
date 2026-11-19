@@ -261,10 +261,11 @@ func (s *roleSend) noHolder(ctx context.Context, result roles.Resolution) {
 }
 
 // handedOff answers 200 with the envelope and the stopped Legion agent its daemon was handed it
-// for, in place of the holder a delivered send names: the sender reads the answer a delivered
-// message gets, so no client of this route changes.
-func (s *roleSend) handedOff(handed *listenerwire.LegionHandoff) {
-	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: handed.Envelope, ExpectsReply: s.expectsReply, Recipient: handed.TargetSession})
+// for, in place of the holder a delivered send names, and duplicate when the stream already held
+// that hand-off (a repeat under one dedupe key): the sender reads the answer a delivered message
+// gets, so no client of this route changes.
+func (s *roleSend) handedOff(handed *legionHandedOff) {
+	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: handed.Envelope, ExpectsReply: s.expectsReply, Recipient: handed.TargetSession, Duplicate: handed.duplicate})
 	s.settle(sendDelivered)
 }
 

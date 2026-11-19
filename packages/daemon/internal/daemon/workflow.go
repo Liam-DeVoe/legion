@@ -832,8 +832,8 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		return natsauth.WithLastError(err, conn)
 	}
 	if w.answers != nil {
-		// The answer loop's hand-offs (intake.HandoffSubject): the listener hands this project's
-		// stopped agents' messages to the daemon there.
+		// The answer loop's hand-offs (listenerwire.LegionHandoffSubject): the listener hands this
+		// project's stopped agents' messages to the daemon there.
 		w.answers.handoffs, err = intake.OpenHandoffs(ctx, js, w.pool, intake.HandoffSpec{
 			Project: w.answers.project, AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		})

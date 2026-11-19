@@ -666,8 +666,9 @@ const senderStampReadTimeout = 1 * time.Second
 //   - No entry, or one past the gone horizon, for a stopped Legion agent whose daemon answers for
 //     it (handOffToLegion: the agent registry names the session, not released, and its project
 //     last said it answers), whether or not a known-session record stands: 200, recipient the
-//     session and state empty, the message handed to that daemon and stored for no session. A
-//     connected_only send and one carrying "handoff": false are never handed off.
+//     session and state empty, the message handed to that daemon and stored for no session, and
+//     duplicate when the stream already held that hand-off (a repeat under one idempotency key).
+//     A connected_only send and one carrying "handoff": false are never handed off.
 //   - No entry, or one past the gone horizon, and a known-session record: 200, state stopped,
 //     recipient_state gone and last_seen the record's. The message is stored either way, and
 //     Envoy keeps it for 72 hours, so a session that runs again under the same id gets it from
@@ -785,6 +786,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 					ExpectsReply:   expectsReplyAnswer(body.ExpectsReply),
 					Recipient:      handed.TargetSession,
 					RecipientState: recipientState,
+					Duplicate:      handed.duplicate,
 				})
 				return
 			}
@@ -3145,10 +3147,10 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	v1.HandleFunc("/v1/roles/set", roleSetHandler(d, machineID, logger))
 	v1.HandleFunc("/v1/roles/", roleGetHandler(d))
 	v1.HandleFunc("/v1/registry/", sessionEntryHandler(d))
-	v1.HandleFunc("/v1/legion/agents", legionAgentsHandler(d))
-	v1.HandleFunc("/v1/legion/agents/sessions/", legionAgentSessionHandler(d))
+	v1.HandleFunc("/v1/legion/agents", legionAgentsHandler(d, logger))
+	v1.HandleFunc("/v1/legion/agents/sessions/", legionAgentSessionHandler(d, logger))
 	v1.HandleFunc("/v1/legion/agents/roles/", legionAgentRoleHandler(d))
-	v1.HandleFunc("/v1/legion/projects/", legionProjectHandler(d))
+	v1.HandleFunc("/v1/legion/projects/", legionProjectHandler(d, logger))
 
 	// A DELETE here removes every interest of a session, so its record is left naming none and a
 	// publish counts it for nothing, and its consumer is refollowed on what is left, as the

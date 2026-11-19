@@ -322,8 +322,9 @@ func decodeLegionAgentBody(w http.ResponseWriter, r *http.Request, into any) boo
 // session's entry, its replacement within its role token, whether it is live and whether its
 // project answers, or `404 {"error":"unknown legion agent <id>"}` when the bucket holds no entry
 // for it. PUT records the one entry its body holds, whose session_id must be the path's, and
-// answers it as stored.
-func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
+// answers it as stored, and refuses a caller whose credential names a session 403
+// (registryWriteBySession).
+func legionAgentSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := strings.TrimPrefix(r.URL.Path, "/v1/legion/agents/sessions/")
 		if sessionID == "" {
@@ -353,6 +354,10 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 			}
 			writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent, answering))
 		case http.MethodPut:
+			if refusal := registryWriteBySession(r, logger); refusal != "" {
+				writeJSONError(w, http.StatusForbidden, refusal)
+				return
+			}
 			if err := legionagents.ValidateSessionID(sessionID); err != nil {
 				writeLegionAgentError(w, err)
 				return
@@ -419,8 +424,9 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 // `{"entries":[…]}` of at most legionagents.MaxBatch entries in a body of at most
 // legionAgentBodyLimit bytes, all validated and checked before the first write, so one bad entry
 // refuses the batch with nothing written. A batch that fails after that answers how many entries
-// were written (writeLegionAgentError).
-func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
+// were written (writeLegionAgentError). A PUT whose credential names a session is refused 403
+// (registryWriteBySession).
+func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -447,6 +453,10 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 			}
 			writeJSON(w, http.StatusOK, list)
 		case http.MethodPut:
+			if refusal := registryWriteBySession(r, logger); refusal != "" {
+				writeJSONError(w, http.StatusForbidden, refusal)
+				return
+			}
 			var body listenerwire.LegionAgentBatch
 			if !decodeLegionAgentBody(w, r, &body) {
 				return
@@ -474,12 +484,17 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 // legionProjectHandler serves PUT /v1/legion/projects/<legion_project>: the project's answering
 // record, `{"answering":<bool>,"updated_at":"<RFC 3339 UTC>"}`, which the Legion daemon writes at
 // boot and every minute while it answers for the project's stopped agents (legionagents.Project).
-// It answers the record as stored. A path that is not a Legion project token, a body without
-// answering, or an updated_at that is not an RFC 3339 UTC time is a 400 and writes nothing.
-func legionProjectHandler(d *listenerDeps) http.HandlerFunc {
+// It answers the record as stored. A caller whose credential names a session is refused 403
+// (registryWriteBySession); a path that is not a Legion project token, a body without answering,
+// or an updated_at that is not an RFC 3339 UTC time is a 400; and neither writes anything.
+func legionProjectHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if refusal := registryWriteBySession(r, logger); refusal != "" {
+			writeJSONError(w, http.StatusForbidden, refusal)
 			return
 		}
 		project := strings.TrimPrefix(r.URL.Path, "/v1/legion/projects/")

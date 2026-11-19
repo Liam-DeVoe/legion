@@ -4,7 +4,8 @@
 // /v1/legion/projects/<legion_project>, the answers of those and of GET /v1/sessions, GET
 // /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET routes of
 // /v1/legion/agents and DELETE /v1/sessions/<session_id>, the hand-off the listener publishes for a
-// stopped Legion agent's daemon (LegionHandoff), and the envelope and the states they carry. The
+// stopped Legion agent's daemon (LegionHandoff) and the subject it publishes it on
+// (LegionHandoffSubject), and the envelope and the states they carry. The
 // listener (cmd/listener) writes and reads these types, and so does each of its Go clients: the
 // broker's wake (internal/broker/wake), Dispatch's client (internal/dispatch/envoy), the load-test
 // harness's listener client (loadtest/listenerclient), the refill rig
@@ -127,8 +128,13 @@ type PublishRequest struct {
 // minted once for its message, which @legion/envoy-client mints for every send that names none,
 // so a repeat of either gets it. The listener's sender limit reads the same verdict and charges
 // such a repeat nothing (its senderCharge.published), unless the verdict answers the bus's resend
-// after a closed connection (bus.StoredAck.Resent). Absent means false, which is what an older
-// listener's answer reads as.
+// after a closed connection (bus.StoredAck.Resent). A send handed to a stopped Legion agent's
+// daemon (the listener's handOffToLegion) answers the verdict of that hand-off's publish instead,
+// whose MsgId comes from the envelope's dedupe key whatever that key names, so a repeat under one
+// idempotency key gets it whoever minted the key. Its answer still names the envelope this
+// request minted, as a live session's repeat does, and its charge is the wake its send reported,
+// which the verdict does not cancel. Absent means false, which is what an older listener's answer
+// reads as.
 type SendResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
@@ -202,6 +208,12 @@ type PublishResponse struct {
 	// listener's handOffToLegion), in place of the holder a delivered one names, and is absent
 	// from every other answer.
 	Recipient string `json:"recipient,omitempty"`
+	// Duplicate, beside Recipient, reports that the stream already held that hand-off, under the
+	// MsgId the listener builds from the envelope's dedupe key, so it stored nothing new: a role
+	// publish repeated under one dedupe_key or idempotency_key. It is SendResponse.Duplicate for
+	// a role publish, and like it the answer still names the envelope this request minted. It is
+	// absent from every other answer, which is also what an older listener's answer reads as.
+	Duplicate bool `json:"duplicate,omitempty"`
 	// KeptUntil is when the kept copy's hour ends, in milliseconds since the epoch: the time the
 	// stream stored the copy plus the listener's roleKeepWindow, against which the walk measures
 	// its age. A repeat of a dedupe key whose copy is still on the lane inside its hour stores
@@ -687,8 +699,8 @@ type LegionProject struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-// LegionHandoff is what the listener publishes, on notifications.legion.<legion_project>.agents.
-// <session_id>, for a message no session took that a stopped Legion agent's daemon answers in its
+// LegionHandoff is what the listener publishes, on LegionHandoffSubject(<legion_project>,
+// <session_id>), for a message no session took that a stopped Legion agent's daemon answers in its
 // place: the topic the message was for (the agent's own, or its role's), the agent session it is
 // for (the session addressed, or the role's newest), that session's role token and Legion project
 // token, and the envelope exactly as it would have been delivered to the agent. It is
@@ -700,4 +712,14 @@ type LegionHandoff struct {
 	RoleToken     string   `json:"role_token"`
 	Project       string   `json:"project"`
 	Envelope      Envelope `json:"envelope"`
+}
+
+// LegionHandoffSubject is the subject the listener publishes a LegionHandoff for session on,
+// notifications.legion.<project>.agents.<session>, project being the Legion project token role
+// tokens carry (not the Dispatch project key). The notification stream retains it, and the
+// project's daemon reads every hand-off through one durable consumer filtered to
+// LegionHandoffSubject(project, ">") (intake.OpenHandoffs in packages/daemon). It is
+// legionAgentHandoffSubject in packages/contracts/src/legion-handoff.ts.
+func LegionHandoffSubject(project, session string) string {
+	return "notifications.legion." + project + ".agents." + session
 }

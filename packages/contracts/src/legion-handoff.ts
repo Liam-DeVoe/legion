@@ -8,7 +8,8 @@ import { LEGION_NOTICE_TOPIC_PREFIX } from "./subject";
  * tokens carry (not the Dispatch project key) and `session` the agent session the message is for.
  * The notification stream retains `notifications.legion.>`, so the daemon's durable consumer on
  * `notifications.legion.<project>.agents.>` reads every hand-off, one published while it was down
- * included. Mirrored in Go as `intake.HandoffSubject` (packages/daemon/internal/intake/handoff.go).
+ * included. Mirrored in Go as `listenerwire.LegionHandoffSubject` (packages/envoy/listenerwire),
+ * which the listener publishes on and the daemon's consumer reads.
  */
 export function legionAgentHandoffSubject(project: string, session: string): string {
   return `${LEGION_NOTICE_TOPIC_PREFIX}${project}.agents.${session}`;

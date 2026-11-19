@@ -34,13 +34,6 @@ type HandoffEnvelope = listenerwire.Envelope
 // (listenerwire.EnvelopeSender).
 type HandoffSender = listenerwire.EnvelopeSender
 
-// HandoffSubject is the subject the listener hands a message for session off on.
-func HandoffSubject(project, session string) string {
-	return handoffPrefix(project) + session
-}
-
-func handoffPrefix(project string) string { return "notifications.legion." + project + ".agents." }
-
 // DecodeHandoff reads a hand-off and checks what the daemon relies on: a target session, a role
 // token, a project, and an envelope with its event id, source, topic and dedupe key.
 func DecodeHandoff(data []byte) (Handoff, error) {
@@ -192,9 +185,9 @@ type Handoffs struct {
 }
 
 // OpenHandoffs creates or updates the project's durable hand-off consumer on
-// notifications.legion.<P>.agents.>, as OpenConsumers does its own: one it creates starts at the
-// stream time pool keeps for it, or at the next hand-off when it keeps none, and one that exists
-// keeps its position.
+// listenerwire.LegionHandoffSubject(<P>, ">"), as OpenConsumers does its own: one it creates
+// starts at the stream time pool keeps for it, or at the next hand-off when it keeps none, and one
+// that exists keeps its position.
 func OpenHandoffs(ctx context.Context, js jetstream.JetStream, pool Pool, spec HandoffSpec) (*Handoffs, error) {
 	spec, err := normalizedHandoffSpec(spec)
 	if err != nil {
@@ -206,7 +199,7 @@ func OpenHandoffs(ctx context.Context, js jetstream.JetStream, pool Pool, spec H
 	}
 	consumer, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
 		Durable:       handoffConsumerName(spec.Project),
-		FilterSubject: handoffPrefix(spec.Project) + ">",
+		FilterSubject: listenerwire.LegionHandoffSubject(spec.Project, ">"),
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       spec.AckWait,
 	})
@@ -258,7 +251,7 @@ func ConsumeHandoff(ctx context.Context, delivery HandoffDelivery, spec HandoffS
 	subject := delivery.Subject()
 	handoff, err := DecodeHandoff(delivery.Data())
 	if err == nil {
-		session, ok := strings.CutPrefix(subject, handoffPrefix(spec.Project))
+		session, ok := strings.CutPrefix(subject, listenerwire.LegionHandoffSubject(spec.Project, ""))
 		switch {
 		case handoff.Project != spec.Project:
 			err = fmt.Errorf("the hand-off names project %q on this daemon's subject", handoff.Project)

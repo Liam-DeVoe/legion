@@ -108,8 +108,11 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 // its next holder, beside the listener's own no-holder answer.
 func keptForPlanner() ResolvedMention {
 	return ResolvedMention{
-		Target: "role:planner", Delivery: "steer", keepForRole: "planner",
-		listenerAnswer: &ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no holder for role planner"},
+		Target: "role:planner", Delivery: "steer",
+		redirect: &registryRedirect[ResolvedMention]{
+			keepForRole:    "planner",
+			listenerAnswer: ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no holder for role planner"},
+		},
 	}
 }
 
@@ -161,7 +164,7 @@ func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
 	kept := keptForPlanner()
 	outcome := s.sendResolvedDelivery(
 		context.Background(), kept, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), true)
-	if outcome.failure != "no holder for role planner" || outcome.refused != kept.listenerAnswer ||
+	if outcome.failure != "no holder for role planner" || outcome.refused != &kept.redirect.listenerAnswer ||
 		outcome.envelopeID != nil || outcome.queued {
 		t.Fatalf("sendResolvedDelivery = %+v, want the listener's no-holder answer refused, with nothing kept", outcome)
 	}
@@ -178,7 +181,7 @@ func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
 func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAnswer(t *testing.T) {
 	stopped := "stopped-2"
 	registered := func(answer ResolvedMention) ResolvedMention {
-		return ResolvedMention{Target: answer.Target, Delivery: "steer", SessionID: &stopped, listenerAnswer: &answer}
+		return ResolvedMention{Target: answer.Target, Delivery: "steer", SessionID: &stopped, redirect: &registryRedirect[ResolvedMention]{listenerAnswer: answer}}
 	}
 	role := registered(ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no holder for role planner"})
 	session := registered(ResolvedMention{
@@ -217,7 +220,7 @@ func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAns
 				}
 				return
 			}
-			answer := tc.target.listenerAnswer
+			answer := &tc.target.redirect.listenerAnswer
 			if outcome.failure != answer.ResolveError || outcome.refused != answer || outcome.envelopeID != nil ||
 				outcome.queued || outcome.duplicate {
 				t.Fatalf("sendResolvedDelivery = %+v, want the listener's own answer %q refused, with no envelope and nothing queued",
