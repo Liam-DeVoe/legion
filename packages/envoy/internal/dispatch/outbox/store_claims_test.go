@@ -234,6 +234,74 @@ func TestAnEventTwoProcessesRecordedKeepsItsArrayTheFarEndsOfItsTuples(t *testin
 	}
 }
 
+// TestALateRecordUnderARetakenHoldLeavesWhatAPublishedEventOwes holds the other half of a late
+// record (recordBatch): a row already published moves only by the destinations the late batch
+// reached, and what it owes (owed_keys, owed_seq) stays what the record that published it wrote,
+// even when the late batch's process holds the publisher hold again by the time it records.
+// Process a holds the hold, publishes a comment's event to s2 and records it owing nothing as of
+// the owner's last_seq. Process b, which had sent the same event to s3 alone before a took the
+// hold, takes the hold back and records its own batch, which still owes the topic family and s2
+// as of an older read of the owner. The array gains s3's topic, and the row still owes nothing as
+// of a's read.
+func TestALateRecordUnderARetakenHoldLeavesWhatAPublishedEventOwes(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	deps := Deps{Store: database}
+	deps.lanes = newLanes(func() {})
+	seedIssue(t, database, "T-1", nil)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	comment := seedComment(t, database, "T-1", alice, "For whoever has the issue.", nil)
+	event := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "comment.created", Actor: alice, Payload: map[string]any{"id": comment},
+	})
+	const owner = "notifications.dispatch.issue.T-1.comment.created"
+	var ownerSeq int
+	if err := database.Pool.QueryRow(ctx, `select last_seq from issues where key = 'T-1'`).Scan(&ownerSeq); err != nil {
+		t.Fatalf("read the issue's last_seq: %v", err)
+	}
+	record := func(what string, sent outcome) {
+		t.Helper()
+		holder := uuid.New()
+		holdRow(t, database, holder)
+		batch := &batchEvent{pendingEvent: pendingEvent{event: event}, outcome: sent}
+		holds, err := recordBatch(ctx, deps, []outcome{sent}, holder, deliveredGraph([]*batchEvent{batch}, nil, time.Now()))
+		if err != nil {
+			t.Fatalf("record %s: %v", what, err)
+		}
+		if !holds {
+			t.Fatalf("record %s: the publisher hold was not its process's", what)
+		}
+	}
+	record("a's batch, which published the event", outcome{
+		id: event.ID, state: published, reached: []string{owner, contracts.LegacyAgentSubject("s2")},
+		owed: []string{}, owedKnown: true, owedSeq: ownerSeq,
+	})
+	record("b's late batch, which reached s3 alone", outcome{
+		id: event.ID, state: backedOff, attempts: 1, failure: "no responders",
+		reached: []string{contracts.LegacyAgentSubject("s3")},
+		owed:    []string{model.OwedTopicFamily, contracts.LegacyAgentSubject("s2")}, owedKnown: true, owedSeq: ownerSeq - 1,
+	})
+
+	// A null owed_seq reads as -1, which no issue's last_seq is.
+	var destinations, owed []string
+	var owedSeq int
+	if err := database.Pool.QueryRow(ctx, `
+		select published_destinations, owed_keys, coalesce(owed_seq, -1) from events where id = $1
+	`, event.ID).Scan(&destinations, &owed, &owedSeq); err != nil {
+		t.Fatalf("read event %d: %v", event.ID, err)
+	}
+	if want := []string{owner, contracts.LegacyAgentSubject("s2"), contracts.LegacyAgentSubject("s3")}; !slices.Equal(destinations, want) {
+		t.Errorf("event %d was published to %v, want %v: the late record reached s3", event.ID, destinations, want)
+	}
+	if owed == nil || len(owed) != 0 {
+		t.Errorf("event %d owes %v after the late record, want nothing, as the record that published it wrote", event.ID, owed)
+	}
+	if owedSeq != ownerSeq {
+		t.Errorf("event %d's owed_seq is %d after the late record, want %d, the publishing record's read", event.ID, owedSeq, ownerSeq)
+	}
+}
+
 // holdStoreWrite writes nodes and tuples in hold's own transaction and leaves it uncommitted: a
 // writer's insert of the same key waits to learn whether this row commits.
 func holdStoreWrite(t *testing.T, database *store.Store, hold *lockstep.Hold, nodes []graphstore.Node, tuples []graphstore.Tuple) {

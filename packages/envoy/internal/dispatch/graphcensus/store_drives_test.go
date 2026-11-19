@@ -417,14 +417,26 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			}
 			queuedAt(t, comments, "comments", "insert into comments")
 		},
-		// The asks' nodes, which their batch writes before its rows, and the session nodes of
-		// their followers.
+		// The asks' nodes, which their batch writes before its rows, and the session nodes of their
+		// followers; the questions' body blocks with their links and the asks' citations; and the
+		// part the person an ask reaches takes in it with the read mark it stands at, whose first
+		// tuple makes that person's node (graphstore.ToPerson).
 		Counts: map[StoredKind][]string{
 			{graphstore.KindAsk, graphstore.AttributeVisibility}:     {graphstore.KindAsk},
 			{graphstore.KindAsk, graphstore.AttributeState}:          {graphstore.KindAsk},
 			{graphstore.KindAsk, graphstore.AttributeProject}:        {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.TupleMentions}:           {"citation"},
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.TupleParticipatesIn}:  {"participation"},
+			{graphstore.KindPerson, graphstore.TupleReadThrough}:     {"read_mark"},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:     {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:          {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:        {"body_block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:             {"body_block"},
+			{refs.BlockNodeKind, graphstore.TupleMentions}:           {"body_block_ref"},
 		},
 	}, {
 		Name: seedCommentsDrive, Database: database,
@@ -445,8 +457,10 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				t.Fatalf("the seed exited %d; it wrote:\n%s", code, process.Output.String())
 			}
 		},
-		// The comments, as the comment path states one, in their project, their one author's
-		// node, and the messages' nodes, which the seed writes after its comments.
+		// The comments, as the comment path states one, in their project, their meaning tuples and
+		// citations, and the messages, which the seed writes after its comments, with their author,
+		// parent, meaning tuples and citations; the body blocks of both with their links, and each
+		// author's part in the thread written to with the read mark the write moves.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
@@ -454,11 +468,24 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
+			{graphstore.KindComment, graphstore.TupleAnswers}:        {"reply"},
+			{graphstore.KindComment, graphstore.TupleRepliesTo}:      {"reply"},
+			{graphstore.KindComment, graphstore.TuplePartOf}:         {"reply"},
+			{graphstore.KindComment, graphstore.TupleMentions}:       {"citation"},
 			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeProject}:    {graphstore.KindMessage},
-			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
-			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
+			{graphstore.KindMessage, graphstore.TupleAuthoredBy}:     {"message_relation"},
+			{graphstore.KindMessage, graphstore.TuplePartOf}:         {"message_relation", "reply"},
+			{graphstore.KindMessage, graphstore.TupleRepliesTo}:      {"reply"},
+			{graphstore.KindMessage, graphstore.TupleMentions}:       {"citation"},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:     {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:          {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:        {"body_block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:             {"body_block"},
+			{refs.BlockNodeKind, graphstore.TupleMentions}:           {"body_block_ref"},
+			{graphstore.KindPerson, graphstore.TupleParticipatesIn}:  {"participation"},
+			{graphstore.KindPerson, graphstore.TupleReadThrough}:     {"read_mark"},
 		},
 	}}
 }

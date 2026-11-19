@@ -134,8 +134,7 @@ func inboxDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindComment, graphstore.TupleRepliesTo}:              {"reply"},
 			{graphstore.KindComment, graphstore.TuplePartOf}:                 {"reply"},
 			{graphstore.KindComment, graphstore.TupleDeliveredTo}:            {"person_delivery"},
-			{graphstore.KindComment, graphstore.TupleMentions}:               {"mention"},
-			{graphstore.KindAsk, graphstore.TupleDeliveredTo}:                {"person_delivery"},
+			{graphstore.KindComment, graphstore.TupleMentions}:               {"citation"},
 			{graphstore.KindPerson, graphstore.TupleParticipatesIn}:          {"participation"},
 			{graphstore.KindPerson, graphstore.TupleReadThrough}:             {"read_mark"},
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}:             {"body_block"},
@@ -236,7 +235,15 @@ func inboxDrives(t *testing.T) []StoreDrive {
 			}
 			t.Fatalf("the refs grammar owes %#v, and not comment %s", owed, owedComment)
 		},
-		Counts: map[StoredKind][]string{},
+		// The comment's citation of ABAN-1 and its body block, with that block's link to the issue.
+		Counts: map[StoredKind][]string{
+			{graphstore.KindComment, graphstore.TupleMentions}:   {"citation"},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:      {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:    {"body_block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"body_block"},
+			{refs.BlockNodeKind, graphstore.TupleMentions}:       {"body_block_ref"},
+		},
 	}, {
 		// rebuild-refs over the database, whose one source with references to restate is a
 		// second comment an older build wrote, citing ABAN-1.
@@ -247,7 +254,8 @@ func inboxDrives(t *testing.T) []StoreDrive {
 				t.Fatalf("rebuild every source's references: %v", err)
 			}
 		},
-		Counts: map[StoredKind][]string{},
+		// The second comment's citation of ABAN-1, which rebuild-refs states again.
+		Counts: map[StoredKind][]string{{graphstore.KindComment, graphstore.TupleMentions}: {"citation"}},
 	}}
 }
 
@@ -273,12 +281,14 @@ func writeAnOlderCitingComment(t *testing.T, database *store.Store) string {
 	return comment
 }
 
-// seedAnAbandonedMention writes, on issue ABAN-1, a comment of alice's that mentions the session
-// ses_abandoned, its comment.created, and the mention's one attempt as this build opens it - its
-// node first, then its row naming it - created past the delivery sweep's window and claimed by
-// no sender: an attempt nothing will send, which the outbox settles failed as it publishes the
-// comment (outbox's mentionComment.settleAbandoned). The session's node and the comment's own
-// facts are written here too, so the drive reads what the settle and the publish append alone.
+// seedAnAbandonedMention writes, on issue ABAN-1, which routes to the session ses_abandoned, a
+// comment of alice's that mentions that session, its comment.created, and the mention's one
+// attempt as this build opens it - its node first, then its row naming it - created past the
+// delivery sweep's window and claimed by no sender: an attempt nothing will send. The route's copy
+// of the comment is the mention's to decide, so the outbox settles that attempt failed as it
+// publishes the comment and publishes the copy (outbox's mentionComment.settleAbandoned). The
+// session's node and the comment's own facts are written here too, so the drive reads what the
+// settle and the publish append alone.
 func seedAnAbandonedMention(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -289,8 +299,8 @@ func seedAnAbandonedMention(t *testing.T, database *store.Store) {
 		with project as (
 			insert into projects (key, name, default_assignee) values ('ABAN', 'Abandoned', 'alice') returning key
 		), issue as (
-			insert into issues (key, project_key, number, title, created_by, rank)
-			select 'ABAN-1', key, 1, 'Mentioned', '{"kind":"user","id":"alice"}', 'U' from project returning key
+			insert into issues (key, project_key, number, title, created_by, rank, route)
+			select 'ABAN-1', key, 1, 'Mentioned', '{"kind":"user","id":"alice"}', 'U', 'session:ses_abandoned' from project returning key
 		)
 		insert into comments (issue_key, author, body, created_at)
 		select key, '{"kind":"user","id":"alice"}', 'Can you take this?', now() - $1::float8 * interval '1 second' from issue
@@ -298,9 +308,10 @@ func seedAnAbandonedMention(t *testing.T, database *store.Store) {
 	`, abandonedMentionDelay.Seconds()).Scan(&comment, &created); err != nil {
 		t.Fatalf("write the comment that mentions ses_abandoned: %v", err)
 	}
+	abandonedSession := "ses_abandoned"
 	payload, err := json.Marshal(model.CommentEventPayload{Comment: model.Comment{
 		ID: comment, IssueKey: new("ABAN-1"), Author: alice, Body: "Can you take this?", CreatedAt: created,
-		Mentions: []model.Mention{{Target: "session:ses_abandoned", Delivery: "aside"}},
+		Mentions: []model.Mention{{Target: "session:" + abandonedSession, Delivery: "aside", SessionID: &abandonedSession}},
 	}})
 	if err != nil {
 		t.Fatalf("encode the comment's comment.created: %v", err)

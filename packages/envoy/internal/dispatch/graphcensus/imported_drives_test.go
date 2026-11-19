@@ -32,7 +32,11 @@ import (
 // import graphcensus - docs imports it for the block-index tick's comment write, api imports
 // docs, and grapherase imports api - so the package's own tests cannot import them. It hands its
 // drives to TestTheSizingCountsEveryTupleTheWritersAppend as the test binary starts.
-func init() { graphcensus.ImportedDrives = importedDrives }
+func init() {
+	graphcensus.ImportedDrives = func(t *testing.T) []graphcensus.StoreDrive {
+		return slices.Concat(importedDrives(t), mentionClaimDrives(t))
+	}
+}
 
 // writersServerURL is the public origin the writers' server serves under.
 const writersServerURL = "https://dispatch.sizing.invalid"
@@ -61,6 +65,10 @@ type writersRig struct {
 	release func()
 	// resume is one pass of the delivery sweep, which the maintenance loop runs once a minute.
 	resume func(context.Context) error
+	// holdLookups holds every registry lookup of the held session, which a send of a mention of
+	// it makes once it has claimed its attempt and before it sends (api's mentionResolutionFor),
+	// until the function it answers is called.
+	holdLookups func() (open func())
 	// The issue and its spec, the issue's notes document and the slug an anchor names it by, the
 	// comment on the issue the erase takes, the comment whose held send the settle settles (and,
 	// held, the one whose mention a Retry sends again), the ask the follower follows, the targeted
@@ -82,6 +90,26 @@ func newStoppableWritersRig(t *testing.T, stopping *func()) *writersRig {
 	released := make(chan struct{})
 	var once sync.Once
 	rig.release = func() { once.Do(func() { close(released) }) }
+	// The gate the held session's registry lookups wait on while one is set (holdLookups).
+	var gateMu sync.Mutex
+	var gate chan struct{}
+	rig.holdLookups = func() func() {
+		held := make(chan struct{})
+		gateMu.Lock()
+		gate = held
+		gateMu.Unlock()
+		var opened sync.Once
+		return func() {
+			opened.Do(func() {
+				gateMu.Lock()
+				if gate == held {
+					gate = nil
+				}
+				gateMu.Unlock()
+				close(held)
+			})
+		}
+	}
 	record := func(session string) map[string]any {
 		return map[string]any{
 			"session_id": session, "title": session, "capabilities": []string{"btw", "steer"},
@@ -99,6 +127,18 @@ func newStoppableWritersRig(t *testing.T, stopping *func()) *writersRig {
 			_ = json.NewEncoder(w).Encode(records)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
 			session := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
+			if session == heldSession {
+				gateMu.Lock()
+				held := gate
+				gateMu.Unlock()
+				if held != nil {
+					select {
+					case <-held:
+					case <-r.Context().Done():
+						return
+					}
+				}
+			}
 			for _, live := range known {
 				if live == session {
 					_ = json.NewEncoder(w).Encode(record(session))
@@ -217,9 +257,23 @@ func (r *writersRig) request(t *testing.T, method, target string, body any, logi
 // keyedRequest is request under the Idempotency-Key key, none where key is empty.
 func (r *writersRig) keyedRequest(t *testing.T, method, target string, body any, login, key string, want int) []byte {
 	t.Helper()
-	encoded, err := json.Marshal(body)
+	response, err := r.serve(method, target, body, login, key)
 	if err != nil {
 		t.Fatalf("encode %s %s: %v", method, target, err)
+	}
+	if response.Code != want {
+		t.Fatalf("%s %s: status=%d body=%s, want %d", method, target, response.Code, response.Body.String(), want)
+	}
+	return response.Body.Bytes()
+}
+
+// serve sends one request to the server, as keyedRequest does, and answers its response whatever
+// it is: a drive that sends a request from a goroutine of its own reads the answer once that
+// goroutine is done.
+func (r *writersRig) serve(method, target string, body any, login, key string) (*httptest.ResponseRecorder, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
 	}
 	request := httptest.NewRequest(method, target, bytes.NewReader(encoded))
 	request.Header.Set("Content-Type", "application/json")
@@ -233,10 +287,7 @@ func (r *writersRig) keyedRequest(t *testing.T, method, target string, body any,
 	}
 	response := httptest.NewRecorder()
 	r.handler.ServeHTTP(response, request)
-	if response.Code != want {
-		t.Fatalf("%s %s: status=%d body=%s, want %d", method, target, response.Code, response.Body.String(), want)
-	}
-	return response.Body.Bytes()
+	return response, nil
 }
 
 // decoded decodes body into a T, failing the test where it cannot.
@@ -301,13 +352,18 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	// The direct message alice sends the message's session, which that session accepts, and the
 	// keyed comment whose repeat puts its mention back on a lane, with its body and its key.
 	var direct, replayed string
+	// The second comment mentioning the held session, whose first attempt a lane stands down from
+	// beside a Retry in flight; the Retry's answer, and what lets its held lookup through.
+	var overtaken string
+	retried := make(chan *httptest.ResponseRecorder, 1)
+	var openLookups func()
 	replayedBody := map[string]any{
 		"body": "Over to you, @" + messageSession + ".", "mentions": []map[string]any{{"target": "session:" + messageSession}},
 	}
 	const replayedKey = "sizing-replayed-comment"
 	comment := func(name string, sites ...string) []string {
 		return append([]string{name, "api/comment_create.go#writeNode", "api/comment_create.go#caused",
-			"graphstore/people.go#QueueAuthored"}, sites...)
+			"graphstore/people.go#QueueAuthored", "inboxwrite/record.go#Queue"}, sites...)
 	}
 	return append([]graphcensus.StoreDrive{{
 		Name: "api/issue_create.go#createIssue", Database: r.database,
@@ -345,27 +401,27 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: newBlockCounted,
 	}, {
 		Name: "api/comment_create.go#createCommentFor, on an issue", Database: r.database,
-		Sites: comment("api/comment_create.go#createCommentFor"),
+		Sites: comment("api/comment_create.go#createCommentFor", "inboxwrite/thread.go#queueKeepRow"),
 		Drive: func(t *testing.T) {
 			r.comment = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
 				map[string]any{"body": "A remark on the issue."}, "alice", http.StatusCreated)).ID
 		},
 		// The comment, the first alice writes, and alice: her node is made by the write that first
-		// records her.
-		Counts: map[graphcensus.StoredKind][]string{
-			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
-			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
-			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
-			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
-			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
-			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
-		},
+		// records her. Her part in the comment's thread and the read mark the write moves, and the
+		// comment's body block.
+		Counts: merged(objectNodeCounted(graphstore.KindComment), bodyBlockCounted, ownThreadCounted,
+			map[graphcensus.StoredKind][]string{
+				{graphstore.KindComment, graphstore.TupleAuthoredBy}:    {graphstore.TupleAuthoredBy},
+				{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
+				{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
+			}),
 	}, {
 		// A comment anchored to the notes, whose mention resolves to the held session: the
 		// listener holds that send, so what the comment's create appends is read before its settle
 		// runs.
 		Name: "api/comment_create.go#createCommentFor, anchored to a document, mentioning a session", Database: r.database,
-		Sites: comment("api/comment_create.go#createCommentFor"),
+		Sites: comment("api/comment_create.go#createCommentFor", "api/comment_delivery.go#take",
+			"api/comment_delivery.go#recordCommentDeliveryResolution"),
 		Drive: func(t *testing.T) {
 			r.mentioned = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
 				"body": "Does this ship, @" + heldSession + "?", "mentions": []map[string]any{{"target": "session:" + heldSession}},
@@ -378,22 +434,79 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				t.Fatalf("the mention of %s sent nothing to the listener within 30s", heldSession)
 			}
 		},
-		Counts: map[graphcensus.StoredKind][]string{
-			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
-			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
-			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
-			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
-			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
-		},
+		Counts: merged(objectNodeCounted(graphstore.KindComment), bodyBlockCounted, ownThreadCounted,
+			attemptCounted(append(openedAttempt, graphstore.AttemptClaimedAt)...), map[graphcensus.StoredKind][]string{
+				{graphstore.KindComment, graphstore.TupleAuthoredBy}: {graphstore.TupleAuthoredBy},
+				{graphstore.KindComment, graphstore.TupleAnchoredTo}: {graphstore.TupleAnchoredTo},
+			}),
 	}, {
+		// The held send's settle, which lets the lane take the next send of that session: the
+		// first attempt of a second comment's mention, queued behind the held one. A Retry of that
+		// mention opened an attempt of its own while the lane held the first one claimed, and the
+		// Retry's send waits on the session's lookup, so the lane finds a later attempt still being
+		// sent and stands down from the first: it gives the claim back and leaves the attempt
+		// pending (api's claimCommentDeliveryAttempt).
 		Name: "api/comment_delivery.go#completeCommentDelivery", Database: r.database,
 		Sites: []string{"api/comment_delivery.go#completeCommentDelivery", "graphstore/people.go#QueueReached",
-			"graphstore/people.go#QueueSessionRecorded"},
+			"graphstore/people.go#QueueSessionRecorded", "api/comment_delivery.go#standDown"},
+		Ready: func(t *testing.T) {
+			overtaken = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
+				"body": "And does this, @" + heldSession + "?", "mentions": []map[string]any{{"target": "session:" + heldSession}},
+			}, "alice", http.StatusCreated)).ID
+			r.awaitTrue(t, "comment "+overtaken+"'s first attempt claimed for its lane", `
+				select exists (select 1 from comment_deliveries where comment_id = $1::uuid and attempt = 1 and claimed_at is not null)
+			`, overtaken)
+			openLookups = r.holdLookups()
+			t.Cleanup(openLookups)
+			go func() {
+				response, err := r.serve(http.MethodPost, "/api/v1/comments/"+overtaken+"/deliveries",
+					map[string]any{"delivery": "btw"}, "alice", "")
+				if err != nil {
+					response = nil
+				}
+				retried <- response
+			}()
+			r.awaitTrue(t, "the Retry of comment "+overtaken+" opening its second attempt", `
+				select exists (select 1 from comment_deliveries where comment_id = $1::uuid and attempt = 2 and state = 'pending')
+			`, overtaken)
+		},
 		Drive: func(t *testing.T) {
 			r.release()
 			r.settledAttempts(t, r.mentioned, model.DeliveryStateSent)
+			r.awaitTrue(t, "the lane standing down from comment "+overtaken+"'s first attempt", `
+				select exists (
+					select 1 from comment_deliveries
+					where comment_id = $1::uuid and attempt = 1 and state = 'pending' and claimed_at is null
+				)
+			`, overtaken)
 		},
-		Counts: sessionNodeCounted,
+		// The held send's settle - its attempt's facts, its delivered_to and the session's node -
+		// and the lane's stand-down, which retracts the claim on the overtaken attempt.
+		Counts: merged(sessionNodeCounted, attemptDelivered("delivery"), attemptCounted(graphstore.AttemptClaimedAt,
+			graphstore.AttemptState, graphstore.AttemptEnvelopeID, graphstore.TupleOwedTo)),
+	}, {
+		// The Retry's send, once its lookup is let through: it delivers the mention, and its
+		// settle settles the attempt the lane stood down from failed, as superseded.
+		Name: "api/comment_delivery.go#supersedeCommentDelivery, by the Retry that overtook a lane", Database: r.database,
+		Sites: []string{"api/comment_delivery.go#supersedeCommentDelivery", "api/comment_delivery.go#recordCommentDeliveryResolution",
+			"api/comment_delivery.go#completeCommentDelivery"},
+		Drive: func(t *testing.T) {
+			openLookups()
+			select {
+			case response := <-retried:
+				if response == nil || response.Code != http.StatusCreated {
+					t.Fatalf("the Retry of comment %s answered %v, want %d", overtaken, response, http.StatusCreated)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatalf("the Retry of comment %s did not answer within 30s", overtaken)
+			}
+			r.awaitTrue(t, "comment "+overtaken+"'s Retry delivering it and its first attempt settling superseded", `
+				select exists (select 1 from comment_deliveries where comment_id = $1::uuid and attempt = 2 and state = 'sent')
+				   and exists (select 1 from comment_deliveries where comment_id = $1::uuid and attempt = 1 and state = 'failed')
+			`, overtaken)
+		},
+		Counts: merged(attemptDelivered("delivery"), attemptCounted(graphstore.AttemptClaimedAt, graphstore.AttemptState,
+			graphstore.AttemptEnvelopeID, graphstore.AttemptError, graphstore.TupleOwedTo)),
 	}, {
 		// The reply answers an attempt the listener refused, which the answer flips to sent: a
 		// delivery its session is owed a node for, and the one write that states it delivered.
@@ -412,18 +525,12 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"actor": sessionActor(refusedSession), "attempt": 1, "body": "Yes, I take it.",
 			}, "", http.StatusCreated)
 		},
-		// The reply, its author's node, the first write that records the session, and the
-		// delivered_to of the attempt the reply makes a delivery, which the term delivery counts
-		// once for each attempt the listener took or an answer flipped to sent.
-		Counts: map[graphcensus.StoredKind][]string{
-			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
-			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
-			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
-			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
-			{graphstore.KindComment, graphstore.TupleDeliveredTo}:    {"delivery"},
-			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
-			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
-		},
+		// The reply, its author's node, the first write that records the session, its meaning
+		// tuples, its body block and the session's part in the thread, and the attempt the reply
+		// flips to sent: that attempt's facts and its answered_by.
+		Counts: merged(objectNodeCounted(graphstore.KindComment), sessionNodeCounted, bodyBlockCounted, sessionPartCounted,
+			replyCounted, attemptDelivered("delivery"),
+			attemptCounted(graphstore.AttemptState, graphstore.AttemptError, graphstore.TupleAnsweredBy)),
 	}, {
 		// A Retry of the refused mention: its second attempt, which the listener refuses too, so
 		// it settles failed once the take-over window has passed.
@@ -436,7 +543,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				select exists (select 1 from comment_deliveries where comment_id = $1::uuid and attempt = 2 and state = 'failed')
 			`, r.mentioned)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: attemptCounted(append(openedAttempt, graphstore.AttemptClaimedAt, graphstore.AttemptError)...),
 	}, {
 		// The session answers that second attempt with a reply naming the first block of the
 		// comment it answers.
@@ -448,7 +555,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"actor": sessionActor(refusedSession), "attempt": 2, "body": "Taken, as that block asks.", "reply_to_block": "b1",
 			}, "", http.StatusCreated)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: merged(objectNodeCounted(graphstore.KindComment), bodyBlockCounted, sessionPartCounted, replyCounted,
+			attemptDelivered("delivery"), attemptCounted(graphstore.AttemptState, graphstore.AttemptError, graphstore.TupleAnsweredBy)),
 	}, {
 		// A message the request stores on the issue, targeted at a session the listener takes the
 		// send of at once: the message's node, in the issue's project, and the session's node the
@@ -465,7 +573,13 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				   and exists (select 1 from message_deliveries where message_id = $1::uuid and state = 'sent')
 			`, r.message)
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindMessage)),
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindMessage), bodyBlockCounted, ownThreadCounted,
+			attemptDelivered("message_delivery"), attemptCounted(append(openedAttempt,
+				graphstore.AttemptClaimedAt, graphstore.AttemptEnvelopeID)...), map[graphcensus.StoredKind][]string{
+				{graphstore.KindMessage, graphstore.TupleAuthoredBy}:  {"message_relation"},
+				{graphstore.KindMessage, graphstore.TuplePartOf}:      {"message_relation"},
+				{graphstore.KindMessage, graphstore.TupleAddressedTo}: {"message_pointer"},
+			}),
 	}, {
 		// alice's direct message to the message's session from its Agents page, which the session
 		// takes as her own turn within the minute it may: the attempt's accepted_at and
@@ -483,7 +597,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/messages/"+direct+"/deliveries/1/accept",
 				map[string]any{"actor": sessionActor(messageSession)}, "", http.StatusOK)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: attemptCounted(graphstore.AttemptAcceptedAt, graphstore.AttemptAcceptedAs),
 	}, {
 		// The session's reply to that message, a message of the same issue's project.
 		Name: "api/message_delivery.go#insertSessionReply", Database: r.database,
@@ -493,7 +607,17 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"actor": sessionActor(messageSession), "attempt": 1, "body": "On it.",
 			}, "", http.StatusCreated)
 		},
-		Counts: objectNodeCounted(graphstore.KindMessage),
+		// The reply, its node, author, target and parent, its body block, the delivered_to the
+		// person who started the thread, the session's part in it, and the answered_by of the
+		// attempt it answers.
+		Counts: merged(objectNodeCounted(graphstore.KindMessage), bodyBlockCounted, sessionPartCounted,
+			attemptCounted(graphstore.TupleAnsweredBy), map[graphcensus.StoredKind][]string{
+				{graphstore.KindMessage, graphstore.TupleAuthoredBy}:  {"message_relation"},
+				{graphstore.KindMessage, graphstore.TupleAddressedTo}: {"message_pointer"},
+				{graphstore.KindMessage, graphstore.TuplePartOf}:      {"reply"},
+				{graphstore.KindMessage, graphstore.TupleRepliesTo}:   {"reply"},
+				{graphstore.KindMessage, graphstore.TupleDeliveredTo}: {"person_delivery"},
+			}),
 	}, {
 		// A broadcast to the message's session: the copy it stores for that session, a message on
 		// no issue, between alice and the session, whose node names those parties.
@@ -504,12 +628,34 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/broadcasts", map[string]any{
 				"body": "To everyone.", "delivery": "btw", "session_ids": []string{messageSession},
 			}, "alice", http.StatusCreated)
+			// The copy is delivered on a goroutine of the server's own once the request answered
+			// (deliverBroadcast), so the drive waits for its attempt to settle.
+			r.awaitTrue(t, "the broadcast's copy delivered", `
+				select exists (
+					select 1 from message_deliveries d join messages m on m.id = d.message_id
+					where m.broadcast_id is not null and d.state = 'sent'
+				) and not exists (
+					select 1 from message_deliveries d join messages m on m.id = d.message_id
+					where m.broadcast_id is not null and d.state = 'pending'
+				)`)
 		},
-		Counts: map[graphcensus.StoredKind][]string{
+		// The copy's node, its author and its page, its target and its broadcast, its body block on
+		// no project, alice's part in the thread it opens, and its attempt from open to sent.
+		Counts: merged(attemptDelivered("message_delivery"), attemptCounted(append(openedAttempt,
+			graphstore.AttemptClaimedAt, graphstore.AttemptEnvelopeID)...), map[graphcensus.StoredKind][]string{
 			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeParties}:    {graphstore.KindMessage},
-		},
+			{graphstore.KindMessage, graphstore.TupleAuthoredBy}:     {"message_relation"},
+			{graphstore.KindMessage, graphstore.TuplePartOf}:         {"message_relation"},
+			{graphstore.KindMessage, graphstore.TupleAddressedTo}:    {"message_pointer"},
+			{graphstore.KindMessage, graphstore.TupleBroadcastID}:    {"message_pointer"},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:     {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:          {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeParties}:        {"body_block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:             {"body_block"},
+			{graphstore.KindPerson, graphstore.TupleParticipatesIn}:  {"participation"},
+		}),
 	}, {
 		// A session's ask on the issue: the ask's node, in the issue's project, who asked it, and
 		// the asker's follow, planned in the create's read phase (asks.PlanFollowNewAsk).
@@ -520,7 +666,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"question": "Which store do the writers take?", "actor": sessionActor("ses_asker"),
 			}, "", http.StatusCreated)).ID
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted,
+			askDeliveredCounted, bodyBlockCounted, sessionPartCounted, map[graphcensus.StoredKind][]string{
+				{graphstore.KindPerson, graphstore.TupleParticipatesIn}: {"participation"},
+			}),
 	}, {
 		// The removal of an untouched document of the issue, made just before by typing a title:
 		// its node stated gone, which the term artifact_removed counts.
@@ -555,7 +704,12 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_requester")}, "", http.StatusCreated)
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
+		// Beside the request's own facts, the person it waits on reached and taking part, the
+		// requester taking part, and the question's body blocks.
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted,
+			askDeliveredCounted, bodyBlockCounted, sessionPartCounted, map[graphcensus.StoredKind][]string{
+				{graphstore.KindPerson, graphstore.TupleParticipatesIn}: {"participation"},
+			}),
 	}, {
 		// That request renewed by another session while it waits on the person: a retry, which
 		// appends no event.
@@ -567,15 +721,23 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: merged(sessionNodeCounted, followCounted),
 	}, {
-		// A new version of the spec moves the request to its agent, and a session asking for the
-		// approval again hands it back to the person.
-		Name: "api/reviews.go#renewApprovalAsk, handing the request back", Database: r.database,
-		Sites: []string{"api/reviews.go#renewApprovalAsk", "asks/followers.go#Queue", "asks/followers.go#queueFollow"},
-		Ready: func(t *testing.T) {
+		// A new version of the spec moves the open request to it (docs.MoveApprovalAsk): its
+		// question reworded to name that version, and the request moved to its agent.
+		Name: "docs/approval_ask.go#rewriteApprovalAsk", Database: r.database,
+		Sites: []string{"docs/approval_ask.go#rewriteApprovalAsk", "api/artifacts.go#storeArtifact", "refs/blocks.go#Queue"},
+		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "spec.md", "content": "# Spec\n\nWhat the writers write, read once more.\n",
 			}, "alice", http.StatusCreated)
 		},
+		// The version's new block and the one it took out, gone.
+		Counts: merged(newBlockCounted, map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.AttributeState}: {"block_gone"},
+		}),
+	}, {
+		// A session asking for the approval again hands the moved request back to the person.
+		Name: "api/reviews.go#renewApprovalAsk, handing the request back", Database: r.database,
+		Sites: []string{"api/reviews.go#renewApprovalAsk", "asks/followers.go#Queue", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_handback")}, "", http.StatusCreated)
@@ -601,9 +763,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			`, r.notes)
 		},
 		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted,
-			map[graphcensus.StoredKind][]string{
-				{graphstore.KindAsk, graphstore.TupleAnchoredTo}: {"ask_opened"},
-				{graphstore.KindAsk, graphstore.TuplePartOf}:     {"ask_opened"},
+			askDeliveredCounted, bodyBlockCounted, sessionPartCounted, map[graphcensus.StoredKind][]string{
+				{graphstore.KindAsk, graphstore.TupleAnchoredTo}:        {"ask_opened"},
+				{graphstore.KindAsk, graphstore.TuplePartOf}:            {"ask_opened"},
+				{graphstore.KindPerson, graphstore.TupleParticipatesIn}: {"participation"},
 			}),
 	}, {
 		// A person's live edit of the notes, which a build without the block index then wrote as a
@@ -680,7 +843,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"snoozed_until": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 			}, "alice", http.StatusOK)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindPerson, graphstore.TupleSnoozed}: {"snooze"}},
 	}, {
 		// alice reads the thread of her comment on the issue through now: her read_through.
 		Name: "api/replies.go#putThreadRead", Database: r.database,
@@ -690,7 +853,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"read_through": time.Now().UTC().Format(time.RFC3339Nano),
 			}, "alice", http.StatusNoContent)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindPerson, graphstore.TupleReadThrough}: {"read_mark"}},
 	}, {
 		// alice clears her conversation with the message's session: her cleared, from her node.
 		Name: "api/state.go#putUserAgentState", Database: r.database,
@@ -700,15 +863,17 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"cleared_before": time.Now().UTC().Format(time.RFC3339Nano),
 			}, "alice", http.StatusOK)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindPerson, graphstore.TupleCleared}: {"clear"}},
 	}, {
 		// alice marks her whole inbox read: the read_through of every thread a reply moved.
 		Name: "api/inbox_read.go#commitInboxMarks", Database: r.database,
 		Sites: []string{"api/inbox_read.go#commitInboxMarks"},
 		Drive: func(t *testing.T) {
-			r.request(t, http.MethodPost, "/api/v1/me/inbox/read", map[string]any{}, "alice", http.StatusOK)
+			r.request(t, http.MethodPost, "/api/v1/me/inbox/read", map[string]any{
+				"read_through": time.Now().UTC().Format(time.RFC3339Nano),
+			}, "alice", http.StatusOK)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindPerson, graphstore.TupleReadThrough}: {"read_mark"}},
 	}, {
 		// A Retry of the mention the held send delivered: a second attempt, opened by the route
 		// and sent at once now that the listener lets that session's sends through.
@@ -719,13 +884,14 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				map[string]any{"delivery": "btw"}, "alice", http.StatusCreated)
 			r.settledAttempts(t, r.held, model.DeliveryStateSent)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: merged(attemptDelivered("delivery"), attemptCounted(append(openedAttempt,
+			graphstore.AttemptClaimedAt, graphstore.AttemptEnvelopeID)...)),
 	}, {
 		// A keyed repeat of a comment whose process died after it committed and before its
 		// mention's one attempt was sent: the repeat claims that attempt (claimQueuedMention) and
 		// puts it back on the mention sender's lane, which sends it.
-		Name: "api/comment_mention_sender.go#claimQueuedMention", Database: r.database,
-		Sites: []string{"api/comment_mention_sender.go#claimQueuedMention"},
+		Name: "api/comment_mention_claims.go#claimQueuedMention", Database: r.database,
+		Sites: []string{"api/comment_mention_claims.go#claimQueuedMention"},
 		Ready: func(t *testing.T) {
 			replayed = decoded[model.Comment](t, r.keyedRequest(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", replayedBody,
 				"alice", replayedKey, http.StatusCreated)).ID
@@ -740,7 +906,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.keyedRequest(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", replayedBody, "alice", replayedKey, http.StatusCreated)
 			r.settledAttempts(t, replayed, model.DeliveryStateSent)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: attemptCounted(graphstore.AttemptClaimedAt, graphstore.AttemptState, graphstore.AttemptEnvelopeID, graphstore.TupleOwedTo),
 	}, {
 		// The delivery sweep's settle of the held mention's first attempt as superseded: a lane
 		// that stood down from it left it pending and unclaimed while the Retry's attempt
@@ -760,7 +926,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}
 			r.settledAttempts(t, r.held, model.DeliveryStateFailed)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: attemptCounted(graphstore.AttemptClaimedAt, graphstore.AttemptState, graphstore.AttemptError),
 	}, {
 		// The delivery sweep's settle of an owed attempt whose comment no longer holds its
 		// mention: the refused mention's second attempt, left pending and unclaimed past the
@@ -786,11 +952,11 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				select exists (select 1 from comment_deliveries where comment_id = $1::uuid and attempt = 2 and state = 'failed')
 			`, r.mentioned)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: attemptCounted(graphstore.AttemptClaimedAt, graphstore.AttemptState, graphstore.AttemptError),
 	}, {
 		// A Retry of the targeted message: its second attempt, sent at once.
 		Name: "api/message_delivery.go#insertMessageDeliveryAttempt", Database: r.database,
-		Sites: []string{"api/message_delivery.go#insertMessageDeliveryAttempt"},
+		Sites: []string{"api/message_delivery.go#insertMessageDeliveryAttempt", "api/message_delivery.go#recordPendingMessageDelivery"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/messages/"+r.message+"/deliveries",
 				map[string]any{"delivery": "steer"}, "alice", http.StatusCreated)
@@ -798,11 +964,37 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				select exists (select 1 from message_deliveries where message_id = $1::uuid and attempt = 2 and state = 'sent')
 			`, r.message)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: merged(attemptDelivered("message_delivery"), attemptCounted(append(openedAttempt,
+			graphstore.AttemptClaimedAt, graphstore.AttemptEnvelopeID)...)),
+	}, {
+		// A Retry of the targeted message whose second attempt a process left pending and
+		// unclaimed, dying before its send: the Retry resumes that attempt under its own number,
+		// in the mode it recorded, and sends it.
+		Name: "api/message_delivery.go#claimAttempt", Database: r.database,
+		Sites: []string{"api/message_delivery.go#claimAttempt", "api/message_delivery.go#recordPendingMessageDelivery"},
+		Ready: func(t *testing.T) {
+			if _, err := r.database.Pool.Exec(ctx, `
+				update message_deliveries set state = 'pending', claimed_at = null, envelope_id = null
+				where message_id = $1::uuid and attempt = 2
+			`, r.message); err != nil {
+				t.Fatalf("leave the message's second attempt as a process that died before its send leaves it: %v", err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, "/api/v1/messages/"+r.message+"/deliveries",
+				map[string]any{"delivery": "steer"}, "alice", http.StatusCreated)
+			r.awaitTrue(t, "message "+r.message+"'s second attempt resumed and settling sent", `
+				select exists (select 1 from message_deliveries where message_id = $1::uuid and attempt = 2 and state = 'sent')
+				   and not exists (select 1 from message_deliveries where message_id = $1::uuid and attempt = 3)
+			`, r.message)
+		},
+		// The claim and the state the resumed attempt moves through, its envelope and its owed_to
+		// asserted again and retracted; its delivered_to stands from its first send.
+		Counts: attemptCounted(graphstore.AttemptClaimedAt, graphstore.AttemptState, graphstore.AttemptEnvelopeID, graphstore.TupleOwedTo),
 	}, {
 		// The erase of the issue's comment, which deletes its tuples and appends none.
 		Name: "grapherase/erase.go#apply", Database: r.database,
-		Sites: []string{"grapherase/erase.go#apply"},
+		Sites: []string{"grapherase/erase.go#apply", "grapherase/erase.go#eraseItemParts"},
 		Drive: func(t *testing.T) {
 			url := r.database.Pool.Config().ConnString()
 			listing, err := grapherase.Erase(ctx, url, "comment", r.comment, "", 10*time.Millisecond)
@@ -819,6 +1011,73 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: map[graphcensus.StoredKind][]string{},
 	}}, askDrives(t, r)...)
+}
+
+// mentionClaimDrives are the drives of the mention sender's refresh and release, over a rig of
+// their own whose server's lifetime the release ends. A comment mentions the held session, whose
+// send the listener holds, and a second comment mentions it again, whose send waits behind the
+// first on that session's lane. The sender writes the claims of both again on its refresh tick
+// (api's mentionClaimRefresh, a third of model.DeliveryClaimLapse), which nothing outside api can
+// shorten, so the refresh drive waits for one tick. The release drive then ends the server's
+// lifetime before it lets the held send through: that send settles sent, and the lane starts
+// nothing more, so the stop gives back the claim of the send that never started.
+func mentionClaimDrives(t *testing.T) []graphcensus.StoreDrive {
+	t.Helper()
+	var stop func()
+	r := newStoppableWritersRig(t, &stop)
+	var queued string
+	mention := func(t *testing.T, issue, body string) string {
+		t.Helper()
+		return decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
+			"body": body, "mentions": []map[string]any{{"target": "session:" + heldSession}},
+		}, "alice", http.StatusCreated)).ID
+	}
+	return []graphcensus.StoreDrive{{
+		Name: "api/comment_mention_claims.go#refreshMentionClaims", Database: r.database,
+		Sites: []string{"api/comment_mention_claims.go#refreshMentionClaims"},
+		Ready: func(t *testing.T) {
+			issue := decoded[struct {
+				Key string `json:"key"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "SIZE", "title": "What the mention sender holds",
+			}, "alice", http.StatusCreated)).Key
+			mention(t, issue, "Does this ship, @"+heldSession+"?")
+			select {
+			case <-r.arrived:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("the mention of %s sent nothing to the listener within 30s", heldSession)
+			}
+			queued = mention(t, issue, "And this, @"+heldSession+"?")
+			r.awaitTrue(t, "comment "+queued+"'s attempt claimed", `
+				select exists (select 1 from comment_deliveries where comment_id = $1::uuid and state = 'pending' and claimed_at is not null)
+			`, queued)
+		},
+		Drive: func(t *testing.T) {
+			var claimed time.Time
+			if err := r.database.Pool.QueryRow(context.Background(), `
+				select claimed_at from comment_deliveries where comment_id = $1::uuid
+			`, queued).Scan(&claimed); err != nil {
+				t.Fatalf("read the claim on comment %s's attempt: %v", queued, err)
+			}
+			r.awaitTrue(t, "the refresh writing comment "+queued+"'s claim again", `
+				select exists (select 1 from comment_deliveries where comment_id = $1::uuid and claimed_at > $2)
+			`, queued, claimed)
+		},
+		Counts: attemptCounted(graphstore.AttemptClaimedAt),
+	}, {
+		Name: "api/comment_mention_claims.go#releaseMentionClaims", Database: r.database,
+		Sites: []string{"api/comment_mention_claims.go#releaseMentionClaims"},
+		Drive: func(t *testing.T) {
+			stop()
+			r.awaitTrue(t, "the stop giving back comment "+queued+"'s claim", `
+				select exists (select 1 from comment_deliveries where comment_id = $1::uuid and state = 'pending' and claimed_at is null)
+			`, queued)
+		},
+		// The stop's release of the queued send's claim, after the held send it lets through
+		// settles sent: that attempt's facts, its delivered_to, and the session's node.
+		Counts: merged(sessionNodeCounted, attemptDelivered("delivery"), attemptCounted(graphstore.AttemptClaimedAt,
+			graphstore.AttemptState, graphstore.AttemptEnvelopeID, graphstore.TupleOwedTo)),
+	}}
 }
 
 // The terms that count what several drives here append: a block a version states afresh, with its
@@ -858,6 +1117,42 @@ var (
 		{graphstore.KindAsk, graphstore.TupleAnswerState}: {"ask_resolved"},
 		{graphstore.KindAsk, graphstore.TupleResolution}:  {"ask_resolved"},
 	}
+	// The inbox child's facts several drives here append. A body block a write states afresh in
+	// its item's project: its node's three base attributes and its part_of the comment, message
+	// or ask, which the term body_block counts. A person's part in the thread their write is in
+	// and the read mark it moves (participation, read_mark), and a session's part in it
+	// (participation). The delivered_to of an ask to the person it waits on (person_delivery).
+	bodyBlockCounted = map[graphcensus.StoredKind][]string{
+		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"body_block"},
+		{refs.BlockNodeKind, graphstore.AttributeState}:      {"body_block"},
+		{refs.BlockNodeKind, graphstore.AttributeProject}:    {"body_block"},
+		{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"body_block"},
+	}
+	ownThreadCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindPerson, graphstore.TupleParticipatesIn}: {"participation"},
+		{graphstore.KindPerson, graphstore.TupleReadThrough}:    {"read_mark"},
+	}
+	sessionPartCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindSession, graphstore.TupleParticipatesIn}: {"participation"},
+	}
+	askDeliveredCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindAsk, graphstore.TupleDeliveredTo}: {"person_delivery"},
+	}
+	// A session's reply to the comment that mentioned it: who wrote it, its answers, replies_to
+	// and part_of (reply), and its two delivered_to tuples, to the person in the thread
+	// (person_delivery) and to the session the answered attempt reached, which api's
+	// queueAnsweredDelivery states beside the attempt's own (delivery).
+	replyCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindComment, graphstore.TupleAuthoredBy}:  {graphstore.TupleAuthoredBy},
+		{graphstore.KindComment, graphstore.TupleAnswers}:     {"reply"},
+		{graphstore.KindComment, graphstore.TupleRepliesTo}:   {"reply"},
+		{graphstore.KindComment, graphstore.TuplePartOf}:      {"reply"},
+		{graphstore.KindComment, graphstore.TupleDeliveredTo}: {"person_delivery", "delivery"},
+	}
+	// openedAttempt is what the open of a delivery attempt states on its node: its two base
+	// attributes, its number, its state, its duplicate flag and its owed_to.
+	openedAttempt = []string{graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.AttemptNumber,
+		graphstore.AttemptState, graphstore.AttemptDuplicate, graphstore.TupleOwedTo}
 )
 
 // objectNodeCounted is what a create of an issue, a document, an ask or a message of a project
@@ -869,6 +1164,22 @@ func objectNodeCounted(kind string) map[graphcensus.StoredKind][]string {
 		{kind, graphstore.AttributeState}:      {kind},
 		{kind, graphstore.AttributeProject}:    {kind},
 	}
+}
+
+// attemptCounted is what a write states of delivery attempts' nodes, one kind of tuple for each
+// of kinds, every one of which the term delivery_attempt counts.
+func attemptCounted(kinds ...string) map[graphcensus.StoredKind][]string {
+	counted := map[graphcensus.StoredKind][]string{}
+	for _, kind := range kinds {
+		counted[graphcensus.StoredKind{From: graphstore.KindDeliveryAttempt, Kind: kind}] = []string{"delivery_attempt"}
+	}
+	return counted
+}
+
+// attemptDelivered is the delivered_to an attempt the listener took ends in, which term counts:
+// delivery for a comment's mention, message_delivery for a message.
+func attemptDelivered(term string) map[graphcensus.StoredKind][]string {
+	return map[graphcensus.StoredKind][]string{{graphstore.KindDeliveryAttempt, graphstore.TupleDeliveredTo}: {term}}
 }
 
 // merged is every kind each of counts holds, its terms joined where two hold one kind.

@@ -223,10 +223,11 @@ const movedParents = "block_parent_moved"
 //     that role's held_by and the retraction that ends it, or else a page of its own with that
 //     page's base attributes and its part_of the session (R14);
 //   - the inbox child's message's author and parent, and the tuples its target and its
-//     broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
-//     person's part in a thread, the delivered_to of each write to every other participant and of
-//     an ask to the person it waits on, the move of that person, the body blocks of a comment, a
-//     message and an ask with their links, and a delivery attempt's node (its spec's
+//     broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, the
+//     citations of a comment, a message and an ask (their refs rows, refs.IndexItem), a person's
+//     or a session's part in a thread, the delivered_to of each write to every other participant
+//     and of an ask to the person it waits on, the move of that person, the body blocks of a
+//     comment, a message and an ask with their links, and a delivery attempt's node (its spec's
 //     #b-r-kinds-move, #b-r-delivery-written, #b-r-participation and #b-r-mentions);
 //   - the blocks child's document version node, an artifact's part_of its issue, an issue's
 //     child_of and needs, a result's node with its values and tuples, its screenshots and its
@@ -272,6 +273,11 @@ func storeKinds(messagesNamed string) []StoreKind {
 		Driver: "comments.created_at: each alias_of and recorded_as the credential that wrote one proved",
 		count:  `(select coalesce(sum(aliases), 0) from sized_comments)`,
 	}, {
+		// A reply that answers an attempt the listener refused flips it to sent and states two
+		// tuples of that one delivery: the attempt's own delivered_to the session
+		// (graphstore.Attempted) and the comment's delivered_to the session (api's
+		// queueAnsweredDelivery). Every other attempt the listener took states the attempt's
+		// alone, so the term counts one a taken attempt and under-states a reply's.
 		Name: "delivery", MovedBy: movedHere, Tuples: 1,
 		Driver: "comment_deliveries.created_at, taken by the listener: a delivered_to for each attempt that reached its destination",
 		count: `(select count(*) from comment_deliveries where state in ` + model.DeliveryTakenStatesSQL +
@@ -393,14 +399,35 @@ func storeKinds(messagesNamed string) []StoreKind {
 		count: `(select count(*) + count(m.resolved_session_id)
 			from comment_mentions m join sized_comments c on c.id = m.comment_id)`,
 	}, {
+		// A person's part in a thread, read off user_threads, which holds one row for each person and
+		// thread, and a session's, which this branch's thread record states too
+		// (inboxwrite.Recording.Queue) with every write the session records there and no row of
+		// it, so each comment, message and ask a session wrote in the window counts one. The base's
+		// sizing counted the persons' rows alone: it was written before the thread record, from the
+		// user_threads rows a person's part was to become.
 		Name: "participation", MovedBy: movedWithInbox, Tuples: 1,
 		Driver: "user_threads rows whose thread's root ask, comment or message was written in the window: a" +
-			" participates_in from the person to that root",
-		count: `(select count(*) from user_threads u
+			" participates_in from the person to that root; and each comment, message and ask a session wrote in the" +
+			" window: a participates_in from the session to its thread's root",
+		count: `((select count(*) from user_threads u
 			left join asks a on u.kind = 'ask' and a.id = u.thread_id
 			left join comments c on u.kind = 'comment' and c.id = u.thread_id
 			left join messages m on u.kind = 'message' and m.id = u.thread_id
-			where coalesce(a.created_at, c.created_at, m.created_at) > ` + sizingWindow + `)`,
+			where coalesce(a.created_at, c.created_at, m.created_at) > ` + sizingWindow + `)
+			+ (select count(*) from comments where author->>'kind' = '` + graphstore.KindSession + `'
+			   and created_at > ` + sizingWindow + `)
+			+ (select count(*) from sized_messages where author_kind = '` + graphstore.KindSession + `')
+			+ (select count(*) from sized_ask_events where type = 'ask.opened' and actor_kind = '` + graphstore.KindSession + `'))`,
+	}, {
+		// An item's citations: each refs row of a comment, a message or an ask, which this branch's
+		// item index states as a mentions tuple out of the item's node (refs.IndexItem, and the
+		// refs grammar's re-index and rebuild-refs, which restate them). The base's sizing has no
+		// such term because the base's item index states none of them: there the refs rows were
+		// no tuples of the store.
+		Name: "citation", MovedBy: movedWithInbox, Tuples: 2,
+		Driver: "refs rows of the comments, messages and asks written or edited in the window: the item's mentions" +
+			" tuple for each, and at most the retraction that ends it",
+		count: `(select count(*) from refs where from_kind in ('comment', 'message', 'ask') and created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "person_delivery", MovedBy: movedWithInbox, Tuples: 1,
 		Driver: "each comment, issue message and answer written in the window, to every other participant user_threads" +
@@ -705,6 +732,7 @@ var sizingWritesWith = `
 	sized_messages as (
 		select m.id, m.in_reply_to, m.target, m.broadcast_id, m.issue_key is not null as threaded,
 		       (m.in_reply_to is not null or m.replies_to_block is not null) as replies,
+		       m.author->>'kind' as author_kind,
 		       case when m.author->>'kind' = 'user' then user_threads_login(m.author->>'id') end as writer
 		from messages m
 		where m.created_at > ` + sizingWindow + `
@@ -717,7 +745,7 @@ var sizingWritesWith = `
 		where r.depth < 64
 	),
 	sized_ask_events as (
-		select e.type, e.payload,
+		select e.type, e.payload, e.actor->>'kind' as actor_kind,
 		       case when e.actor->>'kind' = 'user' then user_threads_login(e.actor->>'id') end as writer
 		from events e
 		where e.type like 'ask.%' and e.created_at > ` + sizingWindow + `

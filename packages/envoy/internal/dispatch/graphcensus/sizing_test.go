@@ -390,13 +390,13 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 // seedSizedRelations writes, beside the history seedSizedHistory writes, one row for each further
 // table a term counts: a mention of the comment that resolved to a session and its attempt, which
 // the listener took, two body blocks of the comment of which one is removed, a link out of the
-// live one, a child issue that waits on its parent, a failed result with two screenshots and its
-// retraction, a Keep, two components of one imported snapshot, one under and depending on the
-// other, with CORE-1 affecting the first, alice's dismissal of the message's thread, her snooze
-// of an ask the session ses_asker opened before the window, so that inside the window the snooze
-// is the one write of it a term counts, a copy in the spec of an ask block of a document written
-// before the window, and an answered ask asked before the window whose block, Dropped, the spec's
-// second version took out.
+// live one and the comment's citation of the issue it names, a child issue that waits on its
+// parent, a failed result with two screenshots and its retraction, a Keep, two components of one
+// imported snapshot, one under and depending on the other, with CORE-1 affecting the first,
+// alice's dismissal of the message's thread, her snooze of an ask the session ses_asker opened
+// before the window, so that inside the window the snooze is the one write of it a term counts, a
+// copy in the spec of an ask block of a document written before the window, and an answered ask
+// asked before the window whose block, Dropped, the spec's second version took out.
 func seedSizedRelations(t *testing.T, database *store.Store, document, comment, message string) {
 	t.Helper()
 	ctx := context.Background()
@@ -429,6 +429,8 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 		{"write the body block's link", `
 			insert into comment_block_refs (comment_id, block_id, from_node, to_kind, to_id)
 			values ($1::uuid, 'b1', 'b1', 'issue', 'CORE-1')`, []any{comment}},
+		{"write the comment's citation", `
+			insert into refs (from_kind, from_id, to_kind, to_id) values ('comment', $1, 'issue', 'CORE-1')`, []any{comment}},
 		{"write the child issue and its wait", `
 			with child as (
 				insert into issues (key, project_key, number, title, created_by, rank, parent_key)
@@ -1061,9 +1063,11 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"dismissal": {tuples: 1, writes: 1}, "snooze": {tuples: 1, writes: 1},
 		"message": {tuples: 3, writes: 2}, "message_relation": {tuples: 2, writes: 2}, "message_pointer": {tuples: 1, writes: 1},
 		"reply": {tuples: 2, writes: 1},
-		// The mention is one tuple to its role and one to the session the role resolved to.
+		// The mention is one tuple to its role and one to the session the role resolved to. The
+		// comment's one refs row is its citation.
 		"mention": {tuples: 1, writes: 2}, "participation": {tuples: 1, writes: 2}, "person_delivery": {tuples: 1, writes: 2},
-		"ask_asked_of": {tuples: 4, writes: 1}, "body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
+		"citation": {tuples: 2, writes: 1}, "ask_asked_of": {tuples: 4, writes: 1},
+		"body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
 		// The attempts are the mention's and the message's.
 		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 2},
 		// CORE-2 is a child of CORE-1 and waits on it. The archive was written before the window.

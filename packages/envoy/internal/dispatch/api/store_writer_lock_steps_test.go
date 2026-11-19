@@ -47,8 +47,10 @@ const storeStepWait = 20 * time.Second
 //     event (graphstore.QueueCaused), and an ask's create (createAskFor), whose node write states
 //     the asker's node beside the ask's (graphstore.AskFacts) and which moves both onto the event
 //     it appends;
-//   - an approval request renewed (renewApprovalAsk), once on a retry, which appends no event and
-//     leaves the follow's node and its base attributes at the sentinel, and once handing the
+//   - an approval request renewed (renewApprovalAsk), once on a retry by a session that did not
+//     follow it, which follows it before the ask.follower_added it appends and moves the node
+//     onto that event, as the follower route does, once on a retry by a session that follows it
+//     already, which appends no event and states nothing of its follow, and once handing the
 //     request back, which follows after its event and states the node under it in the follow's
 //     own statement;
 //   - three writes of a document version, each of which runs the block index (refs'
@@ -98,7 +100,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.commentCreate("createCommentFor on a project document", "/api/v1/artifacts/"+rig.document+"/comments",
 			ownerLockStep(store.ArtifactOwner(rig.document))),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
-		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalHandBack(),
+		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalFollowerRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
@@ -518,23 +520,20 @@ func (r *storeWriterRig) askCreate() storeWriter {
 }
 
 // approvalRetry is the spec's approval request renewed while it waits on the person
-// (renewApprovalAsk), a retry that appends no event: a session no write has recorded asks for the
-// same approval again. The renewal takes its owner's lock (requireOpenOwner), follows the request
-// for that session with the node marked for its cause, since nothing caused the follow, and
-// appends the node's two base attributes at the sentinel (graphstore.QueueCaused). The path takes
-// no event step, which the written order lets it skip, and its tuples carry no event, so no event
-// orders them.
+// (renewApprovalAsk), a retry that changes the request in nothing: a session no write has recorded
+// asks for the same approval again, which makes it a follower, so the renewal appends
+// ask.follower_added as the follower route does. The renewal takes its owner's lock
+// (requireOpenOwner), follows the request for that session with the node marked for its cause,
+// since the follow is queued before its event, appends the event, and then moves the node onto it
+// and appends the node's two base attributes and the followed_by under it (graphstore.QueueCaused).
 func (r *storeWriterRig) approvalRetry() storeWriter {
 	return storeWriter{
 		name: "renewApprovalAsk on a retry",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
 			followNodeStep("the requester's node"),
-			{
-				name: "the tuple append", order: tupleStep,
-				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
-				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
-			},
+			eventAppendStep(),
+			tupleAppendStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			session := r.fresh("lock-steps-requester")
@@ -542,11 +541,49 @@ func (r *storeWriterRig) approvalRetry() storeWriter {
 			return storeWriterRun{
 				made: graphstore.SessionNode(session, actor, time.Now().UTC(), graphstore.NoEvent),
 				write: func() error {
-					// 200 is the request already standing as asked: a 201 would be a renewal that
-					// appended an event, which is the other path.
+					// 200 is the request already standing as asked, its follower_added aside: a 201
+					// would be a renewal that handed it back, which is the other path.
 					return statusOrError(sessionRequest(t, r.call, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 						map[string]any{"actor": map[string]any{"kind": "session", "id": session}}), http.StatusOK)
 				},
+			}
+		},
+	}
+}
+
+// approvalFollowerRetry is the spec's approval request renewed unchanged while it waits on the
+// person by a session that follows it already (renewApprovalAsk), the retry that appends no event
+// and adds no follower: each run first renews the request as a session no write has recorded,
+// through the rig's own server, which makes that session a follower and its node, and then renews
+// it again as that session. The renewal takes its owner's lock (requireOpenOwner), and its follow
+// finds the follower row marked and the session's node there, so it states nothing of either; the
+// facts it holds for the node are appended at the sentinel (graphstore.QueueCaused), for a node
+// this follow made, which is none. The path takes no event step and no node step, and its tuple
+// append carries no event.
+func (r *storeWriterRig) approvalFollowerRetry() storeWriter {
+	return storeWriter{
+		name: "renewApprovalAsk on a retry by a follower",
+		steps: []storeStep{
+			ownerLockStep(store.IssueOwner(r.issue)),
+			{
+				name: "the tuple append", order: tupleStep,
+				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
+		},
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			session := r.fresh("lock-steps-follower-requester")
+			actor := model.Actor{Kind: "session", ID: session}
+			renew := func(handler http.Handler) error {
+				return statusOrError(sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
+					map[string]any{"actor": map[string]any{"kind": "session", "id": session}}), http.StatusOK)
+			}
+			if err := renew(r.handler); err != nil {
+				t.Fatalf("make %s a follower of the approval request: %v", session, err)
+			}
+			return storeWriterRun{
+				made:  graphstore.SessionNode(session, actor, time.Now().UTC(), graphstore.NoEvent),
+				write: func() error { return renew(r.call) },
 			}
 		},
 	}

@@ -42,6 +42,7 @@ func TestMentionsAreTuplesAndEveryAttemptIsANode(t *testing.T) {
 		t.Run("a mention is opened, given back, taken, resolved, sent, reported failed and answered", attemptOfAMentionFromOpenToAnswer)
 		t.Run("a lane stands down for a Retry in flight, whose send then supersedes the lane's attempt", attemptsOfAStandDownAndASupersede)
 		t.Run("a keyed repeat claims an owed mention and the sender writes its claim again and gives it back", attemptOfAKeyedClaim)
+		t.Run("a keyed repeat that finds another sender's claim writes nothing, its attempt facts included", attemptOfALostKeyedClaim)
 		t.Run("a refused send and a mention nobody holds settle failed with their errors", attemptsThatFail)
 		t.Run("the delivery sweep settles a mention its comment no longer holds", attemptTheSweepSettles)
 		t.Run("the outbox settles an abandoned mention before it publishes the session's copy", attemptTheOutboxAbandons)
@@ -79,7 +80,7 @@ func attemptOfAMentionFromOpenToAnswer(t *testing.T) {
 	defer releaseSend()
 	sent := make(chan error, 1)
 	go func() {
-		_, err := rig.direct.deliverResolvedCommentMention(ctx, comment, createdEvent,
+		_, _, err := rig.direct.deliverResolvedCommentMention(ctx, comment, createdEvent,
 			ResolvedMention{Target: "session:s1", Delivery: rig.mentionMode(created.ID, "session:s1")},
 			comment.Author, attemptClaim{attempt: 1}, rig.direct.newTakeoverRetry())
 		sent <- err
@@ -195,6 +196,52 @@ func attemptOfAKeyedClaim(t *testing.T) {
 	if row := rig.requireProjects(key, "the sender gave the claim back"); row.values[graphstore.AttemptClaimedAt] != "" {
 		t.Fatalf("the released attempt carries claimed_at %q, want none", row.values[graphstore.AttemptClaimedAt])
 	}
+	rig.requireEveryAttemptRowIsANode()
+}
+
+// A keyed repeat that finds its owed mention claimed by another sender takes nothing: the claim's
+// batch commits at its end whatever it found (claimQueuedMention), so what holds the row as the
+// other sender left it is that its update matches no row and the statement in the store finds
+// nothing to state - the row holds what its node already says.
+func attemptOfALostKeyedClaim(t *testing.T) {
+	rig := newAttemptRig(t)
+	issue := createInteractionIssue(t, rig.handler, "TEST", "A keyed repeat's lost claim", "before")
+	rig.stop()
+	created := rig.mention(issue.Key, "Who has it?", "session:s1")
+	key := graphstore.CommentAttempt(created.ID, "session:s1", 1)
+	ctx := context.Background()
+	queued := mentionKey{comment: created.ID, target: "session:s1", attempt: 1}
+
+	held, ok, err := rig.direct.claimQueuedMention(ctx, queued)
+	if err != nil || !ok {
+		t.Fatalf("the first sender's claim = %v, %v; want it taken", ok, err)
+	}
+	rig.requireProjects(key, "the first sender claimed the owed attempt")
+	facts := func() int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select count(*) from graph_tuples where from_kind = $1 and from_id = $2
+		`, graphstore.KindDeliveryAttempt, key.ID()).Scan(&count); err != nil {
+			t.Fatalf("count the facts of the attempt's node: %v", err)
+		}
+		return count
+	}
+	before := facts()
+	claimed, ok, err := rig.direct.claimQueuedMention(ctx, queued)
+	if err != nil || ok || !claimed.IsZero() {
+		t.Fatalf("the second claim = %v, %v, %v; want it lost, with no claim and no error", claimed, ok, err)
+	}
+	if after := facts(); after != before {
+		t.Fatalf("the lost claim appended %d fact(s) to the attempt's node, want none", after-before)
+	}
+	var stands time.Time
+	if err := rig.database.Pool.QueryRow(ctx, `
+		select claimed_at from comment_deliveries where comment_id = $1 and target = $2 and attempt = 1
+	`, created.ID, "session:s1").Scan(&stands); err != nil || !stands.Equal(held) {
+		t.Fatalf("the attempt carries claimed_at %v (%v), want the first sender's %v", stands, err, held)
+	}
+	rig.requireProjects(key, "the lost claim left the first sender's")
 	rig.requireEveryAttemptRowIsANode()
 }
 
