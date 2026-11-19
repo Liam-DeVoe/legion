@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `LegionPodUpdateRequest` and `LegionPodUpdateResponse`, the body and the answer of the daemon's
+  `POST /legion/v1/issues/pod-update` at daemon API contract 156: the controller's grant and an
+  issue, answered with the update round over that issue's pod (`round`), the `reasons` it records
+  and whether the request `opened` it.

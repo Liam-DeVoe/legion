@@ -33,6 +33,8 @@ import {
   LegionOperatorClaimsResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPodUpdateRequest,
+  LegionPodUpdateResponse,
   LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
@@ -90,6 +92,9 @@ const schemas: Record<string, z.ZodType> = {
   "claim-retry.json": LegionClaimOperationResponse,
   "claim-suspend.json": LegionClaimOperationResponse,
   "claim-resume.json": LegionClaimOperationResponse,
+  // The controller's request for the replacement of one issue's pod (contract 156): the update
+  // round over it, its reasons, and whether the request opened it.
+  "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -1330,6 +1335,7 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionClaimRequest,
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
+    ["pod update", LegionPodUpdateRequest, { grantId: "grant-208", issue: "LEGION-209" }],
     [
       "gate register",
       LegionGateRegisterRequest,

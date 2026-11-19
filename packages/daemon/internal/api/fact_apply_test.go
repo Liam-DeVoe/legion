@@ -136,6 +136,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/controller/secret":            {none: "the controller's secret; " + noFact},
 		"POST /legion/v1/controller/github-credential": {none: "the controller's GitHub credential; " + noFact},
 		"POST /legion/v1/issues/status":                {none: controller},
+		"POST /legion/v1/issues/pod-update":            {none: "it applies no fact: it posts the update round of the issue's pod to that issue's claims' machines (Options.RequestPodUpdate), and " + controller},
 		"POST /legion/v1/claims/compact":               {none: "it applies no fact: it asks the claim's machine and its agent for a compaction (claimCompact), so the requester an architect's grant notes (claimDoor's redeem) has no fact to wait before"},
 		"POST /legion/v1/claims/stop":                  {none: machineEvent},
 		"POST /legion/v1/claims/suspend":               {none: machineEvent},

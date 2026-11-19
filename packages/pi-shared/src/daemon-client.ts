@@ -18,6 +18,8 @@ import {
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPodUpdateRequest,
+  LegionPodUpdateResponse,
   type LegionReadyForUpdateRequest,
   type LegionReadyRequest,
   LegionRegisterResponse,
@@ -191,6 +193,18 @@ export interface LegionDaemonClient {
   readonly resumeClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  /** The controller's `replace_pod`: the daemon opens its update round over the pod `issue` runs
+   * in, as a drift opens one. Each role of the pod is asked to push its work and answer
+   * `ready_for_update`, and the pod is replaced once each has answered or at the round's bound.
+   * The answer is the round, its reasons, and whether this request opened it, false for a round
+   * already open over the pod. Refused for an issue of another project or with no claim the
+   * daemon supervises (`NO_CLAIM`), one whose claims run no worker in a pod (`NO_POD`), one whose
+   * pod is being replaced already (`POD_CHANGING`), an opening a limit of the project holds back
+   * (`POD_UPDATE_LIMITED`, naming the limit), and a round no claim recorded within the daemon's
+   * wait (`POD_UPDATE_NOT_RECORDED`, 503): a 200 is only ever a round a claim records. */
+  readonly issuePodUpdate: (
+    input: z.input<typeof LegionPodUpdateRequest>
+  ) => Promise<z.output<typeof LegionPodUpdateResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -572,6 +586,8 @@ export function createLegionDaemonClient(
       post("/legion/v1/claims/suspend", LegionClaimRequest, LegionClaimOperationResponse, input),
     resumeClaim: (input) =>
       post("/legion/v1/claims/resume", LegionClaimRequest, LegionClaimOperationResponse, input),
+    issuePodUpdate: (input) =>
+      post("/legion/v1/issues/pod-update", LegionPodUpdateRequest, LegionPodUpdateResponse, input),
     gateRegister: (input) =>
       post("/legion/v1/gates/register", LegionGateRegisterRequest, LegionEmptyResponse, input),
     waveRelease: (input) =>

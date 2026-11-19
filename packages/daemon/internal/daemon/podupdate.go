@@ -64,7 +64,47 @@ import (
 // Neither ends a round, pauses one, or holds back the ask of one: the gate stands only where
 // a new round would open, so a change reaches a few pods first and the rest as those finish.
 func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervise.Claim) {
+	for _, replace := range s.walkPodUpdates(ctx, claims) {
+		if ctx.Err() != nil {
+			return
+		}
+		s.replacePodForRound(ctx, replace)
+	}
+}
+
+// walkPodUpdates is the sweep's walk over the issues, in key order, and the record of what it
+// decided under the project's limits (recordPodUpdateSweep). It reports the replacements the
+// walk left the sweep to make, and none where ctx ended inside the walk. It holds
+// podUpdateWalkMu from its read of the limits (beginPodUpdateSweep) to its record, so a round
+// the controller asks for (requestPodUpdate) is opened before that read or after that record,
+// and never between them on limits the walk has already spent.
+func (s *supervision) walkPodUpdates(ctx context.Context, claims []supervise.Claim) []podReplacement {
+	issues, byIssue := podUpdateGroups(claims)
+	s.podUpdateWalkMu.Lock()
+	defer s.podUpdateWalkMu.Unlock()
 	now := s.plan.clock.Now()
+	sweep := s.beginPodUpdateSweep(now, byIssue)
+	var replacements []podReplacement
+	for _, issue := range issues {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if replace := s.reconcileIssuePodUpdate(ctx, issue, byIssue[issue], now, &sweep); replace != nil {
+			replacements = append(replacements, *replace)
+		}
+	}
+	if len(sweep.waiting) > 0 {
+		s.log.Info("supervise: these drifted issues wait for an update round under this project's limits",
+			"waiting", sweep.held())
+	}
+	s.recordPodUpdateSweep(issues, byIssue, sweep)
+	return replacements
+}
+
+// podUpdateGroups is every claim of claims an update round can cover, by issue, each group in
+// token order, and those issues in key order. A claim with no issue (the project controller's) is in no round, and a retired
+// claim runs nothing on any pod (reconcilePodUpdates).
+func podUpdateGroups(claims []supervise.Claim) ([]string, map[string][]supervise.Claim) {
 	byIssue := map[string][]supervise.Claim{}
 	var issues []string
 	for _, c := range claims {
@@ -76,32 +116,15 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 		}
 		byIssue[c.Issue] = append(byIssue[c.Issue], c)
 	}
+	for _, group := range byIssue {
+		slices.SortFunc(group, func(a, b supervise.Claim) int { return strings.Compare(string(a.Token), string(b.Token)) })
+	}
 	slices.Sort(issues)
-	sweep := s.beginPodUpdateSweep(now, byIssue)
-	var replacements []podReplacement
-	for _, issue := range issues {
-		if ctx.Err() != nil {
-			return
-		}
-		if replace := s.reconcileIssuePodUpdate(ctx, issue, byIssue[issue], now, &sweep); replace != nil {
-			replacements = append(replacements, *replace)
-		}
-	}
-	if len(sweep.waiting) > 0 {
-		s.log.Info("supervise: these drifted issues wait for an update round under this project's limits",
-			"waiting", sweep.held())
-	}
-	s.recordPodUpdateSweep(issues, byIssue, sweep)
-	for _, replace := range replacements {
-		if ctx.Err() != nil {
-			return
-		}
-		s.replacePodForRound(ctx, replace)
-	}
+	return issues, byIssue
 }
 
 // reconcileIssuePodUpdate carries one issue's pod round a step. group is every claim of the issue
-// that has not retired, whatever state it is in.
+// that has not retired, whatever state it is in, in token order (podUpdateGroups).
 //
 // The decisions are taken in this order, and the order is the rule. A round open over a pod other
 // than the one the claims record is over: that pod went, and the pod the claims record now is the
@@ -152,7 +175,6 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // the sweep makes after its whole walk over the issues, or nil where there is nothing left to do
 // for the issue (reconcilePodUpdates, podReplacement).
 func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string, group []supervise.Claim, now time.Time, sweep *podUpdateSweep) *podReplacement {
-	slices.SortFunc(group, func(a, b supervise.Claim) int { return strings.Compare(string(a.Token), string(b.Token)) })
 	pod, split := groupPod(group)
 	if split {
 		s.log.Info("supervise: the claims of this issue run in two pods; their update round waits for the replacement in flight",
@@ -247,15 +269,24 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// posted again too, as that same opening rather than a new one, and no limit holds that post
 	// back either (podUpdateSweep.reposts): it is in a round for the sweep's record, and nothing
 	// more is charged for it.
-	opening := open == "" && !sweep.reposts(issue, round)
-	if opening && sweep.holds(issue) {
-		return nil
+	opening := open == ""
+	if opening {
+		if inFlight, again := sweep.reposts(issue, round); again {
+			// Posted with the reasons it opened with, so every claim records one set of them
+			// whichever post reaches it first.
+			opening, terms = false, inFlight.reasons
+		}
+	}
+	if opening {
+		if _, held := sweep.holds(issue); held {
+			return nil
+		}
 	}
 	if open == "" {
 		live = s.liveGroup(group)
 	}
 	if s.openPodUpdate(ctx, issue, live, pod, terms) && opening {
-		s.recordPodUpdateOpening(sweep, issue, round, now)
+		s.recordPodUpdateOpening(sweep, issue, round, terms, now)
 	}
 	return nil
 }

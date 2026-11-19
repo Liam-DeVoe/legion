@@ -339,6 +339,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly retryClaim: (body: object) => Promise<unknown>;
     readonly suspendClaim: (body: object) => Promise<unknown>;
     readonly resumeClaim: (body: object) => Promise<unknown>;
+    readonly issuePodUpdate: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
     readonly waveRelease: (body: object) => Promise<unknown>;
     readonly phaseBackward: (body: object) => Promise<unknown>;
@@ -414,6 +415,14 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/claims/resume",
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "claim-resume.json",
+    ],
+    // The controller's replace_pod: the daemon's update round over the issue's pod, its reasons,
+    // and whether this request opened it.
+    [
+      "issuePodUpdate",
+      "/legion/v1/issues/pod-update",
+      { grantId: "grant-208", issue: "LEGION-209" },
+      "issue-pod-update.json",
     ],
     [
       "gateRegister",

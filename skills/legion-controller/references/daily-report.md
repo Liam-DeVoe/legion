@@ -124,9 +124,8 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   `skill://legion-controller/references/operations.md` that you did not run because that
   reference sends it here: a `kubectl auth can-i` read that answered `no`, a `kubectl` command that
   failed, a restart whose daemon pod your deployment instructions give no label for or whose read
-  lists no pod or more than one, a `carry-out.sh` that refused with a `refused:` line naming
-  `unshare` or the namespace, and an `agent-secrets` denial (exit 77, with no grant line). Give the
-  operation, the work it was for, and the read or the command with its answer. Name here as well
+  lists no pod or more than one, and an `agent-secrets` denial (exit 77, with no grant line). Give
+  the operation, the work it was for, and the read or the command with its answer. Name here as well
   each Slack reply that `skill://legion-controller/references/slack-mentions.md` sends to this
   report: one Slack refused (`not_in_channel`, `missing_scope`), or one the secrets broker did not
   grant `LEGION_SLACK_BOT_TOKEN` for, with the channel, the thread and the error, and that only a

@@ -1,0 +1,465 @@
+package daemon
+
+// The update round the project's controller asks for over one issue's pod (requestPodUpdate,
+// api's POST /legion/v1/issues/pod-update). Each test drives the daemon's own HTTP handler over a
+// rig of podupdate_test.go or podupdate_fleet_test.go, with a controller grant minted as the
+// grants route mints one, and then the rig's real sweep: what a test reads is what the route
+// answered and what the store, the runtime and the outbox hold after it.
+
+import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/credential"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
+
+// podUpdateLogLine is the line the route writes for a request it answered with a round.
+const podUpdateLogLine = "api: the controller asked for the replacement of an issue's pod"
+
+// podUpdateRoute is the daemon's own HTTP handler serving the controller's pod update through a
+// rig's supervision, as daemon.go wires it (api.Options.RequestPodUpdate), and the controller
+// grant the requests carry.
+type podUpdateRoute struct {
+	t       *testing.T
+	handler http.Handler
+	grant   string
+}
+
+func newPodUpdateRoute(t *testing.T, s *supervision, sup *supervisor, log *slog.Logger) *podUpdateRoute {
+	t.Helper()
+	grants := credential.New(nil)
+	grant, err := grants.MintController()
+	if err != nil {
+		t.Fatalf("mint a controller grant: %v", err)
+	}
+	return &podUpdateRoute{t: t, grant: grant.ID, handler: api.NewServer("127.0.0.1", 0, api.Options{
+		Supervisor: sup, Project: podUpdateProject, DispatchProject: "LEGION", Grants: grants, Log: log,
+		RequestPodUpdate: s.requestPodUpdate,
+	}).Handler}
+}
+
+// ask posts the controller's pod update of issue, and answers the status and the body.
+func (r *podUpdateRoute) ask(issue string) (int, []byte) {
+	r.t.Helper()
+	body, err := json.Marshal(api.PodUpdateRequest{GrantID: r.grant, Issue: issue})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	r.handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/legion/v1/issues/pod-update", bytes.NewReader(body)))
+	return recorder.Code, recorder.Body.Bytes()
+}
+
+// answered asks for the pod update of issue and holds the answer to 200 and want.
+func (r *podUpdateRoute) answered(issue string, want api.PodUpdateResponse) {
+	r.t.Helper()
+	status, body := r.ask(issue)
+	if status != http.StatusOK {
+		r.t.Fatalf("the pod update of %s = %d, want 200; body %s", issue, status, body)
+	}
+	var got api.PodUpdateResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		r.t.Fatalf("decode the answer %s: %v", body, err)
+	}
+	if got != want {
+		r.t.Fatalf("the pod update of %s answered %+v, want %+v", issue, got, want)
+	}
+}
+
+// refused asks for the pod update of issue, holds the answer to status and code, and answers its
+// sentence.
+func (r *podUpdateRoute) refused(issue string, status int, code string) string {
+	r.t.Helper()
+	got, body := r.ask(issue)
+	var failure api.Failure
+	if err := json.Unmarshal(body, &failure); err != nil {
+		r.t.Fatalf("decode the refusal %s: %v", body, err)
+	}
+	if got != status || failure.Code != code {
+		r.t.Fatalf("the pod update of %s = %d %s, want %d %s; body %s", issue, got, failure.Code, status, code, body)
+	}
+	return failure.Error
+}
+
+// requestedRound is what the route answers a request that opened the round over the rig's pod.
+var requestedRound = api.PodUpdateResponse{Round: podUpdateRound, Reasons: requestedPodUpdateReasons, Opened: true}
+
+// The controller's request opens the round a drift opens, over a pod that has drifted from
+// nothing: each claim of the issue that has run a worker records the round with the reasons the
+// controller's request gives, the claim with no worker records none, and the sweeps after it ask
+// each ready role — the issue's architect among them — once, on its own role topic, with the
+// round's one text, naming the round, its end at the bound, and those reasons. Nothing is replaced
+// before the roles answer. The route logs one line naming the caller, the issue and the round.
+//
+// The negative control is the request's opening undone (requestPodUpdate posting nothing): no
+// claim records the round, so the route refuses the request 503 POD_UPDATE_NOT_RECORDED where
+// this test wants the round answered.
+func TestPodUpdateTheControllerAsksForOpensTheRoundAndItsAskReachesEachReadyRole(t *testing.T) {
+	asked := []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleArchitect),
+		readyWorker(claim.RoleImplementer),
+		readyWorker(claim.RoleTester),
+		podUpdateRole{role: claim.RolePlanner, state: supervise.StateQueued},
+	)
+	route := newPodUpdateRoute(t, rig.s, rig.sup, rig.log)
+
+	route.answered(podUpdateIssue, requestedRound)
+
+	for _, role := range asked {
+		if c := rig.awaitRound(role, podUpdateRound); c.UpdateReasons != requestedPodUpdateReasons {
+			t.Errorf("the %s records the reasons %q, want %q", role, c.UpdateReasons, requestedPodUpdateReasons)
+		}
+	}
+	if c := rig.claimOf(claim.RolePlanner); c.UpdateRound != "" {
+		t.Errorf("the planner, which never had a worker, is in round %q; want none", c.UpdateRound)
+	}
+	for _, role := range asked {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	text := supervise.UpdateTask(podUpdateRound, requestedPodUpdateReasons, podUpdateStart.Add(podUpdateGrace))
+	rows := map[claim.Role]int{}
+	for _, ask := range rig.asks() {
+		rows[ask.Role]++
+		if ask.Round != podUpdateRound || ask.Pod != podUpdatePod || ask.Text != text {
+			t.Errorf("the ask to the %s = %+v, want round %s of pod %s with the text:\n%s", ask.Role, ask, podUpdateRound, podUpdatePod, text)
+		}
+	}
+	_, published := rig.listener.snapshot()
+	topics := map[string]int{}
+	for _, publish := range published {
+		topics[publish.topic]++
+	}
+	for _, role := range asked {
+		if rows[role] != 1 || topics[rig.roleTopic(role)] != 1 {
+			t.Errorf("the %s was asked %d times and its topic delivered %d asks, want one of each", role, rows[role], topics[rig.roleTopic(role)])
+		}
+	}
+	if len(rows) != len(asked) {
+		t.Errorf("asks went to %v, want the %v alone", rows, asked)
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("ReplacePod called %d times before any role answered", len(calls))
+	}
+	lines := loggedLines(t, rig.logs.String(), `"msg":"`+podUpdateLogLine+`"`)
+	if len(lines) != 1 || lines[0]["issue"] != podUpdateIssue || lines[0]["round"] != podUpdateRound || lines[0]["opened"] != true {
+		t.Fatalf("lines %q = %v, want one naming %s and round %s opened", podUpdateLogLine, lines, podUpdateIssue, podUpdateRound)
+	}
+}
+
+// A round the controller asked for over a pod that has drifted from nothing is carried by the
+// sweeps that follow to the replacement of its pod, as a drift's round is: a round open over the
+// pod its claims record goes on, drift or no drift (reconcileIssuePodUpdate). Once every role it
+// asks has answered, the next sweep replaces the pod — once, the process of the round's own pod
+// named — and ends the round on every claim.
+//
+// The negative control is the sweep reading an open round over a pod that has not drifted as
+// nothing to do (the `len(reasons) == 0 && open == ""` early return without its `open` half): no
+// sweep asks a role, and the wait for the first ask times out.
+func TestPodUpdateTheControllerAsksForIsCarriedToThePodsReplacementWithNoDrift(t *testing.T) {
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+
+	route.answered(podUpdateIssue, requestedRound)
+	for _, role := range roles {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("ReplacePod called %d times before any role answered", len(calls))
+	}
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.tick()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("ReplacePod called %d times while the tester had not answered", len(calls))
+	}
+	rig.signal(claim.RoleTester, "")
+
+	calls := rig.awaitReplacement(1, "once every role answered the round the controller asked for over a pod that never drifted")
+	if calls[0].Pod.Locator == nil || calls[0].Pod.Locator.Sandbox.PodUID != podUpdatePod {
+		t.Fatalf("ReplacePod called with %+v, want a process of pod %s", calls[0].Pod, podUpdatePod)
+	}
+	for _, role := range roles {
+		rig.awaitClaim(role, "its round to end with the replacement", func(c supervise.Claim) bool {
+			return c.UpdateRound == "" && c.UpdateSignalledAt == nil
+		})
+	}
+}
+
+// charged is this daemon's own record of its openings (podUpdateOpenings' fields, read without
+// dropping any): when it last opened a round, and each opening no claim has recorded yet.
+func charged(s *supervision) (time.Time, map[string]podUpdateOpening) {
+	s.podUpdateMu.Lock()
+	defer s.podUpdateMu.Unlock()
+	return s.podUpdateOpenedAt, maps.Clone(s.podUpdateOpened)
+}
+
+// A request over a pod a round is open over already opens nothing: it answers that round, with
+// the reasons the round records and opened false, and charges nothing to the project's limits.
+// That is so for a drift's round the claims record, for an opening of this daemon's own whose post
+// no claim has recorded yet, and for the controller's own earlier request.
+//
+// The negative control is the request opening whatever it finds (no answer of a round open or in
+// flight): it answers opened true, with the controller's reasons, in each case, and charges the
+// opening it makes.
+func TestPodUpdateTheControllerAsksForOverAnOpenRoundOpensNoSecond(t *testing.T) {
+	t.Run("a drift's round the claims record", func(t *testing.T) {
+		rig := newPodUpdateRig(t,
+			podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
+				contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift},
+			podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
+				contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift},
+		)
+		route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+
+		route.answered(podUpdateIssue, api.PodUpdateResponse{Round: podUpdateRound, Reasons: podUpdateDrift})
+
+		if opened, inFlight := charged(rig.s); !opened.IsZero() || len(inFlight) != 0 {
+			t.Fatalf("the request charged an opening at %v, in flight %v, want nothing charged", opened, inFlight)
+		}
+		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+			rig.settle(role)
+			if c := rig.claimOf(role); c.UpdateReasons != podUpdateDrift || !c.UpdateOpenedAt.Equal(podUpdateStart) {
+				t.Errorf("the %s records reasons %q opened at %v, want the drift's round as it stood: %q at %s",
+					role, c.UpdateReasons, c.UpdateOpenedAt, podUpdateDrift, podUpdateStart)
+			}
+		}
+	})
+	t.Run("an opening still in flight", func(t *testing.T) {
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+		route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+		// A sweep's opening whose post no machine has taken yet, which is what this daemon's
+		// record holds between the post and a claim's record of it.
+		rig.s.recordPodUpdateOpening(&podUpdateSweep{}, podUpdateIssue, podUpdateRound, podUpdateDrift, podUpdateStart)
+		rig.clock.advance(time.Minute)
+
+		route.answered(podUpdateIssue, api.PodUpdateResponse{Round: podUpdateRound, Reasons: podUpdateDrift})
+
+		if opened, inFlight := charged(rig.s); !opened.Equal(podUpdateStart) || len(inFlight) != 1 {
+			t.Fatalf("this daemon's record holds an opening at %v, in flight %v, want the sweep's one at %s alone", opened, inFlight, podUpdateStart)
+		}
+	})
+	t.Run("the controller's own earlier request", func(t *testing.T) {
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+		route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+
+		route.answered(podUpdateIssue, requestedRound)
+		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+			rig.awaitRound(role, podUpdateRound)
+		}
+		rig.clock.advance(time.Minute)
+		route.answered(podUpdateIssue, api.PodUpdateResponse{Round: podUpdateRound, Reasons: requestedPodUpdateReasons})
+
+		if opened, _ := charged(rig.s); !opened.Equal(podUpdateStart) {
+			t.Fatalf("this daemon's last opening is at %v, want the first request's %s: the second charged one", opened, podUpdateStart)
+		}
+	})
+}
+
+// The project's limits on openings hold back the controller's request as they hold back a
+// drift's opening at a sweep, and the refusal names the limit: with pod_update_max_open_rounds at
+// one and another issue's round open, the request is refused naming that limit; with
+// pod_update_rounds_per_minute at one and a round opened less than a minute ago, naming that one.
+// Nothing is opened either time. A minute later the same request opens the round.
+//
+// The negative control is the request opening past the limits (no podUpdateSweep.holds): the
+// first request opens the round over the second issue's pod while the first issue holds the one
+// slot.
+func TestPodUpdateTheControllerAsksForIsHeldByTheProjectsLimits(t *testing.T) {
+	drifted, asked := "LEGION-501", "LEGION-502"
+	rig := newLimitRig(t, drifted, asked)
+	rig.drifts(asked)
+	rig.s.cfg.PodUpdateMaxOpenRounds = new(1)
+	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+
+	rig.tick()
+	rig.awaitRounds("the sweep opened the drifted issue's round", drifted)
+
+	if refusal := route.refused(asked, http.StatusConflict, "POD_UPDATE_LIMITED"); !strings.Contains(refusal, "pod_update_max_open_rounds (1)") {
+		t.Errorf("the refusal under the cap on open rounds says %q, want it to name pod_update_max_open_rounds (1)", refusal)
+	}
+	rig.s.cfg.PodUpdateMaxOpenRounds = nil
+	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
+	if refusal := route.refused(asked, http.StatusConflict, "POD_UPDATE_LIMITED"); !strings.Contains(refusal, "pod_update_rounds_per_minute (1)") {
+		t.Errorf("the refusal under the rounds a minute says %q, want it to name pod_update_rounds_per_minute (1)", refusal)
+	}
+	rig.awaitRounds("two refused requests", drifted)
+
+	rig.clock.advance(time.Minute)
+	route.answered(asked, api.PodUpdateResponse{Round: rig.round(asked), Reasons: requestedPodUpdateReasons, Opened: true})
+	rig.awaitRounds("the request a minute later", drifted, asked)
+}
+
+// A request the daemon can open no round for is refused, and opens nothing: an issue no claim of
+// this daemon is on (404 NO_CLAIM), an issue whose claims record no pod — each suspended, which
+// clears the locator — and one whose claims run no worker in their pod — none has a session yet —
+// (404 NO_POD), and an issue whose pod is changing (409 POD_CHANGING): its claims record two pods,
+// a replacement in flight, or a round over the pod before this one, which the next sweep ends. Each
+// refusal's sentence names the reading that refused it.
+//
+// The negative control is each refusal undone, the request going on to the opening: the round is
+// posted over a pod named by no claim, over a pod no round can reach, over one of two pods, or over
+// the record of the round that is ending.
+func TestPodUpdateTheControllerAsksForIsRefusedWhereNoRoundCanOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		roles  []podUpdateRole
+		status int
+		code   string
+		// says is the part of the refusal's sentence that names the reading which refused it.
+		says string
+	}{
+		{name: "no claim records a pod", status: http.StatusNotFound, code: "NO_POD", says: "no claim of " + podUpdateIssue + " records a process in a pod",
+			roles: []podUpdateRole{
+				{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
+					suspendedBy: supervise.SuspendedByOperator},
+			}},
+		{name: "no claim runs a worker in the pod", status: http.StatusNotFound, code: "NO_POD", says: "no claim of " + podUpdateIssue + " runs a worker in its pod " + podUpdatePod,
+			roles: []podUpdateRole{
+				{role: claim.RoleImplementer, state: supervise.StateLaunching, inPod: true},
+			}},
+		{name: "the claims record two pods", status: http.StatusConflict, code: "POD_CHANGING", says: "the claims of " + podUpdateIssue + " record two pods",
+			roles: []podUpdateRole{
+				readyWorker(claim.RoleImplementer),
+				{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion, pod: podUpdateReplacementPod},
+			}},
+		{name: "a round over the pod before this one is ending", status: http.StatusConflict, code: "POD_CHANGING", says: "is over a pod its claims no longer record",
+			roles: []podUpdateRole{
+				{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion,
+					round: supervise.PodRound(podUpdatePreviousPod), reasons: podUpdateDrift},
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, tc.roles...)
+			route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+
+			if refusal := route.refused(podUpdateIssue, tc.status, tc.code); !strings.Contains(refusal, tc.says) {
+				t.Errorf("the refusal says %q, want it to say %q", refusal, tc.says)
+			}
+			route.refused("LEGION-999", http.StatusNotFound, "NO_CLAIM")
+
+			for _, role := range tc.roles {
+				rig.settle(role.role)
+				if c := rig.claimOf(role.role); c.UpdateRound != role.round {
+					t.Errorf("the %s records round %q after a refused request, want %q as it was seeded", role.role, c.UpdateRound, role.round)
+				}
+			}
+			if opened, inFlight := charged(rig.s); !opened.IsZero() || len(inFlight) != 0 {
+				t.Fatalf("the refused request charged an opening at %v, in flight %v, want nothing charged", opened, inFlight)
+			}
+		})
+	}
+}
+
+// storedRound is the round each claim of issue records in the store, by role: what a daemon that
+// boots now restores.
+func (r *fleetRig) storedRound(issue string) map[claim.Role]string {
+	r.t.Helper()
+	claims, err := r.sup.Claims(r.ctx)
+	if err != nil {
+		r.t.Fatalf("read the stored claims: %v", err)
+	}
+	rounds := map[claim.Role]string{}
+	for _, c := range claims {
+		if c.Issue == issue {
+			rounds[c.Role] = c.UpdateRound
+		}
+	}
+	return rounds
+}
+
+// A 200 is a round a claim of the issue records in the store, and nothing less. The issue's one
+// worker the round asks, its architect, is held inside a Resume, as a relaunch into its pod holds
+// it, so the round's post waits in its machine's inbox and no claim can record it: the request is
+// refused 503 POD_UPDATE_NOT_RECORDED at its bound, and the store holds no round. Answered 200 at
+// the post instead, the controller would read the round as open, and then — once a restart had
+// dropped the post with this daemon's record of the opening, or the claim had failed under it —
+// read the claims recording no round as the round done, over a pod nothing replaced. Once the
+// relaunch ends the machine takes the post, and the next request answers the round its claim
+// records.
+//
+// The negative control is the answer made at the post (no awaitPodRoundRecorded): the request
+// answers 200 opened true while no claim records the round.
+func TestPodUpdateTheControllerAsksForIsAnsweredOnlyOnceAClaimRecordsItsRound(t *testing.T) {
+	issue := "LEGION-503"
+	held := limitIssue(1, issue)
+	held.roles = []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
+	held.unregistered = []claim.Role{claim.RoleImplementer}
+	rig := newFleetRig(t, held)
+	rig.s.podRoundRecordBound = 300 * time.Millisecond
+	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+
+	architect := rig.token(issue, claim.RoleArchitect)
+	died := *rig.claimOf(issue, claim.RoleArchitect).Locator
+	rig.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(architect, issue, rig.pods[issue])})
+	entered, release := make(chan struct{}), make(chan struct{})
+	releaseMachine := sync.OnceFunc(func() { close(release) })
+	rig.rt.HoldResume(func() {
+		rig.rt.HoldResume(nil)
+		close(entered)
+		<-release
+	})
+	defer releaseMachine()
+	go func() {
+		m, _ := rig.sup.Machine(architect)
+		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the architect's machine never reached the Resume this test holds it in")
+	}
+
+	if refusal := route.refused(issue, http.StatusServiceUnavailable, "POD_UPDATE_NOT_RECORDED"); !strings.Contains(refusal, "no claim recorded it") {
+		t.Errorf("the refusal says %q, want it to say no claim recorded the round", refusal)
+	}
+	for role, round := range rig.storedRound(issue) {
+		if round != "" {
+			t.Fatalf("the %s's stored claim records round %q after a refused request", role, round)
+		}
+	}
+
+	releaseMachine()
+	rig.awaitRound(issue, claim.RoleArchitect)
+	route.answered(issue, api.PodUpdateResponse{Round: rig.round(issue), Reasons: requestedPodUpdateReasons})
+}
+
+// A round the controller asked for, over a pod that never drifted, is in the store when the
+// request answers 200, so a daemon that boots straight after the answer — with none of the first
+// daemon's memory, its record of the opening included, and a runtime that reads no drift — carries
+// it: its sweeps take the worker's answer and replace the pod, and the round ends.
+func TestPodUpdateTheControllerAsksForSurvivesARestartAndIsCarriedWithNoDrift(t *testing.T) {
+	issue := "LEGION-504"
+	rig := newFleetRig(t, limitIssue(1, issue))
+	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+
+	route.answered(issue, api.PodUpdateResponse{Round: rig.round(issue), Reasons: requestedPodUpdateReasons, Opened: true})
+	if stored := rig.storedRound(issue)[claim.RoleArchitect]; stored != rig.round(issue) {
+		t.Fatalf("the architect's stored claim records round %q when the request answered, want %s", stored, rig.round(issue))
+	}
+
+	next := rig.restart()
+	if opened, inFlight := charged(next.s); !opened.IsZero() || len(inFlight) != 0 {
+		t.Fatalf("the restarted daemon holds an opening at %v, in flight %v, want none of the first one's memory", opened, inFlight)
+	}
+	next.awaitRound(issue, claim.RoleArchitect)
+	next.answer(issue)
+	next.sweepUntilReplaced(issue)
+	next.awaitRoundEnded(issue)
+	next.replacedOnce(issue)
+}

@@ -2254,7 +2254,25 @@ package api
 // or its tree lingers (refuseStartOfStoppedWork), nothing of the claim changed, since the daemon's
 // own rules start that work again. The operator claim routes'
 // and the four routes' `suspendedBy` and `suspensionHeldBy` gain the value `architect`; no shape
-// moves. (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
+// moves. The controller gets one more route of its own beside these (#4065):
+// `POST /legion/v1/issues/pod-update` takes `api.PodUpdateRequest` (`grantId`, `issue`) and
+// opens the daemon's update round over that issue's pod as a drift opens one: each role of the
+// pod is asked to push its work and answer ready_for_update, and the pod is replaced once each
+// has answered or at the round's bound (`pod_update_grace_minutes`), whatever the pod's drift. The
+// round's reasons say the project's controller asked for the replacement, and the opening is
+// held to the project's limits on openings as a drift's is (`409 POD_UPDATE_LIMITED`, naming
+// `pod_update_max_open_rounds` or `pod_update_rounds_per_minute`). It answers
+// `api.PodUpdateResponse`: the `round`, its `reasons`, and whether this request `opened` it, false
+// for a round already open over the pod, which it leaves as it stands. It takes a controller
+// grant alone (`403 CONTROLLER_REQUIRED`) and an issue key (`400 INVALID_ISSUE`); an issue of
+// another project, or one with no claim the daemon supervises that has not retired, is `404
+// NO_CLAIM`, one whose claims run no worker in a pod `404 NO_POD`, and one whose pod is being
+// replaced already — its claims in two pods, or the round over the pod before it still ending —
+// `409 POD_CHANGING`. It is the one route by which the controller removes an issue pod whose
+// workspace may hold work. It answers 200 only once a claim of the issue records the round in
+// the store, which a restart restores and the sweeps carry to the pod's replacement; a round no
+// claim records within its wait is `503 POD_UPDATE_NOT_RECORDED`, and may still open.
+// (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
 // open heads above it declared 134 (#4021), 135 (#3659), 137 (#4046), 138 (#4017), 139 (#2731,

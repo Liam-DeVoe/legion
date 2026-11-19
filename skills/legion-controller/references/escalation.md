@@ -87,8 +87,9 @@ person's yes:
 
 `{kind: "update-stalled", reason, update: {round, pod?, reasons, waiting}}`, on the issue whose
 pod it is. The daemon must replace the pod that runs an issue's roles, because the configuration
-the pod was built from has moved. It never replaces a live pod where it stands: every role of the
-issue works on that pod's disk, so the daemon opens an update round instead. It publishes one
+the pod was built from has moved, or because you asked for it with `replace_pod`. It never
+replaces a live pod where it stands: every role of the issue works on that pod's disk, so the
+daemon opens an update round instead. It publishes one
 message to each role's own topic, the architect's included, which asks the role to push its work
 and answer `ready_for_update`. The round ends at its bound, `pod_update_grace_minutes` after it
 opened (30 by default), whatever the roles answer. It ends earlier when every role it asked has
@@ -98,10 +99,10 @@ bound is no stall, and the daemon tells nobody of it.
 
 It names the round (`round`: `pod:<pod uid>`, the one kind a daemon of this release opens, since
 the stale-plugin lane replaces a stale process at a paced wake and asks its worker nothing), the
-pod it was opened over (`pod`, absent while no claim of the issue records a pod), the drift the
-round's message states (`reasons`), the one line that says what holds the round (`reason`), and
-every claim the round asked (`waiting`, each with its `claim` token, `role`, `state` and
-`answered`). Past the bound no answer holds the round, so `answered` tells you what each role
+pod it was opened over (`pod`, absent while no claim of the issue records a pod), what the round
+was opened for as its message states it (`reasons`: the drift, or your request), the one line
+that says what holds the round (`reason`), and every claim the round asked (`waiting`, each with
+its `claim` token, `role`, `state` and `answered`). Past the bound no answer holds the round, so `answered` tells you what each role
 said, not whom to prompt. A `failed` claim is never in a pod round's `waiting`: it runs no turn
 on the pod, so the round does not wait for it. A failed phase worker's retry is its architect's
 or the operator's, and yours once the architect escalates the hold

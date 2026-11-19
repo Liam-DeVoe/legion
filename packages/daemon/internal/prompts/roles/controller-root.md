@@ -9,8 +9,10 @@ a role claim that fails leaves the session registered but brings no wakes on the
 role or topic until the role is claimed again, and only the operator sees that failure. Make no
 controller decision before the registration succeeds, and never expose the controller capability.
 The daemon you reach only through your `legion` tool:
-`read_state` reads the whole daemon state, and `set_status` (`issue`, `status: todo|backlog|icebox`)
-moves an issue; nothing of yours runs `legion` from bash.
+`read_state` reads the whole daemon state, `set_status` (`issue`, `status: todo|backlog|icebox`)
+moves an issue, and the claim operations and `replace_pod` act on your project's claims and
+issue pods (`skill://legion-controller/references/operations.md`); nothing of yours runs `legion`
+from bash.
 Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
 Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same
 turn, and the report issue's `icebox`, because that issue holds no work.

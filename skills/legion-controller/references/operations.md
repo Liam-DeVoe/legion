@@ -1,13 +1,13 @@
 # The operations of your own work
 
-Read this before you change a claim's state, restart your project's daemon, delete a pod or
-re-run a CI run, and before you ask anyone to do one of them. Each operation here is yours. Do it
-yourself, and ask no other session to do it. Each section says when to use the operation, the
-exact command, and what to read to know that it worked.
+Read this before you change a claim's state, replace an issue's pod, restart your project's
+daemon or re-run a CI run, and before you ask anyone to do one of them. Each operation here is
+yours. Do it yourself, and ask no other session to do it. Each section says when to use the
+operation, the exact command, and what to read to know that it worked.
 
 The placeholders mean the same in every command:
 
-- `<KEY>`: the issue key, such as `ACME-41`. `<key>` is the same key in lower case.
+- `<KEY>`: the issue key, such as `ACME-41`.
 - `<owner>` and `<repo>`: the issue's repository on GitHub.
 - `<pod>`: the name of a pod in `<namespace>`.
 - `<namespace>`: the Kubernetes namespace your project's pods run in, which `legion.yaml` sets as
@@ -23,26 +23,25 @@ The placeholders mean the same in every command:
 
 ## Before any `kubectl` operation
 
-Make these two reads first, each time:
+Make this read first, each time:
 
 ```sh
-kubectl auth can-i create pods/exec -n <namespace>
 kubectl auth can-i delete pods -n <namespace>
 ```
 
-Each prints `yes` or `no`. Only a controller whose pod runs as its own ServiceAccount
-(`runtime.kubernetes.pod.controller_service_account`) holds these rights. A controller pod that
-runs as the account of the issue pods holds neither.
+It prints `yes` or `no`. Only a controller whose pod runs as its own ServiceAccount
+(`runtime.kubernetes.pod.controller_service_account`) holds this right. A controller pod that
+runs as the account of the issue pods does not.
 
-Where either read prints `no`, or `kubectl` itself fails:
+Where the read prints `no`, or `kubectl` itself fails:
 
-- Run no operation that needs that right. The restart of the daemon and the pod delete need
-  `delete pods`. The pod delete also needs `create pods/exec`.
+- Run no operation that needs that right. The restart of the daemon needs `delete pods`.
 - Name the operation you lack in the day's report, with the read and its answer
   (`skill://legion-controller/references/daily-report.md`).
 - Ask no other session to do it.
 
-The claim operations and the re-run of a CI run need no `kubectl`.
+The claim operations, the replacement of an issue's pod and the re-run of a CI run need no
+`kubectl`.
 
 ## A claim's state
 
@@ -155,181 +154,45 @@ reaches (`triggerTurn` in `packages/pi-envoy/extensions/envoy.ts`), and the daem
 counts no such turn, so it adds to the wave that the pacing holds under the provider's per-minute
 cap (`worker_wakes_per_minute`).
 
-## A pod delete with nothing lost
+## A replacement of an issue's pod
 
 **When.** An issue pod of your project must go, and the daemon does not replace it by itself: a
-person asks for it, or your deployment instructions name the case. The pod's disk goes with the
-pod, and so does every commit and edit of the issue's workspace that no push carried. So carry
-that work to the issue branch first, then delete the pod. Never delete a pod to reach one claim:
-use [the claim operations](#a-claims-state).
+person asks for it, or your deployment instructions name the case. Never replace a pod to reach
+one claim: use [the claim operations](#a-claims-state).
 
-The procedure is the route of `docs/kubernetes.md` in cybermonklabs/legion, "Carrying unpushed
-work out of an issue's pod", with one change: step 2 runs `carry-out.sh` in your own pod, in a
-namespace of its own, where the docs run the same script in a throwaway container. Your pod has
-no Docker. Run no `git`, `jj` or `omp` in the issue pod, and bring no credential into it: a
-`kubectl exec -c roles` shell runs as user 1000 with every role's credentials in reach, and the
-clone's configuration is every role's to write, so a program it names would run there.
+The pod's disk goes with the pod, and so does every commit and edit of the issue's workspace that
+no push carried. So you delete no issue pod or Sandbox with `kubectl`. You have no exec, attach or
+port-forward into a pod, because inside a pod you would reach what its launcher alone holds. The
+daemon's update round is the one way you remove an issue pod: it asks each role in the pod to
+push its work and to answer `ready_for_update`, as it does when a pod drifts from its
+configuration.
 
-Find the pod. `<pod>` is the name this read lists:
+**The command.** `legion({ op: "replace_pod", issue: "<KEY>" })`. The daemon opens the update
+round on that issue's pod. Where a round is open on that pod already, the answer names that
+round, and the daemon opens no second one. An answer that names a round means a claim of the
+issue records it. A refusal opens nothing, and its sentence says what to do:
 
-```sh
-kubectl -n <namespace> get pods -l legion.dev/issue=<KEY> --field-selector=status.phase=Running
-```
+- `NO_CLAIM`: the issue is not one of your project's, or the daemon runs no claim of it. There
+  is no pod of it to replace.
+- `NO_POD`: no role of the issue runs in a pod now. Ask again once one does, if the pod must
+  still go.
+- `POD_CHANGING` or `POD_UPDATE_LIMITED`: a replacement is in flight, or a limit of the project
+  holds the round back, and the sentence names the limit. Ask again at a later wake.
+- `POD_UPDATE_NOT_RECORDED`: no claim recorded the round within the wait, and its post may still
+  land. Read `updateRound` on the issue's claims before you ask again.
 
-The issue's agents run while you copy. Work they write after step 1 goes with the pod.
+Ask no other session to remove the pod.
 
-1. **Copy the clone and the workspace out of the pod with `tar` alone.** The first archive holds
-   the clone's refs, worktree records and objects. The second holds the workspace's files, with no
-   `.git` and no `.jj`. Each command refuses a directory reached through a symlink. An exit of 1
-   after `file changed as we read it` is no failure, because the agents still write:
-
-   ```sh
-   kubectl -n <namespace> exec <pod> -c roles -- sh -c 'set -e; cd -P "$1/.git"
-     test "$(pwd -P)" = "$1/.git"
-     tar --hard-dereference -cf - refs worktrees $(test -f packed-refs && echo packed-refs) objects
-     ' sh /legion/repos/github.com/<owner>/<repo> > "$TMPDIR/<KEY>-git.tar"
-   kubectl -n <namespace> exec <pod> -c roles -- sh -c 'set -e; cd -P "$1"; test "$(pwd -P)" = "$1"
-     tar --hard-dereference --ignore-case --exclude=.git --exclude=.jj --exclude=./.codegraph \
-     -cf - .' sh /legion/workspaces/<owner>/<repo>/<key> > "$TMPDIR/<KEY>-tree.tar"
-   ```
-
-   An exec that `kubectl` refuses (`Forbidden`) is an operation you lack: delete nothing, and name
-   it in the day's report. Any other exit that is not 0, but the exit 1 after `file changed as we
-   read it` above, is a copy you cannot use: the `test` that refuses a directory reached through a
-   symlink, an exec cut off, or a tar that fails. Make step 1 again once. A second such exit means
-   delete nothing, and tell the issue's architect by a mention that names the command and its last
-   line of output.
-
-2. **Rebuild the work into a bundle in your own pod.** `carry-out.sh` runs itself in a user,
-   network, mount and PID namespace of its own, with a tmpfs over `/run` and over `$HOME`, and
-   refuses to run outside it. It checks the type of each entry of both archives. It refuses an
-   entry of the tree through a `.git` or `.jj` directory, at any depth and in any case, and an
-   entry under a symlink of the tree. It refuses a symlink whose relative target, walked from the
-   link's own directory and on through each link of the tree it meets, climbs above the tree's
-   root, loops, or passes through more than 40 links. An in-tree link that climbs and comes back
-   down, as a Bun workspace's `node_modules` holds, passes.
-
-   An absolute target, such as a virtualenv's `bin/python -> /usr/bin/python3`, passes, and ends
-   the walk of any link that reaches it. It carries no write out of the tree: no entry under a
-   link is unpacked, tar replaces a name it meets again and does not write through it, and
-   `git add` stores a link as a link and does not follow it.
-
-   The tree archive holds ignored files too. Step 1 leaves out only `.git`, `.jj` and
-   `.codegraph`, so `node_modules` and a `.venv` are in it, and the script checks them. The
-   repository's `.gitignore` keeps them out of the rebuilt commit. So a link that git never adds
-   can still refuse a pod, but only as an entry under a link or by the walk of its relative target.
-
-   It then rebuilds the work under an empty environment, and writes a bundle of the branch
-   `rescue-<KEY>`: the commits origin lacks, and the edits no commit holds as one more commit. In a
-   pod of the worker image, the plugin holds the script at
-   `/opt/legion/pi-legion/dist/skills/legion-controller/scripts/carry-out.sh`, the same file as
-   `skill://legion-controller/scripts/carry-out.sh`:
-
-   ```sh
-   sh /opt/legion/pi-legion/dist/skills/legion-controller/scripts/carry-out.sh <KEY> /legion/workspaces/<owner>/<repo>/<key> "$TMPDIR/<KEY>-git.tar" "$TMPDIR/<KEY>-tree.tar" "$TMPDIR/<KEY>.bundle"
-   ```
-
-   Read its output:
-
-   - It exits 0: the bundle is written. The lines of `git status --short` are the edits that the
-     last commit of `rescue-<KEY>` now holds.
-   - Each commit under `unpushed commits of other branches, not in the bundle:` is work that no
-     push of the issue branch carries. Delete nothing, and tell the issue's architect by a mention
-     that names those commits.
-   - git's `Refusing to create empty bundle`, with no edit and no such commit: nothing below the
-     working copy is unpushed. Go to step 4.
-   - A `refused:` line that names `unshare` or the namespace: your pod cannot run the rebuild.
-     Delete nothing, and name the operation you lack in the day's report.
-   - Any other `refused:` line: the agents may have written while tar read. Make step 1 again,
-     then step 2 again. A second refusal means delete nothing, and tell the issue's architect,
-     naming the line.
-   - Any other exit that is not 0, with no `refused:` line: a `git` step of the rebuild failed,
-     such as an `update-ref`, a `fetch` or a `reset` that exits 128 on an object the agents were
-     writing while tar read it. Make step 1 again, then step 2 again. A second such exit means
-     delete nothing, and tell the issue's architect, naming the exit status and git's last line.
-
-3. **Push the issue branch, outside the namespace.** Run it through the worker image's `git`, the
-   wrapper first on your `PATH`, so Legion's leak guard checks the push. Take the implement App
-   token as [A re-run of a CI run](#a-re-run-of-a-ci-run) takes it, narrowed to the repository.
-   First fetch the issue branch and the default branch from GitHub into a fresh clone, then the
-   bundle, and read what the bundle adds:
-
-   ```sh
-   s=$(mktemp -d -p "$TMPDIR") && echo "$s" && git -C "$s" init -q
-   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: fetch legion/<KEY> to carry the unpushed work of its pod before the delete' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: basic $(printf "x-access-token:%s" "$LEGION_IMPLEMENT_APP" | base64 -w0)" git -C "$1" fetch -q https://github.com/<owner>/<repo>.git "refs/heads/legion/<KEY>:refs/remotes/origin/legion/<KEY>" "HEAD:refs/remotes/origin/default"' sh "$s"
-   git -C "$s" -c fetch.fsckObjects=true fetch -q "$TMPDIR/<KEY>.bundle" "rescue-<KEY>:refs/remotes/rescue/<KEY>"
-   git -C "$s" log --stat --oneline "origin/legion/<KEY>..rescue/<KEY>"
-   ```
-
-   The fetch from GitHub worked when it exits 0 after the
-   `agent-secrets: LEGION_IMPLEMENT_APP from <source>` line. Any other exit leaves nothing to read
-   the bundle against, so delete nothing. GitHub's
-   `fatal: couldn't find remote ref refs/heads/legion/<KEY>` is an issue branch no role ever
-   pushed, and another line is a refused token or a read that did not answer: tell the issue's
-   architect by a mention that names git's first line. Without the grant line, the status is the
-   client's own, and 77 is a denial: name it in the day's report, and ask no other session to make
-   the fetch.
-
-   `fetch.fsckObjects` has git check each object of the bundle before it stores any, as
-   `transfer.fsckObjects` checks a fetch from a remote. A malformed object refuses the fetch, with
-   `fatal: fsck error in packed object`. With git 2.47.3 on 2026-11-18, a bundle that held a commit
-   with a bad time zone fetched with no refusal without the setting, and with it was refused
-   `badTimezone: invalid author/committer line - bad time zone`.
-
-   The log lists the commits the push adds. Then push them, with no force:
-
-   ```sh
-   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: push the unpushed work of its pod to legion/<KEY> before the delete' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: basic $(printf "x-access-token:%s" "$LEGION_IMPLEMENT_APP" | base64 -w0)" git -C "$1" push https://github.com/<owner>/<repo>.git "refs/remotes/rescue/<KEY>:refs/heads/legion/<KEY>"' sh "$s"
-   ```
-
-   The token reaches git in its environment, never in its arguments. The push worked when it
-   prints `<old>..<new>  rescue/<KEY> -> legion/<KEY>` and exits 0, and when
-   `gh api repos/<owner>/<repo>/git/ref/heads/legion/<KEY> --jq .object.sha` prints the commit
-   that `git -C "$s" rev-parse refs/remotes/rescue/<KEY>` prints. A refused push means delete
-   nothing, and tell the issue's architect by a mention that names the refusal's first line and
-   the commits of the log. GitHub refuses anything but a fast-forward of the branch, and the App's
-   push of a change under `.github/workflows/` unless the App holds `workflows: write`. A fetch of
-   the bundle that names a missing commit, such as one force-pushed away on GitHub, or that fsck
-   refuses, means the same. Never push with force, and never push any branch but `legion/<KEY>`.
-
-4. **Only then, delete the pod**, and remove the scratch directory and the three files by their
-   exact paths (`$s` is the path step 3 printed):
-
-   ```sh
-   kubectl -n <namespace> delete pod <pod>
-   rm -rf -- "$s" "$TMPDIR/<KEY>-git.tar" "$TMPDIR/<KEY>-tree.tar" "$TMPDIR/<KEY>.bundle"
-   ```
-
-   The delete prints `pod "<pod>" deleted`. The pod read above lists `<pod>` no more.
-
-**The residual risk.** The rebuild runs in your own pod, not in a throwaway container. A crafted
-object in the archives that exploits a bug of git or tar runs inside the namespace in your pod.
-There it has no network, and it sees neither `/run`, which holds the credential files under
-`/var/run/legion` and `/var/run/secrets`, nor `$HOME`. It sees `$TMPDIR`. Step 3 runs outside the
-namespace: it fetches the bundle, whose objects came from the pod, and pushes them, with the
-network and your pod's credentials in reach. Its `fetch.fsckObjects` check is the one check of
-those objects there, so a crafted object that exploits a bug of git's that this check does not
-catch runs with your pod's rights.
-
-The bundle can also carry what a role's own push would carry. An absolute link that `git add -A`
-takes, tracked or new and named by no `.gitignore`, can reach the bundle. So can a file that a
-`.gitignore` would have ignored when that `.gitignore` is itself a symlink, because git does not
-read a `.gitignore` that is a symlink. Read the log's `--stat` in step 3 before you push. With
-GNU tar 1.35 and git 2.47.3, tar replaced a repeated name and did not write through the link,
-`git add -A` staged an absolute link as mode 120000, and git did not read a symlinked
-`.gitignore`.
-
-**Proved** on 2026-11-15 on cybermonklabs/legion#4065's own branch, from that issue's own pod
-on its own workspace, so step 1 ran with `sh -c` in place of `kubectl exec`. Step 1 wrote a git
-archive of 525,516,800 bytes and a tree archive of 1,590,466,560 bytes, holding 3,884 links,
-between 15:40:38Z and 15:42:47Z. Step 2's `carry-out.sh` exited 0 at 15:48:37Z with a bundle of
-25,895 bytes, no edit left out of a commit and no other branch's commit. Step 3, not yet with
-`fetch.fsckObjects`, fetched, logged the two commits `1e4bff5d` and `b6ba8a07`, and pushed
-`c0bdcc984..b6ba8a07d  rescue/<KEY> -> legion/<KEY>` at 15:51:03Z. GitHub's
-branch then named `b6ba8a07`, the bundle's tip. The first run of step 2 at 15:02Z
-had refused the same workspace on its Bun links, under an earlier symlink rule that this
-section no longer has. No run has yet made step 1 through `kubectl exec` from a controller's own
-pod.
+**What to read.** The answer names the round, its reasons and whether this call opened it. Then
+`read_state` with `issues: ["<KEY>"]` shows the round as `updateRound` on each claim of the pod,
+and, once a role has answered, the head it pushed as that claim's `updateHead`, which is the
+role's word and nothing verifies. The daemon replaces the pod once every role has answered and
+no turn runs, or at the round's bound, `pod_update_grace_minutes` after the round opened,
+whatever the roles answered. Work that a role did not push by then is lost with the disk, as in
+any update round. The round is done when no claim of the issue shows `updateRound`. A round that
+does not end at its bound is told as an `update-stalled` wake: to the architect that owns a claim
+an architect's suspension holds, and to you for every other hold
+(`skill://legion-controller/references/wakes.md`).
 
 ## A re-run of a CI run
 
@@ -424,10 +287,10 @@ it to no other session.
 
 | Kind | What you do now |
 | --- | --- |
-| `change a claim or a session` | [A claim's state](#a-claims-state): the six `legion` tool operations. Under the operator's suspension: [A claim the operator holds](#a-claim-the-operator-holds). A pod that must go: [A pod delete with nothing lost](#a-pod-delete-with-nothing-lost). |
+| `change a claim or a session` | [A claim's state](#a-claims-state): the six `legion` tool operations. Under the operator's suspension: [A claim the operator holds](#a-claim-the-operator-holds). An issue pod that must go: [A replacement of an issue's pod](#a-replacement-of-an-issues-pod). |
 | `change a Dispatch record` | Your own `dispatch` commands (a comment, an ask, an artifact, the fields of an issue other than its status) and `set_status`. A lifecycle status stays the daemon's. |
 | `merge or queue a pull request` | Not yours: you merge and enqueue nothing. The architect of the tree that owns the pull request enqueues it, after it reads `merge-holds-md` (`skill://legion-architect/references/acceptance.md#a-pull-request-no-merger-merges`). Write to that architect by a mention. A merge that only a person may schedule is a `dispatch ask`. |
-| `act on the cluster, cloud or CI` | [A restart of your project's daemon](#a-restart-of-your-projects-daemon), [A re-run of a CI run](#a-re-run-of-a-ci-run), [A pod delete with nothing lost](#a-pod-delete-with-nothing-lost), and the reads of your project's pods and Sandboxes in `<namespace>`. Any other act, such as a quota, a pin or a Pulumi value, is a change of code. It goes by a mention to the architect of the tree whose code it is, or it is a Legion root you file when no tree owns that code (`skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns`). An apply window that only a person may set is a `dispatch ask`. |
+| `act on the cluster, cloud or CI` | [A restart of your project's daemon](#a-restart-of-your-projects-daemon), [A re-run of a CI run](#a-re-run-of-a-ci-run), [A replacement of an issue's pod](#a-replacement-of-an-issues-pod), and the reads of your project's pods and Sandboxes in `<namespace>`. Any other act, such as a quota, a pin or a Pulumi value, is a change of code. It goes by a mention to the architect of the tree whose code it is, or it is a Legion root you file when no tree owns that code (`skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns`). An apply window that only a person may set is a `dispatch ask`. |
 | `do or change work` | No operation: it is the recipient's own work. Write to its owner by a mention. |
 | `investigate and report` | No operation: it is the recipient's own work. Read and measure what you can reach yourself. Write the rest to its owner by a mention. |
 | `review or verify` | No operation: it is the recipient's own work. Write to its owner by a mention. |

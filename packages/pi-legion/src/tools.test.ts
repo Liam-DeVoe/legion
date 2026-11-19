@@ -105,6 +105,7 @@ function recordingDaemon(options: {
     "retryClaim",
     "suspendClaim",
     "resumeClaim",
+    "issuePodUpdate",
     "handoffComplete",
     "releaseRecords",
   ];
@@ -202,6 +203,17 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
   "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
   "controller's report issue's icebox, because that issue holds no work. " +
+  "The controller's replace_pod (issue) replaces the pod that runs the roles of an issue of its own project. The " +
+  "daemon opens its update round over that pod: it asks each role in the pod to push its work and answer " +
+  "ready_for_update, and it replaces the pod when each role has answered, or at the round's bound whatever the " +
+  "roles said. replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
+  "answer names the round, its reasons, and opened, which is false when a round was already open over the pod. " +
+  "The daemon refuses it for an issue of another project and for an issue with no claim that it supervises " +
+  "(NO_CLAIM), for an issue whose claims run no worker in a pod (NO_POD), for an issue whose pod it replaces " +
+  "already (POD_CHANGING), and while a limit of the project holds the round back (POD_UPDATE_LIMITED, which " +
+  "names the limit). Those refused requests open nothing, and each sentence says when to ask again. The daemon answers only once a claim " +
+  "of the issue records the round. It refuses a round that no claim records in time (POD_UPDATE_NOT_RECORDED): " +
+  "that round can still open, so read updateRound on the issue's claims before you ask again. " +
   "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
   "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
   "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
@@ -354,6 +366,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "resume",
         "read_state",
         "set_status",
+        "replace_pod",
       ],
     },
     issue: { type: "string" },
@@ -629,6 +642,12 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
     await expect(
       run(session, { op: "set_status", issue: "LEGION-208", status: "todo" })
     ).resolves.toMatchObject({ isError: true });
+    await expect(run(session, { op: "replace_pod", issue: "LEGION-208" })).resolves.toMatchObject({
+      isError: true,
+      content: [
+        { type: "text", text: `replace_pod is not available to a ${session.kind} session` },
+      ],
+    });
   }
   await expect(run(architect, { op: "spawn_worker", issue: "LEGION-208" })).resolves.toMatchObject({
     isError: true,
@@ -1959,15 +1978,81 @@ test("the controller stops, retries, suspends and resumes a claim it names by is
   ]);
 });
 
+// The controller's replace_pod names the issue alone, mints the controller's grant as set_status
+// does, and returns the daemon's answer whole: the round over the issue's pod, its reasons, and
+// whether this request opened it. Refused before any mint for a missing issue and for a field it
+// does not take; a refusal of the daemon's is the tool's failure, its code as the daemon gave it.
+test("the controller asks for the replacement of an issue's pod with its own grant", async () => {
+  const minted: string[] = [];
+  // What the daemon answers (issue-pod-update.json): the round the request opened.
+  const opened = {
+    round: "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22",
+    reasons: "the project's controller asked for the replacement of this pod",
+    opened: true,
+  };
+  const { calls, daemon } = recordingDaemon({ answers: { issuePodUpdate: opened } });
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+
+  await expect(run({ op: "replace_pod", issue: "LEGION-209" })).resolves.toEqual({
+    content: [{ type: "text", text: JSON.stringify(opened) }],
+    details: opened,
+  });
+  expect(calls.at(-1)).toEqual([
+    "issuePodUpdate",
+    { grantId: "controller-grant-1", issue: "LEGION-209" },
+  ]);
+  expect(minted).toEqual(["ses_controller"]);
+
+  const before = calls.length;
+  for (const [parameters, message] of [
+    [{ op: "replace_pod" }, "replace_pod requires issue"],
+    [
+      { op: "replace_pod", issue: "LEGION-209", role: "tester" },
+      'replace_pod does not accept field "role"; it takes issue',
+    ],
+  ] as const) {
+    const result = await run(parameters);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
+  }
+  expect(calls).toHaveLength(before);
+  expect(minted).toHaveLength(1);
+
+  const refusing = recordingDaemon({
+    answers: {
+      issuePodUpdate: new LegionDaemonApiError(
+        "POST",
+        "/legion/v1/issues/pod-update",
+        409,
+        "POD_UPDATE_LIMITED",
+        "the project's pod_update_max_open_rounds (2) holds back the update round of LEGION-209"
+      ),
+    },
+  });
+  const refused = await controllerTool(refusing.daemon, []).execute(
+    "",
+    { op: "replace_pod", issue: "LEGION-209" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  expect(refused.isError).toBe(true);
+  expect(refused.content).toEqual([
+    { type: "text", text: expect.stringContaining("POD_UPDATE_LIMITED") },
+  ]);
+});
+
 // The architect's operation set, pinned whole: every `op` the tool's schema lists that an
 // architect's session is not refused as unavailable. It is the tree's workflow operations, the
 // phase ops, and the six claim operations the daemon serves an architect for the issues it owns;
-// the controller's read_state and set_status stay the controller's alone.
+// the controller's read_state, set_status and replace_pod stay the controller's alone.
 test("an architect's operation set is the tree's operations and the six claim operations", async () => {
   const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
     .properties?.op;
   const declared = typeof opSchema === "object" ? (opSchema.enum ?? []).map(String) : [];
-  expect(declared).toHaveLength(20);
+  expect(declared).toHaveLength(21);
   for (const architect of [claimSession("architect"), claimSession("architect", "LEGION-209")]) {
     const tool = toolFor(architect);
     const available: string[] = [];

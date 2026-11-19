@@ -94,7 +94,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
   ],
-  controller: ["read_state", "set_status", ...CLAIM_OPERATIONS],
+  controller: ["read_state", "set_status", "replace_pod", ...CLAIM_OPERATIONS],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
@@ -108,6 +108,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   rerun_child: ["issue"],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
+  replace_pod: ["issue"],
   ...Object.fromEntries(CLAIM_OPERATIONS.map((operation) => [operation, CLAIM_FIELDS])),
 };
 
@@ -347,9 +348,9 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * `handoff_complete` is refused here only for the root architect's session, and finds what it
  * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
  * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
- * operation. `read_state` and `set_status` belong to the controller, and the claim operations
- * (`CLAIM_OPERATIONS`) to the controller and to an architect, whose reach the daemon limits to the
- * claims of the issues it owns. */
+ * operation. `read_state`, `set_status` and `replace_pod` belong to the controller, and the claim
+ * operations (`CLAIM_OPERATIONS`) to the controller and to an architect, whose reach the daemon
+ * limits to the claims of the issues it owns. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -432,6 +433,17 @@ export function createLegionTool(deps: {
         "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
         "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
         "controller's report issue's icebox, because that issue holds no work. " +
+        "The controller's replace_pod (issue) replaces the pod that runs the roles of an issue of its own project. The " +
+        "daemon opens its update round over that pod: it asks each role in the pod to push its work and answer " +
+        "ready_for_update, and it replaces the pod when each role has answered, or at the round's bound whatever the " +
+        "roles said. replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
+        "answer names the round, its reasons, and opened, which is false when a round was already open over the pod. " +
+        "The daemon refuses it for an issue of another project and for an issue with no claim that it supervises " +
+        "(NO_CLAIM), for an issue whose claims run no worker in a pod (NO_POD), for an issue whose pod it replaces " +
+        "already (POD_CHANGING), and while a limit of the project holds the round back (POD_UPDATE_LIMITED, which " +
+        "names the limit). Those refused requests open nothing, and each sentence says when to ask again. The daemon answers only once a claim " +
+        "of the issue records the round. It refuses a round that no claim records in time (POD_UPDATE_NOT_RECORDED): " +
+        "that round can still open, so read updateRound on the issue's claims before you ask again. " +
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
@@ -584,8 +596,15 @@ export function createLegionTool(deps: {
           return await claimOperation(client, operation, { grantId, issue, role });
         }
         if (active.kind === "controller") {
-          // set_status, validated whole before its grant is minted. Every other operation of the
-          // controller's is answered above, so one that reaches here is named, never run as this.
+          // replace_pod and set_status, each validated whole before its grant is minted. Every
+          // other operation of the controller's is answered above, so one that reaches here is
+          // named, never run as either.
+          if (operation === "replace_pod") {
+            // The daemon decides whose pod it opens a round over, and answers the round whole.
+            const issue = requiredString(parameters, operation, "issue");
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.issuePodUpdate({ grantId, issue }));
+          }
           if (operation !== "set_status")
             throw new Error(`Unsupported legion operation: ${operation}`);
           const issue = requiredString(parameters, operation, "issue");

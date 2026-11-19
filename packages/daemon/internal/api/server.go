@@ -83,6 +83,12 @@ type Options struct {
 	// record, which says the daemon has not swept yet: a deployment that serves the route with no
 	// sweep behind it says so rather than read as a sweep that held no issue back.
 	PodUpdateRounds func() PodUpdateRounds
+	// RequestPodUpdate opens the update round over one issue's pod on the project's controller's
+	// request (POST /legion/v1/issues/pod-update; the daemon's requestPodUpdate), through the
+	// opening the sweep makes of a drift's round and under the same project limits. It answers the
+	// round, a *PodUpdateRefused for a request it refused, or another error for a read that failed.
+	// Nil refuses every such request: a deployment with no sweep replaces no pod.
+	RequestPodUpdate func(ctx context.Context, issue string) (PodUpdateResponse, error)
 	// BootTokens resolves a registration's boot token.
 	BootTokens *BootTokens
 	// Project and DispatchProject are the two names this one project answers to, and the daemon
@@ -322,7 +328,9 @@ type server struct {
 	awaitStream func(ctx context.Context, token claim.Token)
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
-	bootTokens      *BootTokens
+	// requestPodUpdate is Options.RequestPodUpdate.
+	requestPodUpdate func(ctx context.Context, issue string) (PodUpdateResponse, error)
+	bootTokens       *BootTokens
 	// project and dispatchProject are Options.Project and Options.DispatchProject.
 	project         string
 	dispatchProject string
@@ -422,6 +430,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		supervisor:         opts.Supervisor,
 		awaitStream:        opts.AwaitStream,
 		podUpdateRounds:    opts.PodUpdateRounds,
+		requestPodUpdate:   opts.RequestPodUpdate,
 		bootTokens:         opts.BootTokens,
 		project:            opts.Project,
 		dispatchProject:    opts.DispatchProject,
@@ -531,6 +540,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/controller/github-credential", s.controllerGitHubCredential},
 		{"POST /legion/v1/handoff/complete", s.handoffComplete},
 		{"POST /legion/v1/issues/status", s.issueStatus},
+		{"POST /legion/v1/issues/pod-update", s.issuePodUpdate},
 		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
 		{"POST /legion/v1/claims/compact", s.claimCompact},
 		{"POST /legion/v1/claims/stop", s.claimStop},
