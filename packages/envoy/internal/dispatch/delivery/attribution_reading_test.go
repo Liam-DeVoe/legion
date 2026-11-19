@@ -865,9 +865,13 @@ func TestAFunctionEarlierInTheSearchPathSuppliesNoKeys(t *testing.T) {
 	}
 }
 
-// The remake of keys carries no keys: it writes a row's title over itself, and the trigger
-// computes the keys from the row the update locked. So a remake that meets a writer's open
-// update waits for it, and after both the row holds the writer's texts and their keys.
+// A remake of keys (RemakeKeys) carries no keys: each chunk skips a row a writer holds, and it
+// writes a row's title over itself, so the trigger computes the keys from the row the update
+// locked. #9151 is on another reading with the title T0. A writer's update to T1 and the branch
+// legion/ACME-2 is open while RemakeKeys runs; the test waits until RemakeKeys has ended or waits
+// on the writer's row, and then the writer commits. After both, the row holds T1, the branch keys
+// [ACME-2] and the reading that runs now. A remake that writes the title it read before the
+// writer's update committed writes T0 back over T1.
 func TestARemakeOfKeysCannotStoreTheKeysOfOlderTexts(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	schema := readingSchema(t, ctx, pool)
@@ -896,45 +900,42 @@ func TestARemakeOfKeysCannotStoreTheKeysOfOlderTexts(t *testing.T) {
 	if _, err := writer.Exec(ctx, `update pull_request_texts set head_ref = 'legion/ACME-2', title = 'T1' where repo = 'acme/widgets' and number = 9151`); err != nil {
 		t.Fatal(err)
 	}
-	remaker, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer remaker.Release()
-	started := time.Now()
 	remade := make(chan error, 1)
 	go func() {
-		_, err := remaker.Exec(context.Background(), `update pull_request_texts x set title = x.title
-			where (x.repo, x.number) = ('acme/widgets', 9151) and x.reading <> `+schema+`.attribution_reading()`)
+		_, err := RemakeKeys(context.Background(), pool)
 		remade <- err
 	}()
-	if err, early := storetest.WaitForQueuedBehind(t, writer, remaker.Conn().PgConn().PID(), remade, 10*time.Second); early {
-		t.Fatalf("the remake ended before it waited for the writer's open update: %v", err)
-	}
-	time.Sleep(300*time.Millisecond - time.Since(started))
-	select {
-	case err := <-remade:
-		t.Fatalf("the remake ended before the writer committed: %v", err)
-	default:
+	var remakeErr error
+	ended, deadline := false, time.Now().Add(time.Minute)
+	for !ended && storetest.WaitForLockWaiters(t, writer, 1, 10*time.Millisecond) == 0 {
+		select {
+		case remakeErr = <-remade:
+			ended = true
+		default:
+			if time.Now().After(deadline) {
+				t.Fatal("RemakeKeys neither ended nor waited on the writer's open update within a minute")
+			}
+		}
 	}
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-remade; err != nil {
-		t.Fatalf("the remake: %v", err)
+	if !ended {
+		remakeErr = <-remade
 	}
-	if waited := time.Since(started); waited < 300*time.Millisecond {
-		t.Errorf("the remake waited %s, want at least 300ms", waited)
+	if remakeErr != nil {
+		t.Fatalf("RemakeKeys: %v", remakeErr)
 	}
 	var title string
 	if err := pool.QueryRow(ctx, `select title from pull_request_texts where repo = 'acme/widgets' and number = 9151`).Scan(&title); err != nil {
 		t.Fatal(err)
 	}
 	lists, reading := storedReading(t, ctx, pool, 9151)
+	t.Logf("remake_ended_before_the_writer_committed=%v title=%s branch_keys=%q", ended, title, lists.BranchKeys)
 	if title != "T1" || !slices.Equal(lists.BranchKeys, []string{"ACME-2"}) {
-		t.Errorf("after the writer and the remake the row holds %s with branch keys %q, want T1 with [ACME-2]", title, lists.BranchKeys)
+		t.Errorf("after the writer and RemakeKeys the row holds %s with branch keys %q, want T1 with [ACME-2]", title, lists.BranchKeys)
 	}
 	if identity := currentReading(t, ctx, pool, schema); reading != identity {
-		t.Errorf("after the writer and the remake the row holds the reading %q, want %q", reading, identity)
+		t.Errorf("after the writer and RemakeKeys the row holds the reading %q, want %q", reading, identity)
 	}
 }
