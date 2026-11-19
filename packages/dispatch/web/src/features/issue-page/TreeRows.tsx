@@ -114,7 +114,7 @@ export function TreeRows({
             }
             context={context.has(row.node.id)}
             {...(place === undefined ? {} : { document: place.artifact })}
-            editable={nodeEditable(row.node, artifacts, isClosed)}
+            editable={nodeEditable(place, isClosed)}
             {...(editing?.row === key ? { editing: editing.artifactId } : {})}
             expanded={row.expanded}
             focused={focused === key}

@@ -51,7 +51,7 @@ export function StagedDocument({
     <>
       {resting ? <div className="flex min-w-0 flex-col" ref={stage} /> : null}
       <DocumentStage artifactId={artifact.id}>
-        <EditorBox readOnly={isClosed}>
+        <EditorBox>
           {user.data === undefined ? (
             <p>Loading document…</p>
           ) : (
@@ -110,20 +110,16 @@ export function StagedDocument({
  *
  * The box carries the page's cue that a block takes typing (`dispatch-edit-cue`, `styles.css`):
  * the text cursor and the page's faint pane under the pointer, and a 1 px rule in the page's ink
- * inside its edge while the editor in it holds the focus, which takes no room in the box. A
- * document that takes no edit, a closed issue's (`readOnly`), draws none of it.
+ * inside its edge while the editor in it holds the focus, which takes no room in the box. It
+ * draws the cue only while the document in it takes typing: one the editor admits read-only - a
+ * closed issue's, or one this build's schema is out of date for, its article marked so
+ * (`ProofDocument.tsx`'s `data-read-only`) - draws none of it.
  */
-export function EditorBox({
-  children,
-  readOnly = false,
-}: {
-  children: ReactNode;
-  readOnly?: boolean;
-}): ReactNode {
+export function EditorBox({ children }: { children: ReactNode }): ReactNode {
   return (
     <div className="min-w-0 [overflow-anchor:none]">
       <div
-        className={`${readOnly ? "" : "dispatch-edit-cue "}max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]! [&_.dispatch-reference]:max-w-[min(24em,100%)]!`}
+        className="dispatch-edit-cue max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]! [&_.dispatch-reference]:max-w-[min(24em,100%)]!"
         {...{ [EDITOR_BOX_ATTRIBUTE]: "" }}
       >
         {children}

@@ -54,6 +54,7 @@ import {
   seedUnbrokenChildTitle,
   seedUnbrokenWords,
   seedWholeIssue,
+  seedWideCode,
   UNBROKEN_PATH,
   type WholeIssueSeed,
 } from "./issue-layout-seed";
@@ -113,7 +114,6 @@ import {
   rowReference,
   rowTags,
   SHAPE_CONTRAST,
-  seedWideCode,
   shapesPainted,
   standInControlBelow,
   standInFootBox,
@@ -4050,8 +4050,9 @@ function editableRows(page: Page): Promise<string[]> {
     .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-node-id") ?? "<no id>"));
 }
 
-/** What the cue that a block takes typing draws on `row` (`styles.css`'s `dispatch-edit-cue`), as
- *  computed: the row's cursor, and the background of its card, which is where the tint is. */
+/** What the cue that a block takes typing draws on `row` (`styles.css`'s `[data-editable]`
+ *  rules), as computed: the row's cursor, and the background of its card, which is where the tint
+ *  is. */
 function rowCue(row: Locator): Promise<{ readonly background: string; readonly cursor: string }> {
   return row.evaluate((element) => {
     const card = element.querySelector(":scope > [data-node-card]");
@@ -4117,10 +4118,10 @@ async function openWithNoRowFocused(page: Page, key: string): Promise<void> {
 // page's faint pane behind its card; once Enter has put the caret in it, the box its editor
 // scrolls in draws a 1 px outline in the page's ink just inside its edge, which takes no room. A
 // comment's row takes no typing and draws neither, and neither does any block of a closed issue,
-// whose documents are read-only. Each is read as computed style, the rows by the mark the outline
-// gives a row that takes typing.
+// whose documents are read-only, nor the box of its editor at focus. Each is read as computed
+// style, the rows by the mark the outline gives a row that takes typing.
 // SLOW(>=2s): the whole issue seeded and loaded, Enter waited on until the statement's editor
-// opens, then the issue closed and loaded again.
+// opens, then the issue closed and loaded again and the statement's editor opened there.
 test("an editable row shows it takes typing under the pointer and at focus, and a comment row and a closed issue's block show neither", async ({
   browser,
 }) => {
@@ -4134,17 +4135,28 @@ test("an editable row shows it takes typing under the pointer and at focus, and 
     await openWithNoRowFocused(page, seeded.key);
     const colours = await cueColours(page);
     const statementRow = nodeRow(page, statement).first();
+    const checkRow = nodeRow(page, check).first();
     const commentRow = nodeRow(page, comment).first();
 
     // The statement's row and the check's are marked as taking typing, and the comment's is not.
+    // Each row is drawn as the read of its own document lands, so the marks are read until both
+    // rows hold theirs, and the comment's once its row is drawn.
     await expect
-      .poll(async () => (await editableRows(page)).includes(statement), {
-        message: "no row the outline marks as taking typing ([data-editable]) is the statement's",
-      })
-      .toBe(true);
-    const marked = await editableRows(page);
-    expect(marked, "the check's row is not marked as taking typing").toContain(check);
-    expect(marked, "the comment's row is marked as taking typing").not.toContain(comment);
+      .poll(
+        async () => {
+          const marked = await editableRows(page);
+          return { check: marked.includes(check), statement: marked.includes(statement) };
+        },
+        {
+          message:
+            "the statement's row and the check's are not both marked as taking typing ([data-editable])",
+        }
+      )
+      .toEqual({ check: true, statement: true });
+    await expect(commentRow, "the comment's row is not drawn").toBeAttached();
+    expect(await editableRows(page), "the comment's row is marked as taking typing").not.toContain(
+      comment
+    );
 
     // Under the pointer the statement's row draws the text cursor and the pane behind its card,
     // and drew neither before.
@@ -4184,19 +4196,44 @@ test("an editable row shows it takes typing under the pointer and at focus, and 
       .toBe(false);
 
     // Closed, the issue's documents are read-only: no row is marked, and the statement's row
-    // under the pointer draws neither.
+    // under the pointer draws neither. The marks are read once the statement's row and the
+    // check's are drawn, as the reads of their documents land.
     await patchIssue(seeded.key, { status: "done" });
     await openWithNoRowFocused(page, seeded.key);
-    expect(
-      await editableRows(page),
-      "a row of the closed issue is marked as taking typing"
-    ).toEqual([]);
+    await expect(statementRow, "the closed issue's statement row is not drawn").toBeAttached();
+    await expect(checkRow, "the closed issue's check row is not drawn").toBeAttached();
+    await expect
+      .poll(() => editableRows(page), {
+        message: "a row of the closed issue is marked as taking typing",
+      })
+      .toEqual([]);
     await statementRow.hover();
     await nextFrames(page);
     expect(
       await rowCue(statementRow),
       "the closed issue's statement under the pointer draws a cue"
     ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+
+    // Nor does the box of its editor draw the rule at focus. Enter opens the statement's editor
+    // there, admitted read-only, and the focus stays on the row, since that editor takes no
+    // caret; so the document inside the box is given the focus, as a control of the document's
+    // would take it. The box itself is not: the browser draws its own ring on what holds the
+    // focus, which is no rule of the cue's.
+    await focusRow(page, statement);
+    await page.keyboard.press("Enter");
+    const article = statementRow.locator("[data-editor-box] .dispatch-doc");
+    await expect(
+      article,
+      "Enter drew no read-only document in the closed issue's statement row"
+    ).toHaveAttribute("data-read-only", "true");
+    await article.evaluate((element) => {
+      element.tabIndex = -1;
+      element.focus();
+    });
+    expect(
+      await editorBoxRule(statementRow),
+      "the box of the closed issue's statement editor draws a rule at focus"
+    ).toMatchObject({ focused: true, style: "none" });
   });
 });
 

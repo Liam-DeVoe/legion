@@ -29,20 +29,21 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
  * reader is.
  *
  * The controls a row draws are worked by keys too, and for the same reason the moves are: the
- * tree is one tab stop, so nothing inside a row takes the focus and Tab from a row leaves
- * the tree. The arrows press the fold control, `o` the one that pins the body open, `r` and `a`
- * Reply and Answer - the line `a` sets draws an open question's options as chips of its own -
- * `Shift+K` presses Keep, `Shift+C` presses Change and puts the caret in the form it opens, and
- * `f` steps through the row's links and then through every other control no key presses - Copy
- * reference, Change answer, a command's Copy - where Enter follows or presses the one it stopped
- * on. So every control of the focused row is reachable from the keyboard without a second tab
- * stop (WCAG 2.1.1), and `?` names each key by what it does, as it names every other.
+ * tree is one tab stop, so the only tab stops inside a row are the focused row's scrolling
+ * blocks, and Tab from a row leaves the tree past them. The arrows press the fold control, `o`
+ * the one that pins the body open, `r` and `a` Reply and Answer - the line `a` sets draws an open
+ * question's options as chips of its own - `Shift+K` presses Keep, `Shift+C` presses Change and
+ * puts the caret in the form it opens, and `f` steps through the row's links and then through
+ * every other control no key presses - Copy reference, Change answer, a command's Copy - where
+ * Enter follows or presses the one it stopped on. So every control of the focused row is
+ * reachable from the keyboard without a second tab stop (WCAG 2.1.1), and `?` names each key by
+ * what it does, as it names every other.
  *
- * A wide block of the focused row's words - a code block, a table - keeps a tab stop of its own,
- * so a reader on the keyboard can scroll it (`RowText.tsx`'s `useOutOfTabOrder`). On that block,
- * or inside it, the keys the browser scrolls by are the browser's: the tree moves, folds and
- * says nothing for them (`scrollsABlock`), and Escape gives the row back, as it does from any
- * control inside a row.
+ * Every block of the focused row's words that scrolls its own content - each code block, table,
+ * a diagram's preview - keeps a tab stop of its own, so a reader on the keyboard can scroll it
+ * (`RowText.tsx`'s `useOutOfTabOrder`). On that block, or inside it, the keys the browser
+ * scrolls by are the browser's: the tree moves, folds and says nothing for them
+ * (`scrollsABlock`), and Escape gives the row back, as it does from any control inside a row.
  */
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */
@@ -103,24 +104,23 @@ const NODE_ROW = "[data-node-row]";
 const END = Number.MAX_SAFE_INTEGER;
 
 /** A block of a row's words that scrolls its own content and keeps a tab stop of its own while
- *  its row holds the focus, as `RowText.tsx`'s `useOutOfTabOrder` keeps a wide code block or
- *  table. Every other control inside a row is out of the tab order, the tree being one tab stop,
- *  so a tab stop inside a row is one of these. */
+ *  its row holds the focus: each code block, table and diagram's preview. `RowText.tsx`'s
+ *  `useOutOfTabOrder` (`keepScrollers`) is the one writer of `tabindex="0"` inside a row, so a
+ *  block carrying it is one of these. The form Change opens is in the tab order too, but carries
+ *  no tabindex attribute. */
 const KEPT_SCROLLER = `${NODE_ROW} [tabindex="0"]`;
 
-/** The keys the browser scrolls by: the arrows, Home and End, Page Up and Page Down, and Space.
- *  It scrolls the box the focus is in where that box scrolls the key's way - Right a wide code
- *  block - and the page where it does not: Home, End and the page keys go up and down alone. */
+/** The keys of this keymap the browser also scrolls by: the arrows, Home and End. It scrolls the
+ *  box the focus is in where that box scrolls the key's way - Right a wide code block - and the
+ *  page where it does not: Home and End go up and down alone. Space and the page keys are the
+ *  browser's already, since no binding here takes them. */
 const SCROLL_KEYS: Record<string, true> = {
-  " ": true,
   ArrowDown: true,
   ArrowLeft: true,
   ArrowRight: true,
   ArrowUp: true,
   End: true,
   Home: true,
-  PageDown: true,
-  PageUp: true,
 };
 
 /** The marks of the controls a row draws that a key of this keymap presses, which `f` leaves to

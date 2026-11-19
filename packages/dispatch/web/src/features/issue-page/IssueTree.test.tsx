@@ -105,6 +105,13 @@ const decisionsDocument: Artifact = {
   versions: [],
 };
 
+const specDocument: Artifact = {
+  ...decisionsDocument,
+  id: "artifact-spec",
+  name: "Spec",
+  slug: "spec",
+};
+
 const decision: Decision = {
   asks: [],
   block_id: "d1",
@@ -1167,8 +1174,8 @@ test("Home from a chip of the first row brings the row back on screen after the 
   }
 });
 
-// A wide code block or table of the focused row's words keeps a tab stop of its own, so a reader
-// on the keyboard can scroll it sideways. On it, or on a link inside it, every key the browser
+// A code block or table of the focused row's words keeps a tab stop of its own, so a reader on
+// the keyboard can scroll it sideways. On it, or on a link inside it, every key the browser
 // scrolls by - the block, or the page where the block does not scroll the key's way - is the
 // browser's: the page's keymap prevents none of them, and the tree moves no focus, folds nothing
 // and says nothing. Escape from it gives the row back, and `j`, which scrolls nothing, still moves
@@ -1289,7 +1296,7 @@ test("a statement's and a check's rows carry data-editable, a comment's, a resul
   setViewport(1440);
   const user = userEvent.setup();
   const artifacts: Artifact[] = [
-    { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" },
+    specDocument,
     {
       ...decisionsDocument,
       id: "artifact-verification",
@@ -1352,7 +1359,6 @@ test("a statement's and a check's rows carry data-editable, a comment's, a resul
 test("Escape leaves the caret for the placement it was taken from, not the node's first row", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   // A check of the Verification document draws a state, and a requirement of the spec is a
   // statement (`isCheck`, `isStatement`): with neither, the outline folds the branch away.
   const shared = {
@@ -1379,7 +1385,7 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
     id: KEY,
     type: "issue",
   });
-  const view = renderTree(root, { artifacts: [spec] });
+  const view = renderTree(root, { artifacts: [specDocument] });
   const placements = rowsFor(view.container, "spec#b-c1");
   expect(placements.length).toBe(2);
   const second = placements[1];
@@ -1402,7 +1408,6 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
 test("the row the reader is editing in places nothing of its own as it grows", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
@@ -1424,7 +1429,7 @@ test("the row the reader is editing in places nothing of its own as it grows", a
   const sizes = sizesByHand();
   const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
   try {
-    const view = renderTree(root, { artifacts: [spec] });
+    const view = renderTree(root, { artifacts: [specDocument] });
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
     await user.keyboard("j");
     await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
@@ -1458,7 +1463,6 @@ test("the row the reader is editing in places nothing of its own as it grows", a
 test("the row's editor opens at the node's block, in a box that ends at the foot of the window", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
@@ -1472,7 +1476,7 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
   const { floor, room, scrolled } = page;
   try {
     const view = renderTree(root, {
-      artifacts: [spec],
+      artifacts: [specDocument],
       editor: <div contentEditable suppressContentEditableWarning />,
     });
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
@@ -1802,7 +1806,6 @@ async function enterStatement(
   editor: StandInEditor,
   after: readonly TreeNode[] = []
 ) {
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
@@ -1812,7 +1815,7 @@ async function enterStatement(
     id: KEY,
     type: "issue",
   });
-  const view = renderTree(root, { artifacts: [spec], editor });
+  const view = renderTree(root, { artifacts: [specDocument], editor });
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
