@@ -741,6 +741,80 @@ func TestHorizonResetDiscardsAnObservationInFlight(t *testing.T) {
 	}
 }
 
+// A caller that refused the observation in flight shares the one after it however late it runs
+// again: one that runs again only once that next observation has ended takes its answer, which
+// started after the call, rather than run one more. A caller that ran again only to find none in
+// flight and start its own would make every caller run one on a machine loaded enough that each
+// runs again after the one before it has finished. Scripted: the first call's observation is
+// held; the second and third calls arrive while it is in flight, so both refuse it; the third is
+// held where it parks until the second has its answer, which it has only once the observation
+// after the held one has ended. Three calls, two observations: fewer means a caller settled for
+// the observation in flight when it called, more means a caller did not share the next.
+func TestHorizonACallerThatRunsAgainLateSharesTheObservationAfterTheOneItRefused(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	counting := &countingHorizonDB{HorizonDB: database.Pool, entered: make(chan struct{}), release: make(chan struct{})}
+	horizon := NewHorizon(counting)
+	parked := make(chan struct{}, 4)
+	late := make(chan struct{})
+	// A failure below must not leave the held observation or the held caller blocked for ever.
+	release, runLate := sync.OnceFunc(func() { close(counting.release) }), sync.OnceFunc(func() { close(late) })
+	defer release()
+	defer runLate()
+	var parks atomic.Int32
+	horizon.afterObservationParked = func() {
+		n := parks.Add(1)
+		parked <- struct{}{}
+		if n == 2 {
+			<-late
+		}
+	}
+	call := func() <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			_, err := horizon.Safe(ctx)
+			done <- err
+		}()
+		return done
+	}
+	await := func(what string, ch <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			t.Fatalf("%s: %v", what, ctx.Err())
+		}
+	}
+	answer := func(which string, done <-chan error) {
+		t.Helper()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("the %s Safe call: %v", which, err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("the %s Safe call has no answer: %v", which, ctx.Err())
+		}
+	}
+
+	first := call()
+	await("the first call's observation never reached the database", counting.entered)
+	second := call()
+	await("the second call never parked on the observation in flight", parked)
+	third := call()
+	await("the third call never parked on the observation in flight", parked)
+	release()
+	answer("first", first)
+	answer("second", second)
+	runLate()
+	answer("third", third)
+	if observations := counting.batches.Load(); observations != 2 {
+		t.Fatalf("three Safe calls, two made while the first one's observation was in flight, ran %d observations, "+
+			"want 2: the first one's and the one after it, which the two share", observations)
+	}
+}
+
 // Safe must not settle for an observation already in flight when it is called: that one's
 // snapshot can predate an event committed just before the call, and with its A at or below H it
 // leaves no gap (Gap), so a reader would arm no re-read and the event would wait for the next

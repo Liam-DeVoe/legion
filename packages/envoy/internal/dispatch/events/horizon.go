@@ -216,9 +216,10 @@ type Horizon struct {
 	// sets pauseFor and a test replaces it to see the waits Await takes.
 	pause func(ctx context.Context, d time.Duration)
 	// afterObservationParked runs, outside the lock, each time a caller finds an observation
-	// already in flight and parks on it rather than running one of its own. Nothing in
-	// production sets it; the package's own test of concurrent callers waits on it instead of
-	// sleeping for a share of them to arrive.
+	// already in flight and waits, on it or on the one after it, rather than run one of its own.
+	// Nothing in production sets it; the package's own tests of concurrent callers wait on it
+	// instead of sleeping for a share of them to arrive, and hold a caller in it to have it run
+	// again late.
 	afterObservationParked func()
 
 	mu sync.Mutex
@@ -227,8 +228,13 @@ type Horizon struct {
 	generation uint64
 	// started counts observations ever started and is never reset: an observation's number is
 	// its order, and Safe and Await each wait for one numbered above the count when called.
+	// inFlight is the observation running now. next, when set, is the one to start after it:
+	// every caller that refuses inFlight, which started before the call, waits for next, and the
+	// first start after inFlight ends starts next rather than a new one, so those callers share
+	// one observation however late each of them runs again.
 	started  uint64
 	inFlight *horizonFlight
+	next     *horizonFlight
 	// safe is H. safeThrough is the number of the newest observation H covers: proven safe, or
 	// with an A at or below H when recorded or later. Both are this generation's.
 	safe        int64
@@ -280,8 +286,9 @@ type horizonObservation struct {
 	at         time.Time
 }
 
-// horizonFlight is the one observation in flight, which concurrent callers share. Its fields
-// are written by the caller running it before done closes and read by the others after.
+// horizonFlight is one observation, which concurrent callers share. number and generation are
+// set when it starts (startLocked); a flight made as next has neither until then. Its other
+// fields are written by the caller running it before done closes and read by the others after.
 type horizonFlight struct {
 	number     uint64
 	generation uint64
@@ -641,37 +648,75 @@ func (h *Horizon) Reset() {
 	h.persistedSafe = 0
 }
 
-// observe returns once an observation numbered above after has ended, recorded or failed: it
-// joins the one in flight, or runs one itself when none is. An observation numbered at or below
-// after started before the caller needed it, so the caller waits it out and takes the next.
+// observe returns once an observation numbered above after has ended, recorded or failed. It
+// joins the one in flight when that one started after the call, and runs one itself when none
+// is in flight. One in flight numbered at or below after started before the caller needed it, so
+// the caller waits it out and then shares next, the observation after it, with every caller that
+// refused the same one. The first start after it ends starts next, whether one of those callers
+// makes it or a caller that finds none in flight does, and each of those callers, however late it
+// runs again, waits for next or takes its answer if it has ended, rather than start one more.
+// Every observation it returns on is thus numbered above after.
 func (h *Horizon) observe(ctx context.Context, after uint64) error {
 	for {
 		h.mu.Lock()
-		flight := h.inFlight
+		flight, ahead := h.inFlight, (*horizonFlight)(nil)
 		run := flight == nil
-		if run {
-			h.started++
-			flight = &horizonFlight{number: h.started, generation: h.generation, done: make(chan struct{})}
-			h.inFlight = flight
+		switch {
+		case run:
+			flight = h.startLocked()
+		case flight.number <= after:
+			if h.next == nil {
+				h.next = &horizonFlight{done: make(chan struct{})}
+			}
+			flight, ahead = h.next, flight
 		}
 		h.mu.Unlock()
+		if !run && h.afterObservationParked != nil {
+			h.afterObservationParked()
+		}
+		if ahead != nil {
+			select {
+			case <-ahead.done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			// Every start takes next, so next is still unstarted only while nothing has started
+			// since ahead ended, and then none is in flight: this caller starts it.
+			h.mu.Lock()
+			if run = h.next == flight; run {
+				h.startLocked()
+			}
+			h.mu.Unlock()
+		}
 		if run {
 			h.run(ctx, flight)
 		} else {
-			if h.afterObservationParked != nil {
-				h.afterObservationParked()
-			}
 			select {
 			case <-flight.done:
 			case <-ctx.Done():
 				return ctx.Err()
 			}
 		}
-		if flight.number <= after || (flight.abandoned && ctx.Err() == nil) {
+		if flight.abandoned && ctx.Err() == nil {
 			continue
 		}
 		return flight.err
 	}
+}
+
+// startLocked starts an observation, with none in flight: next, which callers that refused the
+// one before it wait for, or a new one when no caller does. It numbers it and stamps it with the
+// generation now, and makes it the one in flight. h.mu is held.
+func (h *Horizon) startLocked() *horizonFlight {
+	flight := h.next
+	if flight == nil {
+		flight = &horizonFlight{done: make(chan struct{})}
+	}
+	h.next = nil
+	h.started++
+	flight.number, flight.generation = h.started, h.generation
+	h.inFlight = flight
+	return flight
 }
 
 // run takes flight's observation and records it, unless a Reset came between. A stall warning it
