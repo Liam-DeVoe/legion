@@ -306,14 +306,14 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
 
 ## Go's package deadline
 
-`go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
-which reads as a failure of the change under test. `packages/envoy/internal/dispatch/api` alone
-takes close to that, about 600 s on a workstation, so every command that runs that package, on its
-own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 20m`:
+`go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`), which reads as a failure of the change under test.
+`packages/envoy/internal/dispatch/api` alone took close to that, 665 s in the last CI run that ran it whole without `-race` (`envoy-go-test-json-2` of run 41703055842).
+Its claim model, `TestTheMentionSenderClaimModel`, searches every interleaving of the mention sender's code and took 19 min 18 s on its own (`.github/workflows/ci-job-envoy-go-claim-model.yaml`), so it runs by name in a job of its own.
+So every command that runs that package, on its own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 20m` and leaves the claim model to its job:
 
 ```sh
 cd packages/envoy
-go test -timeout 20m ./internal/dispatch/api
+go test -timeout 20m -skip '^TestTheMentionSenderClaimModel$' ./internal/dispatch/api
 ```
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
@@ -322,7 +322,7 @@ CI leaves that package out of `envoy-go`'s package list and runs it under `-race
 `envoy-go-race-api`, the job that runs it by itself, through `packages/envoy/scripts/database-skips.sh`,
 which gives it 32 minutes (`--timeout 32m`) and counts its skips
 (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps); `text-checks`
-runs its fifteen source-guard tests by name.
+runs its seventeen source-guard tests by name, and `envoy-go-claim-model` its two claim model tests.
 `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 54 (`-timeout 54m`).
 A plain run covers, by name, the few tests of those two packages that the race build leaves out or runs smaller.
 `envoy-go` runs those of `docs` in the race-impossible call of its unit step.

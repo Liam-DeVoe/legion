@@ -160,8 +160,10 @@ func PerPodLoginSchema(t testing.TB, st *store.Store) {
 
 // DatabaseURL creates a fresh, UNMIGRATED database on the DatabaseURLEnv server, drops it when t
 // ends, and returns its DSN. URL remains the right helper for everything else: it hands out a
-// database already carrying every migration. The DSN is unmigrated because that is what both
-// callers need: a LISTEN/NOTIFY test, which reads no table at all, and a test that starts two
+// database already carrying every migration. The DSN is unmigrated because that is what its
+// callers need: a LISTEN/NOTIFY test, which reads no table at all; a subcommand's test on a
+// schema nobody applied, which the subcommand must refuse, or read as nothing checked, and leave
+// unmigrated (cmd/broker's signin_status_test.go and versions_test.go); and a test that starts two
 // broker processes against a database neither has migrated yet, which is the race those two
 // processes are there to settle. A caller that wants tables runs store.Migrate on it itself.
 func DatabaseURL(t testing.TB) string {
