@@ -1107,11 +1107,11 @@ func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *sto
 		go func() { done <- run.write() }()
 		rig.waitQueued(t, ctx, holder, backend, done, writer.name+" held at "+step.name)
 
-		running := rig.runningStatement(t, ctx, backend)
+		running, cut := rig.runningStatement(t, ctx, backend)
 		held := rig.locksHeld(t, ctx, backend)
 		t.Logf("held at %s, %s waits at: %s", step.name, writer.name, running)
 		t.Logf("held at %s, %s holds: %v", step.name, writer.name, held)
-		if !strings.HasPrefix(running, normalizedStatement(step.at)) {
+		if !runsStatement(running, cut, step.at) {
 			t.Errorf("%s held at %s waits at %q, which is not the statement that takes %s (%q)",
 				writer.name, step.name, running, step.name, step.at)
 		}
@@ -1290,7 +1290,8 @@ func (r *storeWriterRig) waitQueued(t *testing.T, ctx context.Context, holder pg
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s never queued there within %s; it runs %q", what, storeStepWait, r.runningStatement(t, ctx, backend))
+			running, _ := r.runningStatement(t, ctx, backend)
+			t.Fatalf("%s never queued there within %s; it runs %q", what, storeStepWait, running)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -1306,15 +1307,27 @@ func normalizedStatement(statement string) string {
 }
 
 // runningStatement is the statement backend runs, which for a backend queued on a lock is the
-// statement that asked for it. It reads pg_stat_activity through the pool, a fresh view each time.
-func (r *storeWriterRig) runningStatement(t *testing.T, ctx context.Context, backend uint32) string {
+// statement that asked for it, and whether pg_stat_activity cut it: it keeps the first
+// track_activity_query_size bytes of a statement (1024 by default), and a statement reading an
+// issue room's rows runs past that. It reads pg_stat_activity through the pool, a fresh view each
+// time.
+func (r *storeWriterRig) runningStatement(t *testing.T, ctx context.Context, backend uint32) (string, bool) {
 	t.Helper()
 	var query string
+	var cut bool
 	if err := r.database.Pool.QueryRow(ctx,
-		`select query from pg_stat_activity where pid = $1`, backend).Scan(&query); err != nil {
+		`select query, octet_length(query) >= pg_size_bytes(current_setting('track_activity_query_size')) - 1
+		 from pg_stat_activity where pid = $1`, backend).Scan(&query, &cut); err != nil {
 		t.Fatalf("read the statement backend %d runs: %v", backend, err)
 	}
-	return normalizedStatement(query)
+	return normalizedStatement(query), cut
+}
+
+// runsStatement is whether running, a statement runningStatement read, is the statement want:
+// running opens with want, or, where pg_stat_activity cut running, want opens with what it kept.
+func runsStatement(running string, cut bool, want string) bool {
+	want = normalizedStatement(want)
+	return strings.HasPrefix(running, want) || cut && strings.HasPrefix(want, running)
 }
 
 // locksHeld is every table lock backend's transaction holds above a plain read's, in table and

@@ -384,7 +384,9 @@ func TestDocumentEditPreconditionRejectsWriterAfterDurableAppendRace(t *testing.
 		t.Fatalf("begin document lock holder: %v", err)
 	}
 	defer blocker.Rollback(context.Background())
-	if _, err := blocker.Exec(context.Background(), `select pg_advisory_xact_lock(hashtext($1))`, issue.PrimaryArtifactID); err != nil {
+	// The room's lock is the lock of the room the spec is edited in, its issue's room.
+	room, _ := documentRoomOf(t, database.Pool, issue.PrimaryArtifactID)
+	if _, err := blocker.Exec(context.Background(), `select pg_advisory_xact_lock(hashtext($1))`, room); err != nil {
 		t.Fatalf("lock document room: %v", err)
 	}
 

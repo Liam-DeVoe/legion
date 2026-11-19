@@ -721,15 +721,16 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 		t.Errorf("the refused reading wrote version %d of asks.md, which stood at version %d", after, asksVersion)
 	}
 
-	// The reading is in no document of its own: the issue holds the documents the fixture made,
-	// and the decisions query its create made (createDecisionsQuery).
+	// The reading is in no document of its own: the issue lists the documents the fixture made,
+	// and neither its tree nor the decisions query its create made, which no list of its
+	// documents holds (issueArtifactsStatement).
 	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/artifacts", nil, "alice")
 	var slugs []string
 	for _, artifact := range decodeBody[[]artifactRead](t, listed) {
 		slugs = append(slugs, artifact.Slug)
 	}
 	sort.Strings(slugs)
-	if want := []string{"asks-md", "choices-md", issueDecisionsName, "spec"}; !slices.Equal(slugs, want) {
+	if want := []string{"asks-md", "choices-md", "spec"}; !slices.Equal(slugs, want) {
 		t.Errorf("the issue lists the documents %v, want %v: a reading sits in no document of its own", slugs, want)
 	}
 

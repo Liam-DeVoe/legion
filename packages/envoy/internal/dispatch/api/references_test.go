@@ -927,10 +927,13 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebuild refs: %v", err)
 	}
-	// Every document has a version (three, counting the two specs); the planted row from a message
-	// that does not exist is the one orphan. Each of the three is marked owed a block index, and
-	// the ask, the comment and the message are each marked owed a block index of their own parts.
-	if report != (refs.Rebuild{Documents: 3, Asks: 1, Comments: 1, Messages: 1, Orphans: 1, Edges: 6, BlocksOwed: 3, ItemsOwed: 3}) {
+	// Every document has a version - the two project documents and the issue's spec - and so do
+	// the issue's tree, whose references an issue room's documents are indexed under, and its
+	// decisions query, each of which an issue born converted is made with: five. The planted row
+	// from a message that does not exist is the one orphan. Each doc is marked owed a block index -
+	// the four of them but the tree, whose room an owed mark on any of its documents reconciles -
+	// and the ask, the comment and the message are each marked owed a block index of their own parts.
+	if report != (refs.Rebuild{Documents: 5, Asks: 1, Comments: 1, Messages: 1, Orphans: 1, Edges: 6, BlocksOwed: 4, ItemsOwed: 3}) {
 		t.Fatalf("rebuild report = %#v", report)
 	}
 	var documents, owed int
@@ -941,7 +944,7 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 	`).Scan(&documents, &owed); err != nil {
 		t.Fatalf("read the block index of every document: %v", err)
 	}
-	if documents != 3 || owed != documents {
+	if documents != 4 || owed != documents {
 		t.Fatalf("after rebuild-refs %d of %d documents are owed a block index, want every one", owed, documents)
 	}
 	var items, owedItems int

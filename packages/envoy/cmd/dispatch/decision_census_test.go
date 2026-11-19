@@ -64,7 +64,8 @@ func storeCensusOf(t *testing.T, databaseURL, when string) (int, string) {
 // the test's own, and every row is written through its API, as a deployment's are: a spec of three
 // requirements; an ask a person asks in a document of the issue, shaping the first requirement,
 // which another person answers and a session follows; a reading inside that answered ask; a copy
-// of that ask on another document; an agent's decision shaping the first two requirements,
+// of an answered ask on another document, in an issue of its own held unconverted, since a copy
+// keeps its source's block id and a block id is unique in an issue room; an agent's decision shaping the first two requirements,
 // settling the ask (from_ask) and holding a reading of its own; and a note citing the issue. The
 // issue is routed to a role and commented on, as dispatch://INFRA-1149's census run addresses one
 // (addressTheRole), so every kind of that child holds rows too - the note's mention the block_ref
@@ -119,8 +120,6 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 		t.Fatalf("a session follows the ask: %s", answer)
 	}
 	upload(asUser(dispatchTestLogin), "asks.md", askBlock+"\n:::reading{#g1}\nThe agent reads it as REST for every service.\n:::\n::::\n", nil)
-	upload(asUser(dispatchTestLogin), "copy.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\n"+question+
-		"\n:::reading{#g2}\nThe agent reads the copied answer as REST.\n:::\n::::\n", nil)
 	upload(agentBearer(), "choices.md", "::::decision{#d1 shaped=\""+pointer("r1")+" "+pointer("r2")+"\" from_ask=\"dispatch://"+issue+"/ask/"+askID+"\"}\n"+
 		"REST for every service this quarter.\n\n:::reading{#g3}\nThe agent reads it so.\n:::\n::::\n",
 		map[string]any{"kind": "session", "id": decisionCensusSession})
@@ -129,7 +128,42 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	upload(asUser(dispatchTestLogin), "notes.md", "The notes cite dispatch://"+issue+".\n", nil)
 	process.call(t, http.MethodPatch, "/api/v1/issues/"+issue, `{"route":"role:`+decisionCensusRole+`"}`, http.StatusOK)
 	process.mention(t, issue, "A comment on the routed issue, so the role is a destination.")
-	awaitSettledCopy(t, database, askID)
+	// The copy takes an issue of its own, held unconverted: a block id is unique in an issue room,
+	// so a copy keeping its source's id stands only between documents that are each their own room.
+	// A live server process of this build that announces no issue room holds every issue created
+	// while it stands unconverted, as a rolling deploy's older process does.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into server_processes (instance, commit, signing_keys, schema_version, schema_creatable, heartbeat_at)
+		select gen_random_uuid(), commit, signing_keys, schema_version, schema_creatable, now() + interval '1 day'
+		from server_processes limit 1`); err != nil {
+		t.Fatalf("add a live server process that announces no issue room: %v", err)
+	}
+	var second struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(process.call(t, http.MethodPost, "/api/v1/issues", censusBody(t, map[string]any{
+		"project": "CENS", "title": "The copied ask", "spec": ":::requirement{#r1}\nThe copy's own.\n:::\n",
+	}), http.StatusCreated), &second); err != nil || second.Key == "" {
+		t.Fatalf("read the issue the copy is in: %v", err)
+	}
+	// The source shapes nothing, so the shaped kind counts the first issue's pointers alone.
+	source := "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\n" + question + "::::\n"
+	if answer := process.send(t, http.MethodPost, "/api/v1/issues/"+second.Key+"/artifacts",
+		censusBody(t, map[string]any{"name": "asks.md", "content": source}), asUser(dispatchTestLogin)); answer.status != http.StatusCreated {
+		t.Fatalf("upload the copied ask's source: %s", answer)
+	}
+	sourceID := awaitBlockAsk(t, process, second.Key, "a1")
+	if answer := process.send(t, http.MethodPost, "/api/v1/asks/"+sourceID+"/answer",
+		`{"selected":["REST"],"text":"Plain HTTP for now.","expected_edited_at":null}`, asUser("bob")); answer.status != http.StatusOK {
+		t.Fatalf("bob answers the copied ask's source: %s", answer)
+	}
+	if answer := process.send(t, http.MethodPost, "/api/v1/issues/"+second.Key+"/artifacts", censusBody(t, map[string]any{
+		"name": "copy.md", "content": "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\n" + question +
+			"\n:::reading{#g2}\nThe agent reads the copied answer as REST.\n:::\n::::\n",
+	}), asUser(dispatchTestLogin)); answer.status != http.StatusCreated {
+		t.Fatalf("upload the copy: %s", answer)
+	}
+	awaitSettledCopy(t, database, sourceID)
 	awaitRolePublished(t, database, decisionCensusRole)
 
 	code, printed := storeCensusOf(t, databaseURL, "over the seeded database")
@@ -156,11 +190,20 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	// states r1 and r3, so both sides count three, and the census names the row of r2 that no
 	// tuple states and the tuple into r3 that no row projects, and nothing of r1, whose row and
 	// tuple agree (dispatch://INFRA-1150 c-census: every reference, triple by triple).
-	decision := issue + "/choices-md#d1"
+	// The issue is born converted: its documents' blocks are its room's nodes, keyed by the tree's
+	// ref_key (refs.DocumentRoomSQL), and so are the far ends the decision's pointers resolve to.
+	var room string
+	if err := database.Pool.QueryRow(ctx, `
+		select tree.ref_key from artifacts document join artifacts tree on tree.id = `+refs.DocumentRoomSQL("document.id")+`
+		where document.issue_key = $1 and document.slug = 'choices-md'`, issue).Scan(&room); err != nil {
+		t.Fatalf("read the room of %s's choices.md: %v", issue, err)
+	}
+	node := func(block string) string { return room + "#" + block }
+	decision := node("d1")
 	tag, err := database.Pool.Exec(ctx, `
 		update graph_tuples set to_id = $3
 		where from_kind = 'block' and from_id = $1 and kind = 'shaped' and to_kind = 'block' and to_id = $2
-	`, decision, issue+"/spec#r2", issue+"/spec#r3")
+	`, decision, node("r2"), node("r3"))
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("move the decision's shaped tuple to the third requirement: %d rows, %v", tag.RowsAffected(), err)
 	}
@@ -171,15 +214,15 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	requireCensusLine(t, printed, refs.TupleShaped, false)
 	for _, want := range []string{
 		"census: store kind=shaped tuples=3 rows=3 table=block_refs rows_without_a_tuple=1 tuples_without_a_row=1 ",
-		"census: store kind=shaped difference at block_ref " + decision + " shaped -> block " + issue + "/spec#r2: a row no tuple states\n",
-		"census: store kind=shaped difference at block:" + decision + " shaped -> block:" + issue + "/spec#r3: a tuple no row projects\n",
+		"census: store kind=shaped difference at block_ref " + decision + " shaped -> block " + node("r2") + ": a row no tuple states\n",
+		"census: store kind=shaped difference at block:" + decision + " shaped -> block:" + node("r3") + ": a tuple no row projects\n",
 		"census: store REFUSED (2 difference(s))\n",
 	} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("census --store once a shaped tuple reaches the wrong node printed no line holding %q", want)
 		}
 	}
-	if unchanged := " difference at block_ref " + decision + " shaped -> block " + issue + "/spec#r1"; strings.Contains(printed, unchanged) {
+	if unchanged := " difference at block_ref " + decision + " shaped -> block " + node("r1"); strings.Contains(printed, unchanged) {
 		t.Errorf("census --store once a shaped tuple reaches the wrong node printed a line holding %q, whose row and tuple agree", unchanged)
 	}
 }

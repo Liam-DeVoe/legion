@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -116,7 +115,7 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 					name, race.mime, race.second, "alice"))
 			}()
 			rig.waitQueued(t, ctx, holder, backend, uploaded, "the later version of "+refKey+" behind the backfill")
-			if running := rig.runningStatement(t, ctx, backend); !strings.HasPrefix(running, normalizedStatement(race.waits)) {
+			if running, cut := rig.runningStatement(t, ctx, backend); !runsStatement(running, cut, race.waits) {
 				t.Errorf("the later version of %s waits behind the backfill at %q, want %q", refKey, running, race.waits)
 			}
 			release()
