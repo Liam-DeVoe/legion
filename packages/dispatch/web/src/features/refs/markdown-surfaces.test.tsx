@@ -154,6 +154,7 @@ function Transcript({ messages }: { messages: KeyedMessage[] }): ReactNode {
         front
         held={false}
         initialPlace={null}
+        notice={undefined}
         onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"

@@ -58,7 +58,8 @@ and the one Dispatch project it may write, or no project for an entry that names
 (`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
 service and a fixed session instead, and no person and no project: the token holds the OAuth scope
 `read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
-other route with `403 READ_ONLY_TOKEN`, and the Envoy listener refuses it with `401`
+other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
+service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of a project's
 architecture (`GET /api/v2/projects/{key}/architecture`, and `GET /api/v1/projects/{key}/architecture`
 while Dispatch still serves the deprecated `/api/v1`) for every project that has an architecture source: each
