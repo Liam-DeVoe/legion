@@ -27,6 +27,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
+- A test of the leak guard, or of code that runs it, names the fixture rule file of `packages/daemon/internal/leakguard/leakguardtest`.
+  `WriteRules` writes the file into a directory of the test's and returns its path, which the test gives `LEGION_PRIVATE_NAME_RULES_FILE`, and `Rules` is the file's text, which a test compiles with `leakguard.LoadRules` where it hands the guard a compiled set.
+  Every name in it is an invented word, and its constants (`RulesHost`, `PairName` and `PairWord`, `Word`, and each rule's class) are what a test puts in the write it checks and looks for in the report, so a Go test of the guard assembles no name of any deployment's rules.
+  It holds no file the guard refuses: a test of a refused rule file builds that file in its own body, often from `Rules` with one change.
+
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
@@ -503,6 +508,8 @@ A Legion issue pod hands every process its live workspace (`LEGION_WORKSPACE`), 
 A test that let git or jj inherit them read and pushed the pod's own work: the shim's rescue test, run with no `LEGION_WORKSPACE` of its own, pushed the pod's workspace to the real origin as `legion/WIDGETS-42-rescue-…` branches.
 
 - A `packages/daemon` package whose tests run git or jj, as children or in-process through the code under test, calls `fixtureenv.MustGuard` in its `TestMain`, after any branch where the test binary runs as a helper child.
+  So does a package whose code under test reads a `LEGION_` variable of the pod that its tests must not run under.
+  `internal/ghbranch` is one: its `Create` runs the leak guard, which reads `LEGION_PRIVATE_NAME_RULES_FILE`, the pointer every role in a pod holds to the deployment's own rule file, so its tests would run the deployment's rules in place of the fixture's.
   MustGuard is Guard with a `TestMain`'s only answer to a failure: it prints it and ends the process with status 1, which `packages/daemon/internal/fixtureenv`'s own test holds, with the guarantee Guard gives every package (`fixtureenv.RequireGuarded` stays for the test that needs the check in its own body).
   Such a package is also a line of `guardingPackages` in `packages/daemon/internal/fixtureenv/guardingpackages_test.go`, which fails when a listed package's `TestMain` calls no `MustGuard`, calls it only inside a branch, runs the tests before it, or runs them under a branch whose condition does not say a helper-child marker is set (`os.Getenv(<name>) != ""`, or `if _, ok := os.LookupEnv(<name>); ok`), since every ordinary run of the package takes such a branch too.
   It also fails a `TestMain` that a build constraint keeps out of the default `go test` build, and a package of the module whose `TestMain` calls `MustGuard` while the list does not hold it, so adding a package to the guard adds it to the list.

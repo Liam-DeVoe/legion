@@ -255,8 +255,10 @@ a shared box has no such boundary: the daemon, its panes and the operator are on
 wrapper put first on a pane's `PATH` would be one the pane can replace, and a `core.hooksPath`
 pinned for it one the pane can override.
 A copy of them here would read as a guard and hold nothing.
-What a pane does run the guard in is `legion gh`, the same binary with the same rules compiled
-in, which resolves the shared public leak check from the pane's own `PUBLIC_LEAK_CHECK`.
+What a pane does run the guard in is `legion gh`, the same binary, which resolves the shared
+public leak check from the pane's own `PUBLIC_LEAK_CHECK` and runs the deployment's private-name
+rule file that the pane's launch hands it, or no private-name rule where the deployment names none
+([What a pane's Dispatch credential is](#what-a-panes-dispatch-credential-is)).
 A pane can find that check no other way: `PUBLIC_LEAK_CHECK` is not a name a pane reads from the
 daemon's environment, a pane's `XDG_CONFIG_HOME` is under the state directory rather than the
 operator's home, and the check's installer puts its files on no `PATH` a pane has.
@@ -317,6 +319,17 @@ The Envoy listener bearer reaches a pane the same way. It is a launch secret, `E
 every launch secret to a 0600 file of its own under `<state_dir>/secrets` and tells the pane the
 matching `<NAME>_FILE` pointer, here `ENVOY_TOKEN_FILE` (`secretFiles`, `WriteSecretFiles` and
 `panePairs`, `packages/daemon/internal/runtime/tmux/spawn.go`).
+
+The deployment's private-name rule file is a launch secret too, `LEGION_PRIVATE_NAME_RULES`, which
+the pane's `legion gh` reads through `LEGION_PRIVATE_NAME_RULES_FILE`. The daemon reads the file
+once at boot, from `private_name_rules_file` in `legion.yaml` or else
+`LEGION_PRIVATE_NAME_RULES_FILE` in its own environment, and hands its bytes to every launch. A
+pane keeps the copy its launch was handed, so a changed file reaches a pane after the daemon
+restarts and that pane launches again. Where neither setting names a file, no launch carries the
+secret, and a pane's `legion gh` runs no private-name rule and says so once on standard error.
+`legion controller start` passes the operator's own environment to its controller, so an operator
+who wants that controller's guard to run the rules exports `LEGION_PRIVATE_NAME_RULES_FILE` there.
+`docs/kubernetes.md`, "The deployment's private-name rules", has the rest.
 
 When `dispatch_token_file` holds one of the deployment's shared agent tokens
 (`DISPATCH_AGENT_TOKEN`), Dispatch matches the bearer against them (`MatchesSharedAgentToken`,
@@ -468,7 +481,8 @@ provider_keys:
   `LEGION_CONTROLLER`, `LEGION_SLACK_CHANNELS`), the variables it sets on every Claude Code pane
   (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the git
   identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
-  gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
+  gets as a file of its own (`ENVOY_TOKEN_FILE`, `LEGION_PRIVATE_NAME_RULES_FILE`,
+  `NATS_NKEY_SEED_FILE`), the variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
   `OMP_SESSION_SQL_DSN_FILE`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,
