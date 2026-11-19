@@ -285,8 +285,9 @@ func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 
 // A re-admitted tree's merging child is resumed with no approved head: the re-admission clears the
 // generation, which empties the review round's decision with the rest of the tree's handoffs
-// (record.ClearTreeGeneration), so the merger refuses for want of one and the round is reviewed
-// again rather than merged on the last generation's approval.
+// (record.ClearTreeGeneration), so its resume task says `Approved head: none.`, the merger refuses
+// for want of one, and the round is reviewed again rather than merged on the last generation's
+// approval.
 func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -312,7 +313,7 @@ func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
+			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Resume the existing phase work. Approved head: none.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
 		rows, err := record.NewStore().Phases(context.Background(), tx, "LEGION-209")
@@ -360,7 +361,7 @@ func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
+			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Resume the existing phase work. Approved head: none.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
 		child, err := record.NewStore().Issue(context.Background(), tx, "LEGION-209")

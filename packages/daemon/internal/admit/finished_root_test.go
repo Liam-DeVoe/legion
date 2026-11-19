@@ -417,8 +417,8 @@ func TestTheOutboxsConsumptionOfAHandOverIsLogged(t *testing.T) {
 }
 
 // A carried root's workers resume from what the carry kept. A carried merger is told the head the
-// carried review round approved, the one head its READY may name, so it does not send the round
-// back to review. A carried root held from a phase starts no worker, and the only held notice went
+// carried review round approved, the one head it may merge, so it does not send the round back to
+// review. A carried root held from a phase starts no worker, and the only held notice went
 // to the old tree's architect, so its own architect is told of the hold at promotion, to retry or
 // escalate it.
 func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
@@ -467,9 +467,9 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 			}
 			if tc.hold == nil {
 				// A carried root's merger is resumed into the phase it stood in with the phase's resume
-				// task, which names no approved head: the task that started it on merging named the
-				// head the review approved (workflow's approvedHeadSentence), and its session holds it.
-				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work."
+				// task, and the carry keeps the review round's decision, so the task names the head
+				// that decision approved (workflow's resumeTask).
+				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work. Approved head: approved-head."
 				if len(mergerTasks) != 1 || mergerTasks[0] != want {
 					t.Fatalf("carried merger tasks = %q, want one resuming merging: %q", mergerTasks, want)
 				}

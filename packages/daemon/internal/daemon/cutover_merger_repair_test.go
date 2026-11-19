@@ -877,14 +877,15 @@ func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 
 // toldOnce holds that issue's merger was given exactly one task over its whole life in this
 // test, and that it is the merging task: the resume task of the phase it holds
-// (workflow.ResumePhaseTask), read from the issue as the record holds it now.
+// (workflow.ResumePhaseTask), read from the issue as the record holds it now, with the approved
+// head the merger's resume task ends with, none here, since the rig records no review round.
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	stands := readIssue(t, r.pool, issue.key)
 	if stands == nil {
 		t.Fatalf("read %s: the record does not hold it", issue.key)
 	}
-	want := workflow.ResumePhaseTask(*stands)
+	want := workflow.ResumePhaseTask(*stands) + " Approved head: none."
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
 	}

@@ -296,26 +296,34 @@ func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
 // A claim behind its role's entry is sent the work that entry names, at that entry and with no
 // entry raised: the task the record holds for it where it holds one, and the phase's resume task
 // where it holds none, which is the row the upgrade to the entry left and the row a re-admission
-// reset. The merger reads both halves, and no task of either names a head: the merger reads the
-// head it merges on GitHub itself.
+// reset. The merger reads both halves. The task its entry stored is sent as stored, and it named
+// the approved head when the move into merging stored it (withApprovedHead); the resume task is
+// composed now, so it names the head the reviewer's decided approval holds now, or none where the
+// row holds no approval, and a merger on a session that holds no task of its phase still reads
+// the one head it may merge.
 func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"}
-	recorded := ResumePhaseTask(issue) + " Reason: the review approved."
+	recorded := ResumePhaseTask(issue) + " Reason: the review approved. Approved head: " + headOne + "."
+	approved := &record.ReviewDecision{State: "approved", Head: headOne}
 	for _, tc := range []struct {
 		name string
 		// held is the work the merger's phases row names, "" for a row that names none.
 		held string
-		want string
+		// decision is the reviewer's recorded decision, nil for none.
+		decision *record.ReviewDecision
+		want     string
 	}{
-		{name: "a row that names the work of its entry", held: recorded, want: recorded},
-		{name: "a row an upgrade or a re-admission left with none", want: ResumePhaseTask(issue)},
+		{name: "a row that names the work of its entry", held: recorded, decision: approved, want: recorded},
+		{name: "a row an upgrade or a re-admission left with none, over an approval", decision: approved,
+			want: ResumePhaseTask(issue) + " Approved head: " + headOne + "."},
+		{name: "a row left with none where no approval is on record", want: ResumePhaseTask(issue) + " Approved head: none."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, issue)
 			seedTreeLifecycle(t, pool, entryIssue)
-			seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleReviewer, Claim: "review-claim"})
+			seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleReviewer, Claim: "review-claim", Decision: tc.decision})
 			merger := record.PhaseRow{Issue: entryIssue, Role: claim.RoleMerger, Claim: "merge-claim",
 				Entry: seededEntry, EntryTask: tc.held, EntryRaisedAt: seededRaisedAt}
 			seedPhase(t, pool, merger)

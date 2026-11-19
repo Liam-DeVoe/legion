@@ -1435,10 +1435,10 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // withApprovedHead is text, a task of role's, with the head the review approved after it when role
-// is the merger (approvedHeadSentence): the merger merges that head and no other, so the task the
-// move into merging starts it with (transition), and the task of a retry of that phase
-// (retryPhase), name the one the record holds for the round that ended in it. A task that resumes
-// the phase names none, and the merger reads the head from the task that started it.
+// is the merger (approvedHeadSentence): the merger merges that head and no other, so every task
+// that starts it on its phase names the one the record holds for the round that ended in it - the
+// move into merging (transition), a retry of that phase (retryPhase) and each resume of it
+// (resumeTask).
 func (e *Engine) withApprovedHead(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, text string) (string, error) {
 	if role != claim.RoleMerger {
 		return text, nil

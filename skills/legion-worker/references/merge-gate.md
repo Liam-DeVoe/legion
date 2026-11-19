@@ -280,9 +280,9 @@ it there until that answer comes clean.
 - The merger resolves no review thread: the reviewer's approval already judged them, and the
   merge requires no thread state beyond it. It writes no file, commits nothing and pushes
   nothing.
-- **The merge is the merger's own act, at the head the review approved.** The task that starts
-  the merger on `merging` ends with `Approved head: <sha>`, the head of the review that decided
-  the round (`none` where the record holds no approval). It reads the pull request
+- **The merge is the merger's own act, at the head the review approved.** Every task that starts
+  or resumes the merger on `merging` ends with `Approved head: <sha>`, the head of the review that
+  decided the round (`none` where the record holds no approval). It reads the pull request
   (`gh pr view <n> --json number,title,url,state,baseRefName,headRefOid,mergeStateStatus`), and
   merges nothing unless `headRefOid` is that head: on another head, or on `none`, it sends the
   issue back with `request_backward_move` `to: reviewing`. Every step below names that head:

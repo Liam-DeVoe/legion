@@ -617,7 +617,11 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	task := row.EntryTask
 	marks.stored = task != ""
 	if task == "" {
-		task = ResumePhaseTask(issue)
+		resume, err := e.resumeTask(ctx, tx, issue, role)
+		if err != nil {
+			return err
+		}
+		task = resume
 	}
 	marks.reasserts = true
 	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
@@ -625,7 +629,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
 // promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumePhaseTask).
+// in (resumeTask).
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -636,7 +640,10 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // The entry it raises is of no move back: the promotion hands the role the phase it already
 // stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	task := ResumePhaseTask(issue)
+	task, err := e.resumeTask(ctx, tx, issue, role)
+	if err != nil {
+		return err
+	}
 	entry, sent, err := e.enter(ctx, tx, issue, role, task, false, false)
 	if err != nil {
 		return err
@@ -1041,9 +1048,18 @@ func handoffWord(role claim.Role) string {
 
 // ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
 // begins that phase — the run that did is over — so the task names the phase and says to carry
-// the work on, which is what a resumed session needs to tell this phase from its last.
+// the work on, which is what a resumed session needs to tell this phase from its last. Every start
+// the daemon makes with it reads it through resumeTask, which names the merger its approved head.
 func ResumePhaseTask(issue record.Issue) string {
 	return continueLine(issue) + " Resume the existing phase work."
+}
+
+// resumeTask is the resume task role is started with on issue's phase (ResumePhaseTask), with the
+// head the review approved after it when role is the merger (withApprovedHead): a merger resumed
+// on a session that holds no task of its phase, a fresh one above all, still reads the head it
+// may merge, from the decided review the record holds.
+func (e *Engine) resumeTask(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (string, error) {
+	return e.withApprovedHead(ctx, tx, issue.Key, role, ResumePhaseTask(issue))
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

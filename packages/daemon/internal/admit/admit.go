@@ -2467,14 +2467,14 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // has just opened, and gives the one role whose phase the member stands in the task that carries
 // that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
 // role needs the same resume start ordinary mid-phase children receive
-// (workflow.ResumePhaseTask, which says to carry the phase's work on and names no head, since a
-// merger reads the head it merges on GitHub). A root promoted held, which only a hand-over leaves
-// (every other re-admission starts its root at admitted), starts no worker. The hold's first
-// notice was routed in the tree the root was handed over from, where it reached the root's own
-// architect only if that claim held its role then, and else an architect above it, so its
-// architect is told of the hold again as a root's (workflow.HeldNotice), whether or not it carried
-// a gate. Promotion already queued the root's branch; each other member queues its own before
-// starting.
+// (workflow.Engine.StartPromotedWorker's resume task, which says to carry the phase's work on and
+// names a merger the head the decided review approved, the one head it may merge). A root promoted
+// held, which only a hand-over leaves (every other re-admission starts its root at admitted),
+// starts no worker. The hold's first notice was routed in the tree the root was handed over from,
+// where it reached the root's own architect only if that claim held its role then, and else an
+// architect above it, so its architect is told of the hold again as a root's
+// (workflow.HeldNotice), whether or not it carried a gate. Promotion already queued the root's
+// branch; each other member queues its own before starting.
 // No member's phase is rewritten on the way back: the phase its record carries is the phase it
 // stands in, since the merge is what ends merging and no phase of this workflow is a wait for
 // one. A child of a re-admitted tree, and a root a hand-over created, come back in merging where

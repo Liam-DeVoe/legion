@@ -11,8 +11,10 @@ body: |-
     `Reason:` naming the approved head and what replaced it, tells the architect in a
     `phase-finished` notice whose reason begins `moved back to reviewing by the daemon:`, tells the
     implementer in retro or the merger in merging that its phase ended, and posts the reason on the
-    issue. The merger's task now ends with `Approved head: <sha>`, or `Approved head: none.` where
-    the record holds no approval, and its prompt merges nothing unless the pull request's head is
-    that head, sending the issue back to `reviewing` instead.
+    issue. Every task that starts or resumes the merger on `merging` now ends with
+    `Approved head: <sha>`, read from the decided review the record holds, or
+    `Approved head: none.` where it holds no approval, so a merger on a fresh session still knows
+    the one head it may merge; its prompt merges nothing unless the pull request's head is that
+    head, sending the issue back to `reviewing` instead.
 custom:
     Issue: pr4471

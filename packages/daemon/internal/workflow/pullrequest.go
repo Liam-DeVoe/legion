@@ -407,9 +407,9 @@ func approvedHead(row record.PhaseRow) string {
 	return row.Decision.Head
 }
 
-// approvedHeadSentence is the sentence the merger's task ends with when the move into merging or a
-// retry of it starts the merger (withApprovedHead): the head the approval on row, the reviewer's,
-// names, or `none` where the row holds no approval. The merger merges that head and no other
+// approvedHeadSentence is the sentence every task that starts or resumes the merger on its phase
+// ends with (withApprovedHead): the head the approval on row, the reviewer's, names, or `none`
+// where the row holds no approval. The merger merges that head and no other
 // (prompts/roles/merger.md).
 func approvedHeadSentence(row record.PhaseRow) string {
 	approved := approvedHead(row)
