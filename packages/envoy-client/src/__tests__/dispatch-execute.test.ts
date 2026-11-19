@@ -5863,13 +5863,13 @@ describe("executeDispatchTool", () => {
   test("dispatch_issue reads a created issue's 2xx without its project as a landing", async () => {
     const failure = await executeDispatchTool({
       tool: "dispatch_issue",
-      args: { project: "LEGION", title: "Architecture work" },
+      args: { project: "ACME", title: "Architecture work" },
       cwd: "/workspace",
       host: "omp",
       config,
       env: {},
       exec: repoExec("owner/repo"),
-      fetchImpl: answering({ key: "LEGION-216", title: "Architecture work" }) as typeof fetch,
+      fetchImpl: answering({ key: "ACME-216", title: "Architecture work" }) as typeof fetch,
       sleep: async () => {},
       writeRetry,
     }).then(
