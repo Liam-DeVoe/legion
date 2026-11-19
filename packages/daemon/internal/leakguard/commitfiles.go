@@ -36,8 +36,7 @@ import (
 // decodes by the encoding header does not. git show formats the last author line and the last
 // committer line of a commit that holds two, so an earlier one that holds anything else is read as
 // a header of its own. A header that holds a zero byte is read decoded too, as a message is
-// (appendDecoded): git's own check, which a destination that checks what it receives runs, refuses
-// such a crafted header, but one that does not keeps it.
+// (appendDecoded).
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
@@ -471,12 +470,12 @@ func appendDecoded(records []Record, record Record) []Record {
 	return append(records, Record{Label: record.Label + " with its zero bytes taken out", Text: strings.ReplaceAll(record.Text, "\x00", "")})
 }
 
-// wideText is message decoded from UTF-16 (size 2) or UTF-32 (size 4) from its first byte,
+// wideText is text decoded from UTF-16 (size 2) or UTF-32 (size 4) from its first byte,
 // little-endian where little and big-endian else, with one U+FEFF it opens with, a byte-order mark
 // of that order, left out. A unit that is no character, an unpaired surrogate, or in UTF-32 a
 // surrogate or a value above U+10FFFF, and the bytes after the last whole unit, are each read as
 // U+FFFD, and the decode goes on: what follows them is read, and nothing fails the push.
-func wideText(message string, size int, little bool) string {
+func wideText(text string, size int, little bool) string {
 	// unit is the code unit at the head of s, which holds one.
 	unit := func(s string) rune {
 		var r rune
@@ -489,7 +488,7 @@ func wideText(message string, size int, little bool) string {
 		}
 		return r
 	}
-	rest := message
+	rest := text
 	if len(rest) >= size && unit(rest) == '\ufeff' {
 		rest = rest[size:]
 	}

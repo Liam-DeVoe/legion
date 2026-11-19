@@ -459,13 +459,14 @@ func wide(text string, size int, little bool) string {
 // zero bytes taken out; and the push refuses one that names a host, whatever label its report
 // gives the line. UTF-16 text one byte off is the other order's text aligned, which a decode
 // reads; UTF-32 text two bytes off, and UTF-16 text that one zero byte parts into two alignments,
-// are each read only with the zero bytes taken out. A message in either that names nothing is
-// passed. The author line of a commit under such a header is read as the object holds it, since
-// git show decodes the identity with the message (identityLine). Each object is written with
-// --literally: git's own check of a commit, hash-object's and a destination's that runs
-// receive.fsckObjects, refuses a zero byte in its body (nulInCommit), but a destination that runs
-// no such check, git's default, keeps it, and the check takes such a tag. The report never holds
-// the text it refused (refusal).
+// are each read only with the zero bytes taken out. A message in UTF-16LE from its first byte is
+// refused by its decode itself, not only with its zero bytes taken out. A message in either that
+// names nothing is passed. The author line of a commit under such a header is read as the object
+// holds it, since git show decodes the identity with the message (identityLine). Each object is
+// written with --literally: git's own check of a commit, hash-object's and a destination's that
+// runs receive.fsckObjects, refuses a zero byte in its body (nulInCommit), but a destination that
+// runs no such check, git's default, keeps it, and the check takes such a tag. The report never
+// holds the text it refused (refusal).
 func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -489,10 +490,13 @@ func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 		author   string
 		encoding string
 		message  string
-		// named is whether the push is refused.
-		named bool
+		// named is whether the push is refused, and decoded, where set, the record after
+		// "commit <short> " that a report line must name: a decode, which the message with its zero
+		// bytes taken out does not stand in for.
+		named   bool
+		decoded string
 	}{
-		{name: "a message in UTF-16LE", encoding: "UTF-16LE", message: wide(named, 2, true), named: true},
+		{name: "a message in UTF-16LE", encoding: "UTF-16LE", message: wide(named, 2, true), named: true, decoded: "message decoded as UTF-16, little-endian"},
 		{name: "a message in UTF-16LE after its byte-order mark", encoding: "UTF-16LE", message: "\xff\xfe" + wide(named, 2, true), named: true},
 		{name: "a message in UTF-16LE after its byte-order mark under UTF-16", encoding: "UTF-16", message: "\xff\xfe" + wide(named, 2, true), named: true},
 		{name: "a message in UTF-16BE with no byte-order mark under UTF-16", encoding: "UTF-16", message: wide(named, 2, false), named: true},
@@ -546,6 +550,9 @@ func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 					t.Errorf("the report line %q does not name the message's class, %q", line, theClass)
 				}
 			}
+			if want := "commit " + short(pushed) + " " + tc.decoded + ": " + theClass; tc.decoded != "" && !slices.Contains(refused.Lines, want) {
+				t.Errorf("the report is %q, want a line %q", refused.Lines, want)
+			}
 		})
 	}
 }
@@ -559,9 +566,10 @@ func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 // (TestAMessageInUTF16OrUTF32IsReadDecoded): decoded four ways from the header's first byte, and
 // with its zero bytes taken out, and refuses one that names a host, whatever label its report
 // gives the line. "x-note " is seven bytes, so UTF-16 text after it is one byte off the header's
-// first byte, and after one more byte it is on it; UTF-32 text one byte off is read only with the
-// zero bytes taken out. A header in UTF-16LE that names nothing is passed. Each object is written
-// with --literally, which skips that check. The report never holds the text it refused (refusal).
+// first byte, and after one more byte it is on it, where the decode itself refuses it; UTF-32 text
+// one byte off is read only with the zero bytes taken out. A header in UTF-16LE that names nothing
+// is passed. Each object is written with --literally, which skips that check. The report never
+// holds the text it refused (refusal).
 func TestAHeaderInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -582,12 +590,15 @@ func TestAHeaderInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 		tag     bool
 		header  string
 		tagName string
-		// named is whether the push is refused.
-		named bool
+		// named is whether the push is refused, and decoded, where set, the record after
+		// "commit <short> " that a report line must name, as in
+		// TestAMessageInUTF16OrUTF32IsReadDecoded.
+		named   bool
+		decoded string
 	}{
 		{name: "a commit's header in UTF-16LE", header: "x-note " + wide(named, 2, true), named: true},
 		{name: "a commit's header in UTF-32BE", header: "x-note " + wide(named, 4, false), named: true},
-		{name: "a commit's header in UTF-16LE after one stray byte", header: "x-note x" + wide(named, 2, true), named: true},
+		{name: "a commit's header in UTF-16LE after one stray byte", header: "x-note x" + wide(named, 2, true), named: true, decoded: "header decoded as UTF-16, little-endian"},
 		{name: "a tag's header in UTF-16LE", tag: true, header: "x-note " + wide(theHost, 2, true), named: true},
 		{name: "a tag's name in UTF-16LE", tag: true, tagName: wide(theHost, 2, true), named: true},
 		{name: "a commit's header in UTF-16LE that names nothing", header: "x-note " + wide(clean, 2, true)},
@@ -622,6 +633,9 @@ func TestAHeaderInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 				if !strings.HasSuffix(line, ": "+theClass) {
 					t.Errorf("the report line %q does not name the header's class, %q", line, theClass)
 				}
+			}
+			if want := "commit " + short(pushed) + " " + tc.decoded + ": " + theClass; tc.decoded != "" && !slices.Contains(refused.Lines, want) {
+				t.Errorf("the report is %q, want a line %q", refused.Lines, want)
 			}
 		})
 	}
