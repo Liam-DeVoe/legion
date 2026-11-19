@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // A handover of a role's kept lane one of whose probes of the main client reads a false "down" - a
@@ -23,7 +24,8 @@ import (
 //
 // The controls are each of the two sweep reads giving up on the loss rather than waiting and
 // making it again: the head read passes the lane over, and the handover reports the loss as a
-// failed handover at ERROR; in both the copy is not forwarded.
+// failed handover at ERROR; in both the copy is not forwarded, and the case fails at the test's
+// deadline.
 func TestAHandoverWhoseProbeReadsAFalseDownHandsTheLaneOver(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -47,7 +49,7 @@ func TestAHandoverWhoseProbeReadsAFalseDownHandsTheLaneOver(t *testing.T) {
 			var probes atomic.Int64
 			restore := harness.client.ProbeReadsDownForTest(func() bool { return probes.Add(1) == tc.downAt })
 			defer restore()
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 			defer cancel()
 			if tc.name != "drain" {
 				sweepOnce(ctx, cfg)
@@ -59,8 +61,8 @@ func TestAHandoverWhoseProbeReadsAFalseDownHandsTheLaneOver(t *testing.T) {
 				if !strings.HasSuffix(key, item.DedupeKey) {
 					t.Fatalf("the handover forwarded %q, want the kept copy %q", key, item.DedupeKey)
 				}
-			case <-time.After(15 * time.Second):
-				t.Fatalf("the %s case forwarded nothing 15 s after probe read %d read a false down (%d probe reads); log: %s", tc.name, tc.downAt, probes.Load(), harness.logs.String())
+			case <-time.After(testnats.Remaining(t)):
+				t.Fatalf("the %s case forwarded nothing by the test's deadline after probe read %d read a false down (%d probe reads); log: %s", tc.name, tc.downAt, probes.Load(), harness.logs.String())
 			}
 			if probes.Load() <= tc.downAt {
 				t.Fatalf("the probe was read %d times, want a read made again after the false down at read %d", probes.Load(), tc.downAt)

@@ -130,11 +130,12 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // guard is passed over when a handover of the role holds it.
 //
 // The head is read under the guard, so the main client is asked first, within the probe's budget
-// (bus.Client.LostNow), and the guard waits for no handshake. A read that found the connection
-// down or lost it gives the guard back, waits for the connection with nothing held
-// (bus.Reconnected), and takes the guard and reads the head again, within one roleKeepDrainWindow;
-// a false "down" from a slow probe costs the sweep its probe and nothing else. Any other failed
-// read is passed over under a debug line, and the next sweep reads the lane again.
+// (bus.Client.LostNow), the read is made under a context marked so (bus.WithLockHeld), and the
+// guard waits for no handshake. A read that found the connection down or lost it gives the guard
+// back, waits for the connection with nothing held (bus.Reconnected), and takes the guard and reads
+// the head again, within one roleKeepDrainWindow; a false "down" from a slow probe costs the sweep
+// its probe and nothing else. Any other failed read is passed over under a debug line, and the
+// next sweep reads the lane again.
 func sweptLaneHead(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (func(), keptLaneHead, bool) {
 	headCtx, cancel := context.WithTimeout(ctx, roleKeepDrainWindow)
 	defer cancel()
@@ -146,7 +147,7 @@ func sweptLaneHead(ctx context.Context, cfg listenerDeliveryHandlerConfig, role 
 		var head keptLaneHead
 		err := cfg.client.LostNow()
 		if err == nil {
-			head, err = readKeptLaneHead(headCtx, cfg.client, role)
+			head, err = readKeptLaneHead(bus.WithLockHeld(headCtx), cfg.client, role)
 		}
 		if err == nil && head.left {
 			return release, head, true

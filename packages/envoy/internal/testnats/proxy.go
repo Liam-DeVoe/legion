@@ -41,18 +41,26 @@ type Proxy struct {
 // ConnectHold is a hold of the server's answer to a client's CONNECT (Proxy.HoldConnectAnswers):
 // the client has sent its CONNECT, and its handshake waits for the server's answer, with nats.go's
 // connection lock held (nats.go v1.53.1 processConnectInit, under doReconnect's lock, :3458-3485),
-// until Restore or until the client's own connect timeout ends the attempt.
+// until Restore or until the client's own connect timeout ends the attempt. Every connection the
+// proxy accepts while the hold lasts is held the same way, each until Restore or its own end; Held
+// and Ended report the first connection whose CONNECT reached the server.
 type ConnectHold struct {
 	held, ended, release chan struct{}
 	heldOnce, endedOnce  sync.Once
+	// waiting gets a token each time a connection's answer starts to wait for the hold, and
+	// passed the reason each such wait ended ("release", "own end", "proxy closed"), for the
+	// package's own rows; a token a full channel has no room for is dropped.
+	waiting chan struct{}
+	passed  chan string
 }
 
 // Held is closed once a client's CONNECT has reached the server through the hold, so its
 // handshake is waiting for the answer the hold keeps.
 func (h *ConnectHold) Held() <-chan struct{} { return h.held }
 
-// Ended is closed once a connection the hold holds has closed: the client gave its handshake up,
-// at its connect timeout, or the proxy cut it.
+// Ended is closed once a connection the hold held has closed: the client gave its handshake up,
+// at its connect timeout, or the proxy cut it. A connection accepted after that one is still held
+// until Restore or its own end.
 func (h *ConnectHold) Ended() <-chan struct{} { return h.ended }
 
 // HoldConnectAnswers ends a Cut and holds the handshake of each connection the proxy accepts from
@@ -64,7 +72,8 @@ func (p *Proxy) HoldConnectAnswers() *ConnectHold {
 	defer p.mu.Unlock()
 	p.cut = false
 	if p.hold == nil {
-		p.hold = &ConnectHold{held: make(chan struct{}), ended: make(chan struct{}), release: make(chan struct{})}
+		p.hold = &ConnectHold{held: make(chan struct{}), ended: make(chan struct{}), release: make(chan struct{}),
+			waiting: make(chan struct{}, 64), passed: make(chan string, 64)}
 	}
 	return p.hold
 }
@@ -189,9 +198,20 @@ func (p *Proxy) join(client net.Conn) {
 	p.mu.Lock()
 	hold := p.hold
 	p.mu.Unlock()
-	go p.relay(server, client, hold, false)
-	p.relay(client, server, hold, true)
+	// pair is closed once either direction of this connection has ended, so the direction that
+	// holds the server's answer is released by its own connection's end, never by another's.
+	pair := &relayPair{done: make(chan struct{})}
+	go p.relay(server, client, hold, pair, false)
+	p.relay(client, server, hold, pair, true)
 }
+
+// relayPair is one relayed connection's two directions: done is closed once either has ended.
+type relayPair struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func (r *relayPair) end() { r.once.Do(func() { close(r.done) }) }
 
 // track records conn as relayed and reports true, or closes it and reports false while the proxy
 // is cut or closed.
@@ -232,10 +252,16 @@ const proxyReadBuffer = 64 << 10
 // of its INFO line wait for the hold's release, and the end of the client's first line, when that
 // line is its CONNECT, marks the hold held. Both are found across reads, since a TCP read need not
 // hold a whole line or its CRLF.
-func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, toClient bool) {
+func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, pair *relayPair, toClient bool) {
 	defer p.untrack(dst, src)
+	defer pair.end()
+	held := false
 	if hold != nil {
-		defer hold.endedOnce.Do(func() { close(hold.ended) })
+		defer func() {
+			if held {
+				hold.endedOnce.Do(func() { close(hold.ended) })
+			}
+		}()
 	}
 	type chunk struct {
 		data []byte
@@ -283,6 +309,7 @@ func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, toClient bool) {
 			}
 			firstDone, data = true, data[end:]
 			if !toClient && bytes.HasPrefix(firstLine, []byte("CONNECT ")) {
+				held = true
 				hold.heldOnce.Do(func() { close(hold.held) })
 			}
 		}
@@ -290,10 +317,11 @@ func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, toClient bool) {
 			continue
 		}
 		if hold != nil && toClient {
-			select {
-			case <-hold.release:
-			case <-hold.ended:
-			case <-p.done:
+			if reason, waited := hold.wait(pair.done, p.done); waited {
+				select {
+				case hold.passed <- reason:
+				default:
+				}
 			}
 		}
 		if _, err := dst.Write(data); err != nil {
@@ -304,6 +332,43 @@ func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, toClient bool) {
 	_ = src.Close()
 	for range queue {
 	}
+}
+
+// wait holds a connection's answer until the hold's release, its own connection's end (own) or the
+// proxy's (closed), and reports which, and whether it had to wait: an end already there passes at
+// once with no report. A wait that blocks reports so first (waiting), so a row sees the answer held
+// before the proxy could write it.
+func (h *ConnectHold) wait(own, closed <-chan struct{}) (string, bool) {
+	ends := func(block bool) string {
+		if !block {
+			select {
+			case <-h.release:
+				return "release"
+			case <-own:
+				return "own end"
+			case <-closed:
+				return "proxy closed"
+			default:
+				return ""
+			}
+		}
+		select {
+		case <-h.release:
+			return "release"
+		case <-own:
+			return "own end"
+		case <-closed:
+			return "proxy closed"
+		}
+	}
+	if reason := ends(false); reason != "" {
+		return reason, false
+	}
+	select {
+	case h.waiting <- struct{}{}:
+	default:
+	}
+	return ends(true), true
 }
 
 // lineEnd is the index just past the CRLF that ends a line in data, -1 when data holds none; prev

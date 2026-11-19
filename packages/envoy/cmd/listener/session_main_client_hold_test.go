@@ -20,8 +20,9 @@ import (
 // handshake is held. Once the proxy is restored the delete goes on.
 //
 // The control is the delete's leader read made without asking the main client first: the delete
-// holds the session's lock for as long as the main client's handshake is held, and the row fails
-// at heldHandshakeWait.
+// holds the session's lock while the main client's handshake is held until its call budget ends
+// (5 s), then gives the lock up and reports the consumer standing, and the row fails at its check of
+// the delete's outcome. The lock's wait is bounded only by the test's deadline.
 func TestADeleteDuringAHeldMainClientHandshakeReleasesTheSessionsLock(t *testing.T) {
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)
@@ -53,10 +54,10 @@ func TestADeleteDuringAHeldMainClientHandshakeReleasesTheSessionsLock(t *testing
 	go func() { deleted <- rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil) }()
 	awaitLockUsers(t, locks, sessionID, 2)
 	held()
-	for deadline := time.Now().Add(heldHandshakeWait); lockUsers(locks, sessionID) != 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(testnats.Remaining(t)); lockUsers(locks, sessionID) != 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			proxy.Restore()
-			t.Fatalf("the delete still held the session's lock %s into the main client's held handshake: it waited for that client's connection lock with the session's lock held", heldHandshakeWait)
+			t.Fatal("the delete still held the session's lock at the test's deadline, during the main client's held handshake: it waited for that client's connection lock with the session's lock held")
 		}
 	}
 	select {

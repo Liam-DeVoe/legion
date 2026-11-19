@@ -783,7 +783,7 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		return err
 	}
 	kv, epoch := r.watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(sessionID, buf) })
+	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Within(ctx).Put(sessionID, buf) })
 	if !answered {
 		return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
 	}
@@ -878,7 +878,7 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 // marker, a value that does not decode and a row past its TTL are not found.
 func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
-	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Within(ctx).Get(sessionID) })
 	if !answered {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}

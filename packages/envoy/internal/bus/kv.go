@@ -65,6 +65,20 @@ type KeyValue struct {
 	// server's refusals (refusedOn, refusedAfterOn). nil on a connection no client owns (a test's
 	// own), whose requests wait out their bounds and read no record.
 	owner *Client
+	// ctx is the context its legacy requests are bound with (kvRequest, Within): its deadline, and
+	// whether its caller holds a lock across them (WithLockHeld). nil binds with
+	// context.Background.
+	ctx context.Context
+}
+
+// Within is kv with its legacy requests (Get, Put, Create, Update, Delete and the rest, which take
+// no context) bound with ctx, the context of the caller that makes them: a request whose read of
+// its connection's state the probe's budget ends waits for nats.go's own answer within ctx when the
+// caller holds no lock, and answers the loss at once when ctx is marked as made under one
+// (WithLockHeld). The handle's other calls take their context as an argument.
+func (kv KeyValue) Within(ctx context.Context) KeyValue {
+	kv.ctx = ctx
+	return kv
 }
 
 // RequestTimeout bounds one send of a read through the jetstream handle whose caller holds no
@@ -394,10 +408,15 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 }
 
 // kvRequest is call, one request of kv's legacy handle, which takes no context, bound to the life
-// of the connection of the client that owns kv's (RequestBounded): it answers ErrConnectionLost
-// when that connection's loss cut its answer off. A handle no client owns runs call as it is.
+// of the connection of the client that owns kv's (RequestBounded), under the context Within gave
+// kv: it answers ErrConnectionLost when that connection's loss cut its answer off. A handle no
+// client owns runs call as it is.
 func kvRequest[T any](kv KeyValue, call func() (T, error)) (T, error) {
-	return RequestBounded(context.Background(), kv.owner, call)
+	ctx := kv.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return RequestBounded(ctx, kv.owner, call)
 }
 
 // RefusesRead answers the refusal a Get of key through this handle would answer before anything is

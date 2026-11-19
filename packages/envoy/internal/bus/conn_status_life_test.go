@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,14 +17,20 @@ import (
 )
 
 // withLifeListenGate makes a client whose lives' goroutines run gate before they register their
-// status listener ("register") and before their first wait ("select") (Client.lifeListenGate).
-func withLifeListenGate(gate func(stage string)) ConnectOption {
+// status listener ("register") and before their first wait on it once registered ("select")
+// (Client.lifeListenGate).
+func withLifeListenGate(gate func(stage string, life context.Context)) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.lifeListenGate = gate })
 }
 
-// stageHold holds the first life listener goroutine that reaches stage until release.
+// stageHold holds the first life listener goroutine that reaches stage, of a life not yet ended,
+// until release. One made with newUnarmedStageHold holds nothing until arm: a row whose client began
+// a life at its connect (proxiedClient) arms it after it ends that life (endRunningLife), so the
+// goroutine it holds is the one of the life the row's own request begins, whether or not the ended
+// life's goroutine has reached the stage yet.
 type stageHold struct {
 	stage       string
+	armed       atomic.Bool
 	once        sync.Once
 	held        chan struct{}
 	released    chan struct{}
@@ -31,11 +38,19 @@ type stageHold struct {
 }
 
 func newStageHold(stage string) *stageHold {
+	h := newUnarmedStageHold(stage)
+	h.arm()
+	return h
+}
+
+func newUnarmedStageHold(stage string) *stageHold {
 	return &stageHold{stage: stage, held: make(chan struct{}), released: make(chan struct{})}
 }
 
-func (h *stageHold) gate(stage string) {
-	if stage != h.stage {
+func (h *stageHold) arm() { h.armed.Store(true) }
+
+func (h *stageHold) gate(stage string, life context.Context) {
+	if stage != h.stage || !h.armed.Load() || life.Err() != nil {
 		return
 	}
 	first := false
@@ -78,53 +93,196 @@ func requireLostAtDrop(t *testing.T, answered <-chan error, what string) {
 		if !errors.Is(err, ErrConnectionLost) {
 			t.Fatalf("%s: the request in flight answered %v, want ErrConnectionLost", what, err)
 		}
-	case <-time.After(heldAnswerWait):
-		t.Fatalf("%s: the request in flight gave no answer within %s: its life outlived the drop", what, heldAnswerWait)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatalf("%s: the request in flight gave no answer by the test's deadline: its life outlived the drop", what)
 	}
 }
 
-// A close answer read on the session consumers' kind of client (withLossAtOnce) while nats.go is in
-// a reconnect's handshake answers within the probe's budget: closedUnder reads the connection's
-// status by the probe alone on that client. A forced reconnect (the token keeper's) answers the
-// pending request ErrConnectionClosed and starts the reconnect at once, and the hub holding the
-// CONNECT holds nats.go's lock. The row holds the life's end (withLifeEndGate), so finish reaches
-// closedUnder, as it does whenever the request's answer is read before the life has ended.
-//
-// The control is closedUnder reading conn.Status() before it asks which client it is on: the row
-// gives no answer within heldAnswerWait.
-func TestACloseAnswerDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
-	gate := newLifeEndHold()
-	client, proxy := proxiedClient(t, withLossAtOnce(), withLifeEndGate(gate.gate))
-	t.Cleanup(gate.release)
-	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
-	defer cancel()
-	_, finish := client.bindRequest(ctx)
-	conn := client.Connection()
-	hold := proxy.HoldConnectAnswers()
-	if err := conn.ForceReconnect(); err != nil {
-		t.Fatalf("force a reconnect: %v", err)
-	}
-	awaitHeld(t, hold)
+// heldClientKinds are the two kinds of client a caller can hold a lock across: the session
+// consumers' (withLossAtOnce), every request of which is made under a lock, and the listener's main
+// client, which a caller holding a session's lock asks first (LostNow) and then calls under a
+// context it marks (WithLockHeld). held is the context such a caller makes its requests under.
+var heldClientKinds = []struct {
+	name    string
+	options []ConnectOption
+	held    func(context.Context) context.Context
+}{
+	{"session consumers' client", []ConnectOption{withLossAtOnce()}, func(ctx context.Context) context.Context { return ctx }},
+	{"main client", nil, WithLockHeld},
+}
+
+// awaitBeforeHoldEnds waits for answered while hold still holds the handshake: a row that passes
+// reads the answer before the row restores the proxy, which ends the hold, and one that fails ends
+// at the test's deadline. It decides by that order alone.
+func awaitBeforeHoldEnds[T any](t *testing.T, proxy *testnats.Proxy, hold *testnats.ConnectHold, answered <-chan T, what string) T {
+	t.Helper()
 	select {
-	case <-gate.held:
-	case <-time.After(testnats.Remaining(t)):
-		t.Fatal("the forced reconnect never reached the end of the request's life")
-	}
-	answered := make(chan error, 1)
-	go func() { answered <- finish(natsgoClosedAnswer) }()
-	select {
-	case err := <-answered:
-		if !errors.Is(err, ErrConnectionLost) {
-			t.Fatalf("the close answer read during the held handshake answered %v, want ErrConnectionLost", err)
+	case got := <-answered:
+		select {
+		case <-hold.Ended():
+			t.Fatalf("%s came only once the held handshake had ended", what)
+		default:
 		}
-	case <-time.After(heldAnswerWait):
-		proxy.Restore()
-		t.Fatalf("a close answer read during the held handshake gave no answer within %s: closedUnder waited for nats.go's connection lock, which the handshake holds", heldAnswerWait)
-	}
-	select {
+		return got
 	case <-hold.Ended():
-		t.Fatal("the close answer was given only once the held handshake had ended")
-	default:
+		t.Fatalf("%s did not come while the handshake was held", what)
+	case <-time.After(testnats.Remaining(t)):
+		proxy.Restore()
+		t.Fatalf("%s did not come by the test's deadline while the handshake was held: it waited for nats.go's connection lock, which the handshake holds", what)
+	}
+	var zero T
+	return zero
+}
+
+// A close answer read while nats.go is in a reconnect's handshake answers within the probe's
+// budget, on either kind of client a caller can hold a lock across: closedUnder reads the
+// connection's status by the probe (requestRead), and a caller that holds a lock reads within its
+// budget. A forced reconnect (the token keeper's) answers the pending request ErrConnectionClosed
+// and starts the reconnect at once, and the hub holding the CONNECT holds nats.go's lock. The row
+// holds the life's end (withLifeEndGate), so finish reaches closedUnder, as it does whenever the
+// request's answer is read before the life has ended. It decides by order: the answer must come
+// while the handshake is still held.
+//
+// The control is closedUnder reading nats.go's own Status and Stats: no answer comes while the
+// handshake is held, and each case fails at the test's deadline.
+func TestACloseAnswerDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
+	for _, kind := range heldClientKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			gate := newLifeEndHold()
+			client, proxy := proxiedClient(t, append([]ConnectOption{withLifeEndGate(gate.gate)}, kind.options...)...)
+			t.Cleanup(gate.release)
+			ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
+			defer cancel()
+			_, finish := client.bindRequest(kind.held(ctx))
+			conn := client.Connection()
+			hold := proxy.HoldConnectAnswers()
+			if err := conn.ForceReconnect(); err != nil {
+				t.Fatalf("force a reconnect: %v", err)
+			}
+			awaitHeld(t, hold)
+			select {
+			case <-gate.held:
+			case <-time.After(testnats.Remaining(t)):
+				t.Fatal("the forced reconnect never reached the end of the request's life")
+			}
+			answered := make(chan error, 1)
+			go func() { answered <- finish(natsgoClosedAnswer) }()
+			if err := awaitBeforeHoldEnds(t, proxy, hold, answered, "the close answer"); !errors.Is(err, ErrConnectionLost) {
+				t.Fatalf("the close answer read during the held handshake answered %v, want ErrConnectionLost", err)
+			}
+		})
+	}
+}
+
+// A request's read of its connection made while nats.go is in a reconnect's handshake, by a caller
+// that holds a lock across the request, answers within the probe's budget, on either kind of client:
+// requestLife reads the connection by the probe (requestRead), which answers a lock held past
+// heldLockBudget "unknown", and the request is not sent. A caller holding a session's lock across
+// the main client's calls asks LostNow first; a reconnect that starts between that answer and the
+// request's own read holds the read here, not the lock. It decides by order: requestLife must
+// return while the handshake is still held.
+//
+// The control is requestLife reading nats.go's own Status and Stats: it gives no answer while the
+// handshake is held, and each case fails at the test's deadline.
+func TestARequestsReadDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
+	for _, kind := range heldClientKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			client, proxy := proxiedClient(t, kind.options...)
+			proxy.Cut()
+			hold := proxy.HoldConnectAnswers()
+			awaitHeld(t, hold)
+			answered := make(chan context.Context, 1)
+			go func() {
+				life, _, _ := client.requestLife(kind.held(t.Context()))
+				answered <- life
+			}()
+			if life := awaitBeforeHoldEnds(t, proxy, hold, answered, "the request's read of its connection"); life.Err() == nil {
+				t.Fatal("a request made during the held handshake was bound to a running life, want the ended one")
+			}
+		})
+	}
+}
+
+// A life whose goroutine has not yet run - not scheduled, on a loaded box - when the connection
+// drops and a reconnect's attempt takes nats.go's lock ends at the next request's read of the
+// connection, by a caller that holds a lock, while the attempt still holds nats.go's: requestLife,
+// reading "unknown" for a life whose goroutine has no listener yet, ends the life running on it. A
+// request bound to that life would otherwise wait meanwhile, with its caller's lock held. The row
+// gates the goroutine at "register" through the whole held handshake, so only the next request's
+// read can end the life. It decides by order: the request in flight must answer while the handshake
+// is still held.
+//
+// The control is requestLife's down branch leaving the running life as it is: the request in
+// flight gives no answer while the handshake is held, and each case fails at the test's deadline.
+func TestALifeWhoseGoroutineIsHeldEndsAtTheNextRequestDuringAHeldReconnect(t *testing.T) {
+	for _, kind := range heldClientKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			stage := newUnarmedStageHold("register")
+			client, proxy := proxiedClient(t, append([]ConnectOption{withLifeListenGate(stage.gate)}, kind.options...)...)
+			t.Cleanup(stage.release)
+			endRunningLife(client)
+			stage.arm()
+			ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
+			defer cancel()
+			inflight := inFlight(t, ctx, client)
+			select {
+			case <-stage.held:
+			case <-time.After(testnats.Remaining(t)):
+				t.Fatal("the life's listener goroutine never started")
+			}
+			proxy.Cut()
+			hold := proxy.HoldConnectAnswers()
+			awaitHeld(t, hold)
+			go client.requestLife(kind.held(ctx))
+			if err := awaitBeforeHoldEnds(t, proxy, hold, inflight, "the request in flight's answer"); !errors.Is(err, ErrConnectionLost) {
+				t.Fatalf("the request in flight answered %v, want ErrConnectionLost", err)
+			}
+		})
+	}
+}
+
+// A life whose goroutine registers its status listener only once the connection has dropped and a
+// reconnect's attempt holds nats.go's lock ends at the drop, while the attempt still holds that
+// lock, with no other request made: the listener is registered on a goroutine of its own
+// (requestLife), since StatusChanged waits for nats.go's lock, and the life's goroutine reads the
+// connection meanwhile, "unknown" after the drop's connection event, which ends the life. The row
+// gates the goroutine at "register" until the attempt holds the lock and the client has reported
+// the drop (ConnectionChanged), then releases it. It decides by order: the request in flight must
+// answer while the handshake is still held.
+//
+// The control is the listener registered on the life's own goroutine: that goroutine waits for
+// nats.go's lock before it reads, the request in flight gives no answer while the handshake is
+// held, and each case fails at the test's deadline.
+func TestALifeWhoseListenerRegistersDuringAHeldReconnectEndsAtTheDrop(t *testing.T) {
+	for _, kind := range heldClientKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			stage := newUnarmedStageHold("register")
+			client, proxy := proxiedClient(t, append([]ConnectOption{withLifeListenGate(stage.gate)}, kind.options...)...)
+			t.Cleanup(stage.release)
+			endRunningLife(client)
+			stage.arm()
+			ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
+			defer cancel()
+			inflight := inFlight(t, ctx, client)
+			select {
+			case <-stage.held:
+			case <-time.After(testnats.Remaining(t)):
+				t.Fatal("the life's listener goroutine never started")
+			}
+			dropped := client.ConnectionChanged()
+			proxy.Cut()
+			hold := proxy.HoldConnectAnswers()
+			awaitHeld(t, hold)
+			select {
+			case <-dropped:
+			case <-time.After(testnats.Remaining(t)):
+				t.Fatal("the client never reported the drop by the test's deadline")
+			}
+			stage.release()
+			if err := awaitBeforeHoldEnds(t, proxy, hold, inflight, "the request in flight's answer"); !errors.Is(err, ErrConnectionLost) {
+				t.Fatalf("the request in flight answered %v, want ErrConnectionLost", err)
+			}
+		})
 	}
 }
 

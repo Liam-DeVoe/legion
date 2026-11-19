@@ -1,47 +1,47 @@
 package main
 
 import (
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // A relay whose every probe read reads a false "down" - a box loaded past the probe's budget -
 // backs off its restarts: each restart's first session-consumer call answers ErrConnectionLost at
 // once (connForRequest), the relay waits in Reconnected, which reads nats.go connected and returns
-// at once, and a second loss in a row within relayRetryFirst of its restart waits the retry backoff
-// (relay). Its context is the relay's whole run, so no call budget bounds it, unlike a registration
-// or a delete. The row counts the passes in 3 s of a seam that reads "down" for every read,
-// spending the probe's budget on each.
+// at once, and a second loss in a row within relayRetryFirst of its restart asks for the retry
+// backoff (relay), which doubles. Its context is the relay's whole run, so no call budget bounds it,
+// unlike a registration or a delete. The row counts by events (newCountedRelayRig): the waits come
+// one lost restart apart, each twice the one before, from relayRetryFirst.
 //
-// The control is the relay restarting at once on every loss: about 30 passes in the 3 s.
+// The control is the relay restarting at once on every loss: it asks for no wait, and reads its
+// probe without end.
 func TestARelayWhoseProbeReadsDownBacksOffItsRestarts(t *testing.T) {
-	rig := newRelayRig(t)
+	rig, waits := newCountedRelayRig(t, newRelayClock())
 	const sessionID = "ses_relay_false_down"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	before, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), before)
+	requireFrames(t, standIn.collect(t, 1, testnats.Remaining(t)), before)
 
-	const line = "session relay lost its NATS connection"
-	restore := rig.deps.consumers.consumers.ProbeReadsDownForTest(func() bool {
-		time.Sleep(probeBudget)
-		return true
-	})
+	down, spun := countingDown()
+	restore := rig.deps.consumers.consumers.ProbeReadsDownForTest(down)
 	defer restore()
-	start := strings.Count(rig.harness.logs.String(), line)
 	rig.deps.consumers.consumers.CloseConnection()
-	const window = 3 * time.Second
-	time.Sleep(window)
-	passes := strings.Count(rig.harness.logs.String(), line) - start
-	restore()
-	t.Logf("restart passes that lost the connection in %s: %d", window, passes)
-	if passes > 5 {
-		t.Fatalf("the relay lost its connection %d times in %s of a false \"down\": its restarts never back off while the probe reads down, want at most 5 (the retry backoff from %s)", passes, window, relayRetryFirst)
-	}
-	if passes == 0 {
-		t.Fatal("the relay never lost its connection: the row shows nothing of a restart loop")
+	want, previous := relayRetryFirst, -1
+	for i := range 4 {
+		asked := waits.next(t, spun, "a relay whose probe reads down")
+		if asked.d != want {
+			t.Fatalf("wait %d is %s, want %s: the retry backoff does not double from %s", i+1, asked.d, want, relayRetryFirst)
+		}
+		if previous >= 0 && asked.losses-previous != 1 {
+			t.Fatalf("wait %d came %d lost restarts after the one before it, want 1", i+1, asked.losses-previous)
+		}
+		want, previous = min(2*want, relayRetryMax), asked.losses
+		if i == 3 {
+			restore()
+		}
+		asked.release <- true
 	}
 }

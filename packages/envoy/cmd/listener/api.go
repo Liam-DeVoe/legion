@@ -2742,13 +2742,15 @@ func (d *listenerDeps) registerPass(
 	registered := registeredSession{plan: plan, delivery: outcome}
 	// The interest row's write and the session's entry write below are made under the session's
 	// lock, on the main client: each asks that client first whether its connection is up
-	// (sessionDelivery.mainLost, within the probe's budget), so a reconnect's handshake there costs
-	// the lock the probe's budget, not the handshake, and the loss goes the way a lost write here
-	// goes, to the caller's registersAgain.
+	// (sessionDelivery.mainLost, within the probe's budget), and is made under a context marked as
+	// made under a lock (bus.WithLockHeld), so a reconnect's handshake there, before or after the
+	// question, costs the lock the probe's budget, not the handshake, and the loss goes the way a
+	// lost write here goes, to the caller's registersAgain.
+	locked := bus.WithLockHeld(ctx)
 	if lost := d.consumers.mainLost(); lost != nil {
 		return registered, false, nil, lost
 	}
-	row, err := d.registry.UpsertPlanned(ctx, store.Interest{
+	row, err := d.registry.UpsertPlanned(locked, store.Interest{
 		SessionID: body.SessionID,
 		MachineID: machineID,
 		Dir:       body.Dir,
@@ -2784,7 +2786,7 @@ func (d *listenerDeps) registerPass(
 	if lost := d.consumers.mainLost(); lost != nil {
 		return registeredSession{}, false, nil, &sessionEntryWriteError{cause: lost}
 	}
-	if err := d.sessions.PutWithin(ctx, body.SessionID, sessionEntryFromSubscribe(body, machineID, outcome)); err != nil {
+	if err := d.sessions.PutWithin(locked, body.SessionID, sessionEntryFromSubscribe(body, machineID, outcome)); err != nil {
 		// The row is stored and nothing tells another reader the session is here, so the
 		// registration travels as this error alone and no caller is handed it. The pass
 		// answers nothing: the error is the registration's. The caller's switch over it returns

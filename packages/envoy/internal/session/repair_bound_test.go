@@ -127,10 +127,10 @@ func TestAnArmWhileTheRetrysAttemptHoldsItsLockReturnsAtOnce(t *testing.T) {
 	}()
 	select {
 	case <-armed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testnats.Remaining(t)):
 		known.repairMu.Unlock()
 		unlocked = true
-		t.Fatal("armRepair had not returned 2 s after it was called while repairMu was held: it waited for the retry's attempt")
+		t.Fatal("armRepair had not returned by the test's deadline, called while repairMu was held: it waited for the retry's attempt")
 	}
 	known.repairStateMu.Lock()
 	asked := known.rearm

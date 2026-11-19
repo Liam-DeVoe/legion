@@ -136,15 +136,17 @@ func (c *Client) connForRequest(ctx context.Context) error {
 	return c.ensureConnWithContext(ctx)
 }
 
-// LostNow answers ErrConnectionLost, unsent, when the client's connection is down as the probe
-// reads it (upNow), which waits at most heldLockBudget for nats.go's connection lock, and nil when
-// it is up, on any client. A caller that holds a lock - a session's consumer lock, a relay's restart
-// turn - asks it before a call on a client whose own requests ask nats.go directly (requestLife),
-// so it hears that the connection is mid-reconnect within the probe's budget rather than waiting for
-// the handshake with the lock held, and releases the lock before it waits for the connection
-// (Reconnected), as it does for the session consumers' client. Like connForRequest it bounds the
-// question, not the call that follows an "up" answer. A client with no connection yet, one still
-// awaiting its first, and a stopped one answer nil: their own calls answer as they always did.
+// LostNow answers ErrConnectionLost, unsent, when the client's connection is down or its state
+// unknown as the probe reads it (upNow), which waits at most heldLockBudget for nats.go's
+// connection lock, and nil when it is up, on any client. A caller that holds a lock - a session's
+// consumer lock, a relay's restart turn, a role's keep guard - asks it before a call on the main
+// client, so it hears that the connection is mid-reconnect within the probe's budget rather than
+// waiting for the handshake with the lock held, and releases the lock before it waits for the
+// connection (Reconnected), as it does for the session consumers' client; it makes the call with
+// its context marked (WithLockHeld), so the request's own read answers within the budget too. Like
+// connForRequest it bounds the question, not the call that follows an "up" answer. A client with no
+// connection yet, one still awaiting its first, and a stopped one answer nil: their own calls answer
+// as they always did.
 func (c *Client) LostNow() error {
 	if c == nil || c.stopped() {
 		return nil
@@ -159,6 +161,26 @@ func (c *Client) LostNow() error {
 		return &connectionLost{client: c, unsent: true}
 	}
 	return nil
+}
+
+// lockHeldKey is the key WithLockHeld marks a context with.
+type lockHeldKey struct{}
+
+// WithLockHeld returns ctx marked as the context of calls its caller makes while it holds a lock
+// of its own across them: a session's consumer lock, a role's keep guard. A request made under it
+// whose read of its connection's state the probe's budget ends (heldLockBudget) answers the loss
+// at once, unsent, so the caller lets its lock go and retries, where a request whose caller holds
+// nothing waits for nats.go's own answer within its context (requestRead). Every request on the
+// session consumers' client answers so, marked or not, since every caller of that client holds
+// such a lock (withLossAtOnce).
+func WithLockHeld(ctx context.Context) context.Context {
+	return context.WithValue(ctx, lockHeldKey{}, true)
+}
+
+// lockHeld reports whether ctx is marked by WithLockHeld.
+func lockHeld(ctx context.Context) bool {
+	held, _ := ctx.Value(lockHeldKey{}).(bool)
+	return held
 }
 
 // Request sends one request on c's connection through send and returns its answer. send is handed
@@ -231,7 +253,7 @@ func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) 
 	if c == nil {
 		return ctx, func(err error) error { return err }
 	}
-	life, conn, reconnects := c.requestLife()
+	life, conn, reconnects := c.requestLife(ctx)
 	bound, cancel := context.WithCancelCause(ctx)
 	stop := context.AfterFunc(life, func() { cancel(ErrConnectionLost) })
 	if life.Err() != nil {
@@ -240,7 +262,7 @@ func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) 
 	return bound, func(err error) error {
 		stop()
 		cancel(nil)
-		if err == nil || ctx.Err() != nil || life.Err() == nil && !c.closedUnder(err, conn, reconnects) {
+		if err == nil || ctx.Err() != nil || life.Err() == nil && !c.closedUnder(ctx, err, conn, reconnects) {
 			return err
 		}
 		return c.lostOrClosed(err)
@@ -263,22 +285,64 @@ func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) 
 // answers, so it stays nats.go's: a caller reads it as lasting, rather than retrying it for ever,
 // and a reconnect under such a handle's call makes its error lost once, for one retry.
 //
-// Whether conn is connected and its reconnect count are read outside c.mu: on a client whose
-// callers can hold a lock (withLossAtOnce) by the probe alone (probeConn), whose read nats.go's
-// lock kept waiting past heldLockBudget counts the answer lost, which costs the caller one retry;
-// on every other client by nats.go itself.
-func (c *Client) closedUnder(err error, conn *nats.Conn, reconnects uint64) bool {
+// Whether conn is connected and its reconnect count are read outside c.mu, through the probe
+// (requestRead): a caller that holds a lock across the request reads within heldLockBudget, and
+// counts an answer the budget ends ("unknown") lost, which costs it one retry; a caller that holds
+// none waits for nats.go's own answer, within ctx.
+func (c *Client) closedUnder(ctx context.Context, err error, conn *nats.Conn, reconnects uint64) bool {
 	if conn == nil || !closeAnswer(err) {
 		return false
 	}
-	var status nats.Status
-	now, answered := uint64(0), true
-	if c.lossAtOnce {
-		status, now, answered = c.probeConn(conn)
-	} else if status = conn.Status(); status == nats.CONNECTED {
-		now = conn.Stats().Reconnects
-	}
+	status, now, answered := c.requestRead(ctx, conn)
 	return !answered || status != nats.CONNECTED || now != reconnects
+}
+
+// requestRead is the read of conn's state for a request's own bookkeeping (closedUnder,
+// requestLife), made under ctx, the request's context. It reads through the probe, which waits at
+// most heldLockBudget for nats.go's connection lock, and answers "unknown" (answered false) when
+// the budget ends first: a reconnect's dial or handshake holds that lock, or the box is too loaded
+// to run the read in time. That is the answer for a request whose caller holds a lock across it:
+// every request on the session consumers' client (withLossAtOnce), and one made under a context
+// WithLockHeld marks, so the caller lets its lock go rather than wait for a handshake with it held.
+// A request whose caller holds nothing waits on for nats.go's own answer, as it would for
+// IsConnected, until ctx ends, and at most RequestTimeout when ctx has no deadline
+// (requestReadUntil): a slow read on a loaded box is not a lost connection, and answering it as one
+// would fail a publish that its caller sends once.
+//
+// The test's seam (ProbeReadsDownForTest) applies to the budgeted read on a client whose callers
+// all hold a lock (withLossAtOnce), as it does to that client's other reads, and not on any other,
+// where it is the callers' own reads (LostNow) that a row counts; requestReadSlow is this read's own
+// seam on every client.
+func (c *Client) requestRead(ctx context.Context, conn *nats.Conn) (status nats.Status, reconnects uint64, answered bool) {
+	if slow := c.requestReadSlow.Load(); slow == nil || !(*slow)() {
+		status, reconnects, answered = c.readConnState(conn, c.lossAtOnce)
+	}
+	if answered || c.lossAtOnce || lockHeld(ctx) {
+		return status, reconnects, answered
+	}
+	return c.requestReadUntil(ctx, conn)
+}
+
+// requestReadUntil is requestRead's wait for nats.go's own answer, for a request whose caller holds
+// no lock: the probe's read, bounded by ctx, and by RequestTimeout, the bound nats.go's own requests
+// get here, when ctx has none. answered is false only once that bound has ended. A connection the
+// client no longer holds is read from nats.go at once, as readConnState reads it.
+func (c *Client) requestReadUntil(ctx context.Context, conn *nats.Conn) (status nats.Status, reconnects uint64, answered bool) {
+	c.mu.Lock()
+	var prober *connProber
+	if conn == c.Conn && conn != nil {
+		prober = c.proberLocked()
+	}
+	c.mu.Unlock()
+	if prober == nil {
+		return conn.Status(), conn.Stats().Reconnects, true
+	}
+	if _, bounded := ctx.Deadline(); !bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, RequestTimeout)
+		defer cancel()
+	}
+	return prober.probeUntil(ctx)
 }
 
 // lostIfClosed is err, nats.go's answer for a call the bus made directly on conn rather than
@@ -343,28 +407,39 @@ func (c *Client) lostOrClosed(err error) error {
 	return fmt.Errorf("bus: the client was stopped before the request was answered: %w", nats.ErrConnectionClosed)
 }
 
-// requestLife is the life of the client's connection that a request made now is bound to, that
-// connection, and nats.go's reconnect count when the life began: the life running while its
-// connection is still the client's and connected, or else a new one when the connection is
+// requestLife is the life of the client's connection that a request made now under ctx is bound
+// to, that connection, and nats.go's reconnect count when the life began: the life running while
+// its connection is still the client's and connected, or else a new one when the connection is
 // connected; a connection that is not gets endedLife.
 //
-// Whether the connection is connected is read at every request, outside c.mu: on a client whose
-// callers can hold a lock (withLossAtOnce) by the probe (upNow), which waits at most heldLockBudget
-// for nats.go's connection lock and reads a lock held longer as down, and on every other client by
-// nats.go's own IsConnected, which can wait for a reconnect's handshake, since that client's callers
-// hold nothing across it. So a request made once nats.go has closed the connection or reported its
-// drop is not sent.
+// Whether the connection is connected is read at every request, outside c.mu (requestRead): within
+// heldLockBudget for a request whose caller holds a lock across it, which reads a lock held longer
+// as "unknown" and is not sent, and for as long as ctx lasts for one whose caller holds none. So a
+// request made once nats.go has closed the connection or reported its drop is not sent, nor one
+// made under a lock while a reconnect's handshake holds nats.go's lock. Such a read also ends the
+// life that was running on the connection when it began, when nothing else would end that life at
+// the drop: a read that answered the connection down (its requests are lost), or a life whose
+// goroutine has not yet received its status listener (lifeListening), as a goroutine not yet
+// scheduled on a loaded box has not. An "unknown" read ends no life that hears nats.go's own
+// reports: on a loaded box it may come on a connection that is up, and ending the life there would
+// answer every request bound to it, a relay's pull among them, with the loss. A life begun after
+// the read began, by a request made once a reconnect in place was done, is another life and is not
+// ended.
 //
 // A life ends at the first drop nats.go reports to a status listener of the life's own, registered
-// fresh when the life begins, on a goroutine of its own, which waits for nats.go's lock and holds
-// nothing. That listener alone is not enough: nats.go v1.53.1 takes back a report it finds unread
-// and deletes the listener for good (sendStatusEvent, nats.go:6682-6699), which a drop followed by
-// a reconnect attempt that fails its handshake does before the goroutine has read the first, and a
-// drop and reconnect can both come before the goroutine has registered at all. So the goroutine
-// also wakes at each of the client's connection events (ConnectionChanged, taken before the
-// listener), and ends the life whenever nats.go no longer reads the connection connected, or reads
-// a reconnect count other than the one the life began at. The disconnect and close callbacks end
-// at once the life of a connection the client has since replaced (endLifeIfDown).
+// fresh when the life begins. That listener alone is not enough: nats.go v1.53.1 takes back a
+// report it finds unread and deletes the listener for good (sendStatusEvent, nats.go:6682-6699),
+// which a drop followed by a reconnect attempt that fails its handshake does before the goroutine
+// has read the first, and a drop and reconnect can both come before the goroutine has registered
+// at all. So the life's goroutine also wakes at each of the client's connection events
+// (ConnectionChanged, taken before the listener), and ends the life whenever the probe no longer
+// reads the connection connected, or reads a reconnect count other than the one the life began at.
+// The listener is registered on a goroutine of its own: StatusChanged takes nats.go's connection
+// lock, which a reconnect's attempt holds through its dial and handshake, and a life whose
+// registration waited there would outlive a drop until that attempt ended, with every request
+// bound to it waiting too; meanwhile the life's goroutine probes, and ends the life at the drop.
+// The disconnect and close callbacks end at once the life of a connection the client has since
+// replaced (endLifeIfDown).
 //
 // A request made in the moment between nats.go's drop and the listener's ending the life is handed
 // to nats.go. After a close, nats.go refuses it as closed before writing it, and its answer is
@@ -372,28 +447,25 @@ func (c *Client) lostOrClosed(err error) error {
 // one that may have landed: a cost bounded by that moment, on a running client's connection, which
 // nats.go closes only at the client's own Close, a drain, or the hub refusing its credential twice.
 // After a drop it is refused, or abandoned at the life's end (RequestBounded).
-func (c *Client) requestLife() (context.Context, *nats.Conn, uint64) {
+func (c *Client) requestLife(ctx context.Context) (context.Context, *nats.Conn, uint64) {
 	conn := c.Connection()
 	if conn == nil {
 		return endedLife, nil, 0
 	}
-	up, reconnects := false, uint64(0)
-	if c.lossAtOnce {
-		up, reconnects = c.upNow(conn)
-	} else {
-		up = conn.IsConnected()
-	}
-	if !up {
-		return endedLife, conn, 0
-	}
 	c.mu.Lock()
-	if life, running, ok := c.runningLifeLocked(conn); ok {
-		c.mu.Unlock()
-		return life, conn, running
-	}
+	prior, _, _ := c.runningLifeLocked(conn)
 	c.mu.Unlock()
-	if !c.lossAtOnce {
-		reconnects = conn.Stats().Reconnects
+	status, reconnects, answered := c.requestRead(ctx, conn)
+	if !answered || !statusUp(status) {
+		// A read the request's own context ended says nothing of the connection, and ends no life.
+		c.mu.Lock()
+		var end context.CancelCauseFunc
+		if prior != nil && c.life == prior && (answered || !c.lifeListening && ctx.Err() == nil) {
+			end = c.takeLifeLocked()
+		}
+		c.mu.Unlock()
+		c.endLifeNow(end)
+		return endedLife, conn, 0
 	}
 	c.mu.Lock()
 	if life, running, ok := c.runningLifeLocked(conn); ok {
@@ -406,37 +478,67 @@ func (c *Client) requestLife() (context.Context, *nats.Conn, uint64) {
 	}
 	replaced := c.takeLifeLocked()
 	life, end := context.WithCancelCause(context.Background())
-	c.life, c.endLife, c.lifeConn, c.lifeReconnects = life, end, conn, reconnects
+	c.life, c.endLife, c.lifeConn, c.lifeReconnects, c.lifeListening = life, end, conn, reconnects, false
+	var changed <-chan struct{} = c.connChangedLocked()
 	c.mu.Unlock()
 	c.endLifeNow(replaced)
 	go func() {
 		if gate := c.lifeListenGate; gate != nil {
-			gate("register")
+			gate("register", life)
 		}
-		changed := c.ConnectionChanged()
-		lost := conn.StatusChanged(nats.DISCONNECTED, nats.RECONNECTING, nats.CLOSED)
-		defer conn.RemoveStatusListener(lost)
+		registered := make(chan chan nats.Status, 1)
+		register := func() {
+			registered <- conn.StatusChanged(nats.DISCONNECTED, nats.RECONNECTING, nats.CLOSED)
+		}
+		go register()
+		var lost chan nats.Status
+		defer func() {
+			if lost != nil {
+				conn.RemoveStatusListener(lost)
+				return
+			}
+			go func() { conn.RemoveStatusListener(<-registered) }()
+		}()
 		gated := false
+		// woke is whether a connection event has come since the life's last read; for its first
+		// read, since the life began.
+		woke := false
 		for {
+			if !woke {
+				select {
+				case <-changed:
+					woke, changed = true, c.ConnectionChanged()
+				default:
+				}
+			}
 			// The probe, not IsConnected: a wake at a connection event can come while nats.go holds
 			// its lock for the next reconnect's handshake, and the life's end, which every request
-			// bound to it waits for, must not wait for that. A probe nats.go's lock kept waiting past
-			// heldLockBudget reads as down, which ends the life, as the drop it found does.
-			status, now, answered := c.readConnState(conn, false)
-			if !answered || !statusUp(status) || now != reconnects {
+			// bound to it waits for, must not wait for that. A read nats.go's lock kept waiting past
+			// heldLockBudget ("unknown") after a connection event ends the life, as the drop it found
+			// does; one with no event since the last read is a loaded box's slow read on a connection
+			// that was up, and ends nothing, so a new life is not ended by the box's load.
+			status, now, answered := c.lifeRead(conn)
+			if answered && (!statusUp(status) || now != reconnects) || !answered && woke {
 				c.endLifeNow(end)
 				return
 			}
-			if gate := c.lifeListenGate; gate != nil && !gated {
+			woke = false
+			if gate := c.lifeListenGate; gate != nil && !gated && lost != nil {
 				gated = true
-				gate("select")
+				gate("select", life)
 			}
 			select {
+			case lost = <-registered:
+				c.mu.Lock()
+				if c.life == life {
+					c.lifeListening = true
+				}
+				c.mu.Unlock()
 			case <-lost:
 				c.endLifeNow(end)
 				return
 			case <-changed:
-				changed = c.ConnectionChanged()
+				woke, changed = true, c.ConnectionChanged()
 			case <-life.Done():
 				return
 			}
@@ -487,4 +589,14 @@ func (c *Client) endLifeNow(end context.CancelCauseFunc) {
 		gate()
 	}
 	end(ErrConnectionLost)
+}
+
+// lifeRead is a life's own goroutine's read of conn (requestLife): the probe's, within
+// heldLockBudget, past the callers' seam (ProbeReadsDownForTest), or "unknown" while a row's own
+// seam on it answers true (lifeReadSlow).
+func (c *Client) lifeRead(conn *nats.Conn) (status nats.Status, reconnects uint64, answered bool) {
+	if slow := c.lifeReadSlow.Load(); slow != nil && (*slow)() {
+		return 0, 0, false
+	}
+	return c.readConnState(conn, false)
 }

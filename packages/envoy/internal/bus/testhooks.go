@@ -22,11 +22,13 @@ func HoldFirstConnectForTest(gate <-chan struct{}) (restore func()) {
 // HoldFirstConnectForTest.
 func (c *Client) AwaitingConnectionForTest() bool { return c.awaitingFirstConnection() }
 
-// ProbeReadsDownForTest makes each read of c's connection's status through the probe (connProber,
-// the reads of a caller that can hold a lock: connForRequest, requestLife and closedUnder on a
-// withLossAtOnce client) answer "down", as a read nats.go's lock kept waiting past heldLockBudget
-// does, while down reports true, until the function it answers takes the seam out. It is for tests
-// alone: it is the false "down" a loaded box can give, made on demand.
+// ProbeReadsDownForTest makes each read of c's connection's status through the probe (connProber)
+// that its callers make within the probe's budget answer "unknown", as a read nats.go's lock kept
+// waiting past heldLockBudget does, while down reports true, until the function it answers takes
+// the seam out; a caller that holds a lock reads that as the connection down. Those reads are
+// LostNow's on any client, and on a client whose callers all hold a lock (withLossAtOnce) also
+// connForRequest's and a request's own (requestLife, closedUnder); a life's own goroutine reads past
+// it. It is for tests alone: it is the slow read a loaded box can give, made on demand.
 func (c *Client) ProbeReadsDownForTest(down func() bool) (restore func()) {
 	previous := c.probeDown.Swap(&down)
 	return func() { c.probeDown.Store(previous) }

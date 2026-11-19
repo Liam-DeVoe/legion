@@ -50,11 +50,13 @@ func TestCallersDuringAHeldHandshakeShareOneProbe(t *testing.T) {
 
 // A caller takes the answer of a read begun after it asked, never one that may have read nats.go's
 // state before its question: a close answer read once the connection is closed is lost though a
-// read begun before the close, which read the connection connected, is still in flight when the
-// caller asks. The row puts that earlier read in place by hand, the one order it cannot make with
-// nats.go's own lock alone, and ends it once the caller is waiting. It holds the life's end
-// (withLifeEndGate), so the close answer is judged by closedUnder rather than by a life its own
-// listener already ended.
+// read begun before the close, which read the connection connected, is the prober's read in flight
+// when the caller asks. The row puts that earlier read in place by hand, the one order it cannot
+// make with nats.go's own lock alone, and marks it done with its CONNECTED answer while it stays
+// in place, so the order in which the caller arrives decides nothing: whenever it asks, the read in
+// front of it is one begun before its question, which it must not take, and it reads the
+// connection down at its budget. It holds the life's end (withLifeEndGate), so the close answer is
+// judged by closedUnder rather than by a life its own listener already ended.
 //
 // The control is this row with probe taking the answer of the read in flight whatever its number:
 // the caller reads the earlier read's CONNECTED, and the close answer stays nats.go's.
@@ -76,13 +78,9 @@ func TestACloseAnswerAfterTheCloseIsLostThoughAnEarlierProbeIsInFlight(t *testin
 	prober.mu.Unlock()
 	proxy.Cut()
 	conn.Close()
+	close(earlier.done)
 	answered := make(chan error, 1)
 	go func() { answered <- finish(natsgoClosedAnswer) }()
-	time.Sleep(10 * time.Millisecond)
-	prober.mu.Lock()
-	prober.probing = nil
-	prober.mu.Unlock()
-	close(earlier.done)
 	select {
 	case got := <-answered:
 		if !errors.Is(got, ErrConnectionLost) {

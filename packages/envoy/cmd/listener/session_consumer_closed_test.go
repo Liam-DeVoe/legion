@@ -94,14 +94,6 @@ func TestADeleteWhoseConnectionIsClosedReleasesTheSessionsLockAndDeletesOnceItIs
 	}
 }
 
-// heldHandshakeWait is how long the row below waits for the delete to release the session's lock
-// while the hub holds the reconnect's handshake. The hold lasts until the row restores the proxy,
-// and the client's connect timeout is above the test's deadline (bus.WithConnectTimeout), so a
-// delete that waits for nats.go's connection lock under the session's lock never releases it while
-// the hold lasts; one that asks bus's probe of the connection's status releases it within the
-// probe's 100 ms budget. The wait bounds a row that fails, not the answer of one that passes.
-const heldHandshakeWait = 10 * time.Second
-
 // A delete of a gone session's consumer made while the hub holds the handshake of its connection's
 // reconnect - as a hub whose auth service has not answered the CONNECT holds it for its
 // authorization timeout - releases the session's lock while the handshake is still held, and
@@ -117,7 +109,8 @@ const heldHandshakeWait = 10 * time.Second
 //
 // The control is this row with bus's connForRequest reading conn.IsConnected() in place of the
 // probe: the delete holds the session's lock for as long as the handshake is held, and the row
-// fails at heldHandshakeWait.
+// fails at the test's deadline. The row decides by order, the lock given up while the handshake is
+// held, and bounds the wait only by the test's deadline.
 func TestADeleteDuringAHeldReconnectHandshakeReleasesTheSessionsLockWhileItIsHeld(t *testing.T) {
 	rig := newSweepRig(t)
 	proxy := testnats.StartProxy(t, testnats.URL(t))
@@ -148,10 +141,10 @@ func TestADeleteDuringAHeldReconnectHandshakeReleasesTheSessionsLockWhileItIsHel
 	go func() { deleted <- rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil) }()
 	awaitLockUsers(t, locks, sessionID, 2)
 	held()
-	for deadline := time.Now().Add(heldHandshakeWait); lockUsers(locks, sessionID) != 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(testnats.Remaining(t)); lockUsers(locks, sessionID) != 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			proxy.Restore()
-			t.Fatalf("the delete still held the session's lock %s into the held handshake: it waited for nats.go's connection lock with the session's lock held", heldHandshakeWait)
+			t.Fatal("the delete still held the session's lock at the test's deadline, during the held handshake: it waited for nats.go's connection lock with the session's lock held")
 		}
 	}
 	select {

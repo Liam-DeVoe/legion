@@ -894,6 +894,10 @@ type keptRoleHandover struct {
 // the stream's own store time, which no caller may choose. An outstanding claim's age is measured
 // the same way, against the time the stream stored the cursor that carries it.
 func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, now func() time.Time) (keptRoleHandover, error) {
+	// The handover runs under the role's keep guard, so each of its calls on the main client is
+	// made under a context marked so (bus.WithLockHeld): a reconnect's handshake costs the guard
+	// the probe's budget, as the question before each pass does (LostNow).
+	ctx = bus.WithLockHeld(ctx)
 	var (
 		err, readErr   error
 		idle           int

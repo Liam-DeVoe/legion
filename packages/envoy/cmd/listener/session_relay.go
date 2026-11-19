@@ -200,6 +200,12 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
+	// clock and retryWait are a test's seams on how the relay times its runs (now) and on the
+	// wait of its retry backoff (waitRetry), so a row counts the waits the relay asks for and
+	// moves the clock the relay reads instead of sleeping. Both are nil outside tests. Set before
+	// the first relay starts and read-only after.
+	clock     func() time.Time
+	retryWait func(ctx context.Context, run *relayRun, d time.Duration) bool
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -458,6 +464,24 @@ func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
 	case <-timer.C:
 	}
 	return true
+}
+
+// now is the relay's clock for timing its runs (relay, relayRun.lockedAt): a test's (clock), else
+// the wall clock.
+func (m *sessionRelays) now() time.Time {
+	if m.clock != nil {
+		return m.clock()
+	}
+	return time.Now()
+}
+
+// waitRetry waits out a run's retry backoff d (relayRun.waitRetry), or does what a test's seam does
+// in its place (retryWait).
+func (m *sessionRelays) waitRetry(ctx context.Context, run *relayRun, d time.Duration) bool {
+	if m.retryWait != nil {
+		return m.retryWait(ctx, run, d)
+	}
+	return run.waitRetry(ctx, d)
 }
 
 // ended reports whether the run's goroutine has returned: it was stopped, or it may start again
@@ -783,13 +807,13 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 	// a loop.
 	lostAgain := false
 	for {
-		began := time.Now()
+		began := m.now()
 		outcome := m.relayNATS(ctx, run)
 		from := began
 		if run.lockedAt.After(from) {
 			from = run.lockedAt
 		}
-		ran := time.Since(from)
+		ran := m.now().Sub(from)
 		quickLoss := outcome == relayLost && ran < relayRetryFirst
 		if ran >= relayRetryMax {
 			// A run that served this long ends the episode its backoff counted: the next failure
@@ -828,19 +852,19 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 				// refused the credential or closed the connection during the handshake, the host
 				// did not resolve, or the attempt's connect timeout passed. Wait out the retry
 				// backoff, and the next restart says which.
-				if !run.waitRetry(ctx, retry) {
+				if !m.waitRetry(ctx, run, retry) {
 					return
 				}
 				retry = min(retry*2, relayRetryMax)
 			} else if lostAgain && quickLoss {
-				if !run.waitRetry(ctx, retry) {
+				if !m.waitRetry(ctx, run, retry) {
 					return
 				}
 				retry = min(retry*2, relayRetryMax)
 			}
 			lostAgain = true
 		default:
-			if !run.waitRetry(ctx, retry) {
+			if !m.waitRetry(ctx, run, retry) {
 				return
 			}
 			retry = min(retry*2, relayRetryMax)
@@ -887,7 +911,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	if listed := run.listed; listed != nil {
 		run.listed = nil
 		unlock := m.delivery.locks.lock(sessionID)
-		run.lockedAt = time.Now()
+		run.lockedAt = m.now()
 		callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 		defer cancel()
 		filter, _, err := m.storedFilter(callCtx, sessionID)
@@ -922,7 +946,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	}
 	defer func() { <-m.restarts }()
 	unlock := m.delivery.locks.lock(sessionID)
-	run.lockedAt = time.Now()
+	run.lockedAt = m.now()
 	at := m.delivery.mark()
 	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
@@ -960,7 +984,8 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 
 // storedFilter is the filter of sessionID's consumer for its stored interest topics, with the KV
 // revision of the interest row it was built from, read within ctx under the session's lock, which
-// the caller holds, or the read's error.
+// the caller holds (the read is made under a context marked so, bus.WithLockHeld), or the read's
+// error.
 //
 // The row is read from the bucket and not from the watched cache (storedTopics): a registration
 // on another listener may have added a topic this listener's watch has not delivered
@@ -971,7 +996,7 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 	if lost := m.delivery.mainLost(); lost != nil {
 		return nil, 0, lost
 	}
-	topics, revision, err := storedTopics(ctx, m.registry, sessionID)
+	topics, revision, err := storedTopics(bus.WithLockHeld(ctx), m.registry, sessionID)
 	if err != nil {
 		return nil, 0, err
 	}

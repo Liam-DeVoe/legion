@@ -14,11 +14,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// heldAnswerWait is how long a row waits for an answer that must come while a handshake is held
-// (testnats.Proxy.HoldConnectAnswers). The hold lasts until the row restores it, and the client's
-// connect timeout is above the row's own deadline (WithConnectTimeout), so an answer that waits for
-// nats.go's connection lock never comes while it lasts; one the probe gives comes within
-// heldLockBudget. The wait bounds a row that fails, not the answer of one that passes.
+// heldAnswerWait is the timeout a row gives a Drain it makes while a handshake is held
+// (testnats.Proxy.HoldConnectAnswers). No row waits on it for an answer: a row decides by order,
+// an answer while the handshake is still held, and bounds the wait only by the test's deadline.
 const heldAnswerWait = 10 * time.Second
 
 // proxiedClient is a client of its own through a proxy of its own, whose dials and handshakes
@@ -167,7 +165,7 @@ func TestACloseAnswerInTheRequestsOwnRunStaysNatsGos(t *testing.T) {
 // IsConnected waits for the whole handshake.
 //
 // The control is this row with requestLife reading conn.IsConnected() on such a client: the
-// request gives no answer while the handshake is held, and the row fails at heldAnswerWait.
+// request gives no answer while the handshake is held, and the row fails at the test's deadline.
 func TestARequestDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 	client, proxy := proxiedClient(t, withLossAtOnce())
 	proxy.Cut()
@@ -187,9 +185,9 @@ func TestARequestDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 	var err error
 	select {
 	case err = <-answered:
-	case <-time.After(heldAnswerWait):
+	case <-time.After(testnats.Remaining(t)):
 		proxy.Restore()
-		t.Fatalf("a request made during the held handshake gave no answer within %s: it waited for nats.go's connection lock, which the handshake holds", heldAnswerWait)
+		t.Fatal("a request made during the held handshake gave no answer by the test's deadline: it waited for nats.go's connection lock, which the handshake holds")
 	}
 	if !errors.Is(err, ErrConnectionLost) || !requestUnsent(err) || sends.Load() != 0 {
 		t.Fatalf("a request made during the held handshake answered %v (unsent: %t) after %d sends, want ErrConnectionLost, unsent, and no send", err, requestUnsent(err), sends.Load())
@@ -213,7 +211,7 @@ func TestARequestDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 // back, and the call answers.
 //
 // The control is this row with connForRequest reading conn.IsConnected(): the first call, the
-// stream read, gives no answer while the handshake is held, and the row fails at heldAnswerWait.
+// stream read, gives no answer while the handshake is held, and the row fails at the test's deadline.
 func TestASessionConsumerCallDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 	const sessionID = "ses_held_handshake"
 	url := testnats.URL(t)
@@ -263,9 +261,9 @@ func TestASessionConsumerCallDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 		var err error
 		select {
 		case err = <-answered:
-		case <-time.After(heldAnswerWait):
+		case <-time.After(testnats.Remaining(t)):
 			proxy.Restore()
-			t.Fatalf("%s made during the held handshake gave no answer within %s: it waited for nats.go's connection lock, which the handshake holds", call.name, heldAnswerWait)
+			t.Fatalf("%s made during the held handshake gave no answer by the test's deadline: it waited for nats.go's connection lock, which the handshake holds", call.name)
 		}
 		var answer *connectionLost
 		if !errors.As(err, &answer) || !answer.unsent || answer.cause != nil {
@@ -332,7 +330,7 @@ func TestALifeEndsAtTheDropWhileNatsGosCallbacksAreHeld(t *testing.T) {
 		if !errors.Is(err, ErrConnectionLost) {
 			t.Fatalf("the request in flight at the drop answered %v, want ErrConnectionLost", err)
 		}
-	case <-time.After(heldAnswerWait):
-		t.Fatalf("the request in flight at the drop gave no answer within %s with nats.go's disconnect callback held: its life did not end at the drop", heldAnswerWait)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the request in flight at the drop gave no answer by the test's deadline with nats.go's disconnect callback held: its life did not end at the drop")
 	}
 }

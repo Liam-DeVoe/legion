@@ -48,7 +48,7 @@ type connectOpts struct {
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
 	lifeEndGate                 func()
-	lifeListenGate              func(stage string)
+	lifeListenGate              func(stage string, life context.Context)
 	beforeStoredSend            func(resend bool)
 	background                  bool
 	silentCutDetection          bool
@@ -324,11 +324,11 @@ type Client struct {
 	// nats.go's answer for its connection's close, the order nats.go gives when close clears the
 	// pending requests before its status report reaches the client.
 	lifeEndGate func()
-	// lifeListenGate, when not nil, runs on a life's own goroutine (requestLife) before it
-	// registers its status listener (stage "register") and before its first wait (stage
-	// "select"). It is nil outside tests: a test sets it (withLifeListenGate,
-	// conn_status_life_test.go) to stand for that goroutine not yet scheduled.
-	lifeListenGate func(stage string)
+	// lifeListenGate, when not nil, runs on a life's own goroutine (requestLife), with that life,
+	// before it registers its status listener (stage "register") and before its first wait on that
+	// listener once registered (stage "select"). It is nil outside tests: a test sets it
+	// (withLifeListenGate, conn_status_life_test.go) to stand for that goroutine not yet scheduled.
+	lifeListenGate func(stage string, life context.Context)
 	// beforeStoredSend, when not nil, runs in sendStored on the goroutine that sends: between its
 	// read of the client's JetStream context and its first send on that context (resend false),
 	// and, in its branch for a closed connection, before the wait for the connection the second
@@ -417,21 +417,31 @@ type Client struct {
 	// connection installed, and a disconnect, reconnect or close of a connection the client dialled.
 	// ConnectionChanged makes the next one when a caller takes it.
 	connChanged chan struct{}
-	// prober reads Conn's status within heldLockBudget (connProber), for a caller that can hold a
-	// lock; under mu, made for each connection the first time it is asked (proberLocked). probeDown
-	// is a test's seam (ProbeReadsDownForTest), nil outside tests.
+	// prober reads Conn's status (connProber) for every request's own read and for LostNow: within
+	// heldLockBudget for a caller that holds a lock, and within the request's context for one that
+	// holds none (requestRead); under mu, made for each connection the first time it is asked
+	// (proberLocked). probeDown is a test's seam (ProbeReadsDownForTest), nil outside tests.
 	prober    *connProber
 	probeDown atomic.Pointer[func() bool]
+	// requestReadSlow is a row's seam on a request's own read (requestRead): while it answers true,
+	// that read's budgeted part answers "unknown", as a read a loaded box keeps waiting does. nil
+	// outside tests.
+	requestReadSlow atomic.Pointer[func() bool]
+	// lifeReadSlow is a row's seam on a life's own goroutine's read (lifeRead), nil outside tests.
+	lifeReadSlow atomic.Pointer[func() bool]
 	// stopHook is a test's seam on the stop's calls into nats.go (stopCall), nil outside tests.
 	stopHook func()
 	// life is the life of lifeConn that requests are bound to (Request, requestLife), under mu: a
 	// context endLife ends, with ErrConnectionLost as its cause, at the first drop of lifeConn its
 	// own status listener is sent, and lifeReconnects is nats.go's reconnect count of lifeConn when
-	// it began. nil before the client's first request on a connected connection.
+	// it began. lifeListening is whether the life's goroutine has received that listener, so
+	// nats.go's own reports reach it. nil before the client's first request on a connected
+	// connection.
 	life           context.Context
 	endLife        context.CancelCauseFunc
 	lifeConn       *nats.Conn
 	lifeReconnects uint64
+	lifeListening  bool
 
 	// reconnectWaits counts the waits ensureConnWithContext makes for a connection nats.go is
 	// reconnecting, one per pass of its loop that waits; a test reads it to bound them.
