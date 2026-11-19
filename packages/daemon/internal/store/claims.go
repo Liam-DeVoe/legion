@@ -38,6 +38,13 @@ var _ supervise.Store = (*Store)(nil)
 // what lets the daemon's minute sweep see what a quiet worker's own session says it is waiting
 // on (supervise.Claim's ActivityAt and the three beside it, internal/daemon's
 // tellSilentPhaseWorkers).
+//
+// The notice the claim's newest run of provider-error turns owes the controller is read from the
+// newest of its rows of provider_errors_owed, while that run is untold
+// (supervise.Claim.ProviderErrorsOwed): the claim's machine names that notice in each write it
+// makes, and the write adds or rewrites that run's row alone (upsertClaim). A run admission has
+// told has no row, and reads as nothing; an older untold run's row is admission's to read
+// (record.Store.ProviderErrorsOwed), and no claim write touches it.
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -50,8 +57,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
-	c.update_left_round, c.provider_error_run, c.provider_error_run_id, c.provider_errors_owed_run,
-	c.provider_errors_owed_reason, c.death_charged,
+	c.update_left_round, c.provider_error_run, c.provider_error_run_id, coalesce(o.run, 0),
+	coalesce(o.reason, ''), c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
@@ -59,7 +66,9 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.round_named
-	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
+	from claims c left join pending_task_deliveries d on d.claim_token = c.token
+	left join lateral (select run, reason from provider_errors_owed
+		where claim_token = c.token order by run desc limit 1) o on true`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
@@ -312,6 +321,18 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (boo
 // upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim
 // that can queue no publication.
 //
+// The same statement writes the notice the claim's run of provider-error turns owes the
+// project's controller (supervise.Claim.ProviderErrorsOwed) into provider_errors_owed, as the row
+// of that run alone: it adds the row, or rewrites its words when the run's turns have climbed
+// since, and it does so only while the run stands above the claim's told mark, which admission
+// alone moves (admit's tellProviderErrors). So a claim write never removes an owed row and never
+// names another run's: a second run that reaches six before the first run's notice is written
+// owes a row beside the first's, and neither replaces the other (20261119114140_provider_errors_told).
+// The row is written after the claim's own row in the one statement, so the write holds the
+// claim's row lock when it reads the told mark and writes the owed row, the order in which every
+// reader of the owed rows takes the two (record.Store.ProviderErrorsOwed): a mark that commits
+// first is read, and a run it told gets no row again.
+//
 // The write that records a retirement stamps the claim with retired_at_write_mark, a number
 // from outbox_write_mark_seq, and every other write leaves the column where it stands: the mark
 // and the state are one write, so no claim is ever read as retired at a moment the store does
@@ -397,7 +418,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
-	_, err := db.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
+	_, err := db.Exec(ctx, `with claim as (insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
@@ -409,11 +430,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
-		provider_error_run_id, provider_errors_owed_run, provider_errors_owed_reason,
+		provider_error_run_id,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61,
+		$55, $56, $57, $58, $59,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -449,13 +470,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_told_at = excluded.update_told_at,
 		update_left_round = excluded.update_left_round,
 		provider_error_run = excluded.provider_error_run,
-		-- The run's number and the notice it owes are the machine's (supervise's
-		-- Claim.ProviderErrorsOwed). The mark that the notice was told is admission's alone
-		-- (admit's tellProviderErrors), and no claim write names it, so no turn, reset or restart
-		-- of the claim can tell a run, or untell one (20261119114140_provider_errors_told).
+		-- The run's number is the machine's, and so is the notice a run owes, which the statement's
+		-- second half writes as that run's own row of provider_errors_owed. The mark that a notice
+		-- was told is admission's alone (admit's tellProviderErrors), and no claim write names it,
+		-- so no turn, reset or restart of the claim can tell a run, or untell one
+		-- (20261119114140_provider_errors_told).
 		provider_error_run_id = excluded.provider_error_run_id,
-		provider_errors_owed_run = excluded.provider_errors_owed_run,
-		provider_errors_owed_reason = excluded.provider_errors_owed_reason,
 		serving_check_look = excluded.serving_check_look,
 		serving_check_opened_at = excluded.serving_check_opened_at,
 		death_charged = excluded.death_charged,
@@ -489,7 +509,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 			then '' else claims.activity_kinds end,
 		activity_next_reminder_at = case when claims.generation <> excluded.generation
 			then null else claims.activity_next_reminder_at end,
-		updated_at = now()`,
+		updated_at = now()
+		returning token, provider_errors_told_run)
+		insert into provider_errors_owed (claim_token, run, reason)
+		select token, $60::bigint, $61::text from claim where $60::bigint > 0 and $60::bigint > provider_errors_told_run
+		on conflict (claim_token, run) do update set reason = excluded.reason
+		where provider_errors_owed.reason <> excluded.reason`,
 		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), int64(c.TreeEpoch),
 		c.Session, c.SessionFile, locator, string(c.State), c.Failure,
 		c.Budgets.LaunchFailures, c.Budgets.Deaths, c.Budgets.PromptFailures, c.Budgets.PromptRetires,

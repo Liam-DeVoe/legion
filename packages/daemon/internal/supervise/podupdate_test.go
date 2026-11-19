@@ -483,6 +483,20 @@ func TestPodUpdateAskWaitsBehindTheTaskTheClaimHolds(t *testing.T) {
 		h.openUpdate(testRound, testReasons)
 		goesOnce(h, "to a claim holding no task")
 	})
+	// An older daemon queued a round's question as a task (updateTaskPrefix), and a restored claim
+	// can hold one. That delivery is the question itself, not a task it waits behind, so the rule
+	// owes the ask; an ask of another round queued so is a task like any other, and the question
+	// waits behind it.
+	t.Run("the round's own question an older daemon queued as a task", func(t *testing.T) {
+		c := Claim{UpdateRound: testRound, Pending: &Delivery{ID: updateTaskID(testRound), Task: "Update your pod."}}
+		if owed, why := c.OwesUpdateAsk(testRound); !owed {
+			t.Fatalf("a claim whose pending delivery is an ask of its own round = %v, %v, want the ask owed", owed, why)
+		}
+		c.Pending = &Delivery{ID: updateTaskID(testRound + "-later"), Task: "Update your pod."}
+		if owed, why := c.OwesUpdateAsk(testRound); owed || why != UpdateAskBehindTask {
+			t.Fatalf("a claim whose pending delivery is an ask of another round = %v, %v, want it to wait behind that task", owed, why)
+		}
+	})
 }
 
 // The lock is taken without waiting: whatever holds it — a decision in flight, or a section that

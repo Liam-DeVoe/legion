@@ -188,6 +188,57 @@ func TestASecondRunOfSixIsToldWhileTheFirstRunsNoticeWaitsUnsent(t *testing.T) {
 	}
 }
 
+// Two runs of six end while no controller is registered (the default: an operator launches the
+// controller), one after the other, each ended by a clean turn. Then a controller registers.
+// Each run reached six, so each owes the controller its notice, and each is told once: the
+// second run's owed notice stands beside the first's rather than in its place (the gates' case of
+// the second round: the claim kept one owed notice, and the second run's replaced the first's).
+// The first run is seven turns long and the second six, so the words of each notice say which
+// run it tells.
+func TestEachRunOfSixBeforeAControllerRegistersIsToldOnce(t *testing.T) {
+	r := newErrorRunRig(t)
+	for range 7 {
+		r.errorTurn()
+	}
+	r.cleanTurn()
+	r.give()
+	for range 6 {
+		r.errorTurn()
+	}
+	r.cleanTurn()
+	if notices := r.notices(); len(notices) != 0 {
+		t.Fatalf("with no controller registered the outbox holds %d provider-errors notices, want none: %+v", len(notices), notices)
+	}
+	r.registerController()
+	r.wantEachRunToldOnce("after two runs of six, each ended by a clean turn while no controller was registered, and then a controller's registration,",
+		"7 turns in a row", "6 turns in a row")
+}
+
+// The same two runs, with the second still going when the controller registers: both runs are
+// told at the registration, once each, and the second run's next failed turn and the clean turn
+// that ends it tell neither again.
+func TestEachRunOfSixIsToldOnceWhenTheSecondGoesOnAfterTheRegistration(t *testing.T) {
+	r := newErrorRunRig(t)
+	for range 7 {
+		r.errorTurn()
+	}
+	r.cleanTurn()
+	r.give()
+	for range 6 {
+		r.errorTurn()
+	}
+	r.registerController()
+	r.wantEachRunToldOnce("after two runs of six with no controller registered, the second still going, and then a controller's registration,",
+		"7 turns in a row", "6 turns in a row")
+	r.publish()
+	r.errorTurn()
+	r.cleanTurn()
+	if notices := r.notices(); len(notices) != 0 {
+		t.Fatalf("after both runs were told, the second run's seventh turn and the clean turn that ended it wrote %d provider-errors notices, want none: %+v",
+			len(notices), notices)
+	}
+}
+
 // A new session puts the run back to zero, and the notice the run of six owes outlives it: the
 // controller registered after the reset is told of the run all the same.
 func TestARunOfSixEndedByANewSessionIsToldWhenAControllerRegisters(t *testing.T) {
@@ -533,6 +584,30 @@ func (r *errorRunRig) wantOneNotice(when string, run int) {
 	for _, want := range []string{fmt.Sprintf("%d turns in a row", run), "claude-opus-5", "ended in a provider error (HTTP 529)"} {
 		if !strings.Contains(notice.reason, want) {
 			r.t.Errorf("the notice's reason is %q, want it to name %q", notice.reason, want)
+		}
+	}
+}
+
+// wantEachRunToldOnce fails the case unless the outbox's provider-errors notices name the
+// implementer of the issue and the error, and the words of each run, runs, stand in them exactly
+// once in all: each run is told, and none twice.
+func (r *errorRunRig) wantEachRunToldOnce(when string, runs ...string) {
+	r.t.Helper()
+	notices := r.notices()
+	if len(notices) == 0 {
+		r.t.Fatalf("%s the outbox holds no provider-errors notice for the controller, want each of %q told once", when, runs)
+	}
+	var told strings.Builder
+	for _, notice := range notices {
+		if notice.issue != errorRunIssue || notice.role != claim.RoleImplementer || !strings.Contains(notice.reason, "ended in a provider error (HTTP 529)") {
+			r.t.Errorf("%s a notice names the %s of %s and says %q, want the implementer of %s and the error (HTTP 529)",
+				when, notice.role, notice.issue, notice.reason, errorRunIssue)
+		}
+		told.WriteString(notice.reason + "\n")
+	}
+	for _, run := range runs {
+		if n := strings.Count(told.String(), run); n != 1 {
+			r.t.Errorf("%s the run of %q is told %d times in the outbox's provider-errors notices, want once: %+v", when, run, n, notices)
 		}
 	}
 }

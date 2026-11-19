@@ -789,12 +789,14 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // provider error: its Role is that role, and its Reason the run, the model and the HTTP status the
 // provider answered, where it answered one, in words built from structured fields alone
 // (supervise's oweProviderErrorsNotice). It is told once for each run that reached six turns,
-// whatever came after that run: the claim's row keeps the notice the run owes, and admission
-// writes it while a controller is registered and marks the run told in the same transaction
-// (admit.Admission.TellOfProviderErrors, TellOwedProviderErrors). Each run is told on its own, so a
-// later run's notice is written while an earlier run's still waits unsent. Nothing is held and
-// nothing is bounded, because a chain's bottom refusing deterministically
-// costs one request every ten minutes. A tree-stalled notice names a
+// whatever came after that run, a later run of the same claim that reached six among it: the
+// store keeps one owed notice for each such run until it is told (provider_errors_owed), and
+// admission writes the claim's owed runs while a controller is registered, in one notice that
+// names each of them, and marks each run told in the same transaction
+// (admit.Admission.TellOfProviderErrors, TellOwedProviderErrors). A later run's notice is written
+// while an earlier run's still waits unsent. Nothing is held and nothing is bounded, because a
+// chain's bottom refusing deterministically costs one request every ten minutes. A tree-stalled
+// notice names a
 // root of the daemon's own whose tree has stopped: nothing of the tree has moved for longer than
 // `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by design (admit's
 // tellStalledTrees says which trees are told). Its issue is that root, and its Reason names the
@@ -908,9 +910,10 @@ type ArchitectStall struct {
 // until that first notice was published.
 //
 // A provider-errors notice passes no wake's pending check at all: it is told once for each run of
-// a claim's provider-error turns by the mark its write leaves on the claim's row, so an earlier
-// run's notice still unsent, of the same claim or of another, holds back no later run's notice
-// (admit.Admission.TellOfProviderErrors). Every other kind says something about the project — a
+// a claim's provider-error turns by the mark its write leaves on the claim's row and the owed run
+// its write deletes, so an earlier notice still unsent, of the same claim or of another, holds
+// back no later run's notice (admit.Admission.TellOfProviderErrors). Every other kind says
+// something about the project — a
 // free slot, a todo issue, the day's tick — which one wake carries however many facts find it
 // pending.
 func NoticePerIssue(kind NoticeKind) bool {

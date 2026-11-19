@@ -90,14 +90,16 @@ import (
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
-// (20261119003157) stands above every other version of this list, and it is the last of them to
+// (20261119003157) stands above every other version of this list but this branch's
+// 20261119114140, and it is the last of them to
 // rewrite outbox_kind_check: it is now that constraint's last word, and it names every kind the
 // plan-record list names and its own two, phase_ended among them. The same migration deletes the
 // queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
 // and pull_requests.merge_forward, both null on every row it finds.
-// The notice a claim's run of provider-error turns owes the project's controller, and the mark
-// that it was told (20261119114140), is applied after all of these: it adds four columns of claims
-// at their defaults, an index and a trigger on claims, and touches no outbox_kind_check.
+// The notices a claim's runs of provider-error turns owe the project's controller, and the mark
+// that they were told (20261119114140), are applied after all of these: the migration adds two
+// columns of claims at their defaults, the table provider_errors_owed and two triggers on claims,
+// and touches no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

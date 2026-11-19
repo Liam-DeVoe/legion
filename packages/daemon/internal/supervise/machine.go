@@ -482,11 +482,14 @@ type Claim struct {
 	ProviderErrorRunID uint64
 	// ProviderErrorsOwed is the notice the project's controller is owed of the newest run of this
 	// claim that reached providerErrorRunTold turns. The machine writes it at each turn of such a
-	// run from that one on (oweProviderErrorsNotice) and never clears it: a run that reached six is
-	// owed its notice whatever comes after, a clean turn, a compaction, a new session or a restart.
-	// The daemon writes the notice while a controller is registered and marks the run told, once
-	// (internal/admit's TellOfProviderErrors and TellOwedProviderErrors). The zero value owes
-	// nothing.
+	// run from that one on (oweProviderErrorsNotice), and the claim's write keeps it in the store
+	// as that run's own owed notice, beside the notice of every earlier run still untold, so a run
+	// that reaches six never replaces an earlier run's notice: each run that reached six is owed
+	// its notice whatever comes after it, a clean turn, a compaction, a new session, a restart or
+	// a later run. The daemon writes the owed notices while a controller is registered and marks
+	// each run told, once (internal/admit's TellOfProviderErrors and TellOwedProviderErrors). The
+	// zero value owes nothing, and a claim read back from the store holds the zero value once that
+	// run is told.
 	ProviderErrorsOwed OwedNotice
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
 	// report it. It is written by the store's PutClaimStep alone and read back with the claim;
@@ -2269,6 +2272,12 @@ func (m *Machine) durableWrite(ctx context.Context, state ClaimState, write func
 	m.report(copyClaim(m.claim), state)
 	return nil
 }
+
+// promptTakenLine is the record, at Info, of one prompt the agent's side took (startSend): the
+// delivery, and how many sends of it a provider error has counted. It is pinned, as the two turn
+// lines below are, because the live proof of the provider-error ladder reads each send from it,
+// and a reword would leave that proof waiting for a line no daemon writes.
+const promptTakenLine = "supervise: the agent took a prompt"
 
 // turnStartedLine is the message a turn's start is logged under, at Info, on each of the four
 // paths that put a claim in working. It is pinned as a constant because an operator and a

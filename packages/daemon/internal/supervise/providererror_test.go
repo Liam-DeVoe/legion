@@ -75,11 +75,39 @@ func (h *harness) climbs(sentSoFar int, wait time.Duration) string {
 	return sent[sentSoFar].Message
 }
 
+// promptTakenRecord is the record of each send the agent took, as the live proof of the ladder
+// reads it: whole, and not as the constant that carries it, so a reword fails here before it
+// leaves that proof waiting for a line no daemon writes.
+const promptTakenRecord = "supervise: the agent took a prompt"
+
+// wantSendRecords fails the case unless the daemon kept one record of each send the agent took,
+// sends in all, the last of them naming the delivery pending now and the sends of it a provider
+// error has counted, retries.
+func (h *harness) wantSendRecords(sends, retries int) {
+	h.t.Helper()
+	taken := h.records.of(promptTakenRecord)
+	if len(taken) != sends {
+		h.t.Fatalf("%q was written %d times, want once for each of the %d sends the agent took", promptTakenRecord, len(taken), sends)
+	}
+	last := taken[len(taken)-1]
+	if claim, ok := last.attr("claim"); !ok || claim.String() != string(h.token) {
+		h.t.Fatalf("the last send's record names claim %v (present %v), want %s", claim, ok, h.token)
+	}
+	if delivery, ok := last.attr("delivery"); !ok || delivery.String() != h.pending().ID {
+		h.t.Fatalf("the last send's record names delivery %v (present %v), want %s", delivery, ok, h.pending().ID)
+	}
+	if got, ok := last.attr("providerErrorRetries"); !ok || got.Int64() != int64(retries) {
+		h.t.Fatalf("the last send's record counts %v sends a provider error took back (present %v), want %d", got, ok, retries)
+	}
+}
+
 // The ladder is exact and has no top step that ends it: 30 s, 60 s, 120 s, doubling to 10 minutes
-// and never further apart than that, for as many turns as the provider keeps failing.
+// and never further apart than that, for as many turns as the provider keeps failing. Each send
+// the agent takes is recorded once, where it happens (promptTakenRecord).
 func TestAProviderErrorTurnKeepsItsTaskAndSendsItAgainOnAGrowingLadder(t *testing.T) {
 	h := workingClaim(t)
 	sent := 1
+	h.wantSendRecords(sent, 0)
 	for attempt, wait := range []time.Duration{
 		30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute,
 		8 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute,
@@ -93,9 +121,26 @@ func TestAProviderErrorTurnKeepsItsTaskAndSendsItAgainOnAGrowingLadder(t *testin
 			t.Fatalf("attempt %d sent %q, want the task again", attempt+1, message)
 		}
 		sent++
+		h.wantSendRecords(sent, attempt+1)
 	}
 	if state := h.state(); state != StateWorking {
 		t.Fatalf("the claim is %s after eight provider errors, want it still working its task", state)
+	}
+}
+
+// A send the agent did not take writes no record of a send: the wait is over and the daemon tries
+// the task, but the transport loses the prompt, so a record that a send reached the agent would be
+// false. The ladder's test above is the control: every send the agent takes is recorded.
+func TestASendTheAgentDidNotTakeWritesNoRecordOfASend(t *testing.T) {
+	h := workingClaim(t)
+	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.conn.FailPrompt(errors.New("the transport lost the prompt"))
+	h.advance(promptRetryDelay(1))
+	if prompts := h.prompts(); len(prompts) < 2 {
+		t.Fatalf("the ladder's wait tried %d prompts in all, want the first send and at least the one the transport lost", len(prompts))
+	}
+	if taken := h.records.of(promptTakenRecord); len(taken) != 1 {
+		t.Fatalf("%q was written %d times, want once: only the first send reached the agent", promptTakenRecord, len(taken))
 	}
 }
 

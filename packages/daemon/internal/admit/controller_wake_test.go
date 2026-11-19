@@ -249,10 +249,17 @@ func TestTheTickAloneCarriesWhatLegionWaitsOn(t *testing.T) {
 const providerErrorsReason = "6 turns in a row ended in a provider error"
 
 // oweProviderErrors records a claim of role on issue whose run run of provider-error turns owes
-// the project's controller its notice, as the claim's machine writes it at the run's sixth turn
-// (supervise's Claim.ProviderErrorsOwed), and answers the claim's token. A second call for the
-// same claim and a later run is that claim's next run reaching six.
+// the project's controller its notice, as the claim's write records it at the run's sixth turn
+// (supervise's Claim.ProviderErrorsOwed, the run's own row of provider_errors_owed), and answers
+// the claim's token. A second call for the same claim and a later run is that claim's next run
+// reaching six: it adds that run's row beside any the claim still owes.
 func oweProviderErrors(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role, run uint64) claim.Token {
+	t.Helper()
+	return oweProviderErrorsOf(t, pool, issue, role, run, providerErrorsReason)
+}
+
+// oweProviderErrorsOf is oweProviderErrors with the words of the run's notice named.
+func oweProviderErrorsOf(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role, run uint64, reason string) claim.Token {
 	t.Helper()
 	project, err := claim.ProjectToken(testProject)
 	if err != nil {
@@ -264,12 +271,18 @@ func oweProviderErrors(t *testing.T, pool *pgxpool.Pool, issue string, role clai
 	}
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session,
 		session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak,
-		provider_error_run, provider_error_run_id, provider_errors_owed_run, provider_errors_owed_reason)
-		values ($1, $2, $3, $3, $4, 1, 'ses', '', 'idle', 0, 0, 0, 0, 6, $5, $5, $6)
-		on conflict (token) do update set provider_error_run_id = excluded.provider_error_run_id,
-		provider_errors_owed_run = excluded.provider_errors_owed_run,
-		provider_errors_owed_reason = excluded.provider_errors_owed_reason`,
-		string(token), project, issue, string(role), int64(run), providerErrorsReason); err != nil {
+		provider_error_run, provider_error_run_id)
+		values ($1, $2, $3, $3, $4, 1, 'ses', '', 'idle', 0, 0, 0, 0, 6, $5)
+		on conflict (token) do update set provider_error_run_id = excluded.provider_error_run_id`,
+		string(token), project, issue, string(role), int64(run)); err != nil {
+		t.Fatalf("record the claim of %s's %s in its run %d: %v", issue, role, run, err)
+	}
+	// The claims write above is an update of the row for a second run, and the migration's trigger
+	// for an earlier release's write owes that run already, in its own words; this run's own words
+	// take its place, as the claim store's own write puts them (upsertClaim).
+	if _, err := pool.Exec(context.Background(), `insert into provider_errors_owed (claim_token, run, reason) values ($1, $2, $3)
+		on conflict (claim_token, run) do update set reason = excluded.reason`,
+		string(token), int64(run), reason); err != nil {
 		t.Fatalf("record the notice %s's %s owes of its run %d: %v", issue, role, run, err)
 	}
 	return token
@@ -419,19 +432,18 @@ func TestAnOwedNoticeIsWrittenAtThePassAfterAControllerRegisters(t *testing.T) {
 	assertProviderErrorsNotices(t, pool, want)
 }
 
-// Two offers of one run at once write one notice: the read of what the claim owes locks the
-// claim's row (record.Store.ProviderErrorsOwed), so the second offer waits for the first to commit
-// and then reads the run told. The first offer's transaction is held open until the second is
-// seen waiting on a lock, and only then committed. Without the lock the second offer reads the
-// run untold beside the first and writes a second notice of it, and its own mark then waits on the
-// first's row lock all the same, which is what this case waits for in both.
-func TestTwoOffersOfOneRunAtOnceWriteOneNotice(t *testing.T) {
-	pool := migratedPool(t)
-	admission := quiet(t, 2)
-	registerController(t, pool)
-	token := oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 1)
+// besideAnOpenOffer runs beside while the claim of token's own offer holds its transaction open:
+// the offer has written the notice its run owes and marked the run told, and has not committed.
+// beside starts on a goroutine of its own, the offer commits once beside is seen waiting on a
+// lock, and beside's answer is then waited for. Every writer of a claim's notice locks the claim's
+// row before it reads what the claim owes (record.Store.ProviderErrorsOwed,
+// ProjectProviderErrorsOwed), so beside waits for the offer, and then reads the run told. A
+// writer that read without the lock would read the run untold beside the offer, write a second
+// notice of it, and then wait on the offer's row lock at its own mark, so beside waits on a lock
+// either way, which is what this waits for before it commits.
+func besideAnOpenOffer(t *testing.T, pool *pgxpool.Pool, admission *Admission, token claim.Token, beside func() error) {
+	t.Helper()
 	ctx := context.Background()
-
 	first, firstCommitted := intake.WithCommitHooks(ctx)
 	tx, err := pool.Begin(first)
 	if err != nil {
@@ -439,12 +451,12 @@ func TestTwoOffersOfOneRunAtOnceWriteOneNotice(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := admission.TellOfProviderErrors(first, tx, token); err != nil {
-		t.Fatalf("the first offer: %v", err)
+		t.Fatalf("the open offer: %v", err)
 	}
 
-	second := make(chan error, 1)
-	go func() { second <- offerProviderErrors(pool, admission, token) }()
-	testwait.Eventually(t, "the second offer to wait on a lock the first offer holds", func() bool {
+	done := make(chan error, 1)
+	go func() { done <- beside() }()
+	testwait.Eventually(t, "the write beside the offer to wait on a lock the offer holds", func() bool {
 		var waiting int
 		if err := pool.QueryRow(ctx, `select count(*) from pg_stat_activity
 			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
@@ -454,14 +466,108 @@ func TestTwoOffersOfOneRunAtOnceWriteOneNotice(t *testing.T) {
 		return waiting == 1
 	})
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the first offer: %v", err)
+		t.Fatalf("commit the open offer: %v", err)
 	}
 	firstCommitted()
-	if err := <-second; err != nil {
-		t.Fatalf("the second offer: %v", err)
+	if err := <-done; err != nil {
+		t.Fatalf("the write beside the offer: %v", err)
 	}
+}
+
+// Two offers of one run at once write one notice: the read of what the claim owes locks the
+// claim's row (record.Store.ProviderErrorsOwed), so the second offer waits for the first to commit
+// and then reads the run told.
+func TestTwoOffersOfOneRunAtOnceWriteOneNotice(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	registerController(t, pool)
+	token := oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 1)
+
+	besideAnOpenOffer(t, pool, admission, token, func() error { return offerProviderErrors(pool, admission, token) })
 
 	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer)})
+}
+
+// An admission pass — a tick here, as any fact, tick or boot runs it — beside a claim's open offer
+// of the same run writes no second notice: the pass's read of the project's owed claims locks
+// each claim's row (record.Store.ProjectProviderErrorsOwed), so it waits for the offer to commit
+// and then reads the run told.
+func TestAPassBesideAnOpenOfferWritesOneNotice(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	registerController(t, pool)
+	token := oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 1)
+
+	besideAnOpenOffer(t, pool, admission, token, func() error {
+		_, err := intake.ApplyFact(context.Background(), pool, "controller", "tick-beside-the-offer", intake.ControllerTick{}, engineStub{}, admission)
+		return err
+	})
+
+	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer)})
+}
+
+// A controller's registration beside a claim's open offer of the same run writes no second
+// notice either: the registration writes the project's owed notices in a transaction of its own
+// (TellOwedProviderErrors, as internal/daemon's controllerRegistered runs it), through the same
+// locked read as the pass.
+func TestARegistrationBesideAnOpenOfferWritesOneNotice(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	registerController(t, pool)
+	token := oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 1)
+
+	besideAnOpenOffer(t, pool, admission, token, func() error {
+		scoped, committed := intake.WithCommitHooks(context.Background())
+		if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error { return admission.TellOwedProviderErrors(scoped, tx) }); err != nil {
+			return err
+		}
+		committed()
+		return nil
+	})
+
+	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer)})
+}
+
+// Each run of a claim that reached six while no controller was registered is told, once: the
+// claim owes a row for each run, so the second run's row stands beside the first's rather than in
+// its place. The registration then writes one notice for the claim, which names each run with its
+// own words, oldest first, and marks both runs told in the same transaction, so neither a pass
+// nor an offer after it tells either run again. A pass before the registration tells nothing.
+func TestEachUntoldRunOfAClaimIsToldInOneNoticeAtTheRegistration(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	const (
+		first  = "6 turns in a row on claude-opus-5 ended in a provider error (HTTP 529); the daemon keeps the task and sends it again every 10m0s at most"
+		second = "7 turns in a row on claude-opus-5 ended in a provider error (HTTP 503); the daemon keeps the task and sends it again every 10m0s at most"
+	)
+	token := oweProviderErrorsOf(t, pool, "LEGION-209", claim.RoleImplementer, 1, first)
+	oweProviderErrorsOf(t, pool, "LEGION-209", claim.RoleImplementer, 2, second)
+	tick(t, pool, admission, "tick-before")
+	assertProviderErrorsNotices(t, pool, nil)
+
+	registerController(t, pool)
+	scoped, committed := intake.WithCommitHooks(context.Background())
+	if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error { return admission.TellOwedProviderErrors(scoped, tx) }); err != nil {
+		t.Fatalf("the registration's write of the owed notices: %v", err)
+	}
+	committed()
+	want := []effect{{kind: record.OutboxKindControllerNotice, issue: "LEGION-209", payload: record.ControllerNotice{
+		Kind: record.ProviderErrorsNotice, Role: claim.RoleImplementer,
+		Reason: "This notice tells 2 runs, oldest first. Run 1: " + first + ". Run 2: " + second + "."}}}
+	assertProviderErrorsNotices(t, pool, want)
+
+	tick(t, pool, admission, "tick-after")
+	mustOfferProviderErrors(t, pool, admission, token)
+	assertProviderErrorsNotices(t, pool, want)
+	var told, owed int
+	if err := pool.QueryRow(context.Background(), `select provider_errors_told_run,
+		(select count(*) from provider_errors_owed where claim_token = $1) from claims where token = $1`,
+		string(token)).Scan(&told, &owed); err != nil {
+		t.Fatalf("read the claim's told mark: %v", err)
+	}
+	if told != 2 || owed != 0 {
+		t.Fatalf("after the notice the claim's told mark is %d and it owes %d runs, want 2 and none", told, owed)
+	}
 }
 
 // The slot wakes keep their own rule: one pending notice of the kind per project, whatever issue

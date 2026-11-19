@@ -177,14 +177,17 @@ type OwedNotice struct {
 // before the write. It is the one exit from a run of such turns, and it is a notice rather than a
 // hold: R2 forbids an attempt limit.
 //
-// The notice is owed, not offered once: it is part of the claim's row, which the decision's own
-// write carries, and nothing but the daemon's write of the notice ends it. The daemon writes it
-// once a controller is registered and marks the run told in the same transaction (internal/admit's
-// TellOfProviderErrors and TellOwedProviderErrors). So a run that reaches six while no controller
-// is registered — an operator launches it by default — or whose notice's write fails, is told when
-// a controller registers, at the next offer or at admission's next pass, whatever comes after the
-// run: another failed turn, a clean one, a compaction, a new session or a restart. model is the
-// model the failed request went to, and is empty when the error named none.
+// The notice is owed, not offered once: the decision's own write carries it, and the claim store
+// keeps it as the run's own owed notice, beside the notice of every earlier run of the claim that
+// is still untold (internal/store's upsertClaim, provider_errors_owed), and nothing but the
+// daemon's write of the notice ends it. The daemon writes the claim's owed notices once a
+// controller is registered, one notice that names each untold run, and marks each run told in the
+// same transaction (internal/admit's TellOfProviderErrors and TellOwedProviderErrors). So a run
+// that reaches six while no controller is registered — an operator launches it by default — or
+// whose notice's write fails, is told when a controller registers, at the next offer or at
+// admission's next pass, whatever comes after the run: another failed turn, a clean one, a
+// compaction, a new session, a restart, or a later run of the claim that reaches six as well.
+// model is the model the failed request went to, and is empty when the error named none.
 func (m *Machine) oweProviderErrorsNotice(model, cause string) {
 	if m.claim.ProviderErrorRun < providerErrorRunTold {
 		return
