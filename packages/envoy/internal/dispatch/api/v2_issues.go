@@ -343,7 +343,10 @@ func (s *server) v2IssueRows() []routeRow {
 				"detail, line}, and its one result is derived from that check run on every read. at=<commit> compares every " +
 				"check with that one commit, {kind: named, commit}, 40 lowercase hex characters (400 INVALID_QUERY " +
 				"otherwise). limit 1 to 200 (default 50) and offset; {items, total, limit, offset, issue, " +
-				"verification_artifact_id}; an issue with no Verification document answers no checks. 404 ISSUE_NOT_FOUND.",
+				"verification_artifact_id}; an issue with no Verification document answers no checks. A caller that sent " +
+				"Dispatch-Trees: 1 is also given each check's text_tree, its whole content as the tree a reader is shown, " +
+				"links and references kept, and each result's observed_tree, the tree its observed text is shown as. " +
+				"404 ISSUE_NOT_FOUND.",
 			Handler:  s.listIssueChecksV2,
 			Resource: "checks", Kind: kindCollection,
 			Query:    issueChecksV2Query{},

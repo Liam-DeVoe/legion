@@ -8743,7 +8743,7 @@
     },
     "/api/v2/issues/{key}/checks": {
       "get": {
-        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), its text - a link's text, never its target - the version its words last changed in and their digest, and results, every result recorded against it from any issue, newest first by when the recording transaction began. Each check carries compared_with, the commits and branches its results are compared with: for a before_merge check every pull request head Dispatch holds for the check's issue, {kind: pull_request, commit, pull_request, learned_at}; for an after_merge check {kind: branch, branch} for the branch that issue's pull request merged into and the repository's default branch; for a default_branch check the default branch alone. Where that list is empty the check carries compared_nothing: no_pull_request (the check's issue holds no pull request), no_repository (the issue resolves to no repository), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check carries pass_stands {answer, roles}, yes with the roles whose passes stand, no, or unknown, and each result commit_stands {answer, basis, reason} (at_basis, other_commit, or unknown), check_words_moved, and retracted {reason, actor, created_at} where a retraction stands against it, which makes it no evidence. A check CI proves carries ci {run, state, case, detail, line}, and its one result is derived from that check run on every read. at=\u003ccommit\u003e compares every check with that one commit, {kind: named, commit}, 40 lowercase hex characters (400 INVALID_QUERY otherwise). limit 1 to 200 (default 50) and offset; {items, total, limit, offset, issue, verification_artifact_id}; an issue with no Verification document answers no checks. 404 ISSUE_NOT_FOUND.",
+        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), its text - a link's text, never its target - the version its words last changed in and their digest, and results, every result recorded against it from any issue, newest first by when the recording transaction began. Each check carries compared_with, the commits and branches its results are compared with: for a before_merge check every pull request head Dispatch holds for the check's issue, {kind: pull_request, commit, pull_request, learned_at}; for an after_merge check {kind: branch, branch} for the branch that issue's pull request merged into and the repository's default branch; for a default_branch check the default branch alone. Where that list is empty the check carries compared_nothing: no_pull_request (the check's issue holds no pull request), no_repository (the issue resolves to no repository), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check carries pass_stands {answer, roles}, yes with the roles whose passes stand, no, or unknown, and each result commit_stands {answer, basis, reason} (at_basis, other_commit, or unknown), check_words_moved, and retracted {reason, actor, created_at} where a retraction stands against it, which makes it no evidence. A check CI proves carries ci {run, state, case, detail, line}, and its one result is derived from that check run on every read. at=\u003ccommit\u003e compares every check with that one commit, {kind: named, commit}, 40 lowercase hex characters (400 INVALID_QUERY otherwise). limit 1 to 200 (default 50) and offset; {items, total, limit, offset, issue, verification_artifact_id}; an issue with no Verification document answers no checks. A caller that sent Dispatch-Trees: 1 is also given each check's text_tree, its whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. 404 ISSUE_NOT_FOUND.",
         "operationId": "getApiV2IssuesByKeyChecks",
         "parameters": [
           {
@@ -22098,6 +22098,19 @@
           },
           "observed": {
             "type": "string"
+          },
+          "observed_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "retracted": {
             "$ref": "#/components/schemas/CheckResultRetracted"

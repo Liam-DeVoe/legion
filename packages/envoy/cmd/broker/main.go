@@ -11,6 +11,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -498,7 +499,9 @@ func main() {
 	// things that name a session: the token exchange, at every token it mints, and an
 	// enrollment, at every session it enrols (enroll.Service.Sessions). So a name a session
 	// writes its Dispatch tokens under and the name its grant follows have one holder, and a
-	// name another principal holds is refused either way.
+	// name another principal holds is refused either way, unless that principal is an account
+	// BROKER_SESSION_ACCOUNT_PAIRS pairs with the claimant's, which takes it either way but for a
+	// name the configuration fixes (below).
 	enr.Sessions = oauthStore
 	// On serving, not ctx, for the same reason the policy's own loads are: this runs after the
 	// bind above, so a SIGTERM arriving here finds a pod the load balancer may already be sending
@@ -564,6 +567,27 @@ func main() {
 	} else {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
 			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
+	}
+	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
+	// and it reads two things off the store: the pairs of BROKER_SESSION_ACCOUNT_PAIRS, either of
+	// whose accounts takes a name the other holds, set here, and the names the exchange's entries
+	// fix, which no pair takes, set by oauth.New below from the policy it is composed with. Both
+	// are set before srv.Serve below hands the store its first request, and nothing writes them
+	// after, so the handlers read them with no lock.
+	paired := make([][2]string, len(cfg.SessionAccountPairs))
+	for i, pair := range cfg.SessionAccountPairs {
+		paired[i] = [2]string{exchange.AccountPrincipal(pair[0]), exchange.AccountPrincipal(pair[1])}
+	}
+	oauthStore.SetSessionPairs(paired)
+	if len(cfg.SessionAccountPairs) == 0 {
+		slog.Info("session account pairs", "state", "off",
+			"detail", "BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds")
+	} else {
+		written := make([]string, len(cfg.SessionAccountPairs))
+		for i, pair := range cfg.SessionAccountPairs {
+			written[i] = pair[0] + "=" + pair[1]
+		}
+		slog.Info("session account pairs", "state", "on", "pairs", strings.Join(written, " "))
 	}
 	// verification_uri is Dispatch's machine-login page, where the person types the code. With
 	// no page (BROKER_MACHINE_LOGIN_URL unset) the provider composes no device grant at all:
@@ -1268,7 +1292,8 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 // fails this build rather than a deployment's first judged request.
 var _ judge.Requests = (*requests.Machine)(nil)
 
-// judgeDispatchTimeout bounds each of the judge's two Dispatch GETs. A run's own 30-second
+// judgeDispatchTimeout bounds each of the judge's Dispatch GETs (the issue, its spec document and
+// the ask the reason cites). A run's own 30-second
 // budget already ends a read whose server never answers, but that budget is shared with the
 // 20-second model call, so a client with no timeout of its own would let one stalled read eat
 // the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized
@@ -1280,6 +1305,10 @@ const judgeDispatchTimeout = 10 * time.Second
 // one line which of the two brokers this is. The five settings are all-or-none (config.Load
 // refuses a start that sets some of them), so the model URL alone says whether there is a judge,
 // and a judge always has dispatch, the read of Dispatch main built once and gave m as well.
+// The line of a broker with a judge names the identity whose token it presents to its model:
+// metadata for the metadata server's identity token, or the service account
+// BROKER_JUDGE_MODEL_ACCOUNT names, whose token is minted at generateIdToken. It is read off the
+// reader the model holds, so the line shows what was wired rather than what was configured.
 //
 // ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
 // `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
@@ -1298,10 +1327,12 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 		slog.Info("model judge", "state", "off", "detail", detail)
 		return
 	}
+	account := brokertoken.NewGoogleAccount(cfg.JudgeModelAudience)
+	account.ServiceAccount = cfg.JudgeModelAccount
 	runner := judge.New(ctx, judge.Options{
 		Rules:      rules,
 		Dispatch:   *dispatch,
-		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
+		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, account),
 		Requests:   m,
 		SkipChecks: cfg.JudgeTestSkipChecks,
 	})
@@ -1309,8 +1340,9 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	// machine's own type, so this is the method and nothing else. Consider returns at once, so
 	// nothing of a run is on the requester's path.
 	m.Judge = runner.Consider
+	identity := cmp.Or(account.ServiceAccount, "metadata")
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
-		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
+		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
 // googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE
