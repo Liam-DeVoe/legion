@@ -1387,7 +1387,13 @@ async function openLinkView(page: Page, seed: LinkSeed, view: LinkView): Promise
       : {
           away: scope.getByRole("link", { exact: true, name: "a page elsewhere" }),
           issue: scope.getByRole("link", { exact: true, name: "the other issue" }),
-          key: scope.locator(`a.dispatch-reference[data-dispatch-href="${reference}"]`).first(),
+          // The bare key's own title, in its own paragraph: the address link of the next
+          // paragraph draws the same reference's title and can draw it first, so a wait for the
+          // first title anywhere let a row reach for the bare key's before the editor had drawn
+          // it (CI run 44535117619, whose page shows the bare key as plain text).
+          key: scope
+            .locator("p", { hasText: "The bare key" })
+            .locator(`a.dispatch-reference[data-dispatch-href="${reference}"]`),
           scope,
         };
   await expect(links.away, `${view} draws the web link`).toBeVisible();
