@@ -121,6 +121,29 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 		assertLateReport(t, pool, engine, claim.RoleTester, apply("late", reportOf(claim.RoleTester, tester, "test-1")), "TASK_STOPPED", stopped+usedTail, "test-1", before)
 	})
 
+	// The way back of a rollback past the release that writes plan rows drops every plan row and
+	// leaves the issue's hold as it stood (the header of 20261117034837_issue_plans.up.sql), so an
+	// issue still held for its stopped task at the roll forward has that hold and no plan rows. A
+	// late report of the stopped step then has no task to read a stop reason from, and is answered
+	// as a report of a phase no role works there, writing nothing.
+	t.Run("a stopped task whose plan rows a rollback dropped is not current", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		tester := seedPhaseWorker(t, pool, "LEGION-208", claim.RoleTester, "")
+		root := stoppedAtTesting(t, pool, engine)
+		for _, table := range []string{"plan_steps", "plan_tasks", "issue_plans"} {
+			if _, err := pool.Exec(t.Context(), "delete from "+table+" where issue = $1", root.Key); err != nil {
+				t.Fatalf("delete %s's rows of %s: %v", root.Key, table, err)
+			}
+		}
+		if held := issueOf(t, pool, engine, root.Key); held.Hold == nil || *held.Hold != (record.Hold{From: phase.Testing, Reason: record.HoldTaskStopped}) {
+			t.Fatalf("%s stands in %s with hold %+v, want held from testing for the stopped task", root.Key, held.Phase, held.Hold)
+		}
+		before := reportedOf(t, pool, engine, root.Key, claim.RoleTester, false)
+		assertLateReport(t, pool, engine, claim.RoleTester, applyFacts(t, pool, engine)("late", reportOf(claim.RoleTester, tester, "test-1")),
+			"HANDOFF_NOT_CURRENT_PHASE", "the tester does not run phase held of LEGION-208; this completion changed nothing", "", before)
+	})
+
 	t.Run("a failed step with no step to return to stopped the task", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
