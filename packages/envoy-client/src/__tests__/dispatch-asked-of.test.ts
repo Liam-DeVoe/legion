@@ -312,10 +312,6 @@ const ALLOWED: readonly (readonly [string, string])[] = [
   ],
   [
     "packages/envoy/AGENTS.md",
-    "that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
     "the asks handed to them, the asks on the issues assigned to them that nobody has handed on",
   ],
   [
