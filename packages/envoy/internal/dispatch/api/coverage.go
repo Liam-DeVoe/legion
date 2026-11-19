@@ -75,8 +75,9 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // and each one's node state from the store (queueRequirementStates). The node states and the
 // counts of what serves each requirement are read in one batch, one round trip, as the counts
 // alone were before the states were read. Both statements start from the requirements the live
-// spec marks, each through a primary key, so for a spec of more than a few requirements Postgres
-// keeps one plan of each rather than planning it again on every read (queueServingBlockCounts).
+// spec marks, each through a primary key, so the plan Postgres makes without their values costs
+// little and a connection soon keeps it rather than planning each read again
+// (queueServingBlockCounts).
 //
 // trees is the reader of a request that answers the requirements' trees, nil for every other
 // caller: each requirement registers with it (requirementBlocksIn), in the row the answer
@@ -161,9 +162,10 @@ var requirementStatesQuery = `
 // holds no row of, as every read of a node answers one (refs.StoredStateAndVisibility), and one
 // the predicate hides from who, so who is told nothing of the state of a node they may not see.
 func queueRequirementStates(b *pgx.Batch, who model.Actor, refKey string, requirements []model.RequirementCoverage, states map[string]string) {
+	prefix := refKey + "#"
 	ids := make([]string, len(requirements))
 	for index, requirement := range requirements {
-		ids[index] = refKey + "#" + requirement.BlockID
+		ids[index] = prefix + requirement.BlockID
 	}
 	b.Queue(requirementStatesQuery, ids, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 		for rows.Next() {
@@ -171,7 +173,7 @@ func queueRequirementStates(b *pgx.Batch, who model.Actor, refKey string, requir
 			if err := rows.Scan(&id, &state); err != nil {
 				return fmt.Errorf("read the node state of the requirements of %s: %w", refKey, err)
 			}
-			states[strings.TrimPrefix(id, refKey+"#")] = state
+			states[strings.TrimPrefix(id, prefix)] = state
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("read the node state of the requirements of %s: %w", refKey, err)
@@ -261,13 +263,15 @@ type servingCounts struct {
 // the indexed spec that the live spec does not mark is counted for nobody, which changes no
 // answer: the route reads the counts of the live spec's requirements alone. Starting there is
 // what lets Postgres keep one plan of the statement. pgx prepares it, and Postgres plans a
-// prepared statement's first five executions with their values and from then on keeps one plan
-// made without them wherever that plan's estimated cost is no higher. Started from the spec's
-// artifact alone, the plan made without its value took the spec for the average document of the
-// store, thousands of blocks, so it cost more and every execution was planned again: on the
-// 8,001-block shape of check c-read-cost, about 1.3 ms of planning a read against 0.5 ms of
-// execution. Started from the requirements, it is kept from a spec of five requirements on, and
-// requirementStatesQuery's from a spec of eight.
+// prepared statement's first five executions on a connection with their values; from then on it
+// uses the plan made without them once that plan's estimated cost is below the average cost of
+// the plans it made with them on that connection, and keeps it. The plan made without the values
+// prices each array at ten elements. Started from the spec's artifact alone, that plan took the
+// spec for the average document of the store, thousands of blocks, so it cost more and every
+// execution was planned again: on the 8,001-block shape of check c-read-cost, about 1.3 ms of
+// planning a read against 0.5 ms of execution. Started from the requirements, it is kept once a
+// connection's reads average about five requirements, and requirementStatesQuery's once they
+// average about eight (measured on that shape).
 func queueServingBlockCounts(b *pgx.Batch, who model.Actor, specArtifactID string, requirements []model.RequirementCoverage, issues []string, served map[string]servingCounts) {
 	blockIDs := make([]string, len(requirements))
 	for index, requirement := range requirements {
