@@ -641,8 +641,9 @@ func standingLimit(limits map[githubrest.Budget]rateLimit, kind record.OutboxKin
 // refusal through here would be finished rather than retried. A 404, and every other coded 4xx,
 // stay permanent and end the row. A step record and a plan record end on exactly the refusals
 // their routes make for good (recordRefused), so a credential answer retries. The router's 404 of a
-// Dispatch that has no route for a row's write never reaches this, whatever the row's kind: execute
-// makes it a wait, which wraps nothing of it.
+// Dispatch that has no route for a record's or the role holders' write never reaches this: execute
+// makes it a wait (waitsForTheRoute), which wraps nothing of it. For every other kind it is the
+// coded 404 it says.
 func permanentRefusal(row record.OutboxRow, err error) bool {
 	switch row.Kind {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
@@ -652,14 +653,10 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		// Permanent on the route's own 404 ISSUE_NOT_FOUND alone: an issue Dispatch does not know
 		// is one it will not know on the retry either, and nothing an operator does here would
 		// land that set. dispatch.PermanentRefusal is deliberately not used, because it calls
-		// every coded 4xx permanent, and every other coded 4xx this publication can meet is one
-		// the retry may still land: the route's own 400 INVALID_ISSUE, which an operator repairs
-		// by changing the gate whose document is missing, and a coded 404 or 400 from whatever
-		// stands in front of Dispatch. Retrying costs no staleness, since the issue's next gate
-		// change replaces this row's payload rather than queueing beside it (the store's
-		// EnqueueDesignGates), so the row carries the newest set whenever it runs. The router's
-		// 404 of a Dispatch older than the route reaches none of this: execute makes it a wait. A
-		// 5xx and a transport failure end on their own, and the set is sent again when they do.
+		// every coded 4xx permanent, which would end every publication against a Dispatch older
+		// than the route: that server's router answers the unknown path 404 under the code
+		// NOT_FOUND, a coded refusal that is not this one. It, a 5xx and a transport failure all
+		// end on their own, and the set is sent again when they do.
 		var refusal *dispatch.Error
 		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
 	case record.OutboxKindRoleHoldersPublish:
@@ -704,22 +701,34 @@ func (w routineWaiting) Unwrap() error { return w.err }
 
 func (routineWaiting) Routine() bool { return true }
 
-// execute runs one row, and is the one place each row's run passes, so the rule every Dispatch
-// write keeps is here: a Dispatch that has no route for the write answers its router's 404
-// (dispatch.NoRoute), which a Dispatch older than the route answers and so does the older build
-// while a release rolls out, so no handler ran and the write is taken once the release that serves
-// the route is live. That answer is a wait, not a failure, whichever executor met it, so the daemon
-// and Dispatch deploy in either order: the row runs again on its backoff and is logged as a wait is
-// (settle), INFO at its first run, DEBUG after, and WARN from waitWarnAttempts on, about two minutes
-// after the first run, once a minute at the backoff's cap. The wait wraps nothing of Dispatch's
-// refusal, as the claim release's waits do (claimHeldWait), so no reading of permanentRefusal can
-// end the row on it. Every other answer is decided as its executor and permanentRefusal decide it.
+// execute runs one row, and is the one place each row's run passes, so the rule for a Dispatch
+// that has no route for a write is here: its router's 404 (dispatch.NoRoute), which a Dispatch
+// older than the route answers and so does the older build while a release rolls out, so no
+// handler ran. For a kind whose route a Dispatch may not serve yet (waitsForTheRoute) that answer
+// is a wait, not a failure, so the daemon and Dispatch deploy in either order: the row runs again
+// on its backoff and is logged as a wait is (settle), INFO at its first run, DEBUG after, and WARN
+// from waitWarnAttempts on, about two minutes after the first run, once a minute at the backoff's
+// cap. The wait wraps nothing of Dispatch's refusal, as the claim release's waits do
+// (claimHeldWait), so no reading of permanentRefusal can end the row on it. Every other answer,
+// and that answer for every other kind, is decided as its executor and permanentRefusal decide it.
 func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 	err := r.run(ctx, row)
-	if dispatch.NoRoute(err) {
+	if waitsForTheRoute(row.Kind) && dispatch.NoRoute(err) {
 		return wait.Errorf("outbox row %d (%s) of %s waits for a Dispatch that serves the route: %v", row.ID, row.Kind, row.Issue, err)
 	}
 	return err
+}
+
+// waitsForTheRoute is whether a write of kind waits for a Dispatch that has no route for it: the
+// records of the record lane (a step's start and end, a retro's rating and a run's plan) and the
+// role holders' publication, whose routes came after the Dispatch a daemon may meet. Every other
+// kind's route stands on every Dispatch it is sent to, so that answer there means a dispatch_url
+// that reaches no such Dispatch, and it is the refusal it says: a status write, a message post and
+// a claim release end on it with their follow-ups (dispatch.PermanentRefusal), and a status write
+// left waiting would hold every later status of its issue behind it; the gated steps' and the
+// design gates' publications retry it as a failure.
+func waitsForTheRoute(kind record.OutboxKind) bool {
+	return record.LaneOf(kind) == record.LaneRecord || kind == record.OutboxKindRoleHoldersPublish
 }
 
 // run is the executor of row's kind.
@@ -1219,9 +1228,9 @@ func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, pa
 // The row's own issue is that project key, and the payload names it too, so the write addresses
 // the project the boot that queued it served however the row is read back.
 //
-// A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
-// so the lane's backoff holds the row until the server has the route, which is what lets the
-// daemon and Dispatch deploy in either order.
+// A Dispatch that has not got the route yet answers 404, and nothing here treats that as final:
+// the kind is no permanent refusal, so the lane's backoff holds the row until the server has the
+// route, which is what lets the daemon and Dispatch deploy in either order.
 func (r *outbox) publishGatedSteps(ctx context.Context, payload record.GatedStepsPublish) error {
 	if r.dispatch == nil {
 		return errors.New("gated steps executor has no Dispatch client")
@@ -1239,9 +1248,9 @@ func (r *outbox) publishGatedSteps(ctx context.Context, payload record.GatedStep
 // nothing clears the set rather than leaving the last one standing.
 //
 // A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
-// which execute makes a wait, so the lane's backoff holds the row until the server has the route,
-// which is what lets the daemon and Dispatch deploy in either order; permanentRefusal ends the row
-// on ISSUE_NOT_FOUND alone.
+// and nothing here treats that as final (permanentRefusal, which ends the row on ISSUE_NOT_FOUND
+// alone): the lane's backoff holds the row until the server has the route, which is what lets the
+// daemon and Dispatch deploy in either order.
 func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGatesPublish) error {
 	if r.dispatch == nil {
 		return errors.New("design gates executor has no Dispatch client")

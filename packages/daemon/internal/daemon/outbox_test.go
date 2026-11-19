@@ -141,6 +141,8 @@ type outboxDispatch struct {
 	gatedSteps    [][]string
 	gatedStepsOf  []string
 	gatedStepsErr error
+	// recordErr is what a step record's write and a plan's write answer.
+	recordErr error
 }
 
 func (d *outboxDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -197,10 +199,10 @@ func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps 
 	return d.gatedStepsErr
 }
 func (d *outboxDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
-	return nil
+	return d.recordErr
 }
 func (d *outboxDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
-	return nil
+	return d.recordErr
 }
 func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
@@ -3364,6 +3366,97 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 	}
 	if remaining := outboxRows(t, pool); remaining != 0 {
 		t.Fatalf("%d rows left in the outbox, want the refusals and their notices all finished", remaining)
+	}
+}
+
+// The router's 404 of a Dispatch with no route for a write ("no route for …", dispatch.NoRoute)
+// ends a status write on its first attempt, with its follow-up, as any coded 404 does
+// (dispatch.PermanentRefusal): the status route stands on every Dispatch, so that answer means a
+// dispatch_url that reaches no Dispatch of the project's, and a status write left waiting would
+// hold every later status write of its issue behind it (the store's outboxInOrder). The finish
+// queues the architect's notice that the status is not set and logs its line. A step record that
+// meets the same answer in the same run waits (waitsForTheRoute): it stays for its retry, logged
+// as a wait and never as a failure, since a Dispatch older than the record lane serves no route
+// of it yet.
+func TestTheRoutersNotFoundEndsAStatusWriteAndAStepRecordWaitsOnIt(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	now := time.Now().UTC()
+	noticeTree(t, pool, records, true)
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	started := now.Add(-time.Minute)
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.OrdinaryStatusWrite("done", "in_progress", ""), now))
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.StepRecord{ID: "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b",
+		Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
+		Agent: "legion-legion-legion-2-implementer", Generation: 1, StartedAt: &started}, now))
+	noRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PATCH /api/v1/issues/LEGION-2"}
+	noStepRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND",
+		Message: "no route for PUT /api/v1/issues/LEGION-2/steps/1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b"}
+	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-2", Status: "in_progress"}, statusErr: noRoute, recordErr: noStepRoute}
+	logs := &syncBuffer{}
+	runner := &outbox{
+		project: "legion", dispatchProject: "LEGION", log: slog.New(slog.NewJSONHandler(logs, nil)),
+		pool: pool, records: records, dispatch: client, notices: &holderPublisher{}, supervisor: sup,
+		now: func() time.Time { return now },
+	}
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run the outbox: %v", err)
+	}
+
+	attemptsOf := func(kind record.OutboxKind) []int {
+		t.Helper()
+		rows, err := pool.Query(ctx, `select attempts from outbox where kind = $1 order by id`, string(kind))
+		if err != nil {
+			t.Fatalf("read the %s rows: %v", kind, err)
+		}
+		attempts, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil {
+			t.Fatalf("read the %s rows: %v", kind, err)
+		}
+		return attempts
+	}
+	if fmt.Sprint(client.statuses) != "[done]" {
+		t.Fatalf("statuses written = %v, want the one attempt the status write made", client.statuses)
+	}
+	if left := attemptsOf(record.OutboxKindDispatchStatus); len(left) != 0 {
+		t.Errorf("the status write stands after the router's 404 with attempts %v, want it ended on its first attempt", left)
+	}
+	const statusRefused = "outbox status write refused by Dispatch; its architect is told what the issue holds now"
+	if lines := loggedLines(t, logs.String(), statusRefused); len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["error"]), noRoute.Message) {
+		t.Errorf("logged %q %d times, want once naming the router's %q: %s", statusRefused, len(lines), noRoute.Message, logs.String())
+	}
+	rows, err := pool.Query(ctx, "select payload from outbox where kind = $1 order by id", string(record.OutboxKindNotice))
+	if err != nil {
+		t.Fatalf("read the notice rows: %v", err)
+	}
+	payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+	if err != nil {
+		t.Fatalf("read the notice rows: %v", err)
+	}
+	var told []record.Notice
+	for _, payload := range payloads {
+		var notice record.Notice
+		if err := json.Unmarshal(payload, &notice); err != nil {
+			t.Fatalf("decode a notice: %v", err)
+		}
+		told = append(told, notice)
+	}
+	if len(told) != 1 || told[0].Kind != "message-refused" || told[0].Role != claim.RoleArchitect ||
+		!strings.Contains(told[0].Reason, "The status done is not set") || !strings.Contains(told[0].Reason, noRoute.Message) {
+		t.Errorf("notices queued = %+v, want the architect's one message-refused notice that the status done is not set, naming %q", told, noRoute.Message)
+	}
+
+	if left := attemptsOf(record.OutboxKindStepRecord); !slices.Equal(left, []int{1}) {
+		t.Errorf("the step record's rows after the router's 404 have attempts %v, want the one row kept for its retry after 1", left)
+	}
+	waited := loggedLines(t, logs.String(), `"msg":"outbox row waits"`)
+	if len(waited) != 1 || !strings.Contains(fmt.Sprint(waited[0]), "step_record") {
+		t.Errorf("logged %d waits, want the step record's one: %s", len(waited), logs.String())
+	}
+	if failed := loggedLines(t, logs.String(), "outbox row failed"); len(failed) != 0 {
+		t.Errorf("logged %d failed attempts, want none: the status write ended and the step record waits: %s", len(failed), logs.String())
 	}
 }
 
