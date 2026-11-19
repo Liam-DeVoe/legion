@@ -57,7 +57,7 @@
 # pinned pgx reads these shapes as libpq does, because pgx v5.11.0's own pgconn/parse_url.go is
 # written to match libpq's URI parser and says so in its first comment. And both run Dispatch
 # with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one that is
-# not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1270-1284).
+# not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1540-1558).
 #
 # Nothing enforces that pin. The pin is `github.com/jackc/pgx/v5 v5.11.0` in
 # packages/envoy/go.mod:31 and packages/daemon/go.mod:13, with its checksum in each go.sum.

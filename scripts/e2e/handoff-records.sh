@@ -55,21 +55,11 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-command -v bun >/dev/null || {
-  echo "FAIL prerequisites: bun is not on PATH; the dispatch CLI the proof drives runs under it" >&2
-  exit 1
-}
-[ -d "$root/node_modules" ] || {
-  echo "FAIL prerequisites: $root/node_modules is missing; run \`bun install\` at the checkout's root first" >&2
-  exit 1
-}
-# The driver binary runs from this directory, not the package's, so it is told the checkout it
-# builds Dispatch from and runs the CLI out of.
-export LEGION_E2E_REPO_ROOT="$root"
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
 # Twice the longest green run on record, rounded up to the minute: 12 green e2e.yaml jobs (3 of
 # them in green runs) up to 2026-11-15, the longest proof step 217 s (run 43017653696).
 proof_guard 480
+require_dispatch_cli
 live_daemon_proof 'handoff records' handoff-records TestHandoffRecordsLive \
   "${HANDOFF_RECORDS_EVIDENCE_DIR:-}"

@@ -390,7 +390,7 @@ export function dispatchStub(
 }
 
 // daemonActorEvent is one event with the daemon's own exact actor identity
-// (legion-daemon:<PROJECT>, internal/dispatch/client.go:287-289), a seq, and a message.created
+// (legion-daemon:<PROJECT>, internal/dispatch/client.go:318-320), a seq, and a message.created
 // body.
 export function daemonActorEvent(
   project: string,
