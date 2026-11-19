@@ -231,9 +231,9 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // notice would reach a process working under another claim's session, or one no claim holds
 // (review rounds 13 to 16 of #4220). Such a publish is not made and answers notify.ErrNoHolder,
 // which every executor already answers its own way — a notice is held for its architect, a
-// merge-queue removal and a controller notice wait, a role message and a hook's prompt for a claim
-// that keeps its session are held (heldDelivery), and every other role message, a phase's end, a
-// hook's prompt and an update ask finish undelivered — so an operator's settle of the name lets a held
+// merge-queue removal and a controller notice wait, and a role message, a phase's end, a hook's
+// prompt and an update ask finish undelivered (heldDelivery holds a role message or a hook's
+// prompt only while the listener has no holder, never for this refusal) — so an operator's settle of the name lets a held
 // row's next attempt through (a notice, a merge-queue removal, a controller notice), while a row
 // that finished undelivered is not sent again (review round 13 of #4220, note 36). A store that
 // does not answer publishes nothing and fails the attempt, which the row's backoff retries.
@@ -1870,9 +1870,9 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		var denied notify.ErrPublishDenied
 		switch {
 		case errors.Is(err, notify.ErrNoHolder):
-			// No live holder, or the gate's refusal of a role whose claim records a session it
-			// does not hold (publish): heldDelivery holds the row while its claim keeps its
-			// session, and finishes it undelivered otherwise.
+			// No live holder, which heldDelivery holds while the claim keeps its session, or the
+			// gate's refusal of a claim that records a session it does not hold (publish), which
+			// it finishes undelivered.
 			return err
 		case errors.As(err, &refused):
 			r.log.Info("outbox role message finished undelivered: its role's holder does not advertise the delivery mode",
@@ -2058,9 +2058,11 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // that now holds its role again finishes with no new publish (storedForItsSession). Otherwise
 // publish runs. Where it answers that no session holds the role and nothing was kept
 // (notify.ErrNoHolder), the row is held for a claim that keeps its session (heldForItsSession),
-// or finishes undelivered with undelivered's line. Every other failure publish answers keeps the
-// row's retry, a publish the listener stored for a holder as that stored copy (storedAnswer), so
-// the retry records it.
+// or finishes undelivered with undelivered's line. The gate's refusal of a claim that records a
+// session it does not hold (heldBack, a claim.Refusal) answers that same error and is no wait: the
+// process that holds that session is another claim's, so the row finishes undelivered, as every
+// row the gate refuses does. Every other failure publish answers keeps the row's retry, a publish
+// the listener stored for a holder as that stored copy (storedAnswer), so the retry records it.
 func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token claim.Token, what string, moved func(record.Issue) bool, publish func() error, undelivered func()) error {
 	if ended, err := r.holdEnded(ctx, row, token, what, moved); err != nil || ended {
 		return err
@@ -2070,8 +2072,11 @@ func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token c
 	}
 	err := publish()
 	if errors.Is(err, notify.ErrNoHolder) {
-		if held := r.heldForItsSession(ctx, row, token, what, moved); held != nil {
-			return held
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) {
+			if held := r.heldForItsSession(ctx, row, token, what, moved); held != nil {
+				return held
+			}
 		}
 		undelivered()
 		return nil

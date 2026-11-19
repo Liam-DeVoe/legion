@@ -56,7 +56,9 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 // while it lives. So the gate holds a kept publish as it holds every other (outbox.publishKept,
 // the merge of cybermonklabs/legion#4088 into #4220): to a claim that records a session it does
 // not hold, neither row publishes anything, kept or not, and each finishes undelivered. To a
-// claim holding its own session, each is published with keep as before (R9).
+// claim holding its own session, the phase's end is published with keep as before (R9), and the
+// hook's prompt without keep, since a claim that keeps its session has the daemon, not the
+// listener, hold its prompt (hookPrompt, keepsItsSession).
 //
 // The control (the pull request records the run): publishKeptToRole calling the publisher's
 // PublishKept directly, as #4088 wrote it, publishes both rows to the claim whose session
@@ -90,9 +92,11 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 		t.Fatalf("published %d messages, want 2, both to %s: %s records a session another claim holds, so nothing goes to its role, kept or not: %+v",
 			len(published), want, unheld, published)
 	}
-	for _, p := range published {
-		if p.topic != want || !p.keep {
-			t.Fatalf("published to %s (keep %v), want %s with keep: %s records a session another claim holds", p.topic, p.keep, want, unheld)
+	// The phase's end is executed first, then the hook's prompt.
+	for i, p := range published {
+		if p.topic != want || p.keep != (i == 0) {
+			t.Fatalf("published to %s (keep %v), want %s with keep %v: %s records a session another claim holds, and %s's hook prompt is the daemon's to hold",
+				p.topic, p.keep, want, i == 0, unheld, held)
 		}
 	}
 }
