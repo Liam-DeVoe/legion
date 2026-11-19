@@ -31,9 +31,11 @@ const WORK_PREFIX = "w";
 /** The work table's own stored layout (`IssuesTable`): the issue, its title, its status and its
  *  project, so Title, which takes what they leave, reads in two lines in the box a 1440 px window
  *  leaves beside the margin. Every other column is one tick away under Columns, who holds the
- *  issue and when it last changed among them; a project's own table keeps its own layout. */
+ *  issue and when it last changed among them; a project's own table keeps its own layout. Its key
+ *  is its own, not the one a scoped table without a layout keeps (`IssuesTable`), whose stored
+ *  layouts were written for a project's opening set and would show that set again here. */
 const WORK_LAYOUT = {
-  key: "priority-work",
+  key: "priority-page-work",
   opens: ["key", "title", "status", "project"],
   widths: { project: { min: 72, size: 72 } },
 } as const;

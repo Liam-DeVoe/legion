@@ -1386,11 +1386,19 @@ test("picker keeps a pick on screen: the assignee in the table of an item of the
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    // The table draws the assignee as plain text in its Assignee column, which it opens shown.
+    // The table draws the assignee as plain text in its Assignee column. The work table of a
+    // priority's page opens without it, so this reader is one who showed it there before: the
+    // table's stored layout holds it shown, and the column is drawn from the table's first paint.
     const shownInTable = await watchCell(page, issue.key, "Assignee");
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", item.id));
     await page.goto(`/issues/${issue.key}`);
+    await page.evaluate(() =>
+      localStorage.setItem(
+        "dispatch.project-table.priority-page-work",
+        JSON.stringify({ visibility: { assignee: true } })
+      )
+    );
     const picker = pagePicker(page, `Assignee of ${issue.key}`);
     await expect(picker).toHaveValue("bob");
 

@@ -1,7 +1,12 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { usePageWords, useTooltips } from "../../components/tooltips";
-import { badgePrimary, borderStrong, textMutedOnCanvas } from "../../theme/classes";
+import {
+  badgePrimary,
+  borderStrong,
+  borderTransparent,
+  textMutedOnCanvas,
+} from "../../theme/classes";
 import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
 
@@ -48,7 +53,7 @@ export function PriorityChip({
         className={`rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline ${
           inherited
             ? `border-dashed ${borderStrong} ${textMutedOnCanvas}`
-            : `border-transparent ${badgePrimary.bg} ${badgePrimary.text}`
+            : `${borderTransparent} ${badgePrimary.bg} ${badgePrimary.text}`
         }`}
       >
         {label}

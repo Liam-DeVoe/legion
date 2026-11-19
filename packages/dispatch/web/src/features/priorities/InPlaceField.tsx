@@ -374,13 +374,14 @@ export function InPlaceField({
   }
 
   const listId = options === undefined ? undefined : `${label.replace(/\W+/g, "-")}-options`;
-  // A plain bordered field, in the border and the focus border of Dispatch's inputs: open, it is
-  // the text's one reading, written where it is read, so nothing hides it until the reader hovers
-  // it. Opened from a chip it is as tall as the chip it stands for, so the row keeps its height.
+  // A plain bordered field, in the border, the focus border and the focus ring of Dispatch's
+  // inputs: open, it is the text's one reading, written where it is read, so nothing hides it
+  // until the reader hovers it. Opened from a chip it is as tall as the chip it stands for, 44 px
+  // on a phone and 28 px from `sm`, so the row keeps its height.
   const field = (
     <input
       {...typing}
-      className={`${closed === undefined ? "w-full py-1" : "w-48 max-w-full py-0.5"} rounded-md border px-2 text-sm outline-none ${inputClasses(true)} ${textPrimaryOnSurface}`}
+      className={`${closed === undefined ? "w-full py-1" : "min-h-11 w-48 max-w-full py-0.5 sm:min-h-7"} rounded-md border px-2 text-sm outline-none focus-visible:ring-2 ${inputClasses(true)} ${focusVisibleRing} ${textPrimaryOnSurface}`}
       id={fieldId}
       list={listId}
       type="text"

@@ -48,9 +48,10 @@ import { issueIsUnread } from "./UnreadDot";
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** Status offers Done before the closed issues it would count are read. */
 const DONE_UNLOADED: ReadonlyMap<string, readonly string[]> = new Map([["status", ["done"]]]);
-/** The one layout key of every table scoped to a priority: the work advancing a priority is
- *  one table, drawn on each priority's own page, so the columns a reader drags there are
- *  dragged once rather than once per priority. */
+/** The one layout key of every table scoped to a priority that names no layout of its own: the
+ *  work advancing a priority is one table wherever it is drawn, so the columns a reader drags
+ *  there are dragged once rather than once per priority. A priority's own page names its own
+ *  layout (`priorities/PriorityPage.tsx`). */
 const SCOPED_LAYOUT_KEY = "priority-work";
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
@@ -105,9 +106,9 @@ export function IssuesTable({
     ownLayout?.opens,
     ownLayout?.widths
   );
-  // One stored layout per project, and one for every scoped table: the work advancing any
-  // priority is one table, so a reader who drags a column on one priority's page drags it on
-  // every priority's page, and not once per priority.
+  // One stored layout per project, one per layout a caller names, and one for every other scoped
+  // table: the work advancing any priority is one table, so a reader who drags a column on it
+  // drags it for every priority, and not once per priority.
   const layout = useTableLayout(
     ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY),
     columnsLayout
