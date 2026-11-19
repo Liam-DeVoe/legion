@@ -218,7 +218,7 @@ func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *rel
 	line := &run.result.Sandboxes[pod.line]
 	before := len(line.Asked)
 	for i, c := range running {
-		run.asked[c.Token] = releaseAsk{line: pod.line, nudge: pod.nudge}
+		run.asked[c.Token] = releaseAsk{line: pod.line, role: c.Role, nudge: pod.nudge}
 		line.Asked = append(line.Asked, api.ReleasedAsk{Role: c.Role})
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod.sandbox.PodUID, Text: text}
 	}
@@ -324,8 +324,7 @@ func (run *releaseRun) passBound(pod *releasePod) (dropped []claim.Token, kept b
 	onLine := map[claim.Role]claim.Token{}
 	for token, asked := range run.asked {
 		if asked.line == pod.line {
-			role, _ := token.Role()
-			onLine[role] = token
+			onLine[asked.role] = token
 		}
 	}
 	line := &run.result.Sandboxes[pod.line]

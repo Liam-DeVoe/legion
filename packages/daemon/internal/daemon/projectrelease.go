@@ -221,13 +221,14 @@ type releaseRun struct {
 }
 
 // releaseAsk is where one asked claim's answer goes: its pod's line, which names the claim's role
-// once, since an issue has one claim per role and a pod is asked once, and the pod's nudge, which
-// wakes the pod's wait at once. A claim is in run.asked exactly while its role is on that line.
-// reached is whether the outbox's publish of the ask reached a session of the claim's role before
-// the bound (reach): only such a role, or one that answered, stays on the line at the bound
+// (role) once, since an issue has one claim per role and a pod is asked once, and the pod's nudge,
+// which wakes the pod's wait at once. A claim is in run.asked exactly while its role is on that
+// line. reached is whether the outbox's publish of the ask reached a session of the claim's role
+// before the bound (reach): only such a role, or one that answered, stays on the line at the bound
 // (passBound).
 type releaseAsk struct {
 	line    int
+	role    claim.Role
 	nudge   chan struct{}
 	reached bool
 }
