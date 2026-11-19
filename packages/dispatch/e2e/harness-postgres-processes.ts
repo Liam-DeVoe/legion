@@ -249,38 +249,61 @@ function mountsOf(file: string): Mount[] {
 }
 
 /** The filesystems whose `stat` the kernel answers itself, from a disk the machine holds or from its
- *  own memory, with no server or daemon that can hang: a closed list. A mount of any other type, a
- *  network or FUSE mount (`nfs`, `cifs`, `fuse.*`, `9p`, `ceph`, `virtiofs`), an automount
- *  (`autofs`, which asks a daemon), or one whose type the table does not give, is read by a reader
- *  of its own (`topOf`): a type missing here costs one reader more, never a path left unread. */
+ *  own memory, with no server or daemon that can hang: a closed list, each type with its reason. A
+ *  mount of any other type, a network or FUSE mount (`nfs`, `cifs`, `fuse.*`, `9p`, `ceph`,
+ *  `virtiofs`), an automount (`autofs`, whose read can start a mount that hangs, as it asks a
+ *  daemon), or one whose type the table does not give, is read by a reader of its own (`topOf`): a
+ *  type missing here costs one reader more, never a path left unread. */
 const kernelAnswered: Record<string, true> = {
+  // A filesystem on a disk of the machine: a stat reads that block device, and asks no server.
   ext2: true,
   ext3: true,
   ext4: true,
   xfs: true,
   btrfs: true,
   vfat: true,
+  // A read-only image on a disk or in a file of the machine.
   squashfs: true,
+  // Files in the machine's memory.
   tmpfs: true,
   ramfs: true,
+  // A container's root: layers that are directories of the machine's own filesystems.
   overlay: true,
+  // The kernel's processes and objects, answered from its memory.
   proc: true,
   sysfs: true,
+  // Device nodes in memory: a stat of a node opens no device.
   devtmpfs: true,
+  // The pseudo-terminals, in memory.
   devpts: true,
+  // The control groups, in memory.
   cgroup: true,
   cgroup2: true,
+  // POSIX message queues, in memory.
   mqueue: true,
+  // Files of huge pages, in memory.
   hugetlbfs: true,
+  // The security modules' files, which the kernel answers.
   securityfs: true,
+  // The kernel's debug files, in memory.
   debugfs: true,
+  // The kernel's tracing files, in memory.
   tracefs: true,
+  // The records of the kernel's last crash, which it read when it mounted them.
   pstore: true,
+  // Pinned BPF objects, in memory.
   bpf: true,
+  // Kernel objects that a user makes, in memory.
   configfs: true,
+  // The control files of FUSE connections, which the kernel answers, not a FUSE server.
   fusectl: true,
+  // The firmware's variables, read through the kernel.
   efivarfs: true,
+  // Handles of namespaces, in memory.
   nsfs: true,
+  // The kernel's table of binary formats, in memory. A box mounts it on `/proc/sys/fs/binfmt_misc`
+  // over that point's automount, and the last mount of a point is the one a stat reaches (`topOf`).
+  binfmt_misc: true,
 };
 
 /** The top path of the paths a start reads on the filesystems the kernel answers itself

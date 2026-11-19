@@ -684,3 +684,93 @@ for (const mounts of [
     rowMs(twoHungMounts)
   );
 }
+
+/** What the next row waits for (`Waits`): two holders, each a child, with their arguments, each at
+ *  most `claimEventMs`; and one sweep, a child, with its one holder read before its claim of the
+ *  data directory, which a holder holds. */
+const kernelTypeMount: Waits = { children: 3, reads: 1, bounds: [claimEventMs, claimEventMs] };
+
+// A mount of a type the kernel answers itself, such as the `binfmt_misc` a box mounts on
+// `/proc/sys/fs/binfmt_misc`, is one of the machine's own filesystems: a start reads its paths in
+// the one reader of those (`kernelAnswered` of e2e/harness-postgres-processes.ts) and starts no
+// reader more for it. On 2026-11-19 a process of another session named that path, and each holder
+// read of a start on that machine started a second reader for it. The row plants such a mount in
+// the start's mount table (`neverAnswering`, with no path that never answers) and a holder that
+// names a path on it, beside a holder of the data directory through a link. Each reader writes the
+// group of paths it reads when it starts, so the row reads which groups the read made: none is the
+// planted mount's, whatever other mounts the processes of this user name on the machine.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start whose holder read meets a binfmt_misc mount reads its paths in the one reader of the machine's own filesystems, and names the process that holds the data directory",
+  async () => {
+    const row = rowOf(kernelTypeMount);
+    const { tmp, run } = scratch();
+    const data = join(run, "worker-0", "pgdata");
+    leaveData(data);
+    const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
+    const point = `/binfmt-misc-${process.pid}`;
+    const named = join(point, "register");
+    const link = join(tmp, "data-link");
+    symlinkSync(data, link);
+    const clock = join(tmp, "readers-clock");
+    row.child("the holder of a path on the binfmt_misc mount");
+    const onMount = standIn(tmp, [
+      process.execPath,
+      "--eval",
+      "setTimeout(() => {}, 600_000)",
+      named,
+    ]);
+    row.child("the holder of the data directory through a link");
+    const healthy = standIn(tmp, [
+      process.execPath,
+      "--eval",
+      "setTimeout(() => {}, 600_000)",
+      join(link, "PG_VERSION"),
+    ]);
+    let sweeping: Subprocess | undefined;
+    try {
+      for (const [holder, last] of [
+        [onMount, named],
+        [healthy, link],
+      ] as const) {
+        await until(
+          () => readFileSync(`/proc/${holder.pid}/cmdline`, "utf8").includes(last),
+          "a holder's arguments",
+          claimEventMs
+        );
+      }
+
+      const reader = neverAnswering([], clock, join(tmp, "mountinfo"), [
+        { point, type: "binfmt_misc" },
+      ]);
+      const started = startSweep(row, tmp, { reader });
+      sweeping = started.child;
+      // A bound on another process, which no fake clock of this one reaches: the sweep and its
+      // holder read as the fixtures' program sums them.
+      const limit = waitsMs({ children: 1, reads: kernelTypeMount.reads, bounds: [] });
+      const lines = await Promise.race([started.lines, Bun.sleep(limit).then(() => undefined)]);
+      if (lines === undefined) throw new Error(`the sweep did not end within ${limit / 1000} s`);
+
+      // The group of each reader the read started, from its line "<pid> forked <at> <read> <top>".
+      const groups = readFileSync(clock, "utf8")
+        .split("\n")
+        .filter((line) => line.split(" ")[1] === "forked")
+        .map((line) => line.split(" ").slice(4).join(" "));
+      console.error(`a binfmt_misc mount: the read started readers for ${JSON.stringify(groups)}`);
+      expect(groups).toContain("the machine's own filesystems");
+      expect(groups).not.toContain(point);
+      expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
+      expect(holding(lines, `${mark} (${data}, which `)).toEqual([
+        expect.stringContaining(`${data}, which bun ${healthy.pid} still holds)`),
+      ]);
+      expect(holding(lines, `: the read of what holds ${data} waits no longer on `)).toEqual([]);
+    } finally {
+      if (sweeping !== undefined) await endChild(sweeping);
+      onMount.stop();
+      healthy.stop();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): two holders and their
+  // arguments, and one sweep with its holder read.
+  rowMs(kernelTypeMount)
+);

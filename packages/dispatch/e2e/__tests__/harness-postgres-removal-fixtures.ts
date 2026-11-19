@@ -222,7 +222,8 @@ function boundsEnv({ answerMs, boundMs }: RemovalBounds): Record<string, string>
  *  its own: one shorter than the row's limit would end the wait in the start's place, and a start
  *  with no bound would pass the row. Its own clock times the start's wait there, which no load on
  *  the start or the row stretches: it writes to `clock`, under its pid, when the kernel forked it,
- *  and then the time it reached that path and the time again every 500 ms until it is killed
+ *  with the read and the group of paths it serves (`HOLDER_READ`, "<read> <top>"), and then the
+ *  time it reached that path and the time again every 500 ms until it is killed
  *  (`clockOf`), each in seconds since the machine booted, the one clock the kernel gives both a
  *  process's start and `/proc/uptime` on. Its mount table is this process's, with each mount of
  *  `mounts` added after it, a
@@ -263,7 +264,7 @@ const write = (what, at) => appendFileSync(${JSON.stringify(clock)}, process.pid
 // of the clock since, would put a fork seconds before a tick that came first.
 const uptime = () => Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
 const ticks = Number(readFileSync("/proc/self/stat", "utf8").slice(readFileSync("/proc/self/stat", "utf8").lastIndexOf(")") + 2).split(" ")[19]);
-write("forked", ticks / 100);
+write("forked", ticks / 100 + " " + (process.env.HOLDER_READ ?? ""));
 const start = process.ppid;
 setInterval(() => {
   if (process.ppid !== start) process.exit(1);
