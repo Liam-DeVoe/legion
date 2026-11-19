@@ -348,7 +348,9 @@ func (r *liveRig) checkRoleIsolation() error {
 			sawInit = true
 		case argv1 == "worker-shim":
 			sawShim = true
-		case args == "sleep infinity ":
+		// The listing's last line has lost its trailing space, since exec's output is trimmed, and
+		// /proc/[0-9]* sorts the pids as text, so the agent's line may be the last.
+		case strings.TrimSpace(args) == "sleep infinity":
 			if sawAgent {
 				return fmt.Errorf("the second role's /proc shows two stub agents: %q", listing)
 			}
