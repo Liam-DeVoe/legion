@@ -7,16 +7,17 @@
 // The model calls themselves are agentloop's (github.com/sjawhar/envoy/agentloop), the one model
 // loop the daemon and Dispatch share and the only import of Grafana's SDK: the providers, the
 // retry, the step bound with no tool on the last allowed call and the message that call carries,
-// the thinking and reasoning options, the cache marks, the check of the reply against its schema
-// and the one ask again for a reply the form's own rules refuse are all its. This package is its
-// caller: it builds the request (the conversation as agentloop's messages, the system prompt, the
-// reply form as the request's Final schema, the form's own rules as its Check, the gh tool
-// described for the agent's repository, the last call's message, the bounds and the endpoint
-// `answers.providers` names, whose key is read again for every call), decides the faults
-// that need no model call (no_provider, no_price, unknown_format), refuses an answer whose calls
-// the provider metered nothing for (unmetered), maps agentloop's faults onto the daemon's own
-// reasons, and reads the run back as the agent's reply, the turns to append and what the answer
-// cost.
+// the thinking and reasoning options, the cache marks, the check of the reply against its schema,
+// the one ask again for a reply the form's own rules refuse and the one call again for a reply
+// the provider cut at output_tokens are all its. This package is its caller: it builds the
+// request (the conversation as agentloop's messages, the system prompt, the reply form as the
+// request's Final schema, the form's own rules as its Check, the gh tool described for the
+// agent's repository, the last call's message, the bounds and the endpoint `answers.providers`
+// names, whose key is read again for every call), decides the faults that need no model call
+// (no_provider, no_price, unknown_format), refuses an answer whose calls the provider metered
+// nothing for (unmetered), maps agentloop's faults onto the daemon's own reasons, and reads the
+// run back as the agent's reply, the turns to append, a cut call agentloop made again left out,
+// and what the answer cost.
 package answer
 
 import (
@@ -64,7 +65,8 @@ const (
 	AnswerSeconds Fault = "answer_seconds"
 	// ModelCalls is the model_calls bound: the last allowed model call still called a tool.
 	ModelCalls Fault = "model_calls"
-	// Length is a last reply cut off at the output_tokens bound.
+	// Length is a reply cut off at the output_tokens bound that agentloop did not make its call
+	// again for: a second cut, or one on the last model call model_calls allows.
 	Length Fault = "length"
 	// Refusal is a last reply the provider refused or filtered.
 	Refusal Fault = "refusal"
@@ -189,10 +191,12 @@ type Reply struct {
 	// the model replied in the form. It holds nothing else the loop told the model: not the
 	// system prompt, and not the message the last model call carries (lastCall), which is the
 	// loop's own instruction to that call and no part of what the agent did, so the agent's
-	// conversation never holds it.
+	// conversation never holds it. Nor does it hold a reply the provider cut at output_tokens
+	// whose call agentloop made again (agentloop.Step.Dropped): no later call was sent it.
 	Append conversation.Append
-	// Calls is how many model calls the answer made; Usage their tokens and costs summed, cache
-	// writes and reads included, reasoning counted as output; CostUSD the sum of its costs.
+	// Calls is how many model calls the answer made, a cut call made again included; Usage
+	// their tokens and costs summed, cache writes and reads included, reasoning counted as
+	// output; CostUSD the sum of its costs.
 	Calls   int
 	Usage   conversation.Usage
 	CostUSD float64
@@ -337,6 +341,13 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 			return err
 		},
 		AskAgain: 1,
+		// A reply the provider cuts at output_tokens is a model running on inside the form,
+		// not one with more to say: the one such reply of 415 calls measured on 2026-11-19
+		// was a whole answer and then newline escapes to the bound, where the longest reply
+		// it did not cut used 567 tokens. agentloop makes that call once again without the
+		// cut reply, within the same bounds, and marks the cut step Dropped, which finish
+		// appends nothing of. A second cut is the length fault.
+		CallAgainWhenCut: 1,
 		// The last call, which offers no tool, is told so (lastCall). agentloop puts the
 		// message on that call alone and in no step, so finish appends nothing of it.
 		LastCall: lastCall,
@@ -393,7 +404,8 @@ func firstToolIndex(earlier []store.AnswerToolCall) int {
 
 // finish reads the run's last reply into reply: the agent's reply in the form, or no answer when
 // the form's own rules refuse it, which they do once agentloop has asked again where its bounds
-// let it; and, with it, the turns to append, every call of the run in order.
+// let it; and, with it, the turns to append, every call of the run in order but a cut one whose
+// call agentloop made again, which no later call was sent and the conversation never holds.
 func finish(reply *Reply, req Request, r route, result agentloop.Result, question string) {
 	form, err := parseReply(result.Value, req.MayAskNothing)
 	if err != nil {
@@ -406,6 +418,9 @@ func finish(reply *Reply, req Request, r route, result agentloop.Result, questio
 		Provider: string(r.provider), API: string(r.kind), Model: r.model,
 	}
 	for _, step := range result.Steps {
+		if step.Dropped {
+			continue
+		}
 		reply.Append.Turns = append(reply.Append.Turns, turnOf(step, r.price))
 	}
 	if err := reply.Append.Validate(); err != nil {

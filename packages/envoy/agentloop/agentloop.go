@@ -276,10 +276,24 @@ type Request struct {
 	// so the marks stay where they would be without it. An empty LastCall sends nothing,
 	// and the run sends exactly what it sent before the field existed.
 	LastCall string
+	// CallAgainWhenCut is the most times the run makes a model call again whose reply the
+	// provider cut for length (doc.go, "A reply cut for length"). Such a reply is not sent
+	// back to the model: the next call is sent the run's messages as they stood before the
+	// cut call, so neither its request nor the conversation holds any of the cut reply, and
+	// that call's reply answers in its place. A call made again stays inside the run's
+	// Bounds as an ask again does: it counts against Calls, it offers no tool and carries
+	// LastCall where it is the last allowed call, it is made only while Time is left, its
+	// reply is held to OutputTokens, and Check reads that reply like any other. The cut
+	// call stays in Result.Steps, marked Step.Dropped, and its usage in Result.Usage. A cut
+	// past CallAgainWhenCut, or one with no model call or no time left, ends the run with
+	// FaultLength. A zero CallAgainWhenCut makes no call again and changes nothing the run
+	// sends.
+	CallAgainWhenCut int
 	// OnText is given the reply's prose as it streams, OnPartial the Final object as it is
-	// built, and OnStep every step as it finishes; a reply the run asked for again streams to
-	// them like any other. An error from any of them ends the run at that point and Run
-	// returns it with the Result so far. A nil callback is not called.
+	// built, and OnStep every step as it finishes; a reply the run asked for again, a cut
+	// reply and the call made again after it stream to them like any other. An error from
+	// any of them ends the run at that point and Run returns it with the Result so far. A
+	// nil callback is not called.
 	OnText    func(delta string) error
 	OnPartial func(snapshot json.RawMessage) error
 	OnStep    func(Step) error
@@ -316,6 +330,13 @@ type Step struct {
 	// the reply to it. It is empty on every other step, and on every step OnStep is given,
 	// since the check reads a reply only once the call that made it is over.
 	AskedAgain string
+	// Dropped marks a call whose reply the provider cut for length and whose call the run
+	// made again (Request.CallAgainWhenCut): the next step is that call made once more,
+	// sent the messages this call was sent and none of this reply, so a caller that writes
+	// the run's steps back into a conversation writes this one nowhere. Its usage still
+	// counts in Result.Usage. It is false on every other step, and on every step OnStep is
+	// given, since the run decides to make a call again only once the call it drops is over.
+	Dropped bool
 }
 
 // Result is the outcome of a run, and every outcome is one: a run that ends on a fault, on its
@@ -328,7 +349,8 @@ type Result struct {
 	Text  string
 	Value json.RawMessage
 	// Steps are the run's model calls, in order, a reply the run asked for again and the
-	// reply after it included, and Usage is their total.
+	// reply after it included, as is a cut call the run made again (Step.Dropped), and
+	// Usage is their total.
 	Steps []Step
 	Usage Usage
 	// Fault is why the run ended short of an answer, and is empty on a run that answered.
@@ -347,7 +369,8 @@ const (
 	FaultTime Fault = "time"
 	// FaultCalls is Bounds.Calls spent without an answer.
 	FaultCalls Fault = "calls"
-	// FaultLength is a reply the provider cut at the output token limit.
+	// FaultLength is a reply the provider cut at the output token limit that the run did
+	// not make again (Request.CallAgainWhenCut).
 	FaultLength Fault = "length"
 	// FaultRefusal is the model refusing to answer.
 	FaultRefusal Fault = "refusal"

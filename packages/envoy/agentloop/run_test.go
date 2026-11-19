@@ -362,6 +362,197 @@ func TestALengthFaultsDetailNamesTheProvidersOwnReason(t *testing.T) {
 	}
 }
 
+// cutSays is what the cut reply says, and cutAnswer that reply as the provider cut it at the
+// output token bound: a whole answer inside finalSchema's string, then the newline escapes a
+// model running on inside its structured reply writes until the bound stops it. No other reply
+// says cutSays, so a request that carries it carries the cut reply.
+const cutSays = "The note says plum."
+
+var cutAnswer = `{"answer":"` + cutSays + strings.Repeat(`\n`, 64)
+
+// A reply the provider cut at the output token bound is made again where the request asks for
+// it (Request.CallAgainWhenCut), on the run's first call and on one after a tool call, on both
+// protocols the Legion daemon calls: the call made again is the cut call byte for byte, its
+// cache marks and the tool call and result before it included, so it carries none of the cut
+// reply, and its reply is the run's answer. Result.Steps holds every call, the cut one alone
+// marked dropped and still carrying its own output items, and Result.Usage sums them all, the
+// cut call's 4000 output tokens included. The control is the same replies with the field zero:
+// the run sends the same requests up to the cut and ends on it with FaultLength, dropping
+// nothing.
+func TestACutReplyIsMadeAgainWithoutIt(t *testing.T) {
+	t.Parallel()
+	const cutItem, finalItem = "msg_cut", "msg_final"
+	anthropicCut := func() reply {
+		return anthropicStream("max_tokens", anthropicUsage{Input: 30, Output: 4000, CacheRead: 2200}, anthropicText(cutAnswer))
+	}
+	anthropicAnswer := func() reply {
+		return anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 5, CacheRead: 2200}, anthropicText(finalAnswer))
+	}
+	openaiCut := func() reply {
+		return openaiStream(openaiUsage{Input: 1000, Cached: 900, Output: 4000}, "max_output_tokens", openaiMessage(cutItem, cutAnswer))
+	}
+	openaiAnswer := func() reply {
+		return openaiStream(openaiUsage{Input: 1000, Cached: 900, Output: 5}, "", openaiMessage(finalItem, finalAnswer))
+	}
+	for _, c := range []struct {
+		name    string
+		kind    Kind
+		history func() []Message
+		replies func() []reply
+		// cut is the index of the cut call among the replies; the reply after it answers.
+		cut int
+	}{
+		{name: "anthropic-messages cut on its first call", kind: AnthropicMessages, history: anthropicAnswered,
+			replies: func() []reply { return []reply{anthropicCut(), anthropicAnswer()} }},
+		{name: "anthropic-messages cut after a tool call", kind: AnthropicMessages, history: anthropicAnswered, cut: 1,
+			replies: func() []reply {
+				return []reply{
+					anthropicStream("tool_use", anthropicUsage{Input: 10, Output: 20, CacheWrite: 2200},
+						anthropicThinking("Read the note.", "sig-cut-1+/=="), anthropicToolUse("toolu_1", toolName, map[string]any{"path": "note.txt"})),
+					anthropicCut(), anthropicAnswer(),
+				}
+			}},
+		{name: "openai-responses cut on its first call", kind: OpenAIResponses, history: openaiHistory,
+			replies: func() []reply { return []reply{openaiCut(), openaiAnswer()} }},
+		{name: "openai-responses cut after a tool call", kind: OpenAIResponses, history: openaiHistory, cut: 1,
+			replies: func() []reply {
+				return []reply{
+					openaiStream(openaiUsage{Input: 1000, CacheWrite: 900, Output: 20, Reasoning: 10},
+						"", openaiReasoning("rs_c1", "gAAAAcut+/one==", "Reading the note"), openaiToolCall("fc_1", "call_1", toolName, map[string]any{"path": "note.txt"})),
+					openaiCut(), openaiAnswer(),
+				}
+			}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			run := func(callAgain int) (Result, []recorded, *fixture) {
+				t.Helper()
+				replies := c.replies()
+				s := newStandIn(t, replies...)
+				// A call more than the replies, so the call made again is not the run's last
+				// allowed one and offers the tool the cut call did.
+				f := newFixture(t, s, c.kind, len(replies)+1)
+				f.req.History = c.history()
+				f.req.Final, f.req.CallAgainWhenCut = json.RawMessage(finalSchema), callAgain
+				result, err := Run(context.Background(), f.req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return result, s.requests(), f
+			}
+			result, got, f := run(1)
+			if result.Fault != "" || string(result.Value) != finalAnswer {
+				t.Fatalf("fault %q (%s), value %s; want no fault and the reply after the cut's %s", result.Fault, result.Detail, result.Value, finalAnswer)
+			}
+			calls := c.cut + 2
+			if len(got) != calls {
+				t.Fatalf("%d model calls, want %d", len(got), calls)
+			}
+			if again, cut := got[c.cut+1].body, got[c.cut].body; !bytes.Equal(again, cut) {
+				t.Errorf("the call made again is\n%s\nwant it byte for byte the cut call's\n%s", again, cut)
+			}
+			for i, r := range got {
+				if bytes.Contains(r.body, []byte(cutSays)) {
+					t.Errorf("call %d carries the cut reply", i+1)
+				}
+			}
+			if len(result.Steps) != calls {
+				t.Fatalf("%d steps, want every one of the %d calls", len(result.Steps), calls)
+			}
+			var total Usage
+			for i, step := range result.Steps {
+				if step.Dropped != (i == c.cut) {
+					t.Errorf("step %d dropped %t, want the cut call's step dropped and no other", i+1, step.Dropped)
+				}
+				total = sum(total, step.Usage)
+			}
+			if cut := result.Steps[c.cut]; cut.Finish != "length" || cut.Usage.Output != 4000 {
+				t.Errorf("the cut step %+v, want its length finish and its 4000 output tokens", cut)
+			}
+			if result.Usage != total || !result.Usage.Metered {
+				t.Errorf("usage %+v, want every call summed, the cut one's included: %+v", result.Usage, total)
+			}
+			if c.kind == OpenAIResponses {
+				for i, want := range map[int]string{c.cut: openaiMessage(cutItem, cutAnswer), c.cut + 1: openaiMessage(finalItem, finalAnswer)} {
+					if native := result.Steps[i].Native; len(native) != 1 || string(native[0]) != want {
+						t.Errorf("step %d's output items %s, want its own call's %s", i+1, native, want)
+					}
+				}
+			}
+			if made := len(f.tool.made()); made != c.cut {
+				t.Errorf("the tool was called %d times, want %d", made, c.cut)
+			}
+
+			plain, plainSent, _ := run(0)
+			if plain.Fault != FaultLength || plain.Value != nil {
+				t.Errorf("with no call again: fault %q, value %s; want %q", plain.Fault, plain.Value, FaultLength)
+			}
+			if len(plainSent) != c.cut+1 || len(plain.Steps) != c.cut+1 {
+				t.Fatalf("with no call again: %d model calls and %d steps, want %d, ending on the cut", len(plainSent), len(plain.Steps), c.cut+1)
+			}
+			for i, r := range plainSent {
+				if !bytes.Equal(r.body, got[i].body) {
+					t.Errorf("call %d with no call again is\n%s\nwant it byte for byte the run's that calls again\n%s", i+1, r.body, got[i].body)
+				}
+				if plain.Steps[i].Dropped {
+					t.Errorf("with no call again step %d is dropped", i+1)
+				}
+			}
+		})
+	}
+}
+
+// A cut call is made again no more than the request's CallAgainWhenCut, and only while the run
+// has a model call left: a second cut, or a cut on the run's last allowed call, ends the run with
+// FaultLength, every call it made reported with its usage and only a call made again dropped.
+func TestACutPastCallAgainIsALengthFault(t *testing.T) {
+	t.Parallel()
+	cut := func() reply {
+		return anthropicStream("max_tokens", anthropicUsage{Input: 30, Output: 4000}, anthropicText(cutAnswer))
+	}
+	answer := func() reply {
+		return anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 5}, anthropicText(finalAnswer))
+	}
+	for _, c := range []struct {
+		name    string
+		calls   int
+		replies []reply
+		// dropped is, for each call the run makes, whether its step is dropped.
+		dropped []bool
+	}{
+		{name: "cut twice", calls: 3, replies: []reply{cut(), cut(), answer()}, dropped: []bool{true, false}},
+		{name: "cut on the last allowed call", calls: 1, replies: []reply{cut(), answer()}, dropped: []bool{false}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, c.replies...)
+			f := newFixture(t, s, AnthropicMessages, c.calls)
+			f.req.Final, f.req.CallAgainWhenCut = json.RawMessage(finalSchema), 1
+			result, err := Run(context.Background(), f.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Fault != FaultLength || result.Value != nil {
+				t.Fatalf("fault %q (%s), value %s; want %q", result.Fault, result.Detail, result.Value, FaultLength)
+			}
+			if n := len(s.requests()); n != len(c.dropped) {
+				t.Errorf("%d model calls, want %d", n, len(c.dropped))
+			}
+			if len(result.Steps) != len(c.dropped) {
+				t.Fatalf("%d steps, want %d", len(result.Steps), len(c.dropped))
+			}
+			for i, step := range result.Steps {
+				if step.Dropped != c.dropped[i] || step.Finish != "length" {
+					t.Errorf("step %d dropped %t, finish %q; want dropped %t and length", i+1, step.Dropped, step.Finish, c.dropped[i])
+				}
+			}
+			if u := result.Usage; u.Output != 4000*len(c.dropped) || !u.Metered {
+				t.Errorf("usage %+v, want every cut call's 4000 output tokens", u)
+			}
+		})
+	}
+}
+
 // A reply the model refused is a refusal fault, on each protocol's own way of saying so, and
 // whether or not the request asked for a Final object: a refusal is why the run ended, not a
 // reply of the wrong form.

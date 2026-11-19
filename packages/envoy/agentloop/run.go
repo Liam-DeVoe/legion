@@ -35,7 +35,8 @@ const placeholderKey = "read-per-call"
 // context ending, and for a callback that returned an error; the Result then still carries what
 // the calls made so far produced and cost. A reply Request.Check refuses is asked for again
 // inside the same run and the same bounds, at most Request.AskAgain times (doc.go, "Asking
-// again").
+// again"), and a call whose reply the provider cut for length is made again, without that
+// reply, at most Request.CallAgainWhenCut times (doc.go, "A reply cut for length").
 func Run(ctx context.Context, req Request) (Result, error) {
 	if err := req.validate(); err != nil {
 		return Result{}, err
@@ -117,6 +118,16 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		default:
 			r.finish(&result, stream)
 		}
+		if r.callAgain(runCtx, result) {
+			// The cut call is made again from the messages it was sent: the ones this
+			// ask was given and every message its calls before the cut one produced. The
+			// SDK's response messages end with the cut call's own, which the stream's last
+			// response holds, so none of the cut reply goes back to the model.
+			produced := stream.ResponseMessages()
+			messages = slices.Concat(messages, produced[:len(produced)-len(stream.Response().Messages)])
+			r.dropped()
+			continue
+		}
 		refusal, again := r.refusal(runCtx, result)
 		if !again {
 			return result, nil
@@ -129,9 +140,9 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 }
 
-// ask makes the model calls of one ask, the run's first or one after Request.Check refused a
-// reply: a stream of the messages the run holds so far, stopped at the model calls the run has
-// left, read to its end.
+// ask makes the model calls of one ask, the run's first, one after Request.Check refused a
+// reply, or a cut call made again: a stream of the messages the run holds so far, stopped at
+// the model calls the run has left, read to its end.
 func (r *run) ask(ctx context.Context, model provider.LanguageModel, opts []aisdk.StreamOption, messages []provider.Message) *aisdk.StreamTextResult {
 	stream := aisdk.StreamText(ctx, model, slices.Concat([]aisdk.StreamOption{
 		aisdk.WithModelMessages(messages...),
@@ -156,6 +167,15 @@ func (r *run) refusal(ctx context.Context, result Result) (string, bool) {
 	return "", false
 }
 
+// callAgain is whether the run makes its last model call again: it does where the provider cut
+// that call's reply for length, the request makes a cut call again and has a call again left,
+// and the run has a model call and time left. A run that does not call again ends on the cut
+// reply's FaultLength.
+func (r *run) callAgain(ctx context.Context, result Result) bool {
+	return result.Fault == FaultLength && r.cut < r.req.CallAgainWhenCut &&
+		len(result.Steps) < r.req.Bounds.Calls && ctx.Err() == nil
+}
+
 // askedAgain records the sentence the run sends after its last step's reply on that step, and
 // starts the next ask's count of calls after every call the run has made.
 func (r *run) askedAgain(refusal string) {
@@ -164,6 +184,16 @@ func (r *run) askedAgain(refusal string) {
 	r.before = len(r.steps)
 	r.mu.Unlock()
 	r.asked++
+}
+
+// dropped marks the run's last step as the cut call the run makes again, and starts the next
+// ask's count of calls after every call the run has made, the dropped one included.
+func (r *run) dropped() {
+	r.mu.Lock()
+	r.steps[len(r.steps)-1].Dropped = true
+	r.before = len(r.steps)
+	r.mu.Unlock()
+	r.cut++
 }
 
 // validate is whether the request is one the loop can run at all: it has its bounds, an
@@ -299,9 +329,10 @@ type run struct {
 	history int
 	// before is how many model calls the run made before its current ask, which prepareStep
 	// adds to a step's own number, counted from the ask's first, to find the run's last
-	// allowed call; asked is how many times the run has asked again. Both change only
-	// between two asks, before the stream that reads them starts.
-	before, asked int
+	// allowed call; asked is how many times the run has asked again, and cut how many times
+	// it has made a cut call again. All three change only between two asks, before the
+	// stream that reads them starts.
+	before, asked, cut int
 
 	mu sync.Mutex
 	// steps are the model calls that finished, in order; text and reason are the last of
@@ -438,7 +469,9 @@ func (r *run) failure() error {
 // request's Input is empty, the first call's newest message is the history's own last message,
 // which keeps the history's mark for the whole run. An ask after Request.Check refused a reply
 // starts from the run's own messages, which carry the history's marks and no other, so its
-// newest message, the check's sentence, takes the fourth.
+// newest message, the check's sentence, takes the fourth. A cut call made again starts from the
+// messages the cut call was sent, so its newest message is the cut call's and takes the mark
+// the cut call put there.
 //
 // The last allowed call also carries Request.LastCall, after every other message and after the
 // mark: that call is the run's last, so nothing re-sends the sentence, a mark on it would pay for

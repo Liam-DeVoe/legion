@@ -812,6 +812,126 @@ func TestAReplyTheFormRefusesIsAskedForOnceAgain(t *testing.T) {
 	}
 }
 
+// cutReply is a reply of the form the provider cut at output_tokens, and cutSays what it says: a
+// whole answer inside the form's text, then the newline escapes a model running on inside the
+// form writes until the bound stops it, as the one reply the bound cut in 415 measured calls was.
+// No other reply says cutSays, so a request or an append holding it holds the cut reply.
+const cutSays = "PR 7 was green at abc123."
+
+var cutReply = `{"kind":"answered","text":"` + cutSays + strings.Repeat(`\n`, 64)
+
+// A reply the provider cut at output_tokens is not the agent's and is never sent back: agentloop
+// makes that call once again without it, inside the same model_calls, and the reply to the call
+// made again is posted, on both provider APIs. Every call is counted and priced, the cut one's
+// 4000 output tokens included, and the append holds the turns of every other call, the gh call
+// before the cut and the reply, with nothing of the cut reply in it or in what Oh My Pi's and
+// Claude Code's appenders write, so the conversation never holds a reply no later call was sent.
+func TestACutReplyIsMadeAgainAndTheAppendHoldsNoTraceOfIt(t *testing.T) {
+	const answered = `{"kind":"answered","text":"PR 7 is green.","needs":""}`
+	for _, c := range []struct {
+		name    string
+		openai  bool
+		replies []reply
+	}{
+		{name: "anthropic-messages", replies: []reply{
+			anthropicStream("tool_use", anthropicUsage{Input: 10, Output: 20}, anthropicThinking("Check the PR.", "sig-cut-1+/=="), anthropicGH("toolu_1", "pr", "view", "7")),
+			anthropicStream("max_tokens", anthropicUsage{Input: 30, Output: 4000}, anthropicText(cutReply)),
+			anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 25}, anthropicText(answered)),
+		}},
+		{name: "openai-responses", openai: true, replies: []reply{
+			openaiStream(openaiUsage{Input: 10, Output: 20}, "", openaiReasoning("rs_c1", "gAAAAcut+/one==", "Checking the PR"), openaiGH("fc_c1", "call_c1", "pr", "view", "7")),
+			openaiStream(openaiUsage{Input: 30, Output: 4000}, "max_output_tokens", openaiMessage("msg_cut", cutReply)),
+			openaiStream(openaiUsage{Input: 30, Output: 25}, "", openaiMessage("msg_answer", answered)),
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStandIn(t, c.replies...)
+			req, price := anthropicRequest(t, s, &stubGH{}, 4), anthropicPrice
+			if c.openai {
+				req, price = openaiRequest(t, s, &stubGH{}, 4), openaiPrice
+			}
+			reply, err := Answer(context.Background(), req)
+			if err != nil || reply.Fault != "" || reply.Kind != Answered || reply.Text != "PR 7 is green." {
+				t.Fatalf("reply %+v, %v; want the reply to the call made again, answered", reply, err)
+			}
+			want := (70*price.Input + 4045*price.Output) / 1e6
+			if u := reply.Usage; reply.Calls != 3 || u.InputTokens != 70 || u.OutputTokens != 4045 || math.Abs(reply.CostUSD-want) > 1e-12 {
+				t.Errorf("calls %d, usage %+v, cost $%.10f; want all three calls counted and priced at $%.10f, the cut one included", reply.Calls, u, reply.CostUSD, want)
+			}
+			got := s.requests()
+			if len(got) != 3 {
+				t.Fatalf("%d model calls, want 3", len(got))
+			}
+			for i, r := range got {
+				if bytes.Contains(r.body, []byte(cutSays)) {
+					t.Errorf("call %d carries the cut reply", i+1)
+				}
+			}
+			appended := reply.Append
+			if encoded, err := json.Marshal(appended); err != nil || bytes.Contains(encoded, []byte(cutSays)) {
+				t.Errorf("the append %s (%v) holds the cut reply", encoded, err)
+			}
+			if turns := appended.Turns; len(turns) != 2 || turns[0].Usage.OutputTokens != 20 || turns[1].Usage.OutputTokens != 25 {
+				t.Fatalf("turns %+v, want the gh call's and the reply's, not the cut call's", turns)
+			}
+			if err := appended.Validate(); err != nil {
+				t.Fatalf("the append does not validate: %v", err)
+			}
+			if c.openai {
+				return
+			}
+			for name, encode := range map[string]func(conversation.Append, time.Time) ([]byte, error){
+				"Oh My Pi": ompSession(t).Encode, "Claude Code": claudeSession(t).Encode,
+			} {
+				data, err := encode(appended, time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC))
+				if err != nil {
+					t.Fatalf("%s's appender refuses the append: %v", name, err)
+				}
+				if bytes.Contains(data, []byte(cutSays)) {
+					t.Errorf("%s's appender writes the cut reply:\n%s", name, data)
+				}
+				if !bytes.Contains(data, []byte("PR 7 is green.")) {
+					t.Errorf("%s's appender writes no reply:\n%s", name, data)
+				}
+			}
+		})
+	}
+}
+
+// A reply cut at output_tokens again after the call made again is no answer under length, as a
+// cut on the last model call model_calls allows is: the answer made each call it could, counts
+// and prices them all, and appends nothing.
+func TestACutReplyCutAgainIsALengthFault(t *testing.T) {
+	cut := func() reply {
+		return anthropicStream("max_tokens", anthropicUsage{Input: 30, Output: 4000}, anthropicText(cutReply))
+	}
+	answered := anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 25}, anthropicText(`{"kind":"answered","text":"PR 7 is green.","needs":""}`))
+	for _, c := range []struct {
+		name       string
+		modelCalls int
+		replies    []reply
+		// calls is how many model calls the answer makes.
+		calls int
+	}{
+		{name: "cut twice", modelCalls: 3, replies: []reply{cut(), cut(), answered}, calls: 2},
+		{name: "cut on the last allowed call", modelCalls: 1, replies: []reply{cut(), answered}, calls: 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStandIn(t, c.replies...)
+			reply, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, c.modelCalls))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reply.Fault != Length || reply.Kind != NotAnswered || reply.Text != "" || len(reply.Append.Turns) != 0 {
+				t.Fatalf("reply %+v, want no answer with fault %s", reply, Length)
+			}
+			if n := len(s.requests()); n != c.calls || reply.Calls != c.calls || reply.Usage.OutputTokens != int64(4000*c.calls) {
+				t.Errorf("%d model calls, reply calls %d, usage %+v; want %d cut calls counted", n, reply.Calls, reply.Usage, c.calls)
+			}
+		})
+	}
+}
+
 // A run no model call of which the provider metered is no answer either: a provider that sends
 // no usage, or a gateway between it and the daemon that strips it, leaves the answer unpriced,
 // so it would cost the project's daily bound nothing however many calls it made (Unmetered).

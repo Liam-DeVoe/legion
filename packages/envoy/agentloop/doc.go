@@ -158,6 +158,28 @@
 // they would be without it. An empty LastCall sends nothing, and a run without it sends exactly
 // what it sent before the field existed.
 //
+// # A reply cut for length
+//
+// A reply the provider cut for length is no answer, and a reply cut at Bounds.OutputTokens is
+// most often a model running on inside its structured reply rather than one with more to say.
+// Measured on the Legion daemon's answer loop on 2026-11-19: of 415 model calls, the longest
+// reply the bound of 4000 did not cut used 567 output tokens, and the one reply it cut was a
+// complete answer of some 350 tokens inside the form's string followed by some 3800 newline
+// escapes; five replays of that request with the bound at 64000 ended between 167 and 487
+// tokens. Sending such a reply back asks the model to go on from its runaway, so
+// Request.CallAgainWhenCut has the run make the cut call again instead, at most that many
+// times: the next call is sent the run's messages as they stood before the cut call, the SDK's
+// response messages less the cut call's own, and nothing of the cut reply. It is a model call
+// of the run like any other: Bounds.Calls counts it, it offers no tool and carries
+// Request.LastCall where it is the last allowed call, it is made only while Bounds.Time is
+// left, its cache marks fall where the cut call's did, and Request.Check reads its reply. The
+// cut call stays in Result.Steps, marked Step.Dropped so a caller that writes the steps back
+// into a conversation leaves it out, and its usage stays in Result.Usage. A cut past
+// CallAgainWhenCut, or a cut with no model call or no time left, ends the run with
+// FaultLength. A prompt past the model's context window, which Anthropic also ends as length,
+// is the same prompt on the call again, so that run ends with FaultLength one call later. A
+// request with a zero CallAgainWhenCut sends exactly what it sent before the field existed.
+//
 // # Bounds
 //
 // Bounds.Calls bounds model calls. A per-tool budget — how much work one tool will do before it

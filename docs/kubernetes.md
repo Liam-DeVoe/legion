@@ -1501,6 +1501,11 @@ answers:
   The message is the loop's own instruction to that call, as its system prompt is, so the exchange written into the agent's conversation never holds it.
 
 - `bounds.output_tokens` (4000): Output tokens per model call.
+  A reply the provider cuts there is taken for a model running on inside the reply form, not for a longer answer:
+  across 415 answer calls in three proof runs, the longest reply the bound did not cut used 567 output tokens, and the one it cut was a complete answer of about 350 tokens inside the form's `text`, followed by about 3800 newline escapes.
+  So a cut reply is never sent back to the model: the daemon makes the same model call once more without it, inside the same `model_calls` and `answer_seconds`, and the reply to that call is the agent's.
+  The exchange written into the agent's conversation never holds the cut reply, and its tokens and cost count in the answer's.
+  A second cut reply, or one on the last call `model_calls` allows, is `length` (below).
 
 - `bounds.gh_seconds` (30): How long one `gh` call may run.
 
