@@ -14,15 +14,17 @@ type command struct{}
 type secretForm struct { help command; run func() int }
 var secretForms []secretForm
 func init() { secretForms = []secretForm{{command{}, good}} }
+func main() { os.Exit(dispatch()) }
 func good() int { return exitUsageError }
+func waitBound(wait int) int { return wait }
 func dispatch() int {
 	for _, form := range secretForms { return form.run() }
 	return 0
 }
 `
 	for _, tc := range []struct{ name, before, after, want string }{
-		{"registered checked function", "", "", ""},
-		{"undocumented handler exit", "return exitUsageError", "return 17", "exit code 17"},
+		{"unreached int helper", "", "", ""},
+		{"real undocumented handler exit", "return exitUsageError", "return 17", "exit code 17"},
 		{"foreign handler", "command{}, good", "command{}, foreign.Run", "checked local exit-code function"},
 		{"literal callback", "command{}, good", "command{}, func() int { return 17 }", "checked local exit-code function"},
 		{"changed row", "return form.run()", "form.run = foreign.Run; return form.run()", "cannot be reassigned"},
