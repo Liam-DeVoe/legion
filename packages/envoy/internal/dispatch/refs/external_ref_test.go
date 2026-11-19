@@ -2,18 +2,23 @@ package refs
 
 import "testing"
 
-// A repository a person writes is read as Dispatch stores it: trimmed of the space around it,
-// lower-cased, and one trailing `.git` trimmed off the name. Each half is free of `/` and
-// whitespace and the name free of `#`, so `acme/widgets#5`, which names an issue, is no
-// repository, and neither is a name with a space in it or a third segment.
+// A repository is read as Dispatch stores it: lower-cased, and one trailing `.git` trimmed off the
+// name. Each half is free of `/` and whitespace and the name free of `#`, so `acme/widgets#5`,
+// which names an issue, is no repository, and neither is a name with a space in or around it or a
+// third segment: a caller that takes a value a person wrote trims it first, so each caller keeps
+// the reading it had when it read the value as a reference.
 //
-// The negative control is a reading that lets `#` into the name, which takes `acme/widgets#5`.
+// The negative controls are a reading that lets `#` into the name, which takes `acme/widgets#5`,
+// and one that trims the space around the value, which takes `acme/x ` and ` acme/x`.
 func TestParseExternalRepoReadsARepositoryAsDispatchStoresIt(t *testing.T) {
 	for _, row := range []struct {
 		raw, want string
 	}{
 		{raw: "acme/widgets", want: "acme/widgets"},
-		{raw: " Acme/Widgets.git\t", want: "acme/widgets"},
+		{raw: "Acme/Widgets.git", want: "acme/widgets"},
+		{raw: " acme/x"},
+		{raw: "acme/x "},
+		{raw: "acme/x\t"},
 		{raw: "acme/x.git.git", want: "acme/x.git"},
 		{raw: "mona-cat_octo/x", want: "mona-cat_octo/x"},
 		{raw: "acme/widgets#5"},

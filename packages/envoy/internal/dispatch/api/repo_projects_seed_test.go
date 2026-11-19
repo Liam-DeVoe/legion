@@ -226,6 +226,10 @@ func TestParseRepoProjectsRefusesANameTheSettingsRouteRefuses(t *testing.T) {
 		{raw: "acme/..=KEY"},
 		{raw: "acme/...git=KEY"},
 		{raw: "acme/widgets=KEY,acme/.git=KEY"},
+		// A space before the `=` stays in the name, as it did when the seed read the entry as a
+		// reference, so the entry is refused, and one around the whole entry is trimmed.
+		{raw: "acme/x =KEY"},
+		{raw: " acme/x=KEY ", want: map[string]string{"acme/x": "KEY"}},
 	} {
 		got, err := ParseRepoProjects(row.raw)
 		if row.want != nil {

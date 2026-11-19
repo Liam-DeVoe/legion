@@ -522,7 +522,7 @@ func mappingPath(repo string) (string, bool) {
 // removal's path by, and so does this. The route test (mapping_route_test.go) sends the requests
 // mappingRepairs names through the route itself.
 func storedName(owner, name string) (string, bool) {
-	return refs.ParseExternalRepo(owner + "/" + name)
+	return refs.ParseExternalRepo(strings.TrimSpace(owner + "/" + name))
 }
 
 // rawSegment is segment as a request path carries it: escaped, and `.` and `..` written as `%2E`

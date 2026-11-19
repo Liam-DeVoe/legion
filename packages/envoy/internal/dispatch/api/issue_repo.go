@@ -48,7 +48,7 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" or null`)
 	}
-	canonical, ok := refs.ParseExternalRepo(value)
+	canonical, ok := refs.ParseExternalRepo(strings.TrimSpace(value))
 	if !ok || !githubCouldHoldRepo(canonical) {
 		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" (got %q)`, value)
 	}

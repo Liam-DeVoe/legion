@@ -394,7 +394,7 @@ func sourcePathRepo(r *http.Request) (owner, name string, err error) {
 // splits and puts into GitHub paths: "acme/<100 characters>.git" is the 100
 // characters stored, and "acme/.git.git", "acme/.git" stored, is refused.
 func parseSourceRepo(raw string) (owner, name string, err error) {
-	canonical, ok := refs.ParseExternalRepo(raw)
+	canonical, ok := refs.ParseExternalRepo(strings.TrimSpace(raw))
 	if ok {
 		owner, name, err = refs.SplitGitHubRepo(canonical)
 	}

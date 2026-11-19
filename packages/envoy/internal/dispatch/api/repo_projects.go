@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -444,9 +445,11 @@ func deletedRepoProjectSpelling(r *http.Request) string {
 // canonical reading refuses it (refs.ParseExternalRepo), as every mapping's path was read before
 // repoProjectPath held it to GitHub's names: 400 INVALID_ISSUE_REF, and nil where that reading
 // takes it. A removal whose path names no stored mapping answers by it: 204 where it is nil, and
-// its 400 otherwise. No GitHub path is built from it here.
+// its 400 otherwise. Space before the owner is trimmed and space after the name is not, as the
+// route read a path when it read it as the reference `<path>#1`, whose leading space alone a trim
+// of the reference took off. No GitHub path is built from it here.
 func checkRepoProjectPath(spelled string) error {
-	if _, ok := refs.ParseExternalRepo(spelled); !ok {
+	if _, ok := refs.ParseExternalRepo(strings.TrimLeftFunc(spelled, unicode.IsSpace)); !ok {
 		return errorf(http.StatusBadRequest, "INVALID_ISSUE_REF", `the path must name a repository "owner/name" (got %q)`, spelled)
 	}
 	return nil

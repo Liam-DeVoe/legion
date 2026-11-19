@@ -15,14 +15,15 @@ var (
 	externalRefPattern = regexp.MustCompile(`^(\S*)#([1-9][0-9]*)$`)
 )
 
-// ParseExternalRepo reads raw, an `owner/name` with any space around it, into the repository it
-// names in the form Dispatch stores it (ExternalRepo), and false where raw has not that shape. It
-// is the one reading of a repository a person writes: the API reads an issue's repository, a
-// source's, a mapping's path and the boot seed's mappings through it, and the CI reconcile reads
-// a stored mapping's name back through it, so the request its warning names reaches the row the
-// route will read.
+// ParseExternalRepo reads raw, an `owner/name` with no space in or around it, into the repository
+// it names in the form Dispatch stores it (ExternalRepo), and false where raw has not that shape.
+// It trims nothing: a caller that takes a value a person wrote trims it first, as each did when it
+// read the value as the reference `<value>#1`. It is the one reading of a repository a person
+// writes: the API reads an issue's repository, a source's, a mapping's path and the boot seed's
+// mappings through it, and the CI reconcile reads a stored mapping's name back through it, so the
+// request its warning names reaches the row the route will read.
 func ParseExternalRepo(raw string) (repo string, ok bool) {
-	match := externalRepoPattern.FindStringSubmatch(strings.TrimSpace(raw))
+	match := externalRepoPattern.FindStringSubmatch(raw)
 	if match == nil {
 		return "", false
 	}
