@@ -197,6 +197,7 @@ the key stays the same across steps. `stack.sh` stops each process by the pid in
 ## Run one step
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/run-step.sh <name> --events <per s> --sessions <n> --requests <per s> \
   [--duration 180s] [--warmup 30s] [--grace 20s] [--event-mix <preset or kind=w,...>] \
   [--route-mix <file>] [--human 0.1] [--live <n>] [--rng-seed 1] [--xact-interval 10ms] \
@@ -364,6 +365,7 @@ step answers two questions: once the listener is back, how long is it before eve
 backlog that built up while it was down, and does any relay frame reach a session twice?
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/restart-step.sh <name> [--events 40] [--sessions 1000] [--requests 600] \
   [--duration 300s] [--out <dir>] [--warm-at 60] [--kill-at 120] [--down 30] \
   [--backlog-per 3] [--backlog-over 25s] [--warm-over 10s] [other run-step.sh flags]
@@ -449,6 +451,7 @@ both the `done` answer and the `identity` of every frame.
 ## Run the series
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/run-series.sh [step flags]
 ```
 
@@ -496,6 +499,7 @@ the build before the change and on the build after it, back to back, with the sa
 give each run its own name (for example `1x-before` and `1x-after`):
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 # 1x: the full REST mix of step-1x, plus 20 editors at 2 updates/s on 10 specs.
 packages/envoy/loadtest/run-step.sh 1x --events 4 --sessions 400 --requests 60 \
   --editors 20 --editor-rate 2 --editor-docs 10
@@ -896,6 +900,7 @@ The generator's revision tokens start at `r0`, because the database is at the se
 ## Before and after across commits
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/stack.sh setup         # build this checkout's Dispatch, listener and loadgen
 packages/envoy/loadtest/stack.sh start
 packages/envoy/loadtest/stack.sh seed --force  # seed with a build that has loadgen seed-refs
@@ -916,6 +921,7 @@ step uses), keep `LOADTEST_SRC` on this checkout and name the older one in
 `LOADTEST_DISPATCH_SRC`: the same `loadgen` then runs against both builds.
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 LOADTEST_DISPATCH_SRC=<base checkout> packages/envoy/loadtest/run-step.sh restart-before <flags>
 packages/envoy/loadtest/run-step.sh restart-after <flags>
 ```
@@ -1372,6 +1378,7 @@ holds the restored replay seed (`stack.sh replay-seed`'s dump), whose
 `loadgen run` reads that table once, over the stack's Postgres URL, before the window.
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 # One replay step (setup, start, replay-get, replay-prepare, reset --replay, loadgen run, tables).
 # LOADTEST_REPLAY_ISSUE names the issue the bundle's and the seed's parts are file artifacts of:
 LOADTEST_REPLAY_ISSUE=<issue> packages/envoy/loadtest/run-step.sh replay-f0.05 --replay --rate 0.05
@@ -1801,6 +1808,7 @@ interleaved on one box in one session; runs from two sessions, or two boxes, are
 
 ```bash
 export LOADTEST_REPLAY_ISSUE=<issue>
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 for i in 1 2 3; do
   packages/envoy/loadtest/run-step.sh base-$i --replay --rate 0.05 --rng-seed 1 --gomaxprocs 2 --dispatch-commit B
   packages/envoy/loadtest/run-step.sh head-$i --replay --rate 0.05 --rng-seed 1 --gomaxprocs 2 --dispatch-commit H
@@ -1873,6 +1881,7 @@ the refetch a browser makes, and comments that mention live sessions through a s
 same `loadgen` runs against both Dispatch builds (Before and after across commits, above):
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/stack.sh seed --min-events 13000
 packages/envoy/loadtest/run-step.sh restart-1x --events 4 --sessions 400 --requests 60 \
   --live 50 --live-resume 1 --live-stale 10 --restart-at 90s \
