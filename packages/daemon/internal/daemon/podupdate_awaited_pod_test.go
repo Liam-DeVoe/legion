@@ -110,8 +110,8 @@ func (r *podUpdateRig) retryLaunch() {
 // and it keeps waiting on the same pod through them. The sweep opens the round over that pod,
 // asks the claim nothing and waits on no answer of it, and replaces the pod through the locator
 // the refusal named. The claim's next try comes up in the pod that replaced it, which has drifted
-// from nothing, and the round ends having told the issue and the controller nothing: no worker
-// lost work.
+// from nothing, and the round ends having told the issue and the controller nothing: a
+// replacement before the round's bound writes on no issue and tells no controller.
 func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	token := rig.tokens[claim.RoleImplementer]
@@ -276,10 +276,13 @@ func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
 
 // The round's answer set: a claim whose launch waits on the round's own pod is one the round is
 // recorded on — with a session or without, since it may be the issue's only claim — and one the
-// replacement waits on no answer of and the gone-pod report names nothing of, since it has no
-// process in that pod. A claim with a session that waits on another pod, and every claim with no
-// process that waits on none, is weighed as before. A claim with no session that waits on another
-// pod is no way to this round's pod and never had a worker, so this round reads nothing of it.
+// replacement waits on no answer of, since it has no process in that pod. With a session and no
+// answer, the gone-pod report names it as having lost what it left unpushed, as any member: its
+// process can have died in that pod before its relaunch was refused. With no session it never had
+// a worker, and the report names nothing of it. A claim with a session that waits on another pod,
+// and every claim with no process that waits on none, is weighed as before. A claim with no
+// session that waits on another pod is no way to this round's pod and never had a worker, so this
+// round reads nothing of it.
 func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 	round := podUpdateRound
 	for name, tc := range map[string]struct {
@@ -287,7 +290,7 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 		blocking, waiting, lost bool
 	}{
 		"it waits on the round's pod, with a session": {
-			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true), blocking: true},
+			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true), blocking: true, lost: true},
 		"it waits on the round's pod, with no session": {
 			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), blocking: true},
 		"it waits on another pod, with a session": {
