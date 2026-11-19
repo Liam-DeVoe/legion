@@ -191,6 +191,7 @@ type Store struct {
 	// registrar's write of that name runs (TestTwoDaemonsFirstWritesOfOneNameAdmitOne); no
 	// production caller sets it.
 	testWriteHook func(ctx context.Context)
+
 	// sessionPairs maps each account principal to every principal it is paired with for session
 	// names, both ways (SetSessionPairs, the one writer, so the map is symmetric). nil pairs
 	// nothing.
@@ -203,6 +204,7 @@ type Store struct {
 	// ReserveSessions read. nil reserves nothing. It must be set before the store serves an
 	// enrollment or a token exchange.
 	Reserved map[string]string
+
 	// sweepMu serialises Sweep's refresh walk, which reads and advances sweepAt.
 	sweepMu sync.Mutex
 	sweepAt sweepCursor

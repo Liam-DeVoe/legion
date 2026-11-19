@@ -148,10 +148,10 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // such a claim may be the issue's only one. So that pod is the group's pod (groupPod), its drift
 // is read through that claim (groupDrift), and the round opens over it as over a pod a process
 // runs in. The round waits on no answer and no turn of such a claim, since it has no process
-// there (waitingClaims), and which such claims a gone pod or a replacement names as having lost
-// work is lostClaims' question. Where no claim records a process in the pod, the pod is replaced
-// through it (podProcess), and its next try, within a minute, comes up in the pod that replaced
-// it (dispatch://INFRA-4425 R4).
+// there (waitingClaims). Which such claims a gone pod names as having lost work is lostClaims'
+// question, and which ones a replacement's line names is unwaitedOnThePod's. Where no claim
+// records a process in the pod, the pod is replaced through it (podProcess), and its next try,
+// within a minute, comes up in the pod that replaced it (dispatch://INFRA-4425 R4).
 //
 // A group whose claims record no pod at all, neither a process nor a pod a launch waits on,
 // decides nothing from its claims: no locator is no evidence either way — every claim of the
@@ -1690,9 +1690,11 @@ func lostClaims(group []supervise.Claim, round string) []supervise.Claim {
 // whatever its worker left unpushed went with the pod. A claim with no session that waits on the
 // pod never had a worker, and the line names nothing of it.
 //
-// It names more than lostClaims does: lostClaims names only a member of the round (memberOf),
-// and this one also names a waiting claim the round has not reached yet, which records another
-// round or none (waitingClaims).
+// Neither it nor lostClaims names all of what the other names. lostClaims names every member of
+// the round (memberOf) with a session that had not answered, a claim that runs in the pod or is
+// suspended included, which this one never names. Of the claims whose launch waits on the
+// round's pod, this one names more: it also names one the round has not reached yet, which
+// records another round or none (waitingClaims), and which is no member.
 func unwaitedOnThePod(group []supervise.Claim, round string) []supervise.Claim {
 	var unwaited []supervise.Claim
 	for _, c := range askedClaims(group, round) {
