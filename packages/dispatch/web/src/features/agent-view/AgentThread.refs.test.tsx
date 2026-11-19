@@ -153,6 +153,7 @@ function Harness({
         front
         held={false}
         initialPlace={null}
+        notice={undefined}
         onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"
