@@ -1,10 +1,9 @@
 # shellcheck shell=bash disable=SC2154,SC2034 # the variables below are the caller's (listed below)
 # A reverse tunnel from the devbox to a scratch pod+Service of the run's own, for a cluster whose
 # pods cannot reach the devbox at all (no tailnet bridge, no routable private address — GKE's
-# pattern, unlike AWS's directly-reachable private address). Shared by two callers:
-# stage4a-sandbox-runtime.sh's LEGION_E2E_POD_REACHABILITY=bridge mode (two ports: the worker
-# stream and the session database) and claude-backend-sandbox.sh (six ports: the daemon API, the
-# worker stream, Dispatch, the Envoy listener, NATS and the session database). Pods dial the
+# pattern, unlike AWS's directly-reachable private address), for claude-backend-sandbox.sh (six
+# ports: the daemon API, the worker stream, Dispatch, the Envoy listener, NATS and the session
+# database). Pods dial the
 # Service; the Service's one pod runs a chisel reverse-tunnel server (mirror.gcr.io/jpillora/chisel,
 # pinned by digest). This file is a devbox live proof no CI job runs, which is why it keeps Google's
 # mirror rather than a copy in ghcr.io/cybermonklabs/legion/ci (.github/scripts/check-ci-images.sh names

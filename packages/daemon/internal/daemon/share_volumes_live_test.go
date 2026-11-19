@@ -177,7 +177,7 @@ func shareLivePodShares(t *testing.T, rig *kindtest.Rig, pod, seed string) {
 	started := time.Now()
 	fmt.Printf("== pod-shares\n")
 	enter, err := exec.Command("bash", "-c", `. "$1" && printf %s "$role_enter_sh"`, "role-enter",
-		filepath.Join("..", "..", "..", "..", "scripts", "e2e", "lib", "role-namespaces.sh")).Output()
+		filepath.Join(kindtest.RepositoryRoot(t), "scripts", "e2e", "lib", "role-namespaces.sh")).Output()
 	if err != nil || len(enter) == 0 {
 		t.Fatalf("read role_enter_sh from scripts/e2e/lib/role-namespaces.sh: %v", err)
 	}

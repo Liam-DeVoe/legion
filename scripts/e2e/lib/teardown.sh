@@ -49,9 +49,8 @@ teardown_sequence() {
 
 # kill_harness stops the Go test process directly, not just the shell's own `wait` on it: cleanup
 # calls it defensively, and the watchdog (lib/bridge-tunnel.sh) calls it from both of its own
-# give-up paths, since merely interrupting `wait` (which a trapped signal does immediately — the
-# harness invocation in stage4a-sandbox-runtime.sh explains why that matters) leaves the harness
-# itself running as an orphan unless something also kills the process.
+# give-up paths, since merely interrupting `wait`, which a trapped signal does immediately, leaves
+# the harness itself running as an orphan unless something also kills the process.
 kill_harness() {
   [ -f "$work/harness.pid" ] || return 0
   kill "$(cat "$work/harness.pid")" 2>/dev/null || true

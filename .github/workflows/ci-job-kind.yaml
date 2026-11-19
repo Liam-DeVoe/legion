@@ -13,8 +13,8 @@ name: CI job kind
 # as github.com and api.github.com through a CoreDNS rule. packages/daemon/internal/kindtest
 # brings that rig up from the test process, and every pin of it is
 # scripts/e2e/lib/kind-sandbox.sh's: kind v0.33.0 built with `go install`, the node, registry,
-# busybox and NFS server images by the digests of their .github/ci-images.yaml rows, Agent
-# Sandbox's vendored manifest and gVisor's dated release.
+# busybox, NFS server and PostgreSQL images by the digests of their .github/ci-images.yaml rows,
+# Agent Sandbox's vendored manifest and gVisor's dated release.
 #
 # image builds the worker image under test, once per run, when the caller hands none. On a pull
 # request whose worker-image job built the head, ci.yaml hands that job's pushed reference
@@ -29,17 +29,22 @@ name: CI job kind
 # worker_image filter's own paths, so a change the image is built from runs this job whichever
 # of the two builds the run's image comes from.
 #
-# rig is the job's one part: it brings the rig up and runs the one Go test
-# .github/scripts/ci_job_reads.py's KIND_TESTS names, which daemon-go's two steps skip by name.
-# The test times each piece of the rig by name (the pinned kind's build, the cluster, Agent
-# Sandbox, gVisor, the registry, the fake GitHub, the worker image's pull or load, the build FROM
-# it of the image that trusts the fake GitHub's authority, the push of both into the registry and
-# the load into the node), then runs a Burstable Sandbox under gVisor that clones a private
+# rig is the job's one part for now: it runs every Go test .github/scripts/ci_job_reads.py's
+# KIND_TESTS names, which daemon-go's two steps skip by name, one package at a time, each test on a
+# rig of its own. Grouping them by measured time into parts of their own is a later change. The
+# rig's measuring test times each piece of the rig by name (the pinned kind's build, the cluster,
+# Agent Sandbox, gVisor, the registry, the fake GitHub, the worker image's pull or load, the build
+# FROM it of the image that trusts the fake GitHub's authority, the push of both into the registry
+# and the load into the node), then runs a Burstable Sandbox under gVisor that clones a private
 # repository from the fake GitHub and a gVisor pod that mounts an NFS share of a server in the
-# cluster, and logs `df -h` before the rig and with it up. Those measurements size the kind tests
-# that come after it. A failed test leaves the cluster's pods, Sandboxes, events, logs and the
-# Agent Sandbox controller's log, and the fake GitHub's requests, under kind-logs, which the step
-# after it uploads.
+# cluster, and logs `df -h` before the rig and with it up. internal/daemon's three live tests
+# launch issue pods and a project controller through the Sandbox runtime the daemon builds from a
+# legion.yaml, with small explicit reservations, and the Sandbox runtime's own live test,
+# TestStage4aSandboxRuntimeLive, runs its checks as subtests, against a restricted identity of the
+# cluster's own, PostgreSQL in the cluster and this repository's own broker in the test process.
+# A failed test leaves the cluster's pods, Sandboxes, events, logs and the Agent Sandbox
+# controller's log, the fake GitHub's requests and the runtime's own log under kind-logs, which
+# the step after it uploads.
 #
 # Each job's last step reports ci-ok for the caller: on a merge-group run that job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -138,11 +143,13 @@ jobs:
     # whose own report has posted the failure.
     if: ${{ !cancelled() && needs.image.result != 'failure' }}
     runs-on: ubuntu-24.04
-    # The step's own -timeout is 35 minutes, inside which the measured pieces run; the trial runs
-    # of the two kind scripts on this runner (spec, "gVisor and NFS in kind") brought a cluster,
-    # Agent Sandbox, gVisor and the worker image up in under ten. Around the step are the disk's
-    # cleanup, the archive's download and the test binary's build.
-    timeout-minutes: 50
+    # The step runs one package at a time, each test bringing a rig up in about five minutes (the
+    # rig's first CI run): the measuring test, about six minutes in all; internal/daemon's three,
+    # about half an hour between them, the share test's probes the longest; and the sandbox
+    # runtime's, about an hour, its forty checks each a pod start under gVisor or a wait of a minute
+    # or two: about an hour and a half. Two and a half hours holds the three with room for the
+    # disk's cleanup, the archive's download, the bun install and the test binaries' builds.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -173,29 +180,39 @@ jobs:
           name: kind-worker-image-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kind-image
 
-      # The test builds its package's test binary, and the rig's library builds kind with `go
-      # install`, which reads only kind's own module.
+      # The sandbox runtime's live test packs this checkout's pi-envoy and pi-legion through
+      # scripts/e2e/lib/pack-plugin.sh, which builds each bundle over the installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The tests build their packages' test binaries, the rig's library builds kind with `go
+      # install`, which reads only kind's own module, and the sandbox runtime's test builds the
+      # checkout's agent-secrets in packages/envoy.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
 
-      # The one test, by name. .github/scripts/ci_job_reads.py builds this text and daemon-go's
-      # two `-skip`s from KIND_TESTS and holds the steps to what it builds. The image comes by the
-      # caller's reference or the image job's archive (internal/kindtest's ImageEnv and
-      # ImageArchiveEnv), and a failed test's state goes to kind-logs.
-      - name: Run the rig's measuring test
+      # The tests, by name, one package at a time. .github/scripts/ci_job_reads.py builds this text
+      # and daemon-go's two `-skip`s from KIND_TESTS and holds the steps to what it builds. The image
+      # comes by the caller's reference or the image job's archive (internal/kindtest's ImageEnv
+      # and ImageArchiveEnv), and a failed test's state goes to kind-logs.
+      - name: Run the kind tests
         env:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
           LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
           LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
-        run: go test -v -count=1 -timeout 35m -run '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub)$' ./internal/kindtest/
+        run: go test -v -count=1 -p 1 -timeout 90m -run '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestABurstableIssuePodRendersLive|TestShareVolumesMountInAnIssuePodLive|TestStage4aSandboxRuntimeLive|TestTheControllerOrphanSweepLive)$' ./internal/kindtest/ ./internal/daemon/ ./internal/runtime/sandbox/
         working-directory: packages/daemon
 
       # A failed test's state, one directory per test: the cluster's nodes, pods, the legion
-      # namespace's Sandboxes and volume claims, its pods' descriptions and logs and the NFS
-      # server's, every event, the Agent Sandbox controller's log and the fake GitHub's requests.
+      # namespace's Sandboxes and volume claims, its pods' descriptions and logs and the NFS and
+      # PostgreSQL servers', every event, the Agent Sandbox controller's log, the fake GitHub's
+      # requests, and the sandbox runtime's own log.
       - name: Upload the rig's state at the failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -27,6 +27,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/testprereq"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/fakegithub"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -82,8 +84,11 @@ type Rig struct {
 	// of the image trust the fake as GitHub.
 	Image string
 
+	// Evidence is the directory a failed test's cluster state goes to (LogDirEnv), where a test
+	// keeps its own logs for the same upload.
+	Evidence string
+
 	lib, work, kind string
-	evidence        string
 	measured        []measurement
 }
 
@@ -158,12 +163,12 @@ func prepare(t *testing.T) *Rig {
 	testprereq.Require(t, os.Getenv(ImageEnv) != "" || os.Getenv(ImageArchiveEnv) != "", job,
 		"the kind rig starts the worker image under test, which %s names by digest or %s names an archive of; neither is set", ImageEnv, ImageArchiveEnv)
 	r := &Rig{
-		lib:  filepath.Join(repositoryRoot(t), "scripts", "e2e", "lib", "kind-sandbox.sh"),
+		lib:  filepath.Join(RepositoryRoot(t), "scripts", "e2e", "lib", "kind-sandbox.sh"),
 		work: t.TempDir(), kind: "kind",
 		Name: fmt.Sprintf("legion-rig-%d", os.Getpid()),
 	}
 	r.Kubeconfig, r.Context, r.Node = filepath.Join(r.work, "kubeconfig"), "kind-"+r.Name, r.Name+"-control-plane"
-	r.evidence = evidenceDir(t)
+	r.Evidence = evidenceDir(t)
 	t.Cleanup(func() { r.teardown(t) })
 	return r
 }
@@ -294,6 +299,70 @@ func LeakCheckAPI(t *testing.T, token string) string {
 func LeakCheck(t *testing.T) *leakguard.Source {
 	t.Helper()
 	return &leakguard.Source{API: LeakCheckAPI(t, leakCheckToken), Token: func(context.Context) (string, error) { return leakCheckToken, nil }}
+}
+
+// AppTokenCommand is a github_apps.<role>.token_command for app, installed on owners, whose every
+// token the fake GitHub takes: the stand-in for a secrets broker's release of an App's
+// installation tokens (appauth's token mode, tokencommand.go). The command asks a server of this
+// process's own, on its loopback, for the release appauth reads, minted by the fake GitHub
+// (fakegithub.Server.InstallationToken) for the owner LEGION_GITHUB_OWNER names, or for each of
+// owners where it is empty, each read-only where LEGION_GITHUB_READ_ONLY is 1 and able to push
+// otherwise. The server answers until the test ends.
+func (r *Rig) AppTokenCommand(t *testing.T, app fakegithub.App, owners ...string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		query := request.URL.Query()
+		wanted := owners
+		if owner := query.Get("owner"); owner != "" {
+			wanted = []string{owner}
+		}
+		installations := map[string]any{}
+		for _, owner := range wanted {
+			token, installation, expires := r.GitHub.InstallationToken(t, app, owner, query.Get("read_only") != "1")
+			if token == "" {
+				http.Error(w, "the App "+app.Slug+" is not installed on "+owner, http.StatusNotFound)
+				return
+			}
+			installations[owner] = map[string]any{"installation_id": installation, "token": token, "expires_at": expires.Format(time.RFC3339)}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"installations": installations})
+	}))
+	t.Cleanup(server.Close)
+	return fmt.Sprintf(`curl -fsS "%s/release?owner=${%s:-}&read_only=${%s:-}"`, server.URL, appauth.TokenCommandOwner, appauth.TokenCommandReadOnly)
+}
+
+// ServiceAccountToken is a token the cluster's API server issues for the ServiceAccount
+// namespace/account, for audience (the API server's own where empty), living lifetime: what a pod
+// of that account is projected, minted from this process (`kubectl create token`). It fails no
+// test, so a goroutine that mints the next one before the last expires may call it.
+func (r *Rig) ServiceAccountToken(namespace, account, audience string, lifetime time.Duration) (string, error) {
+	args := []string{"-n", namespace, "create", "token", account, "--duration", lifetime.String()}
+	if audience != "" {
+		args = append(args, "--audience", audience)
+	}
+	out, err := r.kubectl(nil, args...)
+	if token := strings.TrimSpace(out); err != nil || token == "" {
+		return "", fmt.Errorf("kubectl create token %s/%s: %v: printed %d bytes", namespace, account, err, len(token))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// IssuerClient is an HTTP client of this process that trusts the cluster's own authority alone,
+// the one its API server's certificate is signed by: what reads the service-account issuer
+// (Issuer), its discovery document and its keys, as a verifier of the cluster's tokens does.
+func (r *Rig) IssuerClient(t *testing.T) *http.Client {
+	t.Helper()
+	encoded := r.Kubectl(t, "config", "view", "--raw", "--minify", "-o", "jsonpath={.clusters[0].cluster.certificate-authority-data}")
+	authority, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil {
+		t.Fatalf("read the cluster's authority from its kubeconfig: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(authority) {
+		t.Fatal("the cluster's kubeconfig holds no authority certificate")
+	}
+	return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
 }
 
 // Pod is what a test reads of a pod.
@@ -437,17 +506,7 @@ func (r *Rig) docker(t *testing.T, args ...string) string {
 // the cluster's own authority alone, and fails t unless it names the issuer and keys under it.
 func (r *Rig) checkIssuer(t *testing.T) {
 	t.Helper()
-	encoded := r.Kubectl(t, "config", "view", "--raw", "--minify", "-o", "jsonpath={.clusters[0].cluster.certificate-authority-data}")
-	authority, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
-	if err != nil {
-		t.Fatalf("read the cluster's authority from its kubeconfig: %v", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(authority) {
-		t.Fatal("the cluster's kubeconfig holds no authority certificate")
-	}
-	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
-	response, err := client.Get(r.Issuer + "/.well-known/openid-configuration")
+	response, err := r.IssuerClient(t).Get(r.Issuer + "/.well-known/openid-configuration")
 	if err != nil {
 		t.Fatalf("read the issuer's discovery document: %v", err)
 	}
@@ -546,11 +605,11 @@ func (r *Rig) teardown(t *testing.T) {
 		status = "1"
 		if r.GitHub != nil {
 			requests := strings.Join(r.GitHub.Requests(), "\n") + "\n"
-			if err := os.WriteFile(filepath.Join(r.evidence, "fake-github-requests.txt"), []byte(requests), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(r.Evidence, "fake-github-requests.txt"), []byte(requests), 0o644); err != nil {
 				t.Logf("keep the fake GitHub's requests: %v", err)
 			}
 		}
-		t.Logf("the rig's state at the failure is in %s", r.evidence)
+		t.Logf("the rig's state at the failure is in %s", r.Evidence)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -559,7 +618,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 . "$1"
 kind_sandbox_use "$2" "$3"
 kind_sandbox_teardown "$4" "$5"`
-	command := exec.CommandContext(ctx, "bash", "-c", script, "kind-rig", r.lib, r.Name, r.work, status, r.evidence)
+	command := exec.CommandContext(ctx, "bash", "-c", script, "kind-rig", r.lib, r.Name, r.work, status, r.Evidence)
 	command.Env = append(os.Environ(), "LEGION_E2E_KIND="+r.kind)
 	if out, err := command.CombinedOutput(); err != nil || len(out) > 0 {
 		t.Logf("teardown of %s: %v: %s", r.Name, err, out)
@@ -586,9 +645,9 @@ func evidenceDir(t *testing.T) string {
 	return dir
 }
 
-// repositoryRoot is the checkout this test runs in: the nearest directory above the working
-// directory that holds the rig's library.
-func repositoryRoot(t *testing.T) string {
+// RepositoryRoot is the checkout this test runs in: the nearest directory above the working
+// directory that holds the rig's library, which a kind test reads its repository's own files from.
+func RepositoryRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
 	if err != nil {

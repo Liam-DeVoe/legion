@@ -27,8 +27,7 @@
 # new generation and register there.
 #
 # It is the rig of the Claude Code backend's tmux proof (packages/daemon/internal/daemon/
-# claude_backend_live_test.go) on the cluster proof's cluster
-# (scripts/e2e/stage4a-sandbox-runtime.sh): scratch Postgres, NATS, Envoy listener and Dispatch from
+# claude_backend_live_test.go) on a real cluster: scratch Postgres, NATS, Envoy listener and Dispatch from
 # lib/rig.sh, `admission_cap: 1`, `gates.design: off`, the smoke repository sjawhar/legion-smoke
 # where the implementer pushes a branch and opens no pull request — and, for the runtime, an
 # existing cluster named by LEGION_E2E_RUNTIME_CONTEXT, the namespace `legion`, LEGION_E2E_IMAGE
@@ -46,8 +45,8 @@
 # under test — the branch carrying this repository's Claude Code lane, the Claude Code pin and the
 # `@sjawhar/claude-envoy` plugin in the image — before this proof can run, and LEGION_E2E_IMAGE
 # names that published image by its digest, never by a tag. Iteration may run the same script body
-# against a throwaway kind cluster with Agent Sandbox and gVisor (lib/kind-sandbox.sh, the pattern
-# of burstable-kind.sh, controller-sweep-kind.sh and share-volumes-kind.sh), which loads the same
+# against a throwaway kind cluster with Agent Sandbox and gVisor (lib/kind-sandbox.sh, the rig of
+# the kind job's tests), which loads the same
 # image by digest into the node's containerd; the recorded run is the one against the cluster.
 #
 # Devbox only, and one run at a time. LEGION_E2E_POD_REACHABILITY picks how the pods reach the

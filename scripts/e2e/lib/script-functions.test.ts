@@ -107,7 +107,7 @@ describe("every helper a stage script defines is called", () => {
     ...new Bun.Glob("lib/*.{sh,ts,py,jq}").scanSync({ cwd: e2e, absolute: true }),
   ].map((file) => readFileSync(file, "utf8"));
 
-  for (const name of ["stage4b-sandbox-tree.sh", "stage4a-sandbox-runtime.sh"]) {
+  for (const name of ["stage4b-sandbox-tree.sh"]) {
     test(name, () => {
       const text = readFileSync(join(e2e, name), "utf8");
       const defined = [...text.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm)].map((m) => m[1]);

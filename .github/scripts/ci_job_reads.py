@@ -1745,26 +1745,47 @@ PLUGIN_SMOKE_RUNS = [
 # internal/kindtest brings up on the runner - a kind cluster with Agent Sandbox's controller and
 # gVisor, the fake GitHub of internal/fakegithub, which the cluster's pods reach as github.com,
 # and the worker image of this commit - and which every piece of comes from
-# scripts/e2e/lib/kind-sandbox.sh. Today that is the rig's own measuring test, which the job's rig
-# part runs. Each file of KIND_FILES is taken whole, as AGENT_HARNESS_FILES are, and
-# hold_whole_files() holds KIND_TESTS to them. Both of daemon-go's steps skip KIND_TESTS by name,
-# built from this one list as the rig part's -run is - the plain step runs internal/kindtest, and
-# the race step the package a kind test of internal/daemon is in - so a kind test runs once per
-# run of the router, in the kind job, where its reads are that job's inputs: the rig's library,
-# Agent Sandbox's manifest and CRD, and every file the worker image is built from
-# (worker_image_reads below), none of which daemon-go's filter needs to name.
-KIND_FILES = ["rig_test.go"]
-KIND_TESTS = ["TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub"]
-KIND_PACKAGE = "internal/kindtest"
+# scripts/e2e/lib/kind-sandbox.sh: the rig's own measuring test, the three live tests of
+# internal/daemon that launch issue pods and a controller through the Sandbox runtime, and the
+# Sandbox runtime's own live test, TestStage4aSandboxRuntimeLive, one subtest per check. The job's
+# rig part runs them all for now, one package at a time. KIND_PACKAGE_FILES names, for each
+# package, the files the job takes whole, as AGENT_HARNESS_FILES are, and the tests of them, and
+# hold_whole_files() holds each package's list to its files. Both of daemon-go's steps skip
+# KIND_TESTS by name, built from the same lists as the rig part's -run is - the plain step runs
+# internal/kindtest and internal/runtime/sandbox, and the race step internal/daemon - so a kind
+# test runs once per run of the router, in the kind job, where its reads are that job's inputs:
+# the rig's library, Agent Sandbox's manifest and CRD, every file the worker image is built from
+# (worker_image_reads below), and what the live tests read beside them, none of which daemon-go's
+# filter needs to name.
+KIND_PACKAGE_FILES = {
+    "internal/kindtest": (["rig_test.go"], ["TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub"]),
+    "internal/daemon": (["burstable_live_test.go", "controller_sweep_live_test.go", "share_volumes_live_test.go"],
+                        ["TestABurstableIssuePodRendersLive", "TestTheControllerOrphanSweepLive",
+                         "TestShareVolumesMountInAnIssuePodLive"]),
+    "internal/runtime/sandbox": (["live_app_test.go", "live_cache_test.go", "live_displaced_test.go", "live_install_test.go",
+                                  "live_lifecycle_test.go", "live_operator_test.go", "live_pod_update_test.go",
+                                  "live_secrets_test.go", "live_sessions_test.go", "live_setup_test.go", "live_test.go"],
+                                 ["TestStage4aSandboxRuntimeLive"]),
+}
+KIND_PACKAGES = list(KIND_PACKAGE_FILES)
+KIND_TESTS = [test for _, tests in KIND_PACKAGE_FILES.values() for test in tests]
 KIND_JOB = "kind"
 KIND_WORKFLOW = job_file(KIND_JOB)
 KIND_IMAGE = "image"
 KIND_IMAGE_STEP = "Build the worker image into a docker archive"
 KIND_RIG = "rig"
-KIND_STEP = "Run the rig's measuring test"
+KIND_STEP = "Run the kind tests"
 KIND_PATTERN = f"'^({'|'.join(sorted(KIND_TESTS))})$'"
-KIND_SCRIPT = f"go test -v -count=1 -timeout 35m -run {KIND_PATTERN} ./{KIND_PACKAGE}/"
-hold_whole_files(KIND_JOB, KIND_PACKAGE, KIND_FILES, KIND_TESTS, "KIND_FILES", "KIND_TESTS", both_steps=True)
+# -p 1: each package's tests bring up a rig of their own, a kind cluster, a registry and the worker
+# image in Docker, which one runner holds one of at a time. -timeout is each test binary's own: the
+# sandbox runtime's, the longest, is one rig (about five minutes in the rig's first CI run), the
+# checkout's agent-secrets build and plugin pack, and some forty checks, each a pod start under
+# gVisor or a wait of a minute or two, so about an hour; 90m leaves half again over it.
+KIND_SCRIPT = (f"go test -v -count=1 -p 1 -timeout 90m -run {KIND_PATTERN} "
+               + " ".join(f"./{package}/" for package in KIND_PACKAGES))
+for _package, (_files, _tests) in KIND_PACKAGE_FILES.items():
+    hold_whole_files(KIND_JOB, _package, _files, _tests, f"KIND_PACKAGE_FILES[{_package!r}]'s files",
+                     f"KIND_PACKAGE_FILES[{_package!r}]'s tests", both_steps=True)
 # The rig's own files beside the worker image's: the library every piece of it is a function of,
 # and the Agent Sandbox CRD and manifest kind_sandbox_install_agent_sandbox applies.
 KIND_LIB = "scripts/e2e/lib/kind-sandbox.sh"
@@ -3213,31 +3234,51 @@ GATES = [
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
 
     # The kind job: its rig part runs the tests of KIND_TESTS, which both daemon-go steps skip by
-    # name, and compiles the package they are in to do it, so this filter is that package's whole
-    # test closure - internal/kindtest and the fake GitHub it serves, internal/fakegithub - as
-    # well as what the rig reads beyond it: scripts/e2e/lib/kind-sandbox.sh, whose functions are
-    # every piece of the rig, and the Agent Sandbox CRD and manifest its install applies, and every
-    # file the worker image under test is built from. The image job builds that image from the
-    # worker_image filter's files when the run's worker-image job did not, and the parts take
-    # worker-image.yaml's build of them when it did, so the image the rig runs is a read of the
-    # job either way, and check-image-trigger-paths.sh holds this filter to the image job's build
-    # as it holds worker_image to worker-image.yaml's. Those reads are declared here, keyed on the
-    # job, rather than in a RULES row of internal/kindtest's test file, which the daemon-go plain
-    # step compiles and runs none of. The called file's jobs carry ids of their own, so this gate
-    # keeps `workflow=CI`, as agent_harness does.
+    # name, and compiles the packages they are in to do it, so this filter is those packages' whole
+    # test closure - internal/kindtest and the fake GitHub it serves, internal/fakegithub,
+    # internal/daemon, internal/runtime/sandbox and the broker's test rig they reach through
+    # envoy's public brokertest - as well as what the rig reads beyond it: scripts/e2e/lib/
+    # kind-sandbox.sh, whose functions are every piece of the rig, and the Agent Sandbox CRD and
+    # manifest its install applies, and every file the worker image under test is built from. The
+    # image job builds that image from the worker_image filter's files when the run's worker-image
+    # job did not, and the parts take worker-image.yaml's build of them when it did, so the image
+    # the rig runs is a read of the job either way, and check-image-trigger-paths.sh holds this
+    # filter to the image job's build as it holds worker_image to worker-image.yaml's. Beside them
+    # are the live tests' own reads: the operator route's files, the role-namespace helper, the
+    # plugin pack and the frozen bun install it needs, and the checkout's agent-secrets, which the
+    # sandbox runtime's test builds. Those reads are declared here, keyed on the job, rather than in
+    # RULES rows of the tests' files, which the daemon-go steps compile and run none of. The called
+    # file's jobs carry ids of their own, so this gate keeps `workflow=CI`, as agent_harness does.
     gate("kind", KIND_JOB, exact=[
         pinned_step(KIND_RIG, KIND_STEP, DAEMON, KIND_SCRIPT, [
-            (DAEMON, [f"./{KIND_PACKAGE}/"], "go test -run over the package the rig's tests are in", {}),
+            (DAEMON, [f"./{package}/" for package in KIND_PACKAGES], "go test -run over the packages the kind tests are in", {}),
+            (ENVOY, ["./cmd/agent-secrets"], "internal/runtime/sandbox/live_test.go:434 newKindLiveEnv runs go build "
+                                            "./cmd/agent-secrets in packages/envoy", {"mode": "build"}),
         ], workflow=KIND_WORKFLOW),
     ], reads=reads(
-        (KIND_LIB, f"{at_kind_rig(KIND_STEP)}: packages/daemon/internal/kindtest/kindtest.go:319 sources it for each "
-                   "piece of the rig, and :480 for its teardown"),
-        (f"{KIND_TESTDATA}/sandboxes.agents.x-k8s.io.yaml", f"{KIND_LIB}:160 kind_sandbox_install_agent_sandbox applies it"),
-        (f"{KIND_TESTDATA}/agent-sandbox-v1.0.3.yaml", f"{KIND_LIB}:162 kind_sandbox_install_agent_sandbox applies it"),
-    ) + worker_image_reads(f"{at(KIND_IMAGE, KIND_IMAGE_STEP, KIND_WORKFLOW)} builds packages/daemon/docker/worker.Dockerfile "
+        (KIND_LIB, f"{at_kind_rig(KIND_STEP)}: packages/daemon/internal/kindtest/kindtest.go:470 sources it for each "
+                   "piece of the rig, and :621 for its teardown"),
+        (f"{KIND_TESTDATA}/sandboxes.agents.x-k8s.io.yaml", f"{KIND_LIB}:164 kind_sandbox_install_agent_sandbox applies it"),
+        (f"{KIND_TESTDATA}/agent-sandbox-v1.0.3.yaml", f"{KIND_LIB}:166 kind_sandbox_install_agent_sandbox applies it"),
+        ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/live_test.go:401 newKindLiveEnv fills it "
+                                                     "for the operator's pod every launch carries"),
+        ("deploy/kubernetes/operator-route/models.yml", "internal/runtime/sandbox/live_test.go:401 newKindLiveEnv fills it "
+                                                        "for the run's operator route ConfigMap"),
+        ("deploy/kubernetes/operator-route/overlay.yml", "internal/runtime/sandbox/live_test.go:425 newKindLiveEnv puts it "
+                                                         "in the run's operator route ConfigMap"),
+        ("scripts/e2e/lib/role-namespaces.sh", "internal/daemon/share_volumes_live_test.go:180 sources it for "
+                                               "role_enter_sh"),
+        ("scripts/e2e/lib/pack-plugin.sh", "internal/runtime/sandbox/live_test.go:505 packLivePlugins runs it for "
+                                           "pi-envoy and pi-legion"),
+    ) + [
+        Read(g, "internal/runtime/sandbox/live_test.go:505 packLivePlugins runs scripts/e2e/lib/pack-plugin.sh, whose "
+                "`bun pm pack` runs each plugin's prepack")
+        for g in PACK_READS
+    ] + worker_image_reads(f"{at(KIND_IMAGE, KIND_IMAGE_STEP, KIND_WORKFLOW)} builds packages/daemon/docker/worker.Dockerfile "
                            f"from it, as .github/workflows/worker-image.yaml's build does, whose image a pull request's "
                            f"run hands {at_kind_rig(KIND_STEP)} instead")
       + setup_go(KIND_RIG, f"{DAEMON}/go.mod", KIND_WORKFLOW)
+      + bun_job(KIND_RIG, KIND_WORKFLOW)
       + CI_SELF + job_self(KIND_JOB), workflow=CI),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`

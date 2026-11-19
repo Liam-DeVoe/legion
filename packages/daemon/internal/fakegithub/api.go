@@ -387,17 +387,46 @@ func (s *Server) mint(w http.ResponseWriter, r *http.Request, found *app, instal
 			return
 		}
 	}
+	write := permissions["contents"] == "write"
+	value, expires := s.grantInstallation(found, installation, write)
+	answer(w, http.StatusCreated, map[string]any{
+		"token": value, "expires_at": expires.Format(time.RFC3339), "permissions": permissions, "repository_selection": "all",
+	})
+}
+
+// InstallationToken mints a token of app's installation on owner, as POST
+// /app/installations/{id}/access_tokens does under the App's own JWT: one that may push when write
+// is true and only reads otherwise, reaching owner's repositories alone, for an hour. It is what a
+// test's stand-in for a secrets broker's release of an App's tokens hands out (appauth's token
+// mode, internal/kindtest's AppTokenCommand). An owner the App is not installed on fails t.
+func (s *Server) InstallationToken(t testing.TB, app App, owner string, write bool) (token string, installation int64, expires time.Time) {
+	t.Helper()
+	s.mu.Lock()
+	found := s.apps[app.ID]
+	if found != nil {
+		installation = found.installations[strings.ToLower(owner)]
+	}
+	s.mu.Unlock()
+	if installation == 0 {
+		t.Errorf("the fake GitHub's App %s is not installed on %s", app.Slug, owner)
+		return "", 0, time.Time{}
+	}
+	token, expires = s.grantInstallation(found, installation, write)
+	return token, installation, expires
+}
+
+// grantInstallation has the server take a fresh token of found's installation, for an hour: its
+// bot's, reaching that installation's owner alone, and one that may push when write is true.
+func (s *Server) grantInstallation(found *app, installation int64, write bool) (string, time.Time) {
 	secret := make([]byte, 18)
 	_, _ = rand.Read(secret)
 	value := "ghs_" + hex.EncodeToString(secret)
 	expires := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	s.mu.Lock()
-	s.tokens[value] = &grant{write: permissions["contents"] == "write", login: found.Slug + "[bot]",
+	defer s.mu.Unlock()
+	s.tokens[value] = &grant{write: write, login: found.Slug + "[bot]",
 		owner: found.owners[installation], installation: installation, expires: expires}
-	s.mu.Unlock()
-	answer(w, http.StatusCreated, map[string]any{
-		"token": value, "expires_at": expires.Format(time.RFC3339), "permissions": permissions, "repository_selection": "all",
-	})
+	return value, expires
 }
 
 // appBySlug is GET /apps/{slug}: the App's id, which token mode holds to its configured app_id.

@@ -7551,7 +7551,7 @@ A claim that exists but is not bound yet is waited on through every attempt of t
 The daemon needs no right on PersistentVolumeClaims for any of this: the pod names the claim and the kubelet mounts it.
 An `nfs` volume is not among the Pod Security "restricted" profile's volume types, which GKE Autopilot's own policy extends with it:
 a namespace that enforces `restricted` (`pod-security.kubernetes.io/enforce`) refuses such a pod, and takes the share through a `persistent_volume_claim` bound to an NFS PersistentVolume instead.
-`scripts/e2e/share-volumes-kind.sh` is the live proof.
+`TestShareVolumesMountInAnIssuePodLive` (`packages/daemon/internal/daemon/share_volumes_live_test.go`), which the kind job of `ci.yaml` runs, is the live test.
 
 ### Cutting over an instance from tmux to pods
 
