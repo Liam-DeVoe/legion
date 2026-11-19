@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -180,8 +181,9 @@ func (c liveClaim) writeHandoff(word string, version int) string {
 
 // newWorkflowHandoffHarness is newHandoffHarness with the workflow deciding every fact the routes
 // apply, so a completion moves the issue and writes its records as the daemon does, and with the
-// server's log written to logs.
-func newWorkflowHandoffHarness(t *testing.T, github *handoffGitHub, logs io.Writer) *harness {
+// server's log written to logs. Each handler of before runs ahead of the workflow, in the fact's
+// own transaction.
+func newWorkflowHandoffHarness(t *testing.T, github *handoffGitHub, logs io.Writer, before ...intake.Handler) *harness {
 	t.Helper()
 	h := newHarness(t)
 	records := record.NewStore()
@@ -191,7 +193,7 @@ func newWorkflowHandoffHarness(t *testing.T, github *handoffGitHub, logs io.Writ
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine}, Dispatch: h.handoffs, Log: slog.New(slog.NewTextHandler(logs, nil)),
+		Handlers: append(before, engine), Dispatch: h.handoffs, Log: slog.New(slog.NewTextHandler(logs, nil)),
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
 	}).Handler
 	return h
@@ -261,7 +263,20 @@ func (h *harness) complete(req HandoffCompleteRequest) *httptest.ResponseRecorde
 	return h.request(http.MethodPost, "/legion/v1/handoff/complete", req, nil)
 }
 
-// refused asserts recorder is the refusal status and code, and returns its sentence.
+// completeRaw posts to the completion route the body `{"grantId":<grant>,"verdict":""<members>}`,
+// written by hand: members, which start with a comma, are what HandoffCompleteRequest cannot write,
+// a member null or written twice.
+func (h *harness) completeRaw(grant, members string) *httptest.ResponseRecorder {
+	h.t.Helper()
+	encoded, err := json.Marshal(grant)
+	if err != nil {
+		h.t.Fatalf("encode the grant: %v", err)
+	}
+	return h.request(http.MethodPost, "/legion/v1/handoff/complete", fmt.Sprintf(`{"grantId":%s,"verdict":""%s}`, encoded, members), nil)
+}
+
+// refused holds a response to the status and the stable code of a coded refusal, a Failure that
+// carries a sentence beside its code, and returns that sentence.
 func refused(t *testing.T, recorder *httptest.ResponseRecorder, status int, code string) string {
 	t.Helper()
 	if recorder.Code != status {
@@ -269,10 +284,18 @@ func refused(t *testing.T, recorder *httptest.ResponseRecorder, status int, code
 	}
 	var failure Failure
 	decodeInto(t, recorder, &failure)
-	if failure.Code != code {
-		t.Fatalf("code = %q, want %q; error %q", failure.Code, code, failure.Error)
+	if failure.Code != code || failure.Error == "" {
+		t.Fatalf("failure = %+v, want code %s and a sentence", failure, code)
 	}
 	return failure.Error
+}
+
+// refusedSaying is refused with the refusal's sentence held to message, whole.
+func refusedSaying(t *testing.T, recorder *httptest.ResponseRecorder, status int, code, message string) {
+	t.Helper()
+	if got := refused(t, recorder, status, code); got != message {
+		t.Fatalf("the %s refusal says %q, want %q", code, got, message)
+	}
 }
 
 // completion asserts recorder is an accepted completion and returns its answer.
@@ -826,10 +849,10 @@ func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *te
 
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	written := tester.writeHandoff("test", 1)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}), http.StatusBadRequest, "TESTER_VERDICT_REQUIRED")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}), http.StatusBadRequest, "TESTER_VERDICT_REQUIRED")
 
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: "bbccdd"}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: "bbccdd"}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
 
 	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1}
 	completion(t, h.complete(request))
@@ -850,18 +873,21 @@ func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *te
 
 // The implementer's retro writes no handoff, so it reports the commit the workspace stands on, the
 // one its implementing round already reported: the completion is retro's own, not a repeat. Retro
-// ends with no handoff record, and a completion naming one is refused.
+// ends with no handoff record, and a completion naming one is refused. Each completion rates the
+// plan, as a retro from a plugin at PlanRatingContract must (handoff_rating_test.go).
 func TestHandoffCompleteRecordsRetroAtTheCommitItStandsOn(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
-	named := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee", HandoffID: implementer.writeHandoff("implement", 3), HandoffVersion: 3}),
+	named := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee", HandoffID: implementer.writeHandoff("implement", 3), HandoffVersion: 3,
+		PlanRating: new(4), PlanReason: new("The plan fit the work.")}),
 		http.StatusConflict, "HANDOFF_RECORD_MISMATCH")
 	if !strings.Contains(named, "phase retro of LEGION-208 ends with no handoff record") {
 		t.Fatalf("retro naming a record was refused with %q; want the phase named", named)
 	}
-	recorder := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee"})
+	recorder := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
+		PlanRating: new(4), PlanReason: new("The plan fit the work.")})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("retro handoff = %d: %s", recorder.Code, recorder.Body)
 	}
@@ -1004,7 +1030,7 @@ func TestHandoffCompleteRefusesALooksCallWhereNoCheckIsOpen(t *testing.T) {
 		t.Fatalf("refusal with no check = %q", message)
 	}
 	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, true, false)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}), http.StatusConflict, "CHECK_NOT_OPEN")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}), http.StatusConflict, "CHECK_NOT_OPEN")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)
 	}
@@ -1223,13 +1249,13 @@ func TestHandoffCompleteReadsTheCommitOnlyForAPhaseCompletionAfterTheGrant(t *te
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	expired := implementer.grant(t)
 	now = now.Add(time.Minute)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: expired, Summary: "implemented"}), http.StatusForbidden, "GRANT_EXPIRED")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: expired, Summary: "implemented"}), http.StatusForbidden, "GRANT_EXPIRED")
 	now = now.Add(-time.Minute)
 
 	if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented"}), http.StatusBadRequest, "MISSING_FIELD"); message != "commit is required" {
 		t.Fatalf("a phase completion naming no commit was refused with %q; want the field named", message)
 	}
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pending", Commit: headSHA}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pending", Commit: headSHA}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)
 	}
@@ -1238,7 +1264,7 @@ func TestHandoffCompleteReadsTheCommitOnlyForAPhaseCompletionAfterTheGrant(t *te
 func TestHandoffCompleteRefusesAnUnrecordedIssue(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: "aabbcc"}), http.StatusNotFound, "ISSUE_NOT_FOUND")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: "aabbcc"}), http.StatusNotFound, "ISSUE_NOT_FOUND")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("handoff facts = %#v, want none for an unrecorded issue", got)
 	}
@@ -1253,17 +1279,17 @@ func TestHandoffCompleteRefusesExpiredAndRevokedGrants(t *testing.T) {
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	expired := implementer.grant(t)
 	now = now.Add(time.Minute)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: expired, Summary: "implemented", Commit: "aabbcc"}), http.StatusForbidden, "GRANT_EXPIRED")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: expired, Summary: "implemented", Commit: "aabbcc"}), http.StatusForbidden, "GRANT_EXPIRED")
 
 	now = now.Add(-time.Minute)
 	grant := implementer.grant(t)
 	written := implementer.writeHandoff("implement", 1)
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented", Commit: "bbccdd", HandoffID: written, HandoffVersion: 1}))
 	// The same command's grant still authenticates a second call; the phase's dedupe answers it.
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented", Commit: "bbccdd", HandoffID: written, HandoffVersion: 1}), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented", Commit: "bbccdd", HandoffID: written, HandoffVersion: 1}), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
 
 	implementer.replaceRegistration(t)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented again", Commit: "ccddee", HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}), http.StatusForbidden, "GRANT_REVOKED")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented again", Commit: "ccddee", HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}), http.StatusForbidden, "GRANT_REVOKED")
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("handoff facts = %#v, want only the completion made before the claim was replaced", got)
 	}
@@ -1285,7 +1311,7 @@ func TestHandoffCompleteAppliesAfterReadmissionTheCompletionALingeringTreeRefuse
 	}
 	planner := newLiveClaim(t, h, "LEGION-209", claim.RolePlanner)
 	request := HandoffCompleteRequest{GrantID: planner.grant(t), Summary: "planned", HandoffID: planner.writeHandoff("plan", 1), HandoffVersion: 1}
-	assertFailure(t, h.complete(request), http.StatusConflict, "TREE_LINGERING")
+	refused(t, h.complete(request), http.StatusConflict, "TREE_LINGERING")
 
 	facts.mu.Lock()
 	facts.refusal = nil
@@ -1481,12 +1507,9 @@ func TestAConflictPassesCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) 
 
 	// It merges main forward, pushes, and completes without writing a new handoff: the newest
 	// record of the phase is still the first pass's.
-	stale := complete("merged", first, 1)
-	var failure Failure
-	decodeInto(t, stale, &failure)
-	if stale.Code != http.StatusConflict || failure.Code != "HANDOFF_NOT_NEW" ||
-		!strings.Contains(failure.Error, "named handoff record "+first+" for its previous phase of LEGION-208; write this phase's handoff with `dispatch handoff-write --issue LEGION-208 --phase implement") {
-		t.Fatalf("the completion with no new handoff = %d %+v, want 409 HANDOFF_NOT_NEW naming the record and the handoff to write", stale.Code, failure)
+	if message := refused(t, complete("merged", first, 1), http.StatusConflict, "HANDOFF_NOT_NEW"); !strings.Contains(message,
+		"named handoff record "+first+" for its previous phase of LEGION-208; write this phase's handoff with `dispatch handoff-write --issue LEGION-208 --phase implement") {
+		t.Fatalf("the completion with no new handoff says %q, want it to name the record and the handoff to write", message)
 	}
 	if got := phaseNow(); got != phase.Implementing {
 		t.Fatalf("after the refused completion the issue is in %s, want implementing", got)
@@ -1605,7 +1628,7 @@ func TestACompletionInAForeignTurnIsNotTheUntakenTasksRun(t *testing.T) {
 
 			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
 			if !tc.accepted {
-				assertFailure(t, h.complete(request), http.StatusConflict, "HANDOFF_NO_RUN")
+				refused(t, h.complete(request), http.StatusConflict, "HANDOFF_NO_RUN")
 				return
 			}
 			if recorder := h.complete(request); recorder.Code != http.StatusOK {
@@ -1712,7 +1735,7 @@ func TestHandoffCompleteRefusesACompletionFromAClaimThatTookNoTask(t *testing.T)
 	registration := h.registered(boot, session)
 	untasked := liveClaim{h: h, token: token, session: session, secret: registration.Secret, tree: "LEGION-208", issue: "LEGION-208"}
 
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: untasked.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: untasked.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NO_RUN")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: untasked.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: untasked.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NO_RUN")
 }
 
 // untaskedClaim launches role's claim on issue and registers its session, with no task delivered

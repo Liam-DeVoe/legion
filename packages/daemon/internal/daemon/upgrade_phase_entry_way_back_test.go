@@ -376,7 +376,10 @@ func wayBackBlockDifference(header, extract string) string {
 // 20261117064152_step_starts_roll_forward (migrations.WayBack): it keeps each issue's witness,
 // which reads phases.entry, so it runs before the phase entry's block drops that column, and it
 // re-arms the roll forward; its 20261117000528_outbox_kinds_with_the_step_record and
-// 20261117004117_step_starts need no statement. An operator runs them by release, newest first:
+// 20261117004117_step_starts need no statement, and neither does contract 168's
+// 20261117023932_outbox_kinds_with_the_plan_record, whose kind the check keeps after the
+// rollback: that release's way back is outbox deletes alone, of the queued writes of the plans
+// and the ratings (docs/kubernetes.md). An operator runs them by release, newest first:
 // the task numbers', then the step records', then the commit statuses', then the reviewed
 // commit's, then this one (docs/kubernetes.md). So this helper does the same: each later block is
 // read from its header (wayBackBlockOfTheHeader, and migrations.WayBack for the step records')

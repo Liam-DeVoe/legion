@@ -95,9 +95,12 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 168 (dispatch://INFRA-2811:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 174 (dispatch://INFRA-2811:
 a claim's task is a value its worker takes over `claims/task`, `claims/task-seen` and
-`claims/take`, and the daemon sends no prompt frame), after contract 160's cache trimmer
+`claims/take`, and the daemon sends no prompt frame), after contract 168's plan rating
+(cybermonklabs/legion#4488: `POST /legion/v1/handoff/complete` takes `planRating` and
+`planReason`, which the completion that ends the retro sends and a plugin at contract 168 or
+later must send), after contract 160's cache trimmer
 (dispatch://INFRA-2009: the answer to the launcher's hello gains `volumeTrim`, the launcher sends
 `launcher_volume_report`, and the state's settings block carries `runtime.kubernetes.volume_trim`,
 which the plugin parses loosely), after contract 152's App-installed

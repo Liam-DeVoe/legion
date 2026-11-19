@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
+import { goBlankPattern } from "./go-blank";
+import {
+  DISPATCH_KEY_PATTERN,
+  GATED_STEPS,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+  LEGION_ROLES,
+} from "./legion-roles";
 
 /**
  * The Legion daemon's HTTP API, as its readers see it.
@@ -191,8 +199,8 @@ export const LEGION_FAILURE_CAUSES = [
 /** The one word the site that failed a claim chose (`supervise.FailureCause`). A claim view
  * carries it twice over: in `failure.cause`, why the claim failed, and in `pendingCause`, what
  * failed the process whose relaunch is in flight. A caller in a pod whose plugin declares a
- * contract below 168 is served `never_registered` in both where the daemon holds
- * `never_reconnected`, the word contract 168 added (the daemon's `withoutNeverReconnected`), since
+ * contract below 174 is served `never_registered` in both where the daemon holds
+ * `never_reconnected`, the word contract 174 added (the daemon's `withoutNeverReconnected`), since
  * its enum names no such word and would refuse the whole body for it. */
 const legionFailureCause = z.enum(LEGION_FAILURE_CAUSES);
 
@@ -1219,7 +1227,7 @@ const taskReadingFields = {
  * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
  * `task` and `finished` are what `POST /legion/v1/claims/task` answers (`LegionTaskResponse`),
  * read once the registration is recorded, so the worker holds its claim's value before its ready
- * (contract 168). */
+ * (contract 174). */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
@@ -1282,7 +1290,7 @@ const legionProviderError = z.strictObject({
  * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
  * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
  * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
- * the wait before its value is written again (contract 168). */
+ * the wait before its value is written again (contract 174). */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
@@ -1359,20 +1367,20 @@ function eitherCaller<Fields extends z.ZodRawShape>(fields: Fields) {
 const taskValueFields = { generation: z.number().int().positive(), ...legionTaskValue.shape };
 
 /** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
- * value, at a new epoch of its relay or when it gains its role again (contract 168). */
+ * value, at a new epoch of its relay or when it gains its role again (contract 174). */
 export const LegionTaskRequest = eitherCaller({ generation: z.number().int().positive() });
 
 export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 168). */
+ * finished, 0 for none (contract 174). */
 export const LegionTaskResponse = z.object(taskReadingFields);
 
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 
 /** `claim.TaskSeenRequest`, the body of `POST /legion/v1/claims/task-seen`, answered 204: the
- * worker reporting the value it was handed, whether or not its host is idle (contract 168). */
+ * worker reporting the value it was handed, whether or not its host is idle (contract 174). */
 export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
 
 export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
@@ -1382,7 +1390,7 @@ export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
  * closed connection, an unreachable host or network, a connect or read timeout, a DNS failure, no
  * answer in 5 minutes, or a 502, 503 or 504 that names no `code` — is sent again unchanged, and a
  * take of a number already accepted and not finished is answered the same text again, before its
- * turn starts or after (contract 168). */
+ * turn starts or after (contract 174). */
 export const LegionTakeRequest = eitherCaller(taskValueFields);
 
 export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
@@ -1394,7 +1402,7 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `session-not-held`,
  * `adoption`), since a worker acts on none of them by name and a hold a later daemon adds must not
- * refuse the answer (contract 168). */
+ * refuse the answer (contract 174). */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
   z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),
@@ -1775,6 +1783,55 @@ export const LegionControllerGrantRequest = z.strictObject({
   secret: nonEmptyString,
 });
 
+/** The scale of a plan's rating and the most characters of its reason, defined once in
+ * `legion-roles.ts` and re-exported here beside the request schema that holds a completion to
+ * them. */
+export { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST, LEGION_PLAN_REASON_MAX };
+
+/** A plan rating's scale on `rating`, a number schema of the reader's: a whole number from
+ * `LEGION_PLAN_RATING_LEAST` to `LEGION_PLAN_RATING_MOST`, each check refused with `refusal` where
+ * one is given. The request schema below and the `legion` tool's `plan_rating` both build theirs
+ * with it, so the scale is written once. */
+export function legionPlanRatingScale(rating: z.ZodNumber, refusal?: string): z.ZodNumber {
+  const error = refusal === undefined ? undefined : { error: refusal };
+  return rating.int(error).min(LEGION_PLAN_RATING_LEAST, error).max(LEGION_PLAN_RATING_MOST, error);
+}
+
+/** A plan rating's reason on `reason`, a string schema of the reader's: not blank as the daemon's
+ * strings.TrimSpace reads it (`goBlankPattern`), which is not JavaScript's trim, and at most
+ * `LEGION_PLAN_REASON_MAX` characters counted as code points, as the daemon counts them, never as
+ * a string's UTF-16 `length`. A blank reason is refused with `refusals.blank` alone, a longer one
+ * with `refusals.long`. The request schema below and the `legion` tool's `plan_reason` both build
+ * theirs with it, so the two rules are written once. */
+export function legionPlanReasonRules(
+  reason: z.ZodString,
+  refusals: { readonly blank: string; readonly long: string }
+): z.ZodString {
+  return reason
+    .refine((text) => !goBlankPattern.test(text), { error: refusals.blank, abort: true })
+    .refine((text) => [...text].length <= LEGION_PLAN_REASON_MAX, { error: refusals.long });
+}
+
+/** `planReason`: why the retro rated the plan as it did (`legionPlanReasonRules`). */
+const legionPlanReason = legionPlanReasonRules(z.string(), {
+  blank: "planReason says why",
+  long: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
+});
+
+/** Which field of a plan's rating came alone: `"rating"` for a rating with no reason, `"reason"`
+ * for a reason with no rating, and `undefined` for both or neither. The daemon takes the two only
+ * together (`PLAN_RATING_INPUT`). The request schema below refuses either lone field, and the
+ * `legion` tool's `handoff_complete` refuses each by its name, both by this, so the pair rule is
+ * written once. */
+export function legionPlanRatingLoneField(
+  rating: number | undefined,
+  reason: string | undefined
+): "rating" | "reason" | undefined {
+  if (rating !== undefined && reason === undefined) return "rating";
+  if (reason !== undefined && rating === undefined) return "reason";
+  return undefined;
+}
+
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
  * completion, or the checking role's report on a look of its closed issue's production check.
  * A file-backed phase (planning, implementing, testing, reviewing) ends with a handoff record on
@@ -1800,16 +1857,28 @@ export const LegionControllerGrantRequest = z.strictObject({
  * checking agent asks to be woken for its next look, which a pending report on a look that is not
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
- * the daemon's decode of it refuses a time with no seconds, and so does this. */
-export const LegionHandoffCompleteRequest = z.strictObject({
-  grantId: nonEmptyString,
-  summary: nonEmptyString,
-  verdict: z.string(),
-  commit: nonEmptyString.optional(),
-  handoffId: nonEmptyString.optional(),
-  handoffVersion: z.number().int().positive().optional(),
-  wakeAt: LegionInstant.optional(),
-});
+ * the daemon's decode of it refuses a time with no seconds, and so does this. `planRating` and
+ * `planReason` are the rating of the plan the issue ran (contract 168), which the completion that
+ * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
+ * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
+ * (`PLAN_RATING_INPUT`). A plugin at contract 168 or later must send both on its retro
+ * (`PLAN_RATING_REQUIRED`). */
+export const LegionHandoffCompleteRequest = z
+  .strictObject({
+    grantId: nonEmptyString,
+    summary: nonEmptyString,
+    verdict: z.string(),
+    commit: nonEmptyString.optional(),
+    handoffId: nonEmptyString.optional(),
+    handoffVersion: z.number().int().positive().optional(),
+    wakeAt: LegionInstant.optional(),
+    planRating: legionPlanRatingScale(z.number()).optional(),
+    planReason: legionPlanReason.optional(),
+  })
+  .refine(
+    (request) => legionPlanRatingLoneField(request.planRating, request.planReason) === undefined,
+    { message: "planRating and planReason appear together" }
+  );
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
 export const LegionIssueStatusRequest = z.strictObject({

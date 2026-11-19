@@ -237,7 +237,7 @@ func TestTakeRouteRefusesAnUnknownCallerWithACodeAndRecordsNothing(t *testing.T)
 	wrongSession := takeOf(c, value)
 	wrongSession.SessionID = "ses_someone_else"
 	recorder, _ := h.postTake(wrongSession)
-	wantFailure(t, recorder, claim.SameAgentRefusal.Status, "SESSION_MISMATCH")
+	refused(t, recorder, claim.SameAgentRefusal.Status, "SESSION_MISMATCH")
 	if stored := h.stored(c.token); stored.TaskTaken != 0 || stored.TaskTakeState != "" {
 		t.Fatalf("the refused take left taken %d and take state %q, want nothing recorded", stored.TaskTaken, stored.TaskTakeState)
 	}

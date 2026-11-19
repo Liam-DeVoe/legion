@@ -147,7 +147,7 @@
 -- roll-forward writes every owed value once under the number the second fill gave it.
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
--- after this one builds on the fourteen columns it drops, and at this release none of the thirteen
+-- after this one builds on the fourteen columns it drops, and at this release none of the fourteen
 -- recorded after it touches them: 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
@@ -162,17 +162,21 @@
 -- stores with the review round's two sentences, 20261117000528_outbox_kinds_with_the_step_record
 -- rewrites outbox_kind_check a third time, 20261117004117_step_starts adds the tables step_starts
 -- and step_starts_rollback and the function step_run_witness, which reads issues and phases,
+-- 20261117023932_outbox_kinds_with_the_plan_record rewrites outbox_kind_check a fourth time,
 -- 20261117064152_step_starts_roll_forward writes step_starts, step_starts_rollback and the
 -- step_record rows it adds to outbox, 20261117112334_pull_request_statuses adds
 -- pull_requests.statuses, and 20261117200337_update_ask_marks_at_delivery clears
 -- claims.update_tasked_at where that claim's ask still waits in the outbox. The release before
--- this one, contract 160, carries all thirteen, so the rollback to it runs this block alone and
--- leaves the thirteen standing. Contract 160's two other migrations,
+-- this one, contract 168, carries all fourteen, so the rollback to it runs this block alone and
+-- leaves the fourteen standing. Contract 160's two other migrations,
 -- 20261111090000_volume_trim_notices and 20261111091500_claim_pod_end, are numbered below this one,
 -- so every database records them before it, and neither touches the fourteen columns. A rollback
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
--- them: this block; contract 160's statement, which deletes every queued volume-near-full notice,
+-- them: this block; contract 168's steps, which delete the queued writes of the runs' plans and of
+-- the retros' ratings, since the release that records each step fails the decode of a rating row
+-- at every attempt (docs/kubernetes.md, "Rolling back the release that rates each plan");
+-- contract 160's statement, which deletes every queued volume-near-full notice,
 -- since no earlier release can decode one, with the counts of each pod it was of
 -- (docs/kubernetes.md, "Rolling back below the release that trims an issue pod's volume"); the step
 -- records' way back, which keeps each issue's witness while the phase entries it reads stand and
@@ -181,8 +185,8 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those thirteen that are the
--- root architect's entry (all but the three kind lists, the five other migrations of contract 152
+-- of its kind behind; contract 146's block, which reverses the four of those fourteen that are the
+-- root architect's entry (all but the four kind lists, the five other migrations of contract 152
 -- and contract 160's 20261116144907_claim_sessions); the merge-queue removal's outbox delete; the
 -- five statements of the release whose update round ends at its bound, whose
 -- 20261113110610_drop_claim_update_answer_marks dropped two columns
@@ -194,8 +198,10 @@
 -- and each adds one column or table no earlier release names; contract 123's
 -- 20261113090512_phase_entry_moved_back, contract 152's
 -- 20261117000528_outbox_kinds_with_the_step_record and 20261117004117_step_starts, which the step
--- records' way back leaves standing, and its 20261117200337_update_ask_marks_at_delivery need no
--- statement on the way back, and contracts 151, 144, 137 and 104 add no migration. Nor does
+-- records' way back leaves standing, its 20261117200337_update_ask_marks_at_delivery and contract
+-- 168's 20261117023932_outbox_kinds_with_the_plan_record, whose kind the check keeps after the
+-- rollback, need no statement on the way back, and contracts 151, 144, 137 and 104 add no
+-- migration. Nor does
 -- contract 160's 20261111091500_claim_pod_end, whose claims.pod_end an earlier release leaves
 -- unread and unwritten; the tables pod_volume_notices its 20261111090000_volume_trim_notices adds
 -- and claim_sessions its 20261116144907_claim_sessions adds stand too, read by no earlier release.

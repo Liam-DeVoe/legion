@@ -2385,7 +2385,45 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 168: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 174: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
 // worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
@@ -2414,12 +2452,12 @@ package api
 // claim view's delivery loses `deliveredAt`, since no prompt is acknowledged; the failure causes
 // gain `never_reconnected`, a claim a daemon restart restored ready, idle or working whose shim
 // never said hello within the registration deadline while its process lived, which a caller from
-// a pod whose claims record a contract below 168 is served as `never_registered` in `failure.cause`
+// a pod whose claims record a contract below 174 is served as `never_registered` in `failure.cause`
 // and `pendingCause` (withoutNeverReconnected), since its plugin reads both through a strict enum
 // and refuses the whole body for a word it does not name; and
 // `GET /legion/v1/state` carries `unseenTaskValues`, every running claim whose value nobody
 // reported seeing for a whole first bound (`{claim, issue, role, task, writtenAt}`), which a
-// caller from a pod whose claims record a contract below 168 is served the body without (api's
+// caller from a pod whose claims record a contract below 174 is served the body without (api's
 // stateFor, withoutUnseenTaskValues), as one below 133 is served every issue without `mergeWait`,
 // one below 111 the issues without the tree's quiet time (withoutQuietTime) and one below 98 the
 // admission block without `held`. They are the last two rows of stateNarrowings, after 146's, and
@@ -2461,13 +2499,19 @@ package api
 // no other open pull request declared. It kept 157 at the forward merge of 2026-11-18 that
 // brought main in at a5348c75fa42c05f5581df45abaf33877c9ce90b, which carried 152,
 // cybermonklabs/legion#3730's INFRA-2543, then the number the base carried: 157 was still above
-// it. It takes 168 at the forward merge of 2026-11-19 that brings main in at
-// c70a80228d85f42e6f70c6f6d0d18b10c827ddb3, which carries 160, cybermonklabs/legion#3519's
-// INFRA-2009, the entry right above and the number the base now carries: 157 is no longer above
-// it, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request
-// on 2026-11-19 found 161 through 167 declared by other open pull requests, so 168 is the lowest
-// number above the base's 160 that no other open pull request declares. Read the base's own
+// it. It took 168 at the forward merge of 2026-11-19 that brought main in at
+// c70a80228d85f42e6f70c6f6d0d18b10c827ddb3, which carried 160, cybermonklabs/legion#3519's
+// INFRA-2009, then the entry right above and the number the base then carried: 157 was no longer
+// above it, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
+// request on 2026-11-19 found 161 through 167 declared by other open pull requests, so 168 was the
+// lowest number above the base's 160 that no other open pull request declared. It took 174 at the
+// forward merge of 2026-11-19 that brought main in at a16c218ee39a294f22ffd785ab0b5fd300b1e3b7,
+// which carried 168, cybermonklabs/legion#4488, the entry right above and the number the base now
+// carries: the contract check's reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// every open pull request on 2026-11-19 found 169 (#3831 and #4065), 170 (#2230, #4030, #4173,
+// #4180 and #4193), 171 (#4115, #4485 and #4495), 172 (#3659) and 173 (#4493) declared by open
+// pull requests, so 174 was the lowest number above 168 that none declared. Read the base's own
 // number and every open pull request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 168
+const DaemonAPIVersion = 174
