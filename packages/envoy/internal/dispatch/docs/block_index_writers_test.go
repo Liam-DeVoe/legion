@@ -795,12 +795,13 @@ var indexPasses = map[string]string{
 	"inboxwrite/record.go#Record": "the write its caller stored and the event that recorded it, the person an ask it creates waits on, the thread's participates_in tuples, the rows of the thread the marker test passes, and the read mark its own upsert left its writer's row at",
 	// The move of the person open asks wait on (dispatch://INFRA-1152 R2): it locks the asks the
 	// write that changed who they wait on may have moved, and reads of each who it waits on now and,
-	// in the store, whom its delivery stands to - whether each such person's delivery and
-	// participation stand, and what else holds them there - and appends the delivery and
-	// participation of the person it waits on and the retractions of the others' through
-	// graphstore.ToPerson. It reads the store to state what the store holds next, never a
-	// projection to mend it, so it is no repair.
-	"inboxwrite/waiting.go#MoveWaiting": "the asks its caller's write may have moved, who each waits on, and the tuples of whom its delivery stands to",
+	// in the store, whom its arm stands to - each person whose delivery stands, or whose
+	// participation their own move of the ask onto themselves stated, which it tells by that move's
+	// event and the ask's row (inboxwrite.OwnMove), and what else holds them there - and appends the
+	// participation of the person it waits on, with their delivery unless they made the move, and
+	// the retractions of the others' through graphstore.ToPerson. It reads the store and the log to
+	// state what the store holds next, never a projection to mend it, so it is no repair.
+	"inboxwrite/waiting.go#MoveWaiting": "the asks its caller's write may have moved, who each waits on, the tuples of whom its arm stands to, and the event and the ask's row that tell a person's own move of the ask",
 	// The routes that write a person's read state (dispatch://INFRA-1152 R6): each states, through
 	// graphstore.FromPerson and under the event it appends, the marks its own statement stored, read
 	// back from that statement - the rows it moved and the moment each now holds - so each tuple is
