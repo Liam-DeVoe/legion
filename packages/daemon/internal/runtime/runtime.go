@@ -602,6 +602,15 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// StoreFault is a Gone of a process that exited after its session store stopped answering
+	// it: the Kubernetes launcher's proxy could not reach the session database for the child's
+	// own connection, with no later one that reached it (shimwire.LauncherExit.Session). The
+	// process ended on a store that did not answer, which says nothing about the claim or its
+	// session, so the supervisor keeps the session, charges nothing, and starts it again every
+	// minute until the store answers, telling the issue and the controller (supervise's
+	// startWaitsForStore). Only the Sandbox runtime reports it. It is a field rather than a shape
+	// of Detail for the reason Displaced is.
+	StoreFault bool
 	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
 	// `<reason>: <message>`, the reason alone where there is no message, and empty where the pod
 	// carries no reason: `Evicted: The node was low on resource: ephemeral-storage. ...` is the

@@ -97,10 +97,15 @@ func (d sessionDial) connect(ctx context.Context) (*pgx.Conn, error) {
 // opened, or on which ready fails, is asked again after each of resumeLookupBackoff's waits until
 // resumeLookupTimeout, as a database that is briefly unreachable must not fail the launch; a URL
 // file that is missing or empty is refused at once. parent's end (the container's stop) ends the
-// wait as the timeout does.
+// wait as the timeout does. The refusal wraps the last answer the database gave (%w), so whoever
+// reads it can tell a store that refused or never answered from one that answered with a refusal
+// (ompsessions.StoreFault): an attempt the bound or the stop cut short says nothing the one
+// before it did not, and stands only where no attempt ended on its own. A wait the stop ended
+// wraps the stop's own error too, which is no fault of the store's.
 func (d sessionDial) dial(parent context.Context, ready func(context.Context, *pgx.Conn) error) (*pgx.Conn, error) {
 	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
 	defer cancel()
+	var last error
 	for attempt := 0; ; attempt++ {
 		dsn, err := d.url()
 		if err != nil {
@@ -113,9 +118,15 @@ func (d sessionDial) dial(parent context.Context, ready func(context.Context, *p
 			}
 			closeSessions(conn)
 		}
+		if ctx.Err() == nil || last == nil {
+			last = err
+		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("%v (after %d attempts in %s)", err, attempt+1, resumeLookupTimeout)
+			if parent.Err() != nil {
+				return nil, fmt.Errorf("%w (after %d attempts; the start was stopped: %w)", last, attempt+1, parent.Err())
+			}
+			return nil, fmt.Errorf("%w (after %d attempts in %s)", last, attempt+1, resumeLookupTimeout)
 		case <-time.After(resumeLookupBackoff[min(attempt, len(resumeLookupBackoff)-1)]):
 		}
 	}
@@ -257,10 +268,11 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 // transcript the keeper names from the start, then restores each file from its row (restore), so
 // the child starts on the session the table holds, and the transcript's marker is written: the
 // table already holds what the claim records. parent's end (the container's stop) ends the wait as
-// the timeout does. A nil keeper, a generation that keeps nothing, closes conn. A table it cannot
-// dial and ready, or whose rows it cannot read back, is shimwire.SessionStoreUnreachable, a store
-// that did not answer, as the resume's own lookup is (resumable); a file of the session it cannot
-// write on the pod's disk is not.
+// the timeout does. A nil keeper, a generation that keeps nothing, closes conn. A table that
+// refused or never answered its dial, or the read of its rows (ompsessions.StoreFault), is
+// shimwire.SessionStoreUnreachable, a store that did not answer, as the resume's own lookup is
+// (resumable); a URL file that is missing, a login the server refused and a file of the session it
+// cannot write on the pod's disk are not.
 func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	if k == nil {
 		closeSessions(conn)
@@ -275,7 +287,7 @@ func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	if conn == nil {
 		var err error
 		if conn, err = k.sessions.dial(ctx, ompsessions.CreateTables); err != nil {
-			return fmt.Errorf("keep Claude Code session %s: %w: %v", k.session, shimwire.SessionStoreUnreachable, err)
+			return fmt.Errorf("keep Claude Code session %s: %w", k.session, storeRefusal(err))
 		}
 	}
 	k.conn = conn
@@ -314,12 +326,12 @@ func (k *claudeKeeper) connect(ctx context.Context) error {
 // The file there is something the role wrote and the launcher is its container's PID 1, so it is
 // read only as a regular file and only up to one byte past the row (readHead): a link, a fifo or
 // anything else that is no regular file is refused at once in words naming it, never followed or
-// waited on, and a file of any size is read no further than one byte past the row. A row the
-// table could not be asked for is shimwire.SessionStoreUnreachable.
+// waited on, and a file of any size is read no further than one byte past the row. A read of the
+// row the table refused or never answered is shimwire.SessionStoreUnreachable (storeRefusal).
 func (k *claudeKeeper) restore(ctx context.Context, f *keptFile) error {
 	row, ok, err := ompsessions.Read(ctx, k.conn, f.path)
 	if err != nil {
-		return fmt.Errorf("%w: %v", shimwire.SessionStoreUnreachable, err)
+		return storeRefusal(err)
 	}
 	if !ok {
 		return nil
@@ -345,6 +357,17 @@ func (k *claudeKeeper) restore(ctx context.Context, f *keptFile) error {
 	f.extends = true
 	f.dev, f.ino = fileID(info)
 	return nil
+}
+
+// storeRefusal is err as a start's refusal over its session store: wrapped as
+// shimwire.SessionStoreUnreachable, which the daemon waits out a minute at a time with the
+// session kept, when the store refused or never answered or holds no session table
+// (ompsessions.StoreFault), and err as it is otherwise, a refusal the daemon charges.
+func storeRefusal(err error) error {
+	if ompsessions.StoreFault(err) {
+		return fmt.Errorf("%w: %v", shimwire.SessionStoreUnreachable, err)
+	}
+	return err
 }
 
 // run saves the session's files every saveInterval until finish. A nil keeper saves nothing.

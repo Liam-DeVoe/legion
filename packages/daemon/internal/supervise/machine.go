@@ -2892,28 +2892,25 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, sessionLost bool)
 }
 
 // startFresh spawns a new agent for a claim whose recorded session no store holds any more
-// (start). The spec is built again for a launch that lost its session, so the agent that starts
-// is told its predecessor is gone rather than left to infer it from an empty transcript, and the
-// report to the issue, the architect and the controller goes only once the fresh agent is
-// actually running: a spawn that failed is a launch failure the caller charges, and says nothing
-// yet about the session.
+// (start). The loss is reported to the issue, the architect and the controller first, and then the
+// fresh agent starts. The report goes as soon as the session is forgotten, because nothing reports
+// it later: a spawn that fails here is a launch failure the caller charges, and its retry is a
+// plain spawn of a claim that records no session. The spec is built again for a launch that lost
+// its session, so the agent that starts is told its predecessor is gone rather than left to infer
+// it from an empty transcript.
 func (m *Machine) startFresh(ctx context.Context, token string, cause error) (runtime.Locator, error) {
 	m.log.Warn("supervise: the recorded session is found nowhere the runtime can resume it, so the claim starts a fresh agent, charged nothing",
 		"session", m.claim.Session, "sessionFile", m.claim.SessionFile, "error", cause)
 	lost := m.claim.Session
 	m.forgetSession(fmt.Sprintf("no session store the runtime could resume it from holds it any more: %v", cause))
+	if m.deps.SessionLost != nil {
+		m.deps.SessionLost(m.current(), fmt.Sprintf("the session %s this claim recorded is in no session store the runtime could resume it from, so it starts a fresh agent that has read none of its own earlier work: %v", lost, cause))
+	}
 	spec, err := m.spawnSpec(ctx, token, true)
 	if err != nil {
 		return runtime.Locator{}, err
 	}
-	loc, err := m.spawn(ctx, spec)
-	if err != nil {
-		return loc, err
-	}
-	if m.deps.SessionLost != nil {
-		m.deps.SessionLost(m.current(), fmt.Sprintf("the session %s this claim recorded is in no session store the runtime could resume it from, so it runs a fresh agent that has read none of its own earlier work: %v", lost, cause))
-	}
-	return loc, nil
+	return m.spawn(ctx, spec)
 }
 
 // spawn starts a fresh agent for this launch, and so a session of its own: from here an answer of
@@ -3025,6 +3022,9 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	if m.held != nil {
 		return m.endHeld(ctx, stopSent)
 	}
+	if observation.StoreFault {
+		return m.diedOnTheStore(ctx, observation, ended)
+	}
 	if m.claim.DeathCharged {
 		return m.relaunchAfterFailure(ctx, CauseDied, ended)
 	}
@@ -3042,6 +3042,25 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
 	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, CauseDied, ended))
+}
+
+// diedOnTheStore is a death the runtime says came of a session store that stopped answering the
+// process after its start's checks had passed (runtime.Observation.StoreFault): the process exited
+// on a store that did not answer, which says nothing about the claim or its session, so it is no
+// launch failure and no death with work outstanding, as a start the store could not answer is none
+// (startWaitsForStore). The process is let go here, for ending, with nothing charged, and the same
+// session is started again every minute until the store answers, the issue and the controller told
+// at once and then hourly. The take-back, the session's clean stop and the record of what the
+// process ended are died's, made before this is reached.
+func (m *Machine) diedOnTheStore(ctx context.Context, observation runtime.Observation, ending string) error {
+	cause := fmt.Errorf("%w: %s", runtime.ErrSessionStore, deathCause(observation))
+	m.letGo(ctx, ending)
+	m.claim.LastStartFailure = cause.Error()
+	m.log.Error("supervise: the process exited on a session store that stopped answering it; trying it again every minute, charging nothing",
+		"generation", m.claim.Generation, "retry", sessionStoreRetry, "error", cause)
+	m.tellStoreFault(cause)
+	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, false, false, noEnd) })
+	return m.persist(ctx)
 }
 
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the

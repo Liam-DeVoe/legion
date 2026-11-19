@@ -27,11 +27,16 @@ import (
 // last is taken. found is "" when no directory holds the session; err is a failure to look, never
 // the session's absence: a folder that cannot be looked in is runtime.ErrSessionStore, a store
 // that did not answer, which the claim's machine waits out a minute at a time with the session
-// kept, and a pane sessions directory that cannot be resolved is the launch's own failure.
+// kept, and a pane sessions directory that cannot be resolved is the launch's own failure. A folder
+// another user owns and denies this daemon's user (othersFolder) is passed over at every level:
+// the recorded path's own, a sessions directory, a folder of one and a session in it. It is no part
+// of this daemon's session store, so a session under it is searched for elsewhere, as a session
+// that is not there is: a takeover whose pod recorded its session under the image's home, which
+// is another user's folder on this host, finds the copy carried into the pane's sessions directory.
 func sessionFileOf(recorded string, paneSessions func() (string, error)) (found string, searched []string, err error) {
 	if _, err := os.Stat(recorded); err == nil {
 		return recorded, nil, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if !errors.Is(err, os.ErrNotExist) && !othersFolder(recorded, err) {
 		return "", nil, fmt.Errorf("%w: %v", runtime.ErrSessionStore, err)
 	}
 	searched = []string{filepath.Dir(filepath.Dir(recorded))}
@@ -74,14 +79,14 @@ func newestSession(sessions, name string) (string, error) {
 			ofID = "_" + id + ".jsonl"
 		}
 	}
-	folders, err := sessionEntries(sessions, false)
+	folders, err := sessionEntries(sessions)
 	if err != nil {
 		return "", err
 	}
 	var named, identified []string
 	for _, folder := range folders {
 		dir := filepath.Join(sessions, folder.Name())
-		entries, err := sessionEntries(dir, true)
+		entries, err := sessionEntries(dir)
 		if err != nil {
 			return "", err
 		}
@@ -97,7 +102,7 @@ func newestSession(sessions, name string) (string, error) {
 	newest, newestAt := "", time.Time{}
 	for _, candidate := range append(named, identified...) {
 		info, err := os.Stat(candidate)
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) || othersFolder(candidate, err) {
 			continue
 		}
 		if err != nil {
@@ -114,11 +119,12 @@ func newestSession(sessions, name string) (string, error) {
 }
 
 // sessionEntries is what dir, a sessions directory or a folder of one, holds: nothing when it is
-// not there or is no directory, or when it is a folder another user owns and denies this daemon's
-// user (othersFolder), and runtime.ErrSessionStore when it is there and cannot be read otherwise.
-func sessionEntries(dir string, folder bool) ([]os.DirEntry, error) {
+// not there or is no directory, or when it is under a folder another user owns that denies this
+// daemon's user (othersFolder), and runtime.ErrSessionStore when it is there and cannot be read
+// otherwise.
+func sessionEntries(dir string) ([]os.DirEntry, error) {
 	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || folder && othersFolder(dir, err) {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || othersFolder(dir, err) {
 		return nil, nil
 	}
 	if err != nil {
@@ -127,18 +133,24 @@ func sessionEntries(dir string, folder bool) ([]os.DirEntry, error) {
 	return entries, nil
 }
 
-// othersFolder is whether err, the refusal to read dir, is this daemon's user denied a folder that
-// another user owns. A folder whose owner cannot be read is not taken for another's.
-func othersFolder(dir string, err error) bool {
+// othersFolder is whether err, the refusal to read or look at path, is this daemon's user denied
+// by a folder that another user owns: path itself, or the nearest folder above it that can be
+// looked at, when the denial is of a folder on the way to it. A folder whose owner cannot be read
+// is not taken for another's.
+func othersFolder(path string, err error) bool {
 	if !errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EPERM) {
 		return false
 	}
-	info, statErr := os.Stat(dir)
-	if statErr != nil {
-		return false
+	for dir := path; ; dir = filepath.Dir(dir) {
+		info, statErr := os.Stat(dir)
+		if statErr == nil {
+			owner, ok := info.Sys().(*syscall.Stat_t)
+			return ok && int(owner.Uid) != os.Geteuid()
+		}
+		if !errors.Is(statErr, syscall.EACCES) && !errors.Is(statErr, syscall.EPERM) || dir == filepath.Dir(dir) {
+			return false
+		}
 	}
-	owner, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(owner.Uid) != os.Geteuid()
 }
 
 // searchedIn is the sessions directories a search for a session found nothing in (sessionFileOf),

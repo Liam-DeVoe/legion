@@ -77,6 +77,8 @@ func (u *upstream) next(t *testing.T) net.Conn {
 // fakeDialer stands in for the Cloud SQL connector: it records what the proxy asked of it and
 // hands back a real connection to the test's upstream listener.
 type fakeDialer struct {
+	// addr is read and written under mu, so a test can point the dialer elsewhere while the proxy
+	// serves.
 	addr string
 
 	mu        sync.Mutex
@@ -88,13 +90,13 @@ type fakeDialer struct {
 func (f *fakeDialer) Dial(ctx context.Context, instance string) (net.Conn, error) {
 	f.mu.Lock()
 	f.instances = append(f.instances, instance)
-	err := f.err
+	err, addr := f.err, f.addr
 	f.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	var dialer net.Dialer
-	return dialer.DialContext(ctx, "tcp", f.addr)
+	return dialer.DialContext(ctx, "tcp", addr)
 }
 
 func (f *fakeDialer) Close() error {
@@ -478,28 +480,38 @@ func TestStartRefusesWhenSomethingHoldsTheSocket(t *testing.T) {
 	_ = conn.Close()
 }
 
-// A refusal over the database itself, a dialer that could not be built or a proof dial the instance
-// refused or never answered, is ErrUnreachable, which the launcher answers as a session store that
-// did not answer; a refusal over the proxy's own configuration or socket is not.
-func TestOnlyARefusalOverTheDatabaseIsErrUnreachable(t *testing.T) {
+// A proof dial the database refused or never answered is ErrUnreachable, which the launcher
+// answers as a session store that did not answer; every other refusal is not: a dialer that could
+// not be built (a credential that is not there), a sign-in the instance refused, a start stopped
+// during its proof dial, the proxy's own configuration or socket.
+func TestOnlyAProofDialTheDatabaseRefusedOrNeverAnsweredIsErrUnreachable(t *testing.T) {
 	for name, tc := range map[string]struct {
 		cfg         func(t *testing.T, socket string) Config
+		stop        bool
 		unreachable bool
 	}{
-		"a dialer that cannot be built": {unreachable: true, cfg: func(_ *testing.T, socket string) Config {
+		"a proof dial the database refused": {unreachable: true, cfg: func(t *testing.T, socket string) Config {
+			dialer := &fakeDialer{addr: refusingAddress(t)}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
+		}},
+		"a proof dial the database never answered": {unreachable: true, cfg: func(t *testing.T, socket string) Config {
+			dialer := &stallingDialer{addr: silentUpstream(t)}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: 200 * time.Millisecond}
+		}},
+		"a dialer that cannot be built": {cfg: func(_ *testing.T, socket string) Config {
 			return Config{Socket: socket, Instance: testInstance, ProofTimeout: testProofTimeout,
 				NewDialer: func(context.Context, string) (Dialer, error) {
 					return nil, errors.New("google: could not find default credentials")
 				}}
 		}},
-		"a proof dial the instance refused": {unreachable: true, cfg: func(t *testing.T, socket string) Config {
+		"a sign-in the instance refused": {cfg: func(t *testing.T, socket string) Config {
 			dialer := &fakeDialer{addr: newUpstream(t).listener.Addr().String()}
 			dialer.failWith(errors.New("the instance refused the login"))
 			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
 		}},
-		"a proof dial the instance never answered": {unreachable: true, cfg: func(t *testing.T, socket string) Config {
+		"a start stopped during its proof dial": {stop: true, cfg: func(t *testing.T, socket string) Config {
 			dialer := &stallingDialer{addr: silentUpstream(t)}
-			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: 200 * time.Millisecond}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
 		}},
 		"a socket something else holds": {cfg: func(t *testing.T, socket string) Config {
 			held, err := net.Listen("unix", socket)
@@ -516,7 +528,12 @@ func TestOnlyARefusalOverTheDatabaseIsErrUnreachable(t *testing.T) {
 		}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := Start(context.Background(), tc.cfg(t, socketPath(t)))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.stop {
+				time.AfterFunc(100*time.Millisecond, cancel)
+			}
+			_, err := Start(ctx, tc.cfg(t, socketPath(t)))
 			if err == nil {
 				t.Fatal("Start served")
 			}
@@ -524,6 +541,70 @@ func TestOnlyARefusalOverTheDatabaseIsErrUnreachable(t *testing.T) {
 				t.Fatalf("Start = %v, which is ErrUnreachable %t, want %t", err, got, tc.unreachable)
 			}
 		})
+	}
+}
+
+// refusingAddress is a TCP address nothing listens on any more, so a dial of it is refused by the
+// host, as a database that is down refuses one.
+func refusingAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return address
+}
+
+// A connection's own dial the database refused, after a start whose proof dial it answered, is
+// the proxy's Fault, ErrUnreachable, until a later connection's dial reaches the database; a dial
+// refused over anything else, a sign-in the instance refused, is no fault of the store's.
+func TestAConnectionsDialTheDatabaseRefusedIsTheProxysFaultUntilOneReachesIt(t *testing.T) {
+	up := newUpstream(t)
+	dialer := &fakeDialer{addr: up.listener.Addr().String()}
+	socket := socketPath(t)
+	proxy := startProxy(context.Background(), t, up, dialer, socket)
+	defer proxy.Close()
+	connect := func() {
+		t.Helper()
+		client, err := net.Dial("unix", socket)
+		if err != nil {
+			t.Fatalf("dial the proxy: %v", err)
+		}
+		defer client.Close()
+		// The proxy writes nothing before its dial, so the client's read returns once the dial
+		// has ended either way: closed for a refused one, a deadline for one that reached.
+		_ = client.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_, _ = client.Read(make([]byte, 1))
+	}
+	if err := proxy.Fault(); err != nil {
+		t.Fatalf("Fault before any connection = %v, want none", err)
+	}
+
+	dialer.mu.Lock()
+	dialer.addr = refusingAddress(t)
+	dialer.mu.Unlock()
+	connect()
+	if err := proxy.Fault(); !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("Fault after a connection whose dial the database refused = %v, want ErrUnreachable", err)
+	}
+
+	dialer.mu.Lock()
+	dialer.addr = up.listener.Addr().String()
+	dialer.mu.Unlock()
+	connect()
+	_ = up.next(t).Close()
+	if err := proxy.Fault(); err != nil {
+		t.Fatalf("Fault after a connection whose dial reached the database = %v, want none", err)
+	}
+
+	dialer.failWith(errors.New("the instance refused the login"))
+	connect()
+	if err := proxy.Fault(); err != nil {
+		t.Fatalf("Fault after a dial refused over the sign-in = %v, want none: the database answered", err)
 	}
 }
 

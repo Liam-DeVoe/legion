@@ -998,6 +998,12 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 // nothing is left listening over a socket that has been removed, and between generations nothing is
 // bound at all. active.done is closed last, so endGeneration, and with it Run's stopActive, returns
 // only once the proxy is closed.
+//
+// A child whose own connection to the session database the proxy could not reach the database for
+// (sessionproxy.Proxy.Fault), with no later connection that reached it, exited on a store that
+// stopped answering it after the start's checks had passed: its exit carries
+// shimwire.SessionStoreUnreachable, which the daemon waits out a minute at a time with the session
+// kept and charges nothing for, where any other exit is the child's own end.
 func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	var reported *syscall.WaitStatus
 	if active.status != nil {
@@ -1035,6 +1041,11 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	active.keeper.finish(end.Add(-sessionDrain))
 	if active.proxy != nil {
 		_ = active.proxy.Close()
+		if fault := active.proxy.Fault(); fault != nil {
+			exit.Session = shimwire.SessionStoreUnreachable
+			m.logf("launcher: generation %d exited after the session database stopped answering its connections: %v",
+				active.generation, fault)
+		}
 	}
 	m.mu.Lock()
 	if m.child == active {
@@ -1258,10 +1269,10 @@ func writeCredential(path, content string) error {
 // own pgx client, which spells a unix socket differently from the client the agent runs
 // (ompsessions.Endpoint); with no session database it is "", and the launcher looks a resume up
 // through the pointer the child's environment carries instead. A failure leaves nothing bound and
-// names the generation; its caller removes the directory. A proxy that could not reach the database
-// (sessionproxy.ErrUnreachable) is shimwire.SessionStoreUnreachable, a store that did not answer,
-// as the resume's own lookup is (resumable); a proxy refused over its configuration or its socket
-// is not.
+// names the generation; its caller removes the directory. A proxy whose proof dial the database
+// refused or never answered (sessionproxy.ErrUnreachable) is shimwire.SessionStoreUnreachable, a
+// store that did not answer, as the resume's own lookup is (resumable); a proxy refused over its
+// configuration, its socket, a dialer it could not build or a sign-in the instance refused is not.
 //
 // In an issue pod's container the launcher and the role see the generation's directory at two
 // paths: the launcher binds the socket at dir, under the role's own private directory of the roles
@@ -1346,7 +1357,7 @@ func endSession(proxy *sessionproxy.Proxy, dir string) {
 func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *pgx.Conn, err error) {
 	sessions, err := newSessionDial(env, clientURL)
 	if err != nil {
-		return false, nil, fmt.Errorf("resume session %s: %w: %v", file, shimwire.SessionStoreUnreachable, err)
+		return false, nil, fmt.Errorf("resume session %s: %v", file, err)
 	}
 	written, conn, err := sessionWritten(ctx, sessions, file)
 	if err != nil {
@@ -1368,8 +1379,10 @@ func resumable(ctx context.Context, env []string, file, clientURL string, log io
 
 // sessionWritten is when the session a resume names was last written, read from the session table
 // the child's Oh My Pi keeps it in (resumable) through a connection sessions dials, which it returns
-// open. A table that could not be asked at all is shimwire.SessionStoreUnreachable; a session the
-// table answers it does not hold is shimwire.SessionGone, refused at once.
+// open. A table that refused or never answered the lookup, or that does not exist, is
+// shimwire.SessionStoreUnreachable (storeRefusal); any other refusal, a URL file that is not there
+// or a login the server refused, is the start's own, which the daemon charges; a session the table
+// answers it does not hold is shimwire.SessionGone, refused at once.
 func sessionWritten(parent context.Context, sessions sessionDial, file string) (time.Time, *pgx.Conn, error) {
 	var written time.Time
 	var found bool
@@ -1378,7 +1391,7 @@ func sessionWritten(parent context.Context, sessions sessionDial, file string) (
 		return err
 	})
 	if err != nil {
-		return time.Time{}, nil, fmt.Errorf("resume session %s: %w: %v", file, shimwire.SessionStoreUnreachable, err)
+		return time.Time{}, nil, fmt.Errorf("resume session %s: %w", file, storeRefusal(err))
 	}
 	if !found {
 		closeSessions(conn)

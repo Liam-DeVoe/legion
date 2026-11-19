@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -100,12 +101,13 @@ func ConnectURL(ctx context.Context, dsn string) (*pgx.Conn, error) {
 
 // Written is when the session the table holds at path was last written: the row's mtime_ms, which
 // Oh My Pi sets on every write, an append included, and Import sets to the copied file's. ok is false
-// when the table holds no such session; a database no Oh My Pi has opened has no table yet, and so
-// holds none.
+// when the table holds no such session. A database with no session table at all is an error, which
+// StoreFault reads as the store's: it cannot say whether it held the session a claim recorded in it,
+// and every store a claim recorded a session in made that table (Oh My Pi when it starts, Import).
 func Written(ctx context.Context, conn *pgx.Conn, path string) (at time.Time, ok bool, err error) {
 	var mtime int64
 	err = conn.QueryRow(ctx, "SELECT mtime_ms FROM omp_session_files WHERE path = $1", path).Scan(&mtime)
-	if isUndefinedTable(err) || errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
 	if err != nil {
@@ -357,4 +359,31 @@ func write(ctx context.Context, conn *pgx.Conn, path string, saved int64, apply 
 func isUndefinedTable(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == undefinedTable
+}
+
+// StoreFault is whether err, a failure to reach or read the session store, is the store's own: the
+// connection was refused, or it was never answered (a network that does not reach the store, or a
+// bound that ran out waiting for it), or the session table does not exist. That is the one failure
+// a start waits out a minute at a time with its session kept (supervise's startWaitsForStore).
+// Every other failure is an answer about the configuration and is not the store's: a URL file that
+// is missing or empty, a URL that does not parse, a login or an IAM sign-in the server refused, a
+// database or a credential that is not there. Nor is a start that was stopped (context.Canceled):
+// the store was never asked to the end.
+func StoreFault(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if isUndefinedTable(err) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return true
+	}
+	for _, errno := range []syscall.Errno{syscall.ECONNREFUSED, syscall.ETIMEDOUT, syscall.EHOSTUNREACH, syscall.ENETUNREACH, syscall.EHOSTDOWN, syscall.ENETDOWN} {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
 }

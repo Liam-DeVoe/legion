@@ -3,7 +3,9 @@ package ompsessions
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -127,13 +129,14 @@ func TestImportDropsPartsAPathWithNoRowLeft(t *testing.T) {
 	}
 }
 
-// Written is the launcher's check: no session in a database no Oh My Pi has opened, the copied one
-// once copied, at the mtime it was copied with to the millisecond mtime_ms keeps, and no other.
+// Written is the launcher's check: a database with no session table cannot say, which is the
+// store's fault, the copied session once copied, at the mtime it was copied with to the millisecond
+// mtime_ms keeps, and no other.
 func TestWrittenFindsOnlyASessionTheTableHoldsAndWhenItWasWritten(t *testing.T) {
 	conn := connect(t)
 	ctx := context.Background()
-	if _, found, err := Written(ctx, conn, sessionPath); err != nil || found {
-		t.Fatalf("Written before any table = %t, %v; want false", found, err)
+	if _, found, err := Written(ctx, conn, sessionPath); !StoreFault(err) || found {
+		t.Fatalf("Written before any table = %t, %v; want an error that is the store's fault", found, err)
 	}
 	mtime := time.Date(2026, 10, 8, 12, 0, 0, 123456789, time.UTC)
 	if _, err := Import(ctx, conn, sessionPath, []byte(session), mtime); err != nil {
@@ -185,6 +188,95 @@ func TestConnectNamesTheFileOrTheAddressAndNeverThePassword(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "127.0.0.1:1") || strings.Contains(err.Error(), "hunter2") {
 		t.Errorf("Connect of an unreachable database = %v, want its address and not its password", err)
 	}
+}
+
+// Only a store that refused the connection, never answered it, or holds no session table is at
+// fault; every other refusal is an answer about the configuration, and a stop is neither. Each
+// error is the one the call really returns.
+func TestOnlyARefusedOrUnansweredStoreOrAMissingTableIsTheStoresFault(t *testing.T) {
+	dsn, _ := testdb.DSNFile(t, "legion_ompsessions_fault_test")
+	dir := t.TempDir()
+	connectTo := func(ctx context.Context, dsn string) error {
+		conn, err := ConnectURL(ctx, dsn)
+		if err == nil {
+			_ = conn.Close(context.Background())
+		}
+		return err
+	}
+	// A role the server does not have, whatever its authentication method, so the server refuses
+	// the login itself.
+	refusedLogin, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedLogin.User = url.UserPassword("legion_no_such_role", "wrong")
+	wrongPassword := refusedLogin.String()
+	for name, tc := range map[string]struct {
+		err   func() error
+		fault bool
+	}{
+		"a connection the store refused": {fault: true, err: func() error {
+			return connectTo(context.Background(), "postgres://legion@127.0.0.1:1/sessions?sslmode=disable")
+		}},
+		"a connection the store never answered": {fault: true, err: func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			return connectTo(ctx, "postgres://legion@"+silentListener(t)+"/sessions?sslmode=disable")
+		}},
+		"a database with no session table": {fault: true, err: func() error {
+			_, _, err := Written(context.Background(), connect(t), sessionPath)
+			return err
+		}},
+		"a login the server refused": {err: func() error { return connectTo(context.Background(), wrongPassword) }},
+		"a URL file that is not there": {err: func() error {
+			_, err := ReadDSN(filepath.Join(dir, "absent"))
+			return err
+		}},
+		"a start that was stopped": {err: func() error {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return connectTo(ctx, "postgres://legion@"+silentListener(t)+"/sessions?sslmode=disable")
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := tc.err()
+			if err == nil {
+				t.Fatal("the call succeeded, want it refused")
+			}
+			if got := StoreFault(err); got != tc.fault {
+				t.Fatalf("StoreFault(%v) = %t, want %t", err, got, tc.fault)
+			}
+		})
+	}
+}
+
+// silentListener is an address that accepts every connection and never writes to it.
+func silentListener(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held []net.Conn
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, conn)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		<-done
+		for _, conn := range held {
+			_ = conn.Close()
+		}
+	})
+	return listener.Addr().String()
 }
 
 // claudeTranscript is a Claude Code transcript's path, the key its role launcher keeps it under,
