@@ -583,10 +583,11 @@ the root's spec, register on that version as a pending basis, and end your turn.
 Where the ancestor is on the backlog, tell the project's controller that the root rests on it, on
 the controller topic your addressing line names. Do this whether or not you send a requirement up.
 
-A version of the route is a version that adds, revises or restores a requirement that a root sent
-up, put to the person for approval. Its request's summary names the roots and the requirement, so a
-root that reads the request can tell it is one. Any other root under the ancestor whose
-registration finds that version waiting on the person may register on it as a pending basis too.
+A version of the route is a version that adds, revises, restores or takes out a requirement that a
+root sent up, put to the person for approval. Its request's summary names the roots and the
+requirement, so a root that reads the request can tell it is one. Any other root under the
+ancestor whose registration finds that version waiting on the person may register on it as a
+pending basis too.
 While a request of the route waits on the person, a second requirement, or a further part found
 after the request opened, goes up for the next version, which follows that answer. The root still
 registers on the waiting version, and builds that part only once it registers on a version that
