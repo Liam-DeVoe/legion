@@ -734,10 +734,9 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 // ErrReceiptTimeout - the class that tells a human the message may already have been published
 // and a same-mode retry is therefore safe. A connect that timed out wrote nothing, and reports
 // the same "Client.Timeout exceeded while awaiting headers" text as a listener that went quiet,
-// so the text cannot tell them apart; requestWritten can. A timeout counts wherever it sits in
-// err's chain (nettimeout.InChain), since net/http gives one read that timed out in more than one
-// shape. The cause is wrapped, not formatted, so a caller can ask the same question again. Either
-// way no listener answered, so both are ErrUnreachable.
+// so the text cannot tell them apart; requestWritten can. The cause is wrapped, not formatted, so
+// a caller can ask the same question again. Either way no listener answered, so both are
+// ErrUnreachable.
 func sendTransportError(err error, requestWritten bool) error {
 	timedOut := errors.Is(err, context.DeadlineExceeded) || nettimeout.InChain(err)
 	if requestWritten && timedOut {

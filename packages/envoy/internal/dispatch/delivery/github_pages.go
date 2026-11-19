@@ -88,10 +88,7 @@ func retryGitHubPage(ctx context.Context, attempt, status int, err error) bool {
 		return false
 	}
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return true
-		}
-		return nettimeout.InChain(err)
+		return errors.Is(err, context.DeadlineExceeded) || nettimeout.InChain(err)
 	}
 	return status == http.StatusBadGateway || status == http.StatusGatewayTimeout
 }
