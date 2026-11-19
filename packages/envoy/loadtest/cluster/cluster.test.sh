@@ -3862,20 +3862,26 @@ stuck_out=$fake/stuck.out
   # A daemon's process group can outlive the daemon: a member of it that takes longer to leave on
   # the same TERM, as a role loop of the sampler can with its kubectl exec. The stop waits until
   # each member has gone, and returns 1, naming the members still there, 10 s after the TERM. The
-  # stand-in daemon ends on its TERM at once, and its member writes its pid and, on the TERM, leaves
-  # 2 s later, or never.
+  # stand-in daemon ends on its TERM at once. Its member holds one nap, a sleep of 300 s in the same
+  # group, and writes both pids before anything else, so the group's members are known and fixed:
+  # on the TERM the member leaves 2 s later with its nap gone (the nap takes the TERM, which the
+  # member traps), or the member ignores it, and so does the nap it started, and both stay.
   member_stand_in() {
     rm -f -- "$RUN_DIR/heartbeat.pid" "$fake/member.pid"
     # shellcheck disable=SC2016 # expanded by the stand-in's own bash
     TRAP=$1 PIDFILE=$RUN_DIR/heartbeat.pid MEMBER=$fake/member.pid REAL=$real_sleep setsid bash -c \
-      '( trap "$TRAP" TERM; echo "$BASHPID" >"$MEMBER"; while :; do "$REAL" 0.1; done ) & echo "$$" >"$PIDFILE"; wait' \
+      '( trap "$TRAP" TERM; "$REAL" 300 & echo "$BASHPID $!" >"$MEMBER"; wait ) & echo "$$" >"$PIDFILE"; wait' \
       _heartbeat --namespace "$NS" --run "$RUN" </dev/null >/dev/null 2>&1 &
     local t0=$SECONDS
     until [ -s "$RUN_DIR/heartbeat.pid" ] && [ -s "$fake/member.pid" ]; do
       ((SECONDS - t0 <= 10)) || fail "the stand-in heartbeat and its member wrote no pids within 10 s"
       sleep 0.05
     done
-    STAND_IN=$(<"$RUN_DIR/heartbeat.pid") MEMBER_PID=$(<"$fake/member.pid")
+    STAND_IN=$(<"$RUN_DIR/heartbeat.pid")
+    read -r MEMBER_PID NAP_PID <"$fake/member.pid"
+    record_pid "$started_record" "$STAND_IN"
+    record_pid "$started_record" "$MEMBER_PID"
+    record_pid "$started_record" "$NAP_PID"
   }
   # shellcheck disable=SC2016 # expanded by the member's trap
   member_stand_in '"$REAL" 2; exit 0'
@@ -3894,10 +3900,16 @@ stuck_out=$fake/stuck.out
   stop_daemon heartbeat 2>"$stuck_out" || stop_rc=$?
   ((stop_rc == 1)) ||
     stand_in_fail "stop_daemon returned $stop_rc, not 1, although a member of the heartbeat daemon's process group (pid $MEMBER_PID) ignored its SIGTERM and still runs: $(cat "$stuck_out")"
-  grep -qF "the heartbeat daemon (pid $STAND_IN) has left, but its process group still holds pid $MEMBER_PID in the process table 10 s after the group's SIGTERM" "$stuck_out" ||
-    stand_in_fail "stop_daemon did not name the member of the heartbeat daemon's process group (pid $MEMBER_PID) still there: $(cat "$stuck_out")"
+  # The stop names exactly the group's members still there at its bound: the member and its nap,
+  # in whatever order it read them, and no other pid.
+  member_list=$(sed -n "s/.*the heartbeat daemon (pid $STAND_IN) has left, but its process group still holds \(.*\) in the process table 10 s after the group's SIGTERM.*/\1/p" "$stuck_out")
+  member_got=$(tr ',' '\n' <<<"$member_list" | sed -n 's/^ *pid \([0-9][0-9]*\)$/\1/p' | sort -n | paste -sd' ')
+  member_want=$(printf '%s\n' "$MEMBER_PID" "$NAP_PID" | sort -n | paste -sd' ')
+  [ "$member_got" = "$member_want" ] ||
+    stand_in_fail "stop_daemon did not name exactly the members of the heartbeat daemon's process group still there (pids $member_want): it named '$member_list': $(cat "$stuck_out")"
   kill -KILL -- "-$STAND_IN" 2>/dev/null || true
   end_process "$MEMBER_PID" || fail "the member of the stand-in's process group (pid $MEMBER_PID) still runs 10 s after its SIGKILL"
+  end_process "$NAP_PID" || fail "the member's nap (pid $NAP_PID) still runs 10 s after its SIGKILL"
   wait "$STAND_IN" 2>/dev/null || true
 )
 pass "a daemon that outlives its SIGTERM makes stop_daemon fail, naming it and keeping its pidfile, and down go on with its delete and then fail, naming it; a daemon that ends on its SIGTERM is stopped and its pidfile removed once every member of its process group has gone, and a member still there 10 s after the group's SIGTERM is named"
