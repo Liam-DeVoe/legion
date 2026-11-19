@@ -1,14 +1,15 @@
 package sandbox
 
-// A session store that stops answering a Kubernetes start, at its proof dial or on the pinned Oh
-// My Pi's own connection after the start's checks passed, is waited out a minute at a time: the
-// claim keeps its session, is charged nothing, and the next minute's try, once the store answers,
-// launches the same session. The test drives the whole chain: a claim's machine on a clock of the
-// test's own, this runtime over the rig's fake cluster, a real `legion launcher` in each pod the
-// rig makes (launcher.Run), its real session proxy to the test's Postgres, and the real Oh My Pi.
-// The one stand-in is the pod's file system: the relay between the runtime and the launcher points
-// the start's argv and environment at the pinned binary and the launcher's own directory where the
-// runtime names a pod's paths.
+// A session store that stops answering a Kubernetes start, at its proof dial, at the resume's
+// lookup, at a Claude Code keeper's read of the session's rows, or on the pinned Oh My Pi's own
+// connection after the start's checks passed, is waited out a minute at a time: the claim keeps
+// its session, is charged nothing, and the next minute's try, once the store answers, launches the
+// same session. The tests drive the whole chain: a claim's machine on a clock of the test's own,
+// this runtime over the rig's fake cluster, a real `legion launcher` in each pod the rig makes
+// (launcher.Run), its real session proxy to the test's Postgres, and the real Oh My Pi or a Claude
+// Code resume's real keeper. The one stand-in is the pod's file system: the relay between the
+// runtime and the launcher points the start's argv and environment at the pinned binary and the
+// launcher's own directory where the runtime names a pod's paths.
 
 import (
 	"bufio"
@@ -30,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -139,12 +141,58 @@ func TestAKubernetesStartWhoseProxyCredentialIsNotThereIsChargedNamingIt(t *test
 	}
 }
 
+// A Claude Code resume whose keeper cannot read the session's rows back, which another transaction
+// holds locked past the start's bound, is waited out a minute at a time through the claim's
+// machine, as the keeper's other store faults are: the claim keeps its session, is charged nothing,
+// and the next minute's try, once the rows can be read, launches the same session, its transcript
+// restored from the table onto the pod's disk.
+func TestAKubernetesClaudeResumeWhoseRowsTheStoreCannotReadIsWaitedOutAMinuteAndRestoresTheSameSession(t *testing.T) {
+	s := newClaudeStoreFaultRig(t, testbin.OMP(t))
+	release := s.lockRows(t)
+
+	err := s.m.Handle(s.g.ctx, supervise.RequestResume{Claim: s.spec.Claim})
+	s.m.Wait()
+	c := s.m.Claim()
+	if !errors.Is(err, runtime.ErrSessionStore) || !strings.Contains(err.Error(), "restore "+s.claude.transcript) {
+		t.Fatalf("the resume whose rows cannot be read answered %v, want runtime.ErrSessionStore naming the restore of %s", err, s.claude.transcript)
+	}
+	if c.State != supervise.StateLaunching || c.Locator != nil || c.Budgets.LaunchFailures != 0 ||
+		c.Session != storeFaultSession || c.SessionFile != storeFaultSessionFile || len(s.faults()) != 1 {
+		t.Fatalf("after the store fault the claim is %s, locator %v, %d launch failures, session %q at %q, %d store faults told; want launching with no process, nothing charged, %s at %s kept, the fault told once",
+			c.State, c.Locator, c.Budgets.LaunchFailures, c.Session, c.SessionFile, len(s.faults()), storeFaultSession, storeFaultSessionFile)
+	}
+	if _, err := os.Stat(s.claude.transcript); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the refused start left the transcript on the pod's disk (%v), want nothing restored", err)
+	}
+	starts := s.relay.startCount()
+
+	release()
+	s.clock.Advance(s.m, time.Minute-time.Second)
+	if got := s.relay.startCount(); got != starts {
+		t.Fatalf("the claim was started again before its minute was out: %d starts, had %d", got, starts)
+	}
+	s.clock.Advance(s.m, time.Second)
+	c = s.m.Claim()
+	if c.Locator == nil || c.Budgets.LaunchFailures != 0 || c.Session != storeFaultSession {
+		t.Fatalf("after the minute's try the claim is %s, locator %v, %d launch failures, session %q; want it launched on %s with nothing charged",
+			c.State, c.Locator, c.Budgets.LaunchFailures, c.Session, storeFaultSession)
+	}
+	if last := s.relay.lastStart(); last.ResumeFile != storeFaultSessionFile {
+		t.Errorf("the minute's start resumes %q, want the same session %s", last.ResumeFile, storeFaultSessionFile)
+	}
+	if got, err := os.ReadFile(s.claude.transcript); err != nil || string(got) != storeFaultTranscript {
+		t.Errorf("the minute's start restored the transcript %q (%v), want the row's %q", got, err, storeFaultTranscript)
+	}
+}
+
 // The session the store-fault tests' claim records, and the file it is recorded under: any key
 // the table holds, since the relay starts the real Oh My Pi fresh beside the launcher's own
-// lookup of it.
+// lookup of it. storeFaultTranscript is what the table holds of it, and of a Claude Code resume's
+// transcript (claudeResume).
 const (
 	storeFaultSession     = "ses-tester"
 	storeFaultSessionFile = "/legion/scratch/state/tester/.omp/profiles/legion/agent/sessions/--legion-workspaces-legion-208--/2026-11-19T12-00-00-000Z_ses-tester.jsonl"
+	storeFaultTranscript  = "{}\n"
 )
 
 // storeFaultRig is one suspended Oh My Pi claim of the rig's worker, its machine on a clock of the
@@ -156,9 +204,21 @@ type storeFaultRig struct {
 	clock  *supervisetest.Clock
 	dialer *storeDialer
 	relay  *realLauncher
+	// dsn is the session database's URL; claude, when not nil, is the Claude Code resume the relay
+	// starts in Oh My Pi's place (newClaudeStoreFaultRig).
+	dsn    string
+	claude *claudeResume
 
 	mu   sync.Mutex
 	told []string
+}
+
+// claudeResume is a Claude Code resume of the claim's session that the relay starts in place of
+// the runtime's Oh My Pi start: the environment names the session's id and a config directory of
+// the test's own, the resume file is the session's transcript under it, which the table holds,
+// and the child is a shell that waits, since the launcher's keeper, not the child, is the subject.
+type claudeResume struct {
+	configDir, transcript string
 }
 
 func (s *storeFaultRig) faults() []string {
@@ -167,11 +227,58 @@ func (s *storeFaultRig) faults() []string {
 	return slices.Clone(s.told)
 }
 
+// lockRows holds the session's parts locked in a transaction of the test's own until the returned
+// release, so that a read of the session's rows waits past the start's bound, as a table that
+// does not answer it does.
+func (s *storeFaultRig) lockRows(t *testing.T) (release func()) {
+	t.Helper()
+	conn, err := ompsessions.ConnectURL(context.Background(), s.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := conn.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), "LOCK TABLE omp_session_files_parts IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			_ = tx.Rollback(context.Background())
+			_ = conn.Close(context.Background())
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
+
 func newStoreFaultRig(t *testing.T, omp string, stopGrace time.Duration, edits ...func(*launcher.Config)) *storeFaultRig {
+	t.Helper()
+	return storeFaultRigOf(t, omp, stopGrace, nil, edits...)
+}
+
+// newClaudeStoreFaultRig is newStoreFaultRig whose relay starts a Claude Code resume of the
+// claim's session (claudeResume), whose transcript the table holds.
+func newClaudeStoreFaultRig(t *testing.T, omp string) *storeFaultRig {
+	t.Helper()
+	configDir := t.TempDir()
+	session := claudelaunch.NewSessionID()
+	return storeFaultRigOf(t, omp, 0, &claudeResume{configDir: configDir,
+		transcript: filepath.Join(configDir, "projects", "-legion-workspaces-legion-208", session+".jsonl")})
+}
+
+// storeFaultRigOf is newStoreFaultRig, the relay starting claude in Oh My Pi's place when it is not
+// nil.
+func storeFaultRigOf(t *testing.T, omp string, stopGrace time.Duration, claude *claudeResume, edits ...func(*launcher.Config)) *storeFaultRig {
 	t.Helper()
 	dsn := testdb.Database(t, "legion_sandbox_store_fault_test")
 	database, address := sessionDatabaseOf(t, dsn)
 	seedSession(t, dsn, storeFaultSessionFile)
+	if claude != nil {
+		seedSession(t, dsn, claude.transcript)
+	}
 	home := t.TempDir()
 	testbin.OMPHome(t, omp, home)
 	testbin.WriteOMPProfile(t, home, "providers:\n  operator:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n"+
@@ -203,9 +310,16 @@ func newStoreFaultRig(t *testing.T, omp string, stopGrace time.Duration, edits .
 		start.Argv = []string{omp, "--mode", "rpc"}
 		start.Env = append(testbin.OMPEnviron(home), ompsessions.StorageVariable+"="+ompsessions.SQLStorage,
 			ompsessions.DSNFileVariable+"="+dsnFile, "LEGION_WORKSPACE="+filepath.Join(home, "workspace"))
+		if claude != nil {
+			start.Argv = []string{"/bin/sh", "-c", "exec sleep 600"}
+			start.Env = append(start.Env, "CLAUDE_CONFIG_DIR="+claude.configDir,
+				claudelaunch.SessionVariable+"="+strings.TrimSuffix(filepath.Base(claude.transcript), ".jsonl"))
+			start.ResumeFile = claude.transcript
+		}
 		return start
 	})
-	s := &storeFaultRig{g: g, spec: spec, clock: supervisetest.NewClock(time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)), dialer: dialer, relay: relay}
+	s := &storeFaultRig{g: g, spec: spec, clock: supervisetest.NewClock(time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)), dialer: dialer, relay: relay,
+		dsn: dsn, claude: claude}
 	suspended := supervise.Claim{Token: spec.Claim, Project: spec.Project, Tree: spec.Tree, Issue: spec.Issue, Role: spec.Role,
 		Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator,
 		Session: storeFaultSession, SessionFile: storeFaultSessionFile}
@@ -265,7 +379,7 @@ func seedSession(t *testing.T, dsn, path string) {
 		t.Fatal(err)
 	}
 	defer conn.Close(context.Background())
-	if _, err := ompsessions.Import(context.Background(), conn, path, []byte("{}\n"), time.Now()); err != nil {
+	if _, err := ompsessions.Import(context.Background(), conn, path, []byte(storeFaultTranscript), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }
