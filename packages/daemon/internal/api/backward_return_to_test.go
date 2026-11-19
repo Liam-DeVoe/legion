@@ -14,7 +14,9 @@ import (
 // takes returnTo, the step the move names by its place: the checker's move with returnTo 1 is the
 // one fact BackwardMove with the checker as requester and returnTo 1, and the owner's move with
 // returnTo 2 carries it as well. A returnTo below 1 names no step and is refused before anything
-// is recorded.
+// is recorded. A phase worker's move carries the entry its claim serves (PhaseEntry), which the
+// workflow holds to the worker's phases row under the fact's lock: 0 for a claim that took no task
+// of an entry, and 2 for the checker that took entry 2's task; the owner's move carries none.
 func TestTheBackwardRouteTakesADeploymentRoleAndReturnTo(t *testing.T) {
 	const key = "LEGION-208"
 	one, two, zero := 1, 2, 0
@@ -30,6 +32,23 @@ func TestTheBackwardRouteTakesADeploymentRoleAndReturnTo(t *testing.T) {
 			t.Fatalf("the checker's move = %d %s, want 200", answer.Code, answer.Body)
 		}
 		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: "checker", To: phase.Implementing, Reason: "the build is broken", ReturnTo: 1}}
+		if got := facts.recorded(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("facts = %#v, want %#v", got, want)
+		}
+	})
+	t.Run("the checker's move names the entry its claim serves", func(t *testing.T) {
+		h, facts, _ := newArchitectHarness(t, nil, nil)
+		seedIssueAt(t, h, key, phase.Step)
+		checker := newLiveClaim(t, h, key, "checker")
+		takeTask(t, h, checker.token, "outbox:77", "check "+key, 2, 1)
+
+		answer := h.request(http.MethodPost, "/legion/v1/phase/backward", PhaseBackwardRequest{GrantID: checker.grant(t), To: phase.Implementing,
+			Reason: "the build is broken"}, nil)
+
+		if answer.Code != http.StatusOK {
+			t.Fatalf("the checker's move = %d %s, want 200", answer.Code, answer.Body)
+		}
+		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: "checker", To: phase.Implementing, Reason: "the build is broken", PhaseEntry: 2}}
 		if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("facts = %#v, want %#v", got, want)
 		}

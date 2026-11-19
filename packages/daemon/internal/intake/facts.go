@@ -922,6 +922,14 @@ type BackwardMove struct {
 	// phase that step runs as. 0 names none, and the move goes to the one earlier place of its
 	// task that runs as To.
 	ReturnTo int
+	// PhaseEntry is, for a phase worker's move, the entry of the requester's phase its claim
+	// serves (the claim's ServingEntry) as the route read it: the move is the decision of a turn
+	// on that entry's task. The workflow judges it on the requester's phases row under the fact's
+	// lock and refuses the move, unspent, where the row stands on a later entry: the phase was
+	// handed to the role again after that turn took its task, and the move would send the new
+	// entry's work back on a reason written about the work before it. 0 for the architect's move
+	// and for a claim that serves no entry, which nothing of an entry judges.
+	PhaseEntry int64
 }
 
 func (BackwardMove) isFact() {}

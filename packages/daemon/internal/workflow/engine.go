@@ -1634,11 +1634,33 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// A phase worker's move is the decision of a turn on the task of the entry its claim serves
+	// (PhaseEntry, which its route read). An entry raised since — the phase handed to the role
+	// again after a conflict sent the work back, while that turn still ran — is work that turn
+	// never saw, and the move would send it back on a reason written about the work before it. So
+	// the move is judged here, on the row this transaction reads, before anything is written, and
+	// refused unspent where the row stands on a later entry.
+	if fact.PhaseEntry != 0 && fact.PhaseEntry < row.Entry {
+		return intake.Result{Refusal: staleBackwardMove(issue.Key, fact.Requester, issue.Phase, row.Entry, fact.PhaseEntry), Unspent: true}, nil
+	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, target, row, pr, fact.Reason)
+}
+
+// staleBackwardMove is the 409 BACKWARD_REFUSED refusal of requester's move of issue back from p,
+// made in a turn on entry served of its phase while its phases row stands on entry current: the
+// phase was handed to the role again after that turn took its task, so the move is no answer for
+// the work the current entry's task asks for, and it changed nothing. The worker does what a
+// worker refused a completion of an entry behind does (intake.StaleEntry): it ends the turn, and
+// the current entry's task, owed to its claim, comes by itself.
+func staleBackwardMove(issue string, requester claim.Role, p phase.Phase, current, served int64) *intake.Refusal {
+	return &intake.Refusal{Status: 409, Code: "BACKWARD_REFUSED", Message: fmt.Sprintf(
+		"%s handed the %s phase %s again: this move back is of entry %d, which is %d behind the entry %d the phase is on, so it changed nothing. "+
+			"End this turn without moving the issue. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself: judge that task's work at the head it names, and move the issue back in its turn if that work calls for it",
+		issue, requester, p, served, current-served, current)}
 }
 
 // parkRule is the condition dispatch://INFRA-2971 sets on each move of an issue to backlog,

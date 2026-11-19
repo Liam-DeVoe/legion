@@ -1248,7 +1248,10 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 
 // phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or the
 // tree architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
-// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED).
+// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED). A phase
+// worker's move carries the entry its claim serves (intake.BackwardMove.PhaseEntry), which the
+// workflow holds to the worker's phases row under the fact's lock, since the phase can be handed
+// to the role again between the turn's decision and the fact.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -1300,8 +1303,12 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusBadRequest, "ISSUE_NOT_GRANTS", fmt.Sprintf("a phase worker moves only its own issue %s, not %s", grant.Issue, req.Issue))
 		return
 	}
+	var entry int64
+	if machine, running := s.supervisor.Machine(grant.Claim); running {
+		entry = machine.Claim().ServingEntry()
+	}
 	s.applyFact(w, r, requestFactID("phase/backward"),
-		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason, ReturnTo: returnTo}, PhaseBackwardResponse{})
+		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason, ReturnTo: returnTo, PhaseEntry: entry}, PhaseBackwardResponse{})
 }
 
 func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
