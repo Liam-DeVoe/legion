@@ -389,7 +389,7 @@ func rankedByMinN(definition Definition, series string) bool {
 // it in. A row that holds the listing already is left as it is.
 //
 // It runs under the eval's lock (Register), which every other writer of these rows takes before
-// it reads the listing it writes (registerMissing, fillLoggedZeros), so no row is written with the
+// it reads the listing it writes (WriteReadings, fillLoggedZeros), so no row is written with the
 // listing this write replaces once it has committed. It locks the rows before it updates them, in
 // the byte order of their keys (repository, day), the order every statement that inserts or locks
 // one eval's day rows takes them in (writeDays), where the update alone would take them in the

@@ -10,11 +10,14 @@
 -- row, when the change at that seq was recorded (its delivery_changes.at), and null on the
 -- `events` row and for a seq no change holds: a pass that finds the change at its cursor gone from
 -- the log reads it to tell a change pruned after its 24 hours (delivery.PruneChanges), which loses
--- nothing, from a log that lost changes the cursor never read. updated_at is the moment the pass
--- that last wrote the row ran as of, which every pass stamps whether or not its feed held anything
--- new, so evals.Store.RefresherAge reads how long ago the last pass committed. It is a table of
--- its own rather than rows of issue_facts_cursor: legionfacts.CursorAge reads that table's oldest
--- row as the age of the Legion facts, and a row of another loop would stand in its answer.
+-- nothing, from a log that lost changes the cursor never read. updated_at is, on the `events` row,
+-- the moment the pass that last wrote the row ran as of, which every pass stamps whether or not its
+-- feed held anything new, and on the `delivery_changes` row when a page last read the change log to
+-- its end (delivery.ChangeCursor's ReadAt), which a full page leaves where it stood; so
+-- evals.Store.RefresherAge reads how long ago the last pass ran or a pass last read the whole
+-- change log, whichever is older. It is a table of its own rather than rows of
+-- issue_facts_cursor: legionfacts.CursorAge reads that table's oldest row as the age of the Legion
+-- facts, and a row of another loop would stand in its answer.
 --
 -- eval_days_walks holds one row per walk the refresher makes over a span of days: the delivery and
 -- CI rows of every project (family `delivery`, project_key ''), since one read of a day's delivery

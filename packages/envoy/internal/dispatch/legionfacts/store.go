@@ -147,11 +147,17 @@ func computedKeys(rows []Row) []string {
 // so the stamp says which rule the stored values were last computed by (otherBuildsRows).
 //
 // updated_at is the row's own UpdatedAt, the moment it was written; a row that carries none takes
-// the moment this write started. A row that carries no AsOf stores none, which a reader closes at
-// the row's updated_at, so writing such a row again with another UpdatedAt moves nothing a
-// comparison reads. A waiting reason of "" is stored as null, the column's "waits on nothing":
-// the rule never answers an empty reason, so the two cannot be confused. A repository of "" is
-// stored as null the same way, the column's "none resolves".
+// the moment this write started. A rewrite stores it or a microsecond past the stored updated_at,
+// whichever is later, so every rewrite moves updated_at. Every row of one pass carries the pass's
+// one moment (pass), so a pass that writes an issue on two of its pages writes it twice at one
+// UpdatedAt, and a second write that moved only values the board's revision of the issue leaves
+// out, the values that grow (api's legionBoardView), would otherwise leave that revision where the
+// first write put it, and a page holding the first write's values would keep them. A row that
+// carries no AsOf stores none, which a reader closes at the row's updated_at, so writing such a
+// row again with another UpdatedAt moves nothing a comparison reads. A waiting reason of "" is
+// stored as null, the column's "waits on nothing": the rule never answers an empty reason, so the
+// two cannot be confused. A repository of "" is stored as null the same way, the column's "none
+// resolves".
 func upsert(ctx context.Context, q Querier, project, build string, rows []Row) ([]string, error) {
 	if len(rows) == 0 {
 		return nil, nil
@@ -294,7 +300,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 			as_of = excluded.as_of,
 			growth = excluded.growth,
 			written_build = excluded.written_build,
-			updated_at = excluded.updated_at
+			updated_at = greatest(excluded.updated_at, issue_facts.updated_at + interval '1 microsecond')
 		where (issue_facts.opened_at, issue_facts.closed_at, issue_facts.hours_by_phase,
 		       issue_facts.work_hours, issue_facts.review_rounds, issue_facts.root_key,
 		       issue_facts.tree_depth, issue_facts.slot_hours, issue_facts.waiting_reason,

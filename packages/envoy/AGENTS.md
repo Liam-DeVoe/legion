@@ -2809,9 +2809,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A mapping's `PUT` takes `default` and moves the project's default in one transaction;
   a mapping that issues name as their repository is deleted and moved like any other, since an issue's own repository needs no mapping;
   and a moved mapping emits `settings.repo_project.updated` on the project it left (`deleted: true`) as well as the one it joined.
-  Every writer of a mapping, the `PUT`, the `DELETE`, the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), `cmd/dispatch-seed` and the delivery fixtures (`deliverytest.WriteRepoProjects`, which `evalfixture` and the eval bench write through), takes `delivery.LockRepoProjectWrite`'s locks in one order:
-  the delivery change log's lock first (`delivery.LockChanges`, since the mapping's trigger logs a `settings` change under it), then an advisory lock on the repository, the event owners of every project it touches, then the row.
-  So two writes to one repository serialize, even while it has no row yet, and the seed's own additions are announced like any other.
+  Every writer of a mapping, the `PUT`, the `DELETE`, the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), `cmd/dispatch-seed` and the delivery fixtures (`deliverytest.WriteRepoProjects`, which `evalfixture` and the eval bench write through), takes `delivery.LockRepoProjectWrite`'s locks in one order.
+  The one exception is the eval bench's `-base` load (`deliverytest.InsertRepoProjects`), which writes into the base head's schema, which has no owner lock, while no server runs on that database.
+  The locks, in order:
+  an advisory lock on the repository, the event owners of every project it touches, then the row, the order the release before this one takes too.
+  None of them is the delivery change log's lock (6900), which no writer of a mapping takes inside its transaction:
+  the mapping's trigger records its `settings` change in the change log's outbox (migration `20261117100020`), and each writer moves one batch of the outbox into the log right after its commit (`delivery.DrainRepoProjectChange`).
+  So two writes to one repository serialize, even while it has no row yet and when the two are of different builds during a roll, and the seed's own additions are announced like any other.
 
 - A closed issue (`closed_at` set) still takes its conversation: a new comment - issue-level, a thread reply, a reply on an ask, one anchored to a quote of one of its documents, and that thread's replies - and a new message, from a person or an agent, with their deliveries, retries and the mentioned or targeted agent's reply.
   A reply still reopens a resolved root there, as it does on an open issue.
@@ -3184,15 +3188,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   | `UpsertRunJobs` | the run's jobs, in their names' byte order, then the run | last, in its one statement |
   | `recordDeployedEvent` | its issue (`for no key update`, in the event's append), a new `events` row, then its pull request, in the marker's update | last, in its last statement |
   | a session group's create, update or delete (`delivery/groups.go`) | `delivery_session_groups`, `delivery_session_group_members` | first, after its reads |
-  | every mapping write, through `delivery.LockRepoProjectWrite` | `projects` (their owner locks, `events.Broker.LockOwners`, and beside an earlier build their rows `for no key update`), `repo_projects` (`for update`), new `events` rows, `session_titles` at commit | first |
   | the drain (`delivery.DrainPending`) | `delivery_changes_pending` | first |
 
   Each table's one position: last for `delivery_pull_requests`, `delivery_runs`, `delivery_run_jobs`, `delivery_settings`, `delivery_reconcile_progress` and `issues`;
-  first for `delivery_session_groups`, `delivery_session_group_members`, `repo_projects`, `projects`, `session_titles` and `delivery_changes_pending`;
+  first for `delivery_session_groups`, `delivery_session_group_members` and `delivery_changes_pending`;
   `events` and `delivery_changes` take new rows alone, under keys no two writers share.
 
-- The eval and Legion writes take no 6900 (the delivery change log's advisory lock) at all: the triggers of `issue_facts`, `issue_filings`, `eval_readings`, `eval_versions`, `eval_series` and `eval_days` record their changes in the outbox, `delivery_changes_pending`, with no lock (migration `20261117100001`, and each trigger in the migration that creates it), and `delivery.DrainPending` moves them into the change log 250 at a time, lowest ids first, each batch one short statement of its own that takes 6900 first and keeps each row's recorded moment, so no burst holds 6900 longer than one batch.
-  An eval write drains one batch, the lowest ids first, right after its own commit and before its route answers (`delivery.DrainPendingBatch`), so its answer waits for one batch whatever backlog another writer left; a Legion facts pass drains every pending row right after its commit, the live hub before each read of the log, the refresher at the start of each pass, and the server's boot once, before it serves.
+- The eval and Legion writes, and every write of a repository's mapping, take no 6900 (the delivery change log's advisory lock) at all: the triggers of `issue_facts`, `issue_filings`, `eval_readings`, `eval_versions`, `eval_series`, `eval_days` and `repo_projects` record their changes in the outbox, `delivery_changes_pending`, with no lock (migration `20261117100001`, and each trigger in the migration that creates it), and `delivery.DrainPending` moves them into the change log 250 at a time, lowest ids first, each batch one short statement of its own that takes 6900 first and keeps each row's recorded moment, so no burst holds 6900 longer than one batch.
+  An eval write and a mapping write each drain one batch, the lowest ids first, right after their own commit, a route's before it answers (`delivery.DrainPendingBatch`, which a mapping's writers call through `delivery.DrainRepoProjectChange`), so an answer waits for one batch whatever backlog another writer left; a Legion facts pass drains every pending row right after its commit, the live hub before each read of the log, the refresher at the start of each pass, and the server's boot once, before it serves.
   A pending row left by a writer killed between its commit and its drain is moved by the next drain of any process, or else by the next process's boot before it serves (`delivery.DrainPending` states the bound).
 
 - Project creation, repository mappings, and architecture sources own project-scoped events (`project.created`, `project.updated`, `settings.repo_project.updated`, `settings.architecture_source.updated`, and the importer's `architecture.synced` `{repo, branch, commit, components}` / `architecture.sync_failed` `{repo, branch, error}`, each naming the one source it judges (`components` is that source's count;

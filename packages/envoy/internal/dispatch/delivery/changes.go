@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -51,8 +52,10 @@ type Change struct {
 // The kinds of delivery change (Change.Kind), each the kind a table's trigger logs, so a reader of
 // the log compares with these rather than spell one again. The delivery intake's five
 // (pull_request, run, run_job, session_group, settings) are written into delivery_changes by their
-// triggers (delivery_change_log, migration 0100); the eval and Legion kinds (issue_facts and the
-// rest) are recorded in the outbox and moved into the log by DrainPending.
+// triggers (delivery_change_log, migration 0100), but for a settings change of a repository's
+// mapping, which repo_projects' trigger records in the outbox (migration 20261117100020); the eval
+// and Legion kinds (issue_facts and the rest) are recorded in the outbox too, and DrainPending
+// moves the outbox's rows into the log.
 const (
 	ChangeKindPullRequest  = "pull_request"
 	ChangeKindRun          = "run"
@@ -101,9 +104,8 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.
 //   - First, with LockChanges: every write of the session groups (writeSessionGroup, after the
-//     reads that decide it) and of a repository's project mapping (LockRepoProjectWrite, which
-//     every writer of repo_projects goes through); and the drain (DrainPending), which takes it
-//     before it locks the pending rows it moves.
+//     reads that decide it); and the drain (DrainPending), which takes it before it locks the
+//     pending rows it moves.
 //
 // Last is not after every row lock in a statement that changes several rows of a table with a
 // foreign key: Postgres fires the after-row triggers at the statement's end row by row, each row's
@@ -119,9 +121,9 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 // first, for the rest of its transaction, so those transactions are short and do their reads
 // before it.
 //
-// No eval, refresher or Legion facts write takes it: their changes wait in the outbox
-// (delivery_changes_pending, migration 20261117100001), and the drain moves them into the log in a
-// short transaction of its own after they commit.
+// No eval, refresher, Legion facts or repository mapping write takes it: their changes wait in the
+// outbox (delivery_changes_pending, migrations 20261117100001 and 20261117100020), and the drain
+// moves them into the log in a short transaction of its own after they commit.
 func LockChanges(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, lockChangesStatement); err != nil {
 		return fmt.Errorf("take the delivery change log's lock: %w", err)
@@ -143,23 +145,24 @@ func queueLockChanges(batch *pgx.Batch) {
 const drainBatch = 250
 
 // DrainPending moves every committed pending change row (delivery_changes_pending, the outbox the
-// eval and Legion tables' triggers record their changes in) into delivery_changes, and answers how
-// many it moved. It moves them a batch at a time (DrainPendingBatch), each batch one statement of
-// its own, delivery_changes_drain (migration 20261117100001), never a statement of a caller's
-// transaction, and moves another batch while a whole one moved. So it holds the change log's lock
-// for one batch's statement and its commit at a time, whatever the burst: each batch takes the lock
-// first, before the pending rows it deletes, and moves the lowest pending ids in id order, keeping
-// each row's at. Where nothing is pending it answers 0 and takes no lock. Two drains take turns on
-// the lock, and each pending row is moved exactly once.
+// eval and Legion tables' triggers and repo_projects' record their changes in) into
+// delivery_changes, and answers how many it moved. It moves them a batch at a time
+// (DrainPendingBatch), each batch one statement of its own, delivery_changes_drain (migration
+// 20261117100001), never a statement of a caller's transaction, and moves another batch while a
+// whole one moved. So it holds the change log's lock for one batch's statement and its commit at
+// a time, whatever the burst: each batch takes the lock first, before the pending rows it deletes,
+// and moves the lowest pending ids in id order, keeping each row's at. Where nothing is pending it
+// answers 0 and takes no lock. Two drains take turns on the lock, and each pending row is moved
+// exactly once.
 //
 // A pending row's id is drawn at its insert and not at its commit, so seq follows the order the
 // drains move rows in, not the order their writers committed in; every seq is still drawn under
 // the lock (LockChanges), so a reader's cursor never skips a moved row. Its callers: each Legion
 // facts pass, right after its commit; the live hub, before each read of the log; the refresher, at
 // the start of each pass; and the server's boot, before it serves. An eval write, the registry's
-// and the refresher's, drains one batch instead (DrainPendingBatch), so a route that answers after
-// its drain waits for one batch at most, whatever backlog another writer left: those callers move
-// the rest.
+// and the refresher's, and every write of a repository's mapping (DrainRepoProjectChange) drain
+// one batch instead (DrainAfterCommit), so a route that answers after its drain waits for one
+// batch at most, whatever backlog another writer left: those callers move the rest.
 //
 // A writer killed between its commit and its drain loses no change: its pending rows committed
 // with its write, and the next drain of any process moves them, whichever runs first:
@@ -168,8 +171,8 @@ const drainBatch = 250
 //     notification on ChangesChannel wakes at the writer's commit. Only a process where a page
 //     subscribes has one running: a hub starts its listener at its first subscription and stops it
 //     when its last one leaves, and drains nothing while no page subscribes;
-//   - the next eval write's, one batch, the lowest ids first (evals' drainChanges), so a row behind
-//     a whole batch of others waits for a later drain;
+//   - the next eval or mapping write's, one batch, the lowest ids first (evals' drainChanges,
+//     DrainRepoProjectChange), so a row behind a whole batch of others waits for a later drain;
 //   - the next Legion facts pass's, every pending row, after its commit (legionfacts' writePass);
 //   - the day-row refresher's next pass, every pending row, at its start (evals' refresh). The
 //     rows' notification wakes the refresher of every live process, and the process that holds the
@@ -198,6 +201,22 @@ func DrainPending(ctx context.Context, pool *store.Pool) (int64, error) {
 func DrainPendingBatch(ctx context.Context, pool *store.Pool) (int64, bool, error) {
 	moved, err := drainOneBatch(ctx, pool)
 	return moved, err == nil && moved == drainBatch, err
+}
+
+// DrainAfterCommit is the drain a writer whose changes wait in the outbox runs right after its
+// write committed: it moves one batch (DrainPendingBatch), the lowest ids first, so the writer's
+// own rows are among them where no more than a batch was pending ahead of them. One batch and no
+// more, so a route that drains before it answers waits for one batch whatever backlog another
+// writer left. A write that finds more than a batch ahead of its rows leaves them pending, as it
+// does when its drain fails. A failed drain fails nothing and logs warning, the caller's own text,
+// unless ctx has ended: the rows committed with the write, and the next drain of any process moves
+// them, or else the next process's boot before it serves (DrainPending states the bound). Its
+// callers are every eval write (evals' drainChanges) and every writer of a mapping
+// (DrainRepoProjectChange), each with its own warning.
+func DrainAfterCommit(ctx context.Context, pool *store.Pool, warning string) {
+	if _, _, err := DrainPendingBatch(ctx, pool); err != nil && ctx.Err() == nil {
+		slog.Warn(warning, "error", err)
+	}
 }
 
 // drainOneBatch is the statement that moves up to drainBatch pending rows into delivery_changes,
@@ -244,21 +263,45 @@ func OldestChangeSeq(ctx context.Context, q Querier) (int64, error) {
 	return seq, err
 }
 
-// ChangeCursor is where one reader of the change log stands: the seq of the last change it read
-// (0 before it read any), when the log recorded that change (its at, nil where the reader holds
-// none: a position no change held), and when the reader last read the log, by the reader's own
-// clock (ReadAt: the moment its last committed pass ran as of, or its last read of the log).
+// ChangeCursor is where one reader of the change log stands in that log, and is a cursor of that
+// log alone: the seq of the last change it read (0 before it read any), when the log recorded that
+// change (At, nil where the reader holds none: a position no change held), and when the reader last
+// read the log to its end, by the reader's own clock (ReadAt). A page of the log moves it by one
+// rule (Through), and a move to the log's head (ChangesHead, on a first read or a lost cursor) is a
+// read of the log to its end too.
+//
+// A reader reads its clock afresh for each page, before that page's read: the one reading is the
+// now its lost-cursor check is judged at (CursorLost) and the ReadAt a read to the end stamps, so
+// a catch-up that runs for hours is judged at the moment of each page and not at its start.
 type ChangeCursor struct {
 	Seq    int64
 	At     *time.Time
 	ReadAt time.Time
 }
 
+// Through is c moved over changes, a page ChangesSince read after c.Seq with limit, where checked
+// is the reader's clock as it read it before that page (ChangeCursor). Seq and At move to the
+// page's last change, and an empty page leaves them where they stood. A page shorter than limit
+// found no change after the last one it took, a read of the log to its end, and stamps ReadAt
+// with checked; a full page carries the earlier ReadAt forward, since the reader has not seen the
+// log's end since. At points at a copy of the change's time, so the cursor keeps none of the page
+// alive.
+func (c ChangeCursor) Through(changes []Change, limit int, checked time.Time) ChangeCursor {
+	if n := len(changes); n > 0 {
+		at := changes[n-1].At
+		c.Seq, c.At = changes[n-1].Seq, &at
+	}
+	if len(changes) < limit {
+		c.ReadAt = checked
+	}
+	return c
+}
+
 // CursorLost reports whether cursor may have passed over changes its reader never read, as of
-// now on the reader's own clock. It is the one rule every reader of the log judges its cursor by
-// (the eval day-row refresher, the delivery live hub and the Legion facts consumer): a reader
-// whose cursor is lost reads again everything the changes could have named, and any other reads
-// on after its cursor.
+// now, the reader's own clock as it read it for this page (ChangeCursor). It is the one rule every
+// reader of the log judges its cursor by (the eval day-row refresher, the delivery live hub and the
+// Legion facts consumer): a reader whose cursor is lost reads again everything the changes could
+// have named, and any other reads on after its cursor.
 //
 // The cursor is lost where the log holds rows and its newest seq is below the cursor's: the
 // sequence went backwards (a TRUNCATE ... RESTART IDENTITY, a restore), so a reader that read on
@@ -274,15 +317,17 @@ type ChangeCursor struct {
 //   - the change was recorded less than ChangeRetention ago by the database's clock, the clock
 //     its at was written by and PruneChanges cuts by, so no prune took it: a log reset, or rows
 //     deleted by hand;
-//   - the reader has read nothing for longer than ChangeRetention before now, by its own clock,
-//     the one ReadAt is stamped by: while it stood still a prune may have taken changes after
-//     its cursor that it never read.
+//   - the reader has not read the log to its end for longer than ChangeRetention before now, by
+//     its own clock, the one ReadAt is stamped by: since that read a prune may have taken changes
+//     after its cursor that it never read, while it stood still or while it caught up a backlog
+//     a full page at a time.
 //
-// A change gone after its retention while its reader read the log within it was pruned in its
-// time, as the prune takes the change a cursor rests on whenever a day brings no newer one, and
-// is no loss: the reader's last read found nothing after it, and every change recorded since is
-// younger than the retention and still in the log. A cursor with no At is judged by ReadAt alone.
-// A cursor at 0 has read nothing and lost nothing.
+// A change gone after its retention while its reader read the log to its end within the retention
+// was pruned in its time and is no loss: that read took every change the log then held, so every
+// change the reader has not read was recorded since, is younger than the retention and is still in
+// the log. That is the routine prune of a quiet day, which takes the change a cursor rests on
+// whenever a day brings no newer one. A cursor with no At is judged by ReadAt alone. A cursor at 0
+// has read nothing and lost nothing.
 //
 // The change at the cursor, the log's newest seq and the database's clock are one statement's,
 // so they describe one log.
@@ -314,7 +359,8 @@ func CursorLost(ctx context.Context, q Querier, cursor ChangeCursor, now time.Ti
 // it is moved to the log's head (the eval day-row refresher's and the Legion facts consumer's on
 // their first read and on a lost cursor, the delivery live hub's on its first read and on a lost
 // one), and the position a hub's recompute reads through. The two are one row of one statement,
-// so they name one change. ReadAt is zero: when its reader read the log is the reader's to stamp.
+// so they name one change. ReadAt is zero: a move to the head is a read of the log to its end,
+// which the reader that moves its cursor there stamps by its own clock (ChangeCursor).
 func ChangesHead(ctx context.Context, q Querier) (ChangeCursor, error) {
 	var head ChangeCursor
 	err := q.QueryRow(ctx, `select seq, at from delivery_changes order by seq desc limit 1`).Scan(&head.Seq, &head.At)

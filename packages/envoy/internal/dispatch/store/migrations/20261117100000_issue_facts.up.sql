@@ -124,13 +124,15 @@
 --
 -- issue_facts_cursor holds one row per named cursor: where the consumer of several feeds stopped
 -- in each, so a restart takes up where the last pass left off rather than reading a feed again
--- from its start. updated_at is the moment the pass that last wrote the row ran at, which every
--- pass stamps whether or not its feed held anything new. at is, on the `delivery_changes` row,
--- when the change at that position was recorded (its delivery_changes.at), and null on the other
--- rows and for a position no change holds: a pass that finds the change at its cursor gone from
--- the log, or another change at its seq, reads the two to tell a change pruned after its 24 hours
--- (delivery.PruneChanges), which loses nothing, from a log that lost changes the cursor never
--- read (delivery.CursorLost).
+-- from its start. updated_at is, on the `events` and `legion_observations` rows, the moment the
+-- pass that last wrote the row ran at, which every pass stamps whether or not its feed held
+-- anything new, and on the `delivery_changes` row when a page last read the change log to its end
+-- (delivery.ChangeCursor's ReadAt), which a full page leaves where it stood. at is, on the
+-- `delivery_changes` row, when the change at that position was recorded (its
+-- delivery_changes.at), and null on the other rows and for a position no change holds: a pass that
+-- finds the change at its cursor gone from the log, or another change at its seq, reads the two to
+-- tell a change pruned after its 24 hours (delivery.PruneChanges), which loses nothing, from a log
+-- that lost changes the cursor never read (delivery.CursorLost).
 --
 -- Two new tables and their indexes, all built over no row: nothing existing is read, locked or
 -- rewritten, and the release before this one neither reads nor writes either table, so the two

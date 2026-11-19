@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"time"
 
@@ -74,9 +73,13 @@ const writeAttempts = 2
 // The transaction runs in the two phases every joined writer runs in (docs.Ledger): fn takes its
 // locks, reads and does its document work first, holding no transaction id, the document's writes
 // and events queued on the ledger as it makes them; then it writes its own rows, and the ledger's
-// Commit sends the queued writes as one batch after them and commits. fn is run again, in a new
-// transaction, where its first run found the document removed under it (errDocumentRemoved),
-// which it answers before it writes anything.
+// Commit sends the queued writes as one batch after them and commits. A row lock (`for update`)
+// gives the transaction an id as a write does, so fn takes it after the advisory locks it may
+// wait for, its evals' locks first (lockEval): every reader of the event log waits for each
+// running transaction id (events.Horizon), and a transaction that waited for a lock holding one
+// would hold them all back for the wait. fn is run again, in a new transaction, where its first
+// run found the document removed under it (errDocumentRemoved), which it answers before it writes
+// anything.
 //
 // Every registry write logs a change for its versions, readings and day rows, whose triggers
 // record each in the change log's outbox (delivery_changes_pending, migration 20261117100001) and
@@ -148,7 +151,7 @@ func (s *Store) committed(ctx context.Context, w *writeTx) {
 }
 
 // drainChanges moves one batch of the change rows committed writes recorded in the change log's
-// outbox into the log (delivery.DrainPendingBatch), the lowest ids first, in a short transaction of
+// outbox into the log (delivery.DrainAfterCommit), the lowest ids first, in a short transaction of
 // its own. One batch and no more: every eval write drains here, a readings or register write
 // before its route answers, so a backlog another writer left (a whole-project facts pass leaves
 // thousands of rows) would otherwise be moved whole by the next write that answers a person. A
@@ -157,9 +160,7 @@ func (s *Store) committed(ctx context.Context, w *writeTx) {
 // it, and the next drain of any process moves them, or else the next process's boot before it
 // serves (delivery.DrainPending states the bound).
 func (s *Store) drainChanges(ctx context.Context) {
-	if _, _, err := delivery.DrainPendingBatch(ctx, s.database.Pool); err != nil && ctx.Err() == nil {
-		slog.Warn("dispatch: an eval write could not move its changes into the delivery change log; the next drain moves them", "error", err)
-	}
+	delivery.DrainAfterCommit(ctx, s.database.Pool, "dispatch: an eval write could not move its changes into the delivery change log; the next drain moves them")
 }
 
 // lockEval serialises, for the rest of tx, every write of one eval's versions and series and of
@@ -174,14 +175,21 @@ func lockEval(ctx context.Context, tx pgx.Tx, evalID string) error {
 	return lockEvals(ctx, tx, []string{evalID})
 }
 
-// lockEvals takes the lock of each eval evalIDs names (lockEval), in one statement, in the byte
-// order of the ids, so two writers that each take several evals' locks through it wait on each
-// other in turn and never in a cycle. The zero fill takes them so, before it reads the evals'
-// listings or writes a day row (fillLoggedZeros).
+// lockEvals takes the lock of each eval evalIDs names (lockEval), in one statement, one lock per
+// distinct key and in the order of the keys rather than of the ids: two ids whose keys collide
+// share one lock, and ordering by id could take that lock before a third eval's in one
+// transaction and after it in another, a cycle Postgres breaks with `deadlock detected` (40P01),
+// which is why store.LockOwners sorts by its lock key too. In key order, two writers that each
+// take several evals' locks through it take any two keys in one order, so they wait on each other
+// in turn and never in a cycle. The order by is the outer statement's, so Postgres sorts the keys
+// before it takes the lock of each: a volatile function of the select list runs after the sort.
+// The zero fill takes them so, before it reads the evals' listings or writes a day row
+// (fillLoggedZeros), and the seed before it reads what the project holds (ensure).
 func lockEvals(ctx context.Context, tx pgx.Tx, evalIDs []string) error {
 	if _, err := tx.Exec(ctx, `
-		select pg_advisory_xact_lock(hashtext('eval:' || id))
-		from (select id from unnest($1::text[]) as id order by id collate "C") ids
+		select pg_advisory_xact_lock(key)
+		from (select distinct hashtext('eval:' || id) as key from unnest($1::text[]) as id) keys
+		order by key
 	`, evalIDs); err != nil {
 		return fmt.Errorf("lock the evals %v: %w", evalIDs, err)
 	}

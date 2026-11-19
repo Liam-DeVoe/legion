@@ -134,16 +134,22 @@ beside it is of: "< 45m for every change" for the longest change, "median < 60m"
 longest change and its median, and every change under the target puts the median under it, so
 the label names the longest change alone and the verdict is the same. A card whose target
 judges its own headline figure alone (deploys a day, the failure rate per deploy, run success,
-the count of unowned P0 issues) names no statistic. Every figure on a card takes a verdict's colour
-only when the card's target judges the statistic the figure shows, and reads plain otherwise; a
-statistic another judged one implies, which the label leaves out, reads plain too, and the card's
-met or missed badge stays the verdict of all the target judges. So merge to production's median
-reads plain under the catalogue's target, whose longest change implies it, the failure rate's upper
-bound reads plain unless the target judges it, and a target someone set to judge the failure rate
-per pull request, or the deploys with a pull request a day, leaves the card's headline figure plain.
-A day's bar on a card's chart is green where that day's value of each judged statistic meets the
-target, red where one misses it, and neutral where the day has no value of one; the dashed target
-line is drawn only when the target judges the figure the bars draw.
+the count of unowned P0 issues) names no statistic.
+
+The met or missed badge is the only verdict of everything the target judges together. Every other
+figure, count, bar and table cell is green or red only when the target judges the statistic it
+shows, and then by its own value of that statistic, never by the badge: under the catalogue's
+target merge to production's median is green or red by the median itself, its longest change by
+the longest change, and a figure the target does not judge, such as the failure rate's upper bound
+under the catalogue's target, reads plain. A day's bar and a day's cell in the per-day table are
+judged by that day's value only for a rate or a median, 90th percentile or longest time; a count
+over the window, such as the concluded runs or the deploys, is judged by the window's total, so its
+figure on the card takes the colour and no day does. The dashed target line is drawn exactly where
+the bars can take a colour. With the target off, nothing takes a colour and no line is drawn.
+A coloured figure takes more decimals where its usual ones would put it on the other side of the
+target from its own value (on the target where the value is not, or past it), so it always reads
+on the side its colour says (4.96% under a 5% target, never 5.0%, while a rate of exactly 5% keeps
+5.0%), and a label writes its target exactly as it was set.
 
 ## For agents
 
@@ -349,11 +355,15 @@ The verdict on these two cards is the eval's own, judged by the same code as
 shows today's and the seven days' value of each, leaving out one that another implies (merge to
 production shows its longest change, which under the target puts the median under it), so a card
 whose eval someone set to judge the 90th percentile reads "P90" where it read "Median". Each
-day's bars on them are green where that day's value of each judged statistic meets the eval's
-target, the target's own value included where the eval counts it as met, red where one misses
-it, and neutral where the day has no value
-of one. The dashed line marks the target when it judges minutes, and is left out when it judges
-the count of pull requests alone.
+figure on these cards, and each day's median bar and 90th-percentile bar, is green or red only
+when the eval's target judges the statistic it shows, by its own value, the target's own value
+included where the eval counts it as met; today's figures and the bars are a day's, so under a
+target of the count of pull requests only the seven days' count takes a colour. The dashed line
+marks the target exactly where a bar can take a colour.
+A coloured figure takes more decimals where its usual ones would put it on the other side of the
+target from its own value (on the target where the value is not, or past it), so it always reads
+on the side its colour says (59.9m under 60 minutes, never 60m, while a median of exactly 60
+minutes keeps 60m), and the card writes its target exactly as it was set.
 
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
 and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely

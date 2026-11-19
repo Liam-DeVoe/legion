@@ -16,7 +16,9 @@
 // as arrays, as legiontest writes its tables: a history of eighty thousand jobs written a statement
 // per row takes minutes against a real Postgres. The mappings are that one statement under a
 // mapping write's locks (WriteRepoProjects), which every fixture that maps a repository calls, so
-// a fixture and a mapping route writing one repository at once never deadlock.
+// a fixture and a mapping route writing one repository at once never deadlock, and their settings
+// changes reach the change log as a mapping route's do. The statement alone (InsertRepoProjects)
+// is for a load no other writer of a mapping runs beside: the eval bench's -base load.
 //
 // Containment (delivery/containment.go) ships a pull request of the deploy repository with the
 // earliest-completing successful production job of a deploy run on main that GitHub created after
@@ -45,6 +47,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -782,21 +786,13 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 
 // WriteRepoProjects stores each mapping's repository as mapped to its project, its default or not,
 // created by its CreatedBy, in one transaction that takes a mapping write's locks for each
-// repository before it inserts the rows (delivery.LockRepoProjectWrite), as the mapping routes do:
-// the change log's lock first, before any row of repo_projects. An insert of mappings in a
-// statement of its own would take that lock after its rows, in the table's change trigger, and
-// wait on a mapping route's write of the same repository while that write waited on it. A
-// repository that has a mapping already refuses the whole write.
+// repository before it inserts the rows (delivery.LockRepoProjectWrite, then InsertRepoProjects),
+// as the mapping routes do, so it and a mapping route writing the same repository wait for each
+// other in one order. Once it has committed it moves the settings changes the mappings' trigger
+// recorded in the change log's outbox into the log, as every writer of a mapping does
+// (delivery.DrainRepoProjectChange). A repository that has a mapping already refuses the whole
+// write.
 func WriteRepoProjects(ctx context.Context, pool *store.Pool, mappings ...model.RepoProject) error {
-	repos, projects, createdBy := make([]string, len(mappings)), make([]string, len(mappings)), make([]string, len(mappings))
-	defaults := make([]bool, len(mappings))
-	for i, mapping := range mappings {
-		author, err := json.Marshal(mapping.CreatedBy)
-		if err != nil {
-			return fmt.Errorf("encode the author of %s's mapping: %w", mapping.Repo, err)
-		}
-		repos[i], projects[i], createdBy[i], defaults[i] = mapping.Repo, mapping.Project, string(author), mapping.Default
-	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -808,14 +804,44 @@ func WriteRepoProjects(ctx context.Context, pool *store.Pool, mappings ...model.
 			return fmt.Errorf("lock the mapping of %s: %w", mapping.Repo, err)
 		}
 	}
-	if _, err := tx.Exec(ctx, `
+	if err := InsertRepoProjects(ctx, tx, mappings...); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	delivery.DrainRepoProjectChange(ctx, pool)
+	return nil
+}
+
+// Execer is what InsertRepoProjects writes through: the pool, or a transaction open on it.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// InsertRepoProjects stores each mapping's repository as mapped to its project, its default or
+// not, created by its CreatedBy, in one insert through q. It takes no lock of its own:
+// WriteRepoProjects calls it under a mapping write's locks, and a caller with no writer of the
+// mapping beside it, the eval bench's -base load, calls it alone. A repository that has a mapping
+// already refuses the whole insert.
+func InsertRepoProjects(ctx context.Context, q Execer, mappings ...model.RepoProject) error {
+	repos, projects, createdBy := make([]string, len(mappings)), make([]string, len(mappings)), make([]string, len(mappings))
+	defaults := make([]bool, len(mappings))
+	for i, mapping := range mappings {
+		author, err := json.Marshal(mapping.CreatedBy)
+		if err != nil {
+			return fmt.Errorf("encode the author of %s's mapping: %w", mapping.Repo, err)
+		}
+		repos[i], projects[i], createdBy[i], defaults[i] = mapping.Repo, mapping.Project, string(author), mapping.Default
+	}
+	if _, err := q.Exec(ctx, `
 		insert into repo_projects (repo, project, created_by, is_default)
 		select repo, project, author::jsonb, is_default
 		from unnest($1::text[], $2::text[], $3::text[], $4::bool[]) as mapped(repo, project, author, is_default)`,
 		repos, projects, createdBy, defaults); err != nil {
 		return fmt.Errorf("map the repositories: %w", err)
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // writeIssues stores every issue. An issue closes half an hour after the last pull request

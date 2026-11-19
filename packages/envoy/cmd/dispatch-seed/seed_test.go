@@ -63,6 +63,24 @@ func TestSeedAtASmallScale(t *testing.T) {
 			t.Fatalf("%d seeded projects default to a login no people row holds", unknown)
 		}
 	})
+	t.Run("every seeded mapping's change is in the change log", func(t *testing.T) {
+		// A mapping's trigger records its settings change in the change log's outbox, and the seed
+		// moves those changes into the log once its projects' transaction has committed, as every
+		// writer of a mapping does (delivery.DrainRepoProjectChange).
+		var unlogged, pending int
+		if err := first.Pool.QueryRow(context.Background(), `
+			select (select count(*) from repo_projects mapping
+			        where not exists (select 1 from delivery_changes change
+			                          where change.kind = 'settings' and change.repo = mapping.repo)),
+			       (select count(*) from delivery_changes_pending where kind = 'settings')
+		`).Scan(&unlogged, &pending); err != nil {
+			t.Fatalf("count the seeded mappings' changes: %v", err)
+		}
+		if unlogged != 0 || pending != 0 {
+			t.Fatalf("%d seeded mappings have no settings change in the change log and %d settings changes wait in its outbox, want every one moved by the seed's drain",
+				unlogged, pending)
+		}
+	})
 	t.Run("a second seed of a filled database is refused", func(t *testing.T) {
 		err := refuseFilledDatabase(context.Background(), first)
 		if err == nil {
@@ -192,7 +210,7 @@ func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
 //
 // Each case reads schema_migrations before and after, whole and in order. A database with no
 // Dispatch schema carries no such table, so "it did not change" is "it is still not there": a
-// migrate-first run creates schema_migrations before it applies anything (store.createVersionTable),
+// migrate-first run creates schema_migrations before it applies anything (store.prepareVersionTable),
 // so it shows there whichever migration it then fails on.
 func TestSeedRefusesAFilledDatabaseWithoutMigratingIt(t *testing.T) {
 	t.Run("a database that is not Dispatch's", func(t *testing.T) {

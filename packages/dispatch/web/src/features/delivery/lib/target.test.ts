@@ -1,18 +1,26 @@
 import { expect, test } from "bun:test";
-import type { DeliveryDailyPoint, DeliveryLeadTimeCell } from "../../../api/types";
+import type { DeliveryLeadTimeCell } from "../../../api/types";
+import { formatDuration, formatMinutes, pct } from "./format";
 import {
-  dailyValue,
-  dayMeets,
   type Judge,
+  judgeFigure,
+  judgesStatistic,
   judgeWord,
   leadTimeValue,
   meetsTarget,
+  ownVerdict,
   shownJudges,
   type Target,
   targetLabel,
   targetLine,
   targetWords,
 } from "./target";
+
+/** The statistics each chart's bars draw a day's value of: the deploys chart's deploys a day, the
+ *  run success chart's success rate, and a lead-time chart's median and p90 (`SpreadBars`). */
+const DEPLOYS: Judge[] = ["deploys.per_day"];
+const RUN_SUCCESS: Judge[] = ["runs.rate"];
+const LEAD_TIMES: Judge[] = ["minutes.median", "minutes.p90"];
 
 /** deploy-frequency's target as the catalogue seeds it, at least 20 deploys a day, with `over`. */
 function deploys(over: Partial<NonNullable<Target>> = {}): NonNullable<Target> {
@@ -111,8 +119,9 @@ test("a judged max implies the same series' median and p90 under lower_better, a
   expect(
     shownJudges(minutes(["minutes.p90", "minutes.n", "minutes.max", "minutes.median"]))
   ).toEqual(["minutes.n", "minutes.max"]);
-  // The answer's own list is the eval's whole list, and a day is judged by all of it.
+  // The answer's own list is the eval's whole list, and every figure is judged by all of it.
   expect(both.judges).toEqual(["minutes.max", "minutes.median"]);
+  expect(judgesStatistic(both, "minutes.median")).toBe(true);
   // No max is judged, or the max is another series': nothing is implied.
   expect(shownJudges(minutes(["minutes.median", "minutes.p90"]))).toEqual([
     "minutes.median",
@@ -127,13 +136,11 @@ test("a judged max implies the same series' median and p90 under lower_better, a
   expect(shownJudges(higher)).toEqual(["minutes.max", "minutes.median"]);
   expect(targetLabel(higher)).toBe("longest and median > 45m");
 
-  // The caption and the dashed line follow the reduced list.
+  // The caption follows the reduced list; the dashed line, as every tone, the whole list: the
+  // median bars a target of the longest change and the median judges carry its line.
   expect(targetLabel(both)).toBe("< 45m for every change");
   expect(targetWords(both)).toBe("under 45m for every change");
-  expect(
-    targetLine(minutes(["minutes.max", "minutes.median"]), ["minutes.median"])
-  ).toBeUndefined();
-  expect(targetLine(both, ["minutes.max"])).toBe(45);
+  expect(targetLine(both, ["minutes.median"])).toBe(45);
 });
 
 // The strings the page wrote at 3140ce34, before a target carried its judges, where
@@ -176,6 +183,36 @@ test("an inclusive target of 0 on an eval better lower reads as the value alone,
   expect(targetLabel({ ...unowned, direction: "higher_better" })).toBe("\u2265 0");
 });
 
+// R3-C1, the architect's rule for review round 3: a target is a value a person set, so a caption
+// writes it exactly. A rate's target rounded to a whole percent reads "> 76%" for 0.755, beside a
+// run success of 75.6% its own tone says meets it.
+test("a caption writes its target exactly: a rate as its percentage, 0.755 as 75.5% and 0.05 as 5%, with no float noise", () => {
+  const success = (value: number, inclusive = true) =>
+    deploys({ value, inclusive, judges: ["runs.rate"] });
+  expect(targetLabel(success(0.755, false))).toBe("> 75.5%");
+  expect(targetWords(success(0.755, false))).toBe("above 75.5%");
+  expect(targetLabel(success(0.7602))).toBe("\u2265 76.02%");
+  expect(targetLabel(success(0.9))).toBe("\u2265 90%");
+  const failures = (value: number, judges: Judge[]) =>
+    deploys({ value, inclusive: false, direction: "lower_better", judges });
+  expect(targetLabel(failures(0.05, ["per_deploy.rate"]))).toBe("< 5% per deploy");
+  expect(targetLabel(failures(0.0496, ["per_deploy.rate"]))).toBe("< 4.96% per deploy");
+  // 0.07 x 100 is 7.000000000000001 in floating point: the noise is not the person's.
+  expect(targetLabel(failures(0.07, ["per_pr.rate"]))).toBe("failure rate < 7% per PR");
+  expect(targetWords(failures(0.035, ["upper_bound.rate"]))).toBe(
+    "failure rate's upper bound under 3.5% per deploy"
+  );
+  // Minutes, deploys a day and counts are written as the number the target holds, exact already.
+  expect(targetLabel(minutes(["minutes.median"], { value: 44.5 }))).toBe("median < 44.5m");
+  expect(targetWords(minutes(["minutes.max"], { value: 44.5 }))).toBe(
+    "under 44.5m for every change"
+  );
+  expect(targetLabel(deploys({ value: 0.25 }))).toBe("\u2265 0.25/day");
+  expect(targetLabel(minutes(["minutes.n"], { value: 3, direction: "higher_better" }))).toBe(
+    "count > 3"
+  );
+});
+
 test("meetsTarget: a value at an inclusive target meets it, at a strict one misses it, in the target's own direction, and an off target judges nothing", () => {
   expect(meetsTarget(20, deploys())).toBe(true);
   expect(meetsTarget(20, deploys({ inclusive: false }))).toBe(false);
@@ -189,57 +226,229 @@ test("meetsTarget: a value at an inclusive target meets it, at a strict one miss
   expect(meetsTarget(1, null)).toBeNull();
 });
 
-test("dayMeets: a day is judged by its value of each judged statistic, missed where any misses, met where every one meets, and neutral where it states none", () => {
-  const day = (values: Record<string, number | null>) => (judge: string) => values[judge] ?? null;
-  const p90 = minutes(["minutes.p90"]);
-  // The p90 is judged and the median is not: a median over the target changes nothing.
-  expect(dayMeets(p90, day({ "minutes.p90": 44, "minutes.median": 90 }))).toBe(true);
-  expect(dayMeets(p90, day({ "minutes.p90": 45, "minutes.median": 10 }))).toBe(false);
-  expect(dayMeets(p90, day({ "minutes.median": 10 }))).toBeNull();
+// R5 (1): an eval with no target, which a person turned off, judges nothing.
+test("an off target judges no statistic: no figure, day or bar takes a verdict of it, and no chart draws its line", () => {
+  for (const statistic of ["deploys.per_day", "minutes.median", "minutes.n", "issues.value"]) {
+    expect(judgesStatistic(null, statistic)).toBe(false);
+    expect(ownVerdict(null, statistic, "window", 1)).toBeNull();
+    expect(ownVerdict(null, statistic, "day", 1)).toBeNull();
+  }
+  expect([DEPLOYS, RUN_SUCCESS, LEAD_TIMES].map((drawn) => targetLine(null, drawn))).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  // A target with no judges, as a server older than them answers, judges nothing either.
+  expect(ownVerdict(deploys({ judges: null }), "deploys.per_day", "window", 25)).toBeNull();
+  expect(targetLine(deploys({ judges: null }), DEPLOYS)).toBeUndefined();
+});
 
+// R5 (3): a figure takes a verdict only where the target's whole list of judges names its
+// statistic, and then of its own value; a statistic no judge names takes none.
+test("ownVerdict: a figure is judged by its own value where the target's whole list of judges names its statistic, and by nothing where no judge names it or it has no value", () => {
   const both = minutes(["minutes.max", "minutes.median"]);
-  expect(dayMeets(both, day({ "minutes.max": 40, "minutes.median": 30 }))).toBe(true);
-  expect(dayMeets(both, day({ "minutes.max": 52, "minutes.median": 30 }))).toBe(false);
-  // One judge with no value: missed where the other misses, no verdict where it meets.
-  expect(dayMeets(both, day({ "minutes.median": 50 }))).toBe(false);
-  expect(dayMeets(both, day({ "minutes.median": 30 }))).toBeNull();
-
-  expect(dayMeets(null, day({ "minutes.p90": 44 }))).toBeNull();
-  expect(dayMeets(minutes([]), day({ "minutes.p90": 44 }))).toBeNull();
+  // The caption names the longest change alone; the median is judged all the same, by its own
+  // value, whatever the longest change does.
+  expect(shownJudges(both)).toEqual(["minutes.max"]);
+  expect(ownVerdict(both, "minutes.median", "window", 30)).toBe(true);
+  expect(ownVerdict(both, "minutes.median", "window", 45)).toBe(false);
+  expect(ownVerdict(both, "minutes.max", "window", 52)).toBe(false);
+  expect(ownVerdict(both, "minutes.max", "window", 40)).toBe(true);
+  // No judge names the p90: no verdict, under the target or over it.
+  expect(judgesStatistic(both, "minutes.p90")).toBe(false);
+  expect(ownVerdict(both, "minutes.p90", "window", 10)).toBeNull();
+  expect(ownVerdict(both, "minutes.p90", "day", 90)).toBeNull();
+  expect(ownVerdict(both, "minutes.median", "window", null)).toBeNull();
+  // In the target's own direction and inclusiveness.
+  expect(ownVerdict(deploys(), "deploys.per_day", "window", 20)).toBe(true);
+  expect(ownVerdict(deploys({ inclusive: false }), "deploys.per_day", "window", 20)).toBe(false);
+  expect(ownVerdict(deploys({ direction: "lower_better" }), "deploys.per_day", "day", 25)).toBe(
+    false
+  );
 });
 
-test("targetLine: the dashed line is the target's value where it judges a statistic the chart's axis measures, and none where it is off or judges another", () => {
-  const axis = ["minutes.median", "minutes.p90", "minutes.max"];
-  expect(targetLine(minutes(["minutes.p90"]), axis)).toBe(45);
-  expect(targetLine(minutes(["minutes.n", "minutes.max"]), axis)).toBe(45);
-  expect(targetLine(minutes(["minutes.n"]), axis)).toBeUndefined();
-  expect(targetLine(null, axis)).toBeUndefined();
-});
-
-test("dailyValue and leadTimeValue read a day row's value of a judge, null where the row states none", () => {
-  const daily: DeliveryDailyPoint = {
-    day: "2026-09-05",
-    partial: false,
-    deploys: 3,
-    concluded: 5,
-    reached_production: 4,
-    cancelled: 2,
-    run_success_rate: 0.8,
-  };
-  expect(
+// R5 (4): a day's value is judged only of a rate or a quantile of that day's samples; a count or
+// a sum over the window judges the window's total, which no day is a share of.
+test("ownVerdict: a day is judged only by a rate or a quantile of its samples, and a count or a sum only over the window", () => {
+  const rates: [Judge, NonNullable<Target>, number, boolean][] = [
+    ["deploys.per_day", deploys({ value: 1 }), 0, false],
+    ["runs.rate", deploys({ value: 0.9, judges: ["runs.rate"] }), 1, true],
+    ["minutes.median", minutes(["minutes.median"]), 30, true],
+    ["minutes.p90", minutes(["minutes.p90"]), 50, false],
+    ["minutes.max", minutes(["minutes.max"]), 30, true],
+  ];
+  for (const [statistic, target, value, met] of rates) {
+    expect([statistic, ownVerdict(target, statistic, "day", value)]).toEqual([statistic, met]);
+    expect([statistic, ownVerdict(target, statistic, "window", value)]).toEqual([statistic, met]);
+  }
+  const counts: [Judge, NonNullable<Target>, number, boolean][] = [
+    ["deploys.deploys", deploys({ value: 1, judges: ["deploys.deploys"] }), 0, false],
+    ["runs.concluded", deploys({ value: 2, judges: ["runs.concluded"] }), 3, true],
     [
-      "deploys.per_day",
-      "deploys.deploys",
-      "deploys.with_prs",
-      "runs.rate",
-      "runs.concluded",
       "runs.reached_production",
-      "runs.cancelled",
-      "per_deploy.rate",
-    ].map((judge) => dailyValue(daily, judge))
-  ).toEqual([3, 3, null, 0.8, 5, 4, 2, null]);
-  expect(dailyValue({ ...daily, run_success_rate: null }, "runs.rate")).toBeNull();
+      deploys({ value: 2, judges: ["runs.reached_production"] }),
+      1,
+      false,
+    ],
+    ["runs.cancelled", minutes(["runs.cancelled"], { value: 2 }), 1, true],
+    ["minutes.n", minutes(["minutes.n"], { value: 2, direction: "higher_better" }), 1, false],
+    ["per_deploy.confirmed", minutes(["per_deploy.confirmed"], { value: 1 }), 0, true],
+  ];
+  for (const [statistic, target, value, met] of counts) {
+    expect([statistic, ownVerdict(target, statistic, "day", value)]).toEqual([statistic, null]);
+    expect([statistic, ownVerdict(target, statistic, "window", value)]).toEqual([statistic, met]);
+  }
+});
 
+// R5 (5): a chart draws its dashed line exactly where its bars take a tone.
+test("targetLine: a chart draws the target's value as its line exactly where its bars take a tone, where the target judges a day's statistic its bars draw", () => {
+  expect(targetLine(deploys(), DEPLOYS)).toBe(20);
+  expect(targetLine(deploys({ judges: ["deploys.per_day", "deploys.deploys"] }), DEPLOYS)).toBe(20);
+  // The window's count of deploys and its deploys with a PR a day: no bar draws either.
+  expect(targetLine(deploys({ judges: ["deploys.deploys"] }), DEPLOYS)).toBeUndefined();
+  expect(targetLine(deploys({ judges: ["deploys.with_prs_per_day"] }), DEPLOYS)).toBeUndefined();
+  expect(targetLine(deploys({ value: 0.9, judges: ["runs.rate"] }), RUN_SUCCESS)).toBe(0.9);
+  expect(targetLine(deploys({ judges: ["runs.concluded"] }), RUN_SUCCESS)).toBeUndefined();
+  // A lead time's bars draw its median and its p90, and no bar its longest change or its count.
+  expect(targetLine(minutes(["minutes.max", "minutes.median"]), LEAD_TIMES)).toBe(45);
+  expect(targetLine(minutes(["minutes.p90"]), LEAD_TIMES)).toBe(45);
+  expect(targetLine(minutes(["minutes.max"]), LEAD_TIMES)).toBeUndefined();
+  expect(targetLine(minutes(["minutes.n"]), LEAD_TIMES)).toBeUndefined();
+  expect(targetLine(minutes(["minutes.n", "minutes.max"]), LEAD_TIMES)).toBeUndefined();
+  // A judge the charts' list names that no day is judged of draws no line either.
+  expect(targetLine(minutes(["minutes.n"]), ["minutes.n"])).toBeUndefined();
+});
+
+// R3-C1, the architect's rule of 2026-11-19 for review round 3: a toned figure's text lies on the
+// same side of its target as its value, with more digits where its usual ones would not.
+test("judgeFigure: a toned figure takes the fewest more decimals that print it on its value's side of the target, and a figure that takes no verdict keeps its usual ones", () => {
+  const underFive = deploys({
+    value: 0.05,
+    inclusive: false,
+    direction: "lower_better",
+    judges: ["per_deploy.rate"],
+  });
+  const rate = (value: number) =>
+    judgeFigure(underFive, "per_deploy.rate", "window", value, (extra) => pct(value, 1 + extra));
+  // Just under 5%: one decimal would print 5.0%, the target itself.
+  expect(rate(0.0496)).toEqual({ met: true, text: "4.96%" });
+  expect(rate(0.049999)).toEqual({ met: true, text: "4.9999%" });
+  // Not near it, or its usual digits already on its side: as usual.
+  expect(rate(0.02)).toEqual({ met: true, text: "2.0%" });
+  expect(rate(0.0449)).toEqual({ met: true, text: "4.5%" });
+  // On the target itself, a strict target missed: the target itself is the value's side.
+  expect(rate(0.05)).toEqual({ met: false, text: "5.0%" });
+
+  // Just past an inclusive target better higher: 90.0% would read as meeting at least 90%.
+  const success = deploys({ value: 0.9, judges: ["runs.rate"] });
+  expect(
+    judgeFigure(success, "runs.rate", "day", 0.8996, (extra) => pct(0.8996, 1 + extra))
+  ).toEqual({ met: false, text: "89.96%" });
+
+  // Minutes in each unit they are written in, read back as minutes.
+  const underFortyFive = minutes(["minutes.max", "minutes.median"]);
+  expect(
+    judgeFigure(underFortyFive, "minutes.max", "window", 44.6, (extra) =>
+      formatDuration(44.6, extra)
+    )
+  ).toEqual({ met: true, text: "44.6m" });
+  expect(
+    judgeFigure(underFortyFive, "minutes.median", "window", 44.4, (extra) =>
+      formatMinutes(44.4, extra)
+    )
+  ).toEqual({ met: true, text: "44m" });
+  const underADay = minutes(["minutes.median"], { value: 1440 });
+  expect(
+    judgeFigure(underADay, "minutes.median", "window", 1439.9, (extra) =>
+      formatMinutes(1439.9, extra)
+    )
+  ).toEqual({ met: true, text: "23.998h" });
+  // Deploys a day, written to one decimal.
+  expect(
+    judgeFigure(
+      deploys(),
+      "deploys.per_day",
+      "window",
+      19.96,
+      (extra) => `${(19.96).toFixed(1 + extra)}/day`
+    )
+  ).toEqual({ met: false, text: "19.96/day" });
+
+  // No judge names the p90, and an off target judges nothing: the usual digits, whatever they
+  // print.
+  expect(
+    judgeFigure(underFortyFive, "minutes.p90", "window", 44.6, (extra) =>
+      formatDuration(44.6, extra)
+    )
+  ).toEqual({ met: null, text: "45m" });
+  expect(
+    judgeFigure(null, "minutes.max", "window", 44.6, (extra) => formatDuration(44.6, extra))
+  ).toEqual({ met: null, text: "45m" });
+});
+
+// R3-C1: a written figure is read back as the decimal it writes, exactly. Read back by a
+// floating-point product, 95% as 95 x 0.01 is 0.9500000000000001, past a target of 0.95, so a value
+// on its target read as past it and took decimals to the cap: "95.000000000000000000%".
+test("judgeFigure: a value on its target reads back as the target itself, so its usual digits stand on the side of its own verdict", () => {
+  const success = (value: number, over: Partial<NonNullable<Target>> = {}) =>
+    deploys({ value, inclusive: false, judges: ["runs.rate"], ...over });
+  const rate = (target: NonNullable<Target>) =>
+    judgeFigure(target, "runs.rate", "window", target.value, (extra) =>
+      pct(target.value, 1 + extra)
+    );
+  expect(rate(success(0.95))).toEqual({ met: false, text: "95.0%" });
+  expect(rate(success(0.7, { inclusive: true, direction: "lower_better" }))).toEqual({
+    met: true,
+    text: "70.0%",
+  });
+  expect(rate(success(0.57))).toEqual({ met: false, text: "57.0%" });
+  // 4.1h, 246 minutes: missed under "< 246m" and met under "<= 246m".
+  for (const [inclusive, met] of [
+    [false, false],
+    [true, true],
+  ] as const) {
+    expect(
+      judgeFigure(
+        minutes(["minutes.median"], { value: 246, inclusive }),
+        "minutes.median",
+        "window",
+        246,
+        (extra) => formatMinutes(246, extra)
+      )
+    ).toEqual({ met, text: "4.1h" });
+  }
+});
+
+// R3-C1: every tenth a rate or a lead time is written to reads back as the double of that decimal
+// in its target's unit. A value equal to the target misses both a strict target above it and one
+// below it, so a reading a hair over or under it would take decimals under one of the two.
+test("judgeFigure: every tenth of 0-100.0%, of 0-240.0h and of 0-240.0d reads back as that decimal exactly", () => {
+  const sides = (value: number, judges: Judge[]) =>
+    (["higher_better", "lower_better"] as const).map((direction) =>
+      deploys({ value, inclusive: false, direction, judges })
+    );
+  const misread: string[] = [];
+  const sweep = (tenths: number, unit: string, value: (tenth: number) => number, judge: Judge) => {
+    for (let tenth = 0; tenth <= tenths; tenth++) {
+      const written = `${Math.floor(tenth / 10)}.${tenth % 10}${unit}`;
+      const exact = value(tenth);
+      for (const target of sides(exact, [judge])) {
+        // Written as `written` alone: a figure that takes a decimal reads "past it".
+        const { text } = judgeFigure(target, judge, "window", exact, (extra) =>
+          extra === 0 ? written : "past it"
+        );
+        if (text !== written) misread.push(`${written} ${target.direction}`);
+      }
+    }
+  };
+  // The decimal itself in the target's unit: a rate's share, and a lead time's minutes.
+  sweep(1000, "%", (tenth) => Number(`${tenth}e-3`), "runs.rate");
+  sweep(2400, "h", (tenth) => tenth * 6, "minutes.median");
+  sweep(2400, "d", (tenth) => tenth * 144, "minutes.median");
+  expect(misread).toEqual([]);
+});
+
+test("leadTimeValue reads a lead-time cell's value of a judge, null where the cell states none", () => {
   const cell: DeliveryLeadTimeCell = {
     n: 2,
     median_minutes: 45,

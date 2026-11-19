@@ -174,8 +174,9 @@ type Result struct {
 // failures, minutes and unowned P0 issues), and the statistics it judges, each `<series>.<stat>`,
 // in the order the eval's verdict judges them (evals.JudgesOf: its target_judges, or its primary
 // series' headline statistic where it names none), so a reader names the figure a verdict is of.
-// The answer's status is the window's verdict (evals.VerdictOf); a page that judges one day of a
-// chart compares that day's value of each judge with the value the same way. The direction's enum
+// The answer's status is the window's verdict (evals.VerdictOf); a page tones each other figure by
+// its own value of a statistic the target judges, compared with the value the same way, and a
+// day's bar or cell only for a rate or a quantile of the day's samples. The direction's enum
 // is the two directions the evals name (evals.DirectionHigherBetter, evals.DirectionLowerBetter),
 // and the judges' is every judge a register write takes of the delivery evals (evals'
 // deliveryJudges), which this package cannot import; evals'

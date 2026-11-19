@@ -223,7 +223,7 @@ func hubOn(t *testing.T, handler http.Handler, database *store.Store, deps Deps,
 func (r *hubRig) changeCursor() int64 {
 	r.hub.mu.Lock()
 	defer r.hub.mu.Unlock()
-	return r.hub.generation.changeSeq
+	return r.hub.generation.change.Seq
 }
 
 // settle waits until the hub has acted on everything the test's setup wrote, so none of it counts
@@ -283,7 +283,7 @@ func (r *hubRig) waitNothingOwed(t *testing.T, latest int64) {
 			}
 		}
 		slices.Sort(busy)
-		return generation.changeSeq, busy
+		return generation.change.Seq, busy
 	}
 	var intake string
 	var changeSeq int64
@@ -1036,8 +1036,8 @@ func TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook(t *testing.T) {
 	}
 	// The hub last read the log, and the change at its cursor, a day and an hour ago.
 	rig.hub.mu.Lock()
-	rig.hub.generation.changeAt = now.Add(-25 * time.Hour)
-	rig.hub.generation.changeRead = now.Add(-25 * time.Hour)
+	lastRead := now.Add(-25 * time.Hour)
+	rig.hub.generation.change.At, rig.hub.generation.change.ReadAt = &lastRead, lastRead
 	epoch := rig.hub.generation.epoch
 	rig.hub.mu.Unlock()
 	rig.hub.catchUpNow()

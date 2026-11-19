@@ -244,7 +244,7 @@ type seedWrite struct {
 }
 
 // ensure is the seed of w's project in w's transaction. It takes the lock of every eval of the
-// catalogue, in one statement and in the byte order of their ids (lockEvals), the order the zero
+// catalogue, in one statement and in the order of their lock keys (lockEvals), the order the zero
 // fill takes several evals' locks in, before it reads what the project holds, so a second seed of
 // the project, a register write, a readings write and the fill of one of those evals each wait for
 // it and then read what it wrote, and none of them waits for it in a cycle. It then takes the

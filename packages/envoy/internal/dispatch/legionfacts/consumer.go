@@ -88,16 +88,17 @@ const PassGap = 10 * time.Second
 // steps that each commit their progress.
 const feedPage = 1000
 
-// The cursors, one row of issue_facts_cursor each, named for the feed it is read by. A cursor
-// holds the position of the last row of its feed a committed pass read and when that pass ran
-// (readCursors), and the change cursor when the change at that position was recorded.
+// The cursors, one row of issue_facts_cursor each, named for the feed it is read by (feedCursors).
+// The events and the observations cursors hold the id of the last row of their feed a committed
+// page read, stamped with the moment its pass ran; the change cursor is a delivery.ChangeCursor,
+// stamped with when a page last read the change log to its end.
 const (
 	eventsCursor       = "events"
 	observationsCursor = "legion_observations"
 	changesCursor      = "delivery_changes"
 )
 
-// cursorNames is the three in one list, which is how a pass reads and writes them.
+// cursorNames is the three in one list, which is how a pass reads them.
 var cursorNames = []string{eventsCursor, observationsCursor, changesCursor}
 
 // Deps is what Run needs of the server.
@@ -133,10 +134,11 @@ type Deps struct {
 }
 
 // schedule is what a test replaces of the loop: page is the most rows a page reads of each feed
-// (feedPage), now answers the moment a pass runs at, which a row's updated_at, the cursors'
-// stamp and the record of a whole read carry, and started is when this process started, which
-// a record another build wrote is judged against (legionProjects). run sets started from now
-// where the schedule leaves it zero.
+// (feedPage); now answers the moment a pass runs at, which a row's updated_at, the events and the
+// observations cursors' stamp and the record of a whole read carry, and which each page reads
+// again for its change cursor (passPage); and started is when this process started, which a
+// record another build wrote is judged against (legionProjects). run sets started from now where
+// the schedule leaves it zero.
 type schedule struct {
 	page    int
 	now     func() time.Time
@@ -252,10 +254,10 @@ func runPass(ctx context.Context, deps Deps, sched schedule) time.Time {
 // pass is one pass of the loop: it reads page after page of the three feeds until one comes back
 // short, each page computed and written in a transaction of its own, and answers the keys whose
 // stored rows it changed and when the loop should run again with no wake. Every page runs at the
-// moment the pass read its horizon. The first page carries the work no feed announces
-// (passPage), and so does a later page where the page before it met a lost change cursor it held
-// (readPages), so the pass answers the loss itself rather than leave it to a pass no wake may
-// start.
+// moment the pass read its horizon, and judges and stamps its change cursor by a reading of the
+// clock of its own (passPage). The first page carries the work no feed announces (passPage), and
+// so does a later page where the page before it met a lost change cursor it held (readPages), so
+// the pass answers the loss itself rather than leave it to a pass no wake may start.
 //
 // The events feed is read up to the safe horizon the pass reads once (events.Horizon.SafeOrAwait,
 // the reading the suggestion outcomes and the eval refresher take): one observation, which waits
@@ -310,13 +312,20 @@ type nextPage struct {
 // held open while a whole project is read. The cursor moves in the transaction that wrote the
 // rows it covers, so a crash between the two cannot lose a change: the next pass reads the same
 // rows again and writes the same values.
+//
+// The rows are computed as of now, the pass's moment, and the change cursor is judged lost or not,
+// and a read of the change log to its end stamped, by checked, a reading of the clock this page
+// takes before it reads (readPages, delivery.ChangeCursor): a pass that catches up a backlog for
+// long enough crosses the change log's retention between two of its pages, and a page judged at
+// the pass's start would read on past what a prune took meanwhile.
 func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now time.Time, unfed bool) ([]string, nextPage, error) {
 	self := process{build: deps.Build, started: sched.started}
-	cursors, err := readCursors(ctx, deps.Pool)
+	cursors, committed, err := readCursors(ctx, deps.Pool)
 	if err != nil {
 		return nil, nextPage{}, err
 	}
-	read, err := readPages(ctx, deps.Pool, cursors, safe, now, sched.page, unfed)
+	checked := sched.now()
+	read, err := readPages(ctx, deps.Pool, cursors, committed, safe, checked, sched.page, unfed)
 	if err != nil {
 		return nil, nextPage{}, err
 	}
@@ -430,12 +439,12 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		computed = append(computed, one)
 	}
 
-	positions := map[string]delivery.ChangeCursor{
-		eventsCursor:       {Seq: read.events.position, ReadAt: now},
-		observationsCursor: {Seq: read.observations.position, ReadAt: now},
-		changesCursor:      {Seq: read.changes.position, At: read.changes.at, ReadAt: now},
+	moved := feedCursors{
+		events:       read.events.position,
+		observations: read.observations.position,
+		changes:      delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
 	}
-	changed, err := writePass(ctx, deps.Pool, computed, positions, now, self, read.changes.remapped)
+	changed, err := writePass(ctx, deps.Pool, computed, moved, now, self, read.changes.remapped)
 	if err != nil {
 		return changed, nextPage{}, err
 	}
@@ -523,7 +532,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // the next drain of any process moves their changes (delivery.DrainPending states the bound). The
 // drain's notification is also the wake of the other process of a roll, whose build the project's
 // record may name (Deps.Deliveries).
-func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]delivery.ChangeCursor, now time.Time, self process, remapped bool) ([]string, error) {
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, cursors feedCursors, now time.Time, self process, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -552,7 +561,7 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, po
 	if err := markComputedWhole(ctx, tx, computed, now, self); err != nil {
 		return nil, err
 	}
-	if err := advanceCursors(ctx, tx, positions); err != nil {
+	if err := advanceCursors(ctx, tx, cursors, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

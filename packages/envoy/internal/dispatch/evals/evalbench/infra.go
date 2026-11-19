@@ -360,8 +360,19 @@ func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory,
 	for i, repo := range Repos {
 		mappings[i] = model.RepoProject{Repo: repo, Project: Project, Default: i == 0, CreatedBy: actor}
 	}
-	if err := deliverytest.WriteRepoProjects(ctx, pool, mappings...); err != nil {
-		return infraHistory{}, fmt.Errorf("map INFRA's repositories: %w", err)
+	// Under -base the mappings go in by the insert alone, with none of a mapping write's locks
+	// (delivery.LockRepoProjectWrite): the load writes into the base head's schema, which lacks the
+	// owner lock (the owner_lock function) those locks take since #2468, and no other write of a
+	// mapping can run beside it, since job.sh runs no server during the load (run.sh migrate starts
+	// and stops the server before it, and run.sh measure starts one after).
+	var mapped error
+	if spec.Base {
+		mapped = deliverytest.InsertRepoProjects(ctx, pool, mappings...)
+	} else {
+		mapped = deliverytest.WriteRepoProjects(ctx, pool, mappings...)
+	}
+	if mapped != nil {
+		return infraHistory{}, fmt.Errorf("map INFRA's repositories: %w", mapped)
 	}
 	if err := copyIssues(ctx, pool, history); err != nil {
 		return infraHistory{}, err
