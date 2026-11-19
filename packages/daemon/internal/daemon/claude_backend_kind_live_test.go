@@ -123,7 +123,7 @@ func (r *claudeKindLive) registers() {
 func (r *claudeKindLive) runsTheBridge() {
 	t := r.t
 	pod, generation := r.implementer.Locator.Sandbox.Name, r.implementer.Generation
-	bridge, err := r.roleArgv(pod, claim.RoleImplementer, "claude-bridge")
+	bridge, err := r.roleArgv(pod, claim.RoleImplementer, 1, "claude-bridge")
 	if err != nil {
 		t.Fatalf("the implementer's namespaces of %s run no Claude Code under legion claude-bridge: %v", pod, err)
 	}
@@ -134,7 +134,7 @@ func (r *claudeKindLive) runsTheBridge() {
 	if got := argValue(bridge, "--"); got != installed {
 		t.Fatalf("the bridge runs %s, not the Claude Code generation %d's start script installed, %s", got, generation, installed)
 	}
-	agent, err := r.roleArgv(pod, claim.RoleImplementer, installed)
+	agent, err := r.roleArgv(pod, claim.RoleImplementer, 0, installed)
 	if err != nil || len(agent) == 0 || agent[0] != installed {
 		t.Fatalf("the process under the bridge is %q (%v), not %s", agent, err, installed)
 	}
@@ -211,7 +211,7 @@ func (r *claudeKindLive) resumesAfterThePodIsDeleted() {
 		t.Fatalf("the relaunch registered session %s at %s, want %s at %s", resumed.Session, resumed.SessionFile, held.Session, r.transcript)
 	}
 	newPod, newUID := resumed.Locator.Sandbox.Name, resumed.Locator.Sandbox.PodUID
-	bridge, err := r.roleArgv(newPod, claim.RoleImplementer, "claude-bridge")
+	bridge, err := r.roleArgv(newPod, claim.RoleImplementer, 1, "claude-bridge")
 	if err != nil || !argvHasPair(bridge, "--resume", held.Session) {
 		t.Fatalf("the relaunched claude was not started with --resume %s: %q (%v)", held.Session, bridge, err)
 	}

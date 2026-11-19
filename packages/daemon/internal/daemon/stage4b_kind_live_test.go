@@ -107,7 +107,12 @@ func TestStage4bSandboxTreeOnTheKindRigLive(t *testing.T) {
 // runtime, which provisions every workspace in its pod.
 func (r *stage4bLive) bootCheck() {
 	t := r.t
-	probe := r.awaitLog("the image probe's pass", 5*time.Minute, func(l loggedRecord) bool { return l.Message == stage4bProbePassed })
+	// The daemon probes its image before its API serves, and the rig's boot returns only once the
+	// API answers, so the pass is already in the log: it is read there rather than waited for.
+	probe := r.lastLog(func(l loggedRecord) bool { return l.Message == stage4bProbePassed })
+	if probe == nil {
+		t.Fatalf("the daemon logged no %q before its API served", stage4bProbePassed)
+	}
 	r.note("image probe: %v", probe.Attrs)
 	var state kindState
 	r.await("the capability report to carry the probe's verdict on every image row", time.Minute, func() bool {
@@ -828,7 +833,7 @@ func (r *stage4bLive) addressMoved(move func() string, samePod bool) {
 			t.Errorf("%s's session file moved: %s to %s", token, was.SessionFile, held.SessionFile)
 		}
 		if held.SessionFile != "" {
-			argv, err := r.roleArgv(held.Locator.Sandbox.Name, held.Role, "--resume=")
+			argv, err := r.roleArgv(held.Locator.Sandbox.Name, held.Role, 0, "/opt/omp/bin/omp")
 			if err != nil || !slices.Contains(argv, "--resume="+held.SessionFile) {
 				t.Errorf("%s's %s runs %q (%v), not --resume=%s", token, held.Role, argv, err, held.SessionFile)
 			}

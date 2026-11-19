@@ -297,11 +297,13 @@ func (r *kindTreeRig) writeConfig() {
 			}
 		}
 	}
+	// provider_keys is a key of legion.yaml's top level, not of runtime.kubernetes
+	// (internal/config's keytable), so it is written before the runtime block.
 	var providerKeys string
 	if len(r.opts.providerKeys) > 0 {
-		providerKeys = "    provider_keys:\n"
+		providerKeys = "provider_keys:\n"
 		for _, name := range slices.Sorted(maps.Keys(r.opts.providerKeys)) {
-			providerKeys += fmt.Sprintf("      %s: %s\n", name, name)
+			providerKeys += fmt.Sprintf("  %s: %s\n", name, name)
 		}
 	}
 	controller := ""
@@ -331,7 +333,7 @@ worker_boot_timeout_seconds: 900
 github_apps:
   implement: {app_id: "%[11]d", token_command: %[12]q}
   review: {app_id: "%[13]d", token_command: %[14]q}
-%[15]s%[16]sruntime:
+%[15]s%[16]s%[23]sruntime:
   kubernetes:
     namespace: %[17]s
     image: %[18]s
@@ -340,7 +342,7 @@ github_apps:
     context: %[20]s
     session_store: postgres
     session_dsn_secret: SESSION_DSN
-%[21]s%[22]s%[23]s    pod:
+%[21]s%[22]s    pod:
 %[24]s
 `, r.cfg.Project, r.kind.Gateway, r.apiPort, r.streamPort, os.Getenv("LEGION_TEST_PG_DSN"), filepath.Join(r.work, "state"),
 		r.envoyURL, r.natsURL, r.dispatchURL, r.opts.admissionCap,
@@ -408,9 +410,11 @@ func (r *kindTreeRig) branch(issue string) {
 	}
 }
 
-// roleArgv is the argv of the first process in role's namespaces of pod whose argv holds needle.
-func (r *kindTreeRig) roleArgv(pod string, role claim.Role, needle string) ([]string, error) {
-	out, err := r.roleExec(pod, role, "sh", "-c", `for p in /proc/[0-9]*; do c=$(tr '\0' '\n' <"$p/cmdline" 2>/dev/null) || continue; case "$c" in *"$1"*) printf '%s\n' "$c"; exit 0;; esac; done; exit 1`, "argv", needle)
+// roleArgv is the argv of the first process in role's namespaces of pod whose argv[at] is word.
+// A word anywhere in an argv would name the role's PID 1 first: its role-init carries the shim's
+// argv after its `--`, and the shim the agent's; and the search's own shell carries the word too.
+func (r *kindTreeRig) roleArgv(pod string, role claim.Role, at int, word string) ([]string, error) {
+	out, err := r.roleExec(pod, role, "sh", "-c", `for p in /proc/[0-9]*; do [ "$(tr '\0' '\n' <"$p/cmdline" 2>/dev/null | sed -n "${1}p")" = "$2" ] || continue; tr '\0' '\n' <"$p/cmdline"; exit 0; done; exit 1`, "argv", strconv.Itoa(at+1), word)
 	if err != nil {
 		return nil, err
 	}
