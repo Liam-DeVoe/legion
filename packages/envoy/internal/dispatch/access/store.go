@@ -128,12 +128,10 @@ func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*str
 }
 
 // lockProject takes project key's owner lock for the rest of tx; taking it again in tx returns at
-// once. The read it guards is a statement of its own after it (store.LockOwner).
+// once. The read it guards is a statement of its own after it (store.LockOwner). Its failure is
+// the store's, which names the project ("lock project <key>: …"), so it is not wrapped again.
 func lockProject(ctx context.Context, tx pgx.Tx, key string) error {
-	if err := store.LockOwner(ctx, tx, store.ProjectOwner(key)); err != nil {
-		return fmt.Errorf("lock project %s: %w", key, err)
-	}
-	return nil
+	return store.LockOwner(ctx, tx, store.ProjectOwner(key))
 }
 
 // ReadProject answers who may see project key and who changes that.

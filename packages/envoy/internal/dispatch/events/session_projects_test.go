@@ -12,7 +12,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// appendAll appends events in tx as one write phase, as a write with several events does.
+// appendAll appends events in tx as one write phase, as a write with several events does. Append
+// writes one event a phase, and TestASessionsEventRecordsItsProject needs several in one: a later
+// statement of the phase sees the session's record an earlier one queued and writes none.
 func appendAll(ctx context.Context, tx pgx.Tx, broker *Broker, events []model.Event) ([]model.Event, error) {
 	appended := make([]model.Event, len(events))
 	err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
@@ -106,8 +108,8 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 	seedEventOwners(t, database)
 	broker := NewBroker()
 	session := model.Actor{Kind: "session", ID: "ses_crossed"}
-	issueEvent := func(key string) []model.Event {
-		return []model.Event{{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}}
+	issueEvent := func(key string) model.Event {
+		return model.Event{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}
 	}
 
 	first, err := database.Pool.Begin(ctx)
@@ -115,7 +117,7 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 		t.Fatalf("begin the first write: %v", err)
 	}
 	defer first.Rollback(ctx)
-	if _, err := appendAll(ctx, first, broker, issueEvent("PP-1")); err != nil {
+	if _, err := broker.Append(ctx, first, issueEvent("PP-1")); err != nil {
 		t.Fatalf("the first write on PP-1: %v", err)
 	}
 
@@ -127,7 +129,7 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 				return err
 			}
 			defer tx.Rollback(context.Background())
-			if _, err := appendAll(context.Background(), tx, broker, issueEvent("PP-2")); err != nil {
+			if _, err := broker.Append(context.Background(), tx, issueEvent("PP-2")); err != nil {
 				return err
 			}
 			return tx.Commit(context.Background())
@@ -142,7 +144,7 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 		t.Fatal("the second write on PP-2 waited 10s on the first's uncommitted record of the same pair")
 	}
 
-	if _, err := appendAll(ctx, first, broker, issueEvent("PP-2")); err != nil {
+	if _, err := broker.Append(ctx, first, issueEvent("PP-2")); err != nil {
 		t.Fatalf("the first write, taking PP-2 after the second committed: %v", err)
 	}
 	if err := first.Commit(ctx); err != nil {

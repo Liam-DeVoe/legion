@@ -40,7 +40,7 @@ type sessionProjectsFill struct {
 }
 
 // fillSessionProjects reads every event in id order, batch at a time, one statement and so one
-// transaction each, and records each pair the live insert (events.queueSessionProjects) records:
+// transaction each, and records each pair the live insert (events.queueSessionProject) records:
 // an event whose actor is a session (`kind` session and a non-empty `id`; a personal token's actor
 // has an empty one) on a project, which is the event's own project_key, else its issue's for an
 // issue's event, else its document's for a document's event. A person's event, and an event of no
