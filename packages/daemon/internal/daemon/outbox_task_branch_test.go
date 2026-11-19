@@ -216,9 +216,10 @@ func TestARowThatRunsAgainMovesNoRef(t *testing.T) {
 	}
 }
 
-// A task started again after a later version changed its needs finds its branch on GitHub, where
-// its first start left it, and joins the need that branch lacks: the work of every need it has now
-// is in the branch it starts from again.
+// A row of a task whose branch GitHub has, where its first start left it before a later version
+// gave the task another need, joins the need that branch lacks: the work of every need the task has
+// now is in its branch. No start again queues such a row at this release (taskBranch); only a
+// task's first start does.
 func TestAStartAgainJoinsANeedItLacks(t *testing.T) {
 	rig := newTaskBranchRig(t, twoNeeds...)
 	a := rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"a.txt": "a\n"}, "a")

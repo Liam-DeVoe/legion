@@ -235,9 +235,9 @@ func (s *Postgres) AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string
 }
 
 // SetJoinConflicts writes needs as the needs of task of the plan of issue at generation whose join
-// into the task's branch GitHub refused as a conflict, in place of what the row held: each start of
-// the task joins its needs again, so the newest join is the one its first step repairs. A task the
-// plan does not hold is refused, naming it.
+// into the task's branch GitHub refused as a conflict, in place of what the row held: each
+// task_branch row of the task joins its needs again, so the newest join is the one its first step
+// repairs. A task the plan does not hold is refused, naming it.
 func (s *Postgres) SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error {
 	describe := fmt.Sprintf("write the needs whose join conflicted of task %s of %s at generation %d", task, issue, generation)
 	if needs == nil {

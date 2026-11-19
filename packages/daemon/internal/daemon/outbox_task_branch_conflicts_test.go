@@ -217,7 +217,7 @@ func TestTheJoinsConflictsNameOnlyNeedsTheTaskHolds(t *testing.T) {
 // issue as an orphan root, which carries the run to a new generation in the same branches, lands
 // while the row joins, and the row writes what the join found onto the carried task. The controls:
 // a re-admission after the row carries the conflicts the row wrote, and a re-admission that starts
-// the plan from its start gets none, since its task starts again and joins its needs itself.
+// the plan from its start gets none, since its task's first start there joins its needs itself.
 func TestTheJoinsConflictsReachTheGenerationTheRunGoesOnAt(t *testing.T) {
 	next := taskBranchIssue.Generation + 1
 	t.Run("control: the re-admission after the row", func(t *testing.T) {

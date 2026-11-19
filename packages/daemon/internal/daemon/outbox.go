@@ -3070,15 +3070,17 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 // starts at the default branch the issue's record names; one that needs some starts at the head of
 // its first need's branch, in the order of its needs. Each need is then merged into the branch in
 // that order (ghbranch.Merge), whether the row created the branch or GitHub had it: a branch GitHub
-// has keeps its head, so a start again, after a later version changed the needs of a stopped task,
-// joins each need whose head the branch does not hold, and GitHub answers a need the branch holds
-// with nothing to merge, which moves no ref, so a row that runs again changes nothing. A merge
-// GitHub refuses as a conflict is no refusal: the branch stands on the needs that joined, and the
-// id of each need that conflicted is written on the task's row (record.Store.SetJoinConflicts), in
-// place of what an earlier start wrote, for the first step to repair, once the task is judged
-// again as the row read it (writeJoinConflicts). A row of a task its plan no longer holds, of a
-// generation the issue has left, or of a tree that lingers finishes without acting, as
-// issueBranch's does: the starts it held back meet their own fences.
+// has keeps its head, so the row joins each need whose head the branch does not hold, and GitHub
+// answers a need the branch holds with nothing to merge, which moves no ref, so a row that runs
+// again changes nothing. Only a task's first start queues the row (workflow's startTaskCopy): a
+// stopped task started again queues none, so a need a later version gave it while it was stopped
+// is not joined into its branch when it starts again. A merge GitHub refuses as a conflict is no
+// refusal: the branch stands on the needs that joined, and the id of each need that conflicted is
+// written on the task's row (record.Store.SetJoinConflicts), in place of what an earlier row wrote,
+// for the first step to repair, once the task is judged again as the row read it
+// (writeJoinConflicts). A row of a task its plan no longer holds, of a generation the issue has
+// left, or of a tree that lingers finishes without acting, as issueBranch's does: the starts it
+// held back meet their own fences.
 func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload record.TaskBranch) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -3142,8 +3144,9 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 //   - At the row's own generation, a task a later version changed: nothing is written, and the row
 //     waits (wait.ErrWaiting), so its next run joins the needs the task holds then.
 //   - Any other: nothing is written, and the row finishes. The plan no longer holds the task, or a
-//     later generation holds a task that is not the one joined (a plan carried from its start, or
-//     a task a version changed there), whose start joins its needs itself (startTaskCopy).
+//     later generation holds a task that is not the one joined: a plan carried from its start, whose
+//     first start there joins its task's needs itself (startTaskCopy), or a task a later version
+//     changed there, which this join no longer describes.
 func (r *outbox) writeJoinConflicts(ctx context.Context, row record.OutboxRow, joined record.PlanTask, conflicts []string) error {
 	var generation uint64
 	var written bool
