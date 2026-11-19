@@ -1,7 +1,7 @@
-import { appendFileSync } from "node:fs";
 import { basename } from "node:path";
 import { SHELL_COMMAND_REPORT_SEPARATOR } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
+import { jsonLineRecord } from "@legion/envoy-client/json-line-record";
 import { procmgr } from "@oh-my-pi/pi-utils";
 
 /**
@@ -108,16 +108,8 @@ export interface ShellCommandRecord {
 /** How many commands `runShellCommand` has started in this process: the next one's `index`. */
 let commandsStarted = 0;
 
-/** Appends `line` to the file `SHELL_RECORD_FILE` names, where it names one; never throws. */
-function recordShellCommand(line: ShellCommandRecord): void {
-  const file = process.env[SHELL_RECORD_FILE];
-  if (file === undefined || file === "") return;
-  try {
-    appendFileSync(file, `${JSON.stringify(line)}\n`);
-  } catch {
-    // The tests' seam only: a write it cannot make changes nothing the command answers.
-  }
-}
+/** Appends each command's line to the file `SHELL_RECORD_FILE` names, where it names one. */
+const recordShellCommand = jsonLineRecord<ShellCommandRecord>(process.env, SHELL_RECORD_FILE);
 
 /** The command a person's message says to run, or undefined for a message that is no command: the
  *  body whose first character is `!`, without that one character and trimmed, as the CLI's own
@@ -378,7 +370,7 @@ export async function runShellCommand(
     killGroup(child.pid);
     runningGroups.delete(child.pid);
   }
-  recordShellCommand({ index, armedMs, endedBy: ended ?? "exit" });
+  recordShellCommand?.({ index, armedMs, endedBy: ended ?? "exit" });
   await drained(reads);
   const output = printable(printed.text());
   const cut = output.length > SHELL_OUTPUT_MAX;

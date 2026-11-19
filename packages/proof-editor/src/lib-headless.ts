@@ -32,7 +32,7 @@ import remarkGfm from 'remark-gfm';
 import remarkParse from 'remark-parse';
 import remarkStringify from 'remark-stringify';
 import type { Options as RemarkStringifyOptions } from 'remark-stringify';
-import { unified } from 'unified';
+import { type Processor, unified } from 'unified';
 
 import { codeBlockExtPlugins } from 'proof-sdk-upstream/src/editor/schema/code-block-ext.js';
 import { frontmatterSchema } from 'proof-sdk-upstream/src/editor/schema/frontmatter.js';
@@ -103,6 +103,45 @@ export interface HeadlessProofOptions {
    *  document service accepts (`relaxAskContentCheck`). A general read-only mode, so later
    *  read-only rules hang on it too. */
   readOnly?: boolean;
+  /** Tests only: handed each parser's unified processor once it is built and before its first
+   *  parse, so a test counts what each stage of the parse does through it (tests/parse-work.ts).
+   *  Unset, as every caller runs the parse, nothing is handed. */
+  observeParser?: (processor: Processor) => void;
+}
+
+/**
+ * Milkdown's runner calls, over every parse in this process: one each time Milkdown's parser
+ * state hands an mdast node or mark to a spec's `parseMarkdown.runner`, counted where this module
+ * builds the specs its schema holds, with no patch of Milkdown. A parse is synchronous, so a test
+ * that reads the count around one reads that parse's calls (tests/parse-work.ts).
+ */
+let runnerCalls = 0;
+
+/** How many runner calls Milkdown's parser state has made in this process so far. */
+export function milkdownRunnerCalls(): number {
+  return runnerCalls;
+}
+
+/** The parse side of a Milkdown node or mark spec, as this module reads it. */
+type MarkdownParsedSpec = {
+  readonly parseMarkdown?: { readonly runner: (...args: never[]) => void };
+};
+
+/** `spec` as the schema holds it: a copy whose parse runner counts each call it gets. */
+function withCountedRunner<Spec extends MarkdownParsedSpec>(spec: Spec): Spec {
+  const parse = spec.parseMarkdown;
+  if (parse === undefined) return spec;
+  const { runner } = parse;
+  return {
+    ...spec,
+    parseMarkdown: {
+      ...parse,
+      runner(this: unknown, ...args: Parameters<typeof runner>) {
+        runnerCalls++;
+        return runner.apply(this, args);
+      },
+    },
+  };
 }
 
 export async function createHeadlessProof(options: HeadlessProofOptions = {}): Promise<HeadlessProofEditor> {
@@ -149,9 +188,13 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
   }
 
   configureDispatchLinks(ctx);
-  const nodes = Object.fromEntries(ctx.get(nodesCtx) as never);
-  const marks = Object.fromEntries(ctx.get(marksCtx) as never);
-  const schema = new Schema({ nodes, marks });
+  const nodes = Object.fromEntries(
+    (ctx.get(nodesCtx) as [string, MarkdownParsedSpec][]).map(([name, spec]) => [name, withCountedRunner(spec)]),
+  );
+  const marks = Object.fromEntries(
+    (ctx.get(marksCtx) as [string, MarkdownParsedSpec][]).map(([name, spec]) => [name, withCountedRunner(spec)]),
+  );
+  const schema = new Schema({ nodes: nodes as never, marks: marks as never });
   // An ask a live document holds off its content rule is built, not refused (./ask-content.ts).
   relaxAskContentCheck(schema);
 
@@ -191,6 +234,7 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
     else if (options.blockSchema) {
       parseProcessor.use(remarkTypedBlocks, options.blockSchema).use(remarkUnfitTypedBlocks, schema);
     }
+    options.observeParser?.(parseProcessor as unknown as Processor);
     return ParserState.create(schema as never, parseProcessor as never) as unknown as (
       markdown: string,
     ) => ProseMirrorNode;

@@ -6,9 +6,15 @@
  * `process.exit` drops what Bun still holds for a full pipe, and in Bun a write's callback, and
  * `drain`, come before the bytes leave. Ending each stream is what waits: its callback runs once
  * the pipe has taken every byte, however slow the reader.
+ *
+ * Where `flushMs` is given, the process exits once that has passed whatever is still queued: the
+ * exit bound's own exit (`./way-out`), which a client's kill follows close behind, gives a reader
+ * that takes nothing that long and no longer.
  */
-export async function exitProcess(code: number): Promise<never> {
-  await Promise.all([ended(process.stdout), ended(process.stderr)])
+export async function exitProcess(code: number, flushMs?: number): Promise<never> {
+  const flushed = Promise.all([ended(process.stdout), ended(process.stderr)])
+  if (flushMs === undefined) await flushed
+  else await Promise.race([flushed, Bun.sleep(flushMs)])
   process.exit(code)
 }
 

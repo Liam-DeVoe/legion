@@ -21144,6 +21144,9 @@ console.log(JSON.stringify(args));
 
     const next = sessionContext("ses_failed_to");
     await fixture.handlers.get("session_switch")?.({}, next);
+    // The switch's pass closes the old session's control subject before the switch returns (the
+    // close runs inside the pass the switch awaits): a close put off past it fails here.
+    expect(natsState.controls.get(oldControl)?.active()).toBe(false);
     expect(natsState.controls.has("agentstream.ses_failed_to.control")).toBe(false);
     const marker = "a turn of the session switched to";
     await fixture.handlers.get("message_end")?.(
@@ -21151,13 +21154,8 @@ console.log(JSON.stringify(args));
       next
     );
 
-    // A viewer of the old session asks for its history. Its control subject is closed first, as
-    // the failed move leaves it, so no handler takes what the viewer sends there: the absence of
-    // a replay below is that state's, and a control left open (the defect) never reads closed.
-    await until(
-      "the old session's control subject closed",
-      () => natsState.controls.get(oldControl)?.active() === false
-    );
+    // A viewer of the old session asks for its history right after the new session's turn, as
+    // main's row asked: a control subject still open then would answer the replay with it.
     const control = natsState.controls.get(oldControl);
     control?.push(JSON.stringify({ type: "watch", v: 1 }));
     control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-old-viewer");

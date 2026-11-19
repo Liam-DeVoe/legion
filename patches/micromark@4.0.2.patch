@@ -307,8 +307,8 @@ index 7192e70a0972e808d779999e57153bf3ed7bfc3a..624bfe3ac70bbaf2ac24c1c0b0e1e23d
 + * How many events and chunks the string and text resolvers of this module have read, over every
 + * document they resolved since it loaded: one for each event `resolveAllText` and
 + * `resolveAllLineSuffixes` visit, one for each chunk and space the line suffix's look back reads,
-+ * and, for each `splice`, one for each event it removes or inserts and each event after them it
-+ * shifts. A test reads it before and after a parse to hold the two resolvers to the length of the
++ * and one for each event they copy into a result or write back, which is each event at most twice
++ * in each. A test reads it before and after a parse to hold the two resolvers to the length of the
 + * document.
 + *
 + * @returns {number}
@@ -799,8 +799,8 @@ index b9383cb721b95c68bd0e684da6cbf441ed82b8eb..135d2d78a333a538699b0aa851efd5a7
 + * How many events and chunks the string and text resolvers of this module have read, over every
 + * document they resolved since it loaded: one for each event `resolveAllText` and
 + * `resolveAllLineSuffixes` visit, one for each chunk and space the line suffix's look back reads,
-+ * and, for each `splice`, one for each event it removes or inserts and each event after them it
-+ * shifts. A test reads it before and after a parse to hold the two resolvers to the length of the
++ * and one for each event they copy into a result or write back, which is each event at most twice
++ * in each. A test reads it before and after a parse to hold the two resolvers to the length of the
 + * document.
 + *
 + * @returns {number}

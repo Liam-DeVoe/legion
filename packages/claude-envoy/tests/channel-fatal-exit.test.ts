@@ -183,9 +183,17 @@ async function startServer(natsUrls: readonly string[]): Promise<Started> {
 }
 
 /** The server's exit code once it exits; past the row's deadline the wait fails, naming `what`
- *  and what the server's stderr said. */
+ *  and what the server's stderr said by then. */
 async function exitOf(started: Started, what: string): Promise<number> {
-  return await settled(`${what}; its stderr said: ${started.stderr()}`, started.server.exited)
+  try {
+    return await settled(what, started.server.exited)
+  } catch (error) {
+    // Read when the wait gave up, not when it began: the line that says why comes late.
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; its stderr said: ${started.stderr()}`,
+      { cause: error },
+    )
+  }
 }
 
 /** Holds the row while the server is expected to run on: a child process that does not exit
@@ -247,7 +255,8 @@ test("a stop asked for while the dial waits on a mute hub exits 0, its socket re
   )
   started.server.kill("SIGTERM")
   // The stop, not nats.js's 20 s dial timeout, ends the wait: a way out that waited for the dial
-  // would meet the server's own exit bound (`SHUTDOWN_EXIT_MS`, 3 s) and exit 1 on it.
+  // would meet the server's own exit bound (`SHUTDOWN_EXIT_MS`, `../src/way-out`) and exit 1 on
+  // it.
   const code = await exitOf(started, "the exit after SIGTERM")
   expect(code, started.stderr()).toBe(0)
   expect(started.stderr()).not.toContain("channel server failed")

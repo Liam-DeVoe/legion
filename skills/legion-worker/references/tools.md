@@ -594,6 +594,14 @@ something to count.
   Pick ports no sibling role holds, and keep the store directory off your home. In your own
   work, run the NATS-backed tests your change touches by name (`go test -run`), as the first
   section says.
+
+  pi-legion's `-omp` suites take a NATS server the same way, started without JetStream
+  (`nats-server -p <port>`, no `-js`), as CI's `pi-legion` job starts its `nats` service
+  (`.github/workflows/ci-job-pi-legion.yaml`): the suites share it, and a server without JetStream
+  keeps no state between them. Pass them the flags of pi-legion's `test` script's second
+  `bun test` command, its two `--preload`s and its `--timeout`: a bare `bun test` gives each row
+  5,000 ms, and its `./test/omp-logs.ts` preload gives Oh My Pi's logger a log directory the run
+  owns, where a bare run writes and prunes your own `~/.omp/logs` (INFRA-3314).
 - **The rest, by package**, for a named run the pod does make. A Postgres unpacked from Debian
   packages (the harness under **The worked case** of `withheld-capability.md`) has only the
   `C`, `C.utf8` and `POSIX` locales, so its default collation is byte order, and

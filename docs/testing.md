@@ -123,7 +123,6 @@ A timing promise across a process boundary is checked by the order of the events
 No verdict holds an elapsed time, two readings of a clock subtracted, to a bound, the program's own clock included: a loaded machine stretches the program's time as much as the test's.
 The readings a decision itself used may be held to that decision's own rule, which no load can break: pi-envoy's card wake records the moment each hold's decision read and the moment it counted the cap from, and no hold read at or past its cap (`controller-start-omp.test.ts`).
 A lower bound, that the program waited at least its delay, may read the program's own record of when it acted, since load can only lengthen the wait.
-A time a person wants read, such as a whole parse's processor time, is a row of a timing lane, which runs on request on a quiet machine and never as a CI verdict: proof-editor's whole-parse CPU rows run only where `PROOF_EDITOR_BENCH_TIMING` is set, and skip elsewhere with a name that says so (`packages/proof-editor/tests/cpu-time.ts`).
 
 A Bun test drives Bun's fake timers (`jest.useFakeTimers()`) where the code runs in the test's own process.
 
@@ -277,6 +276,12 @@ A Bun test waits and is guarded as R2 and R5 above say:
   A probe that throws ends the wait at once, so a probe that reads a report which makes its fact impossible throws.
   A wait under `jest.useFakeTimers()` refuses to start, because those timers hold `performance.now()` and every timer still until the test advances them.
   Outside `bun test`, a proof's Bun driver takes its deadline from `LEGION_PROOF_DEADLINE_MS`, which `proof_guard` exports, and with neither a wait refuses to start.
+
+- A row on Bun's fake clock waits for the code's next step through `@legion/test-fixtures/fake-clock`'s `turnsUntil`, which turns the real event loop until its fact holds and gives the wait no duration either.
+  It ends at the row's deadline, read in real time on an alarm armed at each mark of the row-deadline preload, since the fake clock holds every clock the row could read (`packages/test-fixtures/src/deadline.ts`).
+
+- A row that reads a deadline the code arms with `AbortSignal.timeout` holds it through `@legion/test-fixtures/held-deadlines`: `holdDeadlines(ms)` holds every deadline of that length the code arms until the row ends them (`end`, or `letGo`, after which one of that length is the real one), and `restore` puts the real `AbortSignal.timeout` back.
+  So the row reads what the code did up to its own bound and at it, in that order, and a deadline the code armed at another length is never held: a row that waits for the held one to be armed fails at its deadline, naming the wait.
 
 - Every `bun test` command loads the row-deadline preload, `--preload @legion/test-fixtures/row-deadline`.
   It marks the start of each row, the end of each row's body, the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first `afterEach`.

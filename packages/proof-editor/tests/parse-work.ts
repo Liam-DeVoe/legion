@@ -1,6 +1,6 @@
 /**
- * The work a parse does, as the parse itself counts it, for the rows that hold a heavy body's parse
- * to a cost in proportion to its length.
+ * The work a parse does, counted, for the rows that hold a heavy body's parse to a cost in
+ * proportion to its length.
  *
  * A row reads its counts around one parse (packages/proof-editor/AGENTS.md, "The four dependency
  * patches"). The first five are held to a cost a character as well as to a linear growth:
@@ -20,8 +20,8 @@
  *   (`resolveDirectiveContainers`) and its looks back while it tokenizes read.
  *
  * The last four are the scans that read events rather than codes, which the tokenizer's count does
- * not see. The resolvers that walk the events once a tokenizer has them are counted after them,
- * each held to a linear growth alone:
+ * not see. The stages that walk the events once a tokenizer has them, and the tree after them, are
+ * counted after them, each held to a linear growth alone:
  *
  * - `textResolveScanSteps` of `micromark`: the events, chunks and spaces the string and text
  *   resolvers (`resolveAllText`, `resolveAllLineSuffixes`) read, and every event they copy, put in
@@ -30,31 +30,52 @@
  *   (attention, label end, ATX heading, setext underline, code text), each `splice` counted with
  *   the events after it that it shifts, and for content the events `micromark-util-subtokenize`
  *   hands it back.
+ * - `resolvedEvents` and `postprocessedEvents` of `micromark`: the events every tokenizer's
+ *   resolvers hand on, and the events `postprocess` hands the compile.
+ * - `milkdownRunnerCalls` of src/lib-headless.ts: each mdast node and mark Milkdown's parser state
+ *   hands a spec's runner, counted where this package builds the specs, with no patch.
+ * - The stages no patch reaches, each counted from outside through a counting `Proxy` it is handed
+ *   in place of what it takes (`counted`), one step for every read and every write it makes of an
+ *   object it reaches through it: each mdast transform of the parse, this package's own and the
+ *   ones it installs, by the name of its plugin, handed the tree; `micromark-util-subtokenize`,
+ *   handed the events `postprocess` gives it and the events content's resolver gives it; the GFM
+ *   and front matter extensions, their resolvers handed the events, their compile handlers the
+ *   token and the compile's own state (whose stack is the tree it builds) and their transforms the
+ *   tree; and `mdast-util-from-markdown`'s compile, handed the events. micromark's document
+ *   tokenizer hands its events on through the Proxy itself (`document.resolveAll`, set below on
+ *   micromark's own initializer): the steps go to subtokenize until `postprocessedEvents` moves,
+ *   which is the moment `postprocess` hands them to the compile, and to the compile after it.
  *
- * Three stages no patch reaches are held from outside, by what each hands on: the events every
- * tokenizer's resolvers hand on (`resolvedEvents` of `micromark`, after the extensions' resolvers
- * too), the events `postprocess` hands on once `subtokenize` is done (`postprocessedEvents`: the
- * events `mdast-util-from-markdown`'s compile takes), and the nodes of the document Milkdown's
- * transform built from that tree, counted on the document the parse returns. Output that grows
- * with the square of the body grows them so; a walk inside those stages that grows so while its
- * output does not is read in the timing lane only (tests/cpu-time.ts).
+ * What a count cannot see: work a stage does on a copy of its own (subtokenize's `SpliceBuffer`
+ * splices, a transform's clone of a node), on the input string, or on a structure that is the
+ * stage's alone until it returns it - the compile's own handlers writing the tree they build,
+ * which `mdast-util-from-markdown` keeps private (`compiler` is not exported). That package is
+ * pinned at 2.0.3 with a patch of its own (`patches/mdast-util-from-markdown@2.0.3.patch`), so its
+ * handlers change only when that pin moves; the patch is made again then, and the handlers are
+ * read again with it. `withBlockIds` and `withoutLeafMarks` walk the ProseMirror document, whose
+ * node types ProseMirror compares by identity, so no Proxy stands in for it; nothing counts them.
  *
- * The counts are the code's own record of the work, so a busy machine does not move them, and a
- * parse put back to reading every event or every code again on each line, each `]` or each opener
- * reads a number of steps that grows with the square of the body.
+ * The counts are the code's own record of the work, or the Proxy's of what each stage touched, so
+ * a busy machine does not move them, and a parse put back to reading every event, node or code
+ * again on each line, each `]` or each opener reads a number of steps that grows with the square
+ * of the body.
  *
- * A row reads each count at the shape's full size and at `1/growthStep` of its growing dimension,
- * and holds them three ways: each count moved as far as the body says it must (`expectFloors`), the
- * full size took no more steps a character than the highest healthy reading allows
- * (`expectWorkInProportion`), and no count grew more than `growthSlack` times faster than the
- * dimension did (`expectWorkGrowsLinearly`).
+ * A row reads the kept counts at the shape's full size and at `1/growthStep` of its growing
+ * dimension, and the stages' steps one step down, at `1/growthStep` and its square (or at the
+ * kept counts' two sizes, for a shape whose `smallest` size lies above that square): a Proxy traps
+ * every read and write a stage makes, which at the full size would cost the row far more than its
+ * guard, and a walk that grows with the square of the body shows at that step too. It holds them
+ * three ways: each count moved as far as the body says it must (`expectFloors`), the full size took
+ * no more steps a character than the highest healthy reading allows (`expectWorkInProportion`),
+ * and no count grew more than `growthSlack` times faster than the dimension did
+ * (`expectWorkGrowsLinearly`).
  *
  * The counters run over the whole process. A parse is synchronous and the rows of a file run one at
- * a time, so the steps between the two readings are that parse's alone.
+ * a time, so the steps between two readings are that parse's alone.
  */
 
 import { expect } from "bun:test";
-import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
+import { dirname, join } from "node:path";
 import {
   lazyLineScanSteps,
   postprocessedEvents,
@@ -62,9 +83,11 @@ import {
   textResolveScanSteps,
   tokenizerSteps,
 } from "micromark";
-import { labelEndScanSteps, resolverScanSteps } from "micromark-core-commonmark";
+import { content, labelEndScanSteps, resolverScanSteps } from "micromark-core-commonmark";
+import type { Processor } from "unified";
 import { nestingScanSteps } from "../src/block-nesting";
 import { directiveScanSteps } from "../src/directive-container";
+import { milkdownRunnerCalls } from "../src/lib-headless";
 
 /**
  * The most scan steps - lazy-line, label-end, nesting and directive together - a parse may take
@@ -138,10 +161,15 @@ export type WorkShape = {
   /** Whether the body opens a `:::` container, whose parse reads `directiveScanSteps`'s walks at
    *  least once, in a mode that refuses the body too: the refusal comes after them. */
   opensDirectives?: boolean;
+  /**
+   * The least size at which the body grows as it does at the full size, where a part that does not
+   * grow (a nesting bound) is all of the body below it: the stages are not read at a size under it.
+   */
+  smallest?: number;
 };
 
-/** The counts of one parse. */
-type WorkCounts = {
+/** The counts the code keeps, by what a failure names each. */
+type KeptCounts = {
   readonly tokenizer: number;
   readonly lazyLine: number;
   readonly labelEnd: number;
@@ -156,11 +184,11 @@ type WorkCounts = {
   readonly contentHandedBack: number;
   readonly resolvedHandedOn: number;
   readonly postprocessedHandedOn: number;
-  readonly documentNodes: number;
+  readonly runnerCalls: number;
 };
 
-/** What each count is, as a failure names it. */
-const countNames: Record<keyof WorkCounts, string> = {
+/** What each kept count is, as a failure names it. */
+const countNames: Record<keyof KeptCounts, string> = {
   tokenizer: "tokenizer steps (codes handed a state)",
   lazyLine: "lazy-line steps",
   labelEnd: "label-end steps",
@@ -175,11 +203,11 @@ const countNames: Record<keyof WorkCounts, string> = {
   contentHandedBack: "events subtokenize handed content",
   resolvedHandedOn: "events the tokenizers' resolvers handed on",
   postprocessedHandedOn: "events postprocess handed the mdast compile",
-  documentNodes: "nodes of the document Milkdown's transform built",
+  runnerCalls: "Milkdown runner calls",
 };
 
-/** The counts the code keeps, read now; the document's nodes are read on the parse's value. */
-function readCounts(): Omit<WorkCounts, "documentNodes"> {
+/** The counts the code keeps, read now. */
+function readKeptCounts(): KeptCounts {
   const resolvers = resolverScanSteps();
   return {
     tokenizer: tokenizerSteps(),
@@ -196,19 +224,288 @@ function readCounts(): Omit<WorkCounts, "documentNodes"> {
     contentHandedBack: resolvers.content,
     resolvedHandedOn: resolvedEvents(),
     postprocessedHandedOn: postprocessedEvents(),
+    runnerCalls: milkdownRunnerCalls(),
   };
 }
 
-/** The nodes of `value`, where it is a document: itself and every node below it. */
-function documentNodes(value: unknown): number {
-  const document = value as Partial<ProseMirrorNode> | undefined;
-  if (typeof document?.descendants !== "function") return 0;
-  let nodes = 1;
-  document.descendants(() => {
-    nodes++;
-  });
-  return nodes;
+/** The stage subtokenize is while `postprocess` runs it, as a failure names it. */
+const POSTPROCESS_SUBTOKENIZE = "subtokenize's steps on the events postprocess hands it";
+/** The stage subtokenize is while content's resolver runs it. */
+const CONTENT_SUBTOKENIZE = "subtokenize's steps on the events content's resolver hands it";
+/** The stage the compile is, once `postprocess` has handed it the events. */
+const COMPILE = "the mdast compile's steps on the events";
+
+/** The steps of each stage counted through a Proxy in the parse being read; undefined between
+ *  readings, when every stage gets what it takes as it is. */
+let staged: Map<string, number> | undefined;
+
+/** Every Proxy a stage was handed, and what it stands in for. */
+const fronted = new WeakMap<object, object>();
+
+/**
+ * `root` as a stage is handed it: a Proxy that counts to `stage` (or to the stage it names at each
+ * step) every read and every write the stage makes of `root` and of each object it reaches
+ * through it. An object the stage writes that it was not handed is its own, and it reads it back
+ * as it wrote it, so the stage's own identity checks hold; what it reaches through the Proxy it
+ * reaches through one Proxy for each object, so they hold there too.
+ */
+function counted<T extends object>(stage: string | (() => string), root: T): T {
+  const proxies = new WeakMap<object, object>();
+  const owned = new WeakSet<object>();
+  const step = (): void => {
+    if (staged === undefined) return;
+    const name = typeof stage === "string" ? stage : stage();
+    staged.set(name, (staged.get(name) ?? 0) + 1);
+  };
+  const front = (value: unknown): unknown => {
+    if (typeof value !== "object" || value === null || fronted.has(value) || owned.has(value)) {
+      return value;
+    }
+    const known = proxies.get(value);
+    if (known !== undefined) return known;
+    const proxy = new Proxy(value, handler);
+    proxies.set(value, proxy);
+    fronted.set(proxy, value);
+    return proxy;
+  };
+  const handler: ProxyHandler<object> = {
+    get(target, key) {
+      step();
+      return front(Reflect.get(target, key));
+    },
+    set(target, key, value) {
+      step();
+      const raw = (typeof value === "object" && value !== null && fronted.get(value)) || value;
+      if (typeof raw === "object" && raw !== null && !proxies.has(raw)) owned.add(raw);
+      return Reflect.set(target, key, raw);
+    },
+    deleteProperty(target, key) {
+      step();
+      return Reflect.deleteProperty(target, key);
+    },
+    has(target, key) {
+      step();
+      return Reflect.has(target, key);
+    },
+    ownKeys(target) {
+      step();
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, key) {
+      step();
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+    defineProperty(target, key, descriptor) {
+      step();
+      return Reflect.defineProperty(target, key, descriptor);
+    },
+  };
+  return front(root) as T;
 }
+
+/** What `value` stands for, where it is a Proxy a stage was handed. */
+function unfronted<T>(value: T): T {
+  return ((typeof value === "object" && value !== null && fronted.get(value)) || value) as T;
+}
+
+/**
+ * Puts back, everywhere in the mdast tree `tree`, what each Proxy a stage left in it stands for:
+ * a node a stage reached through its Proxy and wrote into a node of its own. The next stage, and
+ * Milkdown, read the tree itself.
+ */
+function unfrontTree<T>(tree: T, seen = new WeakSet<object>()): T {
+  const raw = unfronted(tree);
+  if (typeof raw !== "object" || raw === null || seen.has(raw)) return raw;
+  seen.add(raw);
+  const node = raw as Record<string, unknown>;
+  for (const key of Object.keys(node)) {
+    const value = node[key];
+    const put = unfrontTree(value, seen);
+    if (put !== value) node[key] = put;
+  }
+  return raw;
+}
+
+/**
+ * Puts back, in the events `events` and each event's token, what each Proxy a stage left there
+ * stands for. A token's own links (`previous`, `next`, `_tokenizer`) reach the tokenizers' whole
+ * state, which no walk here follows: only what a stage wrote into them is put back.
+ */
+function unfrontEvents<T>(events: T): T {
+  const raw = unfronted(events);
+  if (!Array.isArray(raw)) return raw;
+  for (let index = 0; index < raw.length; index++) {
+    const event: unknown = unfronted(raw[index]);
+    raw[index] = event;
+    if (!Array.isArray(event)) continue;
+    for (let part = 0; part < event.length; part++) {
+      const item: unknown = unfronted(event[part]);
+      event[part] = item;
+      if (typeof item !== "object" || item === null) continue;
+      const fields = item as Record<string, unknown>;
+      for (const key of Object.keys(fields)) {
+        const value = fields[key];
+        const put = unfronted(value);
+        if (put !== value) fields[key] = put;
+      }
+    }
+  }
+  return raw;
+}
+
+// micromark's document tokenizer runs its initializer's `resolveAll` last, at the end of the
+// document, and hands on what it returns: postprocess's subtokenize and the compile take the events
+// through the Proxy from here. Its file is not among micromark's exports, so it is read by its
+// path beside the module those exports load; it is that module, so the object is micromark's own.
+const micromarkDocument = (
+  (await import(
+    join(dirname(Bun.resolveSync("micromark", import.meta.dir)), "lib", "initialize", "document.js")
+  )) as { document: { resolveAll?: (events: unknown[]) => unknown[] } }
+).document;
+micromarkDocument.resolveAll = (events) => {
+  if (staged === undefined) return events;
+  // Subtokenize's until postprocess hands the events on, which `postprocessedEvents` counts.
+  const before = postprocessedEvents();
+  return counted(
+    () => (postprocessedEvents() === before ? POSTPROCESS_SUBTOKENIZE : COMPILE),
+    events
+  );
+};
+
+// Content's resolver hands its events to subtokenize: the construct is the one micromark's flow
+// tokenizer attempts, from `micromark-core-commonmark`.
+const resolveContent = content.resolve;
+if (resolveContent === undefined) throw new Error("micromark-core-commonmark's content has no resolver");
+content.resolve = (events, context) =>
+  staged === undefined
+    ? resolveContent(events, context)
+    : unfrontEvents(resolveContent(counted(CONTENT_SUBTOKENIZE, events), context));
+
+/** The constructs whose resolvers already hand their events to a counting Proxy. */
+const countedConstructs = new WeakSet<object>();
+/** The compile handlers and transforms already counted, by the function they wrap. */
+const countedFunctions = new WeakSet<object>();
+
+/** A micromark construct as far as its resolvers go. */
+type ResolvingConstruct = {
+  resolve?: (events: unknown[], context: unknown) => unknown[];
+  resolveAll?: (events: unknown[], context: unknown) => unknown[];
+  resolveTo?: (events: unknown[], context: unknown) => unknown[];
+};
+
+/** Hands each resolver of `construct` its events through a Proxy counting to `stage`. */
+function countResolvers(stage: string, construct: ResolvingConstruct): void {
+  if (countedConstructs.has(construct)) return;
+  countedConstructs.add(construct);
+  for (const key of ["resolve", "resolveAll", "resolveTo"] as const) {
+    const resolver = construct[key];
+    if (resolver === undefined) continue;
+    construct[key] = (events, context) =>
+      staged === undefined
+        ? resolver(events, context)
+        : unfrontEvents(resolver(counted(stage, events), context));
+  }
+}
+
+/** Hands every construct of the micromark extension `extension` to `countResolvers`. */
+function countExtension(stage: string, extension: Record<string, unknown>): void {
+  for (const field of Object.values(extension)) {
+    if (typeof field !== "object" || field === null || Array.isArray(field)) continue;
+    for (const constructs of Object.values(field)) {
+      for (const construct of Array.isArray(constructs) ? constructs : [constructs]) {
+        if (typeof construct === "object" && construct !== null) countResolvers(stage, construct);
+      }
+    }
+  }
+}
+
+/** A compile extension of `mdast-util-from-markdown`, as far as its handlers and transforms go. */
+type CompileExtension = {
+  enter?: Record<string, (this: unknown, token: object) => void>;
+  exit?: Record<string, (this: unknown, token: object) => void>;
+  transforms?: ((tree: object) => object | undefined)[];
+};
+
+/** Hands each handler of `extension` the token and the compile's state, and each transform the
+ *  tree, through a Proxy counting to a stage of its own: `plugin`'s handler or transform, by the
+ *  token type it handles or the transform's name. */
+function countCompileExtension(plugin: string, extension: CompileExtension): void {
+  for (const [side, handlers] of [
+    ["enter", extension.enter],
+    ["exit", extension.exit],
+  ] as const) {
+    if (handlers === undefined) continue;
+    for (const [type, handler] of Object.entries(handlers)) {
+      if (countedFunctions.has(handler)) continue;
+      const stage = `${plugin}'s compile ${side} handler for ${type}: its steps`;
+      const wrapped = function (this: unknown, token: object): void {
+        if (staged === undefined) return handler.call(this, token);
+        return handler.call(counted(stage, this as object), counted(stage, token));
+      };
+      countedFunctions.add(wrapped);
+      handlers[type] = wrapped;
+    }
+  }
+  extension.transforms = extension.transforms?.map((transform, index) => {
+    if (countedFunctions.has(transform)) return transform;
+    const stage = `${plugin}'s compile transform ${transform.name === "" ? index : transform.name}: its steps on the tree`;
+    const wrapped = (tree: object) => {
+      if (staged === undefined) return transform(tree);
+      const raw = unfrontTree(tree);
+      const result = transform(counted(stage, raw));
+      unfrontTree(raw);
+      return result === undefined ? undefined : unfrontTree(result);
+    };
+    countedFunctions.add(wrapped);
+    return wrapped;
+  });
+}
+
+/** The extensions whose parse work the rows count by Proxy, by the plugin that installs them. */
+const COUNTED_EXTENSIONS = new Set(["remarkGfm", "remarkFrontmatter"]);
+
+/**
+ * `observeParser` for the rows (src/lib-headless.ts): counts each stage of every parse `processor`
+ * runs through a Proxy, while a row reads one. Each plugin's transform is handed the tree, and the
+ * GFM and front matter plugins' micromark and compile extensions what each part of them takes.
+ */
+export function countParseStages(processor: Processor): void {
+  processor.attachers.forEach(([attacher, ...settings], index) => {
+    const name = attacher.name === "" ? `plugin ${index}` : attacher.name;
+    const transformStage = `the mdast transform ${name}'s steps on the tree`;
+    const counting = function (this: Processor, ...options: unknown[]) {
+      const micromarkBefore = (this.data("micromarkExtensions") ?? []).length;
+      const compileBefore = (this.data("fromMarkdownExtensions") ?? []).length;
+      const transformer = (attacher as (...options: unknown[]) => unknown).apply(this, options);
+      if (COUNTED_EXTENSIONS.has(name)) {
+        for (const extension of (this.data("micromarkExtensions") ?? []).slice(micromarkBefore)) {
+          countExtension(`${name}'s micromark resolvers' steps on the events`, extension as Record<string, unknown>);
+        }
+        for (const extension of (this.data("fromMarkdownExtensions") ?? []).slice(compileBefore)) {
+          for (const one of Array.isArray(extension) ? extension : [extension]) {
+            countCompileExtension(name, one as CompileExtension);
+          }
+        }
+      }
+      if (typeof transformer !== "function") return transformer;
+      const transform = transformer as (...args: unknown[]) => unknown;
+      const wrapped = function (this: unknown, ...args: unknown[]): unknown {
+        if (staged === undefined) return transform.apply(this, args);
+        const raw = unfrontTree(args[0]);
+        const result = transform.apply(this, [counted(transformStage, raw as object), ...args.slice(1)]);
+        unfrontTree(raw);
+        return result === undefined ? undefined : unfrontTree(result);
+      };
+      // unified calls a transformer that declares a third parameter as one that takes `next`.
+      Object.defineProperty(wrapped, "length", { value: transform.length });
+      return wrapped;
+    };
+    processor.attachers[index] = [counting as typeof attacher, ...settings];
+  });
+}
+
+/** The counts of one parse: the code's own, and each stage's steps through its Proxy. */
+type WorkCounts = KeptCounts & { readonly stages: ReadonlyMap<string, number> };
 
 /** What one parse of a body counted, and what it threw where it threw. */
 type WorkReading<T> = {
@@ -217,6 +514,8 @@ type WorkReading<T> = {
   /** The size of the shape's growing dimension the body was grown to. */
   readonly size: number;
   readonly counts: WorkCounts;
+  /** Whether the stages no patch reaches were handed their counting Proxies in this parse. */
+  readonly staged: boolean;
   /** Whether the parse threw. A parse that throws `undefined` has thrown too, which is why this
    *  stands beside `thrown` rather than being read off it. */
   readonly threw: boolean;
@@ -226,33 +525,46 @@ type WorkReading<T> = {
   readonly value: T | undefined;
 };
 
-/** Parses `shape` once at `size`, reading the counts around the parse, and keeps what it threw. */
-function readWork<T>(shape: WorkShape, size: number, parse: (body: string) => T): WorkReading<T> {
+/**
+ * Parses `shape` once at `size`, reading the counts around the parse, and keeps what it threw;
+ * where `staging`, each stage no patch reaches is handed its counting Proxy too, which costs a
+ * trap for every read and write a stage makes, so only the smaller sizes are read so.
+ */
+function readWork<T>(
+  shape: WorkShape,
+  size: number,
+  parse: (body: string) => T,
+  staging: boolean
+): WorkReading<T> {
   const body = shape.grow(size);
-  const before = readCounts();
+  const stages = new Map<string, number>();
+  const before = readKeptCounts();
   let value: T | undefined;
   let threw = false;
   let thrown: unknown;
+  staged = staging ? stages : undefined;
   try {
     value = parse(body);
   } catch (cause) {
     threw = true;
     thrown = cause;
+  } finally {
+    staged = undefined;
   }
-  const after = readCounts();
+  const after = readKeptCounts();
   const moved = Object.fromEntries(
-    (Object.keys(after) as (keyof typeof after)[]).map((key) => [key, after[key] - before[key]])
-  ) as Omit<WorkCounts, "documentNodes">;
-  const counts: WorkCounts = { ...moved, documentNodes: documentNodes(value) };
-  return { body, size, counts, threw, thrown, value };
+    (Object.keys(after) as (keyof KeptCounts)[]).map((key) => [key, after[key] - before[key]])
+  ) as KeptCounts;
+  return { body, size, counts: { ...moved, stages }, staged: staging, threw, thrown, value };
 }
 
 /**
  * Fails unless each count moved as far as the body says it must: a step for every character
  * tokenized, a lazy-line step for every lazy line, a label-end step for every `]`, and a
- * nesting-scan step where the body opens a container. A counter that stopped counting - a patch
- * not applied, a counter read from a second copy of its package - reads 0 here, and the bounds
- * below would then pass on nothing.
+ * nesting-scan step where the body opens a container; and, for a parse that returned a document,
+ * every stage counted steps. A counter that stopped counting - a patch not applied, a counter read
+ * from a second copy of its package, a stage no longer handed its Proxy - reads 0 here, and the
+ * bounds below would then pass on nothing.
  */
 function expectFloors(what: string, shape: WorkShape, reading: WorkReading<unknown>): void {
   const { body, size, counts } = reading;
@@ -284,18 +596,29 @@ function expectFloors(what: string, shape: WorkShape, reading: WorkReading<unkno
     ).toBeGreaterThan(0);
   }
   // A parse that returned a document went through every stage: its text was resolved, its
-  // tokenizers and `postprocess` handed events on, and the transform built a document.
+  // tokenizers and `postprocess` handed events on, and Milkdown ran its runners on the tree; and,
+  // where the stages were handed their Proxies, subtokenize and the compile read the events and
+  // every transform read the tree.
   if (!reading.threw) {
     for (const key of [
       "textResolve",
       "resolvedHandedOn",
       "postprocessedHandedOn",
-      "documentNodes",
+      "runnerCalls",
     ] as const) {
       expect(
         counts[key],
         `${at} returned a document and took no ${countNames[key]}`
       ).toBeGreaterThan(0);
+    }
+    if (reading.staged) {
+      const transforms = [...counts.stages.keys()].filter((stage) =>
+        stage.startsWith("the mdast transform ")
+      );
+      expect(transforms.length, `${at} returned a document and no transform was counted`).toBeGreaterThan(0);
+      for (const stage of [POSTPROCESS_SUBTOKENIZE, COMPILE, ...transforms]) {
+        expect(counts.stages.get(stage) ?? 0, `${at} returned a document and took no ${stage}`).toBeGreaterThan(0);
+      }
     }
   }
 }
@@ -325,46 +648,67 @@ function expectWorkInProportion(what: string, reading: WorkReading<unknown>): vo
 }
 
 /**
- * Fails when a count grew more than `growthSlack` times faster from the small size to the full
- * one than the shape's growing dimension did. A count that read nothing at either size has nothing
- * to grow; one that read nothing at the small size and something at the full one grew without
- * bound.
+ * Fails when a count grew more than `growthSlack` times faster from `small` to `full` than the
+ * shape's growing dimension did: the kept counts, or, for two staged readings, each stage's steps.
+ * A count that read nothing at either size has nothing to grow; one that read nothing at the small
+ * size and something at the full one grew without bound.
  */
 function expectWorkGrowsLinearly(
   what: string,
   small: WorkReading<unknown>,
-  full: WorkReading<unknown>
+  full: WorkReading<unknown>,
+  counted: "kept" | "stages"
 ): void {
   const bound = growthSlack * growthStep;
-  for (const key of Object.keys(countNames) as (keyof WorkCounts)[]) {
-    const from = small.counts[key];
-    const to = full.counts[key];
+  const counts: [string, number, number][] =
+    counted === "kept"
+      ? (Object.keys(countNames) as (keyof KeptCounts)[]).map((key) => [
+          countNames[key],
+          small.counts[key],
+          full.counts[key],
+        ])
+      : [...new Set([...small.counts.stages.keys(), ...full.counts.stages.keys()])].map(
+          (stage) => [stage, small.counts.stages.get(stage) ?? 0, full.counts.stages.get(stage) ?? 0]
+        );
+  for (const [name, from, to] of counts) {
     if (from === 0 && to === 0) continue;
     expect(
       to,
-      `${what} took ${to} ${countNames[key]} at ${full.size} of its growing dimension against ` +
-        `${from} at ${small.size}, ${(to / from).toFixed(2)} times for a dimension ${growthStep} ` +
-        `times larger (at most ${bound} times)`
+      `${what} took ${to} ${name} at ${full.size} of its growing dimension against ${from} at ` +
+        `${small.size}, ${(to / from).toFixed(2)} times for a dimension ${growthStep} times larger ` +
+        `(at most ${bound} times)`
     ).toBeLessThanOrEqual(bound * from);
   }
 }
 
 /**
  * Parses `shape` at `1/growthStep` of its growing dimension and then at the full size, and holds
- * the two readings to the floors, the full size to the bounds a character, and the counts to the
- * growth check: the assertions both helpers below share.
+ * the two readings to the floors, the full size to the bounds a character, and the kept counts to
+ * the growth check; and holds each stage's steps through its Proxy to the same check one step
+ * down, from `1/growthStep` squared to `1/growthStep`, where the Proxy's trap on every read and
+ * write costs an eighth of what it would at the full size. The assertions both helpers below
+ * share.
  */
 function workWithinBounds<T>(
   what: string,
   shape: WorkShape,
   parse: (body: string) => T
 ): { small: WorkReading<T>; full: WorkReading<T> } {
-  const small = readWork(shape, Math.floor(shape.full / growthStep), parse);
-  const full = readWork(shape, shape.full, parse);
-  expectFloors(what, shape, small);
-  expectFloors(what, shape, full);
+  const smallSize = Math.floor(shape.full / growthStep);
+  const leastSize = Math.floor(smallSize / growthStep);
+  // A shape whose part that does not grow is the whole body below its `smallest` size reads its
+  // stages at the full size and an eighth of it instead, which is the size its cost is read at.
+  const stagedAtFull = leastSize < (shape.smallest ?? 1);
+  const small = readWork(shape, smallSize, parse, true);
+  const full = readWork(shape, shape.full, parse, stagedAtFull);
+  const least = stagedAtFull ? undefined : readWork(shape, leastSize, parse, true);
+  for (const reading of [least, small, full]) {
+    if (reading !== undefined) expectFloors(what, shape, reading);
+  }
   expectWorkInProportion(what, full);
-  expectWorkGrowsLinearly(what, small, full);
+  expectWorkGrowsLinearly(what, small, full, "kept");
+  if (least === undefined) expectWorkGrowsLinearly(what, small, full, "stages");
+  else expectWorkGrowsLinearly(what, least, small, "stages");
   return { small, full };
 }
 

@@ -1,5 +1,5 @@
-import { appendFileSync } from "node:fs";
 import { messageFor } from "@legion/envoy-client/errors";
+import { jsonLineRecord } from "@legion/envoy-client/json-line-record";
 import {
   type FallbackChainContext,
   type FallbackChainLog,
@@ -83,15 +83,7 @@ export const FALLBACK_CHECK_RECORD_FILE = "LEGION_FALLBACK_CHECK_RECORD_FILE";
 export function fallbackCheckRecord(
   env: Record<string, string | undefined>
 ): ((check: RestoreCheck) => void) | undefined {
-  const file = env[FALLBACK_CHECK_RECORD_FILE];
-  if (file === undefined || file === "") return undefined;
-  return (check) => {
-    try {
-      appendFileSync(file, `${JSON.stringify(check)}\n`);
-    } catch {
-      // The tests' seam only: a write it cannot make changes nothing the fallback does.
-    }
-  };
+  return jsonLineRecord<RestoreCheck>(env, FALLBACK_CHECK_RECORD_FILE);
 }
 
 export interface ModelFallback {

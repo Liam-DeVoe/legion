@@ -866,10 +866,15 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
-  const bin = await jjDirectory(scratch, "exec sleep 30")
+  // The stand-in's own record of what it reached: a hook that waited for it to answer would let
+  // it reach its end, 30 s on, before the hook exits.
+  const jjRecord = join(scratch, "jj-record")
+  const bin = await jjDirectory(
+    scratch,
+    `printf 'started\\n' >> ${JSON.stringify(jjRecord)}; sleep 30; printf 'ended\\n' >> ${JSON.stringify(jjRecord)}`,
+  )
   const envFile = join(scratch, "session-env.sh")
   const server = openAsksServer()
-  const started = Date.now()
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
@@ -883,7 +888,8 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     })
 
     expect(result.exitCode).toBe(0)
-    expect(Date.now() - started).toBeLessThan(15_000)
+    // The hook exited with the jj it started still short of its end: it gave that jj up.
+    expect(await readFile(jjRecord, "utf8")).toBe("started\n")
     expect(result.stdout).toStartWith("Dispatch authored-ask summary:\n")
     expect(await readFile(envFile, "utf8")).toBe(
       [

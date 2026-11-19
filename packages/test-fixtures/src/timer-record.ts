@@ -3,13 +3,17 @@
 // stretches a program's time as much as a test's, so no verdict compares two readings of a clock
 // (docs/testing.md, R2 and R4), while a delay a timer was armed with is a number the program
 // chose, and a load cannot change it. A defect that makes the program wait - a timer of its own
-// on the way, a sleep - shows here with the delay it waits, whatever the machine does.
+// on the way, a sleep, a deadline - shows here with the delay it waits, whatever the machine does.
 //
-// It wraps `setTimeout`, `setInterval` and `Bun.sleep` of the process it is installed in. A timer
-// is recorded only when the code that armed it is the program's own: the first frame of the
-// arming stack outside this module lies under one of the roots the test names, and is no test
-// file. A library's timers (nats.js's pings, say) and the test's own are left out, since the
-// first frame of theirs is the library's or the test's.
+// It wraps `setTimeout`, `setInterval`, `Bun.sleep` and `AbortSignal.timeout` of the process it is
+// installed in. A timer is the program's own when the first frame of the arming stack that names
+// a file, past this module and past a compiled Bun executable's own bundle (Oh My Pi's host, which
+// arms a timer for the plugin that called it), lies under one of the roots the test names, and
+// is no test file by its path below that root. A library's timers (nats.js's pings, say), the
+// host's own and the test's are left out, since that frame of theirs is the library's, none or
+// the test's. An arming whose stack names no file at all is recorded as one the record cannot
+// place, and a window that holds one is refused (`timersBetween`): a sum the record builds never
+// leaves out a timer it could not read.
 
 import { appendFileSync } from "node:fs";
 
@@ -19,10 +23,12 @@ export const TIMER_RECORD_FILE = "LEGION_TIMER_RECORD_FILE";
 export const TIMER_RECORD_ROOTS = "LEGION_TIMER_RECORD_ROOTS";
 
 /** One step of the record: a timer the program armed, with the delay it chose and the line that
- *  armed it, or that timer's callback starting (an interval's, at each tick; a sleep's, as it
- *  resolves). Timers are numbered in the order they were armed. */
+ *  armed it; a timer whose arming stack named no file, with its delay; or that timer's callback
+ *  starting (an interval's, at each tick; a sleep's, as it resolves; a deadline's, as its signal
+ *  aborts). Timers are numbered in the order they were armed. */
 export type TimerStep =
   | { readonly timer: number; readonly delayMs: number; readonly from: string }
+  | { readonly unplaced: number; readonly delayMs: number }
   | { readonly fired: number };
 
 /** A timer of the record that was armed and fired between two steps of a record it shares. */
@@ -32,6 +38,9 @@ export interface TimerOnTheWay {
 }
 
 const thisFile = new URL(import.meta.url).pathname;
+
+/** Where a compiled Bun executable's own sources live in its frames: Oh My Pi's host, say. */
+const COMPILED_BUNDLE = "/$bunfs/";
 
 /**
  * The file and line of one frame of a stack, or undefined for a frame that names no file. A
@@ -46,18 +55,58 @@ function frameLocation(frame: string): { readonly file: string; readonly at: str
   return { file, at: `${file}:${line}` };
 }
 
-/** Whether `file` is a test's rather than the program's. */
-function isTestFile(file: string): boolean {
+/** Whether `path`, a file's path below the root it lies under (from that root's `/`), is a
+ *  test's rather than the program's. */
+function isTestPath(path: string): boolean {
   return (
-    /\.test\.[cm]?[jt]sx?$/.test(file) || file.includes("/__tests__/") || file.includes("/test/")
+    /\.test\.[cm]?[jt]sx?$/.test(path) || path.includes("/__tests__/") || path.includes("/test/")
   );
+}
+
+/**
+ * Whose timer the arming `stack` (an `Error`'s `stack`, its first line the message) armed: the
+ * program's, with the line that armed it, when the first frame that names a file, past this
+ * module and past a compiled bundle's frames, lies under one of `prefixes` (each ending in `/`)
+ * and is no test file below it; `"foreign"` when that frame is another's, or when only a compiled
+ * bundle's frames name a file (the host's own timer); `"unplaced"` when no frame names a file.
+ */
+export function placeArming(
+  stack: string,
+  prefixes: readonly string[]
+): { readonly from: string } | "foreign" | "unplaced" {
+  let bundled = false;
+  for (const frame of stack.split("\n").slice(1)) {
+    const location = frameLocation(frame);
+    if (location === undefined || location.file === thisFile) continue;
+    if (location.file.startsWith(COMPILED_BUNDLE)) {
+      bundled = true;
+      continue;
+    }
+    const prefix = prefixes.find((candidate) => location.file.startsWith(candidate));
+    if (prefix === undefined) return "foreign";
+    return isTestPath(location.file.slice(prefix.length - 1)) ? "foreign" : { from: location.at };
+  }
+  return bundled ? "foreign" : "unplaced";
+}
+
+/** The stack of the arming call running now, every frame of it: a host's frames between the
+ *  arming and the plugin that called it must not push the plugin's frame past the limit. */
+function armingStack(): string {
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = Number.POSITIVE_INFINITY;
+  try {
+    return new Error().stack ?? "";
+  } finally {
+    Error.stackTraceLimit = limit;
+  }
 }
 
 /**
  * Installs the record in this process until the returned function is called: from then on each
  * timer whose arming code lies under one of `roots` (absolute directories) is handed to `write`
- * as it is armed, and again as its callback starts. `write` runs synchronously inside the arming
- * call, so a test that appends its own steps to the same record reads one order of both.
+ * as it is armed, and again as its callback starts, and each arming whose stack names no file is
+ * handed to it as unplaced. `write` runs synchronously inside the arming call, so a test that
+ * appends its own steps to the same record reads one order of both.
  */
 export function recordTimers(
   roots: readonly string[],
@@ -68,24 +117,19 @@ export function recordTimers(
     setTimeout: globalThis.setTimeout,
     setInterval: globalThis.setInterval,
     sleep: Bun.sleep,
+    abortTimeout: AbortSignal.timeout,
   };
   let armed = 0;
-  /** The line that armed the timer being armed now, when it is the program's own. */
-  const programFrame = (): string | undefined => {
-    for (const frame of (new Error().stack ?? "").split("\n").slice(1)) {
-      const location = frameLocation(frame);
-      if (location === undefined || location.file === thisFile) continue;
-      const own = prefixes.some((prefix) => location.file.startsWith(prefix));
-      return own && !isTestFile(location.file) ? location.at : undefined;
-    }
-    return undefined;
-  };
+  /** Records the arming running now, when it is the program's or cannot be placed, and returns
+   *  its number. */
   const arm = (delay: unknown): number | undefined => {
-    const from = programFrame();
-    if (from === undefined) return undefined;
+    const place = placeArming(armingStack(), prefixes);
+    if (place === "foreign") return undefined;
     armed += 1;
     const delayMs = typeof delay === "number" && Number.isFinite(delay) ? Math.max(0, delay) : 0;
-    write({ timer: armed, delayMs, from });
+    write(
+      place === "unplaced" ? { unplaced: armed, delayMs } : { timer: armed, delayMs, from: place.from }
+    );
     return armed;
   };
   const firing =
@@ -108,10 +152,19 @@ export function recordTimers(
     const sleeping = original.sleep(until);
     return timer === undefined ? sleeping : sleeping.then(() => write({ fired: timer }));
   }) as typeof Bun.sleep;
+  AbortSignal.timeout = (delay: number): AbortSignal => {
+    const timer = arm(delay);
+    const signal = original.abortTimeout.call(AbortSignal, delay);
+    if (timer !== undefined) {
+      signal.addEventListener("abort", () => write({ fired: timer }), { once: true });
+    }
+    return signal;
+  };
   return () => {
     globalThis.setTimeout = original.setTimeout;
     globalThis.setInterval = original.setInterval;
     Bun.sleep = original.sleep;
+    AbortSignal.timeout = original.abortTimeout;
   };
 }
 
@@ -138,6 +191,11 @@ function isArming(step: unknown): step is Extract<TimerStep, { timer: number }> 
   return typeof step === "object" && step !== null && "timer" in step && "delayMs" in step;
 }
 
+/** Whether `step` is the arming of a timer the record could not place. */
+function isUnplaced(step: unknown): step is Extract<TimerStep, { unplaced: number }> {
+  return typeof step === "object" && step !== null && "unplaced" in step && "delayMs" in step;
+}
+
 /** Whether `step` is a timer's callback starting. */
 function isFiring(step: unknown): step is Extract<TimerStep, { fired: number }> {
   return typeof step === "object" && step !== null && "fired" in step;
@@ -147,7 +205,8 @@ function isFiring(step: unknown): step is Extract<TimerStep, { fired: number }> 
  * The timers of `steps` armed after the step at index `after` whose callback started before the
  * step at index `before`: the program's waits that can lie between the two, each with the delay
  * the program chose. A timer the program cleared, or one still pending at `before`, delayed
- * nothing on the way and is not among them.
+ * nothing on the way and is not among them. Throws where such a timer is one the record could
+ * not place, since a sum without it could only read less than the way waited.
  */
 export function timersBetween(
   steps: readonly unknown[],
@@ -158,8 +217,15 @@ export function timersBetween(
   for (const step of steps.slice(0, Math.max(0, before))) {
     if (isFiring(step)) fired.add(step.fired);
   }
-  return steps
-    .slice(after + 1, Math.max(after + 1, before))
+  const window = steps.slice(after + 1, Math.max(after + 1, before));
+  const unplaced = window.filter(isUnplaced).filter((step) => fired.has(step.unplaced));
+  if (unplaced.length > 0) {
+    throw new Error(
+      `the timer record could not place ${unplaced.length} timer(s) that ran on the way, whose ` +
+        `arming stacks named no file: ${JSON.stringify(unplaced)}`
+    );
+  }
+  return window
     .filter(isArming)
     .filter((step) => fired.has(step.timer))
     .map(({ delayMs, from }) => ({ delayMs, from }));

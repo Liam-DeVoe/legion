@@ -3565,7 +3565,7 @@ jobs:
               - 'packages/dispatch/e2e/**'
               - 'docs/site/src/**'
               - '**/AGENTS.md'
-              # src/__tests__/dispatch-who-waits.test.ts:782,789 reads the CLI guide's sentence on
+              # src/__tests__/dispatch-who-waits.test.ts:786,793 reads the CLI guide's sentence on
               # an assignee move, which must name the project's default assignee.
               - 'packages/envoy/cmd/dispatch/README.md'
               # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of

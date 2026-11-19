@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { jsonLineRecord } from "@legion/envoy-client/json-line-record";
 import { type EnvoyPluginInterface, LOCAL_ENVOY_NOTICE } from "@legion/pi-shared/interface";
 import type {
   AutoCompactionEndEvent,
@@ -288,15 +288,7 @@ export const CARD_WAKE_RECORD_FILE = "ENVOY_CARD_WAKE_RECORD_FILE";
 export function cardWakeRecord(
   env: Record<string, string | undefined>
 ): ((step: CardWakeStep) => void) | undefined {
-  const file = env[CARD_WAKE_RECORD_FILE];
-  if (file === undefined || file === "") return undefined;
-  return (step) => {
-    try {
-      appendFileSync(file, `${JSON.stringify(step)}\n`);
-    } catch {
-      // The tests' seam only: a write it cannot make changes nothing the wake does.
-    }
-  };
+  return jsonLineRecord<CardWakeStep>(env, CARD_WAKE_RECORD_FILE);
 }
 
 /** A card whose `message_end` was seen and that waits for the check: the run it came in, and
