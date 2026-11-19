@@ -494,9 +494,11 @@ func groupChangeEvent(name, change string, by model.Actor) model.Event {
 }
 
 // DeleteGroup deletes group name and takes it off every access list that named it, so a later
-// group of the same name inherits no project. It appends one project.access_changed for each such
-// project and access_group.changed, all in tx, in that order. Who may delete the group is the
-// caller's to decide first.
+// group of the same name inherits no project. It takes the owner lock of each such project
+// (store.LockOwners) before it reads that project's access, so the event it appends there carries
+// every write the lock ordered first, and appends one project.access_changed for each project, in
+// key order, and then access_group.changed, all in tx. Who may delete the group is the caller's to
+// decide first.
 func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string, by model.Actor) ([]model.Event, error) {
 	if err := LockGroupName(ctx, tx, name); err != nil {
 		return nil, err
@@ -519,6 +521,15 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 		return nil, fmt.Errorf("take group %s off its lists: %w", name, err)
 	}
 	slices.Sort(projects)
+	if len(projects) > 0 {
+		owners := make([]store.Owner, len(projects))
+		for index, project := range projects {
+			owners[index] = store.ProjectOwner(project)
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return nil, fmt.Errorf("lock the projects that listed group %s: %w", name, err)
+		}
+	}
 	changes := make([]model.Event, 0, len(projects)+1)
 	for _, project := range projects {
 		access, err := ReadProject(ctx, tx, project)
