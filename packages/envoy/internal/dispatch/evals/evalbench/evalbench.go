@@ -243,15 +243,16 @@ func checkEmpty(ctx context.Context, pool *store.Pool) error {
 
 // resetConsumers deletes what the consumers of the loaded feeds committed over the empty store
 // (Load): the Legion facts consumer's cursors and project marks, and this head's day-row
-// refresher's cursors and walks.
+// refresher's cursors and walks. Each statement names its table, so the item-row census
+// (api's TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus) reads it as a write of no item row.
 func resetConsumers(ctx context.Context, pool *store.Pool, base bool) error {
-	tables := []string{"issue_facts_cursor", "issue_facts_computed"}
+	statements := []string{`delete from issue_facts_cursor`, `delete from issue_facts_computed`}
 	if !base {
-		tables = append(tables, "eval_days_cursor", "eval_days_walks")
+		statements = append(statements, `delete from eval_days_cursor`, `delete from eval_days_walks`)
 	}
-	for _, table := range tables {
-		if _, err := pool.Exec(ctx, `delete from `+table); err != nil {
-			return fmt.Errorf("reset %s: %w", table, err)
+	for _, statement := range statements {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("reset consumers (%s): %w", statement, err)
 		}
 	}
 	return nil
