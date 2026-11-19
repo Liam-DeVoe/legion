@@ -131,8 +131,8 @@
 -- block brought back are dropped again by this file's last statements. The missing row does not
 -- move the number the state read reports while the older image runs (Store.SchemaVersionTx, the
 -- highest row recorded): every database this release migrated records
--- 20261117200337_update_ask_marks_at_delivery, that older daemon's own newest migration, above
--- this version, so the number reads 20261117200337 before the delete and after it, which is the
+-- 20261119003157_conflict_reads_and_merge_forward, that older daemon's own newest migration, above
+-- this version, so the number reads 20261119003157 before the delete and after it, which is the
 -- truth about the image that is running.
 --
 -- What that costs is the numbering, as the phase entry's second fill costs its own: the second
@@ -147,7 +147,7 @@
 -- roll-forward writes every owed value once under the number the second fill gave it.
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
--- after this one builds on the fourteen columns it drops, and at this release none of the fourteen
+-- after this one builds on the fourteen columns it drops, and at this release none of the fifteen
 -- recorded after it touches them: 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
@@ -165,17 +165,23 @@
 -- 20261117023932_outbox_kinds_with_the_plan_record rewrites outbox_kind_check a fourth time,
 -- 20261117064152_step_starts_roll_forward writes step_starts, step_starts_rollback and the
 -- step_record rows it adds to outbox, 20261117112334_pull_request_statuses adds
--- pull_requests.statuses, and 20261117200337_update_ask_marks_at_delivery clears
--- claims.update_tasked_at where that claim's ask still waits in the outbox. The release before
--- this one, contract 168, carries all fourteen, so the rollback to it runs this block alone and
--- leaves the fourteen standing. Contract 160's two other migrations,
+-- pull_requests.statuses, 20261117200337_update_ask_marks_at_delivery clears
+-- claims.update_tasked_at where that claim's ask still waits in the outbox, and
+-- 20261119003157_conflict_reads_and_merge_forward rewrites outbox_kind_check a fifth time, deletes
+-- the queued phase_ended rows and adds pull_requests.conflict_read and pull_requests.merge_forward.
+-- The release before this one, contract 168, carries all fifteen, so the rollback to it runs this
+-- block alone and leaves the fifteen standing. Contract 160's two other migrations,
 -- 20261111090000_volume_trim_notices and 20261111091500_claim_pod_end, are numbered below this one,
 -- so every database records them before it, and neither touches the fourteen columns. A rollback
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
--- them: this block; contract 168's steps, which delete the queued writes of the runs' plans and of
--- the retros' ratings, since the release that records each step fails the decode of a rating row
--- at every attempt (docs/kubernetes.md, "Rolling back the release that rates each plan");
+-- them: this block; contract 168's steps for its merge forward, which delete the queued second
+-- reads and merge-forward messages and clear pull_requests.conflict_read and merge_forward, and
+-- whose delete of the phase_ended rows the roll-forward runs again (docs/kubernetes.md, "Rolling
+-- back the release that merges a conflicting head forward in its phase"); contract 168's steps
+-- for its plans, which delete the queued writes of the runs' plans and of the retros' ratings,
+-- since the release that records each step fails the decode of a rating row at every attempt
+-- (docs/kubernetes.md, "Rolling back the release that rates each plan");
 -- contract 160's statement, which deletes every queued volume-near-full notice,
 -- since no earlier release can decode one, with the counts of each pod it was of
 -- (docs/kubernetes.md, "Rolling back below the release that trims an issue pod's volume"); the step
@@ -185,8 +191,8 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those fourteen that are the
--- root architect's entry (all but the four kind lists, the five other migrations of contract 152
+-- of its kind behind; contract 146's block, which reverses the four of those fifteen that are the
+-- root architect's entry (all but the five kind lists, the five other migrations of contract 152
 -- and contract 160's 20261116144907_claim_sessions); the merge-queue removal's outbox delete; the
 -- five statements of the release whose update round ends at its bound, whose
 -- 20261113110610_drop_claim_update_answer_marks dropped two columns

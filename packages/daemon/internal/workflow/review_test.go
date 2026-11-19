@@ -267,7 +267,7 @@ func TestAnApprovalOnABlockedHeadNamesTheStateAndEveryCheckGitHubReported(t *tes
 	if len(told) != 1 || told[0].Reason != want {
 		t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
 	}
-	for _, phrase := range []string{"GitHub reports that head blocked", `"unit tests" succeeded`, "reads no ruleset", "absent here rather than named as missing"} {
+	for _, phrase := range []string{"GitHub reports that head blocked", `"unit tests" succeeded`, "reads the base's rules only on a conflicting read", "absent here rather than named as missing"} {
 		if !strings.Contains(told[0].Reason, phrase) {
 			t.Fatalf("the notice reads %q, want it to name %q", told[0].Reason, phrase)
 		}
@@ -444,7 +444,8 @@ func TestASynchronizeBeforeItsPushLeavesNoVerdictToMoveAnApprovalOn(t *testing.T
 // settlement, and a push to the base it sits on. Keyed on the fact rather than called from the
 // handlers, a handler's own early return cannot drop it (dispatch://INFRA-714 R3). GitHub's own
 // answer asks for nothing: a read that asked for another would read the same head for as long as
-// GitHub kept answering the same way.
+// GitHub kept answering the same way. A push to the branch moves no head of the record - its
+// synchronize does - so it asks only for a round left waiting on GitHub.
 func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T) {
 	push := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: testReviewApp}
 	for _, tc := range []struct {
@@ -458,7 +459,10 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 	}{
 		// A push whose new head has not arrived leaves the round waiting on that head, not on
 		// GitHub: the approval of the head the push replaced stands for nothing until the move is
-		// known, so nothing is read.
+		// known, so nothing is read. The push moves no head of the record either: the synchronize
+		// that carries the head moves it, and that is the fact a head move of an issue in
+		// implementing through merging is read for (classify.MergeStateFactHeadMove,
+		// dispatch://INFRA-4374 R0) - the head arriving, below.
 		{name: "a push to the branch", fact: push, want: false},
 		{name: "the head arriving", fact: intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
 			HeadSHA: headTwo, Before: headOne, Sender: testReviewApp}, approved: headTwo, want: true},
@@ -503,49 +507,6 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 	}
 }
 
-// A base push moves the base under heads GitHub recomputes with no event of its own, so the daemon
-// asks for a merge-state read of every open pull request on that base whose issue sits in a phase a
-// conflict with the base is acted on: testing, reviewing, accepting, retro, merging alike
-// (mergeability, TriggerConflict in every later phase). Only that read finds a head that went
-// conflicting under the move. Reviewing is read for with no approval standing too: the round's own
-// rule asks only where an approval waits on GitHub's answer (reviewRound), which would leave the
-// conflict of a round still being reviewed unread until a completion. Implementing is not read
-// for: a conflict there needs work that is already where it is read.
-func TestABasePushAsksForAMergeStateReadInEveryPhaseAConflictIsActedOn(t *testing.T) {
-	for _, tc := range []struct {
-		phase  phase.Phase
-		status string
-		want   bool
-	}{
-		{phase.Testing, "testing", true},
-		{phase.Reviewing, "needs_review", true},
-		{phase.Accepting, "needs_review", true},
-		{phase.Retro, "retro", true},
-		{phase.Merging, "retro", true},
-		{phase.Implementing, "in_progress", false},
-	} {
-		t.Run(string(tc.phase), func(t *testing.T) {
-			pool := migratedPool(t)
-			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.phase, Generation: 1, Status: tc.status, Rank: "U"})
-			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-				Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: headOne, Failing: []string{}})
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-			var asked []string
-			engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3,
-				Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
-				Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
-				ReadMergeState: func(issue string) { asked = append(asked, issue) }}, nil)
-
-			applyFacts(t, pool, engine)("base-push", intake.BasePush{Repo: "sjawhar/legion", Branch: "main", After: "base-2"})
-			if got := len(asked) > 0; got != tc.want {
-				t.Fatalf("a base push with the issue in %s asked for %d reads %v, want asked=%v: a conflict a moved base causes is acted on in every later phase, and only this read finds it",
-					tc.phase, len(asked), asked, tc.want)
-			}
-		})
-	}
-}
-
 // seedMergeStateRound seeds LEGION-208 in reviewing, its pull request at head with GitHub's
 // mergeability read mergeable and its merge state state, and its reviewer's round not yet
 // decided. CI settled on the head, reporting the one check run GitHub made there: a round
@@ -577,9 +538,10 @@ func seedMergeStateRound(t *testing.T, pool *pgxpool.Pool, state record.MergeSta
 // A read of GitHub's merge state is one round trip outside the record's transaction, so a push can
 // land between GitHub's answer and the apply. A read that answers for a head the record has moved
 // past is dropped whole: it records neither verdict, not the time it was read, and it decides
-// nothing - not even the conflict that sends an issue back to implementing from any phase, since
-// the head that conflicts is not the head the branch now carries. A stamp written there would say
-// the head the record stands at had been read when it was the head before it that was.
+// nothing - not even the first read of a conflict, which would wait for a second read
+// (record.PullRequest.ConflictRead), since the head that conflicts is not the head the branch now
+// carries. A stamp written there would say the head the record stands at had been read when it
+// was the head before it that was.
 func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateClean)
@@ -594,6 +556,9 @@ func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
 	if got.Mergeability != "" || got.MergeState != record.MergeStateUnread || got.Base != "" {
 		t.Fatalf("after the stale read the record holds %q/%q on base %q, want nothing read: the move to head-2 took GitHub's answer with it and the read was of the head it left",
 			got.Mergeability, got.MergeState, got.Base)
+	}
+	if got.ConflictRead != nil || got.ConflictingHead != "" {
+		t.Fatalf("after the stale read the record holds first read %+v and %q conflicting, want neither: the conflict was of a head the branch has left", got.ConflictRead, got.ConflictingHead)
 	}
 	if !got.StateReadAt.IsZero() {
 		t.Fatalf("after the stale read the record was last read at %v, want no read time at all: the read was of the head head-2 replaced", got.StateReadAt)

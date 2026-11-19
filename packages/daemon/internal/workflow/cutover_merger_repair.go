@@ -112,11 +112,12 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // same slot mark, which a start of merging or of another phase past the review does, takes the
 // owed start out while it is still queued and unleased (held by a closed design gate, or not yet
 // run) and writes its own in its place (Store.EnqueueStart). A later start of a phase that holds
-// a slot, such as implementing after a conflict, leaves it queued, and the outbox's phase fence
-// ends it, since it serves a phase the issue has left. It starts no other role. Once the fact
-// commits, it logs one line per merger with whether it was stopped and the slot mark of the
-// queued start, and one line with the count and each issue, zero included. It owes nothing
-// without the daemon's pod records (Config.Pods), since it cannot read a backstop without them.
+// a slot, such as implementing after the merger's own move back, leaves it queued, and the
+// outbox's phase fence ends it, since it serves a phase the issue has left. It starts no other
+// role. Once the fact commits, it logs one line per merger with whether it was stopped and the
+// slot mark of the queued start, and one line with the count and each issue, zero included. It
+// owes nothing without the daemon's pod records (Config.Pods), since it cannot read a backstop
+// without them.
 func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.CutoverMergerRepair) (intake.Result, error) {
 	owed := []string{}
 	if e.cfg.Pods != nil {

@@ -3969,9 +3969,9 @@ func HoldsCapability(state ClaimState) bool {
 // while it waits out the standing claim of the process it replaced (the listener's live window).
 // The listener refuses a keep: false publish to a role no live session holds with 404
 // (notify.ErrNoHolder), and what that costs is the sending row's own, not one rule:
-// noticeAnswered and mergeQueue each decide it for the rows they finish, and phaseEnded and
-// hookPrompt publish with keep, which the listener answers by keeping the message for the role's
-// next live holder (internal/daemon).
+// noticeAnswered, mergeQueue and the merge forward's message each decide it for the rows they
+// finish, and hookPrompt publishes with keep, which the listener answers by keeping the message
+// for the role's next live holder (internal/daemon).
 func SaidReady(state ClaimState) bool {
 	return state == StateReady || state == StateWorking || state == StateIdle
 }
