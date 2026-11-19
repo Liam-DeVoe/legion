@@ -86,6 +86,7 @@ function renderRow(
     answerer,
     author = NOBODY_RECORDED,
     body = true,
+    editable,
     expanded,
     focused = false,
     folded,
@@ -93,6 +94,7 @@ function renderRow(
     answerer?: string;
     author?: Author;
     body?: boolean;
+    editable?: boolean;
     expanded?: boolean;
     focused?: boolean;
     folded?: number;
@@ -108,6 +110,7 @@ function renderRow(
             author={author}
             body={body}
             context={false}
+            {...(editable === undefined ? {} : { editable })}
             {...(expanded === undefined ? {} : { expanded })}
             {...(folded === undefined ? {} : { folded })}
             focused={focused}
@@ -209,6 +212,31 @@ test("an author is drawn by a name and a shape of its own kind", () => {
     text: "Author unknown",
     title: null,
     token: "author-unknown",
+  });
+});
+
+// A view that edits rows in place passes `editable`, and the row element itself carries
+// `data-editable` for that view's style. Every other view passes nothing, and its rows carry none.
+test("a row carries data-editable where its view passes editable, and none by default", () => {
+  const marked = (editable?: boolean) => {
+    const view = renderRow(node({ id: "comment-1", type: "comment" }), { editable });
+    try {
+      const row = view.container.querySelector("[data-node-row]");
+      if (row === null) throw new Error("the row draws no [data-node-row]");
+      return {
+        anywhere: view.container.querySelectorAll("[data-editable]").length,
+        row: row.getAttribute("data-editable"),
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(marked(true), "editable left the row unmarked").toEqual({ anywhere: 1, row: "" });
+  // The negative controls: a row its view passes nothing, and one passed false, carry none.
+  expect(marked(), "a row with no editable is marked").toEqual({ anywhere: 0, row: null });
+  expect(marked(false), "a row passed editable false is marked").toEqual({
+    anywhere: 0,
+    row: null,
   });
 });
 
