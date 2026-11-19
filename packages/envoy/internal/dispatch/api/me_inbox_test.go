@@ -446,3 +446,99 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 		}
 	})
 }
+
+// The identity rule of the read (person_nodes in meInboxBuild): a session the server proved the
+// person's - the alias_of tuple from it to the person's node, which graphstore.Authored writes
+// beside a write the person's credential made from that session - is one of the person's own
+// nodes. So a relation into the session is the person's, while none of the person's own nodes is
+// an entry, and an identity tuple is no relation of any entry, whichever person it ends at.
+func TestTheOneReadTakesAProvedSessionAsThePersonsOwnNode(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	alice, bob := "alice", "bob"
+	writer := model.Actor{Kind: "user", ID: "carol"}
+	base := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+	at := func(minute int) time.Time { return base.Add(time.Duration(minute) * time.Minute) }
+	session, message := "s-"+uuid.NewString(), uuid.NewString()
+	// A message delivered to the session, as a delivery reaches an agent: the session's node and
+	// the delivered_to from the message to it, which names no person.
+	seed := meInboxSeed{t: t, database: database}
+	seed.node(graphstore.KindSession, session, graphstore.VisibilityProject, writer, at(0))
+	seed.node(graphstore.KindMessage, message, graphstore.VisibilityProject, writer, at(0))
+	seed.tuples(meInboxTuple(graphstore.KindMessage, message, meInboxDelivered, graphstore.KindSession, session, at(1)))
+	if answer := readMeInboxAs(t, handler, alice, nil); answer.Total != 0 {
+		t.Fatalf("before any credential proved the session alice's, her read holds %v, want nothing", meInboxNodes(answer))
+	}
+	// prove writes a comment that login's credential made from the session, through the store's
+	// writer of who wrote a thing, which states the session's alias_of to login beside it.
+	prove := func(t *testing.T, login string, minute int) string {
+		t.Helper()
+		comment := uuid.NewString()
+		author := model.Actor{Kind: "user", ID: login, Act: &model.ActorAct{Session: session}}
+		seed := meInboxSeed{t: t, database: database}
+		seed.node(graphstore.KindComment, comment, graphstore.VisibilityProject, author, at(minute))
+		seed.write(func(ctx context.Context, tx pgx.Tx) error {
+			return graphstore.Authored(ctx, tx, graphstore.KindComment, comment, author, at(minute), graphstore.NoEvent)
+		})
+		aliases, err := graphstore.CurrentOut(context.Background(), database.Pool, graphstore.KindSession, session, []string{graphstore.TupleAliasOf})
+		if err != nil || !slices.ContainsFunc(aliases, func(alias graphstore.Tuple) bool {
+			return alias.ToKind == graphstore.KindPerson && alias.ToID == login
+		}) {
+			t.Fatalf("after %s's write from the session, it is an alias of %+v (%v), want of %s among them", login, aliases, err, login)
+		}
+		return comment
+	}
+	proof := prove(t, alice, 2)
+	// Newest moment first: her comment's authorship, then the message's delivery to the session.
+	want := []string{graphstore.KindComment + ":" + proof, graphstore.KindMessage + ":" + message}
+	// identityFree reads login's answer and fails where it holds one of login's own nodes - the
+	// person, or the session proved theirs - or a relation of the identity kind, and where a read
+	// narrowed to that kind holds anything.
+	identityFree := func(t *testing.T, login string) meInboxResponse {
+		t.Helper()
+		answer := readMeInboxAs(t, handler, login, nil)
+		own := []string{graphstore.KindPerson + ":" + login, graphstore.KindSession + ":" + session}
+		for _, entry := range answer.Entries {
+			if node := entry.Node.Kind + ":" + entry.Node.ID; slices.Contains(own, node) {
+				t.Errorf("%s's read holds %s, one of their own nodes, carrying %v", login, node, meInboxKinds(entry))
+			}
+			for _, relation := range entry.Relations {
+				if relation.Kind == graphstore.TupleAliasOf {
+					t.Errorf("%s's read holds %s:%s by the identity tuple: %v", login, entry.Node.Kind, entry.Node.ID, meInboxKinds(entry))
+				}
+			}
+		}
+		if narrowed := readMeInboxAs(t, handler, login, url.Values{"kind": {graphstore.TupleAliasOf}}); narrowed.Total != 0 || len(narrowed.Entries) != 0 {
+			t.Errorf("%s's read narrowed to %s holds %v, want nothing: the identity tuple is no relation", login, graphstore.TupleAliasOf, meInboxNodes(narrowed))
+		}
+		return answer
+	}
+
+	t.Run("a delivery to the proved session is the person's, and no end of the alias is an entry", func(t *testing.T) {
+		answer := identityFree(t, alice)
+		if nodes := meInboxNodes(answer); !slices.Equal(nodes, want) {
+			t.Fatalf("alice's read holds %v, want %v: her comment, and the message delivered to the session proved hers", nodes, want)
+		}
+		entry, _ := meInboxEntryOfNode(answer, graphstore.KindMessage, message)
+		if kinds := meInboxKinds(entry); !slices.Equal(kinds, []string{meInboxDelivered + "/" + meInboxInbound}) || !entry.Moment.Equal(at(1)) {
+			t.Errorf("the message carries %v at %s, want its delivery to the session at %s", kinds, entry.Moment, at(1))
+		}
+	})
+
+	t.Run("the session's alias to another person is no entry of hers, nor hers of his", func(t *testing.T) {
+		prove(t, bob, 3)
+		if nodes := meInboxNodes(identityFree(t, alice)); !slices.Equal(nodes, want) {
+			t.Errorf("after bob's credential proved the same session, alice's read holds %v, want %v", nodes, want)
+		}
+		identityFree(t, bob)
+	})
+
+	// No writer of this build appends a relation between a person and their session but the alias,
+	// and the read takes its kinds from the store, so the case appends one of a kind no writer knows.
+	t.Run("a relation of any other kind between the person and her session ties no other node", func(t *testing.T) {
+		const later = "linked_by_a_later_write"
+		meInboxSeed{t: t, database: database}.tuples(meInboxTuple(graphstore.KindSession, session, later, graphstore.KindPerson, alice, at(4)))
+		if nodes := meInboxNodes(identityFree(t, alice)); !slices.Equal(nodes, want) {
+			t.Errorf("after a %s tuple from her session to her, alice's read holds %v, want %v", later, nodes, want)
+		}
+	})
+}

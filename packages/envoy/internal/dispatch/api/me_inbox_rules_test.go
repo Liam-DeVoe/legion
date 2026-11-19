@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -679,6 +680,89 @@ func TestTheOneReadsDeclaredKeysAreItsParamsStruct(t *testing.T) {
 	if !slices.Equal(declared, meInboxQueryKeys) {
 		t.Fatalf("meInboxQuery declares %v and the handler takes %v", declared, meInboxQueryKeys)
 	}
+}
+
+// The read answers for the caller's own person and nobody else (R1): a key that would select
+// another person or a session - login, person, assignee, session - is refused by its name with 400
+// INVALID_QUERY, as is every other key the route does not declare, alone or beside a key it
+// declares, with a value or with none, and the refusal carries no entry. A read under each key the
+// route declares answers the caller as its person, and no entry of another person's.
+func TestTheOneReadAnswersForItsCallerAlone(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seed := meInboxSeed{t: t, database: database}
+	writer := model.Actor{Kind: "user", ID: "carol"}
+	at := func(minute int) time.Time {
+		return time.Date(2026, 11, 17, 11, 0, 0, 0, time.UTC).Add(time.Duration(minute) * time.Minute)
+	}
+	mine, theirs := uuid.NewString(), uuid.NewString()
+	seed.node(graphstore.KindComment, mine, graphstore.VisibilityProject, writer, at(0))
+	seed.node(graphstore.KindComment, theirs, graphstore.VisibilityProject, writer, at(1))
+	seed.toPerson(
+		meInboxTuple(graphstore.KindComment, mine, meInboxDelivered, graphstore.KindPerson, "alice", at(2)),
+		meInboxTuple(graphstore.KindComment, theirs, meInboxDelivered, graphstore.KindPerson, "bob", at(3)),
+	)
+	holds := func(answer meInboxResponse, id string) bool {
+		_, held := meInboxEntryOfNode(answer, graphstore.KindComment, id)
+		return held
+	}
+	// The control: each comment is an entry of its own person's read, so a read below that holds
+	// no entry of bob's is a reading of alice's alone, and not of a seed no read reaches.
+	if answer := readMeInboxAs(t, handler, "bob", nil); answer.Person != "bob" || !holds(answer, theirs) || holds(answer, mine) {
+		t.Fatalf("bob's read = person %q, entries %v; want bob, with his comment and not alice's", answer.Person, meInboxNodes(answer))
+	}
+	if answer := readMeInboxAs(t, handler, "alice", nil); answer.Person != "alice" || !holds(answer, mine) || holds(answer, theirs) {
+		t.Fatalf("alice's read = person %q, entries %v; want alice, with her comment and not bob's", answer.Person, meInboxNodes(answer))
+	}
+
+	t.Run("a key that selects a person or a session, or one the route does not declare, is refused by its name", func(t *testing.T) {
+		refused := []string{
+			// The identity selectors, each of which would name somebody other than the caller.
+			"login", "person", "assignee", "session",
+			// Keys the route does not declare: other words for an identity, the words of a
+			// traversal, a word nothing reads, and a declared key spelled in another case.
+			"user", "actor", "owner", "traverse", "depth", "frobnicate", "Limit",
+		}
+		for _, key := range refused {
+			for _, query := range []url.Values{{key: {"bob"}}, {"limit": {"10"}, key: {""}}} {
+				response := meInboxRequestAs(t, handler, context.Background(), "alice", query)
+				var refusal struct{ Code, Error string }
+				if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil ||
+					refusal.Code != "INVALID_QUERY" || !strings.HasPrefix(refusal.Error, key+" is not a query parameter of ") {
+					t.Errorf("alice's read with ?%s answers %d %s, want 400 INVALID_QUERY naming %s",
+						query.Encode(), response.Code, response.Body.String(), key)
+				}
+				if body := response.Body.String(); strings.Contains(body, mine) || strings.Contains(body, theirs) {
+					t.Errorf("the answer to alice's read with ?%s carries an entry, where a refusal carries none: %s", query.Encode(), body)
+				}
+			}
+		}
+	})
+
+	t.Run("a read under each key the route declares answers the caller and no entry of another person's", func(t *testing.T) {
+		values := map[string]string{
+			"limit":  "50",
+			"offset": "0",
+			"kind":   meInboxDelivered,
+			"state":  myRepliesStateInbox,
+			// A cursor that names bob's comment, which selects nothing of his.
+			"cursor":   meInboxCursor{moment: at(60), kind: graphstore.KindComment, id: theirs}.String(),
+			"issue":    "ACME-1",
+			"artifact": uuid.NewString(),
+			"project":  "ACME",
+		}
+		for _, key := range meInboxQueryKeys {
+			value, sent := values[key]
+			if !sent {
+				t.Errorf("the route declares %s and this test sends no value of it", key)
+				continue
+			}
+			answer := readMeInboxAs(t, handler, "alice", url.Values{key: {value}})
+			if answer.Person != "alice" || holds(answer, theirs) {
+				t.Errorf("alice's read under ?%s=%s = person %q, entries %v; want alice, and no entry of bob's",
+					key, value, answer.Person, meInboxNodes(answer))
+			}
+		}
+	})
 }
 
 // A page that asks for the display trees (Dispatch-Trees: 1) is given them on every row it draws,
