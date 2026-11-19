@@ -1,9 +1,9 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_PATTERN } from "@legion/contracts";
 import { keyedLayer } from "../../test/keyed-layer";
 import { leastAnswerFor } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
-import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Every write the `dispatch` command makes carries one key because every request DispatchClient
 // makes goes through its one request function. This drives every method of the class through a
@@ -140,7 +140,10 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listHandoffs: (client) => client.listHandoffs("DSP-1"),
   latestHandoff: (client) => client.latestHandoff("DSP-1", "implement"),
   handoff: (client) => client.handoff("handoff-1"),
+  listSteps: (client) => client.listSteps("DSP-1"),
 };
+
+afterEach(forgetKeyedLayerMemory);
 
 test("every DispatchClient method reaches Dispatch through its one request function, every write keyed and answered", async () => {
   // Every method, which is every own property of the prototype that is one: `token` is an

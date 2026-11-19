@@ -483,6 +483,7 @@ async function forgeOnly(): Promise<void> {
     forged: true,
   });
   console.log(`export ACTIONS_ID_TOKEN_REQUEST_URL='${request.requestUrl}'`);
+  // fixture-secret-next-line: an operator's shell line, printing the fake runner's random token
   console.log(`export ACTIONS_ID_TOKEN_REQUEST_TOKEN='${request.requestToken}'`);
   console.log("export AGENT_SECRETS_MACHINE_IDENTITY=github-actions");
   console.error(
@@ -520,6 +521,7 @@ async function wholeStack(): Promise<void> {
     const branch = `legion/${stack.issue}`;
     stack.setBranch(branch, tested);
     const onBranch = stack.jobEnv({ ...run, ref: `refs/heads/${branch}`, checkRunId: 3 });
+    // fixture-secret-next-line: an operator's shell line, printing the stack's random Dispatch token
     const asSession = `env -u AGENT_SECRETS_URL DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN='${stack.dispatch.token}'`;
     const result = `${CLI} result --project ${stack.project} --verdict pass`;
     console.log("# One job of a push run of local-org/local-repo at the commit below:");
@@ -531,6 +533,7 @@ async function wholeStack(): Promise<void> {
       `# The issue's try line: the job's result of ${CI_CHECK}, which its ci_check names, on a push of ${branch}, then a session's read of it:`
     );
     console.log(
+      // fixture-secret-next-line: an operator's shell line, printing the fake runner's random token
       `ACTIONS_ID_TOKEN_REQUEST_TOKEN='${onBranch.ACTIONS_ID_TOKEN_REQUEST_TOKEN}' ${CLI} result --issue ${stack.issue} --check ${CI_CHECK} --verdict pass --commit ${tested}`
     );
     console.log(`${asSession} ${CLI} results --issue ${stack.issue}`);
@@ -544,6 +547,7 @@ async function wholeStack(): Promise<void> {
       `bun -e 'import { ownIdentityDispatch } from "${OWN_IDENTITY}"; const d = ownIdentityDispatch(process.env); const url = d.url + "/api/v1/issues?project=${stack.project}"; const signal = AbortSignal.timeout(60_000); const r = await fetch(url, { headers: await d.credential.headers("GET", url, undefined, signal), signal }); console.log(r.status, (await r.json()).code)'   # another route`
     );
     console.log(
+      // fixture-secret-next-line: an operator's shell line, printing the fake runner's random token
       `ACTIONS_ID_TOKEN_REQUEST_TOKEN='${forged.ACTIONS_ID_TOKEN_REQUEST_TOKEN}' ${result} --check ${PROBE_CHECK} --commit ${tested}   # a forged token`
     );
     console.error("ci-results-stack: ready; Ctrl-C stops the stack.");

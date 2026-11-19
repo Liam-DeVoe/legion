@@ -1,10 +1,12 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { keyedLayer } from "../../test/keyed-layer";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
+import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Who a question reaches, from the command line and from the texts that state the rule.
 //
@@ -23,14 +25,17 @@ import { resetAdviceMemory } from "../dispatch-execute";
 
 const makeDirectory = temporaryDirectories("dispatch-who-waits");
 
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
+
 /** The repository root, from this file's own path rather than the working directory, which bun
  *  sets to the package when the check runs `cd packages/envoy-client && bun test`. */
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
 /** The issue's own assignee, whom a question on DSP-1 reaches. */
-const ASSIGNEE = "bob@theorem.dev";
+const ASSIGNEE = "bob@example.com";
 /** The person CORE defaults to, whom a question on an issue nobody holds reaches. */
-const DEFAULT_ASSIGNEE = "dana@theorem.dev";
+const DEFAULT_ASSIGNEE = "dana@example.com";
 
 interface Recorded {
   readonly method: string;
@@ -201,6 +206,7 @@ beforeEach(() => {
   projectDefault = DEFAULT_ASSIGNEE;
   stateDir = makeDirectory();
   resetAdviceMemory();
+  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{
@@ -215,7 +221,7 @@ async function run(argv: readonly string[]): Promise<{
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",

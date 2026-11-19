@@ -21,7 +21,8 @@ export interface KeyedLayerOptions {
    * Which of the stand-in's answers to a keyed request name no key back: each one (`true`), or
    * each one this picks by its number (from 1, among the requests that carry a key). Dispatch's
    * keyed layer names the key back on each answer it judges, so a row about an answer that names
-   * none says so here; no other stand-in leaves the key out.
+   * none (a Dispatch without the layer, or something in Dispatch's place) says so here; no other
+   * stand-in leaves the key out.
    */
   readonly namesNoKey?: true | ((request: number) => boolean);
 }
@@ -32,8 +33,9 @@ export interface KeyedLayerOptions {
  * each answer the layer judged (`options.judged`, each 2xx by default) to a request that carries
  * an `Idempotency-Key` names that key back, as `TestEveryKeyedAnswerNamesItsKey` holds every
  * Dispatch answer to a keyed write to, unless the stand-in named a key itself or the row's answer
- * names none (`options.namesNoKey`), none of whose 2xx the client takes as its call's answer
- * (`DispatchClient.#writtenRow`). Every other answer is as the stand-in gave it.
+ * names none (`options.namesNoKey`). The client reads a 2xx that names no key back as its call's
+ * answer only where its process knows nothing of the layer (`answerEvent`,
+ * `DispatchClient`'s keyed-layer memory). Every other answer is as the stand-in gave it.
  */
 export function keyedLayer<Args extends [Request | string | URL, ...unknown[]]>(
   answer: (...args: Args) => Response | Promise<Response>,

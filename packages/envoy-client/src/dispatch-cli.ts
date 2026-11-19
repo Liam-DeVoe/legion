@@ -1,10 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { IDENTITY_GITHUB_ACTIONS } from "@legion/broker-client/environment";
-import {
-  BrokerRefusedError,
-  BrokerTradeFailedError,
-  tradeWaitEnded,
-} from "@legion/broker-client/token-client";
+import { TradeRetryingError, TradeUnansweredError } from "@legion/broker-client/token-errors";
 import { sleep } from "@legion/contracts";
 import {
   askgateState,
@@ -90,15 +86,15 @@ const USAGE = 2;
 /**
  * The one bound of a CI job's `dispatch result`, `--project` or `--issue` (`ownIdentityResult`).
  * The whole call ends `totalMs` after it starts: one timeout, made where the call starts, is the
- * signal every await of it runs under — its wait on the broker's trade and on the runner's token
- * request the trade makes, each write with the asks the write client makes again under its key,
- * and each wait after an answer that says "not now" (`notNow`) — since the write client takes that
- * signal as its deadline and hands it to the credential. The trade itself runs under its own bound,
- * which a second caller of the credential may share (`BrokerTokenClient.token`), so the signal ends
- * the call's wait on it and not the trade. No round starts, and the write client asks nothing
- * again, in its last `reserveMs`, the time a last attempt has to be answered before the bound ends
- * it. A job's step of many checks still ends, and the wait of one call stays far below a job's
- * timeout.
+ * signal every await of it runs under — its wait on the broker's trade, each write with the asks
+ * the write client makes again under its key, and each wait after an answer that says "not now"
+ * (`notNow`) — since the write client takes that signal and `totalMs` as its deadline and hands
+ * the credential that deadline less the request's reserve. The trade itself runs in the token
+ * client's retry loop under its own bound (`TRADE_ATTEMPT_MS`), which a second caller of the
+ * credential may share (`BrokerTokenClient.token`), so the signal ends the call's wait on it and
+ * not the trade. No round starts, and the write client asks nothing again, in its last
+ * `reserveMs`, the time a last attempt has to be answered before the bound ends it. A job's step
+ * of many checks still ends, and the wait of one call stays far below a job's timeout.
  */
 export interface ResultBound {
   readonly totalMs: number;
@@ -132,22 +128,18 @@ const NOT_NOW_STEP_MS = 1_000;
 
 /**
  * Why a call of `ownIdentityResult` was turned away before anything was stored, so it may be sent
- * again, and how long to wait first; undefined for every other failure. Three answers say so:
- * the broker's rate limit (its 429), the broker that could not answer the trade (a 5xx, or no
- * answer before the trade's own bound ended it; a trade stores nothing), and Dispatch's check of
- * the job's token, which answered before any handler ran (`tokenNotChecked`: its 429 of a spent
- * bucket, its 503 for a broker that answered nothing). An answer of the write itself is never
- * one: a refusal is final, and a write that may have stored is `writeOutcomeUnknown`'s.
+ * again, and how long to wait first; undefined for every other failure. Two answers say so: a
+ * trade of the job's token that failed in a way the token client's retry loop trades again on
+ * (`TradeRetryingError`: the broker's rate limit, a 5xx, no answer within the trade's own bound,
+ * a trade that could not be made; a trade stores nothing), told at once to the credential's
+ * fail-fast presentation while the loop goes on, and Dispatch's check of the job's token, which
+ * answered before any handler ran (`tokenNotChecked`: its 429 of a spent bucket, its 503 for a
+ * broker that answered nothing). An answer of the write itself is never one: a refusal is final,
+ * and a write that may have stored is `writeOutcomeUnknown`'s.
  */
 function notNow(error: unknown): { readonly why: string; readonly waitMs: number } | undefined {
-  if (error instanceof BrokerRefusedError && error.status === 429) {
-    return {
-      why: "the secrets broker's rate limit refused the trade",
-      waitMs: error.retryAfterMs ?? NOT_NOW_STEP_MS,
-    };
-  }
-  if (error instanceof BrokerTradeFailedError && (error.status >= 500 || error.timedOut)) {
-    return { why: "the secrets broker could not answer the trade", waitMs: NOT_NOW_STEP_MS };
+  if (error instanceof TradeRetryingError) {
+    return { why: "the secrets broker did not trade the job's token", waitMs: NOT_NOW_STEP_MS };
   }
   if (tokenNotChecked(error)) {
     return {
@@ -160,22 +152,17 @@ function notNow(error: unknown): { readonly why: string; readonly waitMs: number
 
 /**
  * What the call was waiting on when its bound ended it before any write went out, or undefined
- * where that is not so: the trade, which runs under its own bound and goes on, while the bound
- * ends the call's wait on it, marked with the part then under way (`tradeWaitEnded`), the read of
- * the job's own token or the broker's exchange. The credential is asked before each attempt goes
- * out, and the write client gives such an error back as it is only where no attempt of the call
- * may have reached Dispatch (`#ended`, `#settle`), and every earlier round stored nothing, so
- * nothing was written.
+ * where that is not so: the token client's first trade of the job's token, the read of the job's
+ * own token and the broker's exchange together, which runs under its own bound and goes on, while
+ * the credential's share of the call's bound ended the call's wait on it (`TradeUnansweredError`).
+ * The credential is asked before each attempt goes out, and the write client gives such an error
+ * back as it is only where no attempt of the call may have reached Dispatch (`#endWrite`), and
+ * every earlier round stored nothing, so nothing was written.
  */
 function tradeCut(error: unknown): string | undefined {
-  switch (tradeWaitEnded(error)) {
-    case "identity":
-      return "it read the job's own token for the secrets broker";
-    case "exchange":
-      return "the secrets broker traded the job's token";
-    default:
-      return undefined;
-  }
+  return error instanceof TradeUnansweredError
+    ? "it traded the job's token at the secrets broker"
+    : undefined;
 }
 
 const HOSTS = ["omp", "claude", "codex"] as const satisfies readonly DispatchHost[];
@@ -375,16 +362,17 @@ async function ownIdentityResult(
       parsed.tool
     );
   }
-  // One bound, one signal (`ResultBound`): the timeout made here is the write client's deadline,
-  // which it hands to the credential for each request, so the call's wait on the trade ends at it,
-  // and every wait below ends at it too. The client's asks again under the key stop `reserveMs`
-  // before it, and the rounds below are read on the same monotonic clock the client keeps its asks
-  // on.
+  // One bound, one signal (`ResultBound`): the timeout made here, with its length, is the write
+  // client's deadline, which it hands to the credential for each request less the request's
+  // reserve, so the call's wait on the trade ends inside it, and every wait below ends at it too.
+  // The client's asks again under the key stop `reserveMs` before it, and the rounds below are
+  // read on the same monotonic clock the client keeps its asks on.
   const bound = io.resultBound ?? RESULT_BOUND;
   const ended = AbortSignal.timeout(bound.totalMs);
   const lastRound = performance.now() + bound.totalMs - bound.reserveMs;
   const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch, {
-    deadline: ended,
+    signal: ended,
+    deadlineMs: bound.totalMs,
     writeRetry: {
       ...DISPATCH_WRITE_RETRY,
       withinMs: Math.min(DISPATCH_WRITE_RETRY.withinMs, bound.totalMs - bound.reserveMs),
@@ -414,9 +402,10 @@ async function ownIdentityResult(
           parsed.tool
         );
       }
-      // The bound ended the call in the trade, before any write went out: the line names which
-      // part of the trade, and that nothing was written.
-      const cut = ended.aborted ? tradeCut(error) : undefined;
+      // The bound ended the call in the trade, before any write went out: the line says so, and
+      // that nothing was written. The credential's share of the bound ends that wait, less the
+      // request's reserve before the bound itself.
+      const cut = tradeCut(error);
       if (cut !== undefined) {
         return refuse(
           printableLine(

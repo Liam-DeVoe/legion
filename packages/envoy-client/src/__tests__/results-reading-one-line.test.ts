@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // `dispatch results --issue` is the read the reviewer's gate decides by, under each check's own
@@ -32,7 +33,7 @@ async function read(...flags: string[]): Promise<string[]> {
       DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "forgery-reader",
-      DISPATCH_TOKEN: "session-token",
+      DISPATCH_TOKEN: fixtureSecret("session"),
     },
     stdout: "pipe",
     stderr: "pipe",

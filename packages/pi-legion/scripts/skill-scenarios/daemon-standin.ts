@@ -46,6 +46,7 @@ import {
   LegionSignOffRequest,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
 
 const GRANT_TTL_MS = 60_000;
@@ -70,7 +71,9 @@ if (!isLegionRole(role)) {
 /** Encoded exactly as the daemon encodes it (`legion-<project>-<key>-<role>`, lower-cased),
  * since the worker claims this token on the real Envoy and Envoy rejects uppercase. */
 const ROLE_TOKEN = roleToken(project, issue, role);
-const SESSION_SECRET = "rig-secret";
+/** The worker's registration secret: random, as the daemon's is, since the pane holds it and
+ * scrubs it from every line it prints (`@legion/contracts/held-secrets`). */
+const SESSION_SECRET = fixtureSecret("reg");
 
 const startedAt = new Date().toISOString();
 /** The phase the issue is in and the word of the handoff record it ends with, empty when none: the

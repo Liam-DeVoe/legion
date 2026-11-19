@@ -5,6 +5,7 @@
 // one are told the same things the same way.
 
 import { PROJECT_KEY_PATTERN, PROJECT_KEY_RULE } from "@legion/contracts/dispatch-tools";
+import { isHttpUrl } from "@legion/contracts/log-text";
 import { importDpopKey, newDpopKey } from "./dpop";
 import {
   ACTIONS_TOKEN_URL_VAR,
@@ -137,7 +138,7 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
     case "":
       return undefined;
     case IDENTITY_KUBERNETES:
-      return projectedToken(required(env, MACHINE_TOKEN_FILE_VAR, kind));
+      return projectedToken(required(env, MACHINE_TOKEN_FILE_VAR, kind), MACHINE_TOKEN_FILE_VAR);
     case IDENTITY_METADATA:
       return metadataIdentity(required(env, MACHINE_AUDIENCE_VAR, kind));
     case IDENTITY_POOL: {
@@ -146,7 +147,7 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
       const audience = required(env, POOL_AUDIENCE_VAR, kind);
       const serviceAccount = required(env, POOL_ACCOUNT_VAR, kind);
       return poolIdentity({
-        subject: projectedToken(subject),
+        subject: projectedToken(subject, MACHINE_TOKEN_FILE_VAR),
         audience,
         serviceAccount,
         tokenAudience,
@@ -166,8 +167,9 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
       return githubActionsIdentity({ requestUrl, requestToken, audience });
     }
     default:
+      // Its value is not quoted: a secret pasted into the wrong variable would be printed.
       throw new Error(
-        `${IDENTITY_VAR}="${kind}" names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA}, ${IDENTITY_POOL} or ${IDENTITY_GITHUB_ACTIONS}`
+        `${IDENTITY_VAR} names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA}, ${IDENTITY_POOL} or ${IDENTITY_GITHUB_ACTIONS}`
       );
   }
 }
@@ -289,6 +291,9 @@ export async function brokerTokenClient(
   const brokerUrl = value(env, BROKER_URL_VAR);
   const machine = machineIdentity(env);
   if (brokerUrl === "" || machine === undefined) return undefined;
+  // Not quoted: every trade's text names this URL, and a value that is none may be a token pasted
+  // into the variable.
+  if (!isHttpUrl(brokerUrl)) throw new Error(`${BROKER_URL_VAR} is not an http or https URL`);
   const record = await chooseSignIn(env);
   if (record === undefined) {
     const client = new BrokerTokenClient({

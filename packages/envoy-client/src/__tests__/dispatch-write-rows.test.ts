@@ -2,17 +2,21 @@
 // its 2xx into the row its callers read (`dispatch-write-rows.ts`) by one rule, which turns on
 // whether the 2xx names the call's `Idempotency-Key` back, as Dispatch's keyed layer does on every
 // answer it gives a keyed write, on every write route. A 2xx that names it back is Dispatch's: its
-// row is the answer, and a body that gives no row is a landing whose answer was lost
-// (`ANSWER_LOST`). Any other 2xx, one that names no key back or another request's, is not
-// Dispatch's answer to the call, whatever it holds, so the write's outcome is unknown. A route that
-// stores nothing made nothing either way. A row check stricter than Dispatch's true answer would
-// turn a good answer into a landing, so each method is driven here against the answers its
-// route's operation declares in the OpenAPI document the server generates (`test/route-answers.ts`
-// reads it): two instances of each 2xx schema, the least one the schema admits (every optional
-// member absent, every nullable member null, every list empty) and the most one (every member
-// present, none null, every list holding one item), each an answer the route declares. The answers
-// the other tests' stubs serve for a keyed write come from `routeAnswer`, which holds each to its
-// route's schema.
+// row is the answer, and a body that never gives the row, asked again under the key until the
+// asking is spent, is a landing whose answer was lost (`ANSWER_LOST`). A 2xx that names another
+// request's key back is not Dispatch's answer to the call, whatever it holds and whatever the
+// process knows of the layer, so the write's outcome is unknown. A 2xx that names no key back is
+// not the call's answer where the process knows this Dispatch runs the keyed layer (an echo or a
+// `/healthz` that said so, the five-minute memory), and is its answer where the row reads it and
+// the process knows nothing of the layer: each row about one runs in both. A route that stores
+// nothing made nothing either way. A row check stricter than Dispatch's true answer would turn a
+// good answer into a landing, so each method is driven here against the answers its route's
+// operation declares in the OpenAPI document the server generates (`test/route-answers.ts` reads
+// it): two instances of each 2xx schema, the least one the schema admits (every optional member
+// absent, every nullable member null, every list empty) and the most one (every member present,
+// none null, every list holding one item), each an answer the route declares. The answers the
+// other tests' stubs serve for a keyed write come from `routeAnswer`, which holds each to its
+// route's schema. Each write runs on a fake clock: its pauses move it, and nothing waits.
 import { describe, expect, test } from "bun:test";
 import {
   type Actor,
@@ -26,10 +30,13 @@ import { answerErrors, answersOf, instance, onRoute, routeAnswer } from "../../t
 import { bearerCredential } from "../bearer";
 import {
   DISPATCH_ANSWER_LOST,
+  DISPATCH_WRITE_RETRY,
   DispatchAnswerMissingError,
   DispatchClient,
   type DispatchLandedCode,
   DispatchWriteLandedError,
+  forgetKeyedLayerMemory,
+  rememberKeyedLayer,
   writeOutcomeUnknown,
 } from "../dispatch-http";
 import { rowStores, WRITE_ROWS } from "../dispatch-write-rows";
@@ -342,22 +349,50 @@ function dispatchAnswering(
     }
     return routed(request);
   }) as typeof fetch;
+  // The write's pauses move a fake clock laid over the monotonic one, so nothing waits, and an
+  // entry `rememberKeyedLayer` dates on the monotonic clock is read on the same one.
+  let moved = 0;
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
     sleep: async () => undefined,
+    writeRetry: {
+      ...DISPATCH_WRITE_RETRY,
+      pause: async (ms) => {
+        moved += ms;
+      },
+      now: () => performance.now() + moved,
+    },
   });
   return { sent, client };
 }
 
+/** Whether the process knows, before the call, that this Dispatch runs the keyed layer: an echo
+ *  or a `/healthz` that said so within the last five minutes (`rememberKeyedLayer`), or nothing. */
+type Layer = "known" | "not known";
+
 /** What the call made of the answer: the answer, the landing's code, an outcome it cannot know,
- *  the answer missing from a call that stores nothing, or the error. */
+ *  the answer missing from a call that stores nothing, or the error, with the requests it sent. */
+interface Outcome {
+  readonly sent: readonly string[];
+  readonly answered?: unknown;
+  readonly landed?: DispatchLandedCode;
+  readonly unknown?: boolean;
+  readonly missing?: string;
+  readonly thrown?: string;
+}
+
+/** The call's `Outcome`. The process starts the call knowing what `layer` says of this
+ *  Dispatch's keyed layer, and nothing an earlier row taught it. */
 async function outcome(
   row: WriteRowCase,
   status: number,
   type: string,
   body: string,
   echo: Echo,
-  extra: Readonly<Record<string, string>> = {}
-) {
+  extra: Readonly<Record<string, string>> = {},
+  layer: Layer = "not known"
+): Promise<Outcome> {
+  forgetKeyedLayerMemory();
+  if (layer === "known") rememberKeyedLayer({ "http://dispatch.test": new Date().toISOString() });
   const { sent, client } = dispatchAnswering(row, status, type, body, echo, extra);
   try {
     return { sent, answered: await row.call(client) };
@@ -372,15 +407,34 @@ async function outcome(
   }
 }
 
-/** What a 2xx that is not the call's answer is: for a route that stores, a landing whose answer
- *  was lost where the 2xx is Dispatch's own (it names the key back), and an outcome the call
- *  cannot know where it is not; for a route that stores nothing, a missing answer either way. */
-function noAnswer(
-  row: WriteRowCase,
-  echo: Echo
-): { landed?: DispatchLandedCode; unknown?: boolean; missing?: string } {
+/** What the call made of an answer, as a row compares it. */
+interface Read {
+  readonly answered?: boolean;
+  readonly landed?: DispatchLandedCode;
+  readonly unknown?: boolean;
+  readonly missing?: string;
+}
+
+/** `got` as a row compares it: whether it was answered, and how it ended otherwise. */
+const readOf = (got: Outcome): Read => ({
+  answered: "answered" in got ? true : undefined,
+  landed: got.landed,
+  unknown: got.unknown,
+  missing: got.missing,
+});
+
+/** What an answer that is not the call's is: for a route that stores nothing, a missing answer;
+ *  for one that stores, a landing whose answer was lost where the 2xx is Dispatch's own (it names
+ *  the key back), and an outcome the call cannot know where it is not. */
+function noAnswer(row: WriteRowCase, echo: Echo): Read {
   if (!rowStores(WRITE_ROWS[row.method])) return { missing: DISPATCH_ANSWER_LOST };
   return echo === "this" ? { landed: DISPATCH_ANSWER_LOST } : { unknown: true };
+}
+
+/** What a 2xx that names no key back and holds the row is: the call's answer where the process
+ *  knows nothing of the keyed layer, and no answer of the call's where it knows the layer runs. */
+function unkeyedRow(row: WriteRowCase, layer: Layer): Read {
+  return layer === "known" ? noAnswer(row, "none") : { answered: true };
 }
 
 /** Each path inside `schema` at which an object refuses a member it does not name (a
@@ -526,34 +580,42 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     const least = instance(first.schema, "least");
     // Dispatch's keyed layer names the key back on every answer of every write route
     // (`TestEveryKeyedAnswerNamesItsKey`, packages/envoy/internal/dispatch/api/
-    // request_keys_test.go), so its own least answer naming no key back came from something in its
-    // place: it is no answer of the call's, whatever it holds, and the client compares none of it
-    // with what the call sent. A route that stores nothing made nothing either way.
-    test(`${label}: the least ${status} answer naming no key back is not the call's answer`, async () => {
-      const got = await outcome(row, status, "application/json", JSON.stringify(least), "none");
-      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
-        landed: undefined,
-        unknown: undefined,
-        missing: undefined,
-        ...noAnswer(row, "none"),
+    // request_keys_test.go). So its own least answer naming no key back is no answer of the
+    // call's where the process knows this Dispatch runs the layer: something in its place gave it.
+    // Where the process knows nothing of the layer, it is what a Dispatch without the layer
+    // answers, and the call's answer. A route that stores nothing made nothing either way.
+    for (const layer of ["known", "not known"] as const) {
+      const expected = unkeyedRow(row, layer);
+      test(`${label}: the least ${status} answer naming no key back, the layer ${layer}, is ${expected.answered === true ? "the call's answer" : "not the call's answer"}`, async () => {
+        const body = JSON.stringify(least);
+        const got = await outcome(row, status, "application/json", body, "none", {}, layer);
+        expect(readOf(got)).toEqual({
+          answered: undefined,
+          landed: undefined,
+          unknown: undefined,
+          missing: undefined,
+          ...expected,
+        });
       });
-    });
-    test(`${label}: the least ${status} answer naming another key back is not this call's`, async () => {
-      const got = await outcome(row, status, "application/json", JSON.stringify(least), "other");
-      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
-        landed: undefined,
-        unknown: undefined,
-        missing: undefined,
-        ...noAnswer(row, "other"),
+      // Another request's key came through a keyed layer, and not for this call, so it is no
+      // answer of the call's whatever the process knows of the layer.
+      test(`${label}: the least ${status} answer naming another key back, the layer ${layer}, is not this call's`, async () => {
+        const body = JSON.stringify(least);
+        const got = await outcome(row, status, "application/json", body, "other", {}, layer);
+        expect(readOf(got)).toEqual({
+          answered: undefined,
+          landed: undefined,
+          unknown: undefined,
+          missing: undefined,
+          ...noAnswer(row, "other"),
+        });
       });
-    });
+    }
     // Dispatch keeps an answer up to 1 MiB; a repeat under the key of a larger one is a replayed
     // 2xx reading ANSWER_NOT_KEPT (`keyedAnswerKept`, request_keys.go). A route that stores
     // nothing made nothing, so it is the missing answer there, and a landing only where the route
     // stores.
-    const notKept: { landed?: DispatchLandedCode; missing?: string } = rowStores(
-      WRITE_ROWS[row.method]
-    )
+    const notKept: Read = rowStores(WRITE_ROWS[row.method])
       ? { landed: IDEMPOTENCY_ANSWER_NOT_KEPT }
       : { missing: DISPATCH_ANSWER_LOST };
     test(`${label}: a replayed ${status} reading ANSWER_NOT_KEPT, naming its key back, is ${"landed" in notKept ? "ANSWER_NOT_KEPT" : "no answer"}`, async () => {
@@ -561,7 +623,8 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
       const got = await outcome(row, status, "application/json", body, "this", {
         "Idempotency-Replayed": "?1",
       });
-      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+      expect(readOf(got)).toEqual({
+        answered: undefined,
         landed: undefined,
         unknown: undefined,
         missing: undefined,
@@ -571,39 +634,54 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     // A 409 KEY_COMMITTED that names the key back says Dispatch committed the write under it and
     // kept no answer: a landing where the route stores, and by the same rule as the 2xx path, the
     // missing answer where it stores nothing.
-    const committed: { landed?: DispatchLandedCode; missing?: string } = rowStores(
-      WRITE_ROWS[row.method]
-    )
+    const committed: Read = rowStores(WRITE_ROWS[row.method])
       ? { landed: IDEMPOTENCY_KEY_COMMITTED }
       : { missing: DISPATCH_ANSWER_LOST };
     test(`${label}: a 409 KEY_COMMITTED naming its key back is ${"landed" in committed ? "KEY_COMMITTED" : "no answer"}`, async () => {
       const body = JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "committed" });
       const got = await outcome(row, 409, "application/json", body, "this");
-      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+      expect(readOf(got)).toEqual({
+        answered: undefined,
         landed: undefined,
         unknown: undefined,
         missing: undefined,
         ...committed,
       });
     });
-    for (const echo of ["this", "none"] as const) {
-      const named = echo === "this" ? "naming its key back" : "naming no key back";
+    // A body that is not the row: one naming the key back is asked again under it until the
+    // asking is spent (no JSON at all ends at once), then a landing whose answer was lost; one
+    // naming no key back says nothing of the write, in a process that knows the layer or not.
+    // `{}` is the row of a method no caller reads the answer of, so it is that call's answer where
+    // it names the key back, and, naming none, where the process knows nothing of the layer.
+    for (const [echo, layer] of [
+      ["this", "not known"],
+      ["none", "known"],
+      ["none", "not known"],
+    ] as const) {
+      const named =
+        echo === "this" ? "naming its key back" : `naming no key back, the layer ${layer}`;
       for (const [name, type, body] of [
         ["an HTML page", "text/html", "<html><body>not json</body></html>"],
         ["an empty body", "application/json", ""],
         ["JSON null", "application/json", "null"],
-        // `{}` is the row of a method no caller reads the answer of, so it is that call's answer
-        // where it names the key back, and no answer where it names none.
         ...(READS_NOTHING[row.method] && echo === "this"
           ? []
           : [["the JSON {}", "application/json", "{}"]]),
       ] as const) {
-        const expected = noAnswer(row, echo);
+        const expected: Read =
+          READS_NOTHING[row.method] && body === "{}" ? unkeyedRow(row, layer) : noAnswer(row, echo);
         const reads =
-          "landed" in expected ? "ANSWER_LOST" : "missing" in expected ? "no answer" : "unknown";
+          expected.answered === true
+            ? "the call's answer"
+            : "landed" in expected
+              ? "ANSWER_LOST"
+              : "missing" in expected
+                ? "no answer"
+                : "unknown";
         test(`${label}: a ${status} with ${name}, ${named}, is ${reads}`, async () => {
-          const got = await outcome(row, status, type, body, echo);
-          expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+          const got = await outcome(row, status, type, body, echo, {}, layer);
+          expect(readOf(got)).toEqual({
+            answered: undefined,
             landed: undefined,
             unknown: undefined,
             missing: undefined,

@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // What a CI job's `dispatch result --issue` prints goes into its runner's log, which reads a line
@@ -73,7 +74,7 @@ const asJob = (): Record<string, string> => ({
   AGENT_SECRETS_MACHINE_IDENTITY: "github-actions",
   AGENT_SECRETS_MACHINE_AUDIENCE: "example-audience",
   ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${runner.port}/_apis/idtoken?api-version=2.0`,
-  ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner-request-bearer",
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN: fixtureSecret("runner"),
 });
 
 const record = (check: string) => [
@@ -196,7 +197,7 @@ describe("dispatch results --issue: a job's log prints on one line, and no line 
   const asSession = {
     DISPATCH_HOST: "omp",
     DISPATCH_SESSION_ID: "one-line-reader",
-    DISPATCH_TOKEN: "session-token",
+    DISPATCH_TOKEN: fixtureSecret("session"),
   };
 
   test("a job's log holding ::error and ##[ prints neither at the start of a line", async () => {

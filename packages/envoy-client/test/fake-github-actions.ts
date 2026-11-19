@@ -1,4 +1,5 @@
 import { createHash, generateKeyPairSync, type KeyObject, sign } from "node:crypto";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // The stand-in of GitHub that a CI job's result path meets twice: once as the issuer of the
 // job's OIDC token, which the secrets broker verifies (BROKER_EXCHANGE_GITHUB_ISSUER), and once
@@ -113,6 +114,17 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   const blobs = new Map<string, string>();
   // "<owner>/<name>:<branch>" → the branch's head.
   const branches = new Map<string, string>();
+  // Installation id → the installation token minted for it, random as a real one is
+  // (`fixtureSecret`), so the clients that hold it scrub no word of the lines a test reads.
+  const installationTokens = new Map<string, string>();
+  const installationToken = (id: string | number): string => {
+    let minted = installationTokens.get(String(id));
+    if (minted === undefined) {
+      minted = fixtureSecret("ghs");
+      installationTokens.set(String(id), minted);
+    }
+    return minted;
+  };
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -199,7 +211,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
       if (request.method === "POST" && mint !== null) {
         return Response.json(
           {
-            token: `ghs_local_${mint[1]}`,
+            token: installationToken(mint[1] ?? ""),
             expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
           },
           { status: 201 }
@@ -213,7 +225,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
         const rest = repositoryRead[3] ?? "";
         const id = installations.get(repository);
         if (id === undefined) return notFound(repository);
-        if (request.headers.get("Authorization") !== `Bearer ghs_local_${id}`) {
+        if (request.headers.get("Authorization") !== `Bearer ${installationToken(id)}`) {
           return Response.json({ message: "Requires authentication" }, { status: 401 });
         }
         if (rest === "") return Response.json({ full_name: repository, default_branch: "main" });
@@ -288,7 +300,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   return {
     url,
     addRun(run: ActionsRun): ActionsTokenRequest {
-      const requestToken = `actions-request-${crypto.randomUUID()}`;
+      const requestToken = fixtureSecret("actions");
       runs.set(requestToken, run);
       checkRuns.set(`${run.repository}#${run.checkRunId}`, run);
       return { requestUrl: `${url}/_actions/token?api-version=2.0`, requestToken };
