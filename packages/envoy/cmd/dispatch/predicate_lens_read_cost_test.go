@@ -95,7 +95,7 @@ const (
 
 // predicateCostInboundIndexes are the indexes the check's negative control drops:
 // graph_tuples_as_of_in alone, which migration 20261109013400_graph_store declares, the one index
-// that serves a read into a node once graph_tuples_inbound is gone.
+// of the store's set that serves a read into a node.
 var predicateCostInboundIndexes = []string{"graph_tuples_as_of_in"}
 
 // predicateCostInboundLookup is the lookup the tuples-into-a-node read makes of one block, $1 its

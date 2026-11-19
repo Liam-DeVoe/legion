@@ -892,7 +892,7 @@ func (d DecisionIndexing) Queue(batch *store.WriteBatch) error {
 //
 // It reads only what the store places in the document, each by its own key: the decisions and
 // readings its document_blocks rows hold, the block nodes whose current part_of is the document's
-// own node (graph_tuples_inbound) and those its block_refs rows name, which is where the typed-node
+// own node (graph_tuples_as_of_in) and those its block_refs rows name, which is where the typed-node
 // pass above the deferral bound places them; and the readings whose current part_of is one of
 // those decisions or an ask whose block the document holds. A node outside the document - the
 // reading of a copy of one of its asks on another document - is no node of it. The read is the

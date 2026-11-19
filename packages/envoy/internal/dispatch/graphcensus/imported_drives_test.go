@@ -133,24 +133,27 @@ func newWritersRig(t *testing.T) *writersRig {
 	t.Cleanup(listener.Close)
 
 	rig.database = storetest.Open(t)
+	people := store.NewPgPeopleStore(rig.database.Pool, auth.SingleSigningKey("signing-key"), nil)
+	if err := people.Record(ctx, "alice"); err != nil {
+		t.Fatalf("record alice: %v", err)
+	}
+	// One identity for the API and the document service, so a person's browser that connects to a
+	// document's room is admitted by the same header the API reads (emptyAskQuestion).
+	caller := identity.HeaderIdentity{Header: "X-Dispatch-User", People: people}
 	broker := events.NewBroker()
-	rig.documents = docs.New(docs.Deps{Store: rig.database, Events: broker, ServerURL: writersServerURL, Settle: time.Hour})
+	rig.documents = docs.New(docs.Deps{Store: rig.database, Events: broker, Identity: caller, ServerURL: writersServerURL, Settle: time.Hour})
 	t.Cleanup(func() {
 		if err := rig.documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut down the document service: %v", err)
 		}
 	})
-	people := store.NewPgPeopleStore(rig.database.Pool, auth.SingleSigningKey("signing-key"), nil)
-	if err := people.Record(ctx, "alice"); err != nil {
-		t.Fatalf("record alice: %v", err)
-	}
 	tokens, err := auth.ParseSharedAgentTokens("agent-token")
 	if err != nil {
 		t.Fatalf("parse the agent token: %v", err)
 	}
 	deps, err := api.NewDeps(api.DepsInput{
 		Store:       rig.database,
-		Identity:    identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:    caller,
 		AgentTokens: tokens,
 		ServerURL:   writersServerURL,
 		EnvoyURL:    listener.URL,
@@ -279,11 +282,11 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // session opens, a follow of it, the spec's approval request renewed on a retry and handed back, a
 // settlement opening an ask a session wrote as a block, the tick indexing a version a build
 // without the block index wrote, a run of the command bar alice asks, a run an older pod recorded
-// that the boot pass ends, the issue's title, the ask's question and a comment of alice's each
-// written for a run she asked, a lens with a finding, a finding, a risk and a constraint, a
-// pointer appended and one retargeted, the lens's state, and the erase of the issue's comment,
-// which appends nothing. The comment path's drives name the sites the path runs in turn
-// (comment): the comment's node, its tuples under its event, and who wrote it.
+// that the boot pass ends, the issue's title, the question of an ask alice opens and a comment of
+// alice's each written for a run she asked, a lens with a finding, a finding, a risk and a
+// constraint, a pointer appended and one retargeted, the lens's state, and the erase of the
+// issue's comment, which appends nothing. The comment path's drives name the sites the path runs
+// in turn (comment): the comment's node, its tuples under its event, and who wrote it.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
@@ -293,17 +296,17 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			"graphstore/people.go#QueueAuthored"}, sites...)
 	}
 	// What the drives of a run's writes and of the reasoning kinds leave for the drives after them:
-	// the run a write is made for, the comment the run rewords, the trade-off lens on the spec, the
-	// pre-mortem a risk stands under, the issue whose spec holds a requirement, and the constraint
-	// under that issue.
-	var run, edited, lens, premortem, requiring, constraint string
+	// the run a write is made for, the ask and the comment the run rewords, the trade-off lens on the
+	// spec, the pre-mortem a risk stands under, the issue whose spec holds a requirement, and the
+	// constraint under that issue.
+	var run, reworded, edited, lens, premortem, requiring, constraint string
 	nodeRoute := func(issue, address, route string) string {
 		return "/api/v1/issues/" + issue + "/nodes/" + url.PathEscape(address) + "/" + route
 	}
 	type addressed struct {
 		Address string `json:"address"`
 	}
-	return []graphcensus.StoreDrive{{
+	return append([]graphcensus.StoreDrive{{
 		Name: "api/issue_create.go#createIssue", Database: r.database,
 		Sites: []string{"api/issue_create.go#createIssue", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
@@ -460,14 +463,16 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			{graphstore.KindMessage, graphstore.AttributeParties}:    {graphstore.KindMessage},
 		},
 	}, {
+		// A session's ask on the issue: the ask's node, in the issue's project, who asked it, and
+		// the asker's follow, planned in the create's read phase (asks.PlanFollowNewAsk).
 		Name: "api/asks.go#createAskFor", Database: r.database,
-		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#queueFollow"},
+		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#Queue", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
 			r.ask = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks", map[string]any{
 				"question": "Which store do the writers take?", "actor": sessionActor("ses_asker"),
 			}, "", http.StatusCreated)).ID
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk)),
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
 	}, {
 		// The removal of an untouched document of the issue, made just before by typing a title:
 		// its node stated gone, which the term artifact_removed counts.
@@ -484,38 +489,40 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"}},
 	}, {
+		// The follower route's follow of that ask (asks.Follow), whose node it moves onto the
+		// event it appends after it.
 		Name: "api/server.go#appendCausingEvent", Database: r.database,
-		Sites: []string{"api/server.go#appendCausingEvent", "asks/followers.go#queueFollow"},
+		Sites: []string{"api/server.go#appendCausingEvent", "asks/followers.go#Follow", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPut, "/api/v1/asks/"+r.ask+"/followers/ses_follower",
 				map[string]any{"actor": sessionActor("ses_follower")}, "", http.StatusNoContent)
 		},
-		Counts: sessionNodeCounted,
+		Counts: merged(sessionNodeCounted, followCounted),
 	}, {
 		// The spec's approval request, which a session opens: the request's node, in the spec's
 		// project, and the requester's follow.
 		Name: "api/reviews.go#openApprovalAsk", Database: r.database,
-		Sites: []string{"api/reviews.go#openApprovalAsk", "asks/followers.go#queueFollow"},
+		Sites: []string{"api/reviews.go#openApprovalAsk", "asks/followers.go#Queue", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_requester")}, "", http.StatusCreated)
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk)),
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
 	}, {
 		// That request renewed by another session while it waits on the person: a retry, which
 		// appends no event.
 		Name: "api/reviews.go#renewApprovalAsk, on a retry", Database: r.database,
-		Sites: []string{"api/reviews.go#renewApprovalAsk", "asks/followers.go#queueFollow"},
+		Sites: []string{"api/reviews.go#renewApprovalAsk", "asks/followers.go#Queue", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_retry")}, "", http.StatusOK)
 		},
-		Counts: sessionNodeCounted,
+		Counts: merged(sessionNodeCounted, followCounted),
 	}, {
 		// A new version of the spec moves the request to its agent, and a session asking for the
 		// approval again hands it back to the person.
 		Name: "api/reviews.go#renewApprovalAsk, handing the request back", Database: r.database,
-		Sites: []string{"api/reviews.go#renewApprovalAsk", "asks/followers.go#queueFollow"},
+		Sites: []string{"api/reviews.go#renewApprovalAsk", "asks/followers.go#Queue", "asks/followers.go#queueFollow"},
 		Ready: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "spec.md", "content": "# Spec\n\nWhat the writers write, read once more.\n",
@@ -525,12 +532,14 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_handback")}, "", http.StatusCreated)
 		},
-		Counts: sessionNodeCounted,
+		Counts: merged(sessionNodeCounted, followCounted),
 	}, {
 		// A session writes an ask as a block of the notes through the edits route, which writes
-		// the version holding it, and the settlement opens the ask and follows it for that session.
+		// the version holding it, and the settlement opens the ask, in the notes and part of them,
+		// and follows it for that session.
 		Name: "docs/settlement.go#appendEvents", Database: r.database,
-		Sites: []string{"docs/settlement.go#appendEvents", "docs/ask_blocks.go#createAskBlock", "asks/followers.go#queueFollow"},
+		Sites: []string{"docs/settlement.go#appendEvents", "docs/ask_blocks.go#createAskBlock", "asks/followers.go#Queue",
+			"asks/followers.go#queueFollow"},
 		Ready: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.notes+"/edits", map[string]any{
 				"actor": sessionActor("ses_editor"),
@@ -543,7 +552,11 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				select exists (select 1 from asks where block_artifact_id = $1::uuid and block_id = 'sizing-ask')
 			`, r.notes)
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk)),
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted,
+			map[graphcensus.StoredKind][]string{
+				{graphstore.KindAsk, graphstore.TupleAnchoredTo}: {"ask_opened"},
+				{graphstore.KindAsk, graphstore.TuplePartOf}:     {"ask_opened"},
+			}),
 	}, {
 		// A person's live edit of the notes, which a build without the block index then wrote as a
 		// version of its own: the version's insert owes the document its index (migration 0122's
@@ -632,13 +645,19 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: changedByRunCounted(graphstore.KindIssue),
 	}, {
-		// The ask's question reworded for a run alice asked: the ask's node named changed by it.
+		// An ask alice opens on the issue, its question reworded for a run she asked: the ask's node
+		// named changed by it. The ask is one of its own, so the ask ses_asker opened keeps the
+		// question alice's answer of it confirms (askDrives).
 		Name: "api/asks.go#editAsk, made for a run", Database: r.database,
 		Sites: []string{"api/asks.go#editAsk"},
-		Ready: func(t *testing.T) { run = r.askRun(t, "Reword the ask.") },
+		Ready: func(t *testing.T) {
+			reworded = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks",
+				map[string]any{"question": "Which store does a run reword?"}, "alice", http.StatusCreated)).ID
+			run = r.askRun(t, "Reword the ask.")
+		},
 		Drive: func(t *testing.T) {
-			r.requestForRun(t, run, http.MethodPatch, "/api/v1/asks/"+r.ask,
-				map[string]any{"question": "Which store do the writers take, run by run?"}, "alice", http.StatusOK)
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/asks/"+reworded,
+				map[string]any{"question": "Which store does a run reword, run by run?"}, "alice", http.StatusOK)
 		},
 		Counts: changedByRunCounted(graphstore.KindAsk),
 	}, {
@@ -774,7 +793,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}
 		},
 		Counts: map[graphcensus.StoredKind][]string{},
-	}}
+	}}, askDrives(t, r)...)
 }
 
 // The terms that count what several drives here append: a block a version states afresh, with its
@@ -782,8 +801,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 // node with its two base attributes, made by the first write that records the session, which the
 // term session counts; a run's interaction node, with its base attributes, its words and ends_at
 // values and its authored_by, which the term interaction counts, and the one frame value of the
-// run's terminal frame, which the term frame counts; and a lens of alice's with its verdict and a
-// finding under it, which the terms lens and lens_finding count.
+// run's terminal frame, which the term frame counts; a lens of alice's with its verdict and a
+// finding under it, which the terms lens and lens_finding count; who asked an ask, which the term
+// ask_opened counts beside the ask's other facts its create states; and a session's follow of an
+// ask, which the term ask_follower counts.
 var (
 	newBlockCounted = map[graphcensus.StoredKind][]string{
 		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
@@ -821,6 +842,26 @@ var (
 		{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"lens_finding"},
 		{refs.BlockNodeKind, graphstore.AttributeText}:       {"lens_finding"},
 		{refs.BlockNodeKind, graphstore.TupleAuthoredBy}:     {"lens_finding"},
+	}
+	askAuthorCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindAsk, graphstore.TupleAuthoredBy}: {"ask_opened"},
+	}
+	followCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindAsk, graphstore.TupleFollowedBy}: {"ask_follower"},
+	}
+	// What a person's answer of an ask states on its node, which the term answer counts, and what
+	// a resolution states, which the term ask_resolved counts.
+	answerCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindAsk, graphstore.TupleAnswerState}: {"answer"},
+		{graphstore.KindAsk, graphstore.TupleAnswer}:      {"answer"},
+		{graphstore.KindAsk, graphstore.TupleSelected}:    {"answer"},
+		{graphstore.KindAsk, graphstore.TupleAnsweredAt}:  {"answer"},
+		{graphstore.KindAsk, graphstore.TupleAnsweredBy}:  {"answer"},
+		{graphstore.KindAsk, graphstore.TupleDecidedBy}:   {"answer"},
+	}
+	resolutionCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindAsk, graphstore.TupleAnswerState}: {"ask_resolved"},
+		{graphstore.KindAsk, graphstore.TupleResolution}:  {"ask_resolved"},
 	}
 )
 

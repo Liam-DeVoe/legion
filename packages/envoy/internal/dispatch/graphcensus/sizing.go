@@ -455,8 +455,10 @@ func storeKinds() []StoreKind {
 		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "artifact_removed", MovedBy: movedHere, Tuples: 1,
-		Driver: "artifact.removed events in the window: the removed document's node stated gone (api's removeArtifact)",
-		count:  `(select count(*) from events where type = 'artifact.removed' and created_at > ` + sizingWindow + `)`,
+		Driver: "artifact.removed and " + model.DocumentRetiredEventType + " events in the window: the removed or retired" +
+			" document's node stated gone (api's removeArtifact, docs' RetireDocument)",
+		count: `(select count(*) from events where type in ('artifact.removed', '` + model.DocumentRetiredEventType + `')
+			and created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "document_version", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 2,
 		Driver: "artifact_versions.created_at: the document version node each accepted write appends, and its visibility" +
@@ -500,23 +502,26 @@ func storeKinds() []StoreKind {
 		Driver: "ask.opened events in the window: the ask's node and its visibility, state and project or parties",
 		count:  `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
-		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 6,
+		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 7,
 		Driver: "ask.opened events in the window: the ask's answer_state, question and options values, its authored_by" +
-			" and, at most, its anchored_to and owned_by",
+			" and, at most, its anchored_to and owned_by, and the part_of the document holding its block, which an ask" +
+			" block's anchored_to names too",
 		count: `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
 		Name: "ask_edit", MovedBy: movedWithAsks, Tuples: 2,
 		Driver: "ask.edited events in the window: at most the ask's question and options values",
 		count:  `(select count(*) from sized_ask_events where type = 'ask.edited')`,
 	}, {
-		Name: "answer", MovedBy: movedWithAsks, Tuples: 5,
-		Driver: "ask.answered events in the window: the answer text, the options it selects, its author and its time," +
-			" and the ask's answer_state",
+		Name: "answer", MovedBy: movedWithAsks, Tuples: 6,
+		Driver: "ask.answered events in the window: the answer text, the options it selects, its author, as answered_by" +
+			" and as the decided_by that makes the answered ask a person's decision, and its time, and the ask's" +
+			" answer_state",
 		count: `(select count(*) from sized_ask_events where type = 'ask.answered')`,
 	}, {
-		Name: "ask_resolved", MovedBy: movedWithAsks, Tuples: 1,
-		Driver: "ask.resolved events in the window: the ask's answer_state",
-		count:  `(select count(*) from sized_ask_events where type = 'ask.resolved')`,
+		Name: "ask_resolved", MovedBy: movedWithAsks, Tuples: 3,
+		Driver: "ask.resolved events in the window: the ask's answer_state and its resolution, and at most the" +
+			" retraction that ends that resolution, which the reopen that restores the ask appends",
+		count: `(select count(*) from sized_ask_events where type = 'ask.resolved')`,
 	}, {
 		Name: "ask_follower", MovedBy: movedWithAsks, Tuples: 1,
 		Driver: "ask.follower_added and ask.follower_removed events in the window: a followed_by or the retraction that" +
@@ -526,6 +531,40 @@ func storeKinds() []StoreKind {
 		Name: "keep", MovedBy: movedWithAsks, Tuples: 2,
 		Driver: "decision_keeps.kept_at in the window: a kept_by and a kept_text_sum on the decision",
 		count:  `(select count(*) from decision_keeps where kept_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "ask_copy", MovedBy: movedWithAsks, Tuples: 1,
+		Driver: "document_blocks.changed_at in the window of an ask block that names an ask of another document of its" +
+			" owner and that no ask row of its own document names, a copy of that ask: the copy's copied_from, which" +
+			" a settlement claims once and no table projects",
+		count: `(select count(*) from document_blocks b join artifacts d on d.id = b.artifact_id
+			where b.type = 'ask' and b.changed_at > ` + sizingWindow + `
+			  and not exists (select 1 from asks own where own.block_artifact_id = b.artifact_id and own.block_id = b.block_id)
+			  and exists (select 1 from asks source join artifacts s on s.id = source.block_artifact_id
+			              where source.block_id = b.block_id and source.block_artifact_id <> b.artifact_id
+			                and s.issue_key is not distinct from d.issue_key and s.project_key = d.project_key))`,
+	}, {
+		Name: "ask_invalid", MovedBy: movedWithAsks, Tuples: 2,
+		Driver: "block.invalid events in the window, each a settlement's flag of a block that fails the strict read:" +
+			" at most the reason as its ask node's invalid value, where the block has an ask row, and the retraction" +
+			" that ends it once the block reads again",
+		count: `(select count(*) from events where type = 'block.invalid' and created_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "ask_removal", MovedBy: movedWithAsks, Tuples: 2,
+		Driver: "document_block_texts of the versions written in the window, a row that deleted the block of an" +
+			" answered ask, which only a person's own write takes out: the ask node's removed_by to that person, and" +
+			" at most the retraction that ends it once an ask block of that ask stands in the document again, which" +
+			" no table projects",
+		count: `(select count(*) from artifact_versions v
+			join document_block_texts t on t.artifact_id = v.artifact_id and t.version = v.number
+			where v.created_at > ` + sizingWindow + ` and t.text is null
+			  and exists (select 1 from asks k where k.block_artifact_id = t.artifact_id and k.block_id = t.block_id
+			              and k.state = 'answered'))`,
+	}, {
+		Name: "block_move", MovedBy: movedWithAsks, Tuples: 1, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at one a day, since the one writer of a moved_to out of a block is the decisions step's" +
+			" conversion, which moves each section and ask block of a decisions document an earlier release wrote" +
+			" into its issue's spec once, a backlog no table dates: the moved address's moved_to, its node and" +
+			" placement being a block's, which the block terms count",
 	}, {
 		Name: "decision", MovedBy: movedWithAsks, Tuples: 5, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 a day, since production writes no agent's decision before the asks child ships and a" +
@@ -567,6 +606,16 @@ func storeKinds() []StoreKind {
 			" this release: its node, its visibility, state and project, its part_of the node it analyses," +
 			" its has_kind, at most its verdict value and its triggered_by, its authored_by and at most two aliases" +
 			" of its author",
+	}, {
+		// Counted off api's retireConvertedDocument, the one writer of a moved_to out of a document's
+		// address, which appends one through writeReasoningPointer each time the pre-mortem conversion
+		// (api.ConvertPremortem) retires a document.
+		Name: "document_move", MovedBy: movedWithLenses, Tuples: 1, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at one a day, the pre-mortem the lens term assumes a day, since the one writer of a moved_to" +
+			" out of a document's address is the pre-mortem conversion, which moves the address of each pre-mortem" +
+			" document an earlier release wrote to the lens it writes in its place once, a backlog no table dates:" +
+			" the document's moved_to, its lens and risks being counted by the lens and risk terms and its" +
+			" retirement by artifact_removed",
 	}, {
 		// Counted off api's newFinding and writeReasoningNodes, a finding written with its lens
 		// (invokeLens) or on its own (addLensFinding): the visibility, state and project, the part_of
