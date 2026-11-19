@@ -704,10 +704,10 @@ func (*MissingThumbprintError) Permanent() bool { return true }
 // SupersededError is a registration of Pod under Session written at generation Sent and answered
 // at generation Answered, a later one: the broker holds a registration it took at that generation
 // and kept. Foreign is whether Answered is above Latest, the claim's current generation
-// (PodSessionRenewal.Latest), so that no process of this claim made it — another claim registered
-// the session, or another service login wrote the row; otherwise a later process of this claim
-// registered the session since. Its message names the pod, the session and the generations, never
-// a token.
+// (PodSessionRenewal.Latest), so that no process of this claim made it — another claim of this
+// daemon registered the session, or another process of the daemon's account wrote the row;
+// otherwise a later process of this claim registered the session since. Its message names the
+// pod, the session and the generations, never a token.
 type SupersededError struct {
 	Pod, Session           string
 	Sent, Answered, Latest int64

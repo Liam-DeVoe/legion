@@ -594,13 +594,13 @@ func TestALateRenewalOfAnEarlierProcessStopsOnceSuperseded(t *testing.T) {
 
 // TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign: the broker answers a
 // write with a registration at a generation above the claim's current one — above every process
-// this daemon has launched for the claim — so no process of this claim wrote it: another claim
-// registered the session id, or another service login wrote the row (review round 4 of #4153,
-// R4-1, R4-2). That is a permanent failure like any superseded write, logged at Error with an error
-// that says so: the answered generation, above the claim's current one as Latest reads it, and a
-// registration this daemon never made, never a later process of this claim. The log line's prefix
-// is the one every permanent refusal shares (review round 5 of #4153, R5-M1): the case lives in
-// the error, which is what the caller gets back as well.
+// this daemon has launched for the claim — so no process of this claim wrote it: another claim of
+// this daemon registered the session id, or another process of the daemon's account wrote the row
+// (review round 4 of #4153, R4-1, R4-2). That is a permanent failure like any superseded write,
+// logged at Error with an error that says so: the answered generation, above the claim's current
+// one as Latest reads it, and a registration this daemon never made, never a later process of this
+// claim. The log line's prefix is the one every permanent refusal shares (review round 5 of #4153,
+// R5-M1): the case lives in the error, which is what the caller gets back as well.
 func TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign(t *testing.T) {
 	const (
 		pod     = "pod-uid-10"
