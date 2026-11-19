@@ -277,7 +277,9 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		Run(ctx, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
+		// A clock the row never moves holds the coverage loop's ten-minute recheck off, so the
+		// items are made current by the pass Run makes at boot and by nothing that comes later.
+		Run(ctx, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity), Clock: clocktest.Held()})
 	}()
 	testwait.Eventually(t, "every item current under Run", func() bool {
 		items, current, lacking, failed, oldest := coverage(t, database, configuredIdentity)
@@ -840,16 +842,19 @@ func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 	requireUnchanged("a pass while the deployment is missing")
 	requireOneCanary("a pass while the deployment is missing")
 
-	// Run until its boot pass has tried the canary: with the deployment missing that is every
-	// call it will make, since the canary is what gates the identity steps and nothing is
-	// pending for the scan loop.
+	// Run until its boot pass has tried the canary and handled the deployment's 404: with the
+	// deployment missing that is every call it will make, since the canary is what gates the
+	// identity steps and nothing is pending for the scan loop. The coverage loop arms its recheck
+	// on Run's clock only once that pass has returned, so the row waits for that timer (on a
+	// fake it never moves, so the recheck never runs) before it ends Run.
 	ctx, cancel := context.WithCancel(context.Background())
 	ran := make(chan struct{})
+	recheck := clocktest.Held()
 	go func() {
 		defer close(ran)
-		Run(ctx, deps)
+		Run(ctx, Deps{Store: database, Embedder: client, Clock: recheck})
 	}()
-	testwait.Eventually(t, "Run's boot pass to try the canary", func() bool { return fake.seen() > 0 })
+	recheck.AwaitArmed(t, "the coverage loop's recheck, armed once Run's boot pass has handled the canary's 404", 1)
 	cancel()
 	testwait.Receive(t, "Run to return once its context ended", ran)
 	requireUnchanged("Run while the deployment is missing")
@@ -1063,7 +1068,9 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	mustExec(t, database.Pool, `update embeddings set embedding = null, model = null, embedded_hash = null, next_attempt_at = now() where id = 'ANSR-1'`)
 	embedder := newSyncEmbedder(configuredIdentity)
 	embedder.setErr(errors.New("simulated: the deployment does not answer yet"))
-	runQueue(t, Deps{Store: database, Embedder: embedder})
+	// A clock the row never moves holds the coverage loop's ten-minute recheck off, so the
+	// identity steps that follow can only be the ones the first embed wakes.
+	runQueue(t, Deps{Store: database, Embedder: embedder, Clock: clocktest.Held()})
 	// Two canaries fail: the boot pass's, and the one confirming ANSR-1's own failed embed.
 	// ANSR-2 keeps the foreign vector throughout: nothing drops it before the embedder answers.
 	eventually(t, "the boot pass's canary, with ANSR-2's foreign vector still in place", func() bool {
@@ -1426,7 +1433,9 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		Run(runCtx, Deps{Store: proxied, Embedder: newPlaceEmbedder(configuredIdentity)})
+		// A clock the row never moves holds the coverage loop's ten-minute recheck off, so the
+		// items current at the end are the pass's and no later one's.
+		Run(runCtx, Deps{Store: proxied, Embedder: newPlaceEmbedder(configuredIdentity), Clock: clocktest.Held()})
 	}()
 	defer func() {
 		cancel()

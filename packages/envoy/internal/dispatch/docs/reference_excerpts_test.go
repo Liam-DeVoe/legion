@@ -361,7 +361,9 @@ func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *
 // before, and a pass before then leaves it alone. The due times are the service's clock's
 // (refs.DeferExcerpts writes next_attempt_at as the moment its pass read plus the backoff, with
 // up to a fifth more of jitter), so the test moves a fake across each of them rather than waiting,
-// and the server's own schedule - a minute's base - is what runs.
+// and the server's own schedule - a minute's base - is what runs. Each pass returns when the loop
+// runs next, the loop's one timer, so every pass must return the failing document's retry: a pass
+// that returned no time would leave the retry to nothing but a wake.
 func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 	database := storetest.Open(t)
 	failing := owedDocuments(t, database, 1)[0]
@@ -375,8 +377,21 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 		_, attempts := backoffAttempts(t, database, failing)
 		return attempts
 	}
+	// pass runs one pass and requires it to ask to run again at the failing document's retry, the
+	// moment its backoff row names.
+	pass := func(what string) {
+		t.Helper()
+		next := service.reconcileExcerptPass(ctx, referenceExcerptSchedule)
+		var due time.Time
+		if err := database.Pool.QueryRow(ctx, `select next_attempt_at from reference_excerpt_backoff where artifact_id = $1::uuid`, failing).Scan(&due); err != nil {
+			t.Fatalf("%s: read the failing document's retry: %v", what, err)
+		}
+		if !next.Equal(due) {
+			t.Fatalf("%s: the pass asked to run again at %v, want at the failing document's retry, %v", what, next, due)
+		}
+	}
 
-	service.reconcileExcerptPass(ctx, referenceExcerptSchedule)
+	pass("the first pass")
 	if got := tried(); got != 1 {
 		t.Fatalf("the failing document counts %d attempt(s) after the first pass, want 1", got)
 	}
@@ -384,13 +399,13 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 		wait := base << (retry - 1)
 		// A second short of the backoff the document is not due, and a pass leaves it alone.
 		passClock.Advance(wait - time.Second)
-		service.reconcileExcerptPass(ctx, referenceExcerptSchedule)
+		pass(fmt.Sprintf("retry %d, a second short of its backoff", retry))
 		if got := tried(); got != retry {
 			t.Fatalf("retry %d: the failing document counts %d attempt(s) a second short of its %v backoff, want %d: it was read before its retry fell due", retry, got, wait, retry)
 		}
 		// Past the backoff and the fifth of jitter it may carry, the document is due and read.
 		passClock.Advance(wait/5 + 2*time.Second)
-		service.reconcileExcerptPass(ctx, referenceExcerptSchedule)
+		pass(fmt.Sprintf("retry %d, past its backoff", retry))
 		if got := tried(); got != retry+1 {
 			t.Fatalf("retry %d: the failing document counts %d attempt(s) once its %v backoff had passed, want %d", retry, got, wait, retry+1)
 		}

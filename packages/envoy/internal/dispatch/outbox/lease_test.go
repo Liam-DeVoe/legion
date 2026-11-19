@@ -91,6 +91,13 @@ func (s countingSender) PublishAsync(item contracts.Envelope) <-chan error {
 // connected to url, until the test ends or stop is called.
 func startProcess(t *testing.T, name string, database *store.Store, url string, counter *sendCounter) *process {
 	t.Helper()
+	return startProcessOn(t, name, database, url, counter, nil)
+}
+
+// startProcessOn is startProcess with the outbox's timers - its standby's timer to the holder's
+// lapse among them - armed on timers, or on the real clock when timers is nil.
+func startProcessOn(t *testing.T, name string, database *store.Store, url string, counter *sendCounter, timers timerClock) *process {
+	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
 		t.Fatalf("connect %s's NATS client: %v", name, err)
@@ -107,6 +114,9 @@ func startProcess(t *testing.T, name string, database *store.Store, url string, 
 		Broker:    p.broker,
 		Listen:    database.Pool.Listener,
 	})
+	if timers != nil {
+		p.outbox.clock = timers
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { p.outbox.Run(ctx); close(done) }()
@@ -479,14 +489,16 @@ func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 }
 
 // A process that stops gracefully releases the publisher hold, and the other takes it over at once
-// rather than when the hold would have lapsed.
+// rather than when the hold would have lapsed. Each process arms its timers on a fake the row
+// never moves, so the standby's timer to the holder's lapse never fires: only the release's wake
+// (HoldReleasedChannel) can hand the hold over.
 func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
-	first := startProcess(t, "first", database, url, counter)
-	second := startProcess(t, "second", storetest.SecondProcess(t, database), url, counter)
+	first := startProcessOn(t, "first", database, url, counter, clocktest.New(time.Now()))
+	second := startProcessOn(t, "second", storetest.SecondProcess(t, database), url, counter, clocktest.New(time.Now()))
 	holder := waitForOnePublisher(t, first, second)
 	standby := first
 	if holder == first {
@@ -567,10 +579,10 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 
 // A standby waits for the publisher hold to be released or to lapse, or for its NATS connection to
 // change, and for nothing else: the events the holder writes and publishes do not make it try the
-// hold. 100 events written one after another while the holder holds send at most the few takes and
-// lapse reads the standby's timer to the holder's lapse makes over that span (each renewal moves the
-// lapse 6 s on), not one take and one read per event, which would put a write on duty_holds for
-// every event on every standby.
+// hold. The standby arms its timer to the holder's lapse on a fake the row never moves, so that
+// timer never fires, and 100 events written one after another while the holder holds send not one
+// take and not one lapse read, where a standby woken by events would put a write on duty_holds
+// for every event.
 func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
@@ -591,6 +603,7 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 		Broker:    events.NewBroker(),
 		Listen:    database.Pool.Listener,
 	})
+	standby.clock = clocktest.New(time.Now())
 	// restingAt is the takes the standby had sent when it last entered its wait with no wake pending
 	// and its LISTEN connection already up, and -1 until it enters one: while it equals the takes
 	// sent, the standby is waiting and has tried nothing since, so the catch-up try that
@@ -637,8 +650,8 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	takes = len(tracer.matching("insert into duty_holds")) - takes
 	reads = len(tracer.matching("from duty_holds where name")) - reads
 	t.Logf("while 100 events were written and published, the standby sent %d takes of the hold and %d reads of its lapse", takes, reads)
-	if takes > 3 || reads > 3 {
-		t.Fatalf("the standby sent %d takes of the publisher hold and %d reads of its lapse while the holder wrote 100 events, want at most 3 of each: its timer to the lapse alone",
+	if takes != 0 || reads != 0 {
+		t.Fatalf("the standby sent %d takes of the publisher hold and %d reads of its lapse while the holder wrote 100 events, want none: nothing but a release, a lapse or its connection changing wakes it",
 			takes, reads)
 	}
 }
@@ -802,22 +815,15 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// The row takes the hold with duty.TryHold under options of its own rather than through
 	// outbox.tryHold, which uses publisherHoldOptions. What it tests is what publish does and
 	// logs when a recordBatch finds the hold another's before any renewal has noticed, and
-	// that property is not the publisher hold's production numbers; binding the row's slack to
-	// those numbers made every change of them a change of this row's flakiness. Halving Renew
-	// from 2 s to 1 s left the take, the seed, the append and a whole scan one second to run in
-	// before the guard below reports a correct product as a defect - on a runner that, by this
-	// change's own evidence, stalled for 3.1 s.
-	//
-	// These numbers leave seconds instead, inside what duty.TryHold accepts (0 <= Margin < TTL
-	// and 0 < Renew < TTL - Margin): the first renewal tick falls five seconds after the take, so
-	// the take, the seed, the append and a whole scan have those five seconds to run in before
-	// any renewal of this hold can reach the record path, and the deadline - the take plus
-	// TTL - Margin - stays five minutes ahead for the whole row. Five seconds is also short
-	// enough for the count below to wait that tick out and see whether the lost hold's renewal
-	// stopped. The hold is the outbox's own, under its token and instance, so the batch that
-	// records under it finds the row another's exactly as it would in production.
-	recordPath := duty.HoldOptions{TTL: 6 * time.Minute, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token}
-	taken := time.Now()
+	// that property is not the publisher hold's production numbers. The hold's renewals and its
+	// loss timer run on a fake the row never moves (Held, which reads the wall clock, so the
+	// deadline is a real moment five minutes ahead that the line's bounds are judged against):
+	// no renewal tick comes however slow the machine, so the record path is the one that finds
+	// the row another's, and what the fake has armed afterwards is the hold's own record of
+	// whether its renewal stopped. The hold is the outbox's own, under its token and instance, so
+	// the batch that records under it finds the row another's exactly as it would in production.
+	renewals := clocktest.Held()
+	recordPath := duty.HoldOptions{TTL: 6 * time.Minute, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token, Clock: renewals}
 	hold, err := duty.TryHold(ctx, outbox.deps.Store.Pool, publisherHold, outbox.instance, recordPath)
 	if err != nil {
 		t.Fatalf("take the publisher hold under the row's own options: %v", err)
@@ -838,13 +844,10 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 		t.Fatalf("publish ended %s, want %s", end, holdLost)
 	}
 	returned := time.Now()
-	// A publish slow enough to outrun the first renewal would reach holdLost by that renewal
-	// finding the row another's instead, where loseLocked pulls the deadline back to the moment
-	// it closed Lost and stopped is that deadline, so say which path ran rather than let the
-	// assertions below fail as if the product were wrong. The renewal's statement is the one
-	// record of whether it ran: nothing else in this process renews a hold.
+	// No renewal tick can come on the hold's clock, which the row never moves, so a renewal sent
+	// before the record path ended the turn would be the hold renewing without one.
 	if renewed := len(tracer.matching("update duty_holds set expires_at")); renewed != 0 {
-		t.Fatalf("publish returned after %d renewals of the row's own hold were sent: the row is about a record finding the hold another's before any renewal does", renewed)
+		t.Fatalf("publish returned after %d renewals of the row's own hold were sent, on a clock that brought no renewal tick", renewed)
 	}
 	select {
 	case <-hold.Lost():
@@ -898,22 +901,16 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 			stoppedBy.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano))
 	}
 
-	// This count is the whole of the proof that the renewal of the hold just lost stopped when
-	// publish released it: nothing else in the row watches that renewal. Its window starts here,
-	// with publish returned and the stop asserted, and runs past that hold's first renewal tick
-	// at taken + Renew, which no earlier part of the row reaches: a renewal still running sends
-	// its one statement there - that is what a duty.Hold whose Release does not stop the renewal,
-	// and whose renew does not return when Lost closes, does - and nothing else in this process
-	// renews a hold, so a statement in the window could only be this one's. Half a Renew of slack
-	// past the tick, so a statement a loaded runner was slow to start still lands inside the
-	// window rather than after it.
-	renewalsBefore := len(tracer.matching("update duty_holds set expires_at"))
-	window := recordPath.Renew + recordPath.Renew/2
-	testwait.Span(t, time.Until(taken.Add(window)), "a renewal still running would send its statement at the "+
-		"first renewal tick, a wall-clock timer inside duty.Hold that no state the hold exposes names and no "+
-		"later action follows, so only a span past that tick shows none was sent")
-	if got := len(tracer.matching("update duty_holds set expires_at")) - renewalsBefore; got != 0 {
-		t.Fatalf("%s after the hold was taken - past the first tick of its renewal at %s - %d renewals of the lost hold were sent, want none: publish left its renewal running", window, recordPath.Renew, got)
+	// The renewal of the hold just lost must stop when publish released it. Until it does, its
+	// next tick stays armed on the hold's clock beside the loss timer; a duty.Hold whose Release
+	// does not stop the renewal, and whose renew does not return when Lost closes, keeps that tick
+	// armed for good. Once nothing is armed there, no renewal of this hold can ever be sent.
+	testwait.Until(t, "the lost hold's renewal tick and loss timer to be stopped", func() ([]time.Time, bool) {
+		armed := renewals.Armed()
+		return armed, len(armed) == 0
+	})
+	if got := len(tracer.matching("update duty_holds set expires_at")); got != 0 {
+		t.Fatalf("%d renewals of the lost hold were sent, want none", got)
 	}
 }
 
@@ -997,9 +994,10 @@ func loggedMessages(recorder *logtest.Recorder) []string {
 // A holder whose row is taken from under it loses the hold at once: the deadline is pulled back
 // to that moment, and the line that ends the turn says so. The line is written before the
 // release, which is a database round trip the job this came from took a second over, so it is
-// already in the log while the release's own statement is still running, and its stopped
-// attribute names the moment the process stopped publishing rather than the moment it was
-// written.
+// already in the log while the release's own statement is still running, and its stopped and
+// stopped_by attributes name the moment the process stopped publishing rather than the moment it
+// was written: on this path both are the hold's deadline, which the loss pulled back to the
+// moment the hold was lost and which the hold keeps from then on (Deadline).
 func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
@@ -1016,14 +1014,11 @@ func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
 	ended := make(chan holdEnd, 1)
 	go func() { ended <- outbox.publish(ctx, hold) }()
 
-	// The row goes, so the next renewal affects no row and the hold is lost there and then. The
-	// loss can come no earlier than this moment, read before the row goes.
-	rowGone := time.Now()
+	// The row goes, so the next renewal affects no row and the hold is lost there and then.
 	if _, err := database.Pool.Exec(ctx, `delete from duty_holds where name = $1`, publisherHold); err != nil {
 		t.Fatalf("take the hold's row away: %v", err)
 	}
 	testwait.Receive(t, "the hold lost once its row went", hold.Lost())
-	lostAt := time.Now()
 
 	testwait.Receive(t, "the holder running the release", held.started)
 	if _, ok := timeIn(t, recorder, "lost the publisher hold", "stopped"); !ok {
@@ -1038,9 +1033,10 @@ func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
 	if !ok {
 		t.Fatalf("no record of the log says %q; it says %q", "lost the publisher hold", loggedMessages(recorder))
 	}
-	if stopped.Before(rowGone) || stopped.After(lostAt) {
-		t.Errorf("the line dates the stop at %s, want it between the row going at %s and the hold reporting itself lost at %s",
-			stopped.Format(time.RFC3339Nano), rowGone.Format(time.RFC3339Nano), lostAt.Format(time.RFC3339Nano))
+	stoppedBy, _ := timeIn(t, recorder, "lost the publisher hold", "stopped_by")
+	if deadline := hold.Deadline(); !stopped.Equal(deadline) || !stoppedBy.Equal(deadline) {
+		t.Errorf("the line dates the stop at %s and bounds it by %s, want both at %s: the deadline the loss pulled back to the moment the hold was lost",
+			stopped.Format(time.RFC3339Nano), stoppedBy.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano))
 	}
 }
 

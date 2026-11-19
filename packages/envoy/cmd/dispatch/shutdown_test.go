@@ -1115,6 +1115,8 @@ func TestAShutdownWithTheDatabaseUnansweringDecidesToExitInsideStopGrace(t *test
 // back, and says so, instead of waiting on it until the runtime kills Dispatch. The test's pool pings
 // every connection it hands out, as pgxpool pings one idle for over a second, so the late taker is
 // held by a ping the frozen database never answers without the test waiting out that second.
+// closePool's pauses and its probes' bounds run on a fake clock the row moves to each wait it arms,
+// so the give-up is read on that clock: no later than silentProbes pauses and probe bounds.
 func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -1149,10 +1151,40 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	testwait.Eventually(t, "the late taker to take the idle shared connection", func() bool { return pool.Use().InUse > 0 })
 
 	logged := capturedLog(t)
-	started := time.Now()
-	closePool(clock.Real(), pool)
-	took := time.Since(started)
-	t.Logf("closePool returned %v after it began", took)
+	// A fixed moment: nothing closePool arms on the fake is compared with the wall clock.
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		closePool(fake, pool)
+	}()
+	type step struct {
+		to       time.Time
+		returned bool
+		// armed is every deadline pending when the step was read, which a wait that gives up prints.
+		armed []time.Time
+	}
+	for {
+		next := testwait.Until(t, "closePool to arm its next wait, or to return", func() (step, bool) {
+			select {
+			case <-returned:
+				return step{returned: true}, true
+			default:
+			}
+			armed := fake.Armed()
+			if len(armed) == 0 {
+				return step{}, false
+			}
+			return step{to: armed[0], armed: armed}, true
+		})
+		if next.returned {
+			break
+		}
+		fake.Set(next.to)
+	}
+	gaveUp := fake.Now().Sub(began)
+	t.Logf("closePool gave up %v after it began, on its clock", gaveUp)
 	select {
 	case err := <-taken:
 		t.Errorf("the late taker's connection came back (%v), want it held by the frozen database", err)
@@ -1161,13 +1193,11 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	if !strings.Contains(logged.String(), "once the database stopped answering") {
 		t.Errorf("closePool did not say it gave up because the database stopped answering:\n%s", logged.String())
 	}
-	// How long the give-up takes is a reading of this machine's clock against closePool's own
-	// probe timers, so only the opt-in timing lane holds it to a figure; what every run proves
-	// is that closePool returns at all and says why.
-	if os.Getenv(benchtime.TimingEnv) != "" {
-		if bound := silentProbes*(drainPollInterval+2*time.Second) + 3*time.Second; took > bound {
-			t.Errorf("closePool returned %v after it began with the database unanswering, want within %v", took, bound)
-		}
+	// healthProbeBound is the bound HealthyOn arms on each probe (store's healthProbeTimeout).
+	const healthProbeBound = 2 * time.Second
+	if bound := silentProbes * (drainPollInterval + healthProbeBound); gaveUp > bound {
+		t.Errorf("closePool gave up %v after it began with the database unanswering, want within %v: %d pauses of %v and %d probes of %v",
+			gaveUp, bound, silentProbes, drainPollInterval, silentProbes, healthProbeBound)
 	}
 }
 

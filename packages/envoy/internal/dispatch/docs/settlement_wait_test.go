@@ -118,8 +118,13 @@ func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
 	}
 	unlock()
 
-	if locks := tracer.statements(artifactID, "advisory_xact_lock(hashtext(", since); locks != 1 {
-		t.Errorf("the shutdown's settlement sent %d lock statements for the document, want 1", locks)
+	// pg_advisory_xact_lock is the lock that waits; pg_try_advisory_xact_lock, which gives up at
+	// once, is not it, and the shutdown's settlement sends none.
+	if locks := tracer.statements(artifactID, "pg_advisory_xact_lock(hashtext(", since); locks != 1 {
+		t.Errorf("the shutdown's settlement sent %d waiting lock statements for the document, want 1", locks)
+	}
+	if tries := tracer.statements(artifactID, "pg_try_advisory_xact_lock(hashtext(", since); tries != 0 {
+		t.Errorf("the shutdown's settlement sent %d try-locks for the document, want none: a try-lock waits for nothing", tries)
 	}
 	// The wait's bound is Postgres's own: the lock statement goes out in the pipeline that first
 	// sets lock_timeout to 100 ms, so the database ends the wait there - not a try-lock that waits
@@ -136,7 +141,8 @@ func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
 }
 
 // lockWaitsUnder reports whether a pipeline recorded since sets lock_timeout to timeout and then,
-// in that pipeline, takes room's transaction-level advisory lock.
+// in that pipeline, takes room's transaction-level advisory lock with the statement that waits for
+// it (pg_advisory_xact_lock, not pg_try_advisory_xact_lock).
 func (t *statementTracer) lockWaitsUnder(room, timeout string, since int) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -146,7 +152,7 @@ func (t *statementTracer) lockWaitsUnder(room, timeout string, since int) bool {
 			if strings.Contains(statement.sql, "set_config('lock_timeout', '"+timeout+"'") {
 				set = true
 			}
-			if set && strings.Contains(statement.sql, "advisory_xact_lock(hashtext(") && statement.names(room) {
+			if set && strings.Contains(statement.sql, "pg_advisory_xact_lock(hashtext(") && statement.names(room) {
 				return true
 			}
 		}

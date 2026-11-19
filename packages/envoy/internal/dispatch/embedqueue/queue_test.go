@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -624,23 +625,25 @@ func TestClaimRenewalExtendsNextAttemptAtPastClaimWindow(t *testing.T) {
 func TestReserveTokensSharesItsBudgetAcrossConnections(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	const ceiling = 120 // tokens/minute = 2 tokens/second, so a small deficit waits a short, deterministic time
+	// tokens/minute: a fifth of a token a second, so what the budget refills between the seed
+	// and the reservation is small beside the deficit, however slow the machine.
+	const ceiling = 12
 
 	// A direct write stands in for a first process's own reservation having already returned,
 	// leaving the shared row at a 2-token deficit - deliberately not reserveTokens' own blocking
 	// call, which would wait out exactly the debt it created and read back near zero by the time
 	// a second reservation ran right after it, proving nothing about whether the row's state is
 	// actually shared.
-	if _, err := database.Pool.Exec(ctx, `update embeddings_rate_limit set tokens_available = -2, last_refill_at = now()`); err != nil {
+	var seeded time.Time
+	if err := database.Pool.QueryRow(ctx, `update embeddings_rate_limit set tokens_available = -2, last_refill_at = now() returning last_refill_at`).Scan(&seeded); err != nil {
 		t.Fatalf("seed an existing deficit: %v", err)
 	}
 
 	// A second, distinct Deps value - sharing no in-memory state with whatever wrote that
 	// deficit, standing in for a second OS process - reserves 2 more tokens and must wait out
-	// the existing deficit plus its own: 4 tokens at 2/second, about 2 seconds. The wait runs on
-	// a fake clock, so what the reservation owes is read as the deadline it arms rather than
-	// timed on the machine's own clock.
-	fake := clocktest.Held()
+	// the existing deficit plus its own. The wait runs on a fake clock that never moves by
+	// itself, so the deadline it arms is exactly the wait the reservation computed.
+	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
 	start := fake.Now()
 	reserved := make(chan struct{})
 	go func() {
@@ -648,8 +651,22 @@ func TestReserveTokensSharesItsBudgetAcrossConnections(t *testing.T) {
 		reserveTokens(ctx, Deps{Store: database, Clock: fake}, 2, ceiling, nil)
 	}()
 	armed := fake.AwaitArmed(t, "the wait the reservation owes the shared budget", 1)
-	if owed := armed[0].Sub(start); owed < 1500*time.Millisecond {
-		t.Errorf("the reservation waits %v out, want at least ~2s (the pre-existing 2-token deficit plus its own 2-token request, at 2 tokens/sec) - it should have read the shared row's existing debt from a separate writer, not started fresh", owed)
+	// The reservation's own record of what it owed is the shared row it wrote, on the database's
+	// clock: it refilled the seeded deficit for the time between the seed and its own statement,
+	// took its own 2 tokens from that, and armed the wait the deficit left at the ceiling's rate.
+	// A reservation that started fresh would leave a deficit of its own 2 tokens alone.
+	var available, refilled float64
+	if err := database.Pool.QueryRow(ctx, `
+		select tokens_available, extract(epoch from last_refill_at - $1::timestamptz) * ($2::double precision / 60.0)
+		from embeddings_rate_limit`, seeded, float64(ceiling)).Scan(&available, &refilled); err != nil {
+		t.Fatalf("read the shared budget the reservation wrote: %v", err)
+	}
+	if want := -2 + refilled - 2; math.Abs(available-want) > 1e-6 {
+		t.Errorf("the reservation left the shared budget at %.4f tokens, want %.4f: the seeded 2-token deficit, refilled by %.4f since, less its own 2 - it should have read the shared row's existing debt from a separate writer, not started fresh",
+			available, want, refilled)
+	}
+	if owed, want := armed[0].Sub(start), time.Duration(-available/(float64(ceiling)/60.0)*float64(time.Second)); owed != want {
+		t.Errorf("the reservation waits %v out, want %v: the %.4f-token deficit it left, at %d tokens a minute", owed, want, -available, ceiling)
 	}
 	fake.Set(armed[len(armed)-1])
 	testwait.Receive(t, "the reservation to return once its wait is out", reserved)
@@ -1616,14 +1633,14 @@ func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
 }
 
 // A throttled batch waits retryInterval plus its backoff before the next one, so a throttle
-// episode never sends calls more often than the scan ticker did. The scan runs on a fake clock,
-// so the pause is read as the deadline it arms and no second call can come until the test moves
-// the clock there, which it never does.
+// episode never sends calls more often than the scan ticker did. The scan runs on a fake clock
+// that never moves by itself, so the pause is read as exactly the deadline it arms and no second
+// call can come until the test moves the clock there, which it never does.
 func TestAThrottledScanWaitsAtLeastRetryIntervalBeforeItsNextBatch(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "THSC", "THSC-1", "A title")
 	embedder := &fakeEmbedder{err: embedtest.FakeThrottleError{Code: "ThrottlingException"}}
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
 	start := fake.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -216,8 +216,9 @@ func TestAFailingListenerIsAskedOnceWithinTheSilenceWindow(t *testing.T) {
 
 // A cached failure lasts only its silence window: once it has run out, a read asks the listener
 // again and reads its answer. The answered TTL is lengthened to a minute, so a cache that held a
-// failure under that TTL, or for ever, would still read unknown; the silence window is the
-// deployment's, and the test moves the stored row past it rather than waiting it out.
+// failure under that TTL, or for ever, would store an expiry a minute or more past the fetch; the
+// row reads the stored failure's own window, both ends stamped by the database, and requires it
+// shorter than that TTL before it moves the row past the window rather than waiting it out.
 func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T) {
 	roster := &fakeRoster{}
 	roster.down.Store(true)
@@ -228,6 +229,16 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 
 	if got := detailReach(t, handler, key); got != "unknown null" {
 		t.Fatalf("read with the listener down: %s, want unknown null", got)
+	}
+	var answered bool
+	var micros int64
+	if err := database.Pool.QueryRow(context.Background(),
+		`select answered, (extract(epoch from expires_at - sent_at) * 1000000)::bigint from route_roster`).Scan(&answered, &micros); err != nil {
+		t.Fatalf("read the stored listener answer: %v", err)
+	}
+	if window := time.Duration(micros) * time.Microsecond; answered || window >= served.rosters.ttl {
+		t.Fatalf("the stored answer of the failed fetch is answered=%t and lasts %v, want a failure kept for its silence window, shorter than the %v answered TTL",
+			answered, window, served.rosters.ttl)
 	}
 	roster.down.Store(false)
 	roster.set("ses-sre", "sre")

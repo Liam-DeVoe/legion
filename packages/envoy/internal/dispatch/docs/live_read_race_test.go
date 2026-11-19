@@ -152,7 +152,18 @@ func TestReadsOfALiveDocumentRunBesideItsPeers(t *testing.T) {
 	t.Run("unrecorded mark sweep", func(t *testing.T) {
 		service, artifactID, serverURL := newPeeredService(t, seeded)
 		peer := typeIntoDocument(t, service, serverURL, artifactID)
+		// The sweeps run as often as they can, beside the peer's updates, so the loop is the
+		// test's own; it ends with the test failing elsewhere (the peer's typing says why) or
+		// where the shared wait gives up, naming how far the room had got.
+		ctx := testwait.Context(t)
 		for applied := peerApplied(service, artifactID, peer); peerApplied(service, artifactID, peer) < applied+sweepsBesideUpdates; {
+			if t.Failed() {
+				return
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("the room applied %d of the %d peer updates the sweeps run beside before the test binary's deadline",
+					peerApplied(service, artifactID, peer)-applied, sweepsBesideUpdates)
+			}
 			if err := service.unmarkExpired(artifactID, []pmdoc.MarkRef{{Type: string(MarkComment), ID: "absent"}}); err != nil {
 				t.Fatalf("sweep the live document: %v", err)
 			}

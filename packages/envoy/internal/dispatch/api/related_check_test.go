@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -458,14 +459,16 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 }
 
 // A keyword stage held behind a lock, well past the old 300 ms bound, still answers within the
-// check's allowance once the lock goes. The check runs on a clock that never moves, so its
-// allowance cannot end first.
+// check's allowance once the lock goes. The check runs on a fake clock the row moves: it waits
+// for the allowance armed there and moves the clock to just short of it while the lock is still
+// held, so a stage with a shorter bound of its own, on either clock, would answer first.
 func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SLOW")
 	key := createSearchIssue(t, handler, "SLOW", "Quarterly zymurgy ledger drifts", "")
 	srv := directServer(deps)
-	srv.clock = clocktest.New(checkStart)
+	clock := clocktest.New(checkStart)
+	srv.clock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -477,11 +480,12 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	}
 	answered := checkOnTheSide(srv, context.Background(), relatedInput{project: "SLOW", text: "Zymurgy ledger totals drift"})
 	awaitLockWait(t, database, "search_term_stats")
-	select {
-	case early := <-answered:
-		t.Fatalf("the check answered %+v before the lock it reads behind was released", early)
-	default:
-	}
+	allowanceEnds := checkStart.Add(cmp.Or(srv.suggestionTimeout, relatedCheckAllowance))
+	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.Set(allowanceEnds.Add(-time.Millisecond))
+	testwait.Quiet(t, "the check answering while the lock it reads behind is held, a moment short of its allowance", answered,
+		time.Second, "a keyword stage that gave up on a bound of its own answers at once once that bound passes, and the "+
+			"check's answer is the one state of it the row reads")
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}

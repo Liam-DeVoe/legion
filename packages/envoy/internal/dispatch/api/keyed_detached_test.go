@@ -536,12 +536,82 @@ func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
 	awaitArmedAt(t, fake, "the run's renewal due at or past its bound", renewal)
 	fake.Set(bound)
 	testwait.Receive(t, "the run's bound to end its context", bounded)
+	// The renewals end with the run's bound. The renewal due with it may have been sent - the
+	// bound's lease past the limit, which the doc above allows - but none is left armed after it,
+	// so a run that ignores its context renews its lease no further however far the clock moves.
+	testwait.Span(t, 2*time.Second, "the renewal loop's return is reported to no state the test reads, and the "+
+		"renewal due with the bound is a real PostgreSQL statement (no synctest) after which the loop either arms "+
+		"the next renewal or returns; the span starts once the bound has ended the run's context, so by its end a "+
+		"loop that renews past the bound has armed that renewal, and the armed timers read it")
+	afterBound := func(at time.Time) bool {
+		return at.After(bound) && at.Sub(start)%keyedLeaseRenewal == 0
+	}
+	if armed := fake.Armed(); slices.ContainsFunc(armed, afterBound) {
+		t.Fatalf("armed %v once the run's bound at %s had ended its context; want no lease renewal armed past it", armed, bound)
+	}
 	// Then a whole lease past the last renewal it allows.
 	ageRequestKeyLease(t, rig.database, "alice", "overrun", contracts.IdempotencyLease+time.Second)
 	takeover := rig.send(t, "a", nil, "alice", "overrun")
 	if takeover.Code != http.StatusCreated || replayed(takeover) || !strings.Contains(takeover.Body.String(), `"run":2`) {
 		t.Fatalf("a repeat a lease past the run's limit: status=%d body=%s, want the key taken over and run again",
 			takeover.Code, takeover.Body.String())
+	}
+	releaseOnce()
+	awaitResponse(t, answered)
+}
+
+// A running keyed handler's lease renewals keep a fixed rate on the server's clock, as the
+// ticker before the server's clock kept them: a renewal that waits on the key's row past the
+// moment a renewal paced from its end would be due leaves the next one where the rate puts it, one
+// keyedLeaseRenewal after it was due, not one after it ended. So two renewals that each run out of
+// keyedBookkeeping still leave the third due inside IdempotencyLease, as the renewal's own
+// interval promises. Here the first renewal waits on the row, the clock moves half an interval
+// meanwhile, and the next renewal is armed at two intervals, not two and a half.
+func TestALeaseRenewalThatWaitsLeavesTheNextAtItsFixedRate(t *testing.T) {
+	release, releaseOnce := heldUntilReleased(t)
+	running := make(chan struct{})
+	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	rig := newKeyedRigWith(t, testServerOptions{clock: fake}, keyedRigPattern, func(run int32, w http.ResponseWriter, r *http.Request) {
+		if run == 1 {
+			close(running)
+			<-release
+		}
+		answerRun(run, w, r)
+	})
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- rig.send(t, "a", nil, "alice", "fixed-rate") }()
+	testwait.Receive(t, "the run to start", running)
+	first := start.Add(keyedLeaseRenewal)
+	awaitArmedAt(t, fake, "the run's first lease renewal", first)
+
+	ctx := context.Background()
+	locker, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = locker.Rollback(ctx) })
+	if _, err := locker.Exec(ctx,
+		`select 1 from request_keys where login = 'alice' and idempotency_key = 'fixed-rate' for update`); err != nil {
+		t.Fatalf("hold the key's row: %v", err)
+	}
+	fake.Set(first)
+	waitForDatabaseLocks(t, locker, 1)
+	// The renewal waits on the row while the clock moves half an interval past it.
+	ended := first.Add(keyedLeaseRenewal / 2)
+	fake.Set(ended)
+	if err := locker.Rollback(ctx); err != nil {
+		t.Fatalf("release the key's row: %v", err)
+	}
+
+	atRate, fromEnd := first.Add(keyedLeaseRenewal), ended.Add(keyedLeaseRenewal)
+	armed := testwait.Until(t, "the run's next lease renewal to be armed once the waiting one ended", func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, atRate.Equal) || slices.ContainsFunc(armed, fromEnd.Equal)
+	})
+	if !slices.ContainsFunc(armed, atRate.Equal) || slices.ContainsFunc(armed, fromEnd.Equal) {
+		t.Fatalf("armed %v once the renewal that waited ended at %s; want the next renewal at %s, one interval after the "+
+			"waiting one was due, and none at %s, one interval after it ended", armed, ended, atRate, fromEnd)
 	}
 	releaseOnce()
 	awaitResponse(t, answered)

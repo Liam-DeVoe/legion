@@ -120,13 +120,16 @@ func (p inlineRawHTMLParser) Parse(parent ast.Node, block text.Reader, pc parser
 }
 
 // walkedLines is the block reader an inline raw HTML walk reads its block's lines through,
-// counting each line the walk advances past as a step of the parse (ParseWork): the record of
-// where a block holds no closer keeps that count linear in the block.
+// counting, as steps of the parse (ParseWork), the bytes of each line the walk reads from where it
+// stands on it: a walk searches each line it reads for its closer, so those bytes are its cost,
+// whether the line is the opener's own or one past it, and the record of where a block holds no
+// closer keeps that count linear in the block.
 type walkedLines struct{ text.Reader }
 
-func (r walkedLines) AdvanceLine() {
-	parseWork.Add(1)
-	r.Reader.AdvanceLine()
+func (r walkedLines) PeekLine() ([]byte, text.Segment) {
+	line, segment := r.Reader.PeekLine()
+	parseWork.Add(uint64(len(line)))
+	return line, segment
 }
 
 // parseDeclaration reads the declaration the block reader is at, which goldmark's parser reads

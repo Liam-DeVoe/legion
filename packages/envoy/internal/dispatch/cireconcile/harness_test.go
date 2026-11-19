@@ -89,9 +89,10 @@ type harness struct {
 	clock *clocktest.Fake
 	// ciClock is the time the listener's CI store runs its summary loop on (cistore.WithClock):
 	// the loop's grid, its debounce, and the backoff of a claim that lost a compare-and-swap.
-	// It is the reconciler's clock's neighbour rather than the same one, so a pass cut at its
-	// five-minute bound moves no tick of the loop; settlement and the helpers beside it move it
-	// (driveLoop).
+	// The reconciler's CI writer stamps its records on it too, so a record it writes falls due a
+	// debounce after a moment on this clock and on no other. It is the reconciler's clock's
+	// neighbour rather than the same one, so a pass cut at its five-minute bound moves no tick of
+	// the loop; settlement and the helpers beside it move it (driveLoop).
 	ciClock *clocktest.Fake
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
@@ -134,6 +135,7 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 	limits := ratelimit.New(database.Pool)
 	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
 	github := newFakeGitHub(t, fake)
+	ciClock := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
 	return &harness{
 		t:        t,
 		ctx:      ctx,
@@ -143,18 +145,14 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 		logs:     logs,
 		reviewer: reviewer,
 		clock:    fake,
-		// Frozen at the moment the harness is made, which is the order of the moments the
-		// reconciler's writer stamps on records with the wall clock (cistore.OpenWriter takes no
-		// clock): a record it writes falls due on this clock a debounce after that stamp, which
-		// the loop's next armed moment reaches.
-		ciClock: clocktest.New(time.Now()),
+		ciClock:  ciClock,
 		reconciler: &Reconciler{
 			Pool:   database.Pool,
 			GitHub: github.client(limits),
 			Limits: limits,
 			// The writer is bound by the first pass that finds NATS connected and the bucket
 			// made, as the running pass binds it, rather than here.
-			Open:          openWriter(client),
+			Open:          openWriter(client, ciClock),
 			ReviewerAppID: reviewer,
 			Logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 			// A test not about the pace waits for no pace.
@@ -167,10 +165,11 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 }
 
 // openWriter is the Open a Reconciler of this harness binds through: cistore's own writer, which
-// creates no bucket and so fails until the listener has made one.
-func openWriter(client *bus.Client) func() (Writer, error) {
+// creates no bucket and so fails until the listener has made one, stamping its records on
+// ciClock, the listener's clock.
+func openWriter(client *bus.Client, ciClock *clocktest.Fake) func() (Writer, error) {
 	return func() (Writer, error) {
-		writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+		writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithClock(ciClock))
 		if err != nil {
 			return nil, err
 		}
@@ -270,7 +269,7 @@ func (h *harness) replica() *Reconciler {
 		Pool:          h.pool,
 		GitHub:        h.github.client(limits),
 		Limits:        limits,
-		Open:          openWriter(h.bus),
+		Open:          openWriter(h.bus, h.ciClock),
 		ReviewerAppID: h.reviewer,
 		Logger:        slog.New(slog.NewJSONHandler(&syncBuffer{}, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Pace:          0,

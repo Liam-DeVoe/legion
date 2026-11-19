@@ -18,8 +18,11 @@ import (
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
-// template is the database every Open clones: an empty one carrying every Dispatch migration,
-// with autovacuum off for the embeddings table (embeddingsStatistics says why).
+// template is the database every Open clones: an empty one carrying every Dispatch migration and
+// nothing else, so a clone keeps every table setting the product's database has, autovacuum
+// included. A test whose answer follows the planner's choice analyzes the table itself once its
+// rows are in (search_meaning_test.go, search_index_test.go, docs' block_index_test.go), so the
+// plan it meets is the one the product's statistics call for.
 var template = testdb.NewTemplate(testdb.DispatchServer, "dispatch",
 	"func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }",
 	func(ctx context.Context, databaseURL string) error {
@@ -28,32 +31,8 @@ var template = testdb.NewTemplate(testdb.DispatchServer, "dispatch",
 			return fmt.Errorf("open: %w", err)
 		}
 		defer database.Pool.Close()
-		if err := database.Migrate(ctx); err != nil {
-			return err
-		}
-		if _, err := database.Pool.Exec(ctx, embeddingsStatistics); err != nil {
-			return fmt.Errorf("turn autovacuum off for embeddings: %w", err)
-		}
-		return nil
+		return database.Migrate(ctx)
 	})
-
-// embeddingsStatistics turns autovacuum off for embeddings in the template, and so in every
-// clone, which copies the table's options: the table's statistics are then only what the test
-// writes and any analyze it runs itself.
-//
-// Meaning search's plan follows those statistics, and the plan decides its answer. Autovacuum
-// analyzes a clone when its own schedule reaches it, which it did inside one unloaded run of a
-// test a few seconds long. An analyze that lands after a test has written its windows and before
-// their vectors reads every row as holding none, and the planner then takes every meaning arm
-// through embeddings_cosine, pgvector's approximate HNSW index, where at any other moment it takes
-// an exact scan and sort of a table this small. Measured on
-// TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows (INFRA-3149), whose long document
-// holds a hundred identical vectors: with that analyze planted, 6 of 12 searches lost the short
-// document and 1 lost the comment; analyzed once every vector was in, 12 of 12 found all three;
-// and the document arm alone, forced onto the HNSW index, missed the short document in 13 of 33
-// runs. A test whose subject is the planner's choice analyzes the table itself
-// (search_index_test.go, docs' block_index_test.go).
-const embeddingsStatistics = `alter table embeddings set (autovacuum_enabled = false, toast.autovacuum_enabled = false)`
 
 // Open returns a store on a new database carrying every migration, dropped after t ends. It skips
 // t when DISPATCH_TEST_DATABASE_URL is unset.

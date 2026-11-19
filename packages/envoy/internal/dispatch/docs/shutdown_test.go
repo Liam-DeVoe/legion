@@ -100,7 +100,10 @@ func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
 // A browser leaving a room settles what it was owed at once (settleLastPeer), on ygo's disconnect
 // goroutine, in place of the timer it stops. Shutdown joins that settlement as it joins a timer's:
 // it reports which documents settled, and stops ygo, only once the settlement has returned, and the
-// process does not close the store under it.
+// process does not close the store under it. The departing browser's socket ends only once that
+// settlement has returned, so the drain's forced close of the room, which waits for each peer's
+// read loop, orders Shutdown after it too; TestShutdownJoinsATimersSettlementUnderWay is the row
+// where the join alone does.
 func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -160,6 +163,96 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 		t.Fatalf("the document owes no settlement (%v) after a shutdown that settled nothing", err)
 	}
 	waitForPersistedProofText(t, database, artifactID, "before\n\nadded\n")
+}
+
+// A settlement its timer started runs on the timer's goroutine under the timer's settleWG count.
+// Held once its transaction has ended, it holds no lock and no peer's read loop, and the document
+// it settled owes nothing, so Shutdown's drain neither settles the room nor waits on it, and a room
+// with no editor connected is not closed: Shutdown's join of the settlements under way
+// (waitSettles) is the one thing that keeps it from returning - stopping ygo, and leaving the store
+// to its caller to close - while that settlement still runs.
+func TestShutdownJoinsATimersSettlementUnderWay(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	drainClock := clocktest.New(time.Now())
+	service := newShutdownTestServiceOn(t, database, nil, drainClock)
+	hold := holdSettlementsPastTheirTransaction(service)
+	t.Cleanup(hold.let)
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	waitForSettlementOwed(t, service, artifactID)
+	if err := service.waitForDurableAppends(testwait.Context(t), artifactID); err != nil {
+		t.Fatalf("wait for the edit to be stored: %v", err)
+	}
+
+	// The edit armed the room's settlement on its hour-long timer; arming it again with no delay
+	// fires it now, so the settlement runs as the timer's own.
+	hold.armed.Store(true)
+	state := service.lockState(artifactID)
+	service.scheduleSettleAfterLocked(artifactID, state, 0)
+	service.unlockState(artifactID, state)
+	testwait.Receive(t, "the timer's settlement to end its transaction", hold.held)
+	var released atomic.Bool
+	shutdown := make(chan error, 1)
+	var returnedAfterRelease bool
+	go func() {
+		err := service.Shutdown(testwait.Context(t))
+		returnedAfterRelease = released.Load()
+		shutdown <- err
+	}()
+	// The drain budget runs on the service's clock, so the test ends it: that frees the join's
+	// first, budgeted wait, and leaves the wait after the gate closes.
+	budget := drainClock.Now().Add(ShutdownDrainBudget)
+	waitFor(t, "Shutdown to arm its drain budget on the service's clock", func() bool {
+		return slices.Contains(drainClock.Armed(), budget)
+	})
+	drainClock.Advance(ShutdownDrainBudget)
+	testwait.Quiet(t, "Shutdown returning while the timer's settlement is held", shutdown, 2*time.Second,
+		"no state shows Shutdown waiting in its join; a Shutdown that skips it has only its evictions, "+
+			"one database read and ygo's stop left once the budget ends, which take milliseconds")
+	released.Store(true)
+	hold.let()
+	if err := testwait.Receive(t, "Shutdown to return once the timer's settlement has returned", shutdown); err != nil {
+		t.Fatalf("shutdown under the timer's settlement: %v", err)
+	}
+	if !returnedAfterRelease {
+		t.Error("Shutdown returned while the timer's settlement was still under way")
+	}
+	// The settlement committed before Shutdown began, so the document owes nothing.
+	if owed, err := settlementPending(context.Background(), database.Pool, artifactID); err != nil || owed {
+		t.Fatalf("the document still owes its settlement (%v) after the timer's settlement committed", err)
+	}
+	if _, markdown, _ := latestDocumentVersion(t, database, artifactID); markdown != "after\n" {
+		t.Fatalf("the document's latest version holds %q, want the timer's settlement's %q", markdown, "after\n")
+	}
+}
+
+// settlementHold holds a room's next settlement once armed, after its transaction has ended and
+// before it returns (Service.afterSettleTransaction): the settlement has committed, holds no lock,
+// and still counts as under way.
+type settlementHold struct {
+	armed   atomic.Bool
+	held    chan struct{}
+	proceed chan struct{}
+	release sync.Once
+}
+
+// holdSettlementsPastTheirTransaction installs a settlementHold on service, whose settlements it
+// sees from now on.
+func holdSettlementsPastTheirTransaction(service *Service) *settlementHold {
+	hold := &settlementHold{held: make(chan struct{}), proceed: make(chan struct{})}
+	service.afterSettleTransaction = func(string) {
+		if hold.armed.CompareAndSwap(true, false) {
+			close(hold.held)
+			<-hold.proceed
+		}
+	}
+	return hold
+}
+
+func (hold *settlementHold) let() {
+	hold.release.Do(func() { close(hold.proceed) })
 }
 
 // An append a room queued before the signal can be slow to store - waiting on its document's lock

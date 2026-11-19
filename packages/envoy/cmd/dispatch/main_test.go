@@ -23,8 +23,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -907,7 +907,11 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		database.Pool.Close()
 	})
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}))
+	// The probe's bound is armed on a fake clock (healthzHandlerOn), so the row reads the bound the
+	// probe armed and ends the probe only by moving the fake to it.
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	server := httptest.NewServer(healthzHandlerOn(fake, database, nil, nil, nil, "", nil, issuers{}))
 	defer server.Close()
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -915,47 +919,46 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 	}
 
 	// The load balancer's own timeout is five seconds: a poll it has not heard back from in that
-	// long is a failure, and three consecutive failures replace the task. Whether this answer
-	// came inside it is a reading of this machine's clock against store.healthProbeTimeout's
-	// timer, so only benchtime's timing lane holds it to that figure; every run requires the
-	// answer, and the 503 below, through the shared wait's own bound.
+	// long is a failure, and three consecutive failures replace the task. The probe on a database
+	// that answers nothing arms its bound as it starts and answers once that bound passes.
 	blackholed.Store(true)
-	started := time.Now()
-	response, err := healthzWithin(t, server.URL)
-	if err != nil {
-		t.Fatalf("health probe with Postgres unreachable: %v (after %s)", err, time.Since(started))
+	answered := healthzAsync(t, server.URL)
+	armed := fake.AwaitArmed(t, "the database probe's bound", 1)
+	if bound := armed[0].Sub(began); bound >= 5*time.Second {
+		t.Fatalf("the database probe armed its bound %v after the poll came, at or past the load balancer's five seconds", bound)
 	}
-	if took := time.Since(started); os.Getenv(benchtime.TimingEnv) != "" && took >= 5*time.Second {
-		t.Fatalf("health probe with Postgres unreachable answered after %s, past the load balancer's five seconds", took)
-	}
-	defer response.Body.Close()
-	var health map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		t.Fatalf("decode health response: %v", err)
-	}
-	if response.StatusCode != http.StatusServiceUnavailable || health["db"] != false || health["schema_version"] != nil {
+	fake.Set(armed[0])
+	health := testwait.Receive(t, "the health probe to answer once its bound passed", answered).decode(t)
+	if health.status != http.StatusServiceUnavailable || health.body["db"] != false || health.body["schema_version"] != nil {
 		t.Fatalf("health probe with Postgres unreachable = %d %#v, want 503 with db false and no schema version",
-			response.StatusCode, health)
+			health.status, health.body)
 	}
 }
 
-// unansweringBucket is a file store whose bucket never answers its probe: Healthy waits out the
-// two seconds files.S3 bounds its HeadBucket by, as a hung HeadBucket does.
-type unansweringBucket struct{ *filestest.Memory }
+// heldBucket is a file store whose bucket answers its probe only once the test releases it, and
+// says when the probe has reached it, so a test can hold the bucket's probe in flight while it
+// reads what the rest of the probe does. Its probe fails, as a hung HeadBucket's bound does.
+type heldBucket struct {
+	*filestest.Memory
+	reached chan struct{}
+	release chan struct{}
+}
 
-func (unansweringBucket) Healthy(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	<-ctx.Done()
-	return ctx.Err()
+func (b heldBucket) Healthy(ctx context.Context) error {
+	close(b.reached)
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return errors.New("the bucket did not answer")
 }
 
 // /healthz still answers inside the tightest prober's three seconds when Postgres and the
 // file store's bucket both stop answering. Each probe is bounded at two seconds on its own, so
 // run one after the other they took four, and the compose healthcheck and the deploy script
-// read that silence as a dead process; run side by side they take two. That figure is a reading
-// of this machine's clock against the two probes' timers, so only benchtime's timing lane holds
-// it; every run requires the answer and its 503.
+// read that silence as a dead process; run side by side they take two. The row proves them side
+// by side: the database probe arms its bound on the fake while the bucket's probe is held in
+// flight, and a handler that ran them one after the other never has both in flight at once.
 func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) {
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
@@ -972,28 +975,61 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		blackholed.Store(false)
 		database.Pool.Close()
 	})
-	bucket := unansweringBucket{filestest.NewMemory()}
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}))
+	bucket := heldBucket{Memory: filestest.NewMemory(), reached: make(chan struct{}), release: make(chan struct{})}
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	server := httptest.NewServer(healthzHandlerOn(fake, database, nil, nil, bucket, "", nil, issuers{}))
 	defer server.Close()
 
 	blackholed.Store(true)
-	started := time.Now()
-	response, err := healthzWithin(t, server.URL)
-	if err != nil {
-		t.Fatalf("health probe with Postgres and the bucket unreachable: %v (after %s)", err, time.Since(started))
+	answered := healthzAsync(t, server.URL)
+	testwait.Receive(t, "the bucket's probe to start", bucket.reached)
+	armed := fake.AwaitArmed(t, "the database probe's bound, armed while the bucket's probe is held in flight", 1)
+	close(bucket.release)
+	fake.Set(armed[0])
+	health := testwait.Receive(t, "the health probe to answer once both probes ended", answered).decode(t)
+	if health.status != http.StatusServiceUnavailable || health.body["db"] != false || health.body["files"] != false {
+		t.Fatalf("health probe with Postgres and the bucket unreachable = %d %#v, want 503 with db and files false",
+			health.status, health.body)
 	}
-	if took := time.Since(started); os.Getenv(benchtime.TimingEnv) != "" && took >= 3*time.Second {
-		t.Fatalf("health probe with Postgres and the bucket unreachable answered after %s, past the tightest prober's three seconds", took)
+}
+
+// healthzAnswer is one GET of /healthz as healthzAsync received it.
+type healthzAnswer struct {
+	response *http.Response
+	err      error
+}
+
+// healthzRead is a /healthz answer's status and decoded body.
+type healthzRead struct {
+	status int
+	body   map[string]any
+}
+
+// decode fails t unless the GET was answered with a JSON body, and reads it.
+func (a healthzAnswer) decode(t *testing.T) healthzRead {
+	t.Helper()
+	if a.err != nil {
+		t.Fatalf("health probe: %v", a.err)
 	}
-	defer response.Body.Close()
-	var health map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+	defer a.response.Body.Close()
+	read := healthzRead{status: a.response.StatusCode}
+	if err := json.NewDecoder(a.response.Body).Decode(&read.body); err != nil {
 		t.Fatalf("decode health response: %v", err)
 	}
-	if response.StatusCode != http.StatusServiceUnavailable || health["db"] != false || health["files"] != false {
-		t.Fatalf("health probe with Postgres and the bucket unreachable = %d %#v, want 503 with db and files false",
-			response.StatusCode, health)
-	}
+	return read
+}
+
+// healthzAsync sends one GET of /healthz at serverURL (healthzWithin) on a goroutine of its own,
+// so the test can move the probe's clock while it waits, and delivers the answer on the channel.
+func healthzAsync(t *testing.T, serverURL string) <-chan healthzAnswer {
+	t.Helper()
+	answered := make(chan healthzAnswer, 1)
+	go func() {
+		response, err := healthzWithin(t, serverURL)
+		answered <- healthzAnswer{response: response, err: err}
+	}()
+	return answered
 }
 
 // healthzWithin is one GET of /healthz at serverURL under the shared wait's context, which ends

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -46,6 +47,9 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *server) 
 		ServerURL:   "https://dispatch.example",
 		Docs:        documentService,
 		Events:      broker,
+		// Its sockets' event feeds are waited on as the first process's are (eventFeedFrame).
+		HorizonStallAfter: horizontest.StallWarning,
+		HorizonWarnEvery:  horizontest.StallWarning,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies for the second process: %v", err)
@@ -112,10 +116,12 @@ func subscribeRelay(t *testing.T, relay *eventStreamRelay) (<-chan relayedEvent,
 	return subscription.events, subscription.cancel, subscription.head
 }
 
-// receiveRelayed is the subscription's next event.
-func receiveRelayed(t *testing.T, subscription <-chan relayedEvent) relayedEvent {
+// receiveRelayed is the subscription's next event. The relay publishes up to the safe horizon, so
+// the wait is the horizon's (horizontest.WaitInProcess), which fails at once, naming the holder,
+// on a hold in database, the test's own, that has stood OwnHoldBound.
+func receiveRelayed(t *testing.T, subscription <-chan relayedEvent, database *store.Store) relayedEvent {
 	t.Helper()
-	event := testwait.Receive(t, "the relay to publish the next event", subscription)
+	event := horizontest.WaitInProcess(t, "the relay's next event", subscription, database)
 	if event.Event.ID == 0 {
 		t.Fatal("the relay's subscription ended")
 	}
@@ -124,10 +130,10 @@ func receiveRelayed(t *testing.T, subscription <-chan relayedEvent) relayedEvent
 
 // receiveRelayedThrough reads the subscription until the event last, failing on an id out of
 // order or at or below after.
-func receiveRelayedThrough(t *testing.T, subscription <-chan relayedEvent, after, last int64) {
+func receiveRelayedThrough(t *testing.T, subscription <-chan relayedEvent, database *store.Store, after, last int64) {
 	t.Helper()
 	for previous := after; previous != last; {
-		id := receiveRelayed(t, subscription).Event.ID
+		id := receiveRelayed(t, subscription, database).Event.ID
 		if id <= previous {
 			t.Fatalf("the relay published %d after %d; it publishes each event once, in id order", id, previous)
 		}
@@ -274,7 +280,7 @@ func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
 	subscription, cancel, head := subscribeRelay(t, relay)
 	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
 	last := seedEvents(t, database, issue, 1, 0)
-	receiveRelayedThrough(t, subscription, head, last)
+	receiveRelayedThrough(t, subscription, database, head, last)
 	cancel()
 	waitRelayStopped(t, database, relay, dials, "after its last subscriber left")
 	for len(reads) > 0 {
@@ -305,7 +311,7 @@ func TestEventStreamRelayReadsEachCommitOnceForEverySubscriber(t *testing.T) {
 	committed := seedEvents(t, database, issue, 1, 0)
 	frames := make([][]byte, subscribers)
 	for index, subscription := range subscriptions {
-		event := receiveRelayed(t, subscription)
+		event := receiveRelayed(t, subscription, database)
 		if event.Event.ID != committed {
 			t.Fatalf("subscriber %d received event %d, want the committed %d", index, event.Event.ID, committed)
 		}
@@ -338,7 +344,7 @@ func TestEventStreamRelaySubscribeRacingTheLastCancelReceivesTheNextEvent(t *tes
 		subscription, cancelSecond, head := subscribeRelay(t, relay)
 		<-cancelled
 		committed := seedEvents(t, database, issue, 1, 0)
-		receiveRelayedThrough(t, subscription, head, committed)
+		receiveRelayedThrough(t, subscription, database, head, committed)
 		cancelSecond()
 	}
 }
@@ -403,7 +409,7 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 	}
 
 	commitLow()
-	receiveRelayedThrough(t, subscription, opened, high)
+	receiveRelayedThrough(t, subscription, database, opened, high)
 }
 
 // TestEventStreamRelayCatchesUpWhenItsListenerReconnects covers the window a redial leaves: a
@@ -437,7 +443,7 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	testwait.Quiet(t, "the relay's subscription while it has no listening connection", subscription,
 		100*time.Millisecond, relayHoldWhy)
 	down.Store(false)
-	receiveRelayedThrough(t, subscription, opened, committed)
+	receiveRelayedThrough(t, subscription, database, opened, committed)
 
 	// Every later LISTEN catches up the same way, from the cursor as it stands: a redial that
 	// reset it would send every open page the whole log again.
@@ -454,7 +460,7 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 		return len(dials.dialed()) > len(dialed)
 	})
 	next := seedEvents(t, database, issue, 1, 0)
-	receiveRelayedThrough(t, subscription, committed, next)
+	receiveRelayedThrough(t, subscription, database, committed, next)
 }
 
 // TestEventStreamRelayRecoversWhenTheEventLogIsReset: the browser suite empties the event log
@@ -476,7 +482,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 
 	// A cursor well above the ids the reset log will hand out.
 	committed := seedEvents(t, database, issue, 1, 0)
-	receiveRelayedThrough(t, subscription, opened, committed)
+	receiveRelayedThrough(t, subscription, database, opened, committed)
 
 	if _, err := database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {
 		t.Fatalf("reset the event log: %v", err)
@@ -507,7 +513,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 		t.Fatalf("a subscription after the reset has head %d, want the new log's %d", head, refilled)
 	}
 	next := seedEvents(t, database, issue, 1, 0)
-	receiveRelayedThrough(t, reopened, head, next)
+	receiveRelayedThrough(t, reopened, database, head, next)
 }
 
 // TestEventLogResetClearsTheRelaysHorizon: a reset log (`truncate events restart identity`, what

@@ -721,17 +721,12 @@ func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
 	}
 }
 
-const (
-	// requestAnswer is how long a request of these tests waits for its answer: nats.go's own
-	// request timer, a hang guard on a round trip to a server in this process, which no verdict
-	// waits out.
-	requestAnswer = 10 * time.Second
-	// frozenRequest is how long a request to a frozen server waits before it counts as unanswered:
-	// nats.go's own request timer is the span that proves the freeze held the bytes, since an
-	// answer the server never sent leaves no state to read and nothing the test does later orders
-	// against it.
-	frozenRequest = time.Second
-)
+// frozenRequest is how long a request to a frozen server waits before it counts as unanswered:
+// nats.go's own request timer is the span that proves the freeze held the bytes, since an answer
+// the server never sent leaves no state to read and nothing the test does later orders against
+// it. A request the server answers waits on testwait.Context, so no bound of the test's own
+// decides a slow round trip.
+const frozenRequest = time.Second
 
 // A frozen server stops the bytes in either direction without dropping anything: the request times
 // out while its connection is still CONNECTED, as a server that has stopped answering leaves it,
@@ -745,7 +740,7 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 		t.Fatalf("subscribe: %v", err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
-	if _, err := conn.Request("echo", nil, requestAnswer); err != nil {
+	if _, err := conn.RequestWithContext(testwait.Context(t), "echo", nil); err != nil {
 		t.Fatalf("request before the freeze: %v", err)
 	}
 
@@ -758,7 +753,7 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 	}
 
 	thaw()
-	answer, err := conn.Request("echo", nil, requestAnswer)
+	answer, err := conn.RequestWithContext(testwait.Context(t), "echo", nil)
 	if err != nil {
 		t.Fatalf("request after the thaw: %v", err)
 	}
@@ -790,7 +785,7 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 			second()
 			first()
 			second()
-			if _, err := conn.Request("echo", nil, requestAnswer); err != nil {
+			if _, err := conn.RequestWithContext(testwait.Context(t), "echo", nil); err != nil {
 				t.Fatalf("request after every thaw: %v", err)
 			}
 
@@ -800,7 +795,7 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 				t.Fatalf("a request after a stale thaw of an earlier freeze: %v, want %v", err, natsgo.ErrTimeout)
 			}
 			later()
-			if _, err := conn.Request("echo", nil, requestAnswer); err != nil {
+			if _, err := conn.RequestWithContext(testwait.Context(t), "echo", nil); err != nil {
 				t.Fatalf("request after the later thaw: %v", err)
 			}
 		})

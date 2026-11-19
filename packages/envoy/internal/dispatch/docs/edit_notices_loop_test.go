@@ -145,10 +145,20 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 	settleCurrentGeneration(t, service, artifactID)
 
 	wake, stopHub := startEditNoticeHub(t, service.store)
+	// The hub signals every wake channel once its LISTEN is up, after the callback
+	// startEditNoticeHub waited on; that signal is taken here, before the loop starts, so the
+	// one wake left for the loop to take is the notice's notification.
+	testwait.Receive(t, "the hub's signal after its LISTEN", wake)
 	fake := clocktest.New(time.Now())
-	sweeper := newEditNoticeSweeper(t, service.store, fake)
+	tracer := &statementTracer{}
+	sweeper := newEditNoticeSweeper(t, storetest.TracedStore(t, service.store, tracer), fake)
 	leases := excerptLeases(t, service.store)
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.RunEditNotices(ctx, leases, wake) })
+	// The loop's boot pass reads the due time before the edit is written, so it finds nothing due
+	// and arms nothing: a pass that later reads the notice can only have been earned by the wake.
+	testwait.Eventually(t, "the sweep's boot pass to read the due time", func() bool {
+		return tracer.sent("min(due_at) - now()") > 0
+	})
 
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 1, alice, replaceRun("First.", "First, edited."))
@@ -157,7 +167,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 		t.Fatal("alice's settled edit opened no edit notice")
 	}
 	// The notice's notification wakes the loop, which starts its pass no sooner than its gap from
-	// the pass before; the boot pass and the hub's signal after its LISTEN are the passes before it.
+	// the pass before; the boot pass is the pass before it.
 	for {
 		at := awaitOneSweepTimer(t, fake, "the sweep's timer for the pass its wake earned", func(time.Time) bool { return true })
 		if at.After(fake.Now().Add(editNoticeMinGap)) {

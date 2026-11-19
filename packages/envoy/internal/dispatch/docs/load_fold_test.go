@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,9 +26,10 @@ import (
 // single row as stored, a folded log as its merge reads, a log with parked items keeping them, and
 // a log the fold cannot apply served merged, which a cold read refuses as ErrDocumentUnloadable.
 //
-// Which connection a fold holds is the fold's own report (beforeFold's inTransaction), not a
-// sample of the pool's acquired connections: pgxpool's own health check acquires idle connections
-// of that pool on a timer of its own, which raised the sample on a slow run.
+// Which connection a fold holds is read from the rooms pool itself: the connections it has handed
+// out at the moment the fold begins. pgxpool's own health check acquires idle connections of a
+// pool on a timer of its own, which raised that sample on a slow run, so the row's store runs no
+// health check (withoutPoolHealthChecks) and the sample counts what the load took and nothing else.
 func TestALoadReadsOneStateWhetherItFoldsTheLogInMemoryOrStreamed(t *testing.T) {
 	fixtures := readHistoryFixtures(t)
 	parked, lost, gone := parkedHistory(t)
@@ -36,25 +38,29 @@ func TestALoadReadsOneStateWhetherItFoldsTheLogInMemoryOrStreamed(t *testing.T) 
 	if err != nil {
 		t.Fatalf("merge the unfoldable log: %v", err)
 	}
-	database := storetest.Open(t)
+	database := withoutPoolHealthChecks(t, storetest.Open(t))
+	rooms, err := database.Pool.Rooms()
+	if err != nil {
+		t.Fatalf("open the rooms pool: %v", err)
+	}
 	ctx := context.Background()
 	for _, mode := range []struct {
-		name          string
-		limit         int64
-		inTransaction bool
+		name  string
+		limit int64
+		held  int32
 	}{
-		{name: "in memory", inTransaction: false},
-		{name: "streamed", limit: 1, inTransaction: true},
+		{name: "in memory", held: 0},
+		{name: "streamed", limit: 1, held: 1},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			versioned := NewPgVersioned(database)
 			versioned.foldBufferLimit = mode.limit
-			var held []bool
-			versioned.beforeFold = func(_ string, inTransaction bool) { held = append(held, inTransaction) }
+			var held []int32
+			versioned.beforeFold = func(string) { held = append(held, rooms.Stat().AcquiredConns()) }
 			requireFoldHeld := func(t *testing.T, what string) {
 				t.Helper()
-				if len(held) != 1 || held[0] != mode.inTransaction {
-					t.Fatalf("%s folded %v (true: inside its read transaction, holding its connection), want one fold, inside it: %t", what, held, mode.inTransaction)
+				if len(held) != 1 || held[0] != mode.held {
+					t.Fatalf("%s folded holding %v connections of the rooms pool, want one fold holding %d", what, held, mode.held)
 				}
 				held = held[:0]
 			}
@@ -122,6 +128,27 @@ func TestALoadReadsOneStateWhetherItFoldsTheLogInMemoryOrStreamed(t *testing.T) 
 	}
 }
 
+// withoutPoolHealthChecks is a store on database's own database whose pools run no health check of
+// pgxpool's while the test runs (pool_health_check_period, which every pool the store opens copies
+// from its shared pool's configuration), so a sample of a pool's acquired connections counts what
+// the product took and nothing pgxpool took on its own.
+func withoutPoolHealthChecks(t *testing.T, database *store.Store) *store.Store {
+	t.Helper()
+	address, err := url.Parse(database.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("parse the test database's URL: %v", err)
+	}
+	query := address.Query()
+	query.Set("pool_health_check_period", "1h")
+	address.RawQuery = query.Encode()
+	quiet, err := store.Open(context.Background(), address.String())
+	if err != nil {
+		t.Fatalf("open a store with no pool health checks: %v", err)
+	}
+	t.Cleanup(quiet.Pool.Close)
+	return quiet
+}
+
 // Buffered folds are bounded across the process (foldSlots): with one slot, a second load whose
 // rows it reads into memory waits for the slot, holding its read transaction, while the first is
 // inside its fold, and folds once the first gives the slot back; a waiter whose context ends
@@ -139,7 +166,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	release := sync.OnceFunc(func() { close(released) })
 	t.Cleanup(release)
 	var waitedFolds atomic.Int32
-	versioned.beforeFold = func(room string, _ bool) {
+	versioned.beforeFold = func(room string) {
 		switch room {
 		case holding:
 			close(held)
@@ -249,7 +276,7 @@ func TestABufferedFoldEndsWithItsContext(t *testing.T) {
 	t.Run("before the fold starts", func(t *testing.T) {
 		loadCtx, cancelLoad := context.WithCancel(context.Background())
 		defer cancelLoad()
-		versioned.beforeFold = func(string, bool) { cancelLoad() }
+		versioned.beforeFold = func(string) { cancelLoad() }
 		loaded, err := versioned.Load(loadCtx, artifactID)
 		if !errors.Is(err, context.Canceled) || loaded.Update != nil || loaded.Version != 0 {
 			t.Fatalf("the load whose context ended before its fold returned %d bytes at version %d (%v), want none and %v",
@@ -257,7 +284,7 @@ func TestABufferedFoldEndsWithItsContext(t *testing.T) {
 		}
 		readCtx, cancelRead := context.WithCancel(context.Background())
 		defer cancelRead()
-		versioned.beforeFold = func(string, bool) { cancelRead() }
+		versioned.beforeFold = func(string) { cancelRead() }
 		document, err := versioned.LoadDocument(readCtx, artifactID)
 		if !errors.Is(err, context.Canceled) || document.Doc != nil || document.Stamp != (DocumentStamp{}) {
 			t.Fatalf("the cold read whose context ended before its fold returned %+v (%v), want no document and %v",

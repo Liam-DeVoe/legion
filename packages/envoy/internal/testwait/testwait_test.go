@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -209,7 +210,9 @@ func TestQuietFailsWhenItsChannelYields(t *testing.T) {
 // Under a short -timeout every wait gives up 30 s before the deadline, before Go's alarm: it writes
 // its line to stderr and fails the test with the same text, which carries the wait's last reading
 // where it has one. A wait that starts once the margin has passed, a wait in a cleanup included,
-// asks once and fails.
+// asks once and fails. The until wait's readings each carry their count and the child logs how
+// many it read, so the parent wants the last read to name that count: the reading it read last,
+// whatever pace the child's asks kept on a loaded machine.
 func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	child := exec.Command(os.Args[0], "-test.run=^TestTheWaitsGiveUpChild$", "-test.timeout="+childTimeout, "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
@@ -221,10 +224,14 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	if strings.Contains(stdout.String(), "panic: test timed out") || strings.Contains(stderr.String(), "panic: test timed out") {
 		t.Fatalf("the child's waits ran into the binary's deadline rather than giving up before it:\n%s\nstderr:\n%s", &stdout, &stderr)
 	}
+	asked := regexp.MustCompile(`the reading was asked (\d+) time\(s\)`).FindStringSubmatch(stdout.String())
+	if asked == nil {
+		t.Fatalf("the child logged no count of the until wait's readings; its output:\n%s", &stdout)
+	}
 	name := "TestTheWaitsGiveUpChild/"
 	ending := " 30s before the test binary's deadline"
 	want := []string{
-		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + "; last read: a later reading",
+		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + "; last read: reading " + asked[1],
 		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + ending,
 		"testwait: " + name + "next_on_an_empty_stream: gave up waiting for an item no one adds" + ending + "; last read: none",
 		"testwait: " + name + "next_past_unmatched_items: gave up waiting for an item that matches" + ending + `; last read: the latest\nitem`,
@@ -267,12 +274,10 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 	}
 	t.Run("until", func(t *testing.T) {
 		asks := 0
+		t.Cleanup(func() { t.Logf("the reading was asked %d time(s)", asks) })
 		Until(t, "a reading that never holds", func() (string, bool) {
 			asks++
-			if asks == 1 {
-				return "the first reading", false
-			}
-			return "a later reading", false
+			return fmt.Sprintf("reading %d", asks), false
 		})
 	})
 	t.Run("eventually", func(t *testing.T) {

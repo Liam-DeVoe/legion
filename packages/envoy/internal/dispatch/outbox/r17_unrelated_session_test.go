@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // R17 timing: the architect's staging shape. role:reviewer is unheld at the batch read, the
@@ -115,10 +114,10 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	}
 	dueNow(t, rig.database, first.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	received := testwait.Until(t, "ses-u's copies of both events", func() ([]contracts.Envelope, bool) {
-		received := u.received()
-		return received, len(received) >= 2
-	})
+	// Both scans have run to their end, so every copy they sent ses-u is handed on before the
+	// marker settle sends after them: a third copy, or a second of either event, is read too.
+	u.settle(t)
+	received := u.received()
 	var order []string
 	for _, item := range received {
 		order = append(order, item.DedupeKey)

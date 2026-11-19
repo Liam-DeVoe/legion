@@ -457,11 +457,13 @@ func showEdges(read model.GraphReferences) string { return fmt.Sprintf("%#v", re
 // observes the event log: no event stream has started the relay and no Delivery page the hub.
 // Each observation is proven safe only by a later one, so a read that stopped at the horizon
 // proven so far would answer nothing here, the first after boot, and each later read would stop
-// at the previous read's observation, however old. The server runs on the real clock, so a read
-// held past referencesSinceWait by a transaction elsewhere answers short and is read again
-// (awaitHorizonRead).
+// at the previous read's observation, however old. The server runs on a clocktest.Held fake the
+// test never moves, so the one read is never cut at referencesSinceWait: an open transaction
+// elsewhere on the test cluster only delays its answer, and the answer must hold the mention
+// (awaitSinceRead). A read again would let a read that stops at the horizon proven so far pass
+// on its second try.
 func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, _, _ := newTestServer(t, testServerOptions{clock: clocktest.Held()})
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
 	citingResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "CORE", "title": "Rotate the database credentials"}, "alice")
@@ -473,12 +475,12 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 	comment := createReferenceAPIComment(t, handler, citing.Key, "Blocked on "+targetRef)
 
 	query := url.Values{"to": {targetRef}, "since": {"0"}}
-	awaitHorizonRead(t, database, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID,
+	awaitSinceRead(t, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID,
 		func() model.GraphReferences { return graphEdges(t, handler, query) },
 		func(read model.GraphReferences) bool {
 			return len(read.Edges) == 1 && read.Edges[0].Kind == "mentions" &&
 				blockOf(read.Edges[0].Node, "comment", comment.ID)
-		}, showEdges)
+		})
 }
 
 // A poller reads ?since=<the highest source_seq it was shown>. Event ids are not commit order:

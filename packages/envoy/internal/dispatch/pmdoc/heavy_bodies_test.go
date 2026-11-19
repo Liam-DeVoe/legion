@@ -43,9 +43,9 @@ import (
 // the very bytes those rows draw, so those six keep their second there. This file held every
 // shape to a second of this process's CPU time too, until a loaded two-processor run spent that
 // second on the runner's load and its collections rather than the parse (INFRA-3149); it holds the
-// parse's work instead, which no load moves. It is the guard over the parse's own costs as well -
-// the block ids a document's blocks are minted from, and the tab-indentation check each open
-// block runs on each line - which a regression would make superlinear again.
+// parse's work instead, which no load moves: the steps the package counts where it scans, and the
+// bytes the parse allocates (workOf), which a regression that built a string or a list again for
+// each line or block would make grow with the square of the body.
 
 // Every shape at the block bound is stored or refused as it is, and the parse of it takes no more
 // than parseStepsPerCharacter steps for each of its characters: a count linear in the body, which
@@ -127,7 +127,9 @@ func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing
 // that has grown quadratically before (linear_test.go holds the shapes that did), and the write is
 // counted beside it (UpdateWork) because it is the rest of what an API write does with a body,
 // which the end-to-end bound this test replaced used to cover (INFRA-985). The encode is ygo's,
-// which counts nothing of its own; it is run, so a write that encodes no update still fails.
+// which counts no steps of its own; it is counted by the bytes it allocates (workOf), which an
+// encode that copied its buffer again for each item it wrote would make grow with the square of
+// the document, and a write that encodes no update fails.
 //
 // Each size gets a document of its own, since a write changes the document it writes into, and
 // the body it writes is built before the count starts.

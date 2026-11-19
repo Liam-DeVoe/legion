@@ -258,11 +258,15 @@ func HoldToken(ctx context.Context, db Holds, name string) (token string, held b
 }
 
 // renew renews the hold every Renew until ctx ends or the hold is lost. Each renewal waits at
-// most Renew for its answer, and the next renewal is due one Renew after the last was, whatever
-// the last one took, as a ticker's ticks are: one that took longer than Renew is followed at
-// once. The send time is read before the statement leaves, because the database stamps the new
-// expiry no earlier than the statement arrives, and only that order keeps the loss deadline
-// Margin ahead of the row's lapse.
+// most Renew for its answer, and the next renewal is due at the first grid moment (a whole number
+// of Renew after the renewals began) past the moment this one was sent, as a ticker's ticks are:
+// one that took longer than Renew, a renewal that drew no answer among them, is followed at once,
+// and the grid moments it overran are dropped, as a ticker's channel drops the ticks that fall
+// while its receiver is busy. So with the delivery intake's hold (TTL 15 s, Renew 5 s, Margin 2 s)
+// a renewal that draws no answer still leaves the one after it time to be confirmed before the
+// loss deadline. The send time is read before the statement leaves, because the database stamps
+// the new expiry no earlier than the statement arrives, and only that order keeps the loss
+// deadline Margin ahead of the row's lapse.
 func (h *Hold) renew(ctx context.Context) {
 	defer close(h.done)
 	due := h.clock.Now().Add(h.opts.Renew)
@@ -277,6 +281,8 @@ func (h *Hold) renew(ctx context.Context) {
 		case <-next.C():
 		}
 		sent := h.clock.Now()
+		for due = due.Add(h.opts.Renew); !due.After(sent); due = due.Add(h.opts.Renew) {
+		}
 		bounded, cancel := h.clock.WithTimeout(ctx, h.opts.Renew)
 		tag, err := h.db.Exec(bounded, renewHold, h.name, h.holder, h.opts.TTL.Seconds())
 		cancel()
@@ -292,11 +298,7 @@ func (h *Hold) renew(ctx context.Context) {
 		default:
 			h.confirm(sent)
 		}
-		now := h.clock.Now()
-		for !due.After(now) {
-			due = due.Add(h.opts.Renew)
-		}
-		next.Reset(due.Sub(now))
+		next.Reset(due.Sub(h.clock.Now()))
 	}
 }
 

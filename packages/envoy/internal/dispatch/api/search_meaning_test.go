@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1030,13 +1032,14 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	embedWindowsAs(t, database, embedder, "document_block", short.ID, angledVector(0.5, 3))
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 4))
 	processAllPending(t, database, embedder)
-	// The plan each arm runs is read from the table's statistics, which the template keeps this
-	// test's own (storetest's embeddingsStatistics turns autovacuum off for embeddings). The test
-	// analyzes the table once every vector is in, so the plan is the one these rows call for: an
-	// exact scan and sort of a table this small. Analyzed after the windows were written and
-	// before their vectors, the table reads as holding none, and the planner takes every arm
-	// through embeddings_cosine instead, whose HNSW walk over the long document's hundred
-	// identical vectors can miss the short document's one window, or the comment's.
+	// The plan each arm runs is read from the table's statistics. The test analyzes the table
+	// once every vector is in, so the plan is the one these rows call for: an exact scan and sort
+	// of a table this small. Analyzed after the windows were written and before their vectors -
+	// as autovacuum, which a clone keeps on as the product's table does, may do on its own
+	// schedule - the table reads as holding none, and the planner takes every arm through
+	// embeddings_cosine instead, whose HNSW walk over the long document's hundred identical
+	// vectors can miss the short document's one window, or the comment's. Once this analyze has
+	// run no row changes again, so nothing is left for autovacuum to analyze before the search.
 	if _, err := database.Pool.Exec(context.Background(), "analyze embeddings"); err != nil {
 		t.Fatalf("analyze embeddings: %v", err)
 	}
@@ -1565,18 +1568,26 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // 15,002 ms measured at this change's head against 202 ms with a lock_timeout of 200 ms
 // (INFRA-988). A search whose answer is the same either way must not spend a quarter of a
 // minute learning that, so the savepoint bounds its own wait
-// (embeddingProjectKeysFilledLockWait). The page is asserted here, because a short answer that
-// lost the project's rows would be no better than a slow one; the wait itself is the timing
-// lane's row below.
+// (embeddingProjectKeysFilledLockWait). The read's own failure says which bound ended it: the
+// lock bound's is lock_not_available (SQLSTATE 55P03), where a read that waited out the statement
+// bound would fail as a cancelled statement (57014), so the row requires the 55P03 the warning
+// logs. The page is asserted too, because a short answer that lost the project's rows would be no
+// better than a slow one; how long the search took is the timing lane's row below.
 func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
 	const project = "LCKD"
 	handler, issueKey, commentID := lockedProgressRowSearch(t, project)
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
 	}
 	searchHit(t, response, "issue", issueKey)
 	searchHit(t, response, "comment", commentID)
+	logged := logs.String()
+	if !strings.Contains(logged, "could not read the embeddings project_key fill's progress") || !strings.Contains(logged, "SQLSTATE 55P03") {
+		t.Fatalf("the progress read behind the lock logged %q; want its failure at the lock bound (SQLSTATE 55P03), not at the statement bound", logged)
+	}
 }
 
 // TestAProjectScopedSearchBehindALockedProgressRowAnswersInsideItsLockBound is the row above's

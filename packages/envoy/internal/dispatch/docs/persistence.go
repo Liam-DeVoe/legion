@@ -78,10 +78,8 @@ type PgVersioned struct {
 	duringCompactionFold func(room string)
 	// beforeFold runs as a load or a compaction starts to fold a room's rows (foldRead): once its
 	// read transaction has committed when it read them into memory, inside that transaction when
-	// it streams them. inTransaction says which: whether the fold holds the read transaction's
-	// connection of the rooms pool. Nil outside tests; tests use it to see which connection a fold
-	// holds, from the fold itself rather than from a pool counter another acquirer moves.
-	beforeFold func(room string, inTransaction bool)
+	// it streams them. Nil outside tests; tests use it to see which connection a fold holds.
+	beforeFold func(room string)
 	// foldBufferLimit is the most stored update bytes a fold reads into memory (foldBuffer), zero
 	// for foldBufferBytes. Zero outside tests; tests lower it to fold a small log while it streams.
 	foldBufferLimit int64

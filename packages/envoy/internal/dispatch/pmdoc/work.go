@@ -10,7 +10,7 @@ var parseWork, renderWork, updateWork atomic.Uint64
 // for each piece it reads again when it is not:
 //
 //   - each line goldmark's block parse advances past (lastLineColumns), the blank lines it skips
-//     included, and each line an inline raw HTML walk advances past to look for its closer
+//     included, and each byte of each line an inline raw HTML walk reads looking for its closer
 //     (inlineRawHTMLParser), the writer's scan's walks among them (rawHTMLScan);
 //   - each container the nesting bound walks up over as a block opens (opensPastBound);
 //   - each character of a delimiter run the inline parse scans (emphasisParser, tildeParser), and

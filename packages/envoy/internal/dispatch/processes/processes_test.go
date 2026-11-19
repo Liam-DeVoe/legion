@@ -527,8 +527,9 @@ func TestRegistersWaitEndsWithItsContext(t *testing.T) {
 		answered <- err
 	}()
 	// The wait is in its gap between retries, far from the moment it would give up, when the
-	// process is stopped: nothing but the cancellation can answer it.
-	fake.AwaitArmed(t, "Register's retry gap", 1)
+	// process is stopped: nothing but the cancellation can answer it. The peer heartbeats on the
+	// same fake, so its heartbeat timer is one of the two armed, and Register's gap is the other.
+	fake.AwaitArmed(t, "Register's retry gap, beside the peer's heartbeat", 2)
 	stop()
 	if err := testwait.Receive(t, "Register's answer to its context ending", answered); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Register beside a refusing peer, its context ended, returned %v; want the context's error", err)

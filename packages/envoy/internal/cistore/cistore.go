@@ -438,7 +438,16 @@ type Writer struct {
 // write of its own is never given up on for a rewatch (kvCall); it is given up on only when its
 // caller's context ends. The handle stays usable across a reconnect, since nats.go reconnects the
 // same *nats.Conn under it.
-func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logger) (*Writer, error) {
+//
+// Of opts only WithClock reaches a writer: the moment it stamps on each record it writes
+// (LastEventAt, which the listener's summary loop counts the debounce from) is read on that
+// clock, clock.Real() by default, so a test runs the writer and the listener on one fake. The
+// bucket's copies and its TTL are the listener's Open's, and a writer sets neither.
+func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logger, opts ...Option) (*Writer, error) {
+	o := openOpts{clock: clock.Real()}
+	for _, f := range opts {
+		f(&o)
+	}
 	kv, err := bus.OpenKeyValue(context.Background(), conn, js, bus.CIStateBucket)
 	if err != nil {
 		return nil, err
@@ -447,7 +456,7 @@ func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logge
 		combiners: map[string]*keyCombiner{},
 		rewatched: make(chan struct{}),
 		logger:    logger,
-		clock:     clock.Real(),
+		clock:     o.clock,
 	}
 	// One handle for the store's life: nothing moves it, since a writer has no watcher to
 	// rewatch. The cache stays its zero value, since nothing a writer calls reads or writes it.

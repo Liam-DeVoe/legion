@@ -193,13 +193,15 @@ func pageInBound(ref Ref) (Ref, bool) {
 // trimReference drops what trails a reference in prose: sentence punctuation, the `*`, `_` and `~`
 // that close emphasis and strikethrough around it (GFM's autolinks drop the same characters,
 // keeping them inside a link), and a closing parenthesis that opens nowhere in the reference. It
-// counts the parentheses once and walks back from the end, so a run of closers costs one pass,
-// and it adds what it read to trimmedBytes.
+// counts the parentheses once and walks back from the end, so a run of closers costs one pass.
+// Each byte it reads is added to trimmedBytes where it is read: by each count (countIn) and by
+// each step of the walk.
 func trimReference(raw string) string {
-	opened, closed := strings.Count(raw, "("), strings.Count(raw, ")")
+	opened, closed := countIn(raw, "("), countIn(raw, ")")
 	end := len(raw)
 walk:
 	for ; end > 0; end-- {
+		trimmedBytes.Add(1)
 		switch raw[end-1] {
 		case '.', ',', ';', ':', '!', '?', '*', '_', '~':
 		case ')':
@@ -211,16 +213,21 @@ walk:
 			break walk
 		}
 	}
-	// The span once for each of the two counts, and the bytes the walk dropped.
-	trimmedBytes.Add(uint64(3*len(raw) - end))
 	return raw[:end]
+}
+
+// countIn is strings.Count(s, substr), adding every byte of s it reads to trimmedBytes, so a trim
+// that counted again for each byte it dropped would add the span again each time.
+func countIn(s, substr string) int {
+	trimmedBytes.Add(uint64(len(s)))
+	return strings.Count(s, substr)
 }
 
 // trimmedBytes counts what trimWork answers.
 var trimmedBytes atomic.Uint64
 
 // trimWork is how many bytes trimReference has read, in all, since the process started: each
-// span once for each of its two parenthesis counts, and every byte it walked back over. It is
+// span once for each parenthesis count it makes, and every byte its walk back steps over. It is
 // what holds the trim to one pass over a closing run (TestExtractTrimsALongClosingRunInLinearTime),
 // where a trim that counted the parentheses again for every byte it dropped read a 1 MiB run in 13
 // to 26 seconds.

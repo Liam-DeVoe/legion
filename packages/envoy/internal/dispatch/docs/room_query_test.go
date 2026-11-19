@@ -172,7 +172,7 @@ func TestAShareReturnsTheOtherProcessesInFlightAppend(t *testing.T) {
 	paragraph := "Bob's long paragraph " + strings.Repeat("with many words ", 1200) + "ends."
 	pair.heldEditOnB(t, 1, bob, appendBlocks(t, paragraph+"\n"))
 
-	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
+	answers, asked, err := pair.taskA.roomQueries.ask(testwait.Context(t), pair.database.Pool, pair.artifactID, roomQueryShare)
 	if err != nil || !asked {
 		t.Fatalf("task A's share = asked %t, %v; want task B asked", asked, err)
 	}
@@ -258,7 +258,7 @@ func TestAShareHoldsEveryQueuedUpdateOfAPendingBatch(t *testing.T) {
 	pair.heldEditOnB(t, 1, bob, appendBlocks(t, "Bob's first paragraph.\n"))
 	editAsPeer(t, pair.taskB, pair.artifactID, appendBlocks(t, "Bob's second paragraph.\n"))
 
-	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
+	answers, asked, err := pair.taskA.roomQueries.ask(testwait.Context(t), pair.database.Pool, pair.artifactID, roomQueryShare)
 	if err != nil || !asked {
 		t.Fatalf("task A's share = asked %t, %v; want task B asked", asked, err)
 	}
@@ -296,7 +296,7 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, appendBlocks(t, strings.Repeat("Bob's huge paragraph. ", 4000)+"\n"))
 	logs := captureWarnings(t)
 
-	answers, _, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
+	answers, _, err := pair.taskA.roomQueries.ask(testwait.Context(t), pair.database.Pool, pair.artifactID, roomQueryShare)
 	if err != nil {
 		t.Fatalf("task A's share: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 // task A armed when it sent the query; then it returns task B's answer.
 func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	pair, clock := newQueryProcesses(t)
-	// Production's wait, which this test holds: the pair's own is answerWaitPastEveryAnswer
+	// Production's wait, which this test holds: the pair's own is answerWait, the shared wait's
 	// (newSeededProcessPair).
 	pair.taskA.roomQueries.wait = roomQueryWait
 	silent := uuid.NewString()

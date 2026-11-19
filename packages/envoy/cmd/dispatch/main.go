@@ -1933,6 +1933,13 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
 func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers) http.HandlerFunc {
+	return healthzHandlerOn(clock.Real(), database, natsClient, publisher, fileStore, commit, announcer, issuers)
+}
+
+// healthzHandlerOn is healthzHandler with the database probe's bound armed on c: clock.Real from
+// healthzHandler, and a test's clocktest.Fake, which ends a probe the database never answers only
+// where the test moves it.
+func healthzHandlerOn(c clock.Clock, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -1960,7 +1967,7 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			// pool, a deadline on a stalled link, an authentication failure and a refused
 			// dial are four incidents with four next steps, and the body distinguishes
 			// none of them. One line per failed poll, for as long as the outage lasts.
-			version, err := database.Pool.Healthy(req.Context())
+			version, err := database.Pool.HealthyOn(req.Context(), c)
 			if err != nil {
 				slog.Warn("dispatch: health probe failed", "error", err)
 				databaseOK = false

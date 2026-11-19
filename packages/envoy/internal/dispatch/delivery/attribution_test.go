@@ -245,16 +245,38 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 // host bytes before its path (AuthorityReads), which the row counts. The body is 1 MiB with no
 // whitespace in it and an issue path every thirteen bytes, which is the shape a reading that
 // walks back to the nearest space pays the square of: such a walk reads back to the body's start
-// at every match, about the body's length each, where this one reads two bytes a match.
+// at every match, about the body's length each, where this one reads two bytes a match. The bytes
+// the reading allocates are counted too (allocatedBy), at two sizes of the same shape eight times
+// apart, since a reading that took the span back to the nearest space and parsed it as a URL -
+// ebb65528's, which never calls authorityBefore - copies that span for each match: what it
+// allocates grows with the square of the body, where this reading's grows with the body.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
-	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
+	bodyOf := func(size int) string {
+		return strings.Repeat("/a/b/issues/1", size/13) + ",github.com/acme/widgets/issues/7"
+	}
+	body := bodyOf(1 << 20)
 	matches := len(githubIssuePath.FindAllStringIndex(body, -1))
 	before := AuthorityReads()
 	got := citedIssues("acme/widgets", body)
 	read := AuthorityReads() - before
 	if allowed := uint64(matches) * 2 * maxHostName; read > allowed {
 		t.Errorf("citedIssues over %d bytes read back %d bytes before its %d matches' paths, past the %d allowed: %d digits and %d host bytes a match", len(body), read, matches, allowed, maxHostName, maxHostName)
+	}
+	// The least of three readings at each size, since another goroutine of the binary only ever
+	// adds to what a reading sees.
+	allocated := func(size int) uint64 {
+		body := bodyOf(size)
+		least := allocatedBy(func() { citedIssues("acme/widgets", body) })
+		for range 2 {
+			least = min(least, allocatedBy(func() { citedIssues("acme/widgets", body) }))
+		}
+		return least
+	}
+	const small, large, growth, slack = 16 << 10, 128 << 10, 8, 3
+	if smallAllocated, largeAllocated := allocated(small), allocated(large); largeAllocated > slack*growth*smallAllocated {
+		t.Errorf("citedIssues allocated %d bytes over %d bytes and %d over %d, %.1f times for a body %d times longer; want at most %d times",
+			smallAllocated, small, largeAllocated, large, float64(largeAllocated)/float64(smallAllocated), growth, slack*growth)
 	}
 	if !slices.Equal(got, []string{cited}) {
 		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)

@@ -241,20 +241,28 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 }
 
 // An agent that comments on what it filed and, moments later, updates the suggested issue acted
-// on the suggestion. The comment wakes the sweep, but an event is judged by only once it is
-// settle old, by which time the update is written too, so the rules see both and the acted_on
-// rules run before the overridden one: the comment is not judged alone as an override. The
-// pass the comment earned waits on the sweep's clock, which the row moves only once both writes
-// are settle old by the database's clock, so how long the second write takes decides nothing.
+// on the suggestion. The comment wakes the sweep, and the pass that wake earns runs while the
+// comment is younger than settle: it judges nothing, and the loop arms its next pass. An event is
+// judged by only once it is settle old, by which time the update is written too, so the rules see
+// both and the acted_on rules run before the overridden one: the comment is not judged alone as an
+// override. A sweep that judged the comment at once would mark the suggestion overridden at that
+// first pass. Settle is ten seconds by the database's clock, so the first pass, which the row runs
+// at once by moving the sweep's clock to it, is far inside it; the row then waits until both
+// writes are settle old by the database's clock, so how long the second write takes decides
+// nothing.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
-	const settle = 1500 * time.Millisecond
+	const settle = 10 * time.Second
 	sweep := startIdleSweep(t, "OTOGETHER", settle)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 	pool := sweep.server.deps.Store.Pool
 
 	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
-	// Moments later by the database's clock, the one the sweep judges settle by.
-	awaitDatabaseAge(t, pool, "the comment", newestEventAt(t, pool, sweep.source), 300*time.Millisecond)
+	sweep.pass(t, "the pass the comment earned")
+	// The pass has ended once the loop holds its next timer again.
+	sweep.clock.AwaitArmed(t, "the loop's next pass, armed once the comment's pass ended", 1)
+	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "ignored" {
+		t.Fatalf("outcome = %+v after a pass while the comment was younger than settle; want ignored, nothing judged yet", row)
+	}
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
 	awaitDatabaseAge(t, pool, "the update", newestEventAt(t, pool, sweep.target), settle)
 	sweep.passesUntil(t, "the suggestion to be judged", func() bool {
@@ -653,8 +661,10 @@ func TestTheSuggestionSweepTrailsTheSafeHorizon(t *testing.T) {
 
 	schedule := suggestionSchedule{minGap: time.Second, page: suggestionOutcomePage}
 	low, _, commitLow := appendOutOfOrder(t, database, deps.Events, target, other)
-	started := time.Now()
-	next, err := suggestionOutcomePass(ctx, clock.Real(), database.Pool, srv.horizon(), schedule)
+	// The pass stamps its due time on its clock alone, a fake that never moves, so the due time a
+	// held pass asks for is exactly its gap past the fake's moment.
+	passClock := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
+	next, err := suggestionOutcomePass(ctx, passClock, database.Pool, srv.horizon(), schedule)
 	if err != nil {
 		t.Fatalf("the pass run while the lower id is still open: %v", err)
 	}
@@ -667,9 +677,9 @@ func TestTheSuggestionSweepTrailsTheSafeHorizon(t *testing.T) {
 	if row := readSuggestionOutcome(t, srv, source, target); row.Outcome != "ignored" {
 		t.Fatalf("outcome = %+v while the event that resolves the suggestion could still commit; want ignored", row)
 	}
-	if next.IsZero() || next.Before(started.Add(schedule.minGap)) {
-		t.Fatalf("the pass held above the horizon asked to run again at %v, %v after it started; want a due time no sooner than its %v gap",
-			next, next.Sub(started), schedule.minGap)
+	if want := passClock.Now().Add(schedule.minGap); !next.Equal(want) {
+		t.Fatalf("the pass held above the horizon asked to run again at %v; want %v, its %v gap past its clock's moment",
+			next, want, schedule.minGap)
 	}
 
 	commitLow()

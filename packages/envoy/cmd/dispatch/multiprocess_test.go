@@ -786,18 +786,30 @@ func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 	// second publish of an already published event is the other process's outbox racing the
 	// first over the same batch, so it is in flight at about the moment its original is and
 	// never as late as an event published after the marks; the marker's forward is what the
-	// settling read this row used to take stood in for.
-	pair.b.call(t, http.MethodPost, "/api/v1/issues/"+key+"/comments", `{"body":"marker"}`, http.StatusCreated)
+	// settling read this row used to take stood in for. The outbox forwards every event of an
+	// issue routed to a role to the role's holder (roleForward), the marker comment's own event
+	// among them, so the wait ends on that forward, named by the envelope's EventID, and on
+	// nothing else the holder is sent.
+	answer := pair.b.call(t, http.MethodPost, "/api/v1/issues/"+key+"/comments", `{"body":"marker"}`, http.StatusCreated)
+	var marker struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(answer, &marker); err != nil || marker.ID == "" {
+		t.Fatalf("the marker comment's answer names no id: %s (%v)", answer, err)
+	}
+	markerEvent := commentEventID(t, pair.database, marker.ID)
 	var received []contracts.Envelope
 	perEvent := map[string]int{}
-	testwait.Until(t, "the marker comment's forward to reach the role's holder", func() (int, bool) {
+	markerArrived := false
+	testwait.Until(t, "the marker comment's forward ("+markerEvent+") to reach the role's holder", func() (int, bool) {
 		for {
 			select {
 			case item := <-forwards:
 				received = append(received, item)
 				perEvent[item.SourceEventID]++
+				markerArrived = markerArrived || item.EventID == markerEvent
 			default:
-				return len(perEvent), len(perEvent) > comments
+				return len(perEvent), markerArrived
 			}
 		}
 	})
@@ -4902,9 +4914,10 @@ const liveWithin = time.Second
 
 // TestALiveChangeReachesTheOtherProcessWithinASecond is the service level liveWithin names: the
 // spec's "at once" for a change on one process reaching a reader on the other, which the plan
-// pins at one second. Every other row waits through the shared wait for the change to arrive at
-// all; this one holds that arrival to liveWithin, a reading of this machine's clock across two
-// child processes, so it runs only in benchtime's timing lane.
+// pins at one second. The rows below wait through the shared wait for each change to arrive at
+// all and hold it to liveWithin only in benchtime's timing lane (withinLive); this one is a text
+// edit held to liveWithin, a reading of this machine's clock across two child processes, so it
+// runs only in that lane too.
 func TestALiveChangeReachesTheOtherProcessWithinASecond(t *testing.T) {
 	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
 	pair := startPair(t, nil)
@@ -5435,7 +5448,8 @@ func versionActorsSince(t *testing.T, pair *dispatchPair, issueKey string, seq i
 }
 
 // typeAndSee types text in typist's editor and requires reader's editor, on the other process, to
-// show it once it arrives.
+// show it once it arrives, and within liveWithin of the keystroke in benchtime's timing lane
+// (withinLive).
 func (p *dispatchPair) typeAndSee(t *testing.T, artifactID, typistName string, typist *docstest.Peer, text, readerName string, reader *docstest.Peer, keystroke int) {
 	t.Helper()
 	p.requireConnected(t, artifactID, typistName, typist, fmt.Sprintf("before keystroke %d", keystroke))
@@ -5448,7 +5462,20 @@ func (p *dispatchPair) typeAndSee(t *testing.T, artifactID, typistName string, t
 		t.Fatalf("%s's keystroke %d did not reach %s live: %v; %s",
 			typistName, keystroke, readerName, err, p.roomCloses(t, artifactID))
 	}
-	t.Logf("%s's keystroke %d reached %s %v after it was typed", typistName, keystroke, readerName, time.Since(typed))
+	withinLive(t, typed, fmt.Sprintf("%s's keystroke %d reaching %s", typistName, keystroke, readerName))
+}
+
+// withinLive holds a change that began at since on one process and has now reached a reader on
+// the other to liveWithin, in benchtime's timing lane only: across two child processes a reading
+// of this machine's clock is its load as much as the product's work, so every other run holds
+// the change to arriving at all, through the shared wait. It logs how long the change took.
+func withinLive(t *testing.T, since time.Time, what string) {
+	t.Helper()
+	took := time.Since(since)
+	t.Logf("%s took %v", what, took)
+	if os.Getenv(benchtime.TimingEnv) != "" && took > liveWithin {
+		t.Errorf("%s took %v, want within %v", what, took, liveWithin)
+	}
 }
 
 // cursorState is the awareness state a dashboard tab announces: who it is and where its cursor is.
@@ -5548,31 +5575,39 @@ func TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T) 
 		// Bob opens the document second, on the other process: alice's cursor must be there for
 		// him at once, not after her tab's next heartbeat.
 		bob := pair.b.openEditorAs(t, "bob", artifactID, "x\n")
+		opened := time.Now()
 		if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 			t.Fatalf("bob, who opened the document second and on B, did not see the cursor alice set on A: %v",
 				err)
 		}
+		withinLive(t, opened, "the cursor alice set on A reaching bob, who opened the document second and on B,")
 		if err := bob.SetAwareness(bobAwarenessClient, cursorState("bob", 1)); err != nil {
 			t.Fatalf("announce bob's cursor: %v", err)
 		}
+		set := time.Now()
 		if err := alice.WaitForAwareness(t, holdsState(bobAwarenessClient, cursorState("bob", 1))); err != nil {
 			t.Fatalf("the cursor bob set on B did not reach alice on A: %v", err)
 		}
+		withinLive(t, set, "the cursor bob set on B reaching alice on A")
 		if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 1)); err != nil {
 			t.Fatalf("move alice's cursor: %v", err)
 		}
+		moved := time.Now()
 		if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 1))); err != nil {
 			t.Fatalf("alice's cursor moving on A did not reach bob on B: %v", err)
 		}
+		withinLive(t, moved, "alice's cursor moving on A reaching bob on B")
 		pair.requireConnected(t, artifactID, "alice on A", alice, "while the cursors moved")
 		pair.requireConnected(t, artifactID, "bob on B", bob, "while the cursors moved")
 		alice.Close()
+		closed := time.Now()
 		if err := bob.WaitForAwareness(t, func(states map[uint64]json.RawMessage) bool {
 			_, present := states[aliceAwarenessClient]
 			return !present
 		}); err != nil {
 			t.Fatalf("alice's tab closing on A did not remove her presence from bob's tab on B: %v", err)
 		}
+		withinLive(t, closed, "alice's tab closing on A removing her presence from bob's tab on B")
 		pair.requireConnected(t, artifactID, "bob on B", bob, "after alice left")
 		pair.requireNoRoomCloses(t, artifactID)
 	})
@@ -5583,10 +5618,12 @@ func TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T) 
 		if answer := pair.b.send(t, http.MethodPost, editPath(artifactID), editBody(t, "x", "y", "", false), asUser("bob")); answer.status != http.StatusOK {
 			t.Fatalf("bob's edit through B: %v", answer)
 		}
+		sent := time.Now()
 		if err := alice.WaitForText(t, markdown, "y\n"); err != nil {
 			t.Fatalf("bob's edit through B's API did not reach alice's editor on A live: %v; %s",
 				err, pair.roomCloses(t, artifactID))
 		}
+		withinLive(t, sent, "bob's edit through B's API reaching alice's editor on A")
 		pair.requireConnected(t, artifactID, "alice on A", alice, "after bob's edit")
 		pair.requireNoRoomCloses(t, artifactID)
 	})
@@ -5694,9 +5731,11 @@ func (p *dispatchProcess) patchIssueStatus(t *testing.T, issueKey, status string
 }
 
 // requireEndsWithin waits for the editor's socket to close, and fails the test with what the
-// process logged when it stays open.
+// process logged when it stays open; in benchtime's timing lane it holds the close to liveWithin
+// of the call (withinLive).
 func requireEndsWithin(t *testing.T, editor *docstest.Peer, what string, process *dispatchProcess) {
 	t.Helper()
+	since := time.Now()
 	testwait.Until(t, what, func() (string, bool) {
 		select {
 		case <-editor.Ended:
@@ -5705,6 +5744,7 @@ func requireEndsWithin(t *testing.T, editor *docstest.Peer, what string, process
 			return "the socket is still open; that process's output:\n" + process.Output.String(), false
 		}
 	})
+	withinLive(t, since, "the close ("+what+")")
 }
 
 // reconnectWithScope reconnects login's tab to the document on process, authenticates it as the
@@ -8264,10 +8304,17 @@ func TestEveryTestHookActsOnBothProcesses(t *testing.T) {
 		"the live socket B held after the rotate hook was called on A")
 
 	editor := pair.b.openEditor(t, artifactID, "before\n")
+	if rooms := pair.b.residentRooms(t); !slices.Contains(rooms, artifactID) {
+		t.Fatalf("B holds rooms %v with the editor open on it, want %s among them", rooms, artifactID)
+	}
 	pair.a.call(t, http.MethodPost, "/api/v1/artifacts/_test/quiesce", "", http.StatusOK)
 	// B closed the room before it acknowledged, and A answered only after that acknowledgement,
-	// so the close is already on its way over loopback when the answer arrives: the bound is that
-	// trip, not a wait for B to get round to it.
+	// so the moment the answer arrives B holds the room no longer, which B's own list says; the
+	// editor's socket closing is the same close reaching it over loopback.
+	if rooms := pair.b.residentRooms(t); slices.Contains(rooms, artifactID) {
+		t.Fatalf("B still held the room of %s (rooms %v) when quiesce answered on A; quiesce answers only once every process has closed its rooms",
+			artifactID, rooms)
+	}
 	testwait.Receive(t, "the document room B held to close once quiesce answered on A", editor.Ended)
 
 	_, survivor := liveSocketFrames(pair.a.openLiveEvents(t))

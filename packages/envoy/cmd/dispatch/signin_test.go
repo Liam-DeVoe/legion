@@ -65,6 +65,12 @@ func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
 	}
 	fake.Advance(plainRefreshTokenRetireTimeout)
 	testwait.Receive(t, "the retirement to return at its bound", retired)
+	// The bound ends the retirement on the context the revocations run on, so the tokens after the
+	// held one fail on that context without reaching the pool. A retirement that ignored it would
+	// send each later token to the pool and wait out each one's own timeout.
+	if sent := len(pool.RevocationRequests()); sent != 1 {
+		t.Errorf("the pool received %d revocations, want 1: the bound must end the tokens after the held one before they are sent", sent)
+	}
 	out := logs.String()
 	if !strings.Contains(out, "retired the refresh tokens stored in plain text") || !strings.Contains(out, "retired=0 failed=3") {
 		t.Errorf("logged, want the counts retired=0 failed=3:\n%s", out)

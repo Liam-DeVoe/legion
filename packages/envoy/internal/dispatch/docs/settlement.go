@@ -230,6 +230,11 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	if err != nil {
 		return settle.stoppedShort(fmt.Errorf("begin document transaction: %w", err))
 	}
+	// Registered ahead of the rollback, so it runs once the transaction has ended: committed below
+	// or rolled back by the deferred call that follows.
+	if s.afterSettleTransaction != nil {
+		defer s.afterSettleTransaction(room)
+	}
 	defer tx.Rollback(ctx)
 	settle.ledger, settle.tx = ledger, tx
 	owner, open, err := lockArtifactOwner(ctx, tx, room)

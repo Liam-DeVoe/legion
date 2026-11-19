@@ -152,8 +152,15 @@ func RunLeasedOn(ctx context.Context, c clock.Clock, leases Leases, name string,
 //
 // ctx ending returns at once from a wait, and from a tick once its pass returns.
 func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
+	RunLeasedAfterEachPassOn(ctx, clock.Real(), leases, name, interval, pass)
+}
+
+// RunLeasedAfterEachPassOn is RunLeasedAfterEachPass with its ticks on c: clock.Real from
+// RunLeasedAfterEachPass, and a test's clocktest.Fake, which brings each tick only when the test
+// moves it there.
+func RunLeasedAfterEachPassOn(ctx context.Context, c clock.Clock, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
 	period := interval
-	due := time.Now()
+	due := c.Now()
 	for {
 		wait := interval
 		Exclusive(ctx, leases, name, due, period, func(ctx context.Context) {
@@ -163,7 +170,7 @@ func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, int
 		select {
 		case <-ctx.Done():
 			return
-		case due = <-time.After(wait):
+		case due = <-c.After(wait):
 		}
 	}
 }

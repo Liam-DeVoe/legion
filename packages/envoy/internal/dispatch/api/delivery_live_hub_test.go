@@ -103,6 +103,29 @@ type fakeHubClock struct {
 	still bool
 	// fakeOnly arms the fake's timers alone (newFakeOnlyHubClock).
 	fakeOnly bool
+	// hookMu guards the move moveAfterReads sets up and the count of the timers the hub armed.
+	hookMu sync.Mutex
+	// readsBeforeMove counts down the hub's reads of the clock (Now); the read that takes it to
+	// zero moves the clock on by moveBy once it has answered, so that read and the next differ.
+	readsBeforeMove int
+	moveBy          time.Duration
+	// arms counts the hub's AfterFunc calls.
+	arms int
+}
+
+// moveAfterReads moves the clock on by d right after the hub's nth read of it from now.
+func (c *fakeHubClock) moveAfterReads(n int, d time.Duration) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	c.readsBeforeMove, c.moveBy = n, d
+}
+
+// armedCount is how many timers the hub has armed, and whether the move moveAfterReads set up
+// is spent.
+func (c *fakeHubClock) armedCount() (arms int, moved bool) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	return c.arms, c.readsBeforeMove == 0
 }
 
 type fakeHubTimer struct {
@@ -139,13 +162,32 @@ func newFakeOnlyHubClock() *fakeHubClock {
 	return &fakeHubClock{Fake: clocktest.New(noonToday()), still: true, fakeOnly: true}
 }
 
-func (c *fakeHubClock) Now() time.Time { return c.Fake.Now().UTC() }
+func (c *fakeHubClock) Now() time.Time {
+	now := c.Fake.Now().UTC()
+	c.hookMu.Lock()
+	move := time.Duration(0)
+	if c.readsBeforeMove > 0 {
+		if c.readsBeforeMove--; c.readsBeforeMove == 0 {
+			move = c.moveBy
+		}
+	}
+	c.hookMu.Unlock()
+	if move != 0 {
+		c.Fake.Advance(move)
+	}
+	return now
+}
 
 // standsStill is whether the clock moves only by Advance, so a view's recompute, due on this
 // clock, waits for the test rather than for the wall clock.
 func (c *fakeHubClock) standsStill() bool { return c.still }
 
 func (c *fakeHubClock) AfterFunc(d time.Duration, f func()) clock.Timer {
+	defer func() {
+		c.hookMu.Lock()
+		c.arms++
+		c.hookMu.Unlock()
+	}()
 	if c.fakeOnly {
 		return c.Fake.AfterFunc(d, f)
 	}
@@ -442,13 +484,13 @@ func (r *hubRig) cursors() (changeSeq, eventCursor int64) {
 }
 
 // waitForEventCursor waits until the hub holds every event through want. The wait has no bound of
-// its own, and needs none: an open write anywhere on the test cluster holds back the safe horizon
-// the relay publishes up to.
+// its own: an open write anywhere on the test cluster holds back the safe horizon the relay
+// publishes up to, so the wait is the horizon's (horizontest.PollInProcess), which fails at once,
+// naming the holder, on a hold in the test's own database that has stood OwnHoldBound.
 func (r *hubRig) waitForEventCursor(t *testing.T, want int64, what string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the hub to hold the event log through %d (%s)", want, what), func() (int64, bool) {
-		got := r.eventsThrough()
-		return got, got >= want
+	horizontest.PollInProcess(t, fmt.Sprintf("the hub's event log through %d (%s)", want, what), r.database, func() bool {
+		return r.eventsThrough() >= want
 	})
 }
 
@@ -533,6 +575,27 @@ func (c *fakeLiveConn) Send(frame any) bool {
 func (c *fakeLiveConn) next(t *testing.T, what string) any {
 	t.Helper()
 	return testwait.Receive(t, what, c.frames)
+}
+
+// eventNext is the next frame the conn is sent, where the frame comes of an event on the hub's
+// feed, which stands behind the server's event horizon: the wait is the horizon's
+// (horizontest.WaitInProcess), which fails at once on a hold in database, the test's own, that has
+// stood OwnHoldBound.
+func (c *fakeLiveConn) eventNext(t *testing.T, database *store.Store, what string) any {
+	t.Helper()
+	return horizontest.WaitInProcess(t, what, c.frames, database)
+}
+
+// eventDelta is delta for a delta that comes of an event on the hub's feed (eventNext).
+func (c *fakeLiveConn) eventDelta(t *testing.T, database *store.Store, sub string) DeliveryLiveDelta {
+	t.Helper()
+	frame := c.eventNext(t, database, "a delta of "+sub)
+	delta, ok := frame.(DeliveryLiveDelta)
+	if !ok || delta.Sub != sub {
+		raw, _ := json.Marshal(frame)
+		t.Fatalf("frame = %s, want a delta of %s", raw, sub)
+	}
+	return delta
 }
 
 // empty fails when the conn holds a frame nobody should be sent. Its caller has waited for the
@@ -1227,7 +1290,7 @@ func TestAnIssueTitleChangeReachesPagesThatNameTheIssue(t *testing.T) {
 	rig.settle(t)
 	start := rig.mark()
 	patchHubIssue(t, rig.handler, named, map[string]any{"title": "Ship the widgets"})
-	delta := conn.delta(t, "names")
+	delta := conn.eventDelta(t, rig.database, "names")
 	if got := liveMapValues(t, delta, "issue_titles"); got[named] != "Ship the widgets" {
 		t.Fatalf("the delta's issue_titles = %v, want %s retitled", got, named)
 	}
@@ -1253,7 +1316,7 @@ func TestAParentsComponentChangeReachesPagesHoldingItsChildren(t *testing.T) {
 
 	// The child inherits what its parent chooses.
 	patchHubIssue(t, rig.handler, parent, map[string]any{"components": map[string]any{"mode": "explicit", "ids": []string{"api"}}})
-	delta := conn.delta(t, "t")
+	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveUpsertIDs(t, delta, "prs"); !slices.Equal(got, []string{"acme/widgets#1"}) {
 		t.Fatalf("the parent's component change upserts %v, want the child's pull request", got)
 	}
@@ -1294,7 +1357,7 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	if err := rig.database.Pool.QueryRow(t.Context(), `select max(id) from events`).Scan(&newest); err != nil {
 		t.Fatalf("read the newest event: %v", err)
 	}
-	rig.waitFor(t, start, "the retitle on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitForEvent(t, start, "the retitle on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == newest
 	})
 
@@ -1356,7 +1419,7 @@ func TestASessionWriteDuringAViewsReadThatItsAnswerDoesNotShowRecomputesNothing(
 	start := rig.mark()
 	written := appendHubEvent(t, rig, projectOwner("HUB").event("user_state.updated",
 		model.Actor{Kind: "session", ID: "session-not-shown"}, map[string]any{}))
-	rig.waitFor(t, start, "the session's event on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitForEvent(t, start, "the session's event on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == written.ID
 	})
 
@@ -1440,7 +1503,7 @@ func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 	} {
 		step.act()
 		for range 2 {
-			delta, ok := conn.next(t, "each view's delta after "+step.name).(DeliveryLiveDelta)
+			delta, ok := conn.eventNext(t, rig.database, "each view's delta after "+step.name).(DeliveryLiveDelta)
 			if !ok {
 				t.Fatalf("after %s: want a delta for each view", step.name)
 			}
@@ -1468,7 +1531,7 @@ func TestAnArchitectureSyncReachesEveryView(t *testing.T) {
 	start := rig.mark()
 	appendHubEvent(t, rig, projectOwner("HUB").event("architecture.synced", model.Actor{Kind: "system", ID: "architecture-importer"}, map[string]any{"commit": "c2"}))
 	for _, kind := range []string{deliveryLiveTimeline, deliveryLiveMeasures, deliveryLivePipeline} {
-		rig.waitFor(t, start, "the "+kind+" view's recompute", func(note deliveryHubNote) bool {
+		rig.waitForEvent(t, start, "the "+kind+" view's recompute", func(note deliveryHubNote) bool {
 			return note.what == "recompute begin" && strings.HasPrefix(note.view, kind)
 		})
 
@@ -1526,8 +1589,8 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	// horizon proven after the reset (firstRelayCursor); or, when the relay found the reset before
 	// the retitle committed and the new feed began below the retitle's event, the one that event
 	// asks for, which the relay publishes once the horizon has passed it. A transaction held
-	// anywhere on the Postgres instance puts off either, and the wait has no bound of its own.
-	delta := conn.delta(t, "t")
+	// anywhere on the Postgres instance puts off either, so the wait is the horizon's.
+	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("after the event log's reset the delta's issue_titles = %v, want %s retitled", got, key)
 	}
@@ -1591,7 +1654,7 @@ func TestEventsNoViewReadsRecomputeNothing(t *testing.T) {
 	if err := rig.database.Pool.QueryRow(t.Context(), `select max(id) from events`).Scan(&newest); err != nil {
 		t.Fatalf("read the newest event: %v", err)
 	}
-	rig.waitFor(t, start, "the newest event on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitForEvent(t, start, "the newest event on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == newest
 	})
 
@@ -1775,7 +1838,7 @@ func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *
 
 	patchHubIssue(t, rig.handler, key, map[string]any{"title": "Ship the widgets"})
 	release()
-	delta = conn.delta(t, "t")
+	delta = conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("after the hold the delta's issue_titles = %v, want %s retitled", got, key)
 	}
@@ -1964,8 +2027,8 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 	}
 	held = requireLandsOnGET(t, handler, deliveryLiveTimeline, held, delta, "")
 	patchHubIssue(t, handler, key, map[string]any{"title": "Ship every widget"})
-	// The retitle is an event, which reaches the hub on the relay's feed.
-	delta = second.delta(t, "t")
+	// The retitle is an event, which reaches the hub on the relay's feed (eventDelta).
+	delta = second.eventDelta(t, database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship every widget" {
 		t.Fatalf("the new generation's retitle delta has issue_titles %v, want %s retitled", got, key)
 	}
@@ -2080,7 +2143,7 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 	otherTask := http.NewServeMux()
 	t.Cleanup(Register(otherTask, t.Context(), deps).Wait)
 	patchHubIssue(t, otherTask, key, map[string]any{"title": "Ship the widgets"})
-	delta := conn.delta(t, "t")
+	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("the delta's issue_titles = %v, want %s retitled by the other task", got, key)
 	}
@@ -2097,7 +2160,7 @@ func acquires(database *store.Store) int64 { return database.Pool.Stat().Acquire
 func (r *hubRig) waitConnected(t *testing.T) {
 	t.Helper()
 	r.waitFor(t, 0, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
-	r.waitFor(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
+	r.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
 }
 
 // freshness is the next frame conn is sent, which must be a freshness frame.
@@ -2246,12 +2309,12 @@ func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing
 // TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer holds the hub's one timer to
 // the moment the view's answer next expires (nextUTCMidnight), on a clock only the test moves: once
 // the view holds its answer with nothing dirty or computing, the worker's timer is armed for the
-// next UTC midnight, which the clock's report of what is armed shows (AwaitArmed); the test moves
-// the clock to that very moment, and the timer fires, the expiry's recompute ends and its delta
-// reaches the page. The row once moved the clock inside the worker's arm through a hook it said ran
-// between the worker's read of the clock and the timer's placing, but that hook ran once the timer
-// was placed (the ClockWorker note of INFRA-3149), so what the row can hold is the moment the timer
-// is armed for, and that it fires when the clock reaches it - no later.
+// next UTC midnight, which the clock's report of what is armed shows (AwaitArmed). Then a wake
+// with nothing due runs the worker's loop once more, and the clock moves between the worker's read
+// of it and its arm (moveAfterReads): the timer is armed for the expiry all the same, since the arm
+// reads the clock again rather than counting from the read before the move. The test moves the
+// clock to that very moment, and the timer fires, the expiry's recompute ends and its delta
+// reaches the page.
 func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testing.T) {
 	clock := newFakeOnlyHubClock()
 	rig := newClockedHubRig(t, clock)
@@ -2290,6 +2353,23 @@ func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testi
 	armed := clock.AwaitArmed(t, fmt.Sprintf("the hub's timer for the view's expiry at %v", expiry), 1)
 	if len(armed) != 1 || !armed[0].Equal(expiry) {
 		t.Fatalf("the hub's timer is armed for %v, want the view's expiry at %v", armed, expiry)
+	}
+	// A wake with nothing due makes the worker read the clock twice before the read its arm takes
+	// (runDue's read, which finds nothing due, and the read the wake is judged on), and the clock
+	// moves a second right after the second of them: between the worker's read and its arm. An arm
+	// that counted from that earlier read would place the timer a second past the expiry.
+	before, _ := clock.armedCount()
+	clock.moveAfterReads(2, time.Second)
+	rig.hub.mu.Lock()
+	wake := rig.hub.generation.wakeWork
+	rig.hub.mu.Unlock()
+	signal(wake)
+	armed = testwait.Until(t, "the worker's arm after the wake that moved the clock between its read and its arm", func() ([]time.Time, bool) {
+		arms, moved := clock.armedCount()
+		return clock.Armed(), moved && arms > before
+	})
+	if len(armed) != 1 || !armed[0].Equal(expiry) {
+		t.Fatalf("with the clock moved between the worker's read and its arm, the hub's timer is armed for %v, want the view's expiry at %v", armed, expiry)
 	}
 	start := rig.mark()
 	clock.Set(expiry)
@@ -2869,13 +2949,13 @@ func TestALegionBoardsSnapshotAndDeltasLandOnItsGET(t *testing.T) {
 	held = requireLandsOnGET(t, rig.handler, legionBoardView, held, conn.delta(t, "b"), "")
 
 	// A title Dispatch itself rewrites moves the card it is on, through the event log. Its event
-	// reaches the hub on the relay's feed, which stands behind the event horizon.
+	// reaches the hub on the relay's feed, which stands behind the event horizon (eventDelta).
 	patched := dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/issues/INFRA-4",
 		map[string]any{"title": "The reviewer's child"}, "alice")
 	if patched.Code != http.StatusOK {
 		t.Fatalf("retitle the card's issue: status=%d body=%s", patched.Code, patched.Body.String())
 	}
-	held = requireLandsOnGET(t, rig.handler, legionBoardView, held, conn.delta(t, "b"), "")
+	held = requireLandsOnGET(t, rig.handler, legionBoardView, held, conn.eventDelta(t, rig.database, "b"), "")
 	if !strings.Contains(string(held), "The reviewer's child") {
 		t.Fatalf("the board a page holds after the deltas does not carry the new title: %s", held)
 	}

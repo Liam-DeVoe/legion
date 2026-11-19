@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"math"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The fixture every test of two envoy-dispatch processes on one database runs on: the rooms
@@ -45,26 +47,33 @@ func newProcessPair(t *testing.T) processPair {
 	return pair
 }
 
-// answerWaitPastEveryAnswer is the wait every process of a test's pair gives the other's answers
-// (roomQueries.wait) in place of production's roomQueryWait: a minute, past any answer a test's
-// pair makes, as the near-copy gate's test bound is past any read. roomQueryWait is a latency
-// budget, and on a loaded machine an answer can take longer than that to cross Postgres twice,
-// which failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no answer at all
-// (dispatch://INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget
-// itself, on the clock it moves.
-const answerWaitPastEveryAnswer = time.Minute
+// answerWait is the wait every process of a test's pair gives the other's answers
+// (roomQueries.wait) in place of production's roomQueryWait: the shared wait's own, which ends
+// only where testwait gives up, 30 s before the test binary's deadline, and never under no
+// deadline. roomQueryWait is a latency budget, and on a loaded machine an answer can take longer
+// than that to cross Postgres twice, which failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch
+// with no answer at all (dispatch://INFRA-3904); a wait of a length the test picked would fail the
+// same way on a slower machine still. TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the
+// budget itself, on the clock it moves.
+func answerWait(t *testing.T) time.Duration {
+	t.Helper()
+	if deadline, ok := testwait.Context(t).Deadline(); ok {
+		return max(time.Until(deadline), time.Nanosecond)
+	}
+	return time.Duration(math.MaxInt64)
+}
 
 // newSeededProcessPair is the pair on a document seeded with markdown and not settled, which
 // leaves task A holding no room of its own: where the room-query tests start. Each process's
-// queries wait for the other's answers for answerWaitPastEveryAnswer: what the tests over the
-// pair check is what an answer holds and what a write does with it.
+// queries wait for the other's answers for answerWait: what the tests over the pair check is what
+// an answer holds and what a write does with it.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, serverA := newTestServiceInstance(t, database)
 	taskB, gateB := newGatedServiceInstance(t, storetest.SecondProcess(t, database))
-	taskA.roomQueries.wait, taskB.roomQueries.wait = answerWaitPastEveryAnswer, answerWaitPastEveryAnswer
+	taskA.roomQueries.wait, taskB.roomQueries.wait = answerWait(t), answerWait(t)
 	serverB := newTestServer(t, taskB)
 	seedServiceText(t, taskA, artifactID, markdown)
 	return processPair{

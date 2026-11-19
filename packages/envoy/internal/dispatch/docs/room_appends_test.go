@@ -168,6 +168,22 @@ func (t *statementTracer) statements(room, text string, since int) int {
 	return count
 }
 
+// sent is how many statements whose text contains text were sent at all, whatever they name, a
+// pipeline's counted one by one.
+func (t *statementTracer) sent(text string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	count := 0
+	for _, trip := range t.trips {
+		for _, statement := range trip.statements {
+			if strings.Contains(statement.sql, text) {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // storedVersionsAfter is every version of artifactID's stored updates past after, in order.
 func storedVersionsAfter(t *testing.T, database *store.Store, artifactID string, after int64) []int64 {
 	t.Helper()

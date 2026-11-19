@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -487,7 +488,12 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 		})
 	}
 	t.Run("replacing every other block", func(t *testing.T) {
-		for _, blocks := range alternatingBlocks {
+		// What the write allocates at each size, beside the items it reaches: a list of the
+		// fragment's children made again for each replaced block - ygo's Children copies them all -
+		// grows with the square of the blocks there, where UpdateWork, which this package counts as
+		// it lists, sees no list ygo makes on its own.
+		allocated := make([]uint64, len(alternatingBlocks))
+		for step, blocks := range alternatingBlocks {
 			// Headings and paragraphs alternate, and every block becomes a paragraph: every heading
 			// is a run of its own, between two paragraphs Update keeps.
 			doc := crdt.New()
@@ -495,7 +501,7 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 			writeUpdate(t, doc, fragment, repeatedBlocks(t, "#\n\na\n\n", blocks/2))
 			want := repeatedBlocks(t, "a\n\n", blocks)
 			before := UpdateWork()
-			writeUpdate(t, doc, fragment, want)
+			allocated[step] = allocatedBy(func() { writeUpdate(t, doc, fragment, want) })
 			reached := UpdateWork() - before
 			if got, err := Read(fragment); err != nil || !got.Equal(want) {
 				t.Fatalf("replacing every other block: %d blocks read back otherwise (%v)", blocks, err)
@@ -510,7 +516,14 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 			if reached > allowed {
 				t.Fatalf("replacing every other block of %d reached %d items, past the %d allowed: the %d ygo's own Delete and Insert at those indexes reach and %d a block beside them", blocks, reached, allowed, walks, alternatingAllowance)
 			}
-			t.Logf("replacing every other block of %d: %d items reached, %d of them ygo's walks (at most %d)", blocks, reached, walks, allowed)
+			t.Logf("replacing every other block of %d: %d items reached, %d of them ygo's walks (at most %d), %d bytes allocated", blocks, reached, walks, allowed, allocated[step])
+		}
+		for step := 1; step < len(alternatingBlocks); step++ {
+			growth := alternatingBlocks[step] / alternatingBlocks[step-1]
+			if most := uint64(linearSlack*growth) * allocated[step-1]; allocated[step] > most {
+				t.Fatalf("replacing every other block of %d allocated %d bytes, %.1f times the %d of %d blocks: the blocks grew %d times, and a write linear in them may allocate %d at most",
+					alternatingBlocks[step], allocated[step], float64(allocated[step])/float64(allocated[step-1]), allocated[step-1], alternatingBlocks[step-1], growth, most)
+			}
 		}
 	})
 }
@@ -547,17 +560,32 @@ func writeUpdate(t *testing.T, doc *crdt.Doc, fragment *crdt.YXmlFragment, tree 
 const growthAllowance = 4
 
 // workOf is the steps op takes, read from the package's counts of its own work before and after
-// it: the parse's (ParseWork), the render's (RenderWork) and a write's into a document
-// (UpdateWork). The counts are the process's, and no test in this package calls t.Parallel, so
-// the steps between the two readings are op's.
+// it - the parse's (ParseWork), the render's (RenderWork) and a write's into a document
+// (UpdateWork) - and the bytes op allocates (allocatedBy). The counts see the scans and walks the
+// package counts where it makes them; the bytes see what no count of the package's sits in: a
+// string or a list built again for each piece of the input (a text joined from the rest of its
+// lines at each line, a fragment's children listed by ygo again for each block), whose cost grows
+// in the copies it allocates, whether the code making them is this package's, ygo's or
+// goldmark's. Both are the process's, and no test in this package calls t.Parallel, so what grows
+// between the two readings is op's.
 func workOf(op func()) uint64 {
-	before := allWork()
-	op()
-	return allWork() - before
+	before, allocated := allWork(), allocatedBy(op)
+	return allWork() - before + allocated
 }
 
 // allWork is every step the package has counted.
 func allWork() uint64 { return ParseWork() + RenderWork() + UpdateWork() }
+
+// allocatedBy is the bytes the process allocated on the heap while op ran (runtime.MemStats's
+// TotalAlloc, which grows by each allocation's size and which no collection or load of the machine
+// moves).
+func allocatedBy(op func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	op()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
 
 // growthVerdict is growsLinearly's verdict without a *testing.T to report through: which step
 // (0-based, among sizes[1:]) first grew past its bound, or -1 if none did, and one line of context

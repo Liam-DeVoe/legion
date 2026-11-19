@@ -105,17 +105,18 @@ func editAsBrowserPeer(t *testing.T, service *Service, artifactID string, connec
 
 // resendUntilStored is what a browser's provider does after its room is closed under it: while the
 // store does not hold what peer, that browser's own document, has written, it waits for the room's
-// recovery and sends peer's state to the room that replaced it, as actor on connection.
+// recovery and sends peer's state to the room that replaced it, as actor on connection. Five
+// resends are more than any correct product needs, so a sixth fails the test.
 func resendUntilStored(t *testing.T, service *Service, artifactID string, connection uint64, actor model.Actor, peer *crdt.Doc) {
 	t.Helper()
 	ctx := context.Background()
 	state := crdt.EncodeStateAsUpdateV1(peer, nil)
 	quiet := testwait.Context(t)
-	testwait.Eventually(t, actor.ID+"'s edit to reach the store, resent to each room that replaced a closed one", func() bool {
+	for range 5 {
 		_ = service.waitForPendingUpdates(quiet, artifactID)
 		_ = service.waitForDurableAppends(quiet, artifactID)
 		if storedHoldsPeerEdit(t, service.store, artifactID, peer) {
-			return true
+			return
 		}
 		if err := service.awaitRoomRecovery(ctx, artifactID); err != nil {
 			t.Fatalf("wait for the room %s's browser was closed from: %v", actor.ID, err)
@@ -134,8 +135,8 @@ func resendUntilStored(t *testing.T, service *Service, artifactID string, connec
 		if applyErr != nil {
 			t.Fatalf("apply %s's resent edit: %v", actor.ID, applyErr)
 		}
-		return false
-	})
+	}
+	t.Fatalf("%s's edit never reached the store, resent five times", actor.ID)
 }
 
 // storedHoldsPeerEdit reports whether the stored document holds everything peer, a browser's own
