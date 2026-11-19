@@ -44,6 +44,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/nettimeout"
 )
 
 // NotPrinted stands in for a value URL will not print.
@@ -418,7 +420,6 @@ func (c *classified) Unwrap() error { return c.err }
 func class(err error) string {
 	var ue *url.Error
 	var dns *net.DNSError
-	var timeout interface{ Timeout() bool }
 	var re *oauth2.RetrieveError
 	switch {
 	case errors.As(err, &ue) && ue.Op == "parse":
@@ -427,7 +428,7 @@ func class(err error) string {
 		return "name resolution failed"
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return "connection refused"
-	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout():
+	case errors.Is(err, context.DeadlineExceeded) || nettimeout.InChain(err):
 		return "timed out"
 	case tlsFailure(err):
 		return "TLS failed"
