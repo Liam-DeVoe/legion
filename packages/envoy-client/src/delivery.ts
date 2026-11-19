@@ -38,7 +38,7 @@ import { DispatchClient } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
-import { type Words, wordsBlock } from "./words-block";
+import { type NamedWords, wordsBlocks } from "./words-block";
 
 const KNOWN_SOURCES: Readonly<Record<string, unknown>> = EnvelopeSchema.shape.source.enum;
 const FOREIGN_SESSION_ID = /\b01a0[0-9a-f]{4}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
@@ -626,13 +626,6 @@ export function daemonSent(envelope: DeliveryEnvelope): boolean {
 /** The `dispatch` command line that answers a Dispatch event, which its card prints. */
 type ReplyCommand = { readonly command: string };
 
-/** Words of another author that a card draws in a block of their own after its fields, and the
- *  name of the field that holds them. */
-interface CardWords {
-  readonly name: string;
-  readonly words: Words;
-}
-
 /** An author or an actor that a Dispatch payload names: an object with a kind and an id, or the
  *  login of a person, as an answer names who answered. */
 function actorOf(value: unknown): { readonly kind: string; readonly id: string } | undefined {
@@ -759,7 +752,7 @@ type CompactDispatchRecord = Readonly<Record<string, string | readonly string[]>
 interface CompactDispatch {
   readonly record: CompactDispatchRecord;
   readonly askId: string | undefined;
-  readonly words: readonly CardWords[];
+  readonly words: readonly NamedWords[];
 }
 
 /** The block of the words `text` of the field `name`, which `author` wrote at `at`; none where the
@@ -773,7 +766,7 @@ function said(
   at: string | undefined,
   actor: DispatchEvent["actor"],
   field?: string
-): CardWords[] {
+): NamedWords[] {
   if (text === null || text === undefined || text === "") return [];
   return [{ name, words: { text, by: authorBy(author, actor), at, field } }];
 }
@@ -818,7 +811,7 @@ function dispatchCompact(
   );
   if (!ask.success) return undefined;
   let record: CompactDispatchRecord = { question: textHead(ask.data.question ?? "") };
-  let words: readonly CardWords[] = [];
+  let words: readonly NamedWords[] = [];
   switch (event.type) {
     case "ask.opened":
     case "ask.edited": {
@@ -946,7 +939,7 @@ function payloadWords(
   event: DispatchEvent,
   payload: unknown,
   createdAt: string | undefined
-): { readonly payload: unknown; readonly words: readonly CardWords[] } {
+): { readonly payload: unknown; readonly words: readonly NamedWords[] } {
   const carriesBody = ["comment.", "suggestion.", "message."].some((prefix) =>
     event.type.startsWith(prefix)
   );
@@ -1136,21 +1129,28 @@ export function inboundTimestamp(milliseconds: number | undefined): string {
 /** A value that starts as an RFC 3339 time does. */
 const TIME = /^\d{4}-\d{2}-\d{2}T/;
 
+/** One key of a payload path such as `catch_up.kept.decisions[1].answer`: a field's name, or the
+ *  index of a list's item in brackets. */
+const PATH_KEY = /([^.[\]]+)|\[(\d+)\]/g;
+
 /**
  * What a card shows of a notice or a role message of the Legion daemon published as an object:
  * its fields in the payload's key order, and a block for each field that holds another author's
  * words. The payload's `words` object names those fields by their path in the payload (`summary`,
  * `catch_up.kept.decisions[1].answer`) with their author and time (`texts.WordsPaths`,
  * packages/daemon/internal/texts/words.go). Each such field leaves the fields for a block of its
- * own, in the payload's order, and `words` itself is not shown. A block names the author and the
- * time only where no field of the objects that hold the words names them. A `role` that names the
- * reader (the card's topic ends in `-<role>`) is not shown: the reader knows its own role. A
- * payload with no `words` object, as a daemon before that object writes, shows every field.
+ * own, in the payload's order, and `words` itself is not shown. A path whose field the payload
+ * leaves out, as a stand-in the bus took with its long fields dropped leaves out an answer, draws
+ * a block with no words after those, with its entry's mark that more follows. A block names the
+ * author and the time only where no field of the objects that hold the words names them. A `role`
+ * that names the reader (the card's topic ends in `-<role>`) is not shown: the reader knows its
+ * own role. A payload with no `words` object, as a daemon before that object writes, shows every
+ * field.
  */
 function daemonFields(
   payload: Readonly<Record<string, unknown>>,
   topics: readonly (string | undefined)[]
-): { readonly fields: unknown; readonly words: readonly CardWords[] } {
+): { readonly fields: unknown; readonly words: readonly NamedWords[] } {
   const named = payload["words"];
   const paths = isObject(named) && !Array.isArray(named) ? named : undefined;
   // `Object.fromEntries` defines each key as an own field, `__proto__` too: JSON.parse makes it an
@@ -1169,7 +1169,13 @@ function daemonFields(
   if (paths === undefined) return { fields: root, words: [] };
   const taken: TakenWords[] = [];
   const fields = withoutWords(root, "", paths, [], taken);
-  const words = taken.map(({ path, name, text, holders }): CardWords => {
+  for (const path of Object.keys(paths)) {
+    const keys = Array.from(path.matchAll(PATH_KEY), ([, key, index]) => key ?? Number(index));
+    const name = keys.at(-1);
+    if (typeof name !== "string" || fieldAt(root, keys).found !== undefined) continue;
+    taken.push({ path, name, text: "", holders: fieldAt(fields, keys).holders });
+  }
+  const words = taken.map(({ path, name, text, holders }): NamedWords => {
     const entry = paths[path];
     const meta: Readonly<Record<string, unknown>> = isObject(entry) ? entry : {};
     const { by, at, rest, more } = meta;
@@ -1196,6 +1202,22 @@ function daemonFields(
     };
   });
   return { fields, words };
+}
+
+/** The objects along `keys` in `value`, from `value` to the object of the last key, and the value
+ *  of the last key: undefined where `value` leaves it out. */
+function fieldAt(
+  value: unknown,
+  keys: readonly (string | number)[]
+): { readonly holders: Readonly<Record<string, unknown>>[]; readonly found: unknown } {
+  const holders: Readonly<Record<string, unknown>>[] = [];
+  let at = value;
+  for (const key of keys) {
+    if (!isObject(at)) return { holders, found: undefined };
+    if (!Array.isArray(at)) holders.push(at);
+    at = Object.hasOwn(at, key) ? at[key] : undefined;
+  }
+  return { holders, found: at };
 }
 
 /** A field that holds another author's words, taken out of a daemon payload's fields. */
@@ -1241,29 +1263,34 @@ function withoutWords(
   return kept;
 }
 
+/** A line that Go's `strings.TrimSpace` leaves empty: Unicode White_Space alone, which U+0085
+ *  holds and JavaScript's `trim` does not (and U+FEFF, which `trim` removes, is not). */
+const BLANK_LINE = /^\p{White_Space}*$/u;
+
 /** Whether `summary` opens `text`: the first line of `text` that is not blank, less the white
  *  space before it, begins with the summary less its closing ellipsis. That line is the one
  *  Envoy's listener makes a message's summary of (`OneLineSummary`,
- *  packages/envoy/internal/contracts/normalize.go). */
+ *  packages/envoy/internal/contracts/normalize.go), which reads a line as blank as Go's
+ *  `strings.TrimSpace` does (`BLANK_LINE`). */
 function summaryOpens(text: string, summary: string | undefined): boolean {
   if (summary === undefined) return false;
   const head = summary.endsWith("…") ? summary.slice(0, -1) : summary;
   // A payload can be long, so the scan stops at its first line that is not blank.
   let start = 0;
   let end = text.indexOf("\n");
-  while (end !== -1 && text.slice(start, end).trim() === "") {
+  while (end !== -1 && BLANK_LINE.test(text.slice(start, end))) {
     start = end + 1;
     end = text.indexOf("\n", start);
   }
   const line = end === -1 ? text.slice(start) : text.slice(start, end);
-  const first = line.trim() === "" ? "" : line;
+  const first = BLANK_LINE.test(line) ? "" : line;
   return first.replace(/^[ \t\r]+/, "").startsWith(head);
 }
 
 /**
  * One inbound envelope's JSON as a card for the agent, with what the host does with it.
  *
- * The card is TOON under `envoy:`, each field once, and then a block (`wordsBlock`) for each part
+ * The card is TOON under `envoy:`, each field once, and then a block (`wordsBlocks`) for each part
  * of it that another author wrote: a session's message, JSON text too, the body, reply, answer or
  * reason of a Dispatch event and the text a suggestion proposes, and each field a daemon notice
  * names in its `words` object. A person's edit of a document has its diff after the card as a
@@ -1331,8 +1358,8 @@ export function renderInbound(
   // On an ask event the payload is the ask itself, whose author is another follower's
   // session when this session merely replied; naming it is not a spoof to flag.
   let askAuthor: string | undefined;
-  // The blocks that follow the card's fields, each holding words another author wrote.
-  const blocks: string[] = [];
+  // The words another author wrote that follow the card's fields, each in a block of its own.
+  const blocks: NamedWords[] = [];
   // Text that follows the card's TOON block: a person's edit's diff as a fenced `diff` block.
   let trailer = "";
   const dispatchRendered = envelope.source === "dispatch" && envelope.payload !== undefined;
@@ -1492,7 +1519,7 @@ export function renderInbound(
           actor: frame.event.actor,
           ...(compactRecord ?? { payload: shown.payload }),
         };
-        for (const { name, words } of shown.words) blocks.push(wordsBlock(name, words));
+        blocks.push(...shown.words);
         dispatchActor = frame.event.actor;
         dispatchType = frame.event.type;
         bodyNote = carriedBodyNote(frame.event);
@@ -1541,21 +1568,23 @@ export function renderInbound(
     if (fromDaemon && isObject(parsedPayload) && !Array.isArray(parsedPayload)) {
       const shown = daemonFields(parsedPayload, [envelope.topic, subject]);
       message = shown.fields;
-      for (const { name, words } of shown.words) blocks.push(wordsBlock(name, words));
+      blocks.push(...shown.words);
     } else if (fromDaemon && !isObject(parsedPayload)) {
       messageText = typeof parsedPayload === "string" ? parsedPayload : envelope.payload;
     } else {
       message = parsedPayload;
     }
   }
-  if (messageText !== undefined) blocks.push(wordsBlock("message", { text: messageText }));
+  if (messageText !== undefined) blocks.push({ name: "message", words: { text: messageText } });
   const payloadSummary = envelope.payload_summary ?? "unknown";
   const headText = messageText ?? (typeof message === "string" ? message : undefined);
   const summaryIsHead = headText !== undefined && summaryOpens(headText, envelope.payload_summary);
   // Each session that the summary or the payload names, other than the sender, the reader and the
-  // ask's author, in the order they come: the summary's first.
+  // ask's author, in the order they come: the summary's first. A daemon card names none: the
+  // daemon names a session in a field or in a worker's words on purpose, never as a misrouted
+  // message does.
   const namedSessions: string[] = [];
-  for (const part of [envelope.payload_summary ?? "", envelope.payload ?? ""]) {
+  for (const part of fromDaemon ? [] : [envelope.payload_summary ?? "", envelope.payload ?? ""]) {
     for (const [id] of part.matchAll(FOREIGN_SESSION_ID)) {
       if (id !== sender && id !== sessionID && id !== askAuthor) {
         namedSessions.push(id);
@@ -1612,13 +1641,13 @@ export function renderInbound(
   let fields = encode({ envoy: { ...shownFields, ...issues } });
   // The note names a session that the card's words name and its fields do not, as a message sent
   // to the wrong session names the one it was for. A session that a field names already, such as
-  // the `session` of a daemon notice, is not named twice.
+  // a Dispatch event's actor, is not named twice.
   const foreignSession = namedSessions.find((id) => !fields.includes(id));
   if (foreignSession !== undefined) {
     const note = `body names session ${foreignSession}`;
     fields = encode({ envoy: { ...shownFields, note, ...issues } });
   }
-  const card = blocks.length === 0 ? fields : `${fields}\n${blocks.join("\n")}`;
+  const card = blocks.length === 0 ? fields : `${fields}\n${wordsBlocks(blocks)}`;
   return {
     skip: false,
     content: trailer === "" ? card : `${card}\n\n${trailer}`,

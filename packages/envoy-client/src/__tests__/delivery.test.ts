@@ -2637,6 +2637,27 @@ describe("what a card carries", () => {
     expect(
       cardOf<{ dispatch: Record<string, unknown> }>(answered?.content ?? "").envoy.dispatch
     ).toMatchObject({ selected: ["JSON API"], previous_selected: ["MCP API"] });
+
+    // A stand-in the bus took with its long fields dropped carries no answer, and its `words`
+    // entry says more follows: the block has no words and that mark, and the fields name the
+    // author and the time.
+    const standIn = cardOf<Record<string, unknown>>(
+      renderInbound(
+        daemonMessage("notifications.legion.infra.controller", "parked-decision on INFRA-3686", {
+          kind: "parked-decision",
+          issue: "INFRA-3686",
+          actor: reviewer,
+          ref: "dispatch://INFRA-3686/ask/2e360d60-db20-4cbe-b300-0ddedfa9f328",
+          decision: "answered",
+          root: "INFRA-3686",
+          at: "2026-11-14T21:03:00Z",
+          words: { answer: { by: reviewer, at: "2026-11-14T21:03:00Z", more: true } },
+        }),
+        reader
+      ).content
+    );
+    expect(standIn.envoy.message).not.toHaveProperty("answer");
+    expect(standIn.blocks).toEqual([{ tag: "answer", name: "answer", text: "", more: true }]);
   });
 
   test("a daemon card shows its fields as lines and keeps its summary", () => {
