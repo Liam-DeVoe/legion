@@ -1496,8 +1496,8 @@ type Machine struct {
 	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.
 	refusalLogged string
 	// admitted is the session and file the store last admitted for this claim, which holdRecorded
-	// and HoldsItsSession write and HoldsItsSession reads without the lock; forgetSession clears it
-	// with heldNames. Memory only.
+	// and HoldsItsSession write, and HoldsItsSession and Admits (the daemon's step record) read
+	// without the lock; forgetSession clears it with heldNames. Memory only.
 	admitted atomic.Pointer[admittedSession]
 	// registration is the pod-session registration this machine keeps written for the claim's
 	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
@@ -3124,7 +3124,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	m.claim.PodEnd = observation.PodEnd
 	ended := endDied(m.claim.LastDeathCause)
 	m.recordGoneEnd(ctx, ended)
-	m.sessionGone()
+	m.sessionGone(ctx)
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
 	}
@@ -3220,8 +3220,35 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // of the claim registers the same session again — in the same decision after a death, or at a
 // later wake after a suspension — which is the state the listener should then read, so the stop
 // says what is true when it is sent.
-func (m *Machine) sessionGone() {
+//
+// A claim that records a session it does not hold sends no stop (holdRecorded, plan E's t-e-54).
+// The stop deletes the registration the listener holds for the session id, whichever process
+// wrote it last (cleanSessionStop reads its client instance id first), and where another claim
+// holds the id its live process can be that writer, as after a rollback: the stop of this claim's
+// ended process would delete the registration of a process it never ran, and that claim's role
+// would read gone until the next heartbeat. The boot suspends such a claim (the merge of
+// cybermonklabs/legion#4088 into #4220 made that suspension send a stop), so the stop is held as
+// a publish to the claim's role is (outbox.publish). A store that does not answer sends nothing
+// either, since whose registration the id names is then unknown; the registration lapses when its
+// record expires, the wait the session had before the stop existed. A claim holding its session
+// is stopped as before (R9): with names this machine has admitted already (Machine.heldNames) it
+// asks nothing of the store, and with names it has not, as after a restart, which NewMachine
+// starts with none of, it asks the store once, and a store that does not answer then sends no
+// stop for it either. That ask runs on a context the decision's end does not cancel, bounded by
+// the store write's own timeout (Machine.write): the daemon's stop must not cut a clean stop
+// short (sessionStop.send says why), and a hold cancelled mid-ask would send none.
+func (m *Machine) sessionGone(ctx context.Context) {
 	if m.deps.SessionGone == nil || m.claim.Session == "" {
+		return
+	}
+	if err := m.holdRecorded(context.WithoutCancel(ctx), m.claim.Session, m.claim.SessionFile); err != nil {
+		if errors.Is(err, errHoldUnanswered) {
+			m.log.Warn("supervise: no clean stop of the Envoy session: the store did not answer whether the claim holds it",
+				"session", m.claim.Session, "error", err)
+			return
+		}
+		m.log.Info("supervise: no clean stop of the Envoy session of a claim that does not hold it",
+			"session", m.claim.Session, "error", err)
 		return
 	}
 	m.deps.SessionGone(m.claim.Session)

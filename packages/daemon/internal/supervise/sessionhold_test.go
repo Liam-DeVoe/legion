@@ -148,9 +148,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		if enrolled := broker.enrolled(); len(enrolled) != 1 {
 			t.Fatalf("enrollments %+v, want only the first process's", enrolled)
 		}
-		if c := h.claim(); c.State != StateFailed {
-			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under %s", c.State, session)
-		}
+		wantRefusedResume(t, h, err)
 	})
 
 	// A claim the boot could not suspend keeps its live process (review rounds 12 and 13 of #4220):
@@ -528,9 +526,7 @@ func TestAClaudeLaunchIsHeldToItsClaim(t *testing.T) {
 		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
 			t.Fatalf("the runtime was asked to resume %s's Claude session: %+v", holder, calls)
 		}
-		if c := h.claim(); c.State != StateFailed {
-			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under %s", c.State, stolen)
-		}
+		wantRefusedResume(t, h, err)
 	})
 }
 
@@ -627,9 +623,7 @@ func TestATmuxResumeByNameIsHeldToItsClaim(t *testing.T) {
 		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
 			t.Fatalf("the runtime was asked to resume the tester's session: %+v", calls)
 		}
-		if c := h.claim(); c.State != StateFailed {
-			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under the tester's session", c.State)
-		}
+		wantRefusedResume(t, h, err)
 	})
 
 	// What the hold leaves as it was (R9): a pod's session carried onto a tmux host sits in another
@@ -924,9 +918,263 @@ func TestARecordedNameNoHoldCoversIsTakenByNoClaim(t *testing.T) {
 			if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
 				t.Fatalf("the runtime was asked to resume a session no row holds: %+v", calls)
 			}
-			if c := h.claim(); c.State != StateFailed {
-				t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under a name no row holds", c.State)
+			wantRefusedResume(t, h, err)
+		})
+	}
+}
+
+// A compaction whose session hold the store does not answer asks nothing, and its answer says the
+// store did not answer rather than that the claim does not hold its session: the claim may well
+// hold it, and the operator reading `legion claims compact`'s 409 would otherwise look for another
+// claim holding a session nobody else holds (compactStart, plan E's t-e-54).
+//
+// The control (the pull request records the run): compactStart with one sentence for both
+// answers, as before, answers "the claim's session is not held to it" for the store's outage.
+func TestACompactionWhoseHoldTheStoreDoesNotAnswerSaysSo(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.store.fail("HoldSessions", errors.New("the store is down"))
+	h.restart()
+	h.helloWithIdentity()
+	h.m.Wait()
+
+	err := h.m.Compact(h.ctx, testCompactInstructions)
+
+	if !errors.Is(err, ErrCompactNotTaken) || !errors.Is(err, errHoldUnanswered) {
+		t.Fatalf("a compaction whose hold the store did not answer answered %v, want ErrCompactNotTaken carrying errHoldUnanswered", err)
+	}
+	if want := "the store did not answer whether the claim holds its session"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("the answer %q does not say %q", err, want)
+	}
+	if strings.Contains(err.Error(), "is not held to it") {
+		t.Fatalf("the answer %q says the claim does not hold its session, which the store did not say", err)
+	}
+	if got := len(h.conn.Compactions()); got != 0 {
+		t.Fatalf("Oh My Pi was asked for %d compactions, want none", got)
+	}
+}
+
+// A refused hold's Warn line names the claim once: the machine's logger carries it on every line
+// (newMachine's log.With), so a line that passes it again writes the key twice, which a reader of
+// the JSON log gets as two `claim` members (acceptance of #4220).
+//
+// The control (the pull request records the run): the refusal's line passing "claim" as it did:
+// "the line … names the claim 2 times, want once".
+func TestAHoldsLinesNameTheClaimOnce(t *testing.T) {
+	h := newHarness(t)
+	h.store.setHold(sessionID(session), "legion-legion-LEGION-209-tester")
+	h.launch()
+	h.helloWithIdentity()
+	if err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+		CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract}); err == nil {
+		t.Fatal("the registration of another claim's session was admitted")
+	}
+	lines := h.logs.lines("refused a session another claim recorded first")
+	if len(lines) != 1 {
+		t.Fatalf("the refusal wrote %d lines, want one: %v", len(lines), lines)
+	}
+	if n := strings.Count(lines[0], " claim="); n != 1 {
+		t.Fatalf("the line %q names the claim %d times, want once", lines[0], n)
+	}
+}
+
+// An operator's resume of a claim recording a session it does not hold is refused before
+// anything of the claim changes (resumeRefusal): a RefusedError, which the operator's route answers
+// 409 with its sentence, naming the forget-session that gives the claim a new session, and the
+// claim stays suspended with nothing launched and nothing charged. Relaunched, its every launch
+// would be refused by the hold at start and the claim would fail within its launch budget
+// (acceptance of #4220). A rule's resume leaves it suspended the same way. A claim holding its
+// session resumes as before (R9).
+//
+// The control (the pull request records the run): resume with no resumeRefusal: the operator's
+// resume answers no refusal and the claim is launched into the hold's refusal.
+func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.store.setHold(sessionID(session), other)
+	h.restart()
+	h.must(RequestSuspend{Claim: h.token, Reason: "the boot contains it", By: SuspendedByOperator})
+	h.wantState(StateSuspended)
+	resumes := len(h.calls("Resume"))
+
+	err := h.handle(RequestResume{Claim: h.token})
+	var refused *RefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("the operator's resume of a claim recording %s, which %s holds = %v, want a refusal", session, other, err)
+	}
+	if want := "legion claims forget-session --claim " + string(h.token); !strings.Contains(err.Error(), want) {
+		t.Fatalf("the refusal %q does not name %q", err, want)
+	}
+	h.must(RequestRuleResume{Claim: h.token, Reason: "the outbox starts the claim's phase"})
+	h.wantState(StateSuspended)
+	if c := h.claim(); c.Budgets.LaunchFailures != 0 || c.Session != session {
+		t.Fatalf("the refused resumes left the claim with %d launch failures recording %q, want none and %s", c.Budgets.LaunchFailures, c.Session, session)
+	}
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+		t.Fatalf("the runtime was asked to resume %d times, want none", len(calls))
+	}
+
+	// Settled for this claim, the resume relaunches its session as before.
+	h.store.setHold(sessionID(session), h.token)
+	h.must(RequestResume{Claim: h.token})
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 1 {
+		t.Fatalf("the resume of a claim holding its session asked the runtime %d times, want once", len(calls))
+	}
+}
+
+// A release reports, and marks released, only an abandoned session whose names it could free: an
+// abandoned record of the session the claim records again is the current session, none of whose
+// names the release frees, so the release names no abandoned session and leaves the record as it
+// was (acceptance of #4220).
+//
+// The control (the pull request records the run): ReleaseNames marking any unreleased abandoned
+// session: "the release = {… Abandoned:ses_implementer}, want no abandoned session".
+func TestAReleaseReportsNoAbandonedSessionTheClaimRecordsAgain(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestForgetSession{Claim: h.token, Session: session})
+	h.must(RequestResume{Claim: h.token})
+	h.connect()
+	h.register()
+	if c := h.claim(); c.Session != session || c.Abandoned.Session != session {
+		t.Fatalf("the claim records %q and abandoned %q, want %s both", c.Session, c.Abandoned.Session, session)
+	}
+	released, err := h.m.ReleaseNames(h.ctx)
+	if err != nil || released.Abandoned != "" {
+		t.Fatalf("the release = %+v, %v; want no abandoned session", released, err)
+	}
+	if a := h.m.View().Claim.Abandoned; !a.Released.IsZero() {
+		t.Fatalf("the claim marks its abandoned session released, %+v, though the release freed none of its names", a)
+	}
+}
+
+// wantRefusedResume is the outcome of an operator's resume of a claim recording a session it does
+// not hold (resumeRefusal): a RefusedError, which the operator's route answers 409, and the claim
+// still suspended with no launch charged, so no process ran under the session and the claim keeps
+// its whole launch budget for the resume after its forget-session. Before the resume asked the
+// hold itself, the relaunch was refused at start and charged to the budget until the claim failed.
+func wantRefusedResume(t *testing.T, h *harness, err error) {
+	t.Helper()
+	var refused *RefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("the resume answered %v, want a refusal the operator's route answers 409", err)
+	}
+	if c := h.claim(); c.State != StateSuspended || c.Budgets.LaunchFailures != 0 {
+		t.Fatalf("the claim is %s with %d launch failures charged, want it suspended with none rather than relaunched under a session it does not hold", c.State, c.Budgets.LaunchFailures)
+	}
+}
+
+// An operator's retry of a stopped claim, and an operator's delivery to a suspended one, relaunch
+// the session the claim records, so each is refused one the claim does not hold the way a resume is
+// (resumeRefusal): a RefusedError naming the forget-session to run, nothing launched, nothing
+// queued, and the claim left in the state it was in (the side review of 47f29c476c).
+//
+// The control (the pull request records the run): retry and deliverResuming without resumeRefusal:
+// each answers no refusal and relaunches the claim into the hold's refusal.
+func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	for _, tc := range []struct {
+		name  string
+		park  func(h *harness)
+		state ClaimState
+		ask   func(h *harness) Event
+	}{
+		{"an operator's retry of a stopped claim", func(h *harness) { h.must(RequestStop{Claim: h.token}) }, StateRetired,
+			func(h *harness) Event { return RequestOperatorRetry{Claim: h.token} }},
+		{"an operator's delivery to a suspended claim", func(h *harness) { h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator}) }, StateSuspended,
+			func(h *harness) Event { return RequestDeliver{Claim: h.token, Task: "the next task"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			tc.park(h)
+			h.wantState(tc.state)
+			h.store.setHold(sessionID(session), other)
+			h.restart()
+			resumes := len(h.calls("Resume"))
+
+			err := h.handle(tc.ask(h))
+			var refused *RefusedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("%s recording %s, which %s holds = %v, want a refusal", tc.name, session, other, err)
+			}
+			if want := "legion claims forget-session --claim " + string(h.token); !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refusal %q does not name %q", err, want)
+			}
+			if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+				t.Fatalf("the runtime was asked to resume %d times, want none", len(calls))
+			}
+			if c := h.claim(); c.State != tc.state || c.Budgets.LaunchFailures != 0 {
+				t.Fatalf("the claim is %s with %d launch failures, want %s with none", c.State, c.Budgets.LaunchFailures, tc.state)
+			}
+			if _, ok := h.store.delivery(h.token); ok {
+				t.Fatal("the refused request left a task queued on the claim")
 			}
 		})
+	}
+}
+
+// A death's relaunch of a claim recording a session another claim holds is refused by start's own
+// hold (Machine.start) and charged to the launch budget like any refused launch (launchNow), so at
+// the budget the claim fails rather than relaunching at the probe interval for ever. No resume
+// reaches the runtime. The resume, retry and delivery routes refuse such a claim before start
+// (resumeRefusal); a death has no route to refuse, so this row is what reads start's charge.
+//
+// The control (the pull request records the run): launchNow sending start's refusal down the
+// retry that charges nothing, as it sends errHoldUnanswered: the claim is left launching.
+func TestADeathsRelaunchIntoAHeldSessionIsChargedToTheLaunchBudget(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.store.setHold(sessionID(session), other)
+	// The death itself is charged one launch failure (relaunchAfterFailure), and the relaunch start
+	// refuses is charged the second, which spends the budget (launchNow).
+	h.deps.Limits.LaunchFailures = 2
+	h.restart()
+	resumes := len(h.calls("Resume"))
+
+	// At the budget the refused relaunch fails the claim, and the death's handling answers nil or
+	// the refusal: the failure is the claim's, recorded below.
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); err != nil {
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(session) {
+			t.Fatalf("the death's relaunch = %v, want nil or %v", err, claim.SessionHeldRefusal(session))
+		}
+	}
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+		t.Fatalf("the runtime was asked to resume %s's session: %+v", other, calls)
+	}
+	if c := h.claim(); c.State != StateFailed || !strings.Contains(c.Failure, "recorded for another claim") {
+		t.Fatalf("the claim is %s (%q), want it failed at its launch budget by the hold's refusal rather than relaunching under %s", c.State, c.Failure, session)
+	}
+}
+
+// The daemon's own resume of a claim it suspended, recording a session another claim holds, leaves
+// the claim suspended (resumeByRule, resumeRefusal): nothing resumed, nothing charged, and the line
+// says why. A claim an operator suspended never reaches this check (RuleMayResume).
+//
+// The control (the pull request records the run): resumeByRule without its resumeRefusal: the rule's
+// resume answers the hold's refusal from start.
+func TestARuleResumeOfASessionTheClaimDoesNotHoldLeavesItSuspended(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestSuspend{Claim: h.token, Reason: "the boot contains it", By: SuspendedByDaemon})
+	h.wantState(StateSuspended)
+	h.store.setHold(sessionID(session), other)
+	h.restart()
+	resumes := len(h.calls("Resume"))
+
+	h.must(RequestRuleResume{Claim: h.token, Reason: "the outbox starts the claim's phase"})
+	if c := h.claim(); c.State != StateSuspended || c.Budgets.LaunchFailures != 0 {
+		t.Fatalf("the claim is %s with %d launch failures, want it suspended with none", c.State, c.Budgets.LaunchFailures)
+	}
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+		t.Fatalf("the runtime was asked to resume %d times, want none", len(calls))
+	}
+	if lines := h.logs.lines("not resumed by rule: the claim records a session it does not hold"); len(lines) != 1 {
+		t.Fatalf("the rule's refusal wrote %d lines, want one: %v", len(lines), lines)
 	}
 }

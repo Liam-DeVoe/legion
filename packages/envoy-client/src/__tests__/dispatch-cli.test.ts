@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
@@ -17,6 +18,9 @@ interface Recorded {
 }
 
 const makeDirectory = temporaryDirectories("dispatch-cli");
+
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
@@ -539,7 +543,7 @@ function environment(
   return {
     HOME: stateDir,
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-    DISPATCH_TOKEN: "test-token",
+    DISPATCH_TOKEN: TOKEN,
     DISPATCH_STATE_DIR: stateDir,
     ...extra,
   };
@@ -1666,13 +1670,16 @@ describe("dispatch api", () => {
   });
   /** The session each trade asked the broker to write under, as its `session` form field. */
   const trades: string[] = [];
+  /** The access token the broker answered each trade with, in the order of `trades`. */
+  const accessTokens: string[] = [];
   const broker = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     async fetch(request) {
       trades.push(new URLSearchParams(await request.text()).get("session") ?? "no session");
+      accessTokens.push(fixtureSecret("access"));
       return Response.json({
-        access_token: `access-token-not-a-secret-${trades.length}`,
+        access_token: accessTokens[accessTokens.length - 1],
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 600,
@@ -1687,6 +1694,7 @@ describe("dispatch api", () => {
   beforeEach(() => {
     asked.length = 0;
     trades.length = 0;
+    accessTokens.length = 0;
     forgetBrokerClients();
   });
   const session = { ...omp, DISPATCH_URL: `http://127.0.0.1:${dispatch.port}` };
@@ -1696,7 +1704,7 @@ describe("dispatch api", () => {
     expect(code).toBe(0);
     expect(JSON.parse(stdout).claim.actor.id).toBe("ses-architect");
     expect(asked).toEqual([
-      { method: "GET", path: "/api/v1/issues/DSP-1?events=0", authorization: "Bearer test-token" },
+      { method: "GET", path: "/api/v1/issues/DSP-1?events=0", authorization: `Bearer ${TOKEN}` },
     ]);
   });
 
@@ -1718,7 +1726,7 @@ describe("dispatch api", () => {
       {
         method: "GET",
         path: "/api/v1/issues/DSP-1",
-        authorization: "DPoP access-token-not-a-secret-1",
+        authorization: `DPoP ${accessTokens[0]}`,
       },
     ]);
   });
@@ -1746,7 +1754,7 @@ describe("dispatch api", () => {
     expect(code).toBe(1);
     expect(stdout).toBe("NOT_FOUND: issue DSP-404 not found\n");
     expect(asked).toEqual([
-      { method: "GET", path: "/api/v1/issues/DSP-404", authorization: "Bearer test-token" },
+      { method: "GET", path: "/api/v1/issues/DSP-404", authorization: `Bearer ${TOKEN}` },
     ]);
   });
 
@@ -1770,7 +1778,7 @@ describe("dispatch api", () => {
     expect(code).toBe(1);
     expect(stdout).toContain("GET /api/v1 lists every route");
     expect(asked).toEqual([
-      { method: "GET", path: "/api/v1/issuez/DSP-1", authorization: "Bearer test-token" },
+      { method: "GET", path: "/api/v1/issuez/DSP-1", authorization: `Bearer ${TOKEN}` },
     ]);
   });
 });
@@ -1799,7 +1807,7 @@ describe("the dispatch entry as its own process", () => {
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: TOKEN,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -1902,7 +1910,7 @@ describe("the dispatch CLI's envoy.json", () => {
         dispatch: {
           enabled: true,
           serverUrl: `http://127.0.0.1:${server.port}`,
-          token: "test-token",
+          token: TOKEN,
         },
       })
     );
@@ -2185,7 +2193,7 @@ describe("the dispatch CLI's envoy.json", () => {
     writeFileSync(
       old,
       JSON.stringify({
-        dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: "checkout-token" },
+        dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: fixtureSecret("file") },
       })
     );
 
@@ -2246,7 +2254,7 @@ describe("the dispatch CLI's envoy.json", () => {
     const file = join(dir, "envoy.json");
     for (const contents of [
       { envoy: { enabled: true, natsUrls: ["nats://nats.internal.example:4222"] } },
-      { dispatch: { token: "file-token" } },
+      { dispatch: { token: fixtureSecret("file") } },
     ]) {
       writeFileSync(file, JSON.stringify(contents));
       const { code, stdout } = await run(["projects"], { ...fromFile, ENVOY_CONFIG_FILE: file });
@@ -2262,7 +2270,7 @@ describe("the dispatch CLI's envoy.json", () => {
   // the session's one long-lived shell keeps until a command unsets or empties DISPATCH_URL.
   test("DISPATCH_TOKEN_FILE with no DISPATCH_URL says the shell lost it, not that envoy.json is missing, and exits 2, sending nothing", async () => {
     const tokenFile = join(stateDir, "DISPATCH_TOKEN");
-    writeFileSync(tokenFile, "test-token\n");
+    writeFileSync(tokenFile, `${TOKEN}\n`);
     const chosen = join(stateDir, "profile", "envoy.json");
     for (const variables of [
       { DISPATCH_TOKEN_FILE: tokenFile },

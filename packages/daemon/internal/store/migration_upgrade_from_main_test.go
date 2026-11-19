@@ -108,8 +108,8 @@ var thisBranchsMigrations = []int{
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, t-e-54's 20261116144907, the
 // role-holders publication's 20261116165926, the reviewer's reviewed commit, 20261116234034, the
-// step records' three: the kind list with the step record (20261117000528), the count of starts
-// of each step (20261117004117) and its roll forward (20261117064152), dispatch://INFRA-1997's
+// step records' three: the kind list with the step record (20261117000528), the count of starts of
+// each step (20261117004117) and its roll forward (20261117064152), dispatch://INFRA-1997's
 // 20261117112334 and dispatch://INFRA-4109's 20261117200337. That is why the loop below holds the
 // list rather than counting it, so that a version added above any of them is named here rather
 // than read as main's.
@@ -232,16 +232,19 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 }
 
 // todaysMainsNewestMigration is main's newest migration at this branch's last merge of main
-// (89589c2954): #4228's role-holders publication, which is numbered after this branch's
-// claim_sessions (20261116144907). A deployment of main applies it first, so this branch's daemon
-// finds a database whose newest recorded version stands above its own new migration.
-const todaysMainsNewestMigration = 20261116165926
+// (f27003af63): the update ask mark's cutover. It and the other migrations main numbered after
+// this branch's claim_sessions (20261116144907) — the role-holders publication (20261116165926),
+// the reviewer's reviewed commit (20261116234034), the step records' three (20261117000528,
+// 20261117004117, 20261117064152) and the pull request statuses (20261117112334) — stand above
+// it. A deployment of main applies them first, so this branch's daemon finds a database whose
+// newest recorded version stands above its own new migration.
+const todaysMainsNewestMigration = 20261117200337
 
 // thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
 const thisBranchsClaimSessions = 20261116144907
 
 // A database today's main migrated has recorded every migration up to main's newest,
-// 20261116165926, but claim_sessions, which is numbered below it. Store.Migrate applies every
+// 20261117200337, but claim_sessions, which is numbered below it. Store.Migrate applies every
 // migration that database has not recorded, whatever version stands highest (apply asks each
 // migration whether its own version is recorded), so the upgrade applies 20261116144907 below that
 // newest: claim_sessions is created, and its backfill holds the session a claim of main's daemon
