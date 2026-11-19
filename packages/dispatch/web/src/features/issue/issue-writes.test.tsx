@@ -7,9 +7,9 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { titleWrittenElsewhere } from "../../__tests__/title-elsewhere";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { titleWrittenElsewhere } from "../issue-page/title-elsewhere-fixture";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
@@ -1414,6 +1414,37 @@ test("IssuePage follows another reader's title after a character typed and taken
       heading: screen.getByRole("heading", { level: 1 }).textContent,
       writes: patchIssue.mock.calls,
     }).toEqual({ editor: "Plan the review", heading: "Plan the review", writes: [] });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The reader opens the title's editor and types a space at the end of the title, as a reader does
+// before the next word, and another reader then renames the issue. The space is the reader's text:
+// as typed, the draft is not the issue's title, so the keystroke hands nothing back and the editor
+// keeps the reader's text through the rename (decision 332). The end of the edit sends it trimmed,
+// the old title, once. Dispatch's hook before this change does the same: [Review the spec].
+// Compared trimmed, the keystroke handed the draft back to the issue, the rename replaced the
+// reader's text in the open editor, and the end of the edit sent nothing.
+test("IssuePage keeps a space typed after the title through another reader's rename, and sends the title trimmed as the edit ends", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    const title = await openTitleEditor();
+    await user.type(title, " ");
+    expect(title.value).toBe(`${issue.title} `);
+    titleWrittenElsewhere(queryClient, "Plan the review");
+    // The editor holds the reader's text through the rename, before the end of the edit sends it.
+    expect(title.value).toBe(`${issue.title} `);
+
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(patchIssue.mock.calls).toEqual([["CORE-1", { title: issue.title }, keyedAttempt]]);
   } finally {
     unmount();
     restore();

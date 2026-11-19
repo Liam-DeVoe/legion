@@ -14,7 +14,6 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { titleWrittenElsewhere } from "../../__tests__/title-elsewhere";
 import { ApiError, api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type {
@@ -33,6 +32,7 @@ import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
+import { titleWrittenElsewhere } from "./title-elsewhere-fixture";
 
 /**
  * The header's cases of `features/issue/IssuePage.test.tsx` at the new page's checkpoint, each

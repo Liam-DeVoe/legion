@@ -179,6 +179,7 @@ const alphabet = [
   "typeServer",
   "typeOut",
   "typeMore",
+  "typeSpace",
   "saveNew",
   "end",
   "hide",
@@ -257,18 +258,18 @@ class Reader {
   /**
    * The reader's own text the field shows by their record, or none while the field is the
    * issue's and follows the issue's title (decision 332). A type event sets it to its text,
-   * unless that text is the title it is judged against - the title out while one is, else the
-   * issue's - with nothing owed: that hands the field back, to the issue with nothing out, and
-   * with a write out to the title out, the reader's ended choice, as an escape or an end that
-   * chose nothing puts it back (`putBack`). It is none once the title write's own landing or
+   * unless that text, as typed, is the title it is judged against - the title out while one is,
+   * else the issue's - with nothing owed: that hands the field back, to the issue with nothing
+   * out, and with a write out to the title out, the reader's ended choice, as an escape or an end
+   * that chose nothing puts it back (`putBack`). It is none once the title write's own landing or
    * refusal leaves the field the issue's (`settle`). Another reader's title never clears it, not
    * even one equal to it: no keystroke judged that title.
    */
   lastTyped: string | null = null;
   /**
-   * Whether `lastTyped` is text I6 holds the open editor to: the reader typed it, it differed
-   * from the title it was judged against at the keystroke that left it, or was typed while a
-   * choice was owed, and no write has landed with it since.
+   * Whether `lastTyped` is text I6 holds the open editor to: the reader typed it, it differed, as
+   * typed, from the title it was judged against at the keystroke that left it, or was typed while
+   * a choice was owed, and no write has landed with it since.
    */
   private marked = false;
   /**
@@ -368,6 +369,10 @@ class Reader {
         // One character onto the end of what the field shows by the reader's record, as a reader
         // goes on writing without ending the edit.
         return this.type(`${this.shown()}x`);
+      case "typeSpace":
+        // One space onto the end of what the field shows by the reader's record, as a reader types
+        // before the next word: the text as typed is theirs, though an end sends it trimmed.
+        return this.type(`${this.shown()} `);
       case "end":
         this.checkField();
         this.choose();
@@ -424,16 +429,18 @@ class Reader {
   }
 
   /**
-   * A keystroke (decision 332). One that leaves the field on the title it is judged against - the
-   * title out while one is, else the issue's - with nothing owed hands the field back: with
-   * nothing out it is the issue's, and with a write out it is the title out, the reader's ended
-   * choice. Any other keystroke makes the field the reader's typed text, the change mark: with a
-   * choice owed the field does not follow the issue (decision 324), so even a keystroke back to
-   * the title it is judged against leaves it the reader's.
+   * A keystroke (decision 332). One that leaves the field's text, as typed, on the title it is
+   * judged against - the title out while one is, else the issue's - with nothing owed hands the
+   * field back: with nothing out it is the issue's, and with a write out it is the title out, the
+   * reader's ended choice. Any other keystroke makes the field the reader's typed text, the change
+   * mark. A space typed before the next word is the reader's text, though an end sends it trimmed,
+   * so it is compared as typed: handed back, the field took a rename that arrived before the next
+   * keystroke. With a choice owed the field does not follow the issue (decision 324), so even a
+   * keystroke back to the title it is judged against leaves it the reader's.
    */
   private type(value: string): IssueUpdateInput[] {
     const { session } = this;
-    if (this.owed === null && value.trim() === this.against()) {
+    if (this.owed === null && value === this.against()) {
       this.putBack();
     } else {
       this.lastTyped = value;
@@ -672,8 +679,8 @@ function explore(): Violation[] {
 }
 
 // The seven tests below share one exploration: it is the slow part, and it judges all seven at
-// once. It plays about 111,000 sequences of five events, which judge about 122,000 sequences of
-// one to five, about 130 to 145 s in this pod on one core, so each of the seven has a time limit
+// once. It plays about 171,000 sequences of five events, which judge about 187,000 sequences of
+// one to five, about 147 to 201 s in this pod on one core, so each of the seven has a time limit
 // of its own above the suite's minute: whichever runs first pays for the exploration.
 let explored: Violation[] | undefined;
 function exploration(): Violation[] {
@@ -681,10 +688,10 @@ function exploration(): Violation[] {
   return explored;
 }
 // Sized as `__tests__/setup.ts` sizes the suite's minute: twice the slowest run on the slower of
-// the two pod shapes, which runs the suite 2.15 times slower. The 145 s measured here is about
-// 310 s there, derived rather than measured on that pod, and twice that is about 620 s; 600 s
-// rounds it down, since the 145 s is already the slower of two runs here.
-const explorationTimeout = 600_000;
+// the two pod shapes, which runs the suite 2.15 times slower. The 201 s measured here is about
+// 432 s there, derived rather than measured on that pod, and twice that is about 864 s; 860 s
+// rounds it down, since the 201 s is already the slowest of the runs here.
+const explorationTimeout = 860_000;
 
 // I2 and I3 each name a send that I1 also refuses, or one with nothing left to send. A value an
 // escape put away is not the reader's last ended choice: the escape withdrew that choice, and only
