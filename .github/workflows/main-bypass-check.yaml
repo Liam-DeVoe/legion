@@ -84,6 +84,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.after }}
           HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          # The commit main pointed at before this push: the dispatched run's envoy-go-checks
+          # compares every migration it held with main's tip (ci.yaml's migration-base input), so
+          # an edit any commit of the push made is judged, not only the head's.
+          BASE_SHA: ${{ github.event.before }}
         # Its own retry arithmetic, so an exhausted read fails this step by name rather than
         # being cut part way by the job: the run list, the check-runs read and the dispatch, each
         # 5 x 30 + 150 = 300 s, 900 s together, a whole number of minutes, so the budget is the
@@ -147,7 +151,7 @@ jobs:
             # absence the backstop exists to prevent. The loop is over the acts the decision
             # wrote, not over the attempts: the attempts are the helper's.
             retry_fetch "the ci.yaml dispatch" 30 -- \
-              gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+              gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f migration-base="$BASE_SHA"
             echo "::notice::$sha reached $GITHUB_REF_NAME with no passing merge-group ci-ok, so ci.yaml was started on $GITHUB_REF_NAME, whose tip contains it"
             {
               echo
