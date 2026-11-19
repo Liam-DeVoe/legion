@@ -474,3 +474,54 @@ def check_one_merge_group_workflow(problems: list) -> None:
                                     f"the queue refused to enqueue with `Required status check \"ci-ok\" is expected` while a "
                                     f"green ci-ok sat in another workflow's check suite. Run this work on pull_request, or "
                                     f"move it into {WORKFLOW}"))
+
+
+# ------------------------------------------------- every daemon test binary in a /proc of its own
+# The module whose test binaries CI runs in a PID namespace of their own, and the wrapper that puts
+# them there, as a step writes it from that module's directory.
+DAEMON_MODULE = "packages/daemon"
+PRIVATE_PROC = ".github/scripts/private_proc.py"
+# A go test that runs a test binary: `go test`, `go -C <dir> test`, or `xargs go test`. A `-c`
+# build and a `-list` listing run no test function, so they need no namespace.
+GO_TEST_LINE = re.compile(r"(?:^|[\s|;&(])go\s+(?:-C\s+\S+\s+)?test\b(?P<rest>.*)")
+
+
+def check_daemon_tests_in_private_proc(documents: dict, problems: list) -> None:
+    """Every go test of packages/daemon that ci.yaml or a workflow it calls runs goes through
+    private_proc.py, which runs each test binary beneath a supervisor at PID 1 of a PID and mount
+    namespace of its own, with a new /proc that lists none of the runner's processes, and fails the
+    step when a package with tests ran in none. A step that runs one outside it runs the module's
+    tests on the runner's /proc, where nothing refuses a listing no scanner of the module sees: a
+    raw read of the directory, a glob, a program such as pgrep. Nothing fails then; the tests pass on
+    a runner whose processes happen to be harmless and fail on a machine several users share
+    (docs/testing.md, "A test that lists the machine's /proc"). A step counts as the module's when
+    its working directory is the module or below it, or when its go command moves there with -C.
+    The documents are ci.yaml and every workflow its jobs call, keyed by repository-relative path."""
+    for path, document in documents.items():
+        default = ((document.get("defaults") or {}).get("run") or {}).get("working-directory")
+        for job_id, job in (document.get("jobs") or {}).items():
+            job_default = ((job.get("defaults") or {}).get("run") or {}).get("working-directory")
+            for step in job.get("steps") or []:
+                script = step.get("run")
+                if not isinstance(script, str):
+                    continue
+                workdir = str(step.get("working-directory") or job_default or default or ".").strip().removeprefix("./")
+                for line in script_lines(script):
+                    match = GO_TEST_LINE.search(line)
+                    if not match:
+                        continue
+                    words = match.group("rest").split()
+                    if any(word in ("-c", "-list") or word.startswith(("-list=", "-c=")) for word in words):
+                        continue
+                    moved = re.search(r"\bgo\s+-C\s+(\S+)", line)
+                    module = moved.group(1).strip("'\"").removeprefix("./") if moved else workdir
+                    if not (module == DAEMON_MODULE or module.startswith(DAEMON_MODULE + "/")):
+                        continue
+                    before = line[: match.start()]
+                    if before.split() and before.split()[-1].endswith(PRIVATE_PROC):
+                        continue
+                    problems.append(error(path, f"job {job_id} step \"{step.get('name') or line}\" runs `{line}` in "
+                                                f"{DAEMON_MODULE} outside {PRIVATE_PROC}: its test binaries then read the "
+                                                f"runner's /proc, where a listing no scanner of the module checks sees every "
+                                                f"process of the machine; write the go command behind the wrapper, as "
+                                                f"`../../{PRIVATE_PROC} go test …` from the module's directory"))

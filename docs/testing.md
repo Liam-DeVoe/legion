@@ -525,10 +525,27 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
 The machine's `/proc` lists every process of every user on it, so a test that judges by what it finds there passes or fails by what else runs on the machine.
 The launcher's git lock sweep keeps every lock while a git or jj runs whose open files it cannot read, and two of its tests failed on a dev box several users share while they passed in CI, until each test's sweep read a `/proc` of its own.
 
-- A test that lists a `/proc`, directly or through code under test whose `/proc` is the machine's unless something else is set, gives that listing a `/proc` of its own: a directory of links to the processes the test started (the launcher's `procRoot`), a directory the test wrote (`blindProc`), or a fake pod (`packages/daemon/internal/memoryguard`'s `fakePod`).
-- A test that needs the machine's own `/proc` says why in a `// host-proc: <why>` line on or above the listing, or in the doc of the test or of the helper that lists: it matches only a process it started, for example, or it runs only in a PID namespace of its own.
-- A function that lists the machine's `/proc` only where a package variable lets it carries a `// host-proc gate <variable>: <why>` line, and a test that sets that variable gives the listing a `/proc` of its own.
-- `packages/daemon/internal/procaudit` holds this rule for every test of `packages/daemon`, each subtest on its own, in the daemon-go job, and fails naming each test that lists the machine's `/proc` with neither a `/proc` of its own nor a reason.
+Two things hold a test of `packages/daemon` off the machine's processes, one at each scanner and one around every test binary.
+
+- Each scanner of the module that lists a `/proc` checks the root it resolved (`packages/daemon/internal/hostproc`): the launcher's git lock sweep and its reaper, role-init's reaper, the memory guard, its guest watch and their common scan, the repo cache's reaper, and every test helper that lists processes itself.
+  In a test binary, a scanner whose root is a mount of proc ends the binary with exit 86 and its stack, from whatever goroutine reaches it, unless the test gave that scanner a root of its own or a reason.
+  What counts is the mount, not the path's spelling: `/proc`, `/proc/`, `/proc/self/..` and a link to `/proc` are the machine's alike.
+  Outside a test binary the check does nothing: a launcher in a pod reads its container's `/proc` because that is its job.
+- A root of the test's own is a directory of links to the processes the test started (the launcher's `procRoot`), a directory the test wrote (`blindProc`), or a fake pod (`packages/daemon/internal/memoryguard`'s `fakePod`).
+  The launcher's builders take the package's `gitLockProc` and the pod a test points `newMemoryGuard` and `newGuest` at when they build, so a default changed after a sweep is built changes nothing of that sweep.
+- A test that needs the machine's own `/proc` gives that one scanner a reason, `hostproc.Because("<why>")`: it takes only a child of a process the test started, for example.
+  A reason belongs to the scanner it is given to, and no switch lets a test or a process read the machine's `/proc` everywhere.
+  The `/proc` of a PID namespace whose first process is the test's own process (`runAsPIDOne`, role-init in a role's namespaces) needs no reason: every process it lists is one that process or its children started.
+- CI runs every test binary of the module through `.github/scripts/private_proc.py`, which runs it beneath a supervisor at PID 1 of a PID and mount namespace of its own, whose new `/proc` lists that binary's processes and none of the runner's.
+  That holds the routes no scanner sees: a raw read of the directory, `os.DirFS`, a joined glob, an opened directory handed to a helper, and a program such as `pgrep`.
+  A namespace that cannot be made fails the step, with no run on the runner's `/proc` instead, and so does a step in which a package with tests ran in no namespace, or a list with no test in it.
+  `check-ci-filters.sh` refuses a daemon `go test` in a workflow of the router that is not behind the wrapper (its rule 21).
+  Run a package the same way by hand from `packages/daemon`: `../../.github/scripts/private_proc.py go test ./internal/launcher/`, which needs `sudo -n`.
+- `TestTheOriginalConditionsLeaveTheLaunchersOwnRootAndTheUnreadableGitRule` (`packages/daemon/internal/launcher`) makes the conditions the sweep failed under: a real git of another user, visible, its comm exactly `git`, its open files unreadable to the test's user, each shown from that user.
+  Under them the original test passes with its own root, and a sweep given the namespace's `/proc` with a reason keeps a planted lock for the unreadable git.
+
+The limit of this design: it checks the paths a test runs.
+A listing no test reaches is checked the first time one does, and nothing lists the paths no test runs.
 
 ## Containers a test starts
 

@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# Tests for `private_proc.py`: every route a test reads the processes by sees its own namespace's
+# alone, which the same test run without the script does not; the test binary runs beneath a
+# supervisor at PID 1, as its own user, in its own directory, with its environment; and the script
+# fails a run in which no test binary ran in a namespace of its own, a list with no test in it, a
+# namespace it could not make, a supervisor that finds itself in no namespace of its own, and a
+# command that is no go test or that sets -exec itself.
+#
+# The cases run a real `go test` over a scratch module written here, whose test reads /proc by
+# five routes: a direct directory read, os.DirFS, a joined glob, an opened directory handed to a
+# helper, and pgrep. Each must find a process the test started and must not find one this harness
+# started on the machine before the run; the two are told apart by a marker in their command line,
+# never by a pid, which two namespaces can share. The script needs `sudo -n`, which CI's runners
+# give, and a go on PATH.
+#
+# Run from anywhere: .github/scripts/private_proc.test.sh
+# CI runs it in ci.yaml's test job.
+set -euo pipefail
+shopt -s inherit_errexit
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+wrapper="$script_dir/private_proc.py"
+
+# shellcheck source=.github/scripts/test-lib.sh
+source "$script_dir/test-lib.sh"
+
+work=$(mktemp -d)
+outside=""
+cleanup() {
+  if [ -n "$outside" ]; then kill "$outside" 2>/dev/null || true; fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+if ! sudo -n true 2>/dev/null; then
+  echo "private_proc.test.sh needs sudo -n, which makes the namespaces it tests" >&2
+  exit 1
+fi
+
+# The scratch module: one package with the routes' test, and one with no test at all.
+module="$work/routes"
+mkdir -p "$module/notests"
+printf 'module routes\n\ngo 1.22\n' > "$module/go.mod"
+printf 'package notests\n\n// Nothing here is tested.\nconst Nothing = 0\n' > "$module/notests/notests.go"
+cat > "$module/routes_test.go" <<'GO'
+package routes
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// cmdlines is the command line of every process names lists, read under root by read.
+func cmdlines(names []string, read func(string) ([]byte, error)) []string {
+	var out []string
+	for _, name := range names {
+		if _, err := strconv.Atoi(name); err != nil {
+			continue
+		}
+		if body, err := read(filepath.Join(name, "cmdline")); err == nil {
+			out = append(out, strings.ReplaceAll(string(body), "\x00", " "))
+		}
+	}
+	return out
+}
+
+// namesOf is the helper an opened directory is handed to.
+func namesOf(dir *os.File) []string {
+	names, _ := dir.Readdirnames(-1)
+	return names
+}
+
+func TestEveryRouteSeesThisNamespaceAlone(t *testing.T) {
+	if os.Getenv("ROUTES_FAIL") == "1" {
+		t.Fatal("the harness asked this run to fail")
+	}
+	outside := os.Getenv("ROUTES_OUTSIDE_MARKER")
+	if outside == "" {
+		t.Fatal("ROUTES_OUTSIDE_MARKER names no marker of a process outside")
+	}
+	random := make([]byte, 6)
+	if _, err := rand.Read(random); err != nil {
+		t.Fatal(err)
+	}
+	inside := "inside-marker-" + hex.EncodeToString(random)
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := &exec.Cmd{Path: sleep, Args: []string{inside, "60"}}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(child.Process.Pid), "cmdline")); err == nil && strings.Contains(string(body), inside) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the inside marker's command line never showed")
+		}
+	}
+	rooted := func(name string) ([]byte, error) { return os.ReadFile(filepath.Join("/proc", name)) }
+	routes := map[string]func() []string{
+		"a direct directory read": func() []string {
+			entries, _ := os.ReadDir("/proc")
+			var names []string
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			return cmdlines(names, rooted)
+		},
+		"os.DirFS": func() []string {
+			fsys := os.DirFS("/proc")
+			entries, _ := fs.ReadDir(fsys, ".")
+			var names []string
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			return cmdlines(names, func(name string) ([]byte, error) { return fs.ReadFile(fsys, name) })
+		},
+		"a joined glob": func() []string {
+			paths, _ := filepath.Glob(filepath.Join("/proc", "[0-9]*", "cmdline"))
+			var out []string
+			for _, path := range paths {
+				if body, err := os.ReadFile(path); err == nil {
+					out = append(out, strings.ReplaceAll(string(body), "\x00", " "))
+				}
+			}
+			return out
+		},
+		"an opened directory handed to a helper": func() []string {
+			dir, err := os.Open("/proc")
+			if err != nil {
+				return nil
+			}
+			defer dir.Close()
+			return cmdlines(namesOf(dir), rooted)
+		},
+		"pgrep": func() []string {
+			out, _ := exec.Command("pgrep", "-a", "-f", ".").Output()
+			return strings.Split(string(out), "\n")
+		},
+	}
+	names := make([]string, 0, len(routes))
+	for name := range routes {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		seen := strings.Join(routes[name](), "\n")
+		if !strings.Contains(seen, inside) {
+			t.Errorf("%s does not find the inside marker, a process this test started", name)
+		}
+		if strings.Contains(seen, outside) {
+			t.Errorf("%s finds the outside marker, a process of the machine this test did not start", name)
+		}
+	}
+}
+
+func TestTheBinaryRunsBeneathASupervisor(t *testing.T) {
+	if pid := os.Getpid(); pid == 1 {
+		t.Errorf("the test binary is PID 1, want a supervisor there")
+	}
+	if parent := os.Getppid(); parent != 1 {
+		t.Errorf("the test binary's parent is pid %d, want the supervisor at PID 1", parent)
+	}
+	if uid := strconv.Itoa(os.Getuid()); uid != os.Getenv("ROUTES_UID") {
+		t.Errorf("the test binary runs as uid %s, want the user's %s", uid, os.Getenv("ROUTES_UID"))
+	}
+	groups, _ := os.Getgroups()
+	slices.Sort(groups)
+	var got []string
+	for _, group := range groups {
+		got = append(got, strconv.Itoa(group))
+	}
+	if strings.Join(got, ",") != os.Getenv("ROUTES_GROUPS") {
+		t.Errorf("the test binary holds groups %v, want the user's %s", got, os.Getenv("ROUTES_GROUPS"))
+	}
+	if dir, _ := os.Getwd(); dir != os.Getenv("ROUTES_DIR") {
+		t.Errorf("the test binary runs in %s, want its package's directory %s", dir, os.Getenv("ROUTES_DIR"))
+	}
+}
+GO
+
+marker="outside-marker-$$-$RANDOM$RANDOM"
+bash -c "exec -a $marker sleep 600" > /dev/null 2>&1 &
+outside=$!
+for _ in $(seq 50); do
+  if tr '\0' ' ' < "/proc/$outside/cmdline" 2>/dev/null | grep -q -- "$marker"; then break; fi
+  sleep 0.1
+done
+uid=$(id -u)
+groups=$(id -G | tr ' ' '\n' | sort -n | paste -sd,)
+
+# run <command...>: runs it in the scratch module with the routes' environment, and leaves its
+# merged output in $out and its status in $status.
+run() {
+  set +e
+  out=$(cd "$module" && env ROUTES_OUTSIDE_MARKER="$marker" ROUTES_UID="$uid" ROUTES_GROUPS="$groups" \
+    ROUTES_DIR="$(cd "$module" && pwd -P)" "$@" 2>&1)
+  status=$?
+  set -e
+}
+
+echo "case: every route sees the namespace's processes and none of the machine's"
+run "$wrapper" go test -count=1 -v ./...
+check "exits 0" "$(is "$status" 0)"
+check "the routes' test passes" "$(contains "$out" '^--- PASS: TestEveryRouteSeesThisNamespaceAlone')"
+check "the supervisor's test passes" "$(contains "$out" '^--- PASS: TestTheBinaryRunsBeneathASupervisor')"
+check "says the one binary ran beneath PID 1 of a namespace of its own" \
+  "$(contains "$out" 'private-proc: 1 test binaries ran, each beneath PID 1 of a PID namespace of its own, of the 1 packages with tests')"
+
+echo "case: the control, the same test without the script, sees the machine"
+run go test -count=1 ./...
+check "exits non-zero" "$(is "$([ "$status" -ne 0 ] && echo yes)" yes)"
+for route in 'a direct directory read' 'os.DirFS' 'a joined glob' 'an opened directory handed to a helper' 'pgrep'; do
+  check "$route finds the outside marker" "$(contains "$out" "$route finds the outside marker")"
+done
+check "the binary's parent is no supervisor" "$(contains "$out" "the test binary's parent is pid")"
+
+echo "case: a failing test's status passes through"
+run env ROUTES_FAIL=1 "$wrapper" go test -count=1 ./...
+check "exits 1" "$(is "$status" 1)"
+check "go names the failure" "$(contains "$out" 'the harness asked this run to fail')"
+
+echo "case: a go test that ran no test binary fails"
+# go test -c compiles the binary and runs nothing, and exits 0: the record then holds no package,
+# which is what the script must catch. (go never answers a run from its cache while -exec is set.)
+run "$wrapper" go test -c -o "$work/routes.test" .
+check "exits 1" "$(is "$status" 1)"
+check "the binary was built" "$(is "$([ -x "$work/routes.test" ] && echo built)" built)"
+check "names the package that ran in no namespace" "$(contains "$out" 'private-proc: 0 test binaries ran in a namespace of their own, and 1 of the 1 packages with tests did not')"
+
+echo "case: a list with no test in it fails"
+run "$wrapper" go test -count=1 ./notests/
+check "exits 1" "$(is "$status" 1)"
+check "says the list runs nothing" "$(contains "$out" 'has a test file: a list with nothing in it runs nothing, which is no pass')"
+
+echo "case: a namespace that cannot be made fails the binary, and leaves no environment behind"
+mkdir -p "$work/bin" "$work/tmp"
+printf '#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n' > "$work/bin/sudo"
+chmod +x "$work/bin/sudo"
+run env PATH="$work/bin:$PATH" TMPDIR="$work/tmp" "$wrapper" go test -count=1 ./...
+check "exits non-zero" "$(is "$([ "$status" -ne 0 ] && echo yes)" yes)"
+check "says the namespace was not made" "$(contains "$out" 'was not made (sudo exited 1); nothing ran on the machine')"
+check "no file of the environment is left" "$(is "$(find "$work/tmp" -name 'private-proc-env-*' | wc -l)" 0)"
+
+echo "case: a supervisor that finds itself in no namespace of its own refuses"
+printf 'X=1' > "$work/env"
+set +e
+out=$("$wrapper" --init "$work/env" "$uid" "$(id -g)" "$groups" "$work" "$work/record" -- /bin/true 2>&1)
+status=$?
+set -e
+check "exits 125" "$(is "$status" 125)"
+check "says it is no PID 1" "$(contains "$out" 'no namespace of its own for /bin/true: the supervisor is pid')"
+check "starts nothing, and records nothing" "$(is "$([ -e "$work/record" ] && echo recorded || echo none)" none)"
+
+echo "case: a command that is no go test, or that sets -exec, is refused"
+run "$wrapper" go vet ./...
+check "go vet exits 2" "$(is "$status" 2)"
+run "$wrapper" go test -exec /bin/env ./...
+check "a -exec of its own exits 2" "$(is "$status" 2)"
+check "says why" "$(contains "$out" 'sets -exec itself, which would run its test binaries outside a namespace of their own')"
+
+summary "private_proc.py"

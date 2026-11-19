@@ -958,7 +958,8 @@ func TestAStartAfterTheContainersStopIsRefused(t *testing.T) {
 // PID 1's reaper reaps every exited process of its namespace but the generations its managers
 // run, whatever the number of managers: an orphan a `kubectl exec` left in an issue pod's roles
 // container is reaped, and each role's own generation is left to its manager's wait, which still
-// reads that generation's own exit status.
+// reads that generation's own exit status. The reaper lists a /proc of the row's own, whose
+// processes are the four the row started (procRoot), so what it reaps and spares is the row's alone.
 func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	start := func(script string) *exec.Cmd {
 		cmd := exec.Command("/bin/sh", "-c", script)
@@ -975,7 +976,8 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 		{role: "tester", namespaced: true, log: &roleLog{}, child: &child{pid: tester.Process.Pid}},
 		{role: "reviewer", namespaced: true, log: &roleLog{}, child: &child{pid: reviewer.Process.Pid}},
 	}
-	guard := &pidGuard{pids: map[int]bool{guarded.Process.Pid: true}}
+	guard := &pidGuard{pids: map[int]bool{guarded.Process.Pid: true},
+		proc: procRoot(t, tester.Process.Pid, reviewer.Process.Pid, orphan.Process.Pid, guarded.Process.Pid)}
 	// Every one has exited and waits as a zombie for whoever reaps it.
 	for _, cmd := range []*exec.Cmd{tester, reviewer, orphan, guarded} {
 		awaitZombie(t, cmd.Process.Pid)
@@ -1018,7 +1020,8 @@ func reapedByAnother(err error) bool {
 
 // A reap through the guard (pidGuard.reap, which the orphan reaper and the controller pod's drain
 // both run) leaves an exited child the launcher holds for a wait of its own (the leak-check
-// install's run, say) to that wait, which reads its own exit, and reaps any other exited child.
+// install's run, say) to that wait, which reads its own exit, and reaps any other exited child. The
+// guard lists a /proc of the row's own, whose processes are the two the row started (procRoot).
 func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
 	guard := &pidGuard{}
 	held := exec.Command("/bin/sh", "-c", "exit 5")
@@ -1031,6 +1034,7 @@ func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
 	}
 	awaitZombie(t, held.Process.Pid)
 	awaitZombie(t, other.Process.Pid)
+	guard.proc = procRoot(t, held.Process.Pid, other.Process.Pid)
 	if _, err := guard.reap(); err != nil {
 		t.Fatal(err)
 	}

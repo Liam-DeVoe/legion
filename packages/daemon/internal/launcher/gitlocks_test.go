@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -462,21 +463,15 @@ func roleNamespaceHolder(t *testing.T, dir, lock string) int {
 // childOf is the pid of parent's one child in the container's own /proc, and 0 while it has none:
 // every process's status names its parent's pid there, which is how a process of a role's
 // namespaces is found from outside them.
-//
-// host-proc: the child is in PID namespaces of its own, so only the container's /proc names it,
-// and parent is the test's own role-init, which no process the test did not start has for parent.
 func childOf(t *testing.T, parent int) int {
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	pids, err := hostproc.PIDs("childOf", "/proc", hostproc.Because("the child is in PID namespaces of its own, so only "+
+		"the container's /proc names it, and parent is the test's own role-init, which no process the test did not start has for parent"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		status, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "status"))
+	for _, pid := range pids {
+		status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
 		if err != nil {
 			// Gone between the read of the process table and the read of its status.
 			continue

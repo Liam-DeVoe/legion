@@ -334,7 +334,14 @@
 #      own tags, and one go list then compiles is the miss. The steps read their sets off the
 #      module with .github/scripts/go_build_tags.py at run time and ci_job_reads.py gives their
 #      Runs what it prints now, so this rule fails when that script stops printing a set a
-#      file needs.
+#      file needs,
+#  21. a go test of packages/daemon in ci.yaml or a workflow it calls - a step whose working
+#      directory is the module or below it, or a `go -C` into it - that does not run behind
+#      .github/scripts/private_proc.py, naming the file, the job, the step and the line. The
+#      wrapper runs each test binary in a PID and mount namespace of its own, whose /proc lists
+#      none of the runner's processes; outside it a listing no scanner of the module checks sees
+#      every process of the machine, and nothing fails (docs/testing.md, "A test that lists the
+#      machine's /proc"). A `-c` build and a `-list` listing run no test and are passed over.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of

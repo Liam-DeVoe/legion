@@ -2480,6 +2480,7 @@ def check() -> int:
     rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
+    rules.check_daemon_tests_in_private_proc(documents, problems)
     expander, selection = Expander(files), Selection(filters, quantifiers, files)
     # Rule 9's first direction, over the repository's files alone: it needs no closure, so a
     # mistyped path is named even when the go work below cannot run. Its second direction is

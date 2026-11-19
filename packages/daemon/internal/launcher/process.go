@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -28,30 +29,6 @@ func signalGeneration(pid int, sig syscall.Signal) error {
 		return fmt.Errorf("signal role processes: %w", err)
 	}
 	return nil
-}
-
-// procPIDs is every process the /proc mounted at root names, in the order os.ReadDir answers
-// them: /proc names a process by its decimal pid, so a numeric entry is a process and nothing
-// else there is one. The error is os.ReadDir's own, for each caller to word as its own failure,
-// and each keeps whatever further filtering it does of the pids.
-func procPIDs(root string) ([]int, error) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, err
-	}
-	pids := make([]int, 0, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if name == "" || name[0] < '0' || name[0] > '9' {
-			continue
-		}
-		pid, err := strconv.Atoi(name)
-		if err != nil {
-			continue
-		}
-		pids = append(pids, pid)
-	}
-	return pids, nil
 }
 
 // namespaceProcesses is one listing of the /proc of PID 1's namespace, split by the guard's
@@ -72,8 +49,10 @@ type namespaceProcesses struct {
 
 // listNamespace is one listing of the /proc mounted at root, split by held (namespaceProcesses).
 // With nothing held it reads no process's stat: spared is empty and others is every pid but 1.
+// The listing is the launcher's reaper's (hostproc.PIDs): in a test, a reaper whose root is a
+// /proc of the machine is refused unless the test's process is PID 1 of a PID namespace of its own.
 func listNamespace(root string, held []int) (namespaceProcesses, error) {
-	pids, err := procPIDs(root)
+	pids, err := hostproc.PIDs("the launcher's reaper", root, hostproc.Reason{})
 	if err != nil {
 		return namespaceProcesses{}, err
 	}
@@ -149,6 +128,19 @@ func statParentAndGroup(root string, pid int) (ppid, pgid int, ok bool) {
 type pidGuard struct {
 	mu   sync.Mutex
 	pids map[int]bool
+	// proc is the /proc a pass lists: the container's own when empty, which only PID 1 of the
+	// container reads (reapOrphans, cleanExitedGeneration). A test that reaps through a guard of
+	// its own outside such a PID 1 gives it a /proc of its own (procRoot), whose processes are the
+	// ones the test started.
+	proc string
+}
+
+// root is the /proc the guard's passes list.
+func (g *pidGuard) root() string {
+	if g.proc == "" {
+		return "/proc"
+	}
+	return g.proc
 }
 
 // start runs cmd and answers its pid, recorded as the launcher's own.
@@ -207,11 +199,7 @@ func (g *pidGuard) reap(skip ...int) (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	held := g.held()
-	// host-proc: what a test reads from a pass is which of its own children it reaped, since Wait4
-	// answers ECHILD for every process that is not this one's child; whether any other process is
-	// left is read by the drain alone, which runs only as PID 1 (cleanExitedGeneration), and a test
-	// is PID 1 only of a PID namespace of its own, whose /proc is its own (runAsPIDOne).
-	listed, err := listNamespace("/proc", held)
+	listed, err := listNamespace(g.root(), held)
 	if err != nil {
 		return false, fmt.Errorf("list role namespace processes: %w", err)
 	}
@@ -232,9 +220,7 @@ func (g *pidGuard) signalNamespace(sig syscall.Signal) error {
 	if len(held) == 0 {
 		return signalGeneration(0, sig)
 	}
-	// host-proc: only the drain signals, and it runs only as PID 1 (cleanExitedGeneration): a test
-	// is PID 1 only of a PID namespace of its own, whose /proc is its own (runAsPIDOne).
-	listed, err := listNamespace("/proc", held)
+	listed, err := listNamespace(g.root(), held)
 	if err != nil {
 		return fmt.Errorf("list role namespace processes: %w", err)
 	}
@@ -258,9 +244,10 @@ func signalEach(pids []int, sig syscall.Signal, kill func(int, syscall.Signal) e
 // delaying a resident worker's next turn, and never takes the exit status a generation's own wait
 // reports. It answers whether any process of the namespace is left but PID 1 and skip's.
 func reapNamespace(skip ...int) (bool, error) {
-	// host-proc: role-init's alone, which runs as PID 1 of the role's own PID namespace after it
-	// has mounted that namespace's own /proc (prepareRoleNamespace).
-	pids, err := procPIDs("/proc")
+	// Role-init's alone, which runs as PID 1 of the role's own PID namespace after it has mounted
+	// that namespace's own /proc (prepareRoleNamespace): the listing hostproc lets a test's process
+	// make with no reason, since every process it names is one role-init started.
+	pids, err := hostproc.PIDs("role-init's reaper", "/proc", hostproc.Reason{})
 	if err != nil {
 		return false, fmt.Errorf("list role namespace processes: %w", err)
 	}

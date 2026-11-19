@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -601,23 +602,18 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 
 // detachedProcess says whether any process of the machine still runs the detached command the
 // role started, once the role's init has exited.
-//
-// host-proc: the role's PID namespace ends with its init, so only the machine's /proc can show a
-// process of it left behind, and marker is a number of the test process's own (its pid), which
-// no process the test did not start names.
 func detachedProcess(marker string) string {
 	var unreadable string
+	reason := hostproc.Because("the role's PID namespace ends with its init, so only the machine's /proc can show a process " +
+		"of it left behind, and marker is a number of the test process's own (its pid), which no process the test did not start names")
 	gone := testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
-		entries, err := os.ReadDir("/proc")
+		pids, err := hostproc.PIDs("detachedProcess", "/proc", reason)
 		if err != nil {
 			unreadable = "unreadable: " + err.Error()
 			return true
 		}
-		for _, entry := range entries {
-			if _, err := strconv.Atoi(entry.Name()); err != nil {
-				continue
-			}
-			body, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		for _, pid := range pids {
+			body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
 			if err == nil && strings.Contains(string(body), marker) {
 				return false
 			}
@@ -949,21 +945,13 @@ func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
 const uncoverControlEnv = "LEGION_ROLE_INIT_TEST_UNCOVER"
 
 // processes is how many processes the role can see.
-//
-// host-proc: it runs inside the role's namespaces, where /proc is the role's own (role-init mounts
-// it), and what it counts is what the role sees.
 func processes() int {
-	entries, err := os.ReadDir("/proc")
+	pids, err := hostproc.PIDs("processes", "/proc", hostproc.Because("it runs inside the role's namespaces, where /proc is "+
+		"the role's own (role-init mounts it), and what it counts is what the role sees"))
 	if err != nil {
 		return -1
 	}
-	count := 0
-	for _, entry := range entries {
-		if _, err := strconv.Atoi(entry.Name()); err == nil {
-			count++
-		}
-	}
-	return count
+	return len(pids)
 }
 
 func signalOutside(pid int) string {

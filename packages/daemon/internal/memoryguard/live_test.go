@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -96,9 +97,6 @@ const (
 // with its time (`at=`), so a pod the kernel ends keeps every line written before the end. The
 // last line is `live: verdict PASS` or `live: verdict FAIL reason=…`, except in a run the kernel
 // ends, which is what the guard off is expected to end in.
-//
-// host-proc: the guard on a machine's own processes and memory is what this measures, so it reads
-// this machine's /proc on purpose, and it runs only in a pod made for it, where liveEnv is 1.
 func TestMemoryGuardLiveSandbox(t *testing.T) {
 	if os.Getenv(liveHolderEnv) == "1" {
 		holdMemory()
@@ -381,8 +379,11 @@ func (r *liveRun) startHelpers() string {
 func (r *liveRun) startGuard() {
 	r.watch = &guardWatch{act: r.cfg.settings.ActPercent, notify: make(chan struct{}, 1)}
 	g := New(Config{
-		Sink: r.watch.sink,
-		Logf: func(format string, args ...any) { r.out.printf("guard: %s", fmt.Sprintf(format, args...)) },
+		// The guard on a machine's own processes and memory is what this measures, and it runs
+		// only in a pod made for it, where liveEnv is 1 and every process is the run's own.
+		HostProc: hostproc.Because("the live sandbox measures the guard on its own pod's processes and memory, in a pod made for the run"),
+		Sink:     r.watch.sink,
+		Logf:     func(format string, args ...any) { r.out.printf("guard: %s", fmt.Sprintf(format, args...)) },
 	})
 	g.observe = r.watch.observe
 	if r.cfg.wire != nil {

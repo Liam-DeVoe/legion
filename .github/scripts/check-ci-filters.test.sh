@@ -2077,6 +2077,48 @@ check "names the workflow and what it no longer builds" \
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
 
+# Rule 21. A go test of packages/daemon in a workflow of the router runs behind
+# .github/scripts/private_proc.py, which gives each test binary a /proc of its own. daemon_step
+# <root> <name> <run> <working-directory>: a step of the app job that runs <run> there. The other
+# rules refuse such a step for reasons of their own (no gate claims it), so each case reads the
+# rule's own line, and the wrapped cases read that the line is absent.
+daemon_step() {
+  replace "$1/.github/workflows/ci.yaml" $'      - name: Report ci-ok when this job decides a merge-group run\n        if: always()\n        uses: ./.github/actions/ci-ok-report\n        with:\n          changes: ${{ toJSON(needs.changes) }}\n          job-status: ${{ job.status }}\n  image:' \
+    $'      - name: '"$2"$'\n        run: '"$3"$'\n        working-directory: '"$4"$'\n      - name: Report ci-ok when this job decides a merge-group run\n        if: always()\n        uses: ./.github/actions/ci-ok-report\n        with:\n          changes: ${{ toJSON(needs.changes) }}\n          job-status: ${{ job.status }}\n  image:'
+}
+rule21='outside .github/scripts/private_proc.py: its test binaries then read the runner'
+
+echo "case: a daemon go test outside the wrapper"
+root=$(fixture daemon-unwrapped)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "go test -count=1 ./..." packages/daemon
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the step and the line" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::job app step \"Test the daemon\" runs \`go test -count=1 ./...\` in packages/daemon $rule21")"
+
+echo "case: a daemon go test piped into xargs outside the wrapper"
+root=$(fixture daemon-unwrapped-xargs)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "go list ./... | xargs go test -count=1" packages/daemon
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`go list ./... | xargs go test -count=1\` in packages/daemon $rule21")"
+
+echo "case: a go -C into the daemon from the root, outside the wrapper"
+root=$(fixture daemon-unwrapped-chdir)
+daemon_step "$root" "Test the daemon" "go -C packages/daemon test ./..." .
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`go -C packages/daemon test ./...\` in packages/daemon $rule21")"
+
+echo "case: a daemon go test behind the wrapper, and a -c build, pass rule 21"
+root=$(fixture daemon-wrapped)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "../../.github/scripts/private_proc.py go test -count=1 ./..." packages/daemon
+daemon_step "$root" "Test the daemon through xargs" "go list ./... | xargs ../../.github/scripts/private_proc.py go test -count=1" packages/daemon
+daemon_step "$root" "Build the daemon's test binaries" "go test -c -o /dev/null ./..." packages/daemon
+run_check "$root"
+check "no line of rule 21" "$(is "$(contains "$out" "$rule21")" false)"
+
 # Rule 20. darwin_vet <root> <set>...: a step of the app job that vets ./... of mod for
 # darwin/arm64 once per <set> (an empty one is no tag), pinned as an exact entry with one Run
 # per set carrying that platform and those tags, as ci_job_reads.py's darwin_vet pins this

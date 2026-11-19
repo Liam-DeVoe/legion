@@ -78,10 +78,6 @@ const maxWaitingMemoryKills = 32
 // A kill of a process in a role is reported to that role's manager, which sends it on that role's
 // connection (queueMemoryKill); a kill of a process in no role has the watch's own line and
 // nothing else.
-//
-// host-proc gate containerInit: in a test, a launcher passes containerInit only as PID 1 of a PID
-// namespace of its own, whose /proc is its own, or where the test stood its process in for PID 1
-// (useGuardPod, useGuestPod), which gives the watch a pod of the test's own.
 func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
 	if !containerInit() {

@@ -304,7 +304,7 @@ STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
-XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
+XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:\S*\.github/scripts/private_proc\.py\s+)?(?P<test>go\s+test\b.*)$")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 
 
@@ -338,7 +338,7 @@ ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
 # which tests it runs in no way, so the command behind it is read as though it stood alone; one
 # this tuple does not name is refused rather than guessed at. Matched by the end of the word,
 # since a step writes the path from its own working directory.
-GO_WRAPPERS = (".github/scripts/race_memory.py",)
+GO_WRAPPERS = (".github/scripts/race_memory.py", ".github/scripts/private_proc.py")
 # go commands that run no test, so a step may hold one and this script need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # go test flags whose value is the next argument.
