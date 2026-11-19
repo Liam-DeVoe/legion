@@ -97,11 +97,11 @@ export function PrioritiesPage(): ReactNode {
   const [params, setParams] = useSearchParams();
   const asked = params.get(TAB_PARAM);
   const tab: PrioritiesTab = asked === "none" || asked === "parked" ? asked : "order";
-  // The keys every table of the application is walked with (`j`, `k`, `o`, Enter, `x`), which
-  // each table registers in the `project` scope. A tab draws one table, so one table holds them;
-  // the work under an opened priority is a second, mounted after the priorities table and so
-  // registered after it, and the priorities table's bindings, found first, answer every key: `j`
-  // and `k` walk the priorities, and `o` and Enter open whichever row has the focus.
+  // The keys every table of the application is walked with (`j`, `k`, `x`, `o`, Enter), which
+  // each table registers in the `project` scope. The registry holds one table's per page
+  // (`features/project/issues-table-keys.ts`), and each tab draws exactly one table, so the keys
+  // are that table's: the priorities, or a fault list. The work under a priority is on its own
+  // page, which turns the scope on for that table alone.
   useKeymapScope("project");
   // What the page draws of one read, built once that read answers rather than once a render:
   // the titles are what the parked list's columns are declared over, so a map built afresh
@@ -188,7 +188,7 @@ export function PrioritiesPage(): ReactNode {
               </div>
             </div>
           ) : (
-            <PrioritiesTable rows={rows} titles={titles} />
+            <PrioritiesTable rows={rows} />
           )
         )}
         {panel(

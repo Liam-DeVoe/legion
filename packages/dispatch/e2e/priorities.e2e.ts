@@ -522,7 +522,7 @@ test("with no priority the page reads the server's sentence, and writes the firs
 });
 
 // SLOW(>=2s): the seed, four writes a person makes, and two reloads that read them back.
-test("a priority row opens its work by status, and four writes survive a reload", async ({
+test("a priority row opens its description, its title its work, and four writes survive a reload", async ({
   browser,
 }) => {
   const seed = await seedPriorities();
@@ -532,21 +532,38 @@ test("a priority row opens its work by status, and four writes survive a reload"
     await priorityPage(page);
     await page.goto(PRIORITIES_PATH);
 
-    // An opened row shows the work advancing that priority, read by status, which is the
-    // grouping the page writes into the address when it opens the row.
+    // An opened row shows the priority's description and nothing more: the tab draws the one
+    // table, so the keys a table is walked with are its alone, and `j` on a focused priority
+    // moves to the next priority.
     await page.getByRole("button", { name: `Open #3 ${seed.titles[2]}` }).click();
-    const work = section(page, `Work advancing ${seed.titles[2]}`);
-    await expect(page).toHaveURL(/w\.group=status/);
-    await expect(work.getByRole("button", { name: /Needs review, 1 issue/ })).toBeVisible();
-    await expect(work.getByRole("button", { name: /Todo, 1 issue/ })).toBeVisible();
-    await expect(work.getByRole("button", { name: /Backlog, 1 issue/ })).toBeVisible();
+    await expect(page.getByRole("group", { exact: true, name: "Description of #3" })).toBeVisible();
+    await expect(page.getByRole("table")).toHaveCount(1);
+    await expect(page.locator('section[aria-label^="Work advancing"]')).toHaveCount(0);
+    await page.locator(`tr[data-issue-row="${seed.ids[1]}"]`).focus();
+    await page.keyboard.press("j");
+    await expect(page.locator(`tr[data-issue-row="${seed.ids[2]}"]`)).toBeFocused();
+    await page.getByRole("button", { name: `Close #3 ${seed.titles[2]}` }).click();
+
+    // The work is on the priority's own page, which the title opens: there the work table is
+    // the one table, and the same keys walk its rows.
+    await page.getByRole("link", { exact: true, name: seed.titles[2] }).click();
+    await expect(page).toHaveURL(`/priorities/${seed.ids[2]}`);
+    const work = section(page, "Work advancing this priority");
     await expectRowNames(work, [
       `${seed.child} Ledger client migration`,
       `${seed.cutover} Ledger cut-over`,
       `${seed.ledger} Ledger read path`,
     ]);
-    await page.getByRole("button", { name: `Close #3 ${seed.titles[2]}` }).click();
-    await expect(section(page, `Work advancing ${seed.titles[2]}`)).toHaveCount(0);
+    const workRows = work.locator("tr[data-issue-row]");
+    const firstKey = await workRows.first().getAttribute("data-issue-row");
+    const secondKey = await workRows.nth(1).getAttribute("data-issue-row");
+    await workRows.first().focus();
+    await page.keyboard.press("j");
+    await expect(work.locator(`tr[data-issue-row="${secondKey}"]`)).toBeFocused();
+    await page.keyboard.press("k");
+    await expect(work.locator(`tr[data-issue-row="${firstKey}"]`)).toBeFocused();
+    await page.getByRole("link", { name: "‹ Priorities" }).click();
+    await expect(page.getByRole("table", { name: "Priorities table" })).toBeVisible();
 
     // Renamed on its own page, which its title opens: no edit mode and no Save there, so
     // leaving the field writes it, and the list it is read from again names it so.
@@ -610,13 +627,9 @@ test("a priority row opens its work by status, and four writes survive a reload"
     // What the page does not say about a priority (INFRA-2947, R10): no date it is wanted by,
     // no portion of it done, and no word judging how it is going. Every `<time>` the page draws
     // is a moment that has passed, and no relative label reads forwards. Each absence is read on
-    // each tab once the parts that carry dates and counts have drawn - the work under #1 and
-    // each fault list, each a read of its own - since a page still loading them would pass it on
-    // text it never drew.
-    await expectRowNames(section(page, `Work advancing ${seed.titles[0]}`), [
-      `${seed.rollout} Daemon rollout to the fleet`,
-      `${seed.smoke} Daemon smoke suite`,
-    ]);
+    // each tab once the parts that carry dates and counts have drawn - the opened description
+    // and each fault list, each a read of its own - since a page still loading them would pass
+    // it on text it never drew.
     await expectNoForecast(page);
     await chooseTab(page, "none");
     await expect(

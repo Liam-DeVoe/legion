@@ -2,10 +2,16 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { KeymapProvider } from "../shell/KeymapProvider";
 import { PriorityPage } from "./PriorityPage";
+
+/** Where a link or a key the page follows lands: the address, which a test reads. */
+function Landed() {
+  return <output data-testid="landed">{useLocation().pathname}</output>;
+}
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
   return {
@@ -134,9 +140,12 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   const view = render(
     <MemoryRouter initialEntries={[`/priorities/${id}`]}>
       <QueryClientProvider client={client}>
-        <Routes>
-          <Route element={<PriorityPage />} path="/priorities/:id" />
-        </Routes>
+        <KeymapProvider>
+          <Routes>
+            <Route element={<PriorityPage />} path="/priorities/:id" />
+            <Route element={<Landed />} path="*" />
+          </Routes>
+        </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -301,6 +310,33 @@ test("the work under the priority is the issues table, scoped and under its own 
   ).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
+});
+
+test("j, k, x and Enter act on the work rows, the one table the page draws", async () => {
+  const user = userEvent.setup();
+  page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
+  const work = await screen.findByRole("region", { name: "Work advancing this priority" });
+  const first = await within(work).findByRole(
+    "row",
+    { name: "CORE-1 Work CORE-1" },
+    { timeout: 3000 }
+  );
+  await within(work).findByRole("row", { name: "CORE-4 Work CORE-4" });
+  const focused = () => document.activeElement?.getAttribute("data-issue-row");
+  first.focus();
+  await user.keyboard("j");
+  expect(focused()).toBe("CORE-4");
+  await user.keyboard("k");
+  expect(focused()).toBe("CORE-1");
+  // `x` selects the row in hand, as on a project's table.
+  await user.keyboard("x");
+  await waitFor(() =>
+    expect(within(work).getByRole("checkbox", { name: "Select CORE-1" })).toBeChecked()
+  );
+  expect(within(work).getByRole("checkbox", { name: "Select CORE-4" })).not.toBeChecked();
+  // Enter opens the focused issue.
+  await user.keyboard("{Enter}");
+  expect((await screen.findByTestId("landed")).textContent).toBe("/issues/CORE-1");
 });
 
 test("the margin stands beside the page, with no tabs of its own", async () => {

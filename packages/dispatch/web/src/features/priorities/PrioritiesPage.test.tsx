@@ -473,18 +473,22 @@ test("the first line of a description shows on a closed row and the whole of it 
   );
 });
 
-test("opening a row lists the work advancing that priority, over every project", async () => {
+test("opening a row shows its description and no work: the work is on the priority's own page", async () => {
   const user = userEvent.setup();
   const { listing } = page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("OPS-3")]);
-  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
-  const work = await screen.findByRole("region", {
-    name: "Work advancing Legion works reliably first",
-  });
-  expect(await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
-  expect(within(work).queryByRole("row", { name: "OPS-3 Work OPS-3" })).toBeNull();
-  // The narrowing is the server's, and it names no project: a priority belongs to none.
-  expect(listing).toHaveBeenCalledWith({ advances: ["legion-first"], open: true });
+  expect(await screen.findByRole("group", { name: "Description of #1" })).toBeDefined();
+  // The tab draws one table, whatever is open, and reads no work for it: the way to the work is
+  // the title, a link to the priority's own page.
+  expect(screen.getAllByRole("table").map((table) => table.getAttribute("aria-label"))).toEqual([
+    "Priorities table",
+  ]);
+  expect(screen.queryByRole("region", { name: /^Work advancing/ })).toBeNull();
+  expect(listing).not.toHaveBeenCalledWith({ advances: ["legion-first"], open: true });
+  expect(
+    within(row).getByRole("link", { name: "Legion works reliably first" }).getAttribute("href")
+  ).toBe("/priorities/legion-first");
 });
 
 test("a person who may write adds a priority", async () => {
@@ -582,26 +586,32 @@ test("the keyboard moves a priority one place, as the drag does", async () => {
   ]);
 });
 
-test("j walks the priorities and Enter opens the focused row, an opened row's work included", async () => {
+test("j, k, x and Enter act on the priorities, a row opened or not", async () => {
   const user = userEvent.setup();
   page(FIFTEEN, [issue("CORE-1", ["legion-first"])]);
   const first = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  // An opened row adds no second table, so the keys stay the priorities table's.
+  await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
+  await screen.findByRole("group", { name: "Description of #1" });
+  const focused = () => document.activeElement?.getAttribute("aria-label");
   first.focus();
   await user.keyboard("j");
-  expect(document.activeElement?.getAttribute("aria-label")).toBe("#2 Linkage closure eval");
+  expect(focused()).toBe("#2 Linkage closure eval");
+  await user.keyboard("j");
+  expect(focused()).toBe("#3 OSS Verify");
+  await user.keyboard("k");
+  expect(focused()).toBe("#2 Linkage closure eval");
+  // `x` is the priorities table's too: the binding takes the key, and since a priority row has
+  // nothing to select, the focus stays where it is and nothing else moves.
+  const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
+  // user-event cannot say whether a key was taken; the event fireEvent dispatches can.
+  expect(fireEvent.keyDown(second, { code: "KeyX", key: "x" })).toBe(false);
+  expect(focused()).toBe("#2 Linkage closure eval");
+  expect(screen.queryAllByRole("checkbox")).toEqual([]);
+  expect(screen.getByTestId("address").textContent).toBe("POP /priorities");
   // Enter on the focused row opens the priority's own page, as its title link does.
   await user.keyboard("{Enter}");
   expect(screen.getByTestId("address").textContent).toBe("PUSH /priorities/linkage-closure");
-
-  // The work under an opened priority is a second table on the page. The priorities table's keys
-  // answer for both, and Enter opens the row that has the focus: here, an issue of that work.
-  await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
-  const work = await screen.findByRole("region", {
-    name: "Work advancing Legion works reliably first",
-  });
-  (await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" })).focus();
-  await user.keyboard("{Enter}");
-  expect(screen.getByTestId("address").textContent).toBe("PUSH /issues/CORE-1");
 });
 
 test("the table's own view is in the address under its prefix", async () => {

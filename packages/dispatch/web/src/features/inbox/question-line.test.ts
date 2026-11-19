@@ -46,6 +46,15 @@ test("questionLine keeps a code span's backslashes and stars as written", () => 
   expect(questionLine("A stray ` backtick")).toBe("A stray ` backtick");
 });
 
+test("questionLine keeps a private-use character the question holds, beside escapes and code", () => {
+  // A font's icon is a private-use code point: it is the question's own, and stays.
+  expect(questionLine("Icon \uf000 Review this")).toBe("Icon \uf000 Review this");
+  expect(questionLine("Literal \ue100 text")).toBe("Literal \ue100 text");
+  // U+E000 is the first code point an escape or a code span could be held as: one the line
+  // holds already is not taken, and both are given back as written.
+  expect(questionLine("\ue000 1\\. `a*b` \ue001")).toBe("\ue000 1. a*b \ue001");
+});
+
 test("questionLine takes the first line that holds anything", () => {
   expect(questionLine("\n   \n# The question\n\nAnd the detail below it.\n")).toBe("The question");
 });

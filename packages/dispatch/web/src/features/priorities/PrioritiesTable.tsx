@@ -6,8 +6,7 @@ import {
   type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
-import { textMutedOnSurfaceMuted, textSecondaryOnCanvas } from "../../theme/classes";
-import { IssuesTable } from "../project/IssuesTable";
+import { textMutedOnSurfaceMuted } from "../../theme/classes";
 import { useTableLayout } from "../project/issues-table-layout";
 import { NewPriority } from "./NewPriority";
 import { usePriorityColumns } from "./priorities-columns";
@@ -34,8 +33,6 @@ const NOUN: RowNoun = { many: "priorities", one: "priority" };
 const LAYOUT_KEY = "priorities";
 /** The address prefix of this table's own view, so the two fault lists keep their own. */
 const VIEW_PREFIX = "p";
-/** The address prefix of the work under an opened row, which is the issues table's own view. */
-const WORK_PREFIX = "w";
 /** What the title leaves free at the box's right edge: the box's two borders and the widest
  *  classic vertical scrollbar (17 px on Windows), so a box whose rows scroll draws no sideways
  *  scrollbar beside it. */
@@ -46,19 +43,12 @@ const TITLE_MIN = PRIORITY_COLUMNS_BY_ID.get("title")?.min ?? 0;
  * The priorities themselves: one row per priority in the one order, with the counts that say
  * what is happening under each. A reader who may write a priority adds one, writes its
  * description and drags its order here, and renames it on its own page, which its title links
- * to; every reader opens a row, which shows the whole of that priority's description and the
- * work advancing it, which names every priority each row advances by `titles`, as the
- * priority's own page does.
+ * to; every reader opens a row, which shows the whole of that priority's description. The work
+ * advancing a priority is listed on that priority's own page, so this tab draws one table and
+ * the keys every table is walked with (`j`, `k`, `x`, `o`, Enter) are this table's alone.
  */
-export function PrioritiesTable({
-  rows,
-  titles,
-}: {
-  rows: readonly PriorityRow[];
-  /** Each priority's title by its id, which the opened row's work table names a priority by. */
-  titles: ReadonlyMap<string, string>;
-}): ReactNode {
-  const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
+export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): ReactNode {
+  const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
   const shared = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
   const { attachAbove, boxWidth, responsive, sizing, visibility } = shared;
@@ -86,7 +76,6 @@ export function PrioritiesTable({
 
   const items = useMemo(() => buildPriorityItems(rows), [rows]);
   const order = useMemo(() => items.map((item) => item.priority.id), [items]);
-  const open = items.find((item) => item.priority.id === openId);
   // A drag writes the place the reader can see. Under another sort, a grouping or a page of
   // rows that is not the whole order, where a row lands is not where it was dropped, so the
   // handle is not drawn at all.
@@ -126,22 +115,9 @@ export function PrioritiesTable({
     [move, order]
   );
   const onOpen = useCallback(
-    (item: PriorityItem) => {
-      const next = openId === item.priority.id ? undefined : item.priority.id;
-      setOpenId(next);
-      // The work under a priority is read by status, as the page's rule says, unless the
-      // reader has already grouped that table by something else.
-      if (next !== undefined && !params.has(`${WORK_PREFIX}.group`))
-        setParams(
-          (current) => {
-            const changed = new URLSearchParams(current);
-            changed.set(`${WORK_PREFIX}.group`, "status");
-            return changed;
-          },
-          { replace: true }
-        );
-    },
-    [openId, params, setParams]
+    (item: PriorityItem) =>
+      setOpenId((was) => (was === item.priority.id ? undefined : item.priority.id)),
+    []
   );
   // One object while nothing a row can do changes, since the column declarations are built
   // over it (`usePriorityColumns`) and the table is built over those.
@@ -268,19 +244,6 @@ export function PrioritiesTable({
         )}
         scrollTestId="priorities-table-scroll"
       />
-
-      {open === undefined ? null : (
-        <section aria-label={`Work advancing ${open.priority.title}`} className="space-y-2">
-          <h3 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>
-            Work advancing {open.order} {open.priority.title}
-          </h3>
-          <IssuesTable
-            listing={{ advances: open.priority.id }}
-            priorityTitles={titles}
-            stateKey={WORK_PREFIX}
-          />
-        </section>
-      )}
     </section>
   );
 }

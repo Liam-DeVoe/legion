@@ -10,30 +10,43 @@ const STAR_EMPHASIS = /\*(?=\S)([^*]*?\S)\*/g;
 const UNDERSCORE_EMPHASIS = /(?<![\w_])_(?=\S)([^_]*?\S)_(?!\w)/g;
 /** The ASCII punctuation a backslash escapes in markdown prose: `1\.` is `1.`, `\*` is `*`. */
 const PUNCTUATION = /[!-/:-@[-`{-~]/;
-/** Where a part of the line waits while the decoration around its words is stripped: one code
- *  point of the private-use area each. An escaped punctuation mark is held at its own code
- *  above `HELD_MARK`, so an escaped `*` is never read as emphasis; a code span is held as its
- *  index above `HELD_CODE`, so nothing inside it is read as markdown at all. */
-const HELD_MARK = 0xe000;
-const HELD_CODE = 0xe100;
-const HELD = /[\ue021-\ue07e\ue100-\uf8ff]/g;
+/** The code points a held part of the line stands as while the decoration around its words is
+ *  stripped: the Basic Multilingual Plane's private-use area, one code point a part, which no
+ *  markdown rule below reads as a marker. A line may hold such characters itself (a font's icon,
+ *  say), so each part takes a code point the line does not hold. */
+const RESERVED_FIRST = 0xe000;
+const RESERVED_LAST = 0xf8ff;
+const RESERVED = /[\ue000-\uf8ff]/g;
 
 /**
  * The line with each code span and each escaped punctuation mark held, read left to right as
  * markdown reads them: a backslash escapes a punctuation mark in prose and nothing in code, and
  * a run of backticks opens a code span only where a run of exactly as many closes it. A run
- * that nothing closes is backticks as written. Each span's code goes into `codes`, without its
+ * that nothing closes is backticks as written. A span is held as its code, without its
  * delimiters and as markdown trims it: one space off each end, where it has one at both and is
- * not spaces alone.
+ * not spaces alone; an escape is held as the mark alone. `tokens` gets what each code point
+ * this call made stands for, and only those: a private-use character the line held already is
+ * left out of it, and so is given back as it is. A line holding every private-use code point
+ * leaves the rest of its parts as written.
  */
-function hold(line: string, codes: string[]): string {
+function hold(line: string, tokens: Map<string, string>): string {
+  const taken = new Set(line.match(RESERVED));
+  let free = RESERVED_FIRST;
+  const token = (text: string, written: string): string => {
+    while (free <= RESERVED_LAST && taken.has(String.fromCharCode(free))) free += 1;
+    if (free > RESERVED_LAST) return written;
+    const char = String.fromCharCode(free);
+    free += 1;
+    tokens.set(char, text);
+    return char;
+  };
   let held = "";
   let at = 0;
   while (at < line.length) {
     const char = line.charAt(at);
     const next = line.charAt(at + 1);
     if (char === "\\" && PUNCTUATION.test(next)) {
-      held += String.fromCharCode(HELD_MARK + next.charCodeAt(0));
+      held += token(next, char + next);
       at += 2;
     } else if (char === "`") {
       let run = 1;
@@ -45,8 +58,10 @@ function hold(line: string, codes: string[]): string {
         held += line.slice(at, at + run);
       } else {
         const code = line.slice(at + run, end.index);
-        codes.push(/^ [\s\S]* $/.test(code) && code.trim() !== "" ? code.slice(1, -1) : code);
-        held += String.fromCharCode(HELD_CODE + codes.length - 1);
+        held += token(
+          /^ [\s\S]* $/.test(code) && code.trim() !== "" ? code.slice(1, -1) : code,
+          line.slice(at, end.index + run)
+        );
         at = end.index;
       }
       at += run;
@@ -73,19 +88,14 @@ function hold(line: string, codes: string[]): string {
  */
 export function questionLine(question: string): string {
   for (const line of question.split("\n")) {
-    const codes: string[] = [];
-    const plain = hold(line, codes)
+    const tokens = new Map<string, string>();
+    const plain = hold(line, tokens)
       .replace(HEADING, "")
       .replace(LINK, "$1")
       .replace(STRONG, "$2")
       .replace(STAR_EMPHASIS, "$1")
       .replace(UNDERSCORE_EMPHASIS, "$1")
-      .replace(HELD, (held) => {
-        const point = held.charCodeAt(0);
-        return point >= HELD_CODE
-          ? (codes[point - HELD_CODE] ?? "")
-          : String.fromCharCode(point - HELD_MARK);
-      })
+      .replace(RESERVED, (held) => tokens.get(held) ?? held)
       .replace(/\s+/g, " ")
       .trim();
     if (plain !== "") {
