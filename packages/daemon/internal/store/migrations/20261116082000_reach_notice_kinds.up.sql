@@ -19,11 +19,13 @@
 -- forward-only. scripts/e2e/rollback-notices.sh runs that release on such a database.
 --
 -- The check is one list, so it names every kind, as 20261114031356 did: its twenty-four, these
--- two, and role_holders_publish, which 20261116165926_role_holders_publish adds. That version
--- stands above this one, so a fresh database applies its list last, and that list names these
--- two. A database that recorded 20261116165926 before this file applies this list last instead,
--- over the role-holders publications its outbox holds, which a list without that kind would
--- refuse, so the add constraint below would fail and the daemon would not boot.
+-- two, role_holders_publish, which 20261116165926_role_holders_publish adds, and step_record,
+-- which 20261117000528_outbox_kinds_with_the_step_record adds. Those versions stand above this
+-- one, so a fresh database applies 20261117000528's list last, and that list names these two. A
+-- database that recorded 20261116165926 and 20261117000528 before this file applies this list
+-- last instead, over the role-holders publications and step records its outbox holds, which a
+-- list without either kind would refuse, so the add constraint below would fail and the daemon
+-- would not boot.
 --
 -- A database a build of this change migrated before these kinds existed can hold such a notice
 -- under notice or controller_notice, where this release refuses to decode it, because a row's kind
@@ -36,7 +38,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'reach_notice', 'reach_controller_notice',
-  'role_holders_publish'));
+  'role_holders_publish', 'step_record'));
 
 update outbox set kind = 'reach_notice'
   where kind = 'notice' and payload->>'kind' = 'claim-out-of-reach';
