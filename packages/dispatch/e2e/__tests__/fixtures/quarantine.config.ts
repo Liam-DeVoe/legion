@@ -6,7 +6,9 @@ import { type QuarantineEntry, quarantined, quarantineRun } from "../../quaranti
 /** The planted control of e2e/__tests__/quarantine.test.ts for the quarantine's pattern: two
  *  projects over the rows of `quarantine-rows.fixture.ts`, each passed through `quarantined` as
  *  e2e/playwright.config.ts passes its own, with the planted entries below in place of the real
- *  list. The real list ships empty, so without this the pattern would be read by no listing.
+ *  list. The planted list is what the look-alike rows of that file are read against: beside each
+ *  row it names stands one that only looks like it, so a listing of these shows the pattern takes
+ *  the one and leaves the other, whatever the real list holds.
  *
  * `alpha` takes every row, and `alpha-phone` - whose name begins with `alpha`, so a pattern not
  * anchored at the project would reach it - only the `@phone` one. Like the real config, it reads

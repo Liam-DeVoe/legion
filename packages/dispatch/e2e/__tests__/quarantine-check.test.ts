@@ -1,12 +1,14 @@
 /** The nightly's half of the quarantine, `e2e/tools/quarantine-check.ts`, driven through its pure
  *  part with the planted history of `fixtures/quarantine-history.fixture.ts`: what `decide`
  *  names, the lines `report` gives for each, and how a row's own last change and its fix move
- *  what counts. Nothing here reads GitHub or the clock; the moment of the reading is the
+ *  what counts, and the refusal `blame` gives an answer that holds no blame, read from a
+ *  stand-in for GitHub. Nothing here reads GitHub or the clock; the moment of the reading is the
  *  fixture's. */
 import { expect, test } from "bun:test";
 
 import { entryLines } from "../quarantine";
 import {
+  blame,
   decide,
   type FixReading,
   lastChange,
@@ -238,4 +240,15 @@ test("an entry's lines are the layout Biome keeps, a long title on the line afte
     '    added: "2026-11-12",',
     "  },",
   ]);
+});
+
+// GitHub answers a 404 or a 422 with no body, which the client reads as no answer at all
+// (`undefined`), and the refusal must still name the file and what was answered.
+test("a blame GitHub gives no answer for is refused, naming the file", async () => {
+  await expect(
+    blame({ graphql: async () => undefined }, "cybermonklabs/legion", "main", "e2e/pictures.e2e.ts")
+  ).rejects.toThrow(
+    "GitHub answered no blame of e2e/pictures.e2e.ts at main (null), so the rows of that file " +
+      "cannot be read as they stand: the quarantine was not checked."
+  );
 });

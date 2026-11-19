@@ -1512,11 +1512,12 @@ jobs:
           if-no-files-found: ignore
 
   # How many rows the quarantine holds (packages/dispatch/e2e/quarantine.ts), read for the
-  # `quarantine` job below, which runs only where it holds one. The quarantine ships empty and
-  # stays short, and that job pulls the browser image, downloads the binaries, installs and builds
-  # the dashboard before its first row: minutes of a machine for no row at all. So the count is
-  # read first, on the arm runner the merge job takes and for the reason that job's comment
-  # gives, with Bun and the module alone: the module imports nothing, so it needs no install.
+  # `quarantine` job below, which runs only where it holds one. The quarantine holds at most ten
+  # rows, and none once each of them is fixed, and that job pulls the browser image, downloads the
+  # binaries, installs and builds the dashboard before its first row: minutes of a machine for no
+  # row at all. So the count is read first, on the arm runner the merge job takes and for the
+  # reason that job's comment gives, with Bun and the module alone: the module imports nothing,
+  # so it needs no install.
   #
   # The nightly's call alone (`inputs.quarantine`): ci.yaml's call gates a change, its shard legs
   # leave the quarantined rows out, and nothing of that call runs them.
@@ -1564,13 +1565,17 @@ jobs:
   # (packages/dispatch/e2e/tools/quarantine-check.ts) reads the merge job's notices alone.
   #
   # Its steps are the shard job's, in the same image, for the reasons that job's head and steps
-  # give, with four differences: no matrix and no `--shard`, since at most ten rows run here; no
-  # project named, since `only` leaves each project nothing but its quarantined rows and every
-  # quarantined row is in a project a run that names none selects
-  # (packages/dispatch/e2e/__tests__/quarantine.test.ts holds the list to those projects); a JSON
-  # report in place of the blob, which the reading after the browser step reads; and no
-  # PostgreSQL reading, which is a reading of a lane rather than of these rows. The container,
-  # the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here too.
+  # give, with these differences: no matrix and no `--shard`, since at most ten rows run here; no
+  # project named and no lane grep, since `only` leaves each project nothing but its quarantined
+  # rows and every quarantined row is in a project a run that names none selects
+  # (packages/dispatch/e2e/__tests__/quarantine.test.ts holds the list to those projects); `only`
+  # in place of `exclude`; `continue-on-error: true` on the browser step, for the reason above,
+  # whose status is Playwright's own, since nothing pipes it and no row count is read from it; a
+  # JSON report in place of the blob, which the reading after the browser step reads and the
+  # upload after that takes in place of the blob's; no PostgreSQL reading, which is a reading of
+  # a lane rather than of these rows; and no "What the run left behind" and no upload of its
+  # record directory, so a failed row here leaves its trace and none of its stack's logs. The
+  # container, the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here too.
   #
   # The budget. The browser step takes the shard job's 9 minutes, which this leg's rows fit:
   # at most ten rows over four workers is three to a worker, and three rows that each reach the

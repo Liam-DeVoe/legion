@@ -26,14 +26,15 @@
  *  .github/workflows/dispatch-browser.yaml's merge job prints one per flaky row), through the
  *  check runs API: the run listing (`actions: read`), the merge job's check runs in the run's
  *  check suite and their annotations (`checks: read`). For a row flaky in two runs it also reads
- *  a listing of this checkout and its file's blame, one GraphQL call per file through
- *  `gh api graphql`; a refused blame fails the check, naming the file. For each fix it reads
- *  GitHub's compare of the checkout with the fix's commit.
+ *  a listing of its file in this checkout and the file's blame, one GraphQL request per file,
+ *  which it sends itself with the job's token, through the client and the retry ladder of its
+ *  REST reads; a refused blame fails the check, naming the file. For each fix it reads GitHub's
+ *  compare of the checkout with the fix's commit.
  *
  *  Those reads are the adapter's, below `readHistory`, and they decide nothing; `flakyRows`,
  *  `rowLines`, `lastChange`, `decide` and `report` are pure over what was read and the moment
- *  given them, which is how `e2e/__tests__/quarantine-check.test.ts` drives them. Only the
- *  command line reads the clock.
+ *  given them, which is how `e2e/__tests__/quarantine-check.test.ts` drives them, and it drives
+ *  `blame` against a stand-in for GitHub's answer. Only the command line reads the clock.
  *
  *  Environment: GITHUB_REPOSITORY (`owner/name`), GH_TOKEN or GITHUB_TOKEN, GITHUB_SHA (the
  *  commit checked out; `main` when unset), GITHUB_API_URL (https://api.github.com when unset)
@@ -56,6 +57,7 @@ import {
   type QuarantineRow,
   quarantine,
   rowName,
+  titleSeparator,
 } from "../quarantine";
 
 /** How far back a flaky row counts, and how long an entry may be held: R4's 14 days. */
@@ -288,6 +290,12 @@ export function decide(
   };
 }
 
+/** `entry`'s lines as `entryLines` prints them, fenced as TypeScript under a list item of the
+ *  summary, with a blank line before and after. */
+function fencedEntry(entry: QuarantineEntry | FixEntry): string[] {
+  return ["", "  ```ts", ...entryLines(entry).map((line) => `  ${line}`), "  ```", ""];
+}
+
 /** The decision for a person and for the log: `summary` is Markdown, the step summary's;
  *  `annotations` are workflow commands, one per finding; `failed` is whether the run must fail. */
 export function report(
@@ -331,11 +339,7 @@ export function report(
       "",
       `  The controller files the issue that owns it. Add these lines to \`quarantine\` in ` +
         `\`${quarantinePath}\`, with that issue's key for \`<KEY>\`:`,
-      "",
-      "  ```ts",
-      ...entryLines({ ...row, added: today, issue: "dispatch://<KEY>" }).map((line) => `  ${line}`),
-      "  ```",
-      ""
+      ...fencedEntry({ ...row, added: today, issue: "dispatch://<KEY>" })
     );
     annotations.push(
       `::error title=dispatch-browser quarantine::${rowName(row)} was flaky in ${runs.length} ` +
@@ -359,11 +363,7 @@ export function report(
     summary.push(
       `- \`${rowName(entry)}\`, added ${entry.added}, ${days} days ago, owned by ${entry.issue}. ` +
         `Once that issue's fix lands, remove these lines from \`${quarantinePath}\`:`,
-      "",
-      "  ```ts",
-      ...entryLines(entry).map((line) => `  ${line}`),
-      "  ```",
-      ""
+      ...fencedEntry(entry)
     );
     annotations.push(
       `::error title=dispatch-browser quarantine::${rowName(entry)} has been quarantined ` +
@@ -388,11 +388,7 @@ export function report(
       `- \`${rowName(entry)}\`, fixed in ${entry.fixed} at ${committedDate}, more than ` +
         `${windowDays} days ago, so the entry does nothing. Its owner, ${entry.issue}, removes ` +
         `these lines from \`${quarantinePath}\`:`,
-      "",
-      "  ```ts",
-      ...entryLines(entry).map((line) => `  ${line}`),
-      "  ```",
-      ""
+      ...fencedEntry(entry)
     );
   }
   const unread = decision.counted.filter((run) => run.unread > 0);
@@ -536,27 +532,35 @@ async function inTurn<Item, Result>(
  *  that has completed. A filtered run listing answers at most 1,000 runs (GitHub's REST
  *  reference, "List workflow runs for a workflow"), and ci.yaml makes more merge-group runs than
  *  that in 14 days, so the window is read a day at a time, and a day that holds more is refused
- *  rather than read short. */
+ *  rather than read short. The days of both workflows are listed `inTurn`, and each workflow's
+ *  runs are then taken a day at a time, oldest first, which is the order its readings keep. */
 async function readHistory(github: GitHub, repository: string, now: Date): Promise<RunReading[]> {
+  const slices = countedRuns.flatMap((counted) =>
+    Array.from({ length: windowDays }, (_, index) => ({ counted, day: windowDays - index }))
+  );
+  const listed = await inTurn(slices, 4, async ({ counted, day }) => {
+    const from = new Date(now.getTime() - day * dayMs).toISOString();
+    const to = new Date(now.getTime() - (day - 1) * dayMs).toISOString();
+    const { items, total } = await github.everyPage<ListedRun>(
+      `/repos/${repository}/actions/workflows/${counted.workflow}/runs?event=${counted.event}` +
+        `&status=completed&created=${from}..${to}&per_page=100`,
+      "workflow_runs"
+    );
+    if (total > 1000) {
+      throw new Error(
+        `${counted.workflow} made ${total} ${counted.event} runs between ${from} and ${to}, ` +
+          "and GitHub lists 1,000 of a filtered listing at most; read a shorter slice"
+      );
+    }
+    return items;
+  });
   const readings: RunReading[] = [];
   for (const counted of countedRuns) {
     const runs = new Map<number, ListedRun>();
-    for (let day = windowDays; day > 0; day--) {
-      const from = new Date(now.getTime() - day * dayMs).toISOString();
-      const to = new Date(now.getTime() - (day - 1) * dayMs).toISOString();
-      const { items, total } = await github.everyPage<ListedRun>(
-        `/repos/${repository}/actions/workflows/${counted.workflow}/runs?event=${counted.event}` +
-          `&status=completed&created=${from}..${to}&per_page=100`,
-        "workflow_runs"
-      );
-      if (total > 1000) {
-        throw new Error(
-          `${counted.workflow} made ${total} ${counted.event} runs between ${from} and ${to}, ` +
-            "and GitHub lists 1,000 of a filtered listing at most; read a shorter slice"
-        );
-      }
-      for (const run of items) runs.set(run.id, run);
-    }
+    slices.forEach((slice, index) => {
+      if (slice.counted !== counted) return;
+      for (const run of listed[index]) runs.set(run.id, run);
+    });
     const read = await inTurn([...runs.values()], 4, async (run): Promise<RunReading> => {
       const { items: checkRuns } = await github.everyPage<{
         id: number;
@@ -615,9 +619,11 @@ function rowsWithLines(report: { readonly suites?: readonly ListingNode[] }): {
   const fileRows = new Map<string, number[]>();
   const walk = (node: ListingNode, path: readonly string[]): void => {
     for (const spec of node.specs ?? []) {
-      fileRows.set(spec.file, [...(fileRows.get(spec.file) ?? []), spec.line]);
+      const specLines = fileRows.get(spec.file) ?? [];
+      fileRows.set(spec.file, specLines);
+      specLines.push(spec.line);
       for (const test of spec.tests ?? []) {
-        const title = [...path, spec.title].join(" › ");
+        const title = [...path, spec.title].join(titleSeparator);
         const row = { file: spec.file, project: test.projectName ?? "", title };
         lines.set(rowName(row), { file: spec.file, line: spec.line });
       }
@@ -629,10 +635,11 @@ function rowsWithLines(report: { readonly suites?: readonly ListingNode[] }): {
 }
 
 /** The blame of `path` at `expression`: one GraphQL call, `Commit.blame`, on the REST reads'
- *  ladder. A refused call, or an answer that holds no blame, throws, naming the file: the rows of
- *  a file whose blame is unread cannot be read as they stand, and nothing stands in for it. */
-async function blame(
-  github: GitHub,
+ *  ladder. A refused call, or an answer that holds no blame - a 404 or a 422 is no answer at
+ *  all - throws, naming the file: the rows of a file whose blame is unread cannot be read as they
+ *  stand, and nothing stands in for it. */
+export async function blame(
+  github: Pick<GitHub, "graphql">,
   repository: string,
   expression: string,
   path: string
@@ -657,7 +664,7 @@ async function blame(
   )?.data?.repository?.object?.blame?.ranges;
   if (!Array.isArray(ranges)) {
     throw new Error(
-      `GitHub answered no blame of ${path} at ${expression} (${JSON.stringify(answer).slice(0, 200)}), ` +
+      `GitHub answered no blame of ${path} at ${expression} (${JSON.stringify(answer ?? null).slice(0, 200)}), ` +
         "so the rows of that file cannot be read as they stand: the quarantine was not checked."
     );
   }
@@ -668,33 +675,44 @@ async function blame(
  *  from that listing, and their newest commit from its file's blame at `expression`. */
 async function readChanges(
   github: GitHub,
-  candidates: readonly string[],
+  candidates: readonly QuarantineRow[],
   repository: string,
   expression: string
 ): Promise<Map<string, RowChange>> {
   const changes = new Map<string, RowChange>();
   if (candidates.length === 0) return changes;
   // `Listing` (e2e/configurations.ts) declares the fields its own readers take; a spec's `line`
-  // is in the same JSON, which Playwright's JSON reporter writes for every spec.
-  const report = (await listing(import.meta.url, "e2e/playwright.config.ts", {})) as {
-    readonly suites?: readonly ListingNode[];
-  };
+  // is in the same JSON, which Playwright's JSON reporter writes for every spec. It lists the
+  // candidates' files alone: a file filter is a pattern over a spec's path, which may take a file
+  // more but never leaves out a row of a file it names, and a row is read here by its name and
+  // its lines by its own file's rows. `--pass-with-no-tests` keeps a listing that a deleted file
+  // leaves empty from failing, so the deleted file's rows land in `absent`.
+  const files = [...new Set(candidates.map((row) => row.file))];
+  const report = (await listing(import.meta.url, "e2e/playwright.config.ts", {}, [
+    ...files,
+    "--pass-with-no-tests",
+  ])) as { readonly suites?: readonly ListingNode[] };
   const { fileRows, lines } = rowsWithLines(report);
-  const blames = new Map<string, BlameRange[]>();
-  for (const name of candidates) {
+  // Each file's blame and its line count, read once for every candidate of the file.
+  const read = new Map<string, { length: number; ranges: readonly BlameRange[] }>();
+  for (const row of candidates) {
+    const name = rowName(row);
     const at = lines.get(name);
     if (at === undefined) continue;
-    const ranges =
-      blames.get(at.file) ??
-      (await blame(github, repository, expression, `packages/dispatch/e2e/${at.file}`));
-    blames.set(at.file, ranges);
-    const source = readFileSync(fileURLToPath(new URL(`../${at.file}`, import.meta.url)), "utf8");
-    const { end, start } = rowLines(
-      at.line,
-      fileRows.get(at.file) ?? [],
-      source.split("\n").length
-    );
-    const commit = lastChange(ranges, start, end);
+    let file = read.get(at.file);
+    if (file === undefined) {
+      const ranges = await blame(
+        github,
+        repository,
+        expression,
+        `packages/dispatch/e2e/${at.file}`
+      );
+      const source = readFileSync(fileURLToPath(new URL(`../${at.file}`, import.meta.url)), "utf8");
+      file = { length: source.split("\n").length, ranges };
+      read.set(at.file, file);
+    }
+    const { end, start } = rowLines(at.line, fileRows.get(at.file) ?? [], file.length);
+    const commit = lastChange(file.ranges, start, end);
     if (commit === undefined) {
       throw new Error(
         `the blame of ${at.file} at ${expression} holds none of lines ${start}-${end}`
@@ -744,18 +762,16 @@ if (import.meta.main) {
   const github = gitHub(process.env.GITHUB_API_URL ?? "https://api.github.com", token);
   let decision: Decision;
   try {
-    const runs = await readHistory(github, repository, now);
-    const candidates = [...flakyRows(runs, now).rows]
-      .filter(([, seen]) => seen.runs.length >= flakyRunsToQuarantine)
-      .map(([name]) => name);
+    // The fixes depend on neither the history nor the blames, so they are read beside the first.
+    const [runs, fixReadings] = await Promise.all([
+      readHistory(github, repository, now),
+      readFixes(github, repository, expression),
+    ]);
+    const candidates = [...flakyRows(runs, now).rows.values()]
+      .filter((seen) => seen.runs.length >= flakyRunsToQuarantine)
+      .map((seen) => seen.row);
     const changes = await readChanges(github, candidates, repository, expression);
-    decision = decide(
-      runs,
-      quarantine,
-      await readFixes(github, repository, expression),
-      changes,
-      now
-    );
+    decision = decide(runs, quarantine, fixReadings, changes, now);
   } catch (error) {
     console.error(`::error title=dispatch-browser quarantine::${(error as Error).message}`);
     process.exit(1);

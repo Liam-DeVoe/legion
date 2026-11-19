@@ -12,7 +12,7 @@
  *  every pull request: `bun run e2e:embedder`, the rows of `e2e/search-tiers.e2e.ts` against a
  *  server that embeds at a counting fake, in `chromium` and with no grep. Those rows drive the
  *  real stack whatever their tags say, so they count toward both numbers, read from the command
- *  that script runs (`embedderCommand` below).
+ *  that script runs (`embedderCommand` of `./playwright-listing`).
  *
  *  Why 330 and not the 350 dispatch://INFRA-1407's R1 names: dispatch://INFRA-1410 and
  *  dispatch://INFRA-1511 land after this head and will each want rows on this lane, and the
@@ -28,7 +28,6 @@
  *  gated exactly as it was. What such a row loses is feedback on the pull request itself.
  */
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 
 import {
   pullRequestLaneProjects,
@@ -37,40 +36,7 @@ import {
   tagged,
 } from "../configurations";
 import { rowLimit } from "./bounded-subprocess";
-import { listing, projectArguments, retained } from "./playwright-listing";
-
-/** The `playwright test` command `bun run e2e:embedder` ends in, read from this package's
- *  `package.json` rather than written here again, so this file lists exactly the rows the
- *  embedder job runs: the variables set before `playwright`, and the arguments after the config.
- *  A script of any other shape is refused by name rather than read as a listing of nothing. */
-function embedderCommand(): { environment: Record<string, string>; extra: string[] } {
-  // Read as `e2e/__tests__/row-configurations.test.ts` reads `e2e:clock`.
-  const manifest = JSON.parse(
-    readFileSync(new URL("../../package.json", import.meta.url), "utf8")
-  ) as { scripts: Record<string, string> };
-  const script = manifest.scripts["e2e:embedder"] ?? "";
-  const words = (script.split("&&").at(-1) ?? "").trim().split(/\s+/);
-  const start = words.indexOf("playwright");
-  const variables = words.slice(0, Math.max(start, 0));
-  if (
-    start === -1 ||
-    words.slice(start, start + 4).join(" ") !==
-      "playwright test --config e2e/playwright.config.ts" ||
-    variables.some((word) => !word.includes("="))
-  ) {
-    throw new Error(
-      `package.json's e2e:embedder script no longer ends in \`[NAME=value ...] playwright test ` +
-        `--config e2e/playwright.config.ts ...\`: ${JSON.stringify(script)}. Read its rows here ` +
-        "the way the embedder job now runs them."
-    );
-  }
-  return {
-    environment: Object.fromEntries(
-      variables.map((word) => [word.slice(0, word.indexOf("=")), word.slice(word.indexOf("=") + 1)])
-    ),
-    extra: words.slice(start + 4),
-  };
-}
+import { embedderCommand, listing, projectArguments, retained } from "./playwright-listing";
 
 /** The rows the pull-request lane schedules, the rows the embedder job runs beside it, and the
  *  rows of the default selection, read from three listings of one config. The last is read for

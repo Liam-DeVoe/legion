@@ -1,7 +1,8 @@
 name: Dispatch browser nightly
 
-# Two jobs on a schedule: the full browser lane, and the re-record of the stubbed layer's
-# recordings. ci.yaml's dispatch-browser job runs the pull-request lane on a pull request that
+# Three jobs on a schedule: the full browser lane, the re-record of the stubbed layer's
+# recordings, and the quarantine check, which runs on the 02:17 cron and on a workflow_dispatch
+# alone. ci.yaml's dispatch-browser job runs the pull-request lane on a pull request that
 # carries no `full-ci` label, the rows a pull request is held to, and the full lane - all eight
 # parallel projects, the three `-alone` ones, the two stub ones and the two-process job - on
 # every other run, so the merge group runs it on the tree a change lands as. This run covers a
@@ -162,11 +163,11 @@ jobs:
   # This file already stands on main with both triggers, so `gh workflow run
   # dispatch-browser-nightly.yaml --ref <branch>` runs the branch's own copy of this job.
   #
-  # Both crons start both jobs, since a schedule starts a workflow and not a job, so the 13:41
-  # run also runs the full lane. That is a second full lane a day on a repository whose nightly
-  # is one, which is the price of keeping this job dispatchable before its own merge; it is the
-  # same eight runners for the same ten minutes, and `concurrency` keeps it from overlapping the
-  # 02:17 run.
+  # Both crons start this job and the `full` one, since a schedule starts a workflow and not a
+  # job, so the 13:41 run also runs the full lane; the quarantine check's `if:` keeps it to the
+  # 02:17 one. That is a second full lane a day on a repository whose nightly is one, which is
+  # the price of keeping this job dispatchable before its own merge; it is the same eight runners
+  # for the same ten minutes, and `concurrency` keeps it from overlapping the 02:17 run.
   #
   # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,

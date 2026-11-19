@@ -15,15 +15,18 @@
  *   quarantined rows, under `only` it drops every other row, and with the variable unset the
  *   project is returned as it is, so a listing or a run that names no such mode reads the whole
  *   suite. The shard job's browser step sets `exclude`; the nightly's quarantine leg sets `only`.
+ *   The embedder job sets neither, so it runs a quarantined row of its files as it runs the rest.
  * - `e2e/__tests__/quarantine.test.ts` refuses a list of more than `quarantineLimit` rows, an
- *   entry with no issue or no date or a malformed one, and an entry whose row the suite does not
- *   run. It never compares a date with today: a pull request is no place for a check that turns
- *   red on a day nobody chose.
+ *   entry with no issue or no date or a malformed one, an entry of a file the embedder job runs,
+ *   and an entry whose row the suite does not run. It never compares a date with today: a pull
+ *   request is no place for a check that turns red on a day nobody chose.
  * - `e2e/tools/quarantine-check.ts`, which the nightly runs, does what depends on the date: it
  *   names a row flaky in two runs of 14 days that is not here, and an entry held longer than 14
  *   days, each with the exact lines to add or to remove.
  *
- * This module imports nothing, so the tool reads it with no install and no build.
+ * This module imports nothing, so the count step of the `quarantine-rows` job of
+ * .github/workflows/dispatch-browser.yaml reads it with Bun alone, before any install or build.
+ * The tool needs both, for the listing it reads, and its job makes them.
  */
 
 /** One quarantined row, named as the merge job's `dispatch-browser flaky row` notice names it:
@@ -114,10 +117,12 @@ export type UncheckedEntry = {
  *  row, `exclude` leaves the quarantined rows out, and `only` runs them and nothing else. */
 export type QuarantineRun = "all" | "exclude" | "only";
 
-/** What joins a row's `describe` titles to its own in a listing and in the notice:
- *  `titleSeparator` of `e2e/configurations.ts`, whose `rowsOfListing` reads a listing that way,
- *  and the merge job's "Reading two" step, which prints the notice. */
-const titleSeparator = " › ";
+/** What joins a row's `describe` titles to its own, so two rows of one file whose own titles
+ *  match but whose blocks differ stay two rows. Playwright's own reports read this way, and so
+ *  does every reader here: `rowsOfListing` of `e2e/configurations.ts` and
+ *  `e2e/tools/quarantine-check.ts` join a listing's titles with it, and the merge job's
+ *  "Reading two" step prints the notice an entry is written from with the same characters. */
+export const titleSeparator = " › ";
 
 const issuePattern = /^dispatch:\/\/[A-Z][A-Z0-9]*-[1-9][0-9]*$/;
 const datePattern = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -196,15 +201,53 @@ function realDay(value: string): boolean {
   );
 }
 
+/** Each of `entries` as `quarantineFaults` and `fixFaults` read it: its `name`, `<noun> <n>`
+ *  followed by its row where the file, the project and the title are all strings, and that `row`;
+ *  a sentence for each of those three fields that is missing or empty (`unnamed`); and whether an
+ *  entry above it names the same three (`repeated`). */
+function readEntries(
+  entries: readonly UncheckedEntry[],
+  noun: "entry" | "fix"
+): {
+  entry: UncheckedEntry;
+  name: string;
+  repeated: boolean;
+  row: QuarantineRow | undefined;
+  unnamed: string[];
+}[] {
+  const seen = new Set<string>();
+  return entries.map((entry, index) => {
+    const { file, project, title } = entry;
+    const row =
+      typeof file === "string" && typeof project === "string" && typeof title === "string"
+        ? { file, project, title }
+        : undefined;
+    const name =
+      row === undefined ? `${noun} ${index + 1}` : `${noun} ${index + 1} (${rowName(row)})`;
+    const unnamed = (["file", "project", "title"] as const)
+      .filter((field) => typeof entry[field] !== "string" || entry[field] === "")
+      .map((field) => `${name} names no ${field}, and the row is its file, project and title`);
+    const key = JSON.stringify([file, project, title]);
+    const repeated = seen.has(key);
+    seen.add(key);
+    return { entry, name, repeated, row, unnamed };
+  });
+}
+
 /** What is wrong with `entries` as a quarantine, one sentence per fault, each naming the entry:
  *  more than `quarantineLimit` of them, a missing or empty file, project or title, a missing or
- *  malformed issue or date, an entry repeated, and a project outside `projects` - the projects a
+ *  malformed issue or date, an entry repeated, a project outside `projects` - the projects a
  *  flaky row can come from, which are the ones that retry a failed row on CI and run in the
- *  nightly's quarantine leg (`e2e/__tests__/quarantine.test.ts` reads them from the config). It
- *  reads no date against today. */
+ *  nightly's quarantine leg (`e2e/__tests__/quarantine.test.ts` reads them from the config) -
+ *  and a file of `embedderFiles`, the files `bun run e2e:embedder` runs. That is the embedder
+ *  job of .github/workflows/dispatch-browser.yaml, which runs on both lanes and sets no
+ *  `DISPATCH_E2E_QUARANTINE`, and the rows of those files skip wherever the server has no fake
+ *  embedder, the nightly's quarantine leg among them (`e2e/__tests__/quarantine.test.ts` reads
+ *  the files from a listing of that script's command). It reads no date against today. */
 export function quarantineFaults(
   entries: readonly UncheckedEntry[],
-  projects: readonly string[]
+  projects: readonly string[],
+  embedderFiles: readonly string[]
 ): string[] {
   const faults: string[] = [];
   if (entries.length > quarantineLimit) {
@@ -213,18 +256,9 @@ export function quarantineFaults(
         `${quarantineLimit}: fix a quarantined row and take its entry out before another goes in`
     );
   }
-  const seen = new Set<string>();
-  entries.forEach((entry, index) => {
-    const { file, project, title } = entry;
-    const name =
-      typeof file === "string" && typeof project === "string" && typeof title === "string"
-        ? `entry ${index + 1} (${rowName({ file, project, title })})`
-        : `entry ${index + 1}`;
-    for (const field of ["file", "project", "title"] as const) {
-      if (typeof entry[field] !== "string" || entry[field] === "") {
-        faults.push(`${name} names no ${field}, and the row is its file, project and title`);
-      }
-    }
+  for (const { entry, name, repeated, unnamed } of readEntries(entries, "entry")) {
+    const { file, project } = entry;
+    faults.push(...unnamed);
     if (entry.issue === undefined) {
       faults.push(`${name} has no issue: every quarantined row is owned by one, dispatch://<KEY>`);
     } else if (typeof entry.issue !== "string" || !issuePattern.test(entry.issue)) {
@@ -247,10 +281,15 @@ export function quarantineFaults(
           `nightly's quarantine leg does not run; a quarantined row is one of ${projects.join(", ")}`
       );
     }
-    const key = JSON.stringify([file, project, title]);
-    if (seen.has(key)) faults.push(`${name} repeats an entry above it`);
-    seen.add(key);
-  });
+    if (typeof file === "string" && embedderFiles.includes(file)) {
+      faults.push(
+        `${name} names the file ${file}, which the embedder job runs on both lanes with no ` +
+          "quarantine and the nightly's quarantine leg skips, having no embedder: the entry " +
+          "would leave the row gating as before and run it ungated nowhere"
+      );
+    }
+    if (repeated) faults.push(`${name} repeats an entry above it`);
+  }
   return faults;
 }
 
@@ -266,19 +305,9 @@ export function fixFaults(
 ): string[] {
   const held = new Set(quarantined.map(rowName));
   const faults: string[] = [];
-  const seen = new Set<string>();
-  entries.forEach((entry, index) => {
-    const { file, project, title } = entry;
-    const named =
-      typeof file === "string" && typeof project === "string" && typeof title === "string";
-    const name = named
-      ? `fix ${index + 1} (${rowName({ file, project, title })})`
-      : `fix ${index + 1}`;
-    for (const field of ["file", "project", "title"] as const) {
-      if (typeof entry[field] !== "string" || entry[field] === "") {
-        faults.push(`${name} names no ${field}, and the row is its file, project and title`);
-      }
-    }
+  for (const { entry, name, repeated, row, unnamed } of readEntries(entries, "fix")) {
+    const { project } = entry;
+    faults.push(...unnamed);
     if (typeof entry.issue !== "string" || !issuePattern.test(entry.issue)) {
       faults.push(
         `${name} names its issue as ${JSON.stringify(entry.issue)}, which is no ` +
@@ -297,13 +326,11 @@ export function fixFaults(
           `is one of ${projects.join(", ")}`
       );
     }
-    if (named && held.has(rowName({ file, project, title }))) {
+    if (row !== undefined && held.has(rowName(row))) {
       faults.push(`${name} is quarantined too: a row is fixed or quarantined, not both`);
     }
-    const key = JSON.stringify([file, project, title]);
-    if (seen.has(key)) faults.push(`${name} repeats a fix above it`);
-    seen.add(key);
-  });
+    if (repeated) faults.push(`${name} repeats a fix above it`);
+  }
   return faults;
 }
 

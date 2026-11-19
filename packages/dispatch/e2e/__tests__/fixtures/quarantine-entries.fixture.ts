@@ -53,3 +53,16 @@ export const looseFix: readonly UncheckedEntry[] = [
     fixed: "708CA88",
   },
 ];
+
+/** One well-formed entry of a row of `search-tiers.e2e.ts`, the file `bun run e2e:embedder`
+ *  runs: a row only the embedder job runs. Its title is planted; its file is the one that job's
+ *  listing holds, which the test that reads this entry checks first. */
+export const embedderRow: readonly QuarantineEntry[] = [
+  {
+    file: "search-tiers.e2e.ts",
+    project: "chromium",
+    title: "a planted row of the embedder job",
+    issue: "dispatch://INFRA-983",
+    added: "2026-11-02",
+  },
+];

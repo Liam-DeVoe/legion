@@ -5366,7 +5366,7 @@ jobs:
   # lanes, the containerised visual review, and the merge job that joins the shard and alone
   # reports into one and posts this job's ci-ok report.
   #
-  # One input decides that: the called workflow reads `lane` for the projects each job runs, so
+  # One input, `lane`, decides which projects each job runs: the called workflow reads it, so
   # nothing here chooses them a second time. It picks no browser to install any more: the shard
   # and alone jobs run in the image this repository builds, which carries all three engines
   # (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.

@@ -13,6 +13,7 @@
  */
 
 import { valuesTakenAt } from "./playwright-argv";
+import { titleSeparator } from "./quarantine";
 
 /** A row of `playwright test --list --reporter=json`: one test of one project. */
 export type ListedRow = {
@@ -86,10 +87,6 @@ type ListingSpec = {
  *  1280x720 viewport" (playwright-core/types/types.d.ts:26679). `viewport: null` is a different
  *  thing - no fixed viewport at all - and leaves a project with no configuration here. */
 const defaultViewport = { height: 720, width: 1280 };
-
-/** What joins a row's `describe` titles to its own, so two rows of one file whose own titles
- *  match but whose blocks differ stay two rows. Playwright's own reports read this way. */
-const titleSeparator = " › ";
 
 /** Whether a page at `origin` is a secure context, which decides what the browser gives it:
  *  `navigator.locks` and `crypto.randomUUID` on a secure one, neither on a plain-HTTP name that is
