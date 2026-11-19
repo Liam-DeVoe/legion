@@ -6,23 +6,20 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/eventidtest"
 )
 
-// migrationEventIDSequence names the sequence the events id default draws from: by its name, bare,
-// quoted or schema-qualified, or through pg_get_serial_sequence with the table in any of its
-// spellings or with a table argument that is no string literal (a variable, a dollar-quoted
-// string). It is api.eventIDSequence's pattern, and api.TestOnlyAnEventInsertsDefaultDrawsAnEventID
-// fails when this declaration binds another.
-var migrationEventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]`)
+// migrationEventIDSequence names the sequence the events id default draws from, in each spelling
+// eventidtest.SequencePattern reads. The Go sources' guard (api.eventIDSequence) compiles the same
+// pattern.
+var migrationEventIDSequence = regexp.MustCompile(eventidtest.SequencePattern)
 
-// migrationEventIDCurrval is a read of the id this session's nextval last drew from
-// events_id_seq, which draws no id and moves no counter: pg_catalog.currval of a bare string
-// literal or of pg_catalog.pg_get_serial_sequence, with no cast, and nothing else. A bare or
-// otherwise qualified currval, an unqualified pg_get_serial_sequence inside it, or a `::regclass`
-// cast can each resolve to a function or a domain of another schema that draws (see
-// api.eventIDCurrval). It is api.eventIDCurrval's pattern, held to it the same way, and
-// migrationEventIDOffences reads the SQL with each such read blanked out.
-var migrationEventIDCurrval = regexp.MustCompile(`(?:^|[^\w.$\x{80}-\x{10FFFF}])pg_catalog\s*\.\s*currval\(\s*(?:'\s*(?:"?public"?\s*\.\s*)?"?events_id_seq"?\s*'|pg_catalog\s*\.\s*pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'\s*,\s*'\s*"?id"?\s*'\s*\))\s*\)`)
+// migrationEventIDCurrval is pg_catalog.currval of the events id sequence, the one read of it that
+// draws no id (eventidtest.CurrvalPattern says which spellings are that read and why no other is):
+// migrationEventIDOffences reads the SQL with each such read blanked out. The Go sources' guard
+// (api.eventIDCurrval) compiles the same pattern.
+var migrationEventIDCurrval = regexp.MustCompile(eventidtest.CurrvalPattern)
 
 // migrationEventIDOffences is each place in a migration's SQL that names the events id sequence
 // other than to read currval, as "<path>:<line>: <match>". Each currval read is blanked out

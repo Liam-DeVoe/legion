@@ -463,7 +463,7 @@ REFGEN_REFUSALS = tuple(f"{ENVOY}/internal/broker/{d}" for d in ("api", "approva
 MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata "
                              "and all) and :83 parses every .go file it finds but the test files (:80), for "
                              "the tests that ask it for the module's sources: lock_level_test.go:122, "
-                             "event_insert_guard_test.go:82 and :385, review_order_guard_test.go:49, "
+                             "event_insert_guard_test.go:80 and :322, review_order_guard_test.go:49, "
                              "review_write_guard_test.go:51, one_expression_guard_test.go:66")
                   for path in files_but_tests(ENVOY, tree=True)]
 
@@ -793,13 +793,7 @@ RULES = {
          "../../../../contracts/fixtures): TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers compares "
          "the copies the outbox published with the committed fixture, which :1489 writes under -update")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
-    # The id guard also reads the migrations' guard, to hold its sequence and currval patterns to
-    # its own.
-    f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES + reads(
-        (f"{ENVOY}/internal/dispatch/store/migration_event_id_guard_test.go",
-         "internal/dispatch/api/event_insert_guard_test.go:374 parses it under ../../.. (moduleRoot, "
-         "migrationPattern at :225) and holds its migrationEventIDSequence and migrationEventIDCurrval "
-         "bindings to eventIDSequence and eventIDCurrval")),
+    f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
     # main's #3429 put this check in who_waits_test.go, a behaviour file of this package, where
     # the race job was the only one that ran it and the module walk under it was declared by
