@@ -1,0 +1,5 @@
+kind: Fixed
+body: A Codex session's stop now rejects a write still being saved, so the line is not left behind and Envoy's resend is the one copy.
+time: 2026-11-19T04:03:23.000000000Z
+custom:
+    Issue: pr2404
