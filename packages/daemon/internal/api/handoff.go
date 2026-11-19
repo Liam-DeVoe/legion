@@ -318,11 +318,18 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// since an architect ends no phase. It is read past the fences above, which decide whether
 	// this completion is the turn's own work at all, so a completion of a run or an entry that is
 	// over is told that rather than asked for a rating; and before the handoff record and the pull
-	// request are read, so a rating where none belongs costs no read of Dispatch or GitHub.
-	rating, refusal := planRatingOf(req, endsRetro, c.PluginContract, fmt.Sprintf("this completion of phase %s of %s", of, issue.Key))
-	if refusal != nil {
-		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
-		return
+	// request are read, so a rating where none belongs costs no read of Dispatch or GitHub. A held
+	// issue's phase runs no role, so the workflow refuses every completion of it
+	// (HANDOFF_NOT_CURRENT_PHASE), rated or not, and the retro run again once the hold is retried
+	// is the one rated: the rule is not read for it, since phase.Of reads held as no retro and would
+	// tell a rated completion of an issue held from its retro to drop the rating.
+	var rating *record.PlanRating
+	if issue.Phase != phase.Held {
+		var refusal *intake.Refusal
+		if rating, refusal = planRatingOf(req, endsRetro, c.PluginContract, fmt.Sprintf("this completion of phase %s of %s", of, issue.Key)); refusal != nil {
+			writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+			return
+		}
 	}
 	word, writer, handoffPhase := phase.Handoff(of)
 	namesRecord := req.HandoffID != "" || req.HandoffVersion != 0

@@ -621,3 +621,57 @@ func TestPlanRatingCasesGolden(t *testing.T) {
 		Cases []planRatingCase `json:"cases"`
 	}{Cases: cases})
 }
+
+// A completion of an issue held from its retro meets the workflow's refusal, never the rating
+// rule: a held issue's phase runs no role, so the workflow refuses every completion of it
+// HANDOFF_NOT_CURRENT_PHASE, with nothing recorded, and the retro run again once the hold is
+// retried is the one rated. Read by the rating rule, the held issue is no retro (phase.Of answers
+// the implementer's own phase for held), so a rated completion was told to send it again without
+// the rating, and the unrated one sent then was refused all the same. Each row is an issue of its
+// own, held from its retro with the implementer's claim still live, from a plugin that rates; the
+// control is the same claim and completion on an issue in its retro, which the workflow takes.
+func TestAHeldIssuesCompletionMeetsTheWorkflowsRefusalAndNotTheRatingRule(t *testing.T) {
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+	for i, row := range []struct {
+		name          string
+		held, rated   bool
+		status        int
+		code, standAt string
+	}{
+		{name: "a rated completion of an issue held from its retro", held: true, rated: true,
+			status: http.StatusConflict, code: "HANDOFF_NOT_CURRENT_PHASE", standAt: string(phase.Held)},
+		{name: "an unrated completion of an issue held from its retro", held: true,
+			status: http.StatusConflict, code: "HANDOFF_NOT_CURRENT_PHASE", standAt: string(phase.Held)},
+		{name: "the control: a rated completion of an issue in its retro", rated: true,
+			status: http.StatusOK, standAt: string(phase.Merging)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			key := fmt.Sprintf("LEGION-%d", 400+i)
+			seedIssueAt(t, h, key, phase.Retro)
+			implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
+			if got := pluginContractOf(t, h, implementer.token); got < PlanRatingContract {
+				t.Fatalf("the implementer's plugin declared contract %d, below PlanRatingContract %d: this row proves nothing", got, PlanRatingContract)
+			}
+			if row.held {
+				holdFrom(t, h, key, phase.Retro)
+			}
+			req := HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee"}
+			if row.rated {
+				req.PlanRating, req.PlanReason = new(3), new("The plan fit the work but for its tests.")
+			}
+			recorder := h.complete(req)
+			if row.status == http.StatusOK {
+				completion(t, recorder)
+			} else {
+				refused(t, recorder, row.status, row.code)
+			}
+			var at string
+			if err := h.store.Pool().QueryRow(context.Background(), "select phase from issues where key = $1", key).Scan(&at); err != nil {
+				t.Fatalf("read %s's phase: %v", key, err)
+			}
+			if at != row.standAt {
+				t.Fatalf("after the completion %s stands at %s, want %s", key, at, row.standAt)
+			}
+		})
+	}
+}
