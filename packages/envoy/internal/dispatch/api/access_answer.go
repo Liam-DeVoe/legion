@@ -10,11 +10,12 @@ import (
 )
 
 // The membership answer (K3) is what the secrets broker reads to decide a project's secrets and a
-// token's list: one project's owner, visibility and repositories, and whether one person sees it,
-// and one person's member kind. It is plain data read outside any transaction. Only a Kubernetes
-// service account the deployment names in DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected
-// token; every other caller, a person included, is 403 ACCESS_ACCOUNT_REQUIRED before anything is
-// read. A deployment that names no such account answers every caller so.
+// token's list: one project's owner, visibility and Slack channels, and whether one person sees
+// it, and one person's member kind. It names no repositories. It is plain data read outside any
+// transaction. Only a Kubernetes service account the deployment names in DISPATCH_ACCESS_ACCOUNTS
+// reads it, with its own projected token; every other caller, a person included, is 403
+// ACCESS_ACCOUNT_REQUIRED before anything is read. A deployment that names no such account
+// answers every caller so.
 
 // accessAccountOf answers the service-account subject a request's verified projected token names,
 // and false for every other credential: a broker-issued token that names a fleet as its service
