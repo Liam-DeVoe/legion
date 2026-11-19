@@ -5722,6 +5722,10 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
         await page
           .getByRole("button", { exact: true, name: `Add a priority to ${seed.header}` })
           .click();
+        // The form draws its list before the priorities answer, its trigger saying "Loading
+        // priorities…" until then: the value the row reads first is the one the list holds once
+        // they have loaded, which Escape must leave as it was.
+        await expect(advance).toHaveText("Choose a priority", { useInnerText: true });
       },
       trigger: advance,
       value: shown(advance),
