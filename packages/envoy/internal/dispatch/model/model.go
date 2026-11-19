@@ -257,7 +257,9 @@ func PersonLogin(email string) (string, error) {
 // ServiceAccountSubject is a Kubernetes service account's subject as its projected token carries it,
 // system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS subdomain,
 // so it holds no comma. Dispatch's boot holds DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS to
-// it, and the infra component holds oidcAccounts and accessAccounts to it when a stack plans.
+// it, the infra component holds oidcAccounts and accessAccounts to it when a stack plans, and the
+// secrets broker holds its own service-account settings and exchange entries to it
+// (internal/broker/config, internal/broker/exchange).
 var ServiceAccountSubject = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // ActorOrigin describes the client environment of a session actor.

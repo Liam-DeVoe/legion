@@ -49,6 +49,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -86,12 +87,6 @@ var (
 // bytes is past any name a Legion session or a person's tool has reason to use.
 const MaxSessionBytes = 200
 
-// accountPattern is a Kubernetes service account's subject, the one a pod's projected token
-// carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
-// subdomain. It is the grammar the broker's configuration states for the same accounts, repeated
-// here because this package reads no configuration and so cannot import the one that parses it.
-var accountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
-
 // repositoryPattern is a GitHub repository as its token's `repository` claim names it,
 // <owner>/<name>: the owner a letter or digit, then up to 38 letters, digits, hyphens and
 // underscores, since a managed user's login ends in `_<shortcode>` (`mona-cat_octo`); the name up
@@ -100,8 +95,8 @@ var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Z
 
 // googleAccountPattern is a Google service account's email address as a Google identity token
 // carries it in its `email` claim: lowercase, since that is the one spelling a token holds. It is
-// the grammar the broker's configuration states for the same accounts, repeated here for the
-// reason accountPattern is.
+// the grammar the broker's configuration states for the same accounts, repeated here because this
+// package reads no configuration and so cannot import the one that parses it.
 var googleAccountPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._%+-]*@[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$`)
 
 // ProjectScope says what a minted token's list of projects means. Its zero value is no scope at
@@ -570,7 +565,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 	}
 	for i, entry := range accounts {
 		where := fmt.Sprintf("account entry %d, %q", i+1, entry.Account)
-		if !accountPattern.MatchString(entry.Account) {
+		if !model.ServiceAccountSubject.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
 		if err := checkGrant(where, entry.Project, entry.Person, entry.Session, true); err != nil {
@@ -587,7 +582,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 	}
 	for i, entry := range reads {
 		where := fmt.Sprintf("read entry %d, %q", i+1, entry.Account)
-		if !accountPattern.MatchString(entry.Account) {
+		if !model.ServiceAccountSubject.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
 		if strings.TrimSpace(entry.Service) == "" {
