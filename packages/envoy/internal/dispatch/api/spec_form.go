@@ -646,9 +646,18 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string, 
 	return approved, nil
 }
 
-// specFormMarkdown is the stored markdown of version of artifact. A version the document does not
-// have is 404 VERSION_NOT_FOUND.
+// specFormMarkdown is the markdown of version of artifact as q sees it. When q is a transaction
+// whose writes a ledger queues and version is the one it queued and has not written yet - the
+// version a carry judges inside the version write that makes it (docs.FormGate) - that is the
+// queued markdown (docs.QueuedVersionMarkdown), which no read of artifact_versions sees until the
+// write phase has run; otherwise it is the stored row's. A version the document does not have is
+// 404 VERSION_NOT_FOUND.
 func specFormMarkdown(ctx context.Context, q queryer, artifact model.Artifact, version int) (string, error) {
+	if tx, ok := q.(pgx.Tx); ok {
+		if markdown, queued := docs.QueuedVersionMarkdown(ctx, tx, artifact.ID, version); queued {
+			return markdown, nil
+		}
+	}
 	var markdown string
 	err := q.QueryRow(ctx, `select coalesce(markdown, '') from artifact_versions where artifact_id = $1 and number = $2`, artifact.ID, version).Scan(&markdown)
 	if errors.Is(err, pgx.ErrNoRows) {
