@@ -35,7 +35,10 @@ func TestTheOneTaskOfAPlanTakesTheIssuesBranchAndQueuesNoRow(t *testing.T) {
 
 // Each task that starts takes its branch, and each that does not hold the issue's own branch, or
 // that needs other tasks, queues one task_branch row that names it: the row makes its branch on
-// GitHub, at the joined work of its needs, before any step of it starts.
+// GitHub, at the joined work of its needs, before any step of it starts. Production writes none of
+// these plans at this release: register_plan takes no plan of several tasks or with needs
+// (plan.Supported). Each case is the store as the start of tasks leaves it once such plans run,
+// but the third, which no start writes even then (see the case).
 func TestASecondTaskQueuesItsBranchRow(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -63,6 +66,10 @@ func TestASecondTaskQueuesItsBranchRow(t *testing.T) {
 			rows:     []string{"b"},
 		},
 		{
+			// A state no start writes: once plans with needs run, a task starts after the tasks it
+			// needs, so the issue's branch, which the generation's first task to start takes, is
+			// given already. The case holds startTaskCopy's rule alone: a task that needs others
+			// queues its join whatever branch it holds.
 			name:     "the task that holds the issue's branch and needs another queues its row, for the join",
 			needs:    map[string][]string{"a": {"b"}, "b": nil},
 			starts:   []string{"a"},
