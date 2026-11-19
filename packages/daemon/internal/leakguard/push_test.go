@@ -1073,4 +1073,24 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 			t.Errorf("gitSaid = %d bytes, want %d: the count of 10 and the last %d bytes", len(said), len(want), gitErrorBytes)
 		}
 	})
+	// The cut falls where the token of a URL's userinfo would be, had the userinfo not been taken
+	// out of the whole of the standard error first: a cut there leaves the token's end quoted with
+	// no "://" before it for withoutUserinfo to find.
+	t.Run("a cut that would fall inside a URL's credential quotes none of it", func(t *testing.T) {
+		line := "fatal: unable to access '" + credentialedURL + "': the host did not answer\n"
+		at := strings.Index(line, credentialToken) + len(credentialToken)/2
+		stderr := filepath.Join(t.TempDir(), "stderr")
+		if err := os.WriteFile(stderr, []byte(line+strings.Repeat("w", at+gitErrorBytes-len(line))), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		guard := failingGit(t, "cat '"+stderr+"' >&2")
+		_, err := guard.git(bound(t), t.TempDir(), "ls-remote", "origin")
+		if err == nil {
+			t.Fatal("git = nil, want its failure")
+		}
+		if tail := credentialToken[len(credentialToken)/2:] + "@"; strings.Contains(err.Error(), tail) {
+			t.Errorf("the failure quotes the end of the URL's token, %q: %.200v", tail, err)
+		}
+		wantNoCredential(t, err)
+	})
 }
