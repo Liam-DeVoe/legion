@@ -633,3 +633,20 @@ func TestASwitchedOffNoticeCarriesTheLastReadingAsTheReportGaveIt(t *testing.T) 
 		})
 	}
 }
+
+// R2: "The fields are those of the kind, ... the versions and the state that the reader acts on
+// that its event has" (dispatch://INFRA-3686/spec). The report of a trimmer that switched itself
+// off is made by no sweep and measures no size, so it holds no time of a size walk; the notice must
+// state none, as main's sentence left the time out where it was zero, rather than a walk measured
+// at 0001-01-01, which the architect's prompt reads as the time the walk measured the sizes.
+func TestASwitchedOffVolumeNoticeStatesNoTimeOfAWalk(t *testing.T) {
+	notice := VolumeNearFullNotice("LEGION-208", record.VolumeNearFull{Trimmer: "t", Episode: 1, RaisedBy: "first", SwitchedOff: true,
+		StopReason: "the trimmer switched itself off after 3 panics in a row of sweeps", Faults: []string{"panic: a", "panic: b", "panic: c"}})
+	payload, err := json.Marshal(notice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "0001-01-01") {
+		t.Errorf("the notice of a switched-off trimmer states a size walk measured at year 1: %s", payload)
+	}
+}
