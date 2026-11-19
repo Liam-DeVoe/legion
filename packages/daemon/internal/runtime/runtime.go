@@ -118,11 +118,11 @@ type Runtime interface {
 	// life — and only for a claim that runs in one: it answers nothing for a claim with no
 	// process, which records no place at all, and nothing for the project controller's own pod,
 	// which has no issue workspace and nothing to push. The daemon opens an update round on a
-	// non-empty answer: the round asks each role of that place but a failed one and one that has
-	// left the round's place to push its work and answer (api's claims/ready-for-update), and
-	// replaces the place (ReplacePod) once every asked role has answered and no turn runs, or at
-	// the round's bound (pod_update_grace_minutes) whatever the roles answered, an operator's
-	// suspension excepted.
+	// non-empty answer, and that place is then the round's pod: the round asks each of its roles
+	// but a failed one and one that has left the round's pod to push its work and answer (api's
+	// claims/ready-for-update), and replaces the pod (ReplacePod) once every asked role has
+	// answered and no turn runs, or at the round's bound (pod_update_grace_minutes) whatever the
+	// roles answered, an operator's suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:

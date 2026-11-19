@@ -94,8 +94,9 @@ func wantField(t *testing.T, line map[string]any, field string, want ...claim.Ro
 	}
 }
 
-// Every claim answers at once, so the round ends at once, before its bound, and the line of the
-// replacement says no bound made it. No line of a bounded end is written (R8's other half).
+// Both claims answer at once, so every claim the round waits for has answered (waitingClaims)
+// and the round ends at once, before its bound, and the line of the replacement says no bound
+// made it. No line of a bounded end is written (R8's other half).
 func TestPodUpdateBoundEveryAnswerEndsTheRoundBeforeTheBound(t *testing.T) {
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -129,7 +130,8 @@ func TestPodUpdateBoundEveryAnswerEndsTheRoundBeforeTheBound(t *testing.T) {
 // A claim stays in a turn and never answers. Before the bound the pod is not replaced, whatever
 // the clock reads, and no turn is cut; at the bound the pod is replaced, and the bounded end is
 // logged with the claims that answered and those that did not. Nobody is told: a round that
-// waits on its roles is no stall.
+// waits on its roles, each claim with a session but a failed one and one that has left the
+// round's pod, is no stall.
 func TestPodUpdateBoundReplacesThePodOfAClaimThatNeverAnswers(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: readyWorker(claim.RoleImplementer).contract},
@@ -305,10 +307,11 @@ func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *te
 
 // Both claims answer, and the operator suspends the tester after its answer. The suspension holds
 // the pod past the bound. Once the operator resumes the tester, the pod is replaced, and the
-// answers end the round: the bound is past, but no claim is unanswered and no turn runs, so the
-// bound did not end it. The R8 line `supervise pod update replaced at the bound` says that the
-// bound ended a round, and the production check greps it, so it must not be written here. The
-// line that every replacement writes is written, with atTheBound false.
+// answers end the round: the bound is past, but no claim the round waits for is unanswered
+// (waitingClaims) and no turn runs, so the bound did not end it. The R8 line
+// `supervise pod update replaced at the bound` says that the bound ended a round, and the
+// production check greps it, so it must not be written here. The line that every replacement
+// writes is written, with atTheBound false.
 func TestPodUpdateBoundLineIsNotWrittenWhenTheAnswersEndARoundPastItsBound(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -564,7 +567,8 @@ func TestPodUpdateSuspensionInTheLaunchTurnRefusesTheReplacement(t *testing.T) {
 }
 
 // A round whose claims never answer is told to nobody at any clock: before its bound it waits on
-// its roles, which is no stall, at its bound the bound ends it, and after it there is no round.
+// its roles, each claim with a session but a failed one and one that has left the round's pod,
+// which is no stall, at its bound the bound ends it, and after it there is no round.
 func TestPodUpdateBoundTellsNobodyOfARoundWhoseClaimsNeverAnswer(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -658,10 +662,11 @@ const podUpdateDeployReset = `update claims
 // later, which is far past the round's bound, and its daemon starts from the store.
 //
 // With the migration's reset, the round starts its bound at the deploy: the first sweeps publish
-// the ask to each role, once, naming the deploy plus pod_update_grace_minutes as the end, and
-// replace nothing. The control keeps the clock the earlier release left: the first sweep finds
-// the round past its bound and replaces the pod, and no role is ever asked, because each claim
-// already holds the mark this release reads as its ask.
+// the ask to each role the round asks (supervise's Claim.OwesUpdateAsk), once, naming the deploy
+// plus pod_update_grace_minutes as the end, and replace nothing. The control keeps the clock the
+// earlier release left: the first sweep finds the round past its bound and replaces the pod, and
+// no role is ever asked, because each claim already holds the mark this release reads as its ask
+// (supervise's Claim.UpdateTaskedAt, read by Claim.OwesUpdateAsk).
 func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T) {
 	deploy := podUpdateStart.Add(3 * time.Hour)
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
@@ -830,9 +835,13 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheRuntimeFindsNoPodToReplace(t *test
 }
 
 // A claim whose agent has not said it is ready holds no live session on its role's topic, so the
-// round does not ask it, and does not mark it asked: an operator's suspension holds it here. Once
-// the operator resumes it and its agent is ready in the round's pod, the next sweep asks it, and
-// it is asked exactly once however many sweeps follow. The other role is asked once all along.
+// round does not ask it yet (askRound skips a claim of unaskedClaims until supervise.SaidReady),
+// and does not mark it asked: an operator's suspension holds it here. Once the operator resumes
+// it and its agent is ready in the round's pod, the next sweep asks it, and it is asked exactly
+// once however many sweeps follow. The round asks each of its claims with a session but a failed
+// one and one that has left the round's pod in the same way: from the first sweep that finds its
+// agent ready, until an ask of the round reaches it or it answers. The other role is asked once
+// all along.
 func TestPodUpdateAsksAClaimOnceItsAgentIsReady(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),

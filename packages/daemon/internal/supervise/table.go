@@ -232,31 +232,33 @@ type StallBackstop struct {
 }
 
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
-// about to be replaced, and the role is asked to push its work and answer ready_for_update
-// first. Round is the round's identity and kind in one string (Claim.UpdateRound), and Reasons
-// the drift the daemon read of the pod it runs in.
+// about to be replaced, and the role is asked to push its work and answer ready_for_update first,
+// unless it is a failed claim or one that has left the round's pod (Claim.OwesUpdateAsk). Round
+// is the round's identity and kind in one string (Claim.UpdateRound), and Reasons the drift the
+// daemon read of the pod it runs in.
 //
 // The daemon's sweep posts it to every claim of the round at every tick while the round is open,
 // so the action is idempotent: the first post of a round records the round, its reasons and its
 // clock, and each later post of the same round changes nothing. The round's terms are fixed when
 // it opens, so the ask a role reads and the record an operator reads name the same reasons. The
 // machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
-// (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
-// (Machine.PublishUpdateAsk).
+// while the claim owes one (Claim.OwesUpdateAsk, record.UpdateAsk), and the outbox marks it on the
+// claim once it reached a session (Machine.PublishUpdateAsk).
 type PodUpdateOpen struct {
 	Claim   claim.Token
 	Round   string
 	Reasons string
 }
 
-// UpdateTask is the text a pod's update round asks a role with; the round asks each role but a
-// failed one and one that has left the round's pod (Claim.OwesUpdateAsk). round is the round,
+// UpdateTask is the text a pod's update round asks a role with, and the round asks each role but
+// a failed one and one that has left the round's pod (Claim.OwesUpdateAsk). round is the round,
 // which the role answers with. reasons is what the daemon found, as Claim.UpdateReasons holds it.
 // endsAt is the moment the round ends at the latest: the round's recorded opening
 // (Claim.UpdateOpenedAt) plus pod_update_grace_minutes. The sweep (internal/daemon) builds the
-// text from the round's record, so the text names one moment for every role of the round, and
-// the text rides record.UpdateAsk to the role's own Envoy topic. That message can arrive in the
-// middle of a turn, so the text tells the role to act now rather than after the turn.
+// text from the round's record, so the text names one moment for every role the round asks
+// (Claim.OwesUpdateAsk), and the text rides record.UpdateAsk to the role's own Envoy topic. That
+// message can arrive in the middle of a turn, so the text tells the role to act now rather than
+// after the turn.
 //
 // The text names the round's own id, and the role passes it back in its answer
 // (PodUpdateSignalled): an answer counts only for the round whose ask the role read, so the id
@@ -269,8 +271,8 @@ type PodUpdateOpen struct {
 // its background jobs, each commit and each file the role did not push, the pod's test database
 // and its caches. The step to answer is the one step a role can be unable to do: the op list its
 // `legion` tool holds is a closed enum compiled into its plugin, and a plugin below
-// PodUpdateContract has no ready_for_update in it. Such a role is told to push all the same,
-// because its round ends at endsAt whatever it does.
+// PodUpdateContract has no ready_for_update in it. Such a role is told to push all the same when
+// the round asks it (Claim.OwesUpdateAsk), because its round ends at endsAt whatever it does.
 //
 // Only the role's own push keeps its work: the daemon saves nothing of the disk before the pod
 // goes, so the text says that work not pushed before the pod goes is lost.
@@ -2712,11 +2714,14 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // round id, however the drift the sweep reads moves while the round runs.
 //
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
-// topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
-// the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
-// an ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
+// topic once the claim records the round, unless it is a failed claim or one that has left the
+// round's pod (Claim.OwesUpdateAsk, internal/daemon's openPodUpdate, record.UpdateAsk), and the
+// outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk): an
+// ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
 // suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
-// once its agent is ready again, and the round ends at its bound whether or not the role answers.
+// once its agent is ready again, unless it is a failed claim by then or one that has left the
+// round's pod, and the round ends at its bound whether or not the role answers, unless an
+// operator's suspension holds it (heldByOperator).
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an
@@ -2759,8 +2764,9 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 
 // updateTaskPrefix starts the delivery id of every ask an update round queued as a task, which
 // only an older daemon did; the round and a fresh word of that ask's own complete it
-// (updateTaskID). This daemon publishes the round's ask to the role's Envoy topic instead
-// (record.UpdateAsk), so an id of this shape is one a restored claim brings back from the store.
+// (updateTaskID). This daemon publishes the round's ask to the Envoy topic of each role that
+// owes one instead (Claim.OwesUpdateAsk, record.UpdateAsk), so an id of this shape is one a
+// restored claim brings back from the store.
 const updateTaskPrefix = "update:"
 
 // updateTaskID is a delivery id of one ask of round, and names no other ask of it. A rotation
@@ -3016,13 +3022,14 @@ func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 // does next.
 //
 // What it does next is never "answer the round named here". A round that replaced another is
-// asked of the role only at a later sweep (internal/daemon's openPodUpdate publishes once the
-// claim records the round), so the id this refusal prints is one whose words the worker may not
-// have read, and an answer given for it would be counted for a round the worker was never asked
-// (podUpdateSignalled is the one guard that stops exactly that). So the worker is told how the
-// daemon asks — once per round, as a message on the role's own topic — and to answer the round
-// the newest such message names, or to end its turn where no message names the claim's round.
-// For a claim the daemon is asking nothing of, it is told so.
+// asked of the role only at a later sweep, once the claim records the round, and only while the
+// claim owes the ask (internal/daemon's openPodUpdate, Claim.OwesUpdateAsk), so the id this
+// refusal prints is one whose words the worker may not have read, and an answer given for it
+// would be counted for a round the worker was never asked (podUpdateSignalled is the one guard
+// that stops exactly that). So the worker is told how the daemon asks — once per round, as a
+// message on the role's own topic — and to answer the round the newest such message names, or
+// to end its turn where no message names the claim's round. For a claim the daemon is asking
+// nothing of, it is told so.
 func foreignRoundRefusal(c Claim, answered string) error {
 	in, next := fmt.Sprintf("%q", c.UpdateRound), fmt.Sprintf(
 		"The daemon asks each role one time in each update round. "+

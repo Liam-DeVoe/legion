@@ -1,7 +1,8 @@
 package supervise
 
-// An update round is the daemon asking a claim's role to push its work and answer
-// ready_for_update before the process holding that claim is replaced. These tests pin what the
+// An update round is the daemon asking the role of each claim of the round with a session, but a
+// failed one and one that has left the round's pod, to push its work and answer ready_for_update
+// before the process holding that claim is replaced. These tests pin what the
 // machine does with the round's events: a round that opens once, records its terms once and asks
 // nothing of the machine's own — the sweep enqueues the ask to the role's Envoy topic, and the
 // outbox marks it on the claim once it reached a session (PublishUpdateAsk) — a suspended claim
@@ -42,8 +43,8 @@ import (
 
 const (
 	// testRoundPod is the uid of the pod testRound is the round of, and testOtherPod the uid of
-	// the pod a claim is relaunched into once that one has died. A pod round names the pod every
-	// claim of it runs in, so testRound is written from testRoundPod rather than beside it.
+	// the pod a claim is relaunched into once that one has died. A pod round names the pod it was
+	// opened over, so testRound is written from testRoundPod rather than beside it.
 	testRoundPod = "9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22"
 	testOtherPod = "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34"
 	// testRound is a pod round's identity, as the daemon's sweep writes it.
@@ -281,7 +282,8 @@ func TestPodUpdateLeavesTheTaskAWorkingClaimHolds(t *testing.T) {
 }
 
 // A suspended claim is recorded in the round and is not revived for it, whoever suspended it: the
-// ask is a message on the role's topic, a topic no live session holds is asked nothing, and the
+// ask is a message on the role's topic, a topic no live session holds is asked nothing, and, but
+// for an operator's suspension, which holds the round past its bound (heldByOperator), the
 // round ends at its bound whether or not the role answers (dispatch://INFRA-2981 R1).
 func TestPodUpdateRecordsTheRoundOnASuspendedClaimAndRevivesNothing(t *testing.T) {
 	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByOperator} {
@@ -406,11 +408,12 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 	})
 }
 
-// A round publishes its ask once per claim, and the answer a role gives stands for its round. So
-// an ask of the round that still waits in the outbox when the role answers is published to
-// nobody: the answer is what the ask was for. No delivery is marked either, since no ask reached
-// the role, and the answer stays as it was given. The control is the same claim before it
-// answers, whose ask is published once and marked.
+// A round publishes its ask at most once to each claim of it with a session but a failed one and
+// one that has left the round's pod, and the answer a role gives stands for its round. So an ask
+// of the round that still waits in the outbox when the role answers is published to nobody: the
+// answer is what the ask was for. No delivery is marked either, since no ask reached the role,
+// and the answer stays as it was given. The control is the same claim before it answers, whose
+// ask is published once and marked.
 func TestPodUpdatePublishUpdateAskPublishesNothingOnceTheRoleAnswered(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -558,9 +561,11 @@ func TestPodUpdatePublishUpdateAskAnOwedMarkKeepsTheRowWhateverTheClaimBecomes(t
 
 // A claim the daemon started again in another pod than its pod round's own has left that round:
 // the work the round asks about went with the dead pod's disk, and the round asks the process in
-// the new pod nothing. So an ask of the round that still waits in the outbox when the claim leaves
-// is published to nobody, and no delivery is marked. The control is a claim started again in the
-// round's own pod, which is still in the round and is asked once.
+// the new pod nothing, since a round neither asks nor waits for one that has left the round's
+// pod, as it neither asks nor waits for a failed claim. So an ask of the round that still waits
+// in the outbox when the claim leaves is published to nobody, and no delivery is marked. The
+// control is a claim started again in the round's own pod, which is still in the round and is
+// asked once.
 func TestPodUpdatePublishUpdateAskPublishesNothingToAClaimThatLeftTheRoundsPod(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1056,9 +1061,10 @@ func TestPodUpdateRecordsTheRoundOnAClaimWithNoAgent(t *testing.T) {
 	}
 }
 
-// The worker's answer is fenced as every other request an agent makes is: it ends a round, and a
-// round ending deletes the pod's disk, so a process of a superseded generation or of another
-// session must never be what says the work is pushed.
+// The worker's answer is fenced as every other request an agent makes is: it can end a round,
+// which ends early once every claim it waits for has answered (waitingClaims) and no turn runs,
+// and a round ending deletes the pod's disk, so a process of a superseded generation or of
+// another session must never be what says the work is pushed.
 func TestPodUpdateSignalIsFenced(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.reach(StateReady)
@@ -1708,10 +1714,12 @@ func TestPodUpdateARoundThatReplacedThePodTellsItsWorkerNothing(t *testing.T) {
 
 // A pod dies and the claim comes up in another one while the round opened over the dead pod is
 // still recorded on it. The worker now running holds none of the work that round asks about, so
-// the claim's part in the round is frozen unanswered: the sweep's next post asks nothing, and an
-// answer given from the new pod is refused. An answer counted there would report work as pushed
-// that nobody pushed. The older daemon's ask the dead pod never read is dropped at the new
-// process's ready, not because the claim left the pod: sendPending drops every `update:` task.
+// the claim is one that has left the round's pod, which the round neither asks nor waits for, as
+// it neither asks nor waits for a failed claim: the claim's part in the round is frozen
+// unanswered, the sweep's next post asks nothing, and an answer given from the new pod is
+// refused. An answer counted there would report work as pushed that nobody pushed. The older
+// daemon's ask the dead pod never read is dropped at the new process's ready, not because the
+// claim left the pod: sendPending drops every `update:` task.
 func TestPodUpdateAnUnansweredClaimRelaunchedIntoAnotherPodIsAskedNothingMore(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.inPod(testRoundPod)

@@ -57,11 +57,12 @@ func askRow(t *testing.T, id int64, role claim.Role) record.OutboxRow {
 	return row
 }
 
-// The ask reaches the role it names on that role's own topic, a worker and the architect alike,
-// since the architect's process runs in the pod too. The message is the sweep's text unchanged,
-// under the row's own key, so a retried row is one delivery. When the publisher has taken it, the
-// executor writes the one line the production check greps for, with the row, the issue, the round,
-// the pod, the claim, the role and the topic.
+// The ask reaches the role it names on that role's own topic, a worker and the architect alike:
+// the round asks each of its claims with a session that has not answered it, but a failed one
+// and one that has left the round's pod, and the architect's process runs in the pod too. The
+// message is the sweep's text unchanged, under the row's own key, so a retried row is one
+// delivery. When the publisher has taken it, the executor writes the one line the production
+// check greps for, with the row, the issue, the round, the pod, the claim, the role and the topic.
 func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 	for i, role := range []claim.Role{claim.RoleTester, claim.RoleArchitect} {
 		t.Run(string(role), func(t *testing.T) {
@@ -151,14 +152,14 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 	}
 }
 
-// A claim whose own record owes no ask of the round any more is published nothing, and its row
-// ends with a line of its own: its role answered the round while the row waited, the daemon
-// started the claim again in another pod than the round's own, or the claim failed. A claim fails
-// even when the runtime refuses to suspend its process (supervise's fail), so that process can
-// still hold the role's topic: the publisher here takes every publish, as a topic with a live
-// holder does. No delivery is recorded on the claim and no published line is written, because no
-// ask reached the role. The control is the same claim with none of these, which is asked once and
-// marked.
+// A claim whose own record owes no ask of the round any more (supervise's Claim.OwesUpdateAsk)
+// is published nothing, and its row ends with a line of its own: a claim whose role answered the
+// round while the row waited, a claim that has left the round's pod (the daemon started it again
+// in another pod than the round's own), or a failed claim. A claim fails even when the runtime
+// refuses to suspend its process (supervise's fail), so that process can still hold the role's
+// topic: the publisher here takes every publish, as a topic with a live holder does. No delivery
+// is recorded on the claim and no published line is written, because no ask reached the role.
+// The control is the same claim with none of these, which is asked once and marked.
 func TestPodUpdateAskToAClaimTheRoundNoLongerAsksPublishesNothing(t *testing.T) {
 	answeredAt := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
 	for i, tc := range []struct {

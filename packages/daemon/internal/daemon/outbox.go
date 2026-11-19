@@ -1732,14 +1732,16 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // updateAsk publishes an update round's ask (record.UpdateAsk) to the Envoy topic of the role the
 // row names, the claim of that role on the row's issue, and to nothing else. The text is the
 // sweep's, built for the round when it opened (supervise.UpdateTask), and it reaches a worker and
-// the issue's architect alike: every role whose process runs in the pod loses that process when
-// the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
-// waits behind no architect notice of its issue.
+// the issue's architect alike, since every role whose process runs in the pod loses that process
+// when the round replaces the pod: the round asks each of its claims with a session that has not
+// answered it, but a failed one and one that has left the round's pod. It rides the role-message
+// lane (record.LaneRoleMessage), so it waits behind no architect notice of its issue.
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
 // first. A role whose pod an idle release took is not brought back to be asked: its topic has no
 // holder, so its ask is lost as every ask that reached no session is (below), the sweep asks the
-// claim again once its agent is ready again, and the round ends at its bound whether or not the
+// claim again once its agent is ready again, as it asks every claim whose record still owes it
+// an ask (supervise's Claim.OwesUpdateAsk), and the round ends at its bound whether or not the
 // role answers.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
@@ -1765,9 +1767,10 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 //
 // A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
-// claim again (askRound). Until its bound the round waits for every claim with a session but a
-// failed one and one that has left the round's pod, and a claim the ask never reached has
-// nothing to answer: a fresh session that has not claimed its topic yet
+// claim again while its record still owes it an ask (askRound, supervise's Claim.OwesUpdateAsk).
+// Until its bound the round waits for every claim with a session but a failed one and one that
+// has left the round's pod, and a claim the ask never reached has nothing to answer: a fresh
+// session that has not claimed its topic yet
 // is the ordinary case, and a mark that counted such an ask as given held BET-1291's and BET-690's
 // rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other failure of the publish
 // keeps the ordinary retry, as phaseEnded's does: a holder that did not confirm in time, one that

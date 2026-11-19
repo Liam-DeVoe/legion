@@ -1,7 +1,8 @@
 package daemon
 
-// The update round's ask reaches each role on one channel: the sweep publishes it once per claim
-// per round, as a role-message outbox row (record.UpdateAsk) to that claim's own Envoy topic, and
+// The update round's ask reaches, on one channel, each role of the round but a failed one and
+// one that has left the round's pod: the sweep publishes it once per claim per round, as a
+// role-message outbox row (record.UpdateAsk) to that claim's own Envoy topic, and
 // no claim is queued or sent a task for the round (dispatch://INFRA-2981 R1, verification's
 // c-one-channel). "Once" counts the asks that reached a session: the row marks its claim asked
 // when its publish reached a session, and an ask whose topic had no live holder is asked again
@@ -58,7 +59,8 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 
 // One pod round, over the five kinds of claim a pod holds: a role in a turn, an idle role, the
 // issue's architect, a failed claim and a claim that has left the round's pod. Over ten sweeps,
-// the role-message lane running after each, each asked claim gets exactly one update-ask row, the
+// the role-message lane running after each, each asked claim (every claim of the round but a
+// failed one and one that has left the round's pod) gets exactly one update-ask row, the
 // architect's included, each naming its own role, the round, the pod and the round's one text:
 // the reasons the round opened with and the moment it ends, its opening plus
 // pod_update_grace_minutes. Each row reaches its role's topic once and marks its claim asked. The
@@ -202,7 +204,8 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 
 // A daemon with no outbox (no workflow, so supervision's enqueue is nil) publishes no ask and
 // marks no claim, and its round still runs: the claims record it, an answer is taken, and the pod
-// is replaced once every role has answered.
+// is replaced once every role the round waits for has answered — each claim with a session but a
+// failed one and one that has left the round's pod.
 func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.s.enqueue = nil

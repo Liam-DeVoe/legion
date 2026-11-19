@@ -376,11 +376,11 @@ type launch struct {
 // keptPod is what a live pod a launch keeps was built with, for the one role that launch starts in
 // it: the facets of the pod the role's own start command names, which a pod cannot be changed to
 // carry (INFRA-484). A pod that has drifted from the configuration is replaced by an update round,
-// which first asks every role in it to push its work and answer, and not by the launch that
-// finds it; so the launch starts its role as that pod was built, and the role runs degraded —
-// without the secrets broker, without an overlay added since — until the round replaces the pod.
-// It can still push its work and answer the round, which a process that refused to start could
-// not.
+// which first asks every role in it but a failed one and one that has left the round's pod to
+// push its work and answer, and not by the launch that finds it; so the launch starts its role as
+// that pod was built, and the role runs degraded — without the secrets broker, without an
+// overlay added since — until the round replaces the pod. It can still push its work and answer
+// the round, which a process that refused to start could not.
 type keptPod struct {
 	// enrolled is the enrollment decision (Runtime.enrollsIn) read of this pod when the launch
 	// began: the runtime enrols its pods and the pod carries that enrollment for the role, both

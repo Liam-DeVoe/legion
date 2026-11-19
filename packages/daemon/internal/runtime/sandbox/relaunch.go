@@ -68,8 +68,9 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // the ServiceAccount it runs as, the role's overlays, the secrets broker's enrollment, the session
 // store or the GitHub owners its gh volume projects a directory for (PodDrift) — is kept,
 // and this role is started in it.
-// Such a pod is replaced by an update round, which first asks every role in it to push its work
-// and answer, and then ends the pod (ReplacePod): replacing it at a launch would end every role's
+// Such a pod is replaced by an update round, which first asks every role in it but a failed one
+// and one that has left the round's pod to push its work and answer, and then ends the pod
+// (ReplacePod): replacing it at a launch would end every role's
 // turn in it and delete the issue's disk with everything unpushed on it (INFRA-484). A launch into
 // a drifted pod is therefore an ordinary launch, the install of a stale-plugin pair (spec.Plugins,
 // LEGION-164) included, which brings this launch's agent onto the current plugin without a fresh
@@ -95,11 +96,12 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 //
 // A ServiceAccount other than the configured one (accountDrift) is answered by whoever answers
 // the pod's other drift. A launch into a pod a round covers keeps it for the account as for every
-// other drift, and leaves it to that pod's round, which has every worker in it push its work
-// before the pod is ended. A launch into a pod no round covers replaces it for the account
-// whatever it is installing, since no round will ever come for such a pod: the account is fixed
-// for the pod's life, and until the pod is created afresh its agents go on holding the identity
-// the old account grants, so an old account can be deleted only once every pod of it has gone.
+// other drift, and leaves it to that pod's round, which has every worker in it but a failed one
+// and one that has left the round's pod push its work before the pod is ended. A launch into a
+// pod no round covers replaces it for the account whatever it is installing, since no round will
+// ever come for such a pod: the account is fixed for the pod's life, and until the pod is created
+// afresh its agents go on holding the identity the old account grants, so an old account can be
+// deleted only once every pod of it has gone.
 //
 // Replacing a live pod — its Sandbox Running, the pod its own, not ended, its init containers
 // passed, and not a pod its node never started (neverStarted) — ends the process of every role
@@ -188,8 +190,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// the launch is installing: no round will ever come for such a pod, the account is fixed for
 	// the pod's life, and until the pod is created afresh its agents go on holding the identity
 	// the old account grants. A pod a round covers is kept for the account as for its other
-	// drift, and that round, which has every worker in it push its work first, is what replaces
-	// it.
+	// drift, and that round, which has every worker in it but a failed one and one that has left
+	// the round's pod push its work first, is what replaces it.
 	replace := !live || (accountDrifted && !covered) || migrate ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
 		(!installing && !covered && len(r.shapeDrift(s, l.shapeKey())) > 0)
