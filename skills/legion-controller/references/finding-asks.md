@@ -161,7 +161,9 @@ tells you when its root rests on an ancestor on the backlog
 (`skill://legion-architect/references/design-gate.md#a-requirement-the-ancestor-does-not-state`).
 Decide whether that root runs again under [Free slots](skill://legion-controller/SKILL.md#free-slots):
 it leaves the backlog only on a request or a plan directive that names it. Where none names it,
-do as your deployment's instructions say. Where they give you no rule for this move, ask a person:
+do as your deployment's instructions say. Where they say that you decide admission yourself,
+decide it and open no ask: no request or plan directive names the root, so it stays on the
+backlog. Where they give you no rule for this move, ask a person:
 
 1. Open a `dispatch ask` on the report issue that names the root and the member, with the options
    `Run it now` and `Leave it on the backlog` and your recommendation. Follow it
