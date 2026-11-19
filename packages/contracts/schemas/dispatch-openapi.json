@@ -15870,10 +15870,19 @@
           "case": {
             "type": "string"
           },
+          "commit": {
+            "type": "string"
+          },
           "detail": {
             "type": "string"
           },
           "line": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "result": {
             "type": "string"
           },
           "run": {

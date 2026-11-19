@@ -3918,8 +3918,11 @@ export interface components {
     };
     CheckCI: {
       case: string;
+      commit?: string;
       detail: string;
       line: string;
+      repo?: string;
+      result?: string;
       run: string;
       /** @enum {string} */
       state: "pass" | "fail" | "no_result" | "unread";
