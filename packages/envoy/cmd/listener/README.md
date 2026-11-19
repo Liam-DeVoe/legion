@@ -443,9 +443,9 @@ A rollback that stops every pod of this build before starting the old one carrie
 
 ## Without the grant: no-lease mode
 
-The listener's NATS user needs the `envoy_listener` bucket in its grant (`infra/core` `ListenerPermissions`, `DispatchPermissions` and `HostPermissions` carry it from this release).
-That grant writes only the machine's own keys, `lease.listener-<machine id>`, `handback.listener-<machine id>.>` and `delivery.listener-<machine id>.>`, and the `seen.` records.
-It reads each of its buckets by key, a direct get on the key's own subject, and refuses a get by revision, a direct get on the stream's bare subject.
+The listener's NATS user needs the `envoy_listener` bucket in its grant (`infra/core` `ListenerPermissions`, `DispatchPermissions` and `HostPermissions`, and the NATS auth service's answer to a listener or Dispatch connection, carry it from this release).
+That grant reaches only the machine's own keys, `lease.listener-<machine id>`, `handback.listener-<machine id>.*` and `delivery.listener-<machine id>.*.*`, and every session's `seen.*` record: it writes each of them and reads each by key, and holds no other call on the bucket (`natsgrant.ListenerState` names the call behind each subject).
+It reads each of its other buckets by key too, a direct get on the key's own subject, and on every bucket it refuses a get by revision, a direct get on the stream's bare subject.
 So the listener reads back each write it must stamp, the lease's acquiring write and a session registration in `envoy_sessions`, by key, and counts it as its own only at the revision it wrote;
 another revision there means a newer write landed first.
 A listener whose grant refuses the bucket does not exit: it logs one ERROR, `listener lease

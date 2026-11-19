@@ -264,8 +264,8 @@ func (c *Client) holdsRefusal(subject string, sentAt time.Time) bool {
 // A read of a key takes only the refusal of a subject it sends: when a Get draws no answer and the
 // record holds a refusal of the bare direct get of the bucket's stream, which only a read by
 // revision sends, the Get reports its own silence, and the refusal stays in the record for the
-// read that earned it. The grant is shaped as the listener's bucket grant is (infra/core
-// bucketPermissions), every direct get by subject, the leader get and the keys, without the bare
+// read that earned it. The grant is shaped as the listener's bucket grant is (natsgrant.KVWrite),
+// every direct get by subject, the leader get and the keys, without the bare
 // direct get.
 func TestARefusalOfASubjectAReadDoesNotSendAnswersItNothing(t *testing.T) {
 	const bucket = "envoy_denied_cross"

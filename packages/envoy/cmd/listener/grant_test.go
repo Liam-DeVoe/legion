@@ -16,7 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -140,7 +142,11 @@ func hasKeyWithPrefix(keys []string, prefix string) bool {
 // Update) and its own clean-hand-back mark, and reads that mark back as the pod taking the record
 // does; it is refused a write to another machine's lease key, hand-back mark or delivery ledger:
 // no machine's user can take or clear another machine's lease, or vouch for another machine's
-// hand-over.
+// hand-over. A refused Create draws two refusals, since nats.go reads the key after any failed
+// create (nats.go@v1.53.1 kv.go:729-737): its write, and the direct get of the same key, which the
+// grant refuses too
+// (TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEveryLastSeen). Each
+// row waits for every refusal its write draws, and fails on any other answer.
 func TestAMachinesGrantRefusesAnotherMachinesLeaseMarkAndLedger(t *testing.T) {
 	seed, public := testnats.User(t)
 	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.ListenerGrant(t, "box-a")})
@@ -183,32 +189,290 @@ func TestAMachinesGrantRefusesAnotherMachinesLeaseMarkAndLedger(t *testing.T) {
 	for _, refused := range []struct {
 		key   string
 		write func(key string) error
+		// read is whether the write reads the key after it fails, as nats.go's Create does.
+		read bool
 	}{
 		{"lease." + bus.ListenerDurable("box-b"), func(key string) error {
 			_, err := kv.Create(key, []byte(`{"holder":"pod-a","boot":"0123456789abcdef"}`))
 			return err
-		}},
+		}, true},
 		{bus.ListenerHandBackPrefix(bus.ListenerDurable("box-b")) + "7", func(key string) error {
 			_, err := kv.Put(key, []byte(`{"instance":"pod-a","boot":"0123456789abcdef","revision":7}`))
 			return err
-		}},
+		}, false},
 		{"delivery." + bus.ListenerDurable("box-b") + ".0123456789abcdef0123456789abcdef.ses_x", func(key string) error {
 			_, err := kv.Put(key, []byte(`{"state":"delivered"}`))
 			return err
-		}},
+		}, false},
 	} {
 		if err := refused.write(refused.key); err == nil {
 			t.Fatalf("box-a's user wrote %s", refused.key)
 		}
-		subject := "$KV." + bus.ListenerStateBucket + "." + refused.key
+		subjects := []string{"$KV." + bus.ListenerStateBucket + "." + refused.key}
+		if refused.read {
+			subjects = append(subjects, listenerStateDirectGet(refused.key))
+		}
+		awaitRefusals(t, errs, "box-a's write of "+refused.key, subjects...)
+	}
+}
+
+// listenerStateDirectGet is the subject a read of key in the listener state bucket sends: nats.go's
+// direct get of the key's last message, on the key's own subject (nats.go@v1.53.1 kv.go:647-660).
+func listenerStateDirectGet(key string) string {
+	return "$JS.API.DIRECT.GET.KV_" + bus.ListenerStateBucket + ".$KV." + bus.ListenerStateBucket + "." + key
+}
+
+// awaitRefusals reads the connection's errors off errs until the server has refused a publish to
+// each of subjects, in any order, within 5 s, and fails on any other error it reads first: what
+// names the call the refusals answer.
+func awaitRefusals(t *testing.T, errs <-chan error, what string, subjects ...string) {
+	t.Helper()
+	left := slices.Clone(subjects)
+	deadline := time.After(5 * time.Second)
+	for len(left) > 0 {
 		select {
 		case err := <-errs:
-			if !errors.Is(err, natsgo.ErrPermissionViolation) || !strings.Contains(err.Error(), `Publish to "`+subject+`"`) {
-				t.Fatalf("the server's answer to the write of %s: %v, want its refusal", refused.key, err)
+			at := slices.IndexFunc(left, func(subject string) bool {
+				return errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), `Publish to "`+subject+`"`)
+			})
+			if at < 0 {
+				t.Fatalf("the server's answer to %s: %v, want its refusal of %s", what, err, strings.Join(left, ", "))
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("the server did not refuse box-a's write of %s", refused.key)
+			left = slices.Delete(left, at, at+1)
+		case <-deadline:
+			t.Fatalf("the server did not refuse %s within 5s: %s", what, strings.Join(left, ", "))
 		}
+	}
+}
+
+// A listener under its machine's grant cannot read another machine's delivery lease,
+// clean-hand-back mark or delivery ledger: the direct get of each of those keys is refused, so a
+// machine's user learns nothing of another machine's lease or deliveries. It still reads every
+// session's last-seen record, whichever machine's listener wrote it: a role claim names its holder
+// session and no machine, and any listener answers a lapsed holder's last_seen out of that record
+// (GET /v1/roles/<role>).
+func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEveryLastSeen(t *testing.T) {
+	seedA, publicA := testnats.User(t)
+	seedB, publicB := testnats.User(t)
+	granted := testnats.StartGranted(t,
+		testnats.GrantedUser{Public: publicA, Grant: testnats.ListenerGrant(t, "box-a")},
+		testnats.GrantedUser{Public: publicB, Grant: testnats.ListenerGrant(t, "box-b")})
+
+	// box-b writes its own keys, and the last-seen record of a session registered through it,
+	// under its own grant.
+	connB, err := testnats.ConnectSeed(t, granted.URL(), seedB)
+	if err != nil {
+		t.Fatalf("connect as box-b's user: %v", err)
+	}
+	t.Cleanup(connB.Close)
+	kvB, err := openListenerState(t.Context(), connB, 1, 2*time.Second)
+	if err != nil {
+		t.Fatalf("open the listener state bucket under box-b's grant: %v", err)
+	}
+	durableB := bus.ListenerDurable("box-b")
+	theirs := []string{
+		bus.ListenerLeaseKey("box-b"),
+		bus.ListenerHandBackPrefix(durableB) + "7",
+		bus.ListenerLedgerPrefix(durableB) + "0123456789abcdef0123456789abcdef.ses_x",
+	}
+	values := []string{
+		`{"holder":"pod-b","boot":"0123456789abcdef"}`,
+		`{"instance":"pod-b","boot":"0123456789abcdef","revision":7}`,
+		`{"state":"delivered"}`,
+	}
+	for index, key := range theirs {
+		if _, err := kvB.Put(key, []byte(values[index])); err != nil {
+			t.Fatalf("box-b writes its own %s: %v", key, err)
+		}
+	}
+	seen := bus.LastSeenPrefix + dedupe.SessionToken("ses_on_box_b")
+	const seenValue = `{"at":1763500000000}`
+	if _, err := kvB.Put(seen, []byte(seenValue)); err != nil {
+		t.Fatalf("box-b records %s: %v", seen, err)
+	}
+
+	errs := make(chan error, 8)
+	connA, err := testnats.ConnectSeed(t, granted.URL(), seedA,
+		natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) { errs <- err }))
+	if err != nil {
+		t.Fatalf("connect as box-a's user: %v", err)
+	}
+	t.Cleanup(connA.Close)
+	kvA, err := openListenerState(t.Context(), connA, 1, 2*time.Second)
+	if err != nil {
+		t.Fatalf("open the listener state bucket under box-a's grant: %v", err)
+	}
+	for _, key := range theirs {
+		if entry, err := kvA.Get(key); err == nil {
+			t.Fatalf("box-a's user read box-b's %s: %s", key, entry.Value())
+		}
+		awaitRefusals(t, errs, "box-a's read of "+key, listenerStateDirectGet(key))
+	}
+	entry, err := kvA.Get(seen)
+	if err != nil || string(entry.Value()) != seenValue {
+		t.Fatalf("box-a reads %s, which box-b wrote, as %v (%v), want %s", seen, entry, err, seenValue)
+	}
+	select {
+	case err := <-errs:
+		t.Fatalf("the server refused box-a's read of %s: %v", seen, err)
+	default:
+	}
+}
+
+// Every call a listener makes on its state bucket passes under its machine's grant
+// (testnats.ListenerGrant, whose bucket entries are natsgrant.ListenerState's eleven subjects),
+// and the server logs no permission violation, each made by the listener's own code:
+//   - the open of an absent bucket (openListenerState): its lookup, its create, the wait for its
+//     leader and the handle's open;
+//   - the age raise of a bucket an earlier build created with a shorter MaxAge (bus.RaiseMaxAge,
+//     from openListenerState), the stream info and update of KV_envoy_listener that the keeper's
+//     copy raise sends too (raiseReplicas and raiseStream reach the same updateStream), which a
+//     single server of one copy never needs;
+//   - the lease: its create of an absent record and the read back, its renewal and its release,
+//     the clean-hand-back mark the stop writes and the pod that took the record reads, that pod's
+//     poll and take-over, and the released pod's read of its successor;
+//   - the delivery ledger (dedupe.KV): an attempt's create, a second attempt on the same pair,
+//     which nats.go's Create answers by reading the key after its failed write before the ledger
+//     reads it itself, a take-over's update, the record and the clear;
+//   - a session's last-seen record (session.SessionRegistry): written at its registration and
+//     read once the session lapsed.
+func TestEveryCallTheListenerMakesOnItsStateBucketPassesUnderItsMachinesGrant(t *testing.T) {
+	seed, public := testnats.User(t)
+	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.ListenerGrant(t, leaseTestMachine)})
+	errs := make(chan error, 16)
+	conn, err := testnats.ConnectSeed(t, granted.URL(), seed,
+		natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) { errs <- err }))
+	if err != nil {
+		t.Fatalf("connect as %s's user: %v", leaseTestMachine, err)
+	}
+	t.Cleanup(conn.Close)
+	if _, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait); err != nil {
+		t.Fatalf("open the absent listener state bucket under %s's grant: %v", leaseTestMachine, err)
+	}
+
+	admin := testnats.Connect(t, granted.AdminURL)
+	t.Cleanup(admin.Close)
+	adminJS, err := admin.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream as the admin: %v", err)
+	}
+	stream := "KV_" + bus.ListenerStateBucket
+	info, err := adminJS.StreamInfo(stream)
+	if err != nil {
+		t.Fatalf("read %s: %v", stream, err)
+	}
+	earlier := info.Config
+	earlier.MaxAge = 10 * time.Minute
+	if _, err := adminJS.UpdateStream(&earlier); err != nil {
+		t.Fatalf("shorten %s's age as an earlier build had it: %v", stream, err)
+	}
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
+	if err != nil {
+		t.Fatalf("open the listener state bucket of an earlier build's age under %s's grant: %v", leaseTestMachine, err)
+	}
+	if info, err := adminJS.StreamInfo(stream); err != nil || info.Config.MaxAge != listenerStateMaxAge {
+		t.Fatalf("%s after the open: %v (%v), want its age raised to %s", stream, info, err, listenerStateMaxAge)
+	}
+
+	clock := newFakeLeaseClock()
+	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
+	a.step()
+	term := a.Status()
+	if !term.Holding || term.How != leaseTakenAbsent {
+		t.Fatalf("pod-a status = %+v, want the lease taken from an absent record", term)
+	}
+	_, taken := readLease(t, kv)
+	a.step()
+	if _, renewed := readLease(t, kv); renewed.Revision() <= taken.Revision() {
+		t.Fatalf("the lease record after pod-a's renewal is at revision %d, want past %d", renewed.Revision(), taken.Revision())
+	}
+	// A graceful stop that handed messages back: unsettled, released, and its hand-back marked.
+	a.Unsettle(term.Term)
+	if err := a.Release(t.Context()); err != nil {
+		t.Fatalf("release pod-a's lease: %v", err)
+	}
+	if marked, err := a.MarkHandBack(t.Context()); !marked || err != nil {
+		t.Fatalf("pod-a's stop marked its hand-back %v (%v), want marked", marked, err)
+	}
+	b := testLease(kv, "pod-b", productionLeaseConfig(), clock.now)
+	b.step()
+	next := b.Status()
+	if !next.Holding || next.How != leaseTakenReleased || !next.HandBack {
+		t.Fatalf("pod-b status = %+v, want held from pod-a's released record as a hand-back candidate", next)
+	}
+	if marked, err := b.HandBackMarked(t.Context(), next.Term); !marked || err != nil {
+		t.Fatalf("pod-b reads its term marked %v (%v), want the mark pod-a's stop wrote", marked, err)
+	}
+	if successor, _, err := a.Successor(); !successor || err != nil {
+		t.Fatalf("pod-a reads its successor %v (%v), want pod-b's record", successor, err)
+	}
+
+	durable := bus.ListenerDurable(leaseTestMachine)
+	ledger := dedupe.NewKV(kv, dedupe.KVConfig{Durable: durable, Boot: "0123456789abcdef", TakeoverAfter: time.Hour})
+	first, err := ledger.Attempt("granted-1", "ses_granted")
+	if err != nil || first.Verdict != dedupe.Proceed {
+		t.Fatalf("the first attempt = %+v (%v), want to proceed", first, err)
+	}
+	if err := ledger.Record(first); err != nil {
+		t.Fatalf("record the delivery: %v", err)
+	}
+	if again, err := ledger.Attempt("granted-1", "ses_granted"); err != nil || again.Verdict != dedupe.Delivered {
+		t.Fatalf("a second attempt of the delivered pair = %+v (%v), want delivered", again, err)
+	}
+	if _, err := ledger.Attempt("granted-2", "ses_granted"); err != nil {
+		t.Fatalf("attempt a second pair: %v", err)
+	}
+	// Another boot's ledger takes over the unsettled attempt at once.
+	takeover := dedupe.NewKV(kv, dedupe.KVConfig{Durable: durable, Boot: "fedcba9876543210", TakeoverAfter: time.Nanosecond})
+	over, err := takeover.Attempt("granted-2", "ses_granted")
+	if err != nil || over.Verdict != dedupe.Proceed {
+		t.Fatalf("the take-over of the unsettled attempt = %+v (%v), want to proceed", over, err)
+	}
+	if err := takeover.Clear(over); err != nil {
+		t.Fatalf("clear the attempt: %v", err)
+	}
+	if _, err := kv.Get(takeover.Key("granted-2", "ses_granted")); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("the cleared attempt's record reads %v, want no such key", err)
+	}
+
+	const (
+		sessionID = "ses_granted"
+		ttl       = 3 * time.Second
+	)
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionReplicas(1), session.WithSessionTTL(ttl),
+		session.WithLastSeenBucket(kv))
+	if err != nil {
+		t.Fatalf("open the session registry under %s's grant: %v", leaseTestMachine, err)
+	}
+	t.Cleanup(sessions.StopWatch)
+	if err := sessions.Put(sessionID, session.SessionEntry{Port: 4242, MachineID: leaseTestMachine}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	recorded, err := kv.Get(bus.LastSeenPrefix + dedupe.SessionToken(sessionID))
+	if err != nil {
+		t.Fatalf("read %s's last-seen record: %v", sessionID, err)
+	}
+	var record struct {
+		At int64 `json:"at"`
+	}
+	if err := json.Unmarshal(recorded.Value(), &record); err != nil || record.At == 0 {
+		t.Fatalf("%s's last-seen record %s (%v), want a time", sessionID, recorded.Value(), err)
+	}
+	waitFor(t, ttl+10*time.Second, sessionID+"'s registration to lapse", func() bool {
+		_, err := sessions.Get(sessionID)
+		return errors.Is(err, natsgo.ErrKeyNotFound)
+	})
+	if lastSeen := sessions.LastSeen(t.Context(), sessionID); lastSeen != record.At {
+		t.Fatalf("the lapsed %s's last seen = %d, want its record's %d", sessionID, lastSeen, record.At)
+	}
+
+	select {
+	case err := <-errs:
+		t.Fatalf("the server refused a call the listener makes on its state bucket: %v", err)
+	default:
+	}
+	if log := granted.Log(); strings.Contains(log, "Violation") {
+		t.Fatalf("the server refused the listener what its grant should allow:\n%s", log)
 	}
 }
 

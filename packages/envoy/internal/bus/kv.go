@@ -346,17 +346,18 @@ func invalidKey(key any, err error) error {
 //
 // A read the stream's leader answers exists, and this build makes none: js.GetLastMsg(stream,
 // subject) without nats.DirectGet is a STREAM.MSG.GET, which the leader answers, and the
-// listener's grant holds $JS.API.STREAM.MSG.GET.KV_<bucket> for every bucket it opens
-// (infra/core's bucketPermissions), so it is this build's choice and not its permissions. What
-// that read answers is a raw stream message rather than a KV entry, so each caller would decode
-// the KV operation markers nats.go's KV decodes for it today -- the KV-Operation header's DEL and
-// PURGE, which the legacy kvs.get and the jetstream package's own kvs.get both answer
-// ErrKeyDeleted for -- to tell a deleted record from a live one, in each of the two reads the
-// repair makes (session.SessionRegistry.Refresh, store.Registry.RefreshAt). The window the direct
-// get leaves is one write wide and is closed without that decoding: a delete and a registration
-// each repair the session's consumer from the bucket's newest record and row (cmd/listener's
-// registeredTarget, which states what a copy behind costs that repair), and the session's next
-// heartbeat registers again.
+// listener's grant holds $JS.API.STREAM.MSG.GET.KV_<bucket> for every bucket it opens but the
+// listener state bucket (natsgrant.KVWrite; natsgrant.ListenerState grants that bucket the direct
+// get of each key family it reads and no other read), so for those it is this build's choice and
+// not its permissions. What that read answers is a raw stream message rather than a KV entry, so
+// each caller would decode the KV operation markers nats.go's KV decodes for it today -- the
+// KV-Operation header's DEL and PURGE, which the legacy kvs.get and the jetstream package's own
+// kvs.get both answer ErrKeyDeleted for -- to tell a deleted record from a live one, in each of
+// the two reads the repair makes (session.SessionRegistry.Refresh, store.Registry.RefreshAt). The
+// window the direct get leaves is one write wide and is closed without that decoding: a delete and
+// a registration each repair the session's consumer from the bucket's newest record and row
+// (cmd/listener's registeredTarget, which states what a copy behind costs that repair), and the
+// session's next heartbeat registers again.
 func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	if err := kv.check(key, getOverhead(kv.Bucket())); err != nil {
 		return nil, err
@@ -392,12 +393,13 @@ type LatestEntry struct {
 // get, `$JS.API.DIRECT.GET.KV_<bucket>.$KV.<bucket>.<key>`, that nats.go's kvs.get sends through
 // GetLastMsg with nats.DirectGet on the AllowDirect stream behind every bucket this package opens
 // (Get states why each carries it), read here with its KV-Operation header (kvOperationHeader).
-// So the grant that lets a process Get a key lets it read this (infra/core's bucketPermissions
-// holds $JS.API.DIRECT.GET.KV_<bucket>.> beside the bucket's writes), and it goes out on the
-// connection the handle's jetstream context holds, the one BoundedOn watches; it waits
-// RequestTimeout, the MaxWait the listener and Dispatch open their legacy handles with. A value
-// that read finds was stored after Get answered none, and answers revision 0, so the write is
-// refused over it and its caller reads again; a marker stored between the two reads names a key
+// So the grant that lets a process Get a key lets it read this (natsgrant.KVWrite holds
+// $JS.API.DIRECT.GET.KV_<bucket>.> beside the bucket's writes, and natsgrant.ListenerState the
+// direct get of each key family of the listener state bucket beside that family's write), and it
+// goes out on the connection the handle's jetstream context holds, the one BoundedOn watches; it
+// waits RequestTimeout, the MaxWait the listener and Dispatch open their legacy handles with. A
+// value that read finds was stored after Get answered none, and answers revision 0, so the write
+// is refused over it and its caller reads again; a marker stored between the two reads names a key
 // that holds no value either way, so the write lands over that marker. With ENVOY_NATS_REPLICAS
 // above 1 a copy one write behind can answer either read, as it can answer Get: a write at the
 // older revision it answers is refused, and its caller reads again.

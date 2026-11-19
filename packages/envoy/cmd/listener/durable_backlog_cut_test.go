@@ -33,6 +33,11 @@ const (
 	// backlogCutWait caps the whole wait, for a machine on which every part of this is slow: the
 	// row ends as soon as the backlog is in, so it costs this only when something is wrong.
 	backlogCutWait = 3 * time.Minute
+	// backlogCutAttempts is how many times the row aims the cut before it fails for having landed
+	// it inside the push on none of them. The push is over in well under a second, and a loaded
+	// machine now and then lets the server push the whole ack-pending ceiling before the cut's
+	// round trip lands: one run in twelve did at eb66162d.
+	backlogCutAttempts = 3
 )
 
 // Every message of a backlog the durable pushes reaches a subscriber exactly once, even when the
@@ -53,48 +58,44 @@ const (
 // alone, so the message comes back one ack wait later like every other outstanding message. That
 // is why the listener requires nats-server v2.15.0 or later (`cmd/listener/README.md`, "The
 // delivery lease"); on anything older this row fails with messages missing.
+//
+// A cut that lands once the durable has pushed its whole ack-pending ceiling is a miss of the
+// row's own setup, never a pass: nothing the server pushes after that reaches a deliver subject
+// nothing holds. The row aims the cut again rather than fail on one (backlogCutAttempts), each
+// time on an empty stream with a durable of its own (aimBacklogCut), passes only on an attempt
+// whose cut landed inside the push and whose backlog came back exactly once, and fails when every
+// attempt missed, naming each and how far its push had got.
 func TestEveryBackloggedMessagePushedAtAVanishingSubscriberComesBackExactlyOnce(t *testing.T) {
 	uri := testnats.URL(t)
-	const machineID = "box-backlog-cut"
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	consumer := bus.ListenerDurable(machineID)
-	config := natsgo.ConsumerConfig{Durable: consumer, DeliverSubject: natsgo.NewInbox()}
-	applyListenerConsumerPolicy(&config)
-	if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
-		t.Fatalf("create the durable: %v", err)
-	}
-
-	// The durable is created before the backlog and has no subscriber, so the server pushes
-	// nothing until one subscribes (an inactive push consumer gathers no messages): the whole
-	// backlog is queued when the push starts.
-	filler := strings.Repeat("x", backlogCutPayload)
-	for id := range backlogCutMessages {
-		if _, err := client.JS().Publish(receiveTestSubject, []byte(strconv.Itoa(id)+" "+filler)); err != nil {
-			t.Fatalf("publish message %d of the backlog: %v", id, err)
+	var cut backlogCut
+	var misses []string
+	for attempt := 1; ; attempt++ {
+		var miss string
+		if cut, miss = aimBacklogCut(t, client, uri, attempt); miss == "" {
+			t.Logf("the cut landed inside the push on attempt %d after %d misses: the durable had pushed %d messages, under its ack-pending ceiling of %d",
+				attempt, len(misses), cut.pushing, consumerMaxAckPending)
+			break
+		}
+		misses = append(misses, miss)
+		t.Logf("%s, which missed the push", miss)
+		if attempt == backlogCutAttempts {
+			t.Fatalf("the row did not land the cut inside the push in %d attempts: %s; the row needs the server pushing as its only subscriber goes",
+				backlogCutAttempts, strings.Join(misses, "; "))
+		}
+		// The next attempt starts from an empty stream, with a durable of its own.
+		if err := client.JS().DeleteConsumer(bus.Stream, cut.consumer); err != nil {
+			t.Fatalf("delete attempt %d's durable: %v", attempt, err)
+		}
+		if err := client.JS().PurgeStream(bus.Stream); err != nil {
+			t.Fatalf("purge attempt %d's backlog: %v", attempt, err)
 		}
 	}
-
-	// The only subscriber: it acks nothing, so the push stops at the ack-pending ceiling, and it
-	// reads, so the server is not the one to end the connection.
-	vanishing := testnats.Connect(t, uri)
-	t.Cleanup(vanishing.Close)
-	if _, err := vanishing.Subscribe(config.DeliverSubject, func(*natsgo.Msg) {}); err != nil {
-		t.Fatalf("subscribe the vanishing subscriber: %v", err)
-	}
-	if err := vanishing.Flush(); err != nil {
-		t.Fatalf("flush the vanishing subscriber's subscription: %v", err)
-	}
-	pushing := backlogCutPushing(t, client, consumer)
-	// The cut: the connection goes while the server is still pushing the backlog at it, so what
-	// the server pushes next reaches a deliver subject nothing holds.
-	vanishing.Close()
-	if pushing >= consumerMaxAckPending {
-		t.Fatalf("the durable had pushed %d messages, its whole ack-pending ceiling, before the cut landed: the row needs the server pushing as its only subscriber goes", pushing)
-	}
+	consumer, pushing := cut.consumer, cut.pushing
 	// The next subscriber comes only once the server has read the cut, so every message it gets is
 	// one the server pushes with the deliver subject bound again, never one of the push it was
 	// making as the subscriber went.
@@ -111,7 +112,7 @@ func TestEveryBackloggedMessagePushedAtAVanishingSubscriberComesBackExactlyOnce(
 	var completed sync.Once
 	next := testnats.Connect(t, uri)
 	t.Cleanup(next.Close)
-	if _, err := next.Subscribe(config.DeliverSubject, func(msg *natsgo.Msg) {
+	if _, err := next.Subscribe(cut.deliver, func(msg *natsgo.Msg) {
 		id, idErr := strconv.Atoi(strings.SplitN(string(msg.Data), " ", 2)[0])
 		ack := msg.Ack()
 		mu.Lock()
@@ -168,6 +169,58 @@ func TestEveryBackloggedMessagePushedAtAVanishingSubscriberComesBackExactlyOnce(
 		t.Fatalf("of %d messages, %d of them pushed when the cut landed, the next subscriber got %d in %s, the last of them %s ago: %d are missing (%v) and %d arrived more than once (%v). A missing message is the server dropping a first delivery it pushed at no subscriber: nats-server before v2.15.0 underflows that message's delivery count, and MaxDeliver then drops it at the ack wait",
 			backlogCutMessages, pushing, len(seen), time.Since(waited).Round(time.Second), time.Since(last).Round(time.Second), len(missing), backlogCutIDs(missing), len(twice), backlogCutIDs(twice))
 	}
+}
+
+// backlogCut is one aim of the row's cut (aimBacklogCut): the attempt's durable, its deliver
+// subject, and how many messages the durable had pushed when the cut landed.
+type backlogCut struct {
+	consumer, deliver string
+	pushing           int
+}
+
+// aimBacklogCut aims the row's cut once, as attempt: a durable of the attempt's own under the
+// listener's consumer policy, over a backlog of backlogCutMessages, whose only subscriber's
+// connection goes as soon as the durable has pushed a message. It returns the cut and, when the
+// durable had pushed its whole ack-pending ceiling by the time the cut landed, why the attempt
+// missed; "" when the cut landed inside the push.
+func aimBacklogCut(t *testing.T, client *bus.Client, uri string, attempt int) (backlogCut, string) {
+	t.Helper()
+	consumer := bus.ListenerDurable("box-backlog-cut-" + strconv.Itoa(attempt))
+	config := natsgo.ConsumerConfig{Durable: consumer, DeliverSubject: natsgo.NewInbox()}
+	applyListenerConsumerPolicy(&config)
+	if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
+		t.Fatalf("create attempt %d's durable: %v", attempt, err)
+	}
+
+	// The durable is created before the backlog and has no subscriber, so the server pushes
+	// nothing until one subscribes (an inactive push consumer gathers no messages): the whole
+	// backlog is queued when the push starts.
+	filler := strings.Repeat("x", backlogCutPayload)
+	for id := range backlogCutMessages {
+		if _, err := client.JS().Publish(receiveTestSubject, []byte(strconv.Itoa(id)+" "+filler)); err != nil {
+			t.Fatalf("publish message %d of attempt %d's backlog: %v", id, attempt, err)
+		}
+	}
+
+	// The only subscriber: it acks nothing, so the push stops at the ack-pending ceiling, and it
+	// reads, so the server is not the one to end the connection.
+	vanishing := testnats.Connect(t, uri)
+	t.Cleanup(vanishing.Close)
+	if _, err := vanishing.Subscribe(config.DeliverSubject, func(*natsgo.Msg) {}); err != nil {
+		t.Fatalf("subscribe attempt %d's vanishing subscriber: %v", attempt, err)
+	}
+	if err := vanishing.Flush(); err != nil {
+		t.Fatalf("flush attempt %d's vanishing subscriber's subscription: %v", attempt, err)
+	}
+	pushing := backlogCutPushing(t, client, consumer)
+	// The cut: the connection goes while the server is still pushing the backlog at it, so what
+	// the server pushes next reaches a deliver subject nothing holds.
+	vanishing.Close()
+	cut := backlogCut{consumer: consumer, deliver: config.DeliverSubject, pushing: pushing}
+	if pushing >= consumerMaxAckPending {
+		return cut, fmt.Sprintf("attempt %d: the durable had pushed %d messages, its whole ack-pending ceiling, before the cut landed", attempt, pushing)
+	}
+	return cut, ""
 }
 
 // backlogCutPushing reads the durable until it has pushed a message and reports how many it has

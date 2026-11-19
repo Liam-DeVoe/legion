@@ -2841,12 +2841,16 @@ The sender is the session that a secrets-broker token proves, else the request's
 `dispatch` or `envoy`. It does not count a message with no sender either, which is how the Legion
 daemon sends its notices.
 
-So the count is bound to a session only where callers present secrets-broker tokens. A caller
-that presents one and names another session in the body gets `403`. A caller that the listener
-admits on a bearer, or with no credential where `/v1` is open, names the sender itself in
-`source_session`. Such a caller can send under another session's id and spend that session's
-count, which then takes up to `burst × 60 ÷ rate` seconds to fill again. That caller can already
-send messages as that session.
+A secrets-broker token names the session that the listener counts. A caller that presents one
+and names another session in the body gets `403`. A caller that the listener admits on a bearer, or
+with no credential where `/v1` is open, names the sender itself in `source_session`. Such a caller
+can send under another session's id and spend that session's count, which then takes up to
+`burst × 60 ÷ rate` seconds to fill again. That caller can already send messages as that session.
+
+A token does not make a message with another `source` count. The agents' own Envoy tools send
+the source `agent` and give the agent no argument for it, so the limit counts each of their
+messages that has a sender. A caller that writes its own request can give another source, so the
+limit is not a security boundary.
 
 A message that finds its sender's count at 0 is answered HTTP `429`. The listener does not store
 it, keep it for a later holder of a role or report a wake for it. `Retry-After` gives the whole
@@ -3466,31 +3470,16 @@ It publishes to:
   entries; `SessionPermissions` does not, so a session holding that set alone reads no stored
   message itself and takes its own from the consumer its listener relays;
 - for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions`,
-  `envoy_known_sessions`, `legion_agents` (the Legion agent registry), `envoy_ci_state`,
-  `envoy_dpop_proofs` and `envoy_listener` (the machine's delivery lease and the delivery state
-  its listeners share, `packages/envoy/cmd/listener/README.md`), the calls nats.go's key-value
-  store makes: the info, create and update of the bucket's stream `KV_<bucket>`, its direct and
-  stream message gets, writes to its keys, and its watchers' consumer create and delete and their
-  flow-control replies.
+  `envoy_known_sessions`, `legion_agents` (the Legion agent registry), `envoy_ci_state` and
+  `envoy_dpop_proofs`, the calls nats.go's key-value store makes: the info, create and update of
+  the bucket's stream `KV_<bucket>`, its direct and stream message gets, writes to its keys
+  `$KV.<bucket>.>`, and its watchers' consumer create and delete and their flow-control replies.
   The update is the raise a start, or the listener's keeper every 30 seconds after, sends when it
   finds a bucket with fewer copies than `ENVOY_NATS_REPLICAS` (for `envoy_known_sessions` the
   keeper alone, since a start opens that bucket as it finds it); neither writes fewer copies than
   it found, and a grant without it makes that raise time out after 10 seconds with
   `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: context deadline exceeded`.
-  The writes are `$KV.<bucket>.>` for every bucket but `envoy_listener`, where they are
-  the machine's own keys alone: its lease `$KV.envoy_listener.lease.listener-<m>`, the
-  clean-hand-back marks of its stopping pods
-  `$KV.envoy_listener.handback.listener-<m>.>`, its delivery
-  ledger `$KV.envoy_listener.delivery.listener-<m>.>`, and every session's last-seen record
-  `$KV.envoy_listener.seen.>`, so one machine's user cannot take or clear another machine's lease
-  or ledger, or vouch for another machine's hand-over.
-  The last-seen keys are not scoped to the writing machine because they are read across machines:
-  a role claim names its holder session and no machine, and
-  `GET /v1/roles/<role>` on any listener answers a lapsed holder's `last_seen` out of that
-  session's record, whichever machine it registered through.
-  A listener whose grant lacks
-  `envoy_listener` logs an ERROR naming it and delivers without a lease, as its machine's only
-  deliverer; one whose grant lacks `legion_agents`, an image newer than the release that applied
+  A listener whose grant lacks `legion_agents`, an image newer than the release that applied
   its grant, serves everything else and answers 503 on the registry routes (`/v1/legion/agents`)
   while it retries the open in the background (1 s doubling to 1 min, and at once after each NATS
   reconnect), so the routes serve once the grant reaches it, by a reload or a reconnect, without
@@ -3504,11 +3493,46 @@ It publishes to:
   callback, `internal/bus/connect.go`).
   It retries the open in the background (1 s doubling to 5 min, and at once after each NATS
   reconnect), so it takes the grant without a restart;
+- for the bucket `envoy_listener` (the machine's delivery lease and the delivery state its
+  listeners share, `packages/envoy/cmd/listener/README.md`), the eleven subjects the listener's
+  own calls on it send and no wider one (`natsgrant.ListenerState`, whose doc names the file and
+  line of each call), where `<u>` is `listener-<m>`:
+  - `$JS.API.STREAM.INFO.KV_envoy_listener`: the open's lookups and its read of a found bucket,
+    the copy and leader waits, the age raise's read (`bus.RaiseMaxAge`) and the keeper's raise;
+  - `$JS.API.STREAM.CREATE.KV_envoy_listener`: the create of an absent bucket;
+  - `$JS.API.STREAM.UPDATE.KV_envoy_listener`: the copy raise, the age raise, the keeper's raise
+    and nats.go's update of a bucket another pod created first;
+  - `$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.<u>` and
+    `$KV.envoy_listener.lease.<u>`: the lease's reads (`Get`) and its create, renewal and release
+    (`Create`, `Update`);
+  - `$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.handback.<u>.*` and
+    `$KV.envoy_listener.handback.<u>.*`: the clean-hand-back mark a stopping pod writes (`Put`)
+    and the pod that took its lease reads (`Get`), one token after the prefix, the revision the
+    mark vouches for;
+  - `$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.delivery.<u>.*.*` and
+    `$KV.envoy_listener.delivery.<u>.*.*`: its delivery ledger's attempt (`Create`, `Get`,
+    `Update`), record (`Put`) and clear (`Delete`), two tokens after the prefix, the digest and
+    the session token;
+  - `$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.seen.*` and
+    `$KV.envoy_listener.seen.*`: every session's last-seen record, written at each registration
+    (`Put`) and read for a lapsed session (`Get`), one token after the prefix, the session token.
+
+  A read is a direct get of the key's own subject, which a `Get` sends, and so does nats.go's
+  `Create` after a write that failed. The listener makes no other call on the bucket: no get by
+  revision, history, key list or watch, so this bucket's entry holds no stream message get, no
+  consumer create or delete and no flow-control reply, and one machine's user cannot take, clear
+  or read another machine's lease or ledger, or vouch for another machine's hand-over.
+  The last-seen keys are not scoped to the reading or writing machine because they are read across
+  machines: a role claim names its holder session and no machine, and
+  `GET /v1/roles/<role>` on any listener answers a lapsed holder's `last_seen` out of that
+  session's record, whichever machine it registered through.
+  A listener whose grant lacks `envoy_listener` logs an ERROR naming it and delivers without a
+  lease, as its machine's only deliverer;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
   sends.
 
-Each bucket in that list is granted to every user built on this set: the listener's own, the host
-user a host's sessions share (`HostPermissions`) and Dispatch's.
+Each bucket in those two entries is granted to every user built on this set: the listener's own,
+the host user a host's sessions share (`HostPermissions`) and Dispatch's.
 So every session on a host can write another session's record in any of those buckets, its
 session entry in `envoy_sessions` and its known-session record in `envoy_known_sessions` among
 them.

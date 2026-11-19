@@ -95,15 +95,14 @@ var listenerBasePublish = []string{
 	"$JS.API.STREAM.INFO.KV_envoy_listener",
 	"$JS.API.STREAM.CREATE.KV_envoy_listener",
 	"$JS.API.STREAM.UPDATE.KV_envoy_listener",
-	"$JS.API.DIRECT.GET.KV_envoy_listener.>",
-	"$JS.API.STREAM.MSG.GET.KV_envoy_listener",
+	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.listener-example-host-a",
+	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.handback.listener-example-host-a.*",
+	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.delivery.listener-example-host-a.*.*",
+	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.seen.*",
 	"$KV.envoy_listener.lease.listener-example-host-a",
-	"$KV.envoy_listener.handback.listener-example-host-a.>",
-	"$KV.envoy_listener.delivery.listener-example-host-a.>",
-	"$KV.envoy_listener.seen.>",
-	"$JS.API.CONSUMER.CREATE.KV_envoy_listener.>",
-	"$JS.API.CONSUMER.DELETE.KV_envoy_listener.>",
-	"$JS.FC.KV_envoy_listener.>",
+	"$KV.envoy_listener.handback.listener-example-host-a.*",
+	"$KV.envoy_listener.delivery.listener-example-host-a.*.*",
+	"$KV.envoy_listener.seen.*",
 	"$JS.API.STREAM.PURGE.KV_envoy_interests",
 }
 
@@ -167,8 +166,9 @@ func TestListenerPermissionsNameTheDurableAndQueueOfAMachineIDWithASpace(t *test
 	require.Contains(t, p.Publish.Allow, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-example-host")
 	require.Contains(t, p.Publish.Allow, "$JS.ACK.ENVOY_NOTIFICATIONS.listener-example-host.>")
 	require.Contains(t, p.Publish.Allow, "$KV.envoy_listener.lease.listener-example-host")
-	require.Contains(t, p.Publish.Allow, "$KV.envoy_listener.handback.listener-example-host.>")
-	require.Contains(t, p.Publish.Allow, "$KV.envoy_listener.delivery.listener-example-host.>")
+	require.Contains(t, p.Publish.Allow, "$KV.envoy_listener.handback.listener-example-host.*")
+	require.Contains(t, p.Publish.Allow, "$KV.envoy_listener.delivery.listener-example-host.*.*")
+	require.Contains(t, p.Publish.Allow, "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.listener-example-host")
 	require.Contains(t, p.Subscribe.Allow, "notifications.role.> envoy-listener-example-host")
 }
 

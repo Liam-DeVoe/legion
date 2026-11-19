@@ -647,8 +647,8 @@ func TestAListenerWhoseSpentProofBucketDoesNotAnswerWaitsForItThenServes(t *test
 
 // spentProofRefusedListener is a listener configured to take broker access tokens whose NATS grant
 // does not carry the spent-proof bucket (bus.DPoPProofBucket): every entry of its grant that
-// reaches the bucket goes, its stream's calls, its watchers' consumers and its keys (infra/core
-// bucketPermissions), so the start's open of the bucket is refused and never succeeds. The broker
+// reaches the bucket goes, its stream's calls, its watchers' consumers and its keys
+// (natsgrant.KVWrite), so the start's open of the bucket is refused and never succeeds. The broker
 // admits token for sessionID, bound to caller's key, so only the listener's own refusal can keep
 // a presentation of token from being taken.
 type spentProofRefusedListener struct {

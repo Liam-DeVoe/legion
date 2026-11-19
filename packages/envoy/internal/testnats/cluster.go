@@ -98,7 +98,7 @@ func startCluster(t testing.TB, n, running int, config string) *Cluster {
 		if i < running {
 			hub = routes[:running]
 		}
-		server := newServer(t, clusterConfig(i, hub)+config, []string{"-js"})
+		server := newServer(t, "127.0.0.1", clusterConfig(i, hub)+config, []string{"-js"})
 		server.name = memberName(i)
 		if i < running {
 			server.launch(t)

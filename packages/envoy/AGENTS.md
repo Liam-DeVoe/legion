@@ -4804,7 +4804,7 @@ A read-only broker token carries no project either, but none of the three checks
   Lowering the cap (`nats stream edit ENVOY_NOTIFICATIONS --max-consumers=<n>`) is one too, and needs every program's binary lowered first, since the cap is compiled in;
   that edit, like any change of `MaxConsumers` on a stream that already exists, needs nats-server v2.12.5 or later.
 
-- Every KV bucket Envoy opens through `bus.EnsureKeyValue` is created at `ENVOY_NATS_REPLICAS`, and one found with fewer copies is raised by an update of its stream `KV_<bucket>` that changes only its replicas, which needs `$JS.API.STREAM.UPDATE.KV_<bucket>` in the program's NATS grant (`bucketPermissions`, `packages/envoy/infra/core/permissions.go`);
+- Every KV bucket Envoy opens through `bus.EnsureKeyValue` is created at `ENVOY_NATS_REPLICAS`, and one found with fewer copies is raised by an update of its stream `KV_<bucket>` that changes only its replicas, which needs `$JS.API.STREAM.UPDATE.KV_<bucket>` in the program's NATS grant (`natsgrant.KVWrite`, and `natsgrant.ListenerState` for `envoy_listener`, in `packages/envoy/natsgrant/natsgrant.go`);
   lowering a bucket (`nats stream edit KV_<bucket> --replicas=<n>`) likewise needs every program's setting lowered first.
   A replica count above 1 needs a clustered NATS: nats-server v2.15.1 refuses both a create and a raise above 1 on a single server.
   A byte limit above what the server can reserve is refused at create or update.

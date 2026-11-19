@@ -11,7 +11,12 @@ body: |-
     bucket refused by the NATS grant; retrying`), a store bucket (`KV bucket refused by the NATS
     grant; retrying`, with the bucket and the grant), the role lane in both its queue groups (`role
     lane refused by the NATS grant; retrying`) and the session relay's reply subscription (`session
-    relay reply subscription refused by the NATS grant; retrying`). The `ENVOY_NOTIFICATIONS`
+    relay reply subscription refused by the NATS grant; retrying`). The one exception is the
+    listener state bucket, `envoy_listener`: a grant that refuses it is neither tried again nor
+    keeps the pod unready. The pod logs one ERROR (`listener lease unavailable: the NATS user lacks
+    the grant for KV bucket envoy_listener; delivering without a lease`) and delivers without the
+    lease, as the machine's only deliverer with its state in its own process (`openDeliveryLease`
+    in `cmd/listener`). The `ENVOY_NOTIFICATIONS`
     stream's read and create are logged and tried again the same way (`notification stream
     refused by the NATS grant; retrying`, with the stream and the grant), while a NATS credential
     the server refuses still ends the start, as the listener's own setting that a restarted pod

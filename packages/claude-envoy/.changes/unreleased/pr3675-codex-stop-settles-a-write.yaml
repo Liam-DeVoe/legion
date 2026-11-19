@@ -1,5 +1,0 @@
-kind: Fixed
-body: A Codex message whose write the delivery's stop overtook no longer stays waiting in the session's inbox after the stop. Envoy sends such a message again, and the line left behind could also be handed to a Codex turn that was still running, so the session could get the message twice. The stop now withdraws it.
-time: 2026-11-19T02:42:11Z
-custom:
-    Issue: pr3675

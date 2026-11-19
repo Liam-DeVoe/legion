@@ -448,7 +448,8 @@ The limit is each listener pod's own: what that lets a session send with more th
 when a pod's counts are full again, is stated under Sender limit in `packages/envoy/AGENTS.md`.
 The sender is the session that a secrets-broker token proves, else the request's
 `source_session`.
-A message with another `source`, such as `dispatch` or `envoy`, is not counted.
+A message with another `source`, such as `dispatch` or `envoy`, is not counted, with a
+secrets-broker token or without one.
 Neither is a message with no sender, which is how the Legion daemon sends its notices.
 
 A message that finds its sender's count at 0 is answered HTTP `429`. The listener does not store
