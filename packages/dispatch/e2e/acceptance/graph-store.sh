@@ -106,7 +106,8 @@ readonly envoy="http://127.0.0.1:$FAKE_ENVOY_PORT"
 readonly person="${DEV_SIGNIN_LOGIN:-alice}"
 # The second person of the two that must stay apart: the first person's login with one character
 # changed. A canonicalisation that folded the two would answer one person node for both.
-readonly twin="${person%?}$(printf '%s' "${person: -1}" | tr 'a-y' 'b-z')"
+twin="${person%?}$(printf '%s' "${person: -1}" | tr 'a-y' 'b-z')"
+readonly twin
 stamp="$(date +%s)-$$"
 readonly stamp
 session="graph-store-$stamp"
@@ -119,13 +120,15 @@ readonly session
 # own, so the role this driver routes a comment to is nobody else's, and a second forward of it
 # resolves another holder (G9). The session the broker proves a person's (G13) is no session of
 # the listener's: nothing is delivered to it.
-readonly loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
-readonly holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
-readonly second_holder_session="019a1c09-1112-7000-8000-$(printf '%012d' "$$")"
-readonly mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
-readonly stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
-readonly answering_session="019a1c09-aaaa-7000-8000-$(printf '%012d' "$$")"
-readonly proved_session="019a1c09-9999-7000-8000-$(printf '%012d' "$$")"
+loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
+holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
+second_holder_session="019a1c09-1112-7000-8000-$(printf '%012d' "$$")"
+mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
+stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
+answering_session="019a1c09-aaaa-7000-8000-$(printf '%012d' "$$")"
+proved_session="019a1c09-9999-7000-8000-$(printf '%012d' "$$")"
+readonly loose_session holder_session second_holder_session mentioned_session stopped_session \
+  answering_session proved_session
 readonly role="acceptance-$stamp"
 # The role the message of G10 is delivered to, the route of an issue of that section's own: no
 # other issue or write of this run names it, so its role and page nodes are that route's and the
@@ -607,7 +610,8 @@ request "person:$person" POST "/api/v1/me/agent-tokens" \
   "$(jq -cn --arg n "graph-store $stamp" '{name: $n}')"
 want_status 201 G6 "mint a personal token for $person"
 person_token="$(jq -er '.token' "$work/body")" || fail G6 "mint a personal token" "no token: $(body)"
-readonly claimed_session="019a1c09-2222-7000-8000-$(printf '%012d' "$$")"
+claimed_session="019a1c09-2222-7000-8000-$(printf '%012d' "$$")"
+readonly claimed_session
 token_comment G6 "a personal token writes, naming a session it claims" \
   "$person_token" "$claimed_session" "A note a personal token wrote for $person."
 readonly claimed_comment="$comment"
@@ -627,7 +631,8 @@ request "person:$twin" POST "/api/v1/me/agent-tokens" \
   "$(jq -cn --arg n "graph-store twin $stamp" '{name: $n}')"
 want_status 201 G7 "mint a personal token for $twin"
 twin_token="$(jq -er '.token' "$work/body")" || fail G7 "mint a personal token" "no token: $(body)"
-readonly twin_session="019a1c09-3333-7000-8000-$(printf '%012d' "$$")"
+twin_session="019a1c09-3333-7000-8000-$(printf '%012d' "$$")"
+readonly twin_session
 token_comment G7 "$twin's token writes" "$twin_token" "$twin_session" \
   "A note $twin's own token wrote."
 readonly twin_comment="$comment"
@@ -670,7 +675,8 @@ want_value G7 "the two tokens answer two people, and each is a person node" "2|2
 # G8: an attempt that fails earns no tuple. The mention names a session the listener does not
 # hold, so its attempt settles failed; the issue's own route still reaches its session, which is
 # why this reads the tuples of the mentioned session alone.
-readonly dead_session="019a1c09-4444-7000-8000-$(printf '%012d' "$$")"
+dead_session="019a1c09-4444-7000-8000-$(printf '%012d' "$$")"
+readonly dead_session
 comment G8 "a comment mentioning a session the listener does not hold" agent \
   "A mention nobody can take." "session:$dead_session"
 readonly failed_comment="$comment"
@@ -862,8 +868,9 @@ send POST "/api/v1/issues/$key/asks" "$(jq -cn --arg s "$session" \
   '{question: "Which sessions does the store hold?", actor: {kind: "session", id: $s}}')"
 want_status 201 G11 "open an ask"
 ask="$(jq -er '.id' "$work/body")" || fail G11 "open an ask" "no ask id: $(body)"
-readonly followed_session="019a1c09-8888-7000-8000-$(printf '%012d' "$$")"
-readonly unseen_session="019a1c09-5555-7000-8000-$(printf '%012d' "$$")"
+followed_session="019a1c09-8888-7000-8000-$(printf '%012d' "$$")"
+unseen_session="019a1c09-5555-7000-8000-$(printf '%012d' "$$")"
+readonly followed_session unseen_session
 for follower in "$session" "$followed_session"; do
   request "person:$person" PUT "/api/v1/asks/$ask/followers/$follower"
   [[ "$status" == 200 || "$status" == 201 || "$status" == 204 ]] ||
