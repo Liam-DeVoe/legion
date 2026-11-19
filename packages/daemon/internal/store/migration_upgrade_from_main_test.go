@@ -88,9 +88,10 @@ import (
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit: it names every kind the merge-queue list names and its own.
 // The kind list with the step record (20261117000528) is named here too: it stands above every
-// other version of the list, the role-holders publication's included, and above the reviewer's
-// reviewed commit, so an upgrade applies it last, and it restates 20261116165926's kinds with
-// step_record, so it is the last word of outbox_kind_check. The count of starts of each step
+// other version of the list that writes outbox_kind_check, the role-holders publication's
+// included, and above the reviewer's reviewed commit, and no version above it writes that check,
+// so it is the last of the list an upgrade applies to outbox_kind_check, and it restates
+// 20261116165926's kinds with step_record, so it is the last word of outbox_kind_check. The count of starts of each step
 // (20261117004117) creates tables and a function of its own, and its roll forward
 // (20261117064152) changes nothing on a database no rollback touched; neither touches
 // outbox_kind_check.
