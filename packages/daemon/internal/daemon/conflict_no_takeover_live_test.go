@@ -232,14 +232,15 @@ func (r *conflictNoTakeoverLive) conflictMovesAtOnce() {
 			before.State, before.Pending)
 	}
 	suspendsBefore := len(r.rt.CallsOf("Suspend"))
-	pushed := time.Now()
+	pushed, readsBefore := time.Now(), r.github.reads()
 	r.driveConflict()
 	r.note("drove a push onto %s while the tester's turn runs, with GitHub answering the head %s of #%d conflicting with it", conflictBase, conflictFirstHead, r.number)
 
 	got := r.waitFor("the issue back in implementing while the tester's turn runs", func(got api.Issue) bool {
 		return got.Phase == phase.Implementing
 	})
-	r.note("read back: %s went back to %s %s after the push onto the base, while the tester's turn runs", r.key, got.Phase, time.Since(pushed).Round(time.Millisecond))
+	r.note("read back: %s went back to %s %s after the push onto the base, while the tester's turn runs; the push asked GitHub for %d read(s) of #%d by then",
+		r.key, got.Phase, time.Since(pushed).Round(time.Millisecond), r.github.reads()-readsBefore, r.number)
 
 	// The implementer's task is queued on its claim and held there: the claim holds it unsent and
 	// out of any turn, and nothing reaches the implementer's connection while the tester's turn
@@ -259,8 +260,8 @@ func (r *conflictNoTakeoverLive) conflictMovesAtOnce() {
 		t.Fatalf("the implementer is %s holding %+v, want its task %s queued and not taken while the tester's turn runs", waiting.State, waiting.Pending, queued.ID)
 	}
 	r.queued = queued.ID
-	r.note("read back over %s: the implementer's task %s is queued and not taken — its claim is %s holding it undelivered, and the daemon sent its connection nothing (%s)",
-		liveSettle, queued.ID, waiting.State, firstLine(queued.Task))
+	r.note("read back over %s: the implementer's task %s is queued and not taken — its claim is %s holding it undelivered, and the daemon sent its connection nothing (%s); GitHub answered %d read(s) of #%d since the push",
+		liveSettle, queued.ID, waiting.State, firstLine(queued.Task), r.github.reads()-readsBefore, r.number)
 
 	// The tester's turn continues: same delivery, same session, still working, sent nothing, and
 	// not suspended.
@@ -415,11 +416,12 @@ func (r *conflictNoTakeoverLive) noHolderFinishesTheRow() {
 	r.awaitLaunch(r.reviewer)
 	r.note("the reviewer's claim was launched by the tester's pass and never registered; its topic %s now answers 404 unclaimed, which is what a listener without the kept lane, as this stand-in is, answers for a role no live session holds, a keep: true publish included", topic)
 
+	readsBefore := r.github.reads()
 	r.driveConflict()
 	r.note("drove a push onto %s while %s is in reviewing, with GitHub answering the head %s conflicting with it", conflictBase, r.key, conflictSecondHead)
 
 	prompt := r.imp.takeTask("the head conflicts with " + conflictBase)
-	r.note("read back: the start still acted — the implementer was prompted its task (%s)", firstLine(prompt.Message))
+	r.note("read back: the start still acted — the implementer was prompted its task (%s); the push asked GitHub for %d read(s) of #%d by then", firstLine(prompt.Message), r.github.reads()-readsBefore, r.number)
 	if got := r.issue(r.key); got.Phase != phase.Implementing {
 		t.Fatalf("%s is in %s after the conflict in reviewing, want implementing", r.key, got.Phase)
 	}

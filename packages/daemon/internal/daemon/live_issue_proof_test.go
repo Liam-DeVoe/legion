@@ -448,6 +448,9 @@ type liveGitHub struct {
 	// conflicting is what GitHub's lazily computed `mergeable` answers: false once the base has
 	// moved past the head, which is the one answer of a pull request that moves an issue.
 	conflicting bool
+	// pullReads counts the reads of the pull request itself this stand-in has answered: the
+	// merge-state reads a push onto the base asks for among them, which a proof counts.
+	pullReads int
 }
 
 // serveGitHub starts g as GitHub for this proof's pull request, at the head g's sha names and with
@@ -472,6 +475,13 @@ func (g *liveGitHub) conflicts(yes bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.conflicting = yes
+}
+
+// reads is how many reads of the pull request itself the stand-in has answered so far.
+func (g *liveGitHub) reads() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pullReads
 }
 
 func (g *liveGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -509,6 +519,7 @@ func (g *liveGitHub) answer(w http.ResponseWriter, path string) bool {
 	case rest == fmt.Sprintf("/pulls/%d/reviews", g.number):
 		g.write(w, []any{})
 	case rest == fmt.Sprintf("/pulls/%d", g.number):
+		g.pullReads++
 		pull := map[string]any{
 			"number": g.number, "state": "open", "mergeable": !g.conflicting,
 			"base": map[string]string{"ref": g.base},
