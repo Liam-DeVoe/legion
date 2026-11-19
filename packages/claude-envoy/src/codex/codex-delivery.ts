@@ -68,7 +68,9 @@ export interface CodexDelivery {
   /** Whether a turn runs, as the transcript last said. */
   turnRunning(): boolean
   /** Stops watching waiting lines; a write still waiting rejects. Resolves once every waiting line
-   *  is withdrawn or found taken; a line still being written is withdrawn once it is in place. */
+   *  is withdrawn or found taken: a line still being written is withdrawn once it is in place, and
+   *  a sweep already running first settles the writes of the lines it takes. No sweep starts after
+   *  this. */
   stop(): Promise<void>
 }
 
@@ -114,6 +116,9 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     }
   }
   const sweep = (): Promise<void> => {
+    // Once stop() has run, every line left is stop()'s to withdraw or find taken: a sweep that
+    // queued one now would leave stop() a line it cannot withdraw and whose queueing it never saw.
+    if (stopped) return sweeping
     sweeping = sweeping.then(sweepOnce).catch((error: unknown) => {
       options.warn(`the Codex inbox could not be swept, and will be again: ${messageFor(error)}`)
     })
@@ -155,7 +160,7 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       // with no write to settle, or stop() did not see it, and the write never settled.
       const name = inboxItemName()
       const written = Promise.withResolvers<void>()
-      // A sweep can settle the write while the file is still being written; it is awaited below.
+      // A sweep can settle the write before putInbox returns; the write is awaited below.
       written.promise.catch(() => undefined)
       const put = putInbox(directory, item, name)
       waiting.set(name, {
@@ -205,23 +210,28 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       clearInterval(timer)
       // A refused write leaves its Envoy frame unanswered, so Envoy sends it again. Each line is
       // withdrawn before its write is refused, so the hook cannot deliver it as well; a line the
-      // hook took first was delivered, and its write resolves.
-      const left = [...waiting]
-      waiting.clear()
-      return Promise.all(
-        left.map(async ([name, waiter]) => {
-          // A write whose line never landed rejects with its own failure.
-          if (!(await waiter.landed)) return
-          if (await withdrawWaiting(waiter.directory, name)) {
-            waiter.reject(
-              new Error("the Codex session's delivery stopped before the message was taken"),
-            )
-          } else {
-            if ((await takenBy(waiter.directory, name)) === "hook") options.taken?.(waiter.item)
-            waiter.resolve()
-          }
-        }),
-      ).then(() => undefined)
+      // hook took first was delivered, and its write resolves. A sweep that already started
+      // settles the writes of the lines it takes, so stop() takes what is left only once it ends.
+      return sweeping
+        .then(() => {
+          const left = [...waiting]
+          waiting.clear()
+          return Promise.all(
+            left.map(async ([name, waiter]) => {
+              // A write whose line never landed rejects with its own failure.
+              if (!(await waiter.landed)) return
+              if (await withdrawWaiting(waiter.directory, name)) {
+                waiter.reject(
+                  new Error("the Codex session's delivery stopped before the message was taken"),
+                )
+              } else {
+                if ((await takenBy(waiter.directory, name)) === "hook") options.taken?.(waiter.item)
+                waiter.resolve()
+              }
+            }),
+          )
+        })
+        .then(() => undefined)
     },
   }
 }

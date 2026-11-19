@@ -14,6 +14,7 @@ import {
   takeInbox,
   takenBy,
 } from "../src/codex/codex-inbox"
+import { settled } from "./channel-session-harness"
 
 const root = temporaryDirectory("codex-delivery")
 let count = 0
@@ -129,42 +130,35 @@ describe("createCodexDelivery", () => {
   /**
    * Runs `between` once the next line written to an inbox is in place and before the write that
    * put it there returns: the moment a sweep or stop() can first see the line. A write puts its
-   * line with the inbox module's `putInbox`, so the spy wraps that. `returned` answers once the
-   * write has returned.
+   * line with the inbox module's `putInbox`, so the spy wraps that. `ran` answers once `between`
+   * has run, as the write is about to return.
    */
-  function whileLanding(between: () => unknown): { returned: Promise<void>; restore(): void } {
+  function whileLanding(between: () => unknown): { ran: Promise<void>; restore(): void } {
     const put = codexInbox.putInbox
-    const returned = Promise.withResolvers<void>()
+    const ran = Promise.withResolvers<void>()
     const spy = spyOn(codexInbox, "putInbox").mockImplementation(async (...args) => {
       const name = await put(...args)
       await between()
-      returned.resolve()
+      ran.resolve()
       return name
     })
-    return { returned: returned.promise, restore: () => spy.mockRestore() }
+    return { ran: ran.promise, restore: () => spy.mockRestore() }
   }
 
   /**
    * Writes two frames the way the session's listener does, the second once the first settled, and
-   * records how each settled in `settled` as it settles: a handler is on each write from the start,
-   * so a refusal is never an unhandled error. Answers once both settled.
+   * records how each settled in `outcomes` as it settles: a handler is on each write from the
+   * start, so a refusal is never an unhandled error. Answers once both settled.
    */
-  function twoFrames(delivery: CodexDelivery, settled: string[]): Promise<void> {
+  function twoFrames(delivery: CodexDelivery, outcomes: string[]): Promise<void> {
     const record = (name: string, write: Promise<void>) =>
       write.then(
-        () => void settled.push(`${name} resolved`),
-        (error: unknown) => void settled.push(`${name} refused: ${String(error)}`),
+        () => void outcomes.push(`${name} resolved`),
+        (error: unknown) => void outcomes.push(`${name} refused: ${String(error)}`),
       )
     return record("first", delivery.deliver({ content: "first" })).then(() =>
       record("next", delivery.deliver({ content: "next" })),
     )
-  }
-
-  /** Answers once every promise callback already due has run: setImmediate's turn comes after. */
-  function afterPending(): Promise<void> {
-    const { promise, resolve } = Promise.withResolvers<void>()
-    setImmediate(resolve)
-    return promise
   }
 
   test("an idle session takes a line through codex queue at once", async () => {
@@ -324,14 +318,14 @@ describe("createCodexDelivery", () => {
     // returning.
     const landing = whileLanding(() => delivery.turnEnded())
     try {
-      const settled: string[] = []
-      const frames = twoFrames(delivery, settled)
-      await landing.returned
-      await afterPending()
+      const outcomes: string[] = []
+      const frames = twoFrames(delivery, outcomes)
+      await landing.ran
+      await settled()
       // The sweep that took the line has run: a write it did not settle never settles.
-      expect(settled[0]).toBe("first resolved")
+      expect(outcomes[0]).toBe("first resolved")
       await frames
-      expect(settled).toEqual(["first resolved", "next resolved"])
+      expect(outcomes).toEqual(["first resolved", "next resolved"])
       expect(queued).toEqual(["first", "next"])
     } finally {
       landing.restore()
@@ -349,14 +343,14 @@ describe("createCodexDelivery", () => {
       stopping = delivery.stop()
     })
     try {
-      const settled: string[] = []
-      const frames = twoFrames(delivery, settled)
-      await landing.returned
+      const outcomes: string[] = []
+      const frames = twoFrames(delivery, outcomes)
+      await landing.ran
       await stopping
-      await afterPending()
+      await settled()
       // stop() is done with every line it saw: a write it did not settle never settles. Both
-      // frames are refused, so Envoy sends each again to whoever binds the session next.
-      expect(settled).toEqual([
+      // frames are refused, so neither is answered as delivered.
+      expect(outcomes).toEqual([
         "first refused: Error: the Codex session's delivery stopped before the message was taken",
         "next refused: Error: the Codex session's delivery has stopped",
       ])
@@ -364,6 +358,36 @@ describe("createCodexDelivery", () => {
       await frames
     } finally {
       landing.restore()
+    }
+  })
+
+  test("a stop while a sweep queues a line leaves its write to the sweep, which refuses it when codex queue fails", async () => {
+    const directory = inbox()
+    const { delivery } = harness(directory, true)
+    delivery.turnStarted()
+    let stopping: Promise<void> | undefined
+    // stop() comes once the turn's sweep has taken the line, before the sweep calls codex queue.
+    const take = codexInbox.takeInbox
+    const spy = spyOn(codexInbox, "takeInbox").mockImplementation(async (...args) => {
+      const taken = await take(...args)
+      if (args[1] === "server" && taken.length > 0) stopping ??= delivery.stop()
+      return taken
+    })
+    try {
+      const outcomes: string[] = []
+      const frames = twoFrames(delivery, outcomes)
+      await untilWaiting(directory)
+      await delivery.turnEnded()
+      await stopping
+      await settled()
+      // The line never reached the session, so its write is refused, not answered as delivered.
+      expect(outcomes).toEqual([
+        "first refused: Error: codex queue exited 1",
+        "next refused: Error: the Codex session's delivery has stopped",
+      ])
+      await frames
+    } finally {
+      spy.mockRestore()
     }
   })
 })
