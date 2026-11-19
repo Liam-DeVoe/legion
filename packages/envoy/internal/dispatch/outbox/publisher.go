@@ -1080,9 +1080,11 @@ func readDestinations(ctx context.Context, deps Deps, event *batchEvent, look lo
 // comment is the new comment whose mention attempts a settle or a hold of one of its copies writes
 // through, and delivered the destinations the event reached before this read. mentions is what
 // the event's mentions did (a new comment's alone), and mentionPending whether a session's copy
-// was held back for a mention still being sent (leftTo). failed holds the settles and the holds
-// of held-back copies that failed, which end no list: each backs the event off once the
-// destinations the list does name are sent (err).
+// was held back for a mention still being sent (leftTo), or waits in the list for one
+// (waitForCredits). waitingCredits are the copies of sessions only a document credits that wait
+// for a mention of the comment (creditWaits), which the list takes last (end). failed holds the
+// settles and the holds of held-back copies that failed, which end no list: each backs the event
+// off once the destinations the list does name are sent (err).
 type destinations struct {
 	list           []destination
 	seen           map[string]struct{}
@@ -1090,6 +1092,7 @@ type destinations struct {
 	delivered      map[string]struct{}
 	mentions       mentionDeliveries
 	mentionPending bool
+	waitingCredits []destination
 	failed         []error
 }
 
@@ -1185,6 +1188,24 @@ func (d *destinations) addSessions(sessionIDs []string, label string) {
 	}
 }
 
+// waitForCredits holds the copy bound for each session's own topic, a session only a document
+// credits whose copy a mention of the comment may yet decide (creditWaits), named by label and the
+// session: the copy is in the event's list marked waiting, so it makes no send this read, holds
+// its key against the owner's later events and is owed (destination.waiting, planChains,
+// owedKeys), and the event is read again, which decides the copy then (creditFilter). The list
+// takes these copies last (end), so a route that reaches such a session for a reason of its own -
+// a member of the thread, a follower of the ask - gives it the copy that route sends instead.
+func (d *destinations) waitForCredits(sessionIDs []string, label string) {
+	for _, sessionID := range sessionIDs {
+		d.waitingCredits = append(d.waitingCredits, destination{
+			subject: contracts.LegacyAgentSubject(sessionID),
+			label:   label,
+			id:      sessionID,
+			waiting: true,
+		})
+	}
+}
+
 // err joins cause, the lookup or the route failure that ended the list, with the settles and the
 // holds of held-back copies that failed (destinations.failed): each of those backs the event off
 // once the destinations the list names are sent, and holds none of them back.
@@ -1195,11 +1216,30 @@ func (d *destinations) err(cause error) error {
 	return errors.Join(append([]error{cause}, d.failed...)...)
 }
 
+// end is what eventDestinations answers once the list ends, with cause where a lookup or a route
+// ended it (err): the list, with the copies of credits that wait for a mention (waitingCredits)
+// added after every route that may reach those sessions, each once, none the event reached
+// already, and whether a copy of the event waits on a mention, which every such copy it adds is.
+func (d *destinations) end(cause error) ([]destination, bool, error) {
+	for _, dest := range d.waitingCredits {
+		if _, reached := d.delivered[dest.subject]; reached {
+			continue
+		}
+		before := len(d.list)
+		d.addDestination(dest)
+		if len(d.list) > before {
+			d.mentionPending = true
+		}
+	}
+	return d.list, d.mentionPending, d.err(cause)
+}
+
 // eventDestinations lists item's destinations in the order they are sent and recorded: its owner's
 // topic (item.item.Topic), then - for an event that notifies and is not a targeted message - its
 // owner's route, its claimant route, its primary document's sessions and its author routes, then
 // its follower routes and the previous claimant's notice. mentionPending reports a session's copy
-// held back for a mention still being sent (destinations.leftTo). The mention deliveries of a new
+// held back for a mention still being sent (destinations.leftTo), or one that waits in the list
+// for a mention (destination.waiting). The mention deliveries of a new
 // comment that names a mention at all (payloadHasMentions) are read before anything else, so a
 // lookup of them that fails
 // leaves the event with no destination. Any other lookup that fails, or a route that does not
@@ -1230,22 +1270,22 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 	if event.Notify && !targeted {
 		if !suppressesCurrentRoute(event.Payload, routing.route, d) {
 			if err := addRoute(d, routing.route); err != nil {
-				return d.list, d.mentionPending, d.err(err)
+				return d.end(err)
 			}
 		}
 		addClaimantRoute(event, routing.claimant, d)
 		if err := addPrimaryDocumentAuthors(event, routing, look, d); err != nil {
-			return d.list, d.mentionPending, d.err(err)
+			return d.end(err)
 		}
 		if err := addAuthorRoutes(event, routing, look, d); err != nil {
-			return d.list, d.mentionPending, d.err(err)
+			return d.end(err)
 		}
 	}
 	if err := addFollowerRoutes(event, look, d); err != nil {
-		return d.list, d.mentionPending, d.err(err)
+		return d.end(err)
 	}
 	addPreviousClaimant(event, d)
-	return d.list, d.mentionPending, d.err(nil)
+	return d.end(nil)
 }
 
 // addRoute adds the owner's route: a session route is the session's own subject, and a role route
@@ -1391,10 +1431,12 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 // comments on it. A comment in an ask's thread, or a reply, reaches those sessions too, apart from
 // where a session of its thread counts: then the reply answers the thread, and the thread rule
 // leaves out every session the document credits, apart from one whose copy a mention of the
-// comment decides (creditFilter). The batch reads them for all such events in one query
-// (loadLookups, loadPrimaryDocumentAuthors); when that query failed, its error ends the event's
-// destinations here. The actor is skipped (recipientFilter), and a session whose own mention of
-// the comment delivers it is left to that mention (destinations.addSession, the mention rule).
+// comment decides, and holds back the copy of one a mention of it may yet name until the mention
+// does (creditFilter, destinations.waitForCredits). The batch reads them for all such events in
+// one query (loadLookups, loadPrimaryDocumentAuthors); when that query failed, its error ends the
+// event's destinations here. The actor is skipped (recipientFilter), and a session whose own
+// mention of the comment delivers it is left to that mention (destinations.addSession, the mention
+// rule).
 func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, d *destinations) error {
 	if !takesPrimaryAuthors(event, routing) {
 		return nil
@@ -1408,13 +1450,20 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 		return err
 	}
 	filter := newRecipientFilter(event)
-	var targets []string
+	var targets, waiting []string
 	for _, sessionID := range authors {
-		if credits.keeps(sessionID) && filter.keep(sessionID) {
-			targets = append(targets, sessionID)
+		copied := credits.copyOf(sessionID)
+		if copied == creditLeftOut || !filter.keep(sessionID) {
+			continue
 		}
+		if copied == creditWaits {
+			waiting = append(waiting, sessionID)
+			continue
+		}
+		targets = append(targets, sessionID)
 	}
 	d.addSessions(targets, "publish primary document author route to")
+	d.waitForCredits(waiting, "publish primary document author route to")
 	return nil
 }
 
@@ -1461,18 +1510,21 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // keeps the person's later replies; a session the comment names whose copy of it a mention
 // decides - one whose mention failed before the batch read it, which takes this copy under that
 // mention's key, for a new comment (mentionDeliveries.fallbackKeys) and for its edit
-// (lookup.mentionFallbackKeys) alike, and one a mention of a new comment still decides
+// (mentionDeliveries.editCreditCopyOf) alike, and one a mention of a new comment still decides
 // (mentionDeliveries.decidesCopyFor), whose copy the mention rule holds back or keeps as a
 // fallback row rather than this filter dropping it before that rule is asked
 // (destinations.addSession, destinations.leftTo); and artifact.human_edited, a person's edit of
-// the document itself.
+// the document itself. A credit whose copy a mention may yet decide - one an attempt that names
+// no session yet may be pinned to, and for an edit one whose mention of the comment, or the
+// comment's copy that follows it, is still to settle - is neither kept nor left out: its copy
+// waits in the list until that is decided (creditWaits, destinations.waitForCredits).
 func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destinations) error {
 	filter := newRecipientFilter(event)
 	// credits is whether this event leaves the credits of a document out, and which of them it
 	// keeps all the same (creditFilter). It is askTheCredits' to read, and only the two arms
 	// that read credits ask it: no other event type leaves a session out.
 	var credits creditFilter
-	var targets []string
+	var targets, waiting []string
 	consider := func(sessionID string) {
 		if filter.keep(sessionID) {
 			targets = append(targets, sessionID)
@@ -1497,10 +1549,16 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 		return err
 	}
 	// considerCredit adds a session a document credits, unless the claim or the thread rule
-	// leaves it out (creditFilter.keeps).
+	// leaves it out, and holds its copy back where a mention of the comment may yet decide it
+	// (creditFilter.copyOf).
 	considerCredit := func(sessionID string) {
-		if credits.keeps(sessionID) {
+		switch credits.copyOf(sessionID) {
+		case creditKept:
 			consider(sessionID)
+		case creditWaits:
+			if filter.keep(sessionID) {
+				waiting = append(waiting, sessionID)
+			}
 		}
 	}
 	// addEach hands every session of a read's answer to add: a document's credits under a comment
@@ -1580,6 +1638,7 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 	}
 
 	d.addSessions(targets, "publish author route to")
+	d.waitForCredits(waiting, "publish author route to")
 	return nil
 }
 

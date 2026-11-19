@@ -8,4 +8,6 @@ body: |-
   with a bound on the reads open at once, and a registry that does not answer holds back only the
   events that read it, for one read's wait. Every read Dispatch makes of the Envoy listener takes
   its answer whole: one whose body stops after its headers or is cut short counts as the listener
-  not answering, never as its answer.
+  not answering, never as its answer. A session the reply names, whose mention failed, still gets
+  the reply and the person's edit of it, also where the mention was a role's that names the session
+  only after the batch read it.

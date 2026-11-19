@@ -83,9 +83,9 @@ func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testi
 		},
 		{
 			// The zero reading: a comment.created that names no mention carries no reading of
-			// any attempt, and the edit of such a comment reads its failed mentions alone
-			// (lookup.mentionFallbackKeys). Both answer mentionFailed for every session, so the
-			// filter applies plainly to both and the credit hears neither.
+			// any attempt, and the edit of such a comment reads none of its comment
+			// (newCreditFilter). Both answer mentionFailed for every session, so the filter
+			// applies plainly to both and the credit hears neither.
 			name: "a credit of a comment that names no mention is dropped by its creation and by its edit",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker, notes string) creditMentionFixture {
 				head := seedThreadComment(t, database, "T-1", notes, sami, nil)

@@ -6043,9 +6043,14 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   Six cases keep the delivery they have now: a comment on a project document, which names no issue and so has no claim to read;
   an issue a person claims, whose claimant is empty;
   an issue a route holds and no session claims, where the route's holder and the credits both hear it;
-  a session the comment names whose own mention of it failed, which has no other route on a claimed issue and whose copy carries the key of that failed mention (`mentionDeliveries.fallbackKeys`, read for the comment's edit as well as for the comment itself);
+  a session the comment names whose own mention of it failed, which has no other route on a claimed issue and whose copy carries the key of that failed mention (`mentionDeliveries.fallbackKeys`; the comment's edit reaches it too, under the edit's own key);
   a member of the thread, so a session that wrote there still gets the person's later replies;
   and a person's edit of a document (`artifact.human_edited`), which still reaches every session that document credits.
+  A credit whose copy a mention may yet decide is neither kept nor left out: its copy waits in the event's list, marked waiting, sends nothing, holds its key against the owner's later events, and is decided when the event is read again (`creditWaits`, `destinations.waitForCredits`).
+  A new comment's credit waits while an attempt of an unanswered `role:X` mention whose holder the batch cannot name is still to be sent and younger than `unnamedForwardBound`, since its sender may pin it to that credit (`mentionDeliveries.creditCopyOf`):
+  once pinned, the attempt counts under that session, which takes the copy under that mention's key should the send fail, and every other credit is left out.
+  The comment's edit follows the comment's copy (`mentionDeliveries.editCreditCopyOf`):
+  it reaches a credit whose mention failed, and waits while that mention is being sent or is past its lease, while a fallback row of the comment's copy at that session is unsettled, and while such an unpinned attempt may name it, so the comment reaches that session before its edit does.
 
 - On an issue that no route and no session claims, a person's reply in a thread, and its edit, answer that thread, and the credits of a document are not a second reason to deliver them (`takesThreadRule`).
   The rule takes the events `takesPrimaryAuthors` takes that are a reply under a comment (`reply_to`) or a comment in an ask's thread (`ask_id`).
@@ -6061,7 +6066,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   Where one of the thread's sessions reads `live` or `unresponsive` (`routing.threadHeard`), the reply reaches the thread and no session that only a document credits: not the primary document's (`addPrimaryDocumentAuthors`) and not the thread's document's (`addAuthorRoutes`).
   A session that reads `gone`, a stopped one, one the registry holds no record of, and one whose read failed do not count.
   Where none counts, or where the outbox has no registry client (`Deps.Registry` nil), the reply reaches the credits as before.
-  The two exemptions of the claimed rule above hold in both routes (`creditFilter`): a session the reply names whose mention failed keeps its copy under that mention's key, and a session whose copy a mention still decides stays for the mention rule.
+  The exemptions and the waits of the claimed rule above hold in both routes (`creditFilter`): a session the reply names whose mention failed keeps its copy under that mention's key, a session whose copy a mention still decides stays for the mention rule, and a session the reply's mention may yet name, or whose mention the edit waits on, has its copy wait in the list until that is decided.
   A retry reads the registry again, since nothing of the first read is stored.
   `cmd/dispatch` gives the outbox an `envoy.Client` on `ENVOY_URL` and `ENVOY_TOKEN`, as the API server's client has.
 

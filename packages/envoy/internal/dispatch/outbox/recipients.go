@@ -210,7 +210,7 @@ func loadThreadRecipients(ctx context.Context, db queryer, what, query string, a
 // has no route and no session claimant (routing), either of which hears it in their place. A reply
 // in a thread whose session counts reaches only those of them a mention of the reply decides: the
 // thread rule leaves out every other session that only a document credits (takesThreadRule,
-// creditFilter.keeps).
+// creditFilter.copyOf).
 func takesPrimaryAuthors(event model.Event, routing routing) bool {
 	if !event.Notify || (event.Type != "comment.created" && event.Type != "comment.edited") {
 		return false
@@ -499,26 +499,53 @@ func registryUnanswered(err error) bool {
 // creditFilter is the rule a session that only a document credits is asked by, on a person's
 // comment or its edit. Such a session is left out where the issue's session claimant hears the
 // comment on its own topic (takesClaimantRoute), and where a session of the comment's thread counts
-// (routing.threadHeard, takesThreadRule); it is kept everywhere else. Two are kept all the same,
-// both sessions the comment names whose copy of it a mention decides (dispatch://INFRA-1368's R2):
-// one whose mention failed before the batch read it, which takes the copy under that mention's key
-// (failedMentions, destinations.addSession), and one a mention of the comment still decides
-// (mentionDeliveries.decidesCopyFor), which stays in the list so that the mention rule runs for it
-// - holding the event while that send is live, and keeping the fallback row the pass publishes when
-// it fails (destinations.leftTo). addPrimaryDocumentAuthors and addAuthorRoutes both ask it.
+// (routing.threadHeard, takesThreadRule); it is kept everywhere else. A session the comment names
+// whose copy of it a mention decides is kept all the same (dispatch://INFRA-1368's R2,
+// dispatch://INFRA-3686's R6): one whose mention failed before the batch read it, which takes the
+// copy under that mention's key (mentionDeliveries.fallbackKeys, destinations.addSession), and one
+// a mention of the comment still decides (mentionDeliveries.decidesCopyFor), which stays in the
+// list so that the mention rule runs for it - holding the event while that send is live, and
+// keeping the fallback row the pass publishes when it fails (destinations.leftTo). A session the
+// comment may yet name - an attempt that names no session yet and whose role the batch could
+// name no holder for is still to be sent, and its sender may pin it to that session - is neither:
+// its copy waits in the event's list until the sender has pinned the attempt, and is decided
+// then (creditWaits, mentionDeliveries.creditCopyOf). The comment's edit follows the comment's
+// copy: it reaches such a session where that session's mention failed, and waits while that
+// mention, or the comment's copy that follows it, is still to be decided
+// (mentionDeliveries.editCreditCopyOf). addPrimaryDocumentAuthors and addAuthorRoutes both ask it.
 type creditFilter struct {
-	leavesOut      bool
-	failedMentions map[string]string
-	mentions       mentionDeliveries
+	leavesOut bool
+	// mentions is what the comment's mentions did, as the batch read them: the reading the
+	// destination build holds for a new comment (eventDestinations), and for an edit the reading
+	// of the comment it edits, which only this filter reads (edit).
+	mentions mentionDeliveries
+	edit     bool
 }
 
+// creditCopy is what the credits filter makes of the copy of one session that only a document
+// credits (creditFilter.copyOf).
+type creditCopy int
+
+const (
+	// creditLeftOut: the event gives that session no copy.
+	creditLeftOut creditCopy = iota
+	// creditKept: the copy is built, and asks the mention rule as every other copy bound for a
+	// session's own topic does (destinations.addSession).
+	creditKept
+	// creditWaits: a mention of the comment that is still to settle, or still to name a session,
+	// decides whether that session gets the copy. The copy stays in the event's list marked
+	// waiting, makes no send this read, holds its key against the owner's later events, and the
+	// event is read again (destinations.waitForCredits, destination.waiting, planChains).
+	creditWaits
+)
+
 // newCreditFilter reads the rule for event, once for a route that asks it, and reads the one thing
-// that exempts a session and is not in the destination build already: the sessions the comment
-// names and no mention of it reached. A new comment's are the reading the build holds
-// (eventDestinations), and an edit's are read of its comment alone (lookup.mentionFallbackKeys),
-// which adds no reading of that comment anywhere else. An edit whose payload names no mention can
-// exempt nobody that way, so it asks nothing. The failed mentions are asked wherever the thread
-// rule may apply, whether or not it does: the batch's first pass runs before the registry is read
+// that decides a session and is not in the destination build already: what the comment's mentions
+// did. A new comment's are the reading the build holds (eventDestinations), and an edit's are the
+// reading of the comment it edits (lookup.mentionDeliveries), which this filter alone reads and
+// which keys none of the edit's copies. An edit whose payload names no mention names nobody that
+// way, so it asks nothing. The edit's reading is asked wherever the thread rule may apply,
+// whether or not it does: the batch's first pass runs before the registry is read
 // (threadHearing.hear), and it must register every id the second pass reads (wanted). A read that
 // failed ends the event's destinations, as every other lookup does.
 //
@@ -533,28 +560,25 @@ func newCreditFilter(event model.Event, routing routing, look lookup, d *destina
 	if !filter.leavesOut && !takesThreadRule(event, routing) {
 		return filter, nil
 	}
-	switch {
-	case event.Type == "comment.created":
-		filter.failedMentions = d.mentions.fallbackKeys
-	case event.Type == "comment.edited" && payloadHasMentions(event.Payload):
-		keys, err := look.mentionFallbackKeys(payloadString(event.Payload, "id"))
+	if event.Type == "comment.edited" && payloadHasMentions(event.Payload) {
+		reading, err := look.mentionDeliveries(payloadString(event.Payload, "id"))
 		if err != nil {
 			return creditFilter{}, err
 		}
-		filter.failedMentions = keys
+		filter.mentions, filter.edit = reading, true
 	}
 	return filter, nil
 }
 
-// keeps reports whether the copy of a session that only a document credits goes.
-func (f creditFilter) keeps(sessionID string) bool {
-	if !f.leavesOut {
-		return true
+// copyOf reports what becomes of the copy of a session that only a document credits.
+func (f creditFilter) copyOf(sessionID string) creditCopy {
+	switch {
+	case !f.leavesOut:
+		return creditKept
+	case f.edit:
+		return f.mentions.editCreditCopyOf(sessionID)
 	}
-	if _, failed := f.failedMentions[sessionID]; failed {
-		return true
-	}
-	return f.mentions.decidesCopyFor(sessionID)
+	return f.mentions.creditCopyOf(sessionID)
 }
 
 // takesClaimantRoute reports whether an event reaches the session that holds its issue's claim on

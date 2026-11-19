@@ -46,10 +46,12 @@ import (
 // waiting is that wait, written once the role's holder is known (resolveRoleHolders), and the
 // same mark a copy bound for a session the owner's own work names carries while an attempt of
 // the comment that names no session yet, and whose role the batch could name no holder for, may
-// yet be pinned to that session (destinations.addWorkingSession): the destination makes no send
-// this read and holds its key against the owner's later events instead, the way an event that is
-// not due holds a key it has not reached, and against no copy of its own event (planChains), and
-// the event is marked mentionPending so that it is read again.
+// yet be pinned to that session (destinations.addWorkingSession), and the mark of a copy bound
+// for a session only a document credits whose copy a mention of the comment may yet decide
+// (creditWaits, destinations.waitForCredits): the destination makes no send this read and holds
+// its key against the owner's later events instead, the way an event that is not due holds a
+// key it has not reached, and against no copy of its own event (planChains), and the event is
+// marked mentionPending so that it is read again.
 //
 // heldAsARow is the end of that wait for the one copy whose wait has no bound of its own: a
 // role route's forward held for an attempt of the comment that names no session yet and that
@@ -296,8 +298,8 @@ type chain struct {
 // A copy that waits on a mention (destination.waiting) goes on no chain and sends nothing, but
 // it holds its key: the owner's later events bound for that key are held behind it, behind the
 // waiting event itself when it is due - which settles blocked for mentionPendingDelay, so the
-// held event is read again beside it - and behind its nextAttempt when it is not. Two copies
-// wait that way, and both for the same reason: nothing else delivers them to that session.
+// held event is read again beside it - and behind its nextAttempt when it is not. Three copies
+// wait that way, and all for the same reason: nothing else delivers them to that session.
 // A role route's copy waits for the mention that decides its key (resolveRoleHolders): a keep
 // waits up to its hour for the role's next live holder and a forward is the holder's one copy, so
 // a later event let past it would reach the role's holder first - the kept lane is drained in
@@ -306,7 +308,11 @@ type chain struct {
 // the comment that names no session yet and whose role this read could name no holder for
 // (destinations.addWorkingSession): that mention may be pinned to another session, and then
 // nothing but this copy delivers the comment here, so a later event let past it would overtake
-// the comment at that session.
+// the comment at that session. The copy of a session only a document credits, on an event that
+// leaves such a session out, waits for the mention of the comment that decides whether it goes
+// (creditWaits): one such an attempt may yet be pinned to, and for the comment's edit one whose
+// mention of the comment, or the comment's copy that follows it, is still to settle; should that
+// mention fail, this copy is that session's one copy of the event.
 //
 // A copy a comment_fallback_copies row has taken over (destination.heldAsARow) is the other
 // side of that: it goes on no chain, sends nothing and holds nothing, the row being another
