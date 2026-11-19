@@ -16,7 +16,8 @@ import (
 )
 
 // Gate is one TCP address a test holds for its whole life, which relays to srv while it is open
-// and has nothing listening at all while it is closed.
+// and has nothing listening at all while it is closed. The address is at srv's own host
+// (NewHost), so a gate answers on no address another server of the process had.
 //
 // nats.go runs ReconnectErrCB only for a reconnect attempt whose dial failed: an attempt that
 // connects and is then dropped is silent. The server's own relay accepts every connection while
@@ -101,14 +102,20 @@ func gatePorts(text string) (first, count int, err error) {
 	return first, gatePortCount, nil
 }
 
-// StartGate opens a gate on a port of the band gatePorts chooses from this machine's ephemeral
-// range that no other gate and no listener holds, relaying to srv, and closes it and gives up the
-// port when the test ends. It fails the test on a system other than Linux, before it claims
-// anything (the comment above ephemeralRangePath).
+// StartGate opens a gate at srv's host, on a port of the band gatePorts chooses from this machine's
+// ephemeral range that no other gate and no listener holds, relaying to srv, and closes it and
+// gives up the port when the test ends. It fails the test on a system other than Linux, before it
+// claims anything (the comment above ephemeralRangePath).
 func StartGate(t testing.TB, srv *Server) *Gate {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Fatalf("testnats: a gate holds its port with Linux's bind rules and an abstract unix socket, and this system is %s", runtime.GOOS)
+		return nil
+	}
+	server := strings.TrimPrefix(srv.URL(), "nats://")
+	host := net.ParseIP(hostOf(server)).To4()
+	if host == nil {
+		t.Fatalf("testnats: a gate takes its server's IPv4 address, and the server's URL %s names none", srv.URL())
 		return nil
 	}
 	// An unreadable file is empty text, which gatePorts reads as the fallback range.
@@ -121,12 +128,12 @@ func StartGate(t testing.TB, srv *Server) *Gate {
 	var last error
 	for range 100 {
 		port := first + rand.IntN(count)
-		claim, reservation, err := holdGatePort(port)
+		claim, reservation, err := holdGatePort(host, port)
 		if err != nil {
 			last = err
 			continue
 		}
-		g := &Gate{t: t, address: fmt.Sprintf("127.0.0.1:%d", port), server: strings.TrimPrefix(srv.URL(), "nats://"), claim: claim, reservation: reservation}
+		g := &Gate{t: t, address: net.JoinHostPort(host.String(), strconv.Itoa(port)), server: server, claim: claim, reservation: reservation}
 		listener, err := net.Listen("tcp", g.address)
 		if err != nil {
 			g.release()
@@ -144,21 +151,22 @@ func StartGate(t testing.TB, srv *Server) *Gate {
 }
 
 // gateClaim is the abstract unix socket a gate on port holds for its whole life, so no other gate
-// of the machine's network namespace takes the port.
+// of the machine's network namespace takes the port, at any address.
 func gateClaim(port int) string { return "@legion-testnats-gate-" + strconv.Itoa(port) }
 
-// holdGatePort takes port for a gate: its claim, then its reservation on 127.0.0.1, as the comment
-// above ephemeralRangePath describes. It fails when another gate holds the claim, or when a socket
-// already on the address refuses the reservation: one that listens, or one without SO_REUSEADDR.
-func holdGatePort(port int) (net.Listener, int, error) {
+// holdGatePort takes port at host for a gate: its claim, then its reservation on host, as the
+// comment above ephemeralRangePath describes. It fails when another gate holds the claim, or when a
+// socket already on the address refuses the reservation: one that listens, or one without
+// SO_REUSEADDR.
+func holdGatePort(host net.IP, port int) (net.Listener, int, error) {
 	claim, err := net.Listen("unix", gateClaim(port))
 	if err != nil {
 		return nil, -1, fmt.Errorf("claim port %d: %w", port, err)
 	}
-	reservation, _, err := testport.Reserve(&syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}})
+	reservation, _, err := testport.Reserve(&syscall.SockaddrInet4{Port: port, Addr: [4]byte(host.To4())})
 	if err != nil {
 		_ = claim.Close()
-		return nil, -1, fmt.Errorf("reserve 127.0.0.1:%d: %w", port, err)
+		return nil, -1, fmt.Errorf("reserve %s: %w", net.JoinHostPort(host.String(), strconv.Itoa(port)), err)
 	}
 	return claim, reservation, nil
 }

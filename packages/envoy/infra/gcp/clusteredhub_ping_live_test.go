@@ -86,7 +86,7 @@ func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject 
 	b := r.newHubServer(t, r.release+"-1", binary, natsConf, reservePorts(t, 3))
 	b.peers = []*hubServer{b}
 	b.start(t)
-	proxy := testnats.StartProxy(t, fmt.Sprintf("nats://127.0.0.1:%d", b.route), testnats.ProxyRate(routeRate))
+	proxy := testnats.StartProxy(t, "nats://"+b.address(b.route), testnats.ProxyRate(routeRate))
 	a := r.newHubServer(t, r.release+"-0", binary, natsConf, reservePorts(t, 3))
 	a.routeURLs = []string{proxy.URL()}
 	a.start(t)

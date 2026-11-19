@@ -49,13 +49,15 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	}
 	members := make([]atomic.Pointer[Server], n)
 	routes := make([]string, n)
-	listeners := make([]net.Listener, n)
+	hosts := make([]string, n)
 	for i := range n {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		// The member's own address, which its route relay takes first and its server after, so
+		// every listener of the member is on it (NewHost).
+		hosts[i] = NewHost()
+		listener, err := net.Listen("tcp", net.JoinHostPort(hosts[i], "0"))
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
-		listeners[i] = listener
 		routes[i] = listener.Addr().String()
 		member := &members[i]
 		routeRelay := newRelay(listener, func() (string, error) {
@@ -69,7 +71,7 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	}
 	cluster := &Cluster{Servers: make([]*Server, n)}
 	for i := range n {
-		server := start(t, clusterConfig(i, routes)+config, []string{"-js"})
+		server := startOn(t, hosts[i], clusterConfig(i, hosts[i], routes)+config, []string{"-js"})
 		server.name = memberName(i)
 		members[i].Store(server)
 		cluster.Servers[i] = server
@@ -78,8 +80,9 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	return cluster
 }
 
-// clusterConfig is the configuration of member i of a cluster whose route relays listen at routes.
-func clusterConfig(i int, routes []string) string {
+// clusterConfig is the configuration of member i, on host, of a cluster whose route relays listen
+// at routes.
+func clusterConfig(i int, host string, routes []string) string {
 	urls := make([]string, len(routes))
 	for j, route := range routes {
 		urls[j] = fmt.Sprintf("%q", "nats-route://"+route)
@@ -88,12 +91,12 @@ func clusterConfig(i int, routes []string) string {
 jetstream {}
 cluster {
   name: "envoy-test"
-  listen: "127.0.0.1:-1"
+  listen: %q
   advertise: %q
   no_advertise: true
   routes: [ %s ]
 }
-`, memberName(i), routes[i], strings.Join(urls, ", "))
+`, memberName(i), net.JoinHostPort(host, "-1"), routes[i], strings.Join(urls, ", "))
 }
 
 // memberName is member i's server_name.

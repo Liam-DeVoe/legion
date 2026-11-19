@@ -411,11 +411,16 @@ func TestClusteredNatsHubChart(t *testing.T) {
 }
 
 // hubServer is one nats-server of the local cluster, on the rendered nats.conf and auth.conf in a
-// directory of its own. Its command line is built at each start from its ports and its peers'
-// route ports (commandArgs), all of them reserved for the whole test (reservePorts).
+// directory of its own. Its command line is built at each start from its address, its ports and its
+// peers' route addresses (commandArgs), each port reserved for the whole test (reservePorts).
 type hubServer struct {
-	name                   string
-	dir                    string
+	name string
+	dir  string
+	// host is the loopback address every listener of the server binds, its client, monitoring and
+	// route ports, chosen once (testnats.NewHost) so a client another test left dialing an address
+	// its own server had never reaches this one; a restart keeps it, as a restarted pod keeps its
+	// address.
+	host                   string
 	client, monitor, route int
 	binary                 string
 	podArgs, env           []string
@@ -434,7 +439,7 @@ type hubServer struct {
 // route ports, from reservePorts.
 func (r *clusteredHubRender) newHubServer(t *testing.T, name, binary, natsConf string, ports []int) *hubServer {
 	t.Helper()
-	s := &hubServer{name: name, dir: t.TempDir(), binary: binary, client: ports[0], monitor: ports[1], route: ports[2]}
+	s := &hubServer{name: name, dir: t.TempDir(), host: testnats.NewHost(), binary: binary, client: ports[0], monitor: ports[1], route: ports[2]}
 	// jetstream.store_dir: /data, the pod's claim, is the one value replaced in the server's copy
 	// of nats.conf: nats-server v2.15.1 reads the file onto the options its flags set and refuses
 	// -sd beside a store_dir in the file ("Duplicate 'store_dir' configuration"), so no
@@ -460,7 +465,7 @@ func (s *hubServer) commandArgs() []string {
 	routes := s.routeURLs
 	if routes == nil {
 		for _, peer := range s.peers {
-			routes = append(routes, fmt.Sprintf("nats://127.0.0.1:%d", peer.route))
+			routes = append(routes, "nats://"+peer.address(peer.route))
 		}
 	}
 	return append(slices.Clone(s.podArgs),
@@ -469,19 +474,26 @@ func (s *hubServer) commandArgs() []string {
 		// dflag from the server's debug flag, and debug prints nothing without it), and startLogged
 		// prints a server's output only when the test failed, so a failed election shows its votes.
 		"-D",
+		// The pod's own address, which a pod has to itself and these servers share: the server's
+		// host, which its monitoring port takes too, since nats.conf names no http host
+		// (nats-server v2.15.1 server/opts.go:6068-6071).
+		"-a", s.host,
 		// port: 4222, the client port each pod has to itself.
 		"-p", strconv.Itoa(s.client),
 		// http_port: 8222, the monitoring port.
 		"-m", strconv.Itoa(s.monitor),
 		// cluster.port: 6222, the route port.
-		"--cluster", fmt.Sprintf("nats://127.0.0.1:%d", s.route),
+		"--cluster", "nats://"+s.address(s.route),
 		// cluster.routes, the three pods' DNS names in the headless Service, each pod's own
-		// included: here every peer's route port, its own included, or routeURLs.
+		// included: here every peer's route address, its own included, or routeURLs.
 		"--routes", strings.Join(routes, ","),
 		// pid_file: /var/run/nats/nats.pid, the emptyDir the pod shares with the reloader.
 		"-P", filepath.Join(s.dir, "nats.pid"),
 	)
 }
+
+// address is the server's host with port, one of its three ports.
+func (s *hubServer) address(port int) string { return net.JoinHostPort(s.host, strconv.Itoa(port)) }
 
 // routeRemotes is the set of servers the server's /routez names at the other end of its routes.
 func (s *hubServer) routeRemotes() (map[string]bool, error) {
@@ -509,7 +521,7 @@ func (s *hubServer) start(t *testing.T) {
 	cmd := exec.Command(s.binary, s.commandArgs()...)
 	cmd.Env = append(os.Environ(), s.env...)
 	s.proc = startReady(t, s.name, cmd, func(p *cmdtest.Process) error {
-		if !strings.Contains(p.Output.String(), fmt.Sprintf("Listening for route connections on 127.0.0.1:%d", s.route)) {
+		if !strings.Contains(p.Output.String(), "Listening for route connections on "+s.address(s.route)) {
 			return errors.New("not listening yet")
 		}
 		return nil
@@ -711,11 +723,11 @@ func (s *hubServer) kill(t *testing.T) {
 	s.proc.WaitExit(t, "SIGKILL")
 }
 
-func (s *hubServer) url() string { return fmt.Sprintf("nats://127.0.0.1:%d", s.client) }
+func (s *hubServer) url() string { return "nats://" + s.address(s.client) }
 
 // monitorJSON decodes the answer of the server's monitoring endpoint path into into.
 func (s *hubServer) monitorJSON(path string, into any) error {
-	return getJSON(fmt.Sprintf("http://127.0.0.1:%d%s", s.monitor, path), into)
+	return getJSON("http://"+s.address(s.monitor)+path, into)
 }
 
 var monitorClient = &http.Client{Timeout: 2 * time.Second}
@@ -1403,10 +1415,10 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	exporterPorts := reservePorts(t, len(servers))
 	for i, s := range servers {
 		// The chart's arguments with the exporter's port, -port=7777, and the monitoring port of
-		// http://localhost:8222/, both fixed by the pod, replaced by this server's.
+		// http://localhost:8222/, both fixed by the pod, replaced by this server's address.
 		args := podArgs(t, exporterArgs, map[string]string{
 			"-port=7777":     fmt.Sprintf("-port=%d", exporterPorts[i]),
-			"localhost:8222": fmt.Sprintf("localhost:%d", s.monitor),
+			"localhost:8222": s.address(s.monitor),
 		})
 		startReady(t, s.name+" exporter", exec.Command(exporter, args...), func(*cmdtest.Process) error {
 			_, err := scrape(exporterPorts[i])

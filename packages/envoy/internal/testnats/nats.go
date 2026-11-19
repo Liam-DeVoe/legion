@@ -3,13 +3,13 @@
 //
 // Every server these helpers start is the nats-server this binary links in
 // (github.com/nats-io/nats-server/v2), not a container: a test that needed a container runtime
-// could not run where Envoy's agents do, which have none. Each server listens on a loopback port
-// of its own choosing and is reached through a relay this process owns. The relay's port is the
-// one the test's URL names and it holds that port for the test's life, which buys four things: a
-// URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
-// moving in either direction without dropping a connection (Server.Freeze), a reload with no
-// client message in flight (Server.Reload), and a port no other test binary can take while the
-// test runs.
+// could not run where Envoy's agents do, which have none. Each server listens on a loopback address
+// of its own (NewHost), at ports of its own choosing, and is reached through a relay this
+// process owns on that address. The relay's port is the one the test's URL names and it holds that
+// port for the test's life, which buys four things: a URL that survives a stop and a start
+// (Server.Stop, Server.Start), a way to stop the bytes moving in either direction without dropping
+// a connection (Server.Freeze), a reload with no client message in flight (Server.Reload), and a
+// port no other test binary can take while the test runs.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -534,30 +534,31 @@ func (s *Server) natsServer() *natsserver.Server {
 // running reports whether the server is running: started and not stopped since.
 func (s *Server) running() bool { return s.natsServer() != nil }
 
-// hostOnlyConfig is the configuration of a server a test starts with none of its own:
-// nats-server warns on an empty configuration file ("config has no values or is empty"), and the
-// rig imposes its own host over the one this names (serverOptions). The file is never empty, so a
-// server started without a configuration can still be reloaded with one.
-const hostOnlyConfig = "host: 127.0.0.1\n"
+// hostOnlyConfig is the configuration of a server on host that a test starts with none of its
+// own: nats-server warns on an empty configuration file ("config has no values or is empty"), and
+// the host it names is the one the rig imposes anyway (serverOptions). The file is never empty, so
+// a server started without a configuration can still be reloaded with one.
+func hostOnlyConfig(host string) string { return fmt.Sprintf("host: %q\n", host) }
 
 // start runs a nats-server in this process whose whole configuration is config, with serverArgs as
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
-// holding the port of the URL it returns, and returns it once it accepts connections. When the
-// test ends the server is shut down, the relay closed and the server's directory removed; until
-// then AwaitConsumerStored finds the server by the relay address its URL names. The relay and the
-// server listen on 127.0.0.1; startOn is start with both on another loopback address.
+// holding the port of the URL it returns, and returns it once it accepts connections. The relay and
+// the server listen on a loopback address of the server's own (NewHost). When the test ends
+// the server is shut down, the relay closed and the server's directory removed; until then
+// AwaitConsumerStored finds the server by the relay address its URL names.
 func start(t testing.TB, config string, serverArgs []string) *Server {
 	t.Helper()
-	return startOn(t, "127.0.0.1", config, serverArgs)
+	return startOn(t, NewHost(), config, serverArgs)
 }
 
-// startOn is start with the relay and the server itself listening on host: the relay at the port
-// the URL names, the server at one it picks at each start. It is the one place a server of this
-// package is made: every helper here is a call on it.
+// startOn is start with the relay and the server itself listening on host, an address
+// NewHost gave: the relay at the port the URL names, the server at one it picks at each
+// start. It is the one place a server of this package is made: every helper here is a call on it,
+// and a cluster member's on the address its route relay was put on first (StartClusterConfig).
 func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	t.Helper()
 	if config == "" {
-		config = hostOnlyConfig
+		config = hostOnlyConfig(host)
 	}
 	dir, err := os.MkdirTemp("", "testnats")
 	if err != nil {
@@ -644,11 +645,12 @@ const (
 )
 
 // serverOptions parses the configuration at path and serverArgs as nats-server parses its own
-// command line, then imposes what this rig owns: host as the address the server listens on, a
-// client and a monitoring port the server picks, monitoring on 127.0.0.1, the test's own store, no
-// signal handlers, path as the configuration file, and the lame duck's timing when the
-// configuration sets none (rigLameDuck). serverArgs replace nats-server's defaults rather than add
-// to them, as the arguments after the image's own command do.
+// command line, then imposes what this rig owns: host as the address of every listener the server
+// has, its client and monitoring ports, which it picks, and whichever cluster, gateway, leafnode,
+// websocket and MQTT ports its configuration opens; the test's own store, no signal handlers, path
+// as the configuration file, and the lame duck's timing when the configuration sets none
+// (rigLameDuck). serverArgs replace nats-server's defaults rather than add to them, as the
+// arguments after the image's own command do.
 func serverOptions(path string, serverArgs []string, store, host string) (*natsserver.Options, error) {
 	flags := flag.NewFlagSet("nats-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -665,8 +667,25 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 	}
 	opts.Host = host
 	opts.Port = -1
-	opts.HTTPHost = "127.0.0.1"
+	opts.HTTPHost = host
 	opts.HTTPPort = -1
+	// A listener the configuration opens takes the server's address too, whatever the
+	// configuration names, so nothing of a server answers on an address another server of the
+	// process had (NewHost).
+	for _, listener := range []struct {
+		port int
+		host *string
+	}{
+		{opts.Cluster.Port, &opts.Cluster.Host},
+		{opts.Gateway.Port, &opts.Gateway.Host},
+		{opts.LeafNode.Port, &opts.LeafNode.Host},
+		{opts.Websocket.Port, &opts.Websocket.Host},
+		{opts.MQTT.Port, &opts.MQTT.Host},
+	} {
+		if listener.port != 0 {
+			*listener.host = host
+		}
+	}
 	opts.StoreDir = store
 	opts.NoSigs = true
 	opts.ConfigFile = path
