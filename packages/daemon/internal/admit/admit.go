@@ -1413,13 +1413,11 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 	}
 	if orphan {
-		// The carried run keeps the phase it ran in, so it never leaves admitted, where a run's
-		// plan is written otherwise: its new generation's plan is written here (WritePlan). One
-		// carried at admitted itself writes it at that move.
-		if stored.Phase != phase.Admitted {
-			if err := a.engine.WritePlan(ctx, tx, stored); err != nil {
-				return fmt.Errorf("write the plan of re-admitted orphan %s: %w", stored.Key, err)
-			}
+		// The carried run keeps the phase it ran in, past admitted (record.Issue.CarriesRun), so it
+		// never leaves admitted, where a run's plan is written otherwise: its new generation's plan
+		// is written here (WritePlan).
+		if err := a.engine.WritePlan(ctx, tx, stored); err != nil {
+			return fmt.Errorf("write the plan of re-admitted orphan %s: %w", stored.Key, err)
 		}
 		if pr != nil {
 			// The carried pull request starts the generation's fence; its head run goes, as with a
