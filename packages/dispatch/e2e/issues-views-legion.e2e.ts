@@ -1490,8 +1490,14 @@ test("Start next moves the Todo issues labelled legion apart from the Place, ref
     await page.goto(`/projects/${ACME}/issues?f.queue=Queued`);
     await page.getByRole("checkbox", { exact: true, name: "Select ACME-4" }).check();
     await startNext.click();
+    // The region also holds the board header's alert whenever ACME's last daemon read failed,
+    // which the minute's sampler read can leave between rows (its reads of ACME answered 404 in
+    // Job infra-3221-r23e): the refusal is the alert that names Start next.
     await expect(
-      page.getByRole("region", { exact: true, name: "Project issues" }).getByRole("alert")
+      page
+        .getByRole("region", { exact: true, name: "Project issues" })
+        .getByRole("alert")
+        .filter({ hasText: "Start next" })
     ).toHaveText("Start next moves only Todo issues labelled legion.");
     expect(await fixed()).toEqual(fixedBefore);
     expect([await rankOf(first.key), await rankOf(second.key)]).toEqual([firstRank, secondRank]);
