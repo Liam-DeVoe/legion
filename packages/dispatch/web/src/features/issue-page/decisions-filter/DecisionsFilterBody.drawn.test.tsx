@@ -426,7 +426,7 @@ test("the four parts are drawn under their headings, in order, and no sentence e
     // Folded at the foot: its heading says how many it holds, and none is drawn.
     {
       count: "2",
-      heading: `▸ 2 ${DECISIONS_WORDS.agents_many}`,
+      heading: `2 ${DECISIONS_WORDS.agents_many}`,
       part: "agents",
       rows: [],
     },
@@ -440,7 +440,7 @@ test("the four parts are drawn under their headings, in order, and no sentence e
     DECISIONS_WORDS.parts.open_questions,
     DECISIONS_WORDS.parts.review,
     DECISIONS_WORDS.parts.yours,
-    `▸ ${DECISIONS_WORDS.agents_many}`,
+    DECISIONS_WORDS.agents_many,
   ]);
   expect(outside.querySelectorAll("p").length).toBe(0);
 
@@ -500,18 +500,29 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   // The foot unfolds from its own control, which is a plain button in the tab order, and
   // folds again. Its rows stand after it and are the tree's own.
   const foot = view.getByRole("button", FOOT_CONTROL);
+  // The mark before the count is a shape hidden from assistive technology, not text: the
+  // page's typeface keeps neither triangle. Its path is what says whether the foot is open.
+  const mark = () =>
+    foot.querySelector('svg[aria-hidden="true"] path')?.getAttribute("d") ?? "no mark";
+  const folded = mark();
+  expect(folded).not.toBe("no mark");
+  expect(foot.textContent).not.toMatch(/[▾▸]/u);
   expect(foot.getAttribute("aria-expanded")).toBe("false");
   expect(foot.hasAttribute("tabindex")).toBe(false);
   expect(tree.hasAttribute("aria-owns")).toBe(false);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
   expect(foot.getAttribute("aria-expanded")).toBe("true");
-  expect(words(foot)).toBe(`▾ 2 ${DECISIONS_WORDS.agents_many}`);
+  expect(words(foot)).toBe(`2 ${DECISIONS_WORDS.agents_many}`);
+  expect(mark()).not.toBe("no mark");
+  expect(mark()).not.toBe(folded);
+  expect(foot.textContent).not.toMatch(/[▾▸]/u);
   const footRows = view.container.querySelector('[data-decisions-part="agents"] [role="group"]');
   expect(tree.getAttribute("aria-owns")).toBe(footRows?.id ?? "no group");
   expect(footRows?.getAttribute("aria-labelledby")).toBe(foot.id);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([]);
+  expect(mark()).toBe(folded);
 
   // Tab from the row the reader stands on goes to the foot's control, which is inside the
   // list: the row is drawn as focused no more, its body closed and its card plain.
@@ -529,7 +540,7 @@ test("the four parts are drawn under their headings, in order, and no sentence e
 test("the foot's heading agrees with how many decisions it holds", () => {
   const view = renderBody({ children: [decisionNode("minor")], made: [decision("minor")] });
   expect(words(view.container.querySelector('[data-decisions-part="agents"] button'))).toBe(
-    `▸ 1 ${DECISIONS_WORDS.agents_one}`
+    `1 ${DECISIONS_WORDS.agents_one}`
   );
 });
 

@@ -105,7 +105,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     // rows under it are drawn. White space between the parts of one is the browser's to lay out.
     const squeezed = (text: string) => text.replace(/\s+/gu, "");
     const headings = {
-      agents: squeezed(`▸ 3 ${DECISIONS_WORDS.agents_many}`),
+      agents: squeezed(`3 ${DECISIONS_WORDS.agents_many}`),
       open_questions: squeezed(`${DECISIONS_WORDS.parts.open_questions} 1`),
       review: squeezed(`${DECISIONS_WORDS.parts.review} 2`),
       yours: squeezed(`${DECISIONS_WORDS.parts.yours} 4`),
