@@ -82,6 +82,7 @@ export function AgentRuntimeThread({
   empty,
   front,
   modes,
+  notice,
   onPickMode,
   onSend,
   ownSendCount,
@@ -103,6 +104,9 @@ export function AgentRuntimeThread({
   front: boolean;
   /** The delivery modes this session takes, which the `/` list offers beside its commands. */
   modes: readonly MessageDeliveryMode[];
+  /** The line above a transcript that holds turns while the session is silent, by the relay's
+   *  word or the session list's, or undefined for none (`AgentThread`). */
+  notice: string | undefined;
   /** Picks the mode the next message goes in, as the row under the message box does. */
   onPickMode: (mode: MessageDeliveryMode) => void;
   /** Hands `body` to the session as a write of its own, as the page's delivery mode stands. */
@@ -292,6 +296,7 @@ export function AgentRuntimeThread({
         held={sendDisabled}
         initialPlace={initialPlace}
         modes={modes}
+        notice={notice}
         onPickMode={onPickMode}
         onPlace={onPlace}
         ownSendCount={ownSendCount}

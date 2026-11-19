@@ -497,7 +497,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // what it does to the reader (`effect`): a key that focuses a header control scrolls the page
   // to it and a tab chord switches the tab, so both move the reader and the page lets go of
   // their place for them, where the digits and the pin write without moving anybody.
-  const priorityWrite = useIssuePriority(route.key);
+  const priorityWrite = useIssuePriority(route.key, issuePriority(issue.data?.priority));
   useKeymapScope("issue");
   useKeymap("issue", [
     {

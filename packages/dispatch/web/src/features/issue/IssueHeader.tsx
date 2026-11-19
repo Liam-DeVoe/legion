@@ -87,7 +87,6 @@ import {
   issueTitleTextClassName,
 } from "./issue-header-classes";
 import { closeIssueWords, releaseClaimWords, selectableStatuses } from "./issue-header-words";
-import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { stateForIssue } from "./pins";
@@ -519,7 +518,6 @@ export function IssueHeader({
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
-            priority={issuePriority(issue.priority)}
             write={priorityWrite}
           />
           <AssigneeControl

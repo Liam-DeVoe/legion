@@ -63,6 +63,7 @@ function Harness({ messages }: { messages: KeyedMessage[] }): ReactNode {
         held={false}
         initialPlace={null}
         modes={["steer"]}
+        notice={undefined}
         onPickMode={() => {}}
         onPlace={() => {}}
         ownSendCount={0}
