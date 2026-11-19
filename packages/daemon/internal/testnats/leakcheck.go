@@ -8,12 +8,16 @@
 // server with one server per test: the arming, the settle and the report here hold whatever
 // answers which clients a server holds, and only clientConnections has to be re-pointed.
 //
-// The check holds for the shared server alone. A server a test starts for itself
-// (StartNkeyAuthorized, StartNkeyAuthorizedUsers) is removed when that test ends, so a client
-// left on it reaches no other test and there is no successor to blame. It depends as well on
-// this fixture's rule of one test binary at a time, which the package comment and
-// skills/legion-worker/references/tools.md both state: every connection the server holds is this
-// binary's, so one that appeared while a test held the server is that test's own.
+// The check holds the shared server, and each server a test starts for itself
+// (StartNkeyAuthorized, StartNkeyAuthorizedUsers) as well (armServerLeakCheck): such a server is
+// removed when that test ends, but a client left on it outlives the test all the same. One that
+// connects with ReconnectForever, as the daemon's workflow does, keeps dialing the server's address
+// once it is gone, and a later server given its port would answer it. Every server here listens on
+// an address of its own (newHost), so that stray reaches none of them; the check makes the client's
+// own test fail for leaving it. The shared server's check depends as well on this fixture's rule of
+// one test binary at a time, which the package comment and skills/legion-worker/references/tools.md
+// both state: every connection the server holds is this binary's, so one that appeared while a test
+// held the server is that test's own.
 
 package testnats
 
@@ -208,6 +212,55 @@ func settled(armed map[uint64]bool) ([]Connection, error) {
 // opened is what the server holds that it did not hold when the check was armed.
 func opened(armed map[uint64]bool) ([]Connection, error) {
 	open, err := readConnections()
+	if err != nil {
+		return nil, err
+	}
+	var left []Connection
+	for _, c := range open {
+		if !armed[c.CID] {
+			left = append(left, c)
+		}
+	}
+	return left, nil
+}
+
+// armServerLeakCheck records which connections a server t started for itself holds now, the
+// server whose monitoring endpoint's base URL is monitor, and registers the check that reads them
+// again when t ends: a connection absent now and still open leakSettle after the test's own
+// cleanups have run fails t, naming each by id and name. StartNkeyAuthorizedUsers calls it once the
+// server answers and after registering the container's removal, so the check runs before the
+// container is removed and after every cleanup t registered later, its clients' closes among them.
+// The server admits only the test's own nkey users, so the fixture holds no client of it to see,
+// as the shared check sees its reset's; TestAClientLeftOnATestsOwnServerFailsTheCheck is the
+// check's positive control.
+func armServerLeakCheck(t testing.TB, monitor string) {
+	t.Helper()
+	open, err := connectionsAt(monitor)
+	if err != nil {
+		t.Fatalf("read the connections of %s's own NATS server to arm the leak check: %v", t.Name(), err)
+	}
+	armed := cids(open)
+	t.Cleanup(func() {
+		var left []Connection
+		var err error
+		testwait.Holds(leakSettle, leakPoll, func() bool {
+			left, err = openedAt(monitor, armed)
+			return err == nil && len(left) == 0
+		})
+		if err != nil {
+			t.Errorf("read the connections of %s's own NATS server at its end: %v", t.Name(), err)
+		}
+		if len(left) > 0 {
+			t.Errorf("%s left %d client connection(s) %v open on its own NATS server. A test closes every client it opens: one left open reconnects to the server's address after the server is gone",
+				t.Name(), len(left), left)
+		}
+	})
+}
+
+// openedAt is what the server whose monitoring endpoint is monitor holds that it did not hold when
+// its check was armed.
+func openedAt(monitor string, armed map[uint64]bool) ([]Connection, error) {
+	open, err := connectionsAt(monitor)
 	if err != nil {
 		return nil, err
 	}

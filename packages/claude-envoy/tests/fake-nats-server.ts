@@ -34,6 +34,23 @@ function matches(pattern: string, subject: string): boolean {
   return pattern === subject
 }
 
+/**
+ * The address a fake of these tests listens on: `literal`, a fixed loopback address of the fake's
+ * own, on Linux, where every address of 127.0.0.0/8 is the loopback; 127.0.0.1 elsewhere, the
+ * only loopback address such a system brings up by default. A client of an earlier test keeps
+ * dialing the address its own server had, and the kernel can give that server's port to a later
+ * listener on the same address, which the stray client then reaches: a count the later test
+ * asserts (`connections`) is the count it inflates. A fake on an address no other server of the
+ * run listens on is out of its reach. Each fake names its own literal rather than drawing one, so
+ * the tests carry no copy of the Go tests' address rule (testnats.NewHost).
+ */
+export function fakeHost(literal: string): string {
+  return process.platform === "linux" ? literal : "127.0.0.1"
+}
+
+/** The address a FakeNatsServer listens on unless it is given another (its `host` option). */
+export const FAKE_NATS_HOST = "127.86.0.1"
+
 export class FakeNatsServer {
   /** SUB subjects in arrival order, across every client connection. */
   readonly subscribed: string[] = []
@@ -43,7 +60,8 @@ export class FakeNatsServer {
   readonly published: PublishedFrame[] = []
   /** Each client's CONNECT options, in arrival order: an nkey sign-in carries `nkey` and `sig`. */
   readonly connects: Record<string, unknown>[] = []
-  /** Client connections accepted so far. */
+  /** Client connections accepted so far. A count a stray client inflates: the fake's address is
+   *  its own (`host`), so a client dialing 127.0.0.1 at its port never reaches it. */
   connections = 0
   private readonly clients = new Set<Socket<Client>>()
   private waiters: Waiter[] = []
@@ -51,10 +69,12 @@ export class FakeNatsServer {
   /** Connections accepted while `holdNext()` is in force, with their INFO frames withheld. */
   private held: Socket<Client>[] | null = null
 
-  /** `nonce`, when given, goes in INFO, as a server that asks for nkey sign-in sends one. */
-  constructor(private readonly options: { readonly nonce?: string } = {}) {
+  /** `nonce`, when given, goes in INFO, as a server that asks for nkey sign-in sends one. `host` is
+   *  the loopback address it listens on (fakeHost of it): a test that asserts a count no other fake
+   *  may reach names one of its own, and every other fake takes FAKE_NATS_HOST. */
+  constructor(private readonly options: { readonly nonce?: string; readonly host?: string } = {}) {
     this.listener = Bun.listen<Client>({
-      hostname: "127.0.0.1",
+      hostname: fakeHost(options.host ?? FAKE_NATS_HOST),
       port: 0,
       socket: {
         open: (socket) => {
@@ -81,7 +101,7 @@ export class FakeNatsServer {
   }
 
   get url(): string {
-    return `nats://127.0.0.1:${this.listener.port}`
+    return `nats://${this.listener.hostname}:${this.listener.port}`
   }
 
   /** Send a message to every live subscription matching `subject`. */
@@ -159,13 +179,13 @@ export class FakeNatsServer {
       server_name: "fake",
       version: "2.10.22",
       go: "go1.22",
-      host: "127.0.0.1",
+      host: this.listener.hostname,
       port: this.listener.port,
       headers: true,
       max_payload: 1_048_576,
       proto: 1,
       client_id: this.connections,
-      client_ip: "127.0.0.1",
+      client_ip: this.listener.hostname,
       ...(this.options.nonce === undefined ? {} : { nonce: this.options.nonce }),
     }
     socket.write(`INFO ${JSON.stringify(info)}\r\n`)

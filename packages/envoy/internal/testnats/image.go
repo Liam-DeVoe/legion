@@ -50,8 +50,11 @@ var imagePorts = []nat.Port{"4222/tcp", "6222/tcp", "8222/tcp"}
 // ports on a loopback address of the container's own (NewHost), as every server of this package
 // listens on one; elsewhere on every interface of the daemon's machine, as Docker does by default.
 // Either way at a port Docker chooses, and the URL names where it is (ImageEndpoint). The start
-// waits for the client port inside the container only: the module's wait dials the daemon's
-// host, where a container of its own address publishes nothing.
+// waits for the server's own line saying its client listener is bound, not the module's
+// ForListeningPort: that one dials the port at the daemon's host, where a container of its own
+// address publishes nothing, and its in-container check runs /bin/sh, which nats:2.10's image does
+// not have, so on that image it passed without checking anything. Every caller then waits for the
+// server to answer a client (awaitAuth).
 func startImage(t testing.TB, image, config string, serverArgs []string) (*tcnats.NATSContainer, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -78,7 +81,7 @@ func startImage(t testing.TB, image, config string, serverArgs []string) (*tcnat
 				}
 			}
 		}),
-		testcontainers.WithWaitStrategy(wait.ForListeningPort("4222/tcp").SkipExternalCheck()),
+		testcontainers.WithWaitStrategy(wait.ForLog(`Listening for client connections on \S+:4222`).AsRegexp()),
 	)
 	testcontainers.CleanupContainer(t, ctr)
 	if err != nil {
