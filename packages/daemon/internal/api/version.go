@@ -2421,7 +2421,7 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 176: dispatch://INFRA-1117 -- the test database's own disk. Where
+// 178: dispatch://INFRA-1117 -- the test database's own disk. Where
 // `runtime.kubernetes.test_postgres_disk` sets a size, an issue pod that runs the test database
 // keeps its cluster on a generic ephemeral volume of that size in place of the `testpg` emptyDir,
 // and the launcher's command line gains `--test-postgres-disk` after `--test-postgres`
@@ -2438,10 +2438,10 @@ package api
 // paired only with an image of this release. An older daemon renders no such flag, and a
 // launcher of this release given none behaves as before: it reads no free bytes and resets
 // nothing. No frame between the daemon and the launcher moves, and no shape the plugin parses.
-// (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 244 open pull requests of
-// this repository, taken between 2026-11-19T17:45:04Z and 17:52:18Z for the merge that brought
-// main in at 0ec926f5, reads main's 168 and, above it, 169 declared by #4065 and by this change's
-// own head before that merge, and each of 170 to 175 declared, so 176 is the lowest number above
-// main's that no other open head declares. Read main's own number and every open pull request's
-// again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 176
+// (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 242 open pull requests of
+// this repository, taken between 2026-11-19T20:12:49Z and 20:20:11Z for the merge that brought
+// main in at d079920d, reads main's 168 and, above it, each of 169 to 177 declared by another open
+// head (176 by #4030 and by this change's own head before that merge), so 178 is the lowest number
+// above main's that no other open head declares. Read main's own number and every open pull
+// request's again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 178
