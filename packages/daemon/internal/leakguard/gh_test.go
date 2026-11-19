@@ -326,6 +326,18 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 			want: []GhFile{{Option: "--field", Path: "query.graphql", Field: "query"}},
 		},
 		{
+			// gh api's short letters are all known, so its cluster is read as pflag reads it: `-i`
+			// is --include, and the -F that ends the cluster is --field (ghFieldArg).
+			name: "a field read from a file, at the end of gh api's short cluster",
+			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-iF", "body=@body.md"},
+			want: []GhFile{{Option: "-F", Path: "body.md", Field: "body"}},
+		},
+		{
+			name: "a field read from a file, attached to gh api's short cluster",
+			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-iFbody=@notes.md"},
+			want: []GhFile{{Option: "-F", Path: "notes.md", Field: "body"}},
+		},
+		{
 			name: "the same file named twice",
 			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-F", "body=@body.md", "--body-file", "body.md"},
 			want: []GhFile{{Option: "-F", Path: "body.md", Field: "body"}},
@@ -337,6 +349,10 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{name: "a body option whose value is standard input", args: []string{"pr", "comment", "1", "--body-file", "-"}, stdin: "--body-file"},
 		{name: "a field read from standard input", args: []string{"api", "x", "-F", "body=@-"}, stdin: "--field"},
 		{name: "a long field read from standard input", args: []string{"api", "x", "--field", "body=@-"}, stdin: "--field"},
+		{name: "a field read from standard input, at the end of gh api's short cluster", args: []string{"api", "graphql", "-iF", "query=@-"}, stdin: "--field"},
+		// A cluster whose first value letter is another option's: `-iXF` is --include and the
+		// method F, so the argument after it is a positional of gh's and names no file.
+		{name: "gh api's short cluster ending in another option", args: []string{"api", "x", "-iXF", "body=@body.md"}},
 		{name: "gh api's request body on standard input", args: []string{"api", "x", "--input", "-"}, stdin: "--input"},
 		{name: "gh api's attached request body on standard input", args: []string{"api", "x", "--input=-"}, stdin: "--input"},
 		{name: "release notes on standard input", args: []string{"release", "create", "v0", "--notes-file", "-"}, stdin: "--notes-file"},
@@ -419,6 +435,87 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 		if report := refusal(t, err); !strings.Contains(report.Error(), leakguardtest.RulesHostClass) {
 			t.Fatalf("the refusal does not name the class: %v", report)
 		}
+	})
+}
+
+// gh api's short cluster (ghFieldArg) is gh api's alone. In `gh pr create`, `-dF <path>` is
+// `--draft --body-file <path>`: the file the caller parsed out of it is read as the body it is,
+// and the argv makes no field of it. The file's name holds an `=`, so a reader that took `-dF`
+// for gh api's field option would make a field of the path.
+func TestAShortClusterOutsideGhAPIIsNoField(t *testing.T) {
+	body := fieldFile(t, "notes=draft.md", "the "+leakguardtest.PairName+" and the "+leakguardtest.PairWord)
+	args := []string{"pr", "create", "-dF", body}
+	for _, record := range ghArgRecords(args, false) {
+		if strings.HasPrefix(record.Label, "the gh call's field ") {
+			t.Fatalf("ghArgRecords(%q) made the field record %q", args, record.Label)
+		}
+	}
+	err := ghFieldCall(t, GhRequest{Args: args, Files: []GhFile{{Option: "--body-file", Path: body}}})
+	reports(t, refusal(t, err).Lines, body+": "+leakguardtest.PairClass)
+}
+
+// In a `gh api` call a short cluster is read as pflag reads it (ghFieldArg): `-iF query=<v>`,
+// `-iFquery=<v>` and `-if query=<v>` are the query field after --include. So a GraphQL query given
+// so is read one literal at a time: the fixture's two words in two literals of one mutation pass,
+// though a read of the argument whole joins them, and the two in one literal are refused, the
+// report naming the literal.
+func TestGhAPIShortClusterQueryReadsOneLiteralAtATime(t *testing.T) {
+	apart := graphQLMutation("the "+leakguardtest.PairName+" notes", "a "+leakguardtest.PairWord+" aside")
+	together := graphQLMutation("a clean title", "the "+leakguardtest.PairName+" and the "+leakguardtest.PairWord)
+	refusedWhole(t, apart)
+	for _, tc := range []struct {
+		name string
+		args func(query string) []string
+	}{
+		{"-iF query=", func(query string) []string { return []string{"api", "graphql", "-iF", "query=" + query} }},
+		{"-iFquery=", func(query string) []string { return []string{"api", "graphql", "-iFquery=" + query} }},
+		{"-if query=", func(query string) []string { return []string{"api", "graphql", "-if", "query=" + query} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cleared(t, ghFieldCall(t, GhRequest{Args: tc.args(apart)}))
+			err := ghFieldCall(t, GhRequest{Args: tc.args(together)})
+			reports(t, refusal(t, err).Lines, "the gh call's field query, GraphQL string 3: "+leakguardtest.PairClass)
+		})
+	}
+}
+
+// Standard input a field other than `query` takes in a `gh api graphql` call is text GitHub stores
+// as it stands, one record: a mutation on it holding the fixture's two words in two literals is
+// refused, since that input is a body and no query. A query and another field both of standard
+// input are one input gh reads into one of them, so it is read both ways, raw and one literal at
+// a time: the two words apart are refused by the raw record, and a name escaped inside one literal
+// by that literal. A query of standard input that a caller's parse names no option for, where
+// the argv names the field, is read one literal at a time.
+func TestGhAPIGraphQLStandardInputIsReadByTheFieldsThatTakeIt(t *testing.T) {
+	apart := graphQLMutation("the "+leakguardtest.PairName+" notes", "a "+leakguardtest.PairWord+" aside")
+	escaped := graphQLMutation("the "+strings.Replace(leakguardtest.PairName, "l", `\u006c`, 1)+" and the "+leakguardtest.PairWord, "a clean body")
+	refusedWhole(t, apart)
+	if strings.Contains(escaped, leakguardtest.PairName) {
+		t.Fatalf("the query %q spells the name in its own bytes, so it proves nothing", escaped)
+	}
+	const stdin = "the gh call's standard input"
+	for _, tc := range []struct{ name, stdinOption string }{
+		{"read out of the argv", ""},
+		{"named by the caller's parse", "--field"},
+	} {
+		t.Run("another field's input is text, "+tc.name, func(t *testing.T) {
+			err := ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "-F", "body=@-"}, Stdin: strings.NewReader(apart), StdinOption: tc.stdinOption})
+			reports(t, refusal(t, err).Lines, stdin+": "+leakguardtest.PairClass)
+		})
+	}
+	t.Run("a query and another field are read both ways", func(t *testing.T) {
+		args := []string{"api", "graphql", "-F", "query=@-", "-F", "body=@-"}
+		err := ghFieldCall(t, GhRequest{Args: args, Stdin: strings.NewReader(apart)})
+		reports(t, refusal(t, err).Lines, stdin+": "+leakguardtest.PairClass)
+		err = ghFieldCall(t, GhRequest{Args: args, Stdin: strings.NewReader(escaped)})
+		reports(t, refusal(t, err).Lines, stdin+", GraphQL string 2: "+leakguardtest.PairClass)
+	})
+	t.Run("a query no option is known for", func(t *testing.T) {
+		call := func(query string) GhRequest {
+			return GhRequest{Args: []string{"api", "graphql", "-F", "query=@-"}, Stdin: strings.NewReader(query), Files: []GhFile{}}
+		}
+		cleared(t, ghFieldCall(t, call(apart)))
+		reports(t, refusal(t, ghFieldCall(t, call(escaped))).Lines, stdin+", GraphQL string 2: "+leakguardtest.PairClass)
 	})
 }
 

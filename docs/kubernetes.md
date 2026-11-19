@@ -3569,7 +3569,8 @@ A gh call has these records:
   An object's name is a record too, labelled `<record>, JSON <path> (name)`.
   A body that is not exactly one JSON document is read as one record.
 
-- Each string literal of the query of `gh api graphql`, labelled `<record>, GraphQL string <k>`, where `<record>` is the label of the field or the file that holds the query.
+- Each string literal of a GraphQL query, labelled `<record>, GraphQL string <k>`, where `<record>` is the label of the record that holds the query.
+  A `gh api` call's query is read so whatever spelling of GitHub's GraphQL endpoint the call names (`graphql`, `/graphql`, the API's full URL), and wherever the query comes from: a field, a file, a JSON body's `query`, or standard input named by `-F query=@-`.
   A query that does not lex is read as written.
 
 A text that `legion leak-check text` checks has two records, `the title` (its first line) and `the body` (the rest).

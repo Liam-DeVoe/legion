@@ -2,8 +2,52 @@ package leakguard
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
+
+// A `gh api` call sends GitHub a GraphQL query wherever its endpoint reaches the path /graphql of
+// api.github.com, as a server reads a path: under gh's own word `graphql`, with a slash, a query
+// or a fragment, in another case, percent-escaped, through a `..`, and as the API's whole URL on
+// any port. A path elsewhere, another host, a longer word and a path whose escapes do not decode
+// are none. The endpoint is found past `-X POST`, a cluster's `-iX POST` and a bare `--`.
+func TestGhAPIGraphQLIsTheEndpointsPath(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint string
+		want     bool
+	}{
+		{"graphql", true},
+		{"/graphql", true},
+		{"graphql?x=1", true},
+		{"/graphql?x=1", true},
+		{"https://api.github.com/graphql", true},
+		{"https://api.github.com/graphql?x=1", true},
+		{"https://API.GITHUB.COM/graphql", true},
+		{"https://api.github.com:443/graphql", true},
+		{"GRAPHQL", true},
+		{"%67raphql", true},
+		{"graphql#x", true},
+		{"repos/../graphql", true},
+		{"repos/o/r/graphql", false},
+		{"graphqlx", false},
+		{"https://example.com/graphql", false},
+		{"user/graphql", false},
+		{"%zz/graphql", false},
+	} {
+		for _, args := range [][]string{
+			{"api", tc.endpoint},
+			{"api", "-X", "POST", tc.endpoint},
+			{"api", "-iX", "POST", tc.endpoint},
+			{"api", "--", tc.endpoint},
+		} {
+			t.Run(strings.Join(args, " "), func(t *testing.T) {
+				if got := ghAPIGraphQL(args); got != tc.want {
+					t.Fatalf("ghAPIGraphQL(%q) = %v, want %v", args, got, tc.want)
+				}
+			})
+		}
+	}
+}
 
 // The lexer of a GraphQL query's string literals: each literal decoded as the GraphQL
 // specification decodes it, which is the value GitHub stores, and every text the specification

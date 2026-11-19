@@ -1,27 +1,41 @@
 package leakguard
 
 import (
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 )
 
 // graphQLQuery is the field of a `gh api graphql` call that holds the query: a field of the argv
-// (`-f query=…`), the field a file is read into (`-F query=@<path>`, GhFile.Field), or the member
-// of a JSON body (`--input`). gh reads every other field of such a call but `operationName` as a
-// variable, whose value is read as the field it is.
+// (`-f query=…`), the field a file is read into (`-F query=@<path>`, GhFile.Field), the field
+// standard input is read into (`-F query=@-`, stdinRecords), or the member of a JSON body
+// (`--input`). gh reads every other field of a `graphql` call but `operationName` as a variable,
+// and sends it beside the query under any other spelling of the endpoint; either way its value is
+// read as the field it is.
 const graphQLQuery = "query"
 
-// ghAPIGraphQL is whether args, a gh call's argv, is `gh api graphql`: the command `api`, whose
-// endpoint, the first positional argument after it, is `graphql`. The options before it are read
-// by ghAPIValueOptions and ghAPIShortValueOptions, so that the value of one (`-X POST`) is not
-// taken for the endpoint, in a short cluster as pflag reads one (`-iX POST`), and past a bare
-// `--` every argument is positional.
+// ghAPIGraphQL is whether args, a gh call's argv, sends GitHub a GraphQL query: the command
+// `api`, whose endpoint, the first positional argument after it, is GitHub's GraphQL endpoint
+// under any spelling (ghAPIGraphQLEndpoint). A call it finds is what this package's comments call
+// `gh api graphql`. The options before the endpoint are read by ghAPIValueOptions and
+// ghAPIShortValueOptions, so that the value of one (`-X POST`) is not taken for the endpoint, in a
+// short cluster as pflag reads one (`-iX POST`), and past a bare `--` every argument is
+// positional.
 //
-// It errs toward reading no query. A call it does not find is read as written, its query one
-// field among the others, as every query was before literals were read; a call it found that
-// was none would have a REST field named `query` read as a GraphQL document, which leaves out the
-// text outside its literals.
+// The endpoint is read by the path it reaches, not by gh's own rule, the exact word `graphql`.
+// That rule is how gh groups the fields: for that word alone it puts `query` and `operationName`
+// at the top of the request body and every other field under `variables`. Any other spelling is a
+// REST path to gh, which POSTs the fields as one flat JSON body to that path; where the path is
+// /graphql, GitHub's GraphQL endpoint parses the body's `query` member as the query all the same
+// and decodes its literals (TestGhJSONGraphQLEndpointSpellingsReadOneFieldAtATime records the
+// measurement), so a name escaped inside one reaches GitHub as the name.
+//
+// It errs toward reading no query for anything else. A call it does not find is read as written,
+// its query one field among the others, as every query was before literals were read; a call it
+// found that was none would have a REST field named `query` read as a GraphQL document, which
+// leaves out the text outside its literals.
 func ghAPIGraphQL(args []string) bool {
 	if len(args) == 0 || args[0] != "api" {
 		return false
@@ -30,7 +44,7 @@ func ghAPIGraphQL(args []string) bool {
 		arg := args[i]
 		switch {
 		case arg == "--":
-			return i+1 < len(args) && args[i+1] == "graphql"
+			return i+1 < len(args) && ghAPIGraphQLEndpoint(args[i+1])
 		case strings.HasPrefix(arg, "--"):
 			if ghAPIValueOptions[arg] {
 				i++
@@ -47,10 +61,40 @@ func ghAPIGraphQL(args []string) bool {
 				}
 			}
 		default:
-			return arg == "graphql"
+			return ghAPIGraphQLEndpoint(arg)
 		}
 	}
 	return false
+}
+
+// ghAPIGraphQLEndpoint is whether endpoint, a `gh api` call's endpoint, is GitHub's GraphQL
+// endpoint, the path /graphql of api.github.com, under whatever spelling the call gives it, read
+// as a server reads a path. An endpoint holding `://` is a whole URL to gh, which sends the
+// request there, so it is parsed as one and its host, in any case and on any port, must be
+// api.github.com; any other endpoint is a path gh appends to the API's. The path is read up to
+// its query or fragment, its percent-escapes decoded and its `.` and `..` segments resolved, and
+// what is left, its slashes trimmed, is `graphql` in any case. A path whose escapes do not decode
+// is none.
+//
+// cmd/legion's ghAPIRESTEndpoint reads the same endpoint for the other question, whether a call
+// is a REST read, and names the same spellings — `/graphql`, `GRAPHQL`, `%67raphql`,
+// `graphql#x` — as GitHub's GraphQL API by other names.
+func ghAPIGraphQLEndpoint(endpoint string) bool {
+	escaped := endpoint
+	if strings.Contains(endpoint, "://") {
+		whole, err := url.Parse(endpoint)
+		if err != nil || strings.ToLower(whole.Hostname()) != "api.github.com" {
+			return false
+		}
+		escaped = whole.EscapedPath()
+	} else if end := strings.IndexAny(escaped, "?#"); end >= 0 {
+		escaped = escaped[:end]
+	}
+	decoded, err := url.PathUnescape(escaped)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.Trim(path.Clean("/"+decoded), "/"), "graphql")
 }
 
 // ghAPIValueOptions are `gh api`'s long options that take a value written as the argument after

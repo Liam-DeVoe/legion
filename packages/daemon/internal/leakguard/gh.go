@@ -25,8 +25,9 @@ type GhRequest struct {
 	// StdinOption is the option whose value named standard input (`-`, or `@-` for a field), by
 	// its long name as gh spells it: `--input`, `--body-file`, `--notes-file`, `--from-file` or
 	// `--field`. It says what the input is (stdinRecords): `gh api --input -` makes it the
-	// request body, a JSON document GitHub parses, and each other option text GitHub stores as
-	// it stands. "" is a caller that does not know. Where such a caller also handed no Files, the
+	// request body, a JSON document GitHub parses, `-F query=@-` in a `gh api graphql` call the
+	// query, a GraphQL document GitHub parses, and each other option text GitHub stores as it
+	// stands. "" is a caller that does not know. Where such a caller also handed no Files, the
 	// guard reads the option out of the argv (ghFileArgs); where nothing knows, it reads the
 	// input both ways.
 	StdinOption string
@@ -184,7 +185,8 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	graphQL := ghAPIGraphQL(req.Args)
 	records := ghArgRecords(req.Args, graphQL)
 	if len(answer.Stdin) > 0 {
-		records = append(records, stdinRecords(Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}, stdinOption, graphQL)...)
+		stdin := Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}
+		records = append(records, stdinRecords(stdin, stdinOption, req.Args, graphQL)...)
 	}
 	for _, named := range files {
 		text, err := readGhFile(named)
@@ -207,7 +209,8 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 // ghArgRecords is the records of args, a gh call's argv: one of each argument, and none that
 // joins two. An argument is "the gh call's argument <i>", i its index in args, and holds the
 // argument as it was written. A field, the `<name>=<value>` given to -f, --raw-field, -F or
-// --field in either spelling (`-f name=value`, `-fname=value`, `--raw-field=name=value`), is two
+// --field in any spelling ghFieldArg reads (`-f name=value`, `-fname=value`,
+// `--raw-field=name=value`, and in `gh api` a short cluster's `-iF name=value`), is two
 // records: "the gh call's field <name>", which holds the value after the first `=`, and "the gh
 // call's field <name> (name)", which holds the name. A call's fields are values GitHub stores
 // apart — the title and the body of `gh api …/issues -f title=… -f body=…`, a gist's file name
@@ -219,7 +222,8 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 // GitHub would show. The one field that is not is a GraphQL query, `query` in a `gh api
 // graphql` call (graphQL), whose literals GitHub's own parser decodes: it is read one literal at
 // a time (graphQLRecords). A `-F query=@<path>` reads the query from the file, which is read so
-// (GhFile.Field), and the field's own value is then the path, read as written.
+// (GhFile.Field), and a `-F query=@-` from standard input, which is read so too (stdinRecords);
+// the field's own value is then the path or the `@-`, read as written.
 //
 // The reader knows no option's arity but the four fields', which is the direction it errs in:
 // an argument it takes for a field is read as a name and a value, and one it takes for anything
@@ -230,6 +234,7 @@ func ghArgRecords(args []string, graphQL bool) []Record {
 	argument := func(i int) {
 		records = append(records, Record{Label: "the gh call's argument " + strconv.Itoa(i), Text: args[i]})
 	}
+	api := len(args) > 0 && args[0] == "api"
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--" {
 			for ; i < len(args); i++ {
@@ -237,7 +242,7 @@ func ghArgRecords(args []string, graphQL bool) []Record {
 			}
 			break
 		}
-		option, value, attached := ghFieldArg(args[i])
+		option, value, attached := ghFieldArg(args[i], api)
 		if option == "" {
 			argument(i)
 			continue
@@ -273,17 +278,43 @@ func ghArgRecords(args []string, graphQL bool) []Record {
 // ghFieldArg reads arg as a field option of gh's: the option, -f, --raw-field, -F or --field;
 // its value where arg holds it (attached), as `--field=<value>`, `-F<value>` and, as pflag reads
 // a short option, `-F=<value>` do; and "" for an argument that is no field option.
-func ghFieldArg(arg string) (option, value string, attached bool) {
+//
+// A short option is read at the front of arg alone, but in a `gh api` call (api), whose short
+// options are all known (ghAPIShortValueOptions). There a short cluster is read as pflag reads
+// one: the letters before the first that takes a value take none (`-i` is `--include`), and that
+// letter ends the cluster, taking the rest of arg, an `=` before it dropped, or the next argument
+// where it is the last letter. So `-iF query=<v>`, `-iFquery=<v>` and `-if query=<v>` are fields,
+// and a cluster whose value letter is any other (`-iX POST`) is no field option. Every other
+// command's letters mean other things — `-dF` is `--draft --body-file` in `gh pr create` and
+// `--desc F` in `gh gist create` — which only the leaf's own help tells apart.
+func ghFieldArg(arg string, api bool) (option, value string, attached bool) {
 	switch {
-	case arg == "-f" || arg == "-F" || arg == "--raw-field" || arg == "--field":
+	case arg == "--raw-field" || arg == "--field":
 		return arg, "", false
 	case strings.HasPrefix(arg, "--raw-field=") || strings.HasPrefix(arg, "--field="):
 		option, value, _ = strings.Cut(arg, "=")
 		return option, value, true
-	case strings.HasPrefix(arg, "-f") || strings.HasPrefix(arg, "-F"):
-		return arg[:len("-f")], strings.TrimPrefix(arg[len("-f"):], "="), true
+	case len(arg) < 2 || arg[0] != '-' || arg[1] == '-':
+		return "", "", false
 	}
-	return "", "", false
+	letter := 1
+	if api {
+		letter += strings.IndexAny(arg[1:], ghAPIShortValueOptions)
+	}
+	switch {
+	case letter == 0:
+		return "", "", false
+	case arg[letter] == 'f':
+		option = "-f"
+	case arg[letter] == 'F':
+		option = "-F"
+	default:
+		return "", "", false
+	}
+	if letter == len(arg)-1 {
+		return option, "", false
+	}
+	return option, strings.TrimPrefix(arg[letter+1:], "="), true
 }
 
 // stdinRecords is the records of record, the call's buffered standard input, by the option that
@@ -293,7 +324,33 @@ func ghFieldArg(arg string) (option, value string, attached bool) {
 // of a field's bytes itself, and a body option's input is the body. Named by nothing known, it
 // is read both ways, the raw record and the strings of a JSON document beside it, which errs
 // toward reading more.
-func stdinRecords(record Record, option string, graphQL bool) []Record {
+//
+// The one field whose input is not text is the query of a `gh api graphql` call (graphQL): gh
+// sends the bytes of `-F query=@-` as the query, which GitHub parses, so they are read one
+// literal at a time (graphQLRecords), as the same query is from a file. Where a field named the
+// input of such a call — the option is `--field` or `-F`, or nothing known and args, the argv,
+// names a field of standard input — the input is read by the names of the fields whose value is
+// `@-` (ghStdinFields). All of them `query` is the query alone, with no raw record, which would
+// join its literals on one line. Some `query` and some not is a call whose one input goes to one
+// field, which gh's order of reading decides and the guard does not guess: the raw record and
+// the literals are both read. None `query` is text, as above.
+func stdinRecords(record Record, option string, args []string, graphQL bool) []Record {
+	if graphQL {
+		if names := ghStdinFields(args); option == "--field" || option == "-F" || option == "" && len(names) > 0 {
+			if !slices.Contains(names, graphQLQuery) {
+				return []Record{record}
+			}
+			literals := graphQLRecords(record)
+			if !slices.ContainsFunc(names, func(name string) bool { return name != graphQLQuery }) {
+				return literals
+			}
+			if len(literals) == 1 && literals[0] == record {
+				// A query that does not lex is read as written already.
+				return literals
+			}
+			return append([]Record{record}, literals...)
+		}
+	}
 	switch option {
 	case inputOption:
 		return jsonBody(record, graphQL)
@@ -302,6 +359,33 @@ func stdinRecords(record Record, option string, graphQL bool) []Record {
 		return append([]Record{record}, fields...)
 	}
 	return []Record{record}
+}
+
+// ghStdinFields are the names of the fields of args, a gh call's argv, whose value is standard
+// input: each `-F <name>=@-` and `--field <name>=@-`, in every spelling ghFieldArg reads, before a
+// bare `--` and in the order the argv writes them. A -f or --raw-field sends `@-` as those two
+// characters and reads no input, so it names none.
+func ghStdinFields(args []string) []string {
+	api := len(args) > 0 && args[0] == "api"
+	var names []string
+	for i := 0; i < len(args) && args[i] != "--"; i++ {
+		option, value, attached := ghFieldArg(args[i], api)
+		if option == "" {
+			continue
+		}
+		if !attached {
+			if i+1 == len(args) {
+				break
+			}
+			i++
+			value = args[i]
+		}
+		name, after, found := strings.Cut(value, "=")
+		if found && after == "@-" && (option == "-F" || option == "--field") {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // jsonBody is the records of record, a request body GitHub parses as JSON: the strings of the
@@ -537,9 +621,11 @@ func ghUnreadUploadArg(args []string) (string, bool) {
 //
 // The attached short spellings `-F<value>` and `-F=<value>` are read as well, the two split as
 // ghArgRecords splits a field (ghFieldArg), which is how pflag reads them: `-F=body=@notes.md` is
-// the field body read from notes.md. They are the only short cluster read: a `-F` anywhere but
-// the front of a short argument is the value of the option before it (`-dF` is `--desc F`), and
-// reading that as a file would refuse a call over a file nobody named.
+// the field body read from notes.md. Outside `gh api` they are the only short cluster read: a
+// `-F` anywhere but the front of a short argument is the value of the option before it (`-dF` is
+// `--desc F`), and reading that as a file would refuse a call over a file nobody named. `gh api`'s
+// short letters are all known, so its clusters are read as pflag reads them (ghFieldArg):
+// `-iF body=@notes.md` is the same field.
 //
 // This reads the argv with no gh to tell it which other options take a value, so an option's
 // value that itself begins with `-F` (a `--body` whose first word is `-Fixed`) is read as a -F
@@ -586,6 +672,7 @@ func ghUnreadUploadArg(args []string) (string, bool) {
 func ghFileArgs(args []string) ([]GhFile, string) {
 	var files []GhFile
 	stdin, stdinNamed := "", false
+	api := len(args) > 0 && args[0] == "api"
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -594,7 +681,7 @@ func ghFileArgs(args []string) ([]GhFile, string) {
 		// A field option is split as ghArgRecords splits it (ghFieldArg), and any other option at
 		// its first `=`. A -f or --raw-field then reads as neither --field nor a file option, and
 		// names no file.
-		option, value, attached := ghFieldArg(arg)
+		option, value, attached := ghFieldArg(arg, api)
 		if option == "" {
 			option = arg
 			if name, after, found := strings.Cut(arg, "="); found {
