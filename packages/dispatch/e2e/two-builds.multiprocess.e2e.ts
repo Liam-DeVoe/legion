@@ -546,6 +546,14 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `${issue}/plan`,
     },
     {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page.locator("#issue-steps-panel").getByText("No step of this issue has run in Legion."),
+      ],
+      url: `${issue}/steps`,
+    },
+    {
       loads: ["editor"],
       route: "/issues/:key/*",
       shows: (page) => openDocument(page, shown.issueArtifact),
