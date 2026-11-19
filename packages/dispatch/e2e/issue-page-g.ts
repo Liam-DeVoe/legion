@@ -43,7 +43,7 @@ import { asUser } from "./users";
  * them (decision 2 of the parts).
  *
  * The page is the one the reader turns on (`withIssuePage`), opened at the issue's own address
- * with `page.goto`; the body is G's `ConversationRows.tsx`, every branch unfolded at load, and
+ * with `page.goto`; the body is `slots/body.tsx`'s: G's rows drew every branch unfolded, and
  * part I's outline later, which folds to the frontier: so a row that reads a node unfolds every
  * folded branch first (`unfoldEveryBranch`), and holds on either body.
  *
@@ -1341,37 +1341,4 @@ export async function seedWideNote(): Promise<WideNoteSeed> {
   const specSlug =
     ((await getIssue(issue.key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
   return { key: issue.key, note: blockNode(specSlug, "n-wide") };
-}
-
-/** What `seedWideCode` wrote: the issue, and its comment's node id. */
-export interface WideCodeSeed {
-  readonly comment: string;
-  readonly key: string;
-}
-
-/**
- * One issue whose conversation is one comment of the reader's, whose body holds a code block of
- * one line and a table of sixteen columns, each far wider than a row's words at 1440 px, so each
- * scrolls sideways inside the row (decision 282). The reader's own words are never cut, so the
- * row draws both whole. It is an issue of its own, so no seed another row reads changes.
- */
-export async function seedWideCode(): Promise<WideCodeSeed> {
-  await createProject({ key: PROJECT, name: "Rows" });
-  const issue = await createIssue({
-    force: true,
-    project: PROJECT,
-    title: "A comment holds a code block wider than its row",
-  });
-  const flags = Array.from({ length: 60 }, (_unused, at) => `--flag${at + 1}`).join(" ");
-  const line = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
-  const columns = Array.from({ length: 16 }, (_unused, at) => at + 1);
-  const table = [
-    line(columns.map((column) => `columnheading${column}`)),
-    line(columns.map(() => "---")),
-    line(columns.map((column) => `value${column}`)),
-  ].join("\n");
-  const comment = await createComment(issue.key, {
-    body: `Run it so:\n\n\`\`\`sh\nbun run e2e ${flags}\n\`\`\`\n\n${table}\n`,
-  });
-  return { comment: comment.id, key: issue.key };
 }

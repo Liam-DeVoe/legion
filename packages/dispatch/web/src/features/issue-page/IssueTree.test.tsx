@@ -18,6 +18,7 @@ import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "r
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -35,10 +36,16 @@ import { pageFocusedRow } from "../../theme/classes";
 import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import {
+  DocumentAdmissionProvider,
+  type ReportAdmission,
+  useReportAdmission,
+} from "./document-admission";
 import { DocumentStage, DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
@@ -101,6 +108,13 @@ const decisionsDocument: Artifact = {
   session_id: null,
   slug: "decisions",
   versions: [],
+};
+
+const specDocument: Artifact = {
+  ...decisionsDocument,
+  id: "artifact-spec",
+  name: "Spec",
+  slug: "spec",
 };
 
 const decision: Decision = {
@@ -182,6 +196,13 @@ function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode
   return null;
 }
 
+/** How the page's row editor reports what a document's room admitted the page to
+ *  (`document-admission.tsx`), handed out for a test to answer as the room. */
+function AdmissionProbe({ held }: { held: { report?: ReportAdmission } }): ReactNode {
+  held.report = useReportAdmission();
+  return null;
+}
+
 /** What stands in for the editor of the document a row is editing in: a plain element, or what
  *  takes how to hand the row its editor (`onEditing`) and draws one - the document's own
  *  (`LiveEditor`), or one that hands the row nothing. */
@@ -256,9 +277,12 @@ function EditedDocument({
  *  down to the node an address names, which the tree is then to put the focus on
  *  (`slots/body.tsx`); `editor` stands in for the editor of the document a row is editing in,
  *  which the page draws on that row's stage; `emptyLine` is what the tree says where the issue
- *  holds nothing, none where it is not given; `readsHeld` is whether the reads the tree is built
- *  from hold their answers, until `holdReads` draws the same tree with them held; `redraw` draws
- *  the same tree again, as a read answering does. */
+ *  holds nothing, none where it is not given; `isClosed` is whether the issue is closed;
+ *  `readsHeld` is whether the reads the tree is built from hold their answers, until `holdReads`
+ *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
+ *  does, and `reread` draws it over another tree, as a read answering with other nodes does;
+ *  `admit` answers for a document's room, as the page's row editor reports what that room
+ *  admitted the page to (`document-admission.tsx`). */
 function renderTree(
   root: TreeNode,
   {
@@ -266,6 +290,7 @@ function renderTree(
     decisions,
     editor,
     emptyLine,
+    isClosed = false,
     readsHeld = true,
     reveal,
   }: {
@@ -273,6 +298,7 @@ function renderTree(
     decisions?: IssueDecisions;
     editor?: StandInEditor;
     emptyLine?: string;
+    isClosed?: boolean;
     readsHeld?: boolean;
     reveal?: readonly TreeNode[];
   } = {}
@@ -283,9 +309,11 @@ function renderTree(
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
   const reads = { held: readsHeld };
+  const tree = { root };
   const editedDocument: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
   const focused: { node?: FocusedNode } = {};
+  const admission: { report?: ReportAdmission } = {};
   const draw = () => (
     <MemoryRouter>
       <AddressProbe seen={seen} />
@@ -293,30 +321,33 @@ function renderTree(
         <KeymapProvider>
           <MarginProvider>
             <FocusedNodeProvider>
-              <DocumentStages>
-                <IssueScope />
-                <FocusedNodeProbe seen={focused} />
-                <IssueTree
-                  artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
-                  context={new Set()}
-                  emptyLine={emptyLine}
-                  filtering={false}
-                  focusReveal={reveal !== undefined}
-                  holdsEscape={false}
-                  isClosed={false}
-                  onEditing={(artifactId, onEditor) => {
-                    edited.push(artifactId);
-                    editedDocument.set?.(artifactId, onEditor);
-                  }}
-                  readsHeld={reads.held}
-                  reveal={reveal}
-                  root={root}
-                  rootRow
-                />
-                {editor === undefined ? null : (
-                  <EditedDocument editor={editor} held={editedDocument} />
-                )}
-              </DocumentStages>
+              <DocumentAdmissionProvider>
+                <DocumentStages>
+                  <IssueScope />
+                  <FocusedNodeProbe seen={focused} />
+                  <AdmissionProbe held={admission} />
+                  <IssueTree
+                    artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
+                    context={new Set()}
+                    emptyLine={emptyLine}
+                    filtering={false}
+                    focusReveal={reveal !== undefined}
+                    holdsEscape={false}
+                    isClosed={isClosed}
+                    onEditing={(artifactId, onEditor) => {
+                      edited.push(artifactId);
+                      editedDocument.set?.(artifactId, onEditor);
+                    }}
+                    readsHeld={reads.held}
+                    reveal={reveal}
+                    root={tree.root}
+                    rootRow
+                  />
+                  {editor === undefined ? null : (
+                    <EditedDocument editor={editor} held={editedDocument} />
+                  )}
+                </DocumentStages>
+              </DocumentAdmissionProvider>
             </FocusedNodeProvider>
           </MarginProvider>
         </KeymapProvider>
@@ -326,6 +357,8 @@ function renderTree(
   const view = render(draw());
   return {
     address: () => seen.path,
+    admit: (artifactId: string, readOnly: boolean) =>
+      act(async () => admission.report?.(artifactId, readOnly)),
     edited,
     focusedNode: () => focused.node,
     holdReads: () => {
@@ -333,6 +366,10 @@ function renderTree(
       view.rerender(draw());
     },
     redraw: () => view.rerender(draw()),
+    reread: (next: TreeNode) => {
+      tree.root = next;
+      view.rerender(draw());
+    },
     ...view,
   };
 }
@@ -1162,10 +1199,244 @@ test("Home from a chip of the first row brings the row back on screen after the 
   }
 });
 
+// A code block or table of the focused row's words keeps a tab stop of its own, so a reader on
+// the keyboard can scroll it sideways. On it, or on a link inside it, every key the browser
+// scrolls by - the block, or the page where the block does not scroll the key's way - is the
+// browser's: the page's keymap prevents none of them, and the tree moves no focus, folds nothing
+// and says nothing. Escape from it gives the row back, and `j`, which scrolls nothing, still moves
+// to the next row. happy-dom scrolls nothing, so a key left to the browser is what a unit case
+// reads; the browser suite reads the scroll itself.
+test("on a block of the focused row that keeps its tab stop, the keys the browser scrolls by are left to it, and Escape gives the row back", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  await warmMarkdownRenderer();
+  const text = [
+    "Run it so:",
+    "",
+    "```sh",
+    "bun run e2e --project=chromium --workers=1 --retries=0",
+    "```",
+    "",
+    "| Where | What |",
+    "| --- | --- |",
+    "| [the notes](https://example.com/notes) | value |",
+  ].join("\n");
+  // The comment holds a reply, drawn folded, so Right would unfold it and Left move to no row;
+  // the second comment is the row after it.
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "reply-1", text: "A reply.", type: "comment" })],
+        id: "comment-1",
+        text,
+        tree: displayTree(text),
+        type: "comment",
+      }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  // The rules that make a block of a row's words scroll, which `useOutOfTabOrder` reads through
+  // the computed style: happy-dom applies no rule of styles.css.
+  const sheet = document.createElement("style");
+  sheet.textContent = "[data-node-words] pre, [data-node-words] table { overflow-x: auto; }";
+  document.head.append(sheet);
+  try {
+    const { container } = renderTree(root);
+    await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+    const [row] = rowsFor(container, "comment-1");
+    if (row === undefined) throw new Error("the comment has no row");
+    expect(row.getAttribute("aria-expanded"), "the comment's reply is drawn").toBe("false");
+    /** The block of the focused row that keeps its tab stop under `name`, marked as kept. */
+    const kept = (name: string): HTMLElement => {
+      const block = row.querySelector<HTMLElement>(
+        `[data-kept-scroller][tabindex="0"][aria-label="${name}"]`
+      );
+      if (block === null) throw new Error(`the focused row keeps no tab stop named "${name}"`);
+      return block;
+    };
+    const code = await waitFor(() => kept(CONTROL_LABELS.scrolls_code));
+    const link = kept(CONTROL_LABELS.scrolls_table).querySelector<HTMLElement>("a[href]");
+    if (link === null) throw new Error("the table draws no link");
+    /** The rows as drawn, each with whether it is open: what a move or a fold changes. */
+    const drawn = (): string[] =>
+      [...container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+        (one) => `${one.dataset.rowKey} ${one.getAttribute("aria-expanded")}`
+      );
+    /** Presses `key` where the focus is, as the browser sends it, and answers the event once
+     *  the page has heard it. */
+    const press = (key: string): KeyboardEvent => {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+      act(() => {
+        document.activeElement?.dispatchEvent(event);
+      });
+      return event;
+    };
+    const rows = drawn();
+    const report = rowReport(container);
+    for (const [on, what] of [
+      [code, "the code block"],
+      [link, "a link in the table"],
+    ] as const) {
+      act(() => code.focus());
+      // `f` steps from the block to the row's one link, the table's.
+      if (on === link) await user.keyboard("f");
+      expect(document.activeElement, `the focus did not reach ${what}`).toBe(on);
+      for (const key of [
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowUp",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        " ",
+      ]) {
+        const name = key === " " ? "Space" : key;
+        expect(press(key).defaultPrevented, `the page took ${name} from ${what}`).toBe(false);
+        expect(document.activeElement, `${name} moved the focus off ${what}`).toBe(on);
+        expect(drawn(), `${name} on ${what} moved through the tree or folded it`).toEqual(rows);
+        expect(rowReport(container), `${name} on ${what} said something`).toBe(report);
+      }
+      press("Escape");
+      expect(document.activeElement, `Escape on ${what} did not give the row back`).toBe(row);
+    }
+
+    act(() => code.focus());
+    expect(press("j").defaultPrevented, "j on the code block was left to the browser").toBe(true);
+    expect(focusedRow(container), "j on the code block did not move to the next row").toBe(
+      "comment-2"
+    );
+  } finally {
+    sheet.remove();
+  }
+});
+
+// A row whose node Enter puts the caret in - a block of one of the issue's documents, a statement
+// and a check among them - carries `data-editable` (`useNodeEditing.ts`'s `nodeEditable`), which
+// draws the cue that it takes typing (`styles.css`). A comment, a result and a child issue are no
+// block of a document and take no caret, and a closed issue's documents are read-only, so none of
+// its rows carries the mark.
+test("a statement's and a check's rows carry data-editable, a comment's, a result's and a child's do not, and no row of a closed issue does", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const artifacts: Artifact[] = [
+    specDocument,
+    {
+      ...decisionsDocument,
+      id: "artifact-verification",
+      name: "Verification",
+      slug: "verification",
+    },
+  ];
+  const root = node({
+    children: [
+      node({
+        children: [
+          node({
+            children: [node({ id: "result-1", text: "What the run saw.", type: "result" })],
+            id: "verification#b-c1",
+            state: "no-result",
+            text: "The check of the statement.",
+            type: "check",
+          }),
+        ],
+        id: "spec#b-r1",
+        statement: true,
+        text: "A statement of the spec.",
+        type: "requirement",
+      }),
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "CORE-2", text: "The first child", type: "child_issue" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const marked = async (isClosed: boolean): Promise<(string | undefined)[]> => {
+    const view = renderTree(root, { artifacts, isClosed });
+    try {
+      // The check's own branch arrives folded; the reader opens it to draw its result.
+      const [check] = rowsFor(view.container, "verification#b-c1");
+      if (check === undefined) throw new Error("the tree drew no row of the check");
+      await act(async () => check.focus());
+      await user.keyboard("{ArrowRight}");
+      await waitFor(() => expect(rowsFor(view.container, "result-1")).toHaveLength(1));
+      const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
+      expect(
+        rows.map((row) => row.dataset.nodeId),
+        "the tree did not draw every row"
+      ).toEqual(["spec#b-r1", "verification#b-c1", "result-1", "comment-1", "CORE-2"]);
+      return rows
+        .filter((row) => row.hasAttribute("data-editable"))
+        .map((row) => row.dataset.nodeId);
+    } finally {
+      view.unmount();
+    }
+  };
+
+  expect(await marked(false), "the rows marked as taking typing on an open issue").toEqual([
+    "spec#b-r1",
+    "verification#b-c1",
+  ]);
+  expect(await marked(true), "a row of the closed issue is marked as taking typing").toEqual([]);
+});
+
+// A document's room can admit the page read-only, as the server does a page whose schema it
+// cannot trust with writes, and then no block of that document takes typing: the page's row
+// editor reports what the room admitted (`document-admission.tsx`), and every row of that
+// document drops `data-editable`, not only the row being edited in, while another document's rows
+// keep it. Before any room of a document has answered, Enter's rule alone marks its rows, and a
+// later admission to write puts the mark back.
+test("the rows of a document its room admitted read-only carry no data-editable, another document's still do, and an admission to write puts it back", async () => {
+  setViewport(1440);
+  const artifacts: Artifact[] = [
+    specDocument,
+    {
+      ...decisionsDocument,
+      id: "artifact-verification",
+      name: "Verification",
+      slug: "verification",
+    },
+  ];
+  const root = node({
+    children: [
+      node({ id: "spec#b-r1", statement: true, text: "A statement.", type: "requirement" }),
+      node({ id: "spec#b-r2", statement: true, text: "Another statement.", type: "requirement" }),
+      node({ id: "verification#b-c1", state: "no-result", text: "A check.", type: "check" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const every = ["spec#b-r1", "spec#b-r2", "verification#b-c1"];
+  const view = renderTree(root, { artifacts });
+  const marked = () =>
+    [...view.container.querySelectorAll<HTMLElement>("[data-node-row][data-editable]")].map(
+      (row) => row.dataset.nodeId
+    );
+  try {
+    expect(marked(), "before any room has answered, a block's row is not marked").toEqual(every);
+
+    await view.admit(specDocument.id, true);
+    expect(
+      marked(),
+      "a row of the document its room admitted read-only is marked as taking typing, or another document's row is not"
+    ).toEqual(["verification#b-c1"]);
+
+    await view.admit(specDocument.id, false);
+    expect(
+      marked(),
+      "a row of the document its room admitted to write again is not marked as taking typing"
+    ).toEqual(every);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("Escape leaves the caret for the placement it was taken from, not the node's first row", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   // A check of the Verification document draws a state, and a requirement of the spec is a
   // statement (`isCheck`, `isStatement`): with neither, the outline folds the branch away.
   const shared = {
@@ -1192,7 +1463,7 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
     id: KEY,
     type: "issue",
   });
-  const view = renderTree(root, { artifacts: [spec] });
+  const view = renderTree(root, { artifacts: [specDocument] });
   const placements = rowsFor(view.container, "spec#b-c1");
   expect(placements.length).toBe(2);
   const second = placements[1];
@@ -1206,6 +1477,75 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
   expect(document.activeElement).toBe(second);
 });
 
+/** An Escape that ends an input-method composition, as the browser sends it to `target`. */
+function composingEscape(target: Element): void {
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+      key: "Escape",
+    })
+  );
+}
+
+// The tester's finding at #4205's 2ff6850a, on the ruling that a key that ends an input-method
+// composition acts on nothing: a reader typing in Japanese, Chinese or Korean in a row's editor
+// presses Escape to drop the candidate the input method shows, and that Escape is the input
+// method's. At 2ff6850a the editor's own Escape (`useNodeEditing.ts`'s `leave`) reads the key
+// alone, so it ends the editing and takes the caret out mid-word.
+test("an Escape that ends an input-method composition in a row's editor leaves the editing as it was", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        id: "spec#b-r1",
+        statement: true,
+        text: "A statement of the spec.",
+        type: "requirement",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, { artifacts: [specDocument] });
+  const [row] = rowsFor(view.container, "spec#b-r1");
+  if (row === undefined) throw new Error("the statement's row is not drawn");
+  await act(async () => row.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(view.edited.at(-1)).toBe("artifact-spec"));
+  const focused = document.activeElement;
+  await act(async () => composingEscape(focused ?? row));
+  expect(view.edited.at(-1), "an Escape that ended a composition ended the editing").toBe(
+    "artifact-spec"
+  );
+  expect(document.activeElement, "an Escape that ended a composition moved the focus").toBe(
+    focused
+  );
+});
+
+// Safari sends the Escape that ends a composition after the composition's end, unmarked -
+// `isComposing` false - with keyCode 229 (WebKit bug 165004), as the title's editor reads it
+// (`IssueTitleRow.tsx`): that Escape is the input method's as well, and leaves the editing and
+// the focus as they were.
+test("an Escape that ends an input-method composition in a row's editor, sent unmarked with keyCode 229, leaves the editing as it was", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await caretInStatement(user);
+  await act(async () => {
+    pressIn(editable, "Escape", { isComposing: false, keyCode: 229 });
+  });
+  await nextFrame();
+  expect(view.edited.at(-1), "an Escape that ended a composition ended the editing").toBe(
+    "artifact-spec"
+  );
+  expect(
+    document.activeElement === editable,
+    "an Escape that ended a composition moved the focus"
+  ).toBe(true);
+});
+
 // The tester's red row on c-keys (`the caret Enter puts in a statement deep in its document
 // stays on screen while the reader writes`): the row the reader is editing in grows as they
 // write, and put back at its top at each change of its size (`NodeRow.tsx`'s
@@ -1215,7 +1555,6 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
 test("the row the reader is editing in places nothing of its own as it grows", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
@@ -1237,7 +1576,7 @@ test("the row the reader is editing in places nothing of its own as it grows", a
   const sizes = sizesByHand();
   const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
   try {
-    const view = renderTree(root, { artifacts: [spec] });
+    const view = renderTree(root, { artifacts: [specDocument] });
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
     await user.keyboard("j");
     await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
@@ -1271,7 +1610,6 @@ test("the row the reader is editing in places nothing of its own as it grows", a
 test("the row's editor opens at the node's block, in a box that ends at the foot of the window", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
@@ -1285,7 +1623,7 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
   const { floor, room, scrolled } = page;
   try {
     const view = renderTree(root, {
-      artifacts: [spec],
+      artifacts: [specDocument],
       editor: <div contentEditable suppressContentEditableWarning />,
     });
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
@@ -1606,6 +1944,26 @@ async function editStatement(
   return editable;
 }
 
+/** `editStatement` with a plain editable as the row's editor and `after` under the statement,
+ *  answering the tree as well as the editable. */
+async function caretInStatement(user: UserEvent, after: readonly TreeNode[] = []) {
+  const entered = await enterStatement(
+    user,
+    <div contentEditable suppressContentEditableWarning />,
+    after
+  );
+  await drawStatementBlocks(entered.editable);
+  await waitFor(
+    () =>
+      expect(
+        document.activeElement === entered.editable && caretBlock() === "r1",
+        "Enter did not put the caret in the statement"
+      ).toBe(true),
+    { timeout: 10_000 }
+  );
+  return entered;
+}
+
 /** A comment and then a statement of the spec, and `after` under them where given, with Enter
  *  pressed on the statement's row, once the row holds its editor, `editor`. Answers the tree and
  *  the editor's editable. The document's own editor (`LiveEditor`) loads its library on its first
@@ -1615,7 +1973,6 @@ async function enterStatement(
   editor: StandInEditor,
   after: readonly TreeNode[] = []
 ) {
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
@@ -1625,7 +1982,7 @@ async function enterStatement(
     id: KEY,
     type: "issue",
   });
-  const view = renderTree(root, { artifacts: [spec], editor });
+  const view = renderTree(root, { artifacts: [specDocument], editor });
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
@@ -3238,6 +3595,30 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
   );
   await nextFrame();
   expect(document.activeElement === row, "the focus left the row as the editing ended").toBe(true);
+});
+
+// A Tab pressed in an input method's composition is the input method's - marked `isComposing`,
+// or unmarked with keyCode 229 as Safari sends the key that ends one - and ends no editing: the
+// focus stays in the row's editor, and the row keeps its editing.
+test.each([
+  ["isComposing", { isComposing: true }],
+  ["keyCode 229", { isComposing: false, keyCode: 229 }],
+] as const)("a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were", async (_mark, modifiers) => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await caretInStatement(user);
+  controlOutside();
+  await act(async () => {
+    pressIn(editable, "Tab", modifiers);
+  });
+  await nextFrame();
+  expect(
+    document.activeElement === editable,
+    "a Tab pressed in a composition moved the focus out of the row's editor"
+  ).toBe(true);
+  expect(view.edited.at(-1), "a Tab pressed in a composition ended the editing").toBe(
+    "artifact-spec"
+  );
 });
 
 // What the node's own block draws is the node's: from the caret in a plan task's words, Tab stops
@@ -7187,7 +7568,10 @@ test("an item's failure drawn in place of the outline after the reader moved to 
 // the outline stayed drawn, so the focus fell to the page's body with the mark still set, and no
 // focusout left the box when the reader then pressed a control outside it. The line drawn later
 // took the focus from that control. After an act the line takes the focus only while nothing else
-// holds it as it is drawn.
+// holds it as it is drawn. The read here drops every comment, not the reader's alone, so no row is
+// left for the focus to move to: a focused row a render drops gives the focus to the nearest row
+// still drawn (`IssueTree`), and only where none is left does the focus fall to the page's body,
+// with the mark still set.
 test("a line drawn after the reader's row left the outline and they pressed a control outside it leaves the focus on that control", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -7207,13 +7591,10 @@ test("a line drawn after the reader's row left the outline and they pressed a co
     if (moved === undefined) throw new Error("j left the focus on no row");
 
     await act(async () => {
-      body.client.setQueryData(
-        ["comments", KEY],
-        TWO_THREADS.filter((comment) => comment.id !== moved)
-      );
+      body.client.setQueryData(["comments", KEY], []);
     });
     await waitFor(() => expect(rowsFor(container, moved)).toEqual([]));
-    expect(rowsFor(container, "head-a"), "the outline left the page with the row").not.toEqual([]);
+    expect(body.view.queryByRole("tree"), "the outline left the page with the row").not.toBeNull();
     expect(
       document.activeElement,
       "the row's leaving left the focus on an element, not the page's body"
@@ -7629,6 +8010,127 @@ test("a comment the address landed on that leaves the tree leaves the outline dr
     names.mockRestore();
     read.mockRestore();
   }
+});
+
+// A read of the comments that answers without the comment whose row holds the focus takes that
+// row out of the tree, and the browser dropped the focus to the page's body with it: the reader's
+// place in the outline was lost, and no row held the focus. The nearest row still drawn takes
+// it, as a key's move gives it - the tab stop and the row's body go with it: the row that now
+// stands where the dropped one stood, or the last row where the tree now ends before that place.
+// The issue holds three comments, each a thread of its own, so each is a row of the tree's top
+// level; `focus` is the key that takes the reader from the first row to `dropped`'s.
+const THREE_COMMENTS: readonly Comment[] = [
+  readComment("first", 1),
+  readComment("second", 2),
+  readComment("third", 3),
+];
+async function dropFocusedComment(
+  focus: string,
+  dropped: string
+): Promise<{ readonly container: HTMLElement; readonly unmount: () => void }> {
+  const user = userEvent.setup();
+  const body = renderAddressedBody(`/issues/${KEY}`, THREE_COMMENTS);
+  const { container } = body.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("first"));
+  await user.keyboard(focus);
+  await waitFor(() => expect(focusedRow(container)).toBe(dropped));
+
+  await act(async () => {
+    body.client.setQueryData(
+      ["comments", KEY],
+      THREE_COMMENTS.filter((comment) => comment.id !== dropped)
+    );
+  });
+  await waitFor(() => expect(rowsFor(container, dropped)).toEqual([]));
+  return { container, unmount: body.view.unmount };
+}
+
+/** Whether the row of `id` is the reader's place in the tree: the tree's one tab stop, its body
+ *  drawn as a focused row's is. */
+async function expectReadersPlace(container: HTMLElement, id: string): Promise<void> {
+  const row = rowsFor(container, id)[0];
+  expect(row?.tabIndex, `the tree's tab stop is not on ${id}'s row, which holds the focus`).toBe(0);
+  await waitFor(() =>
+    expect(
+      row?.querySelector("[data-node-body]"),
+      `${id}'s row holds the focus and draws no body`
+    ).not.toBeNull()
+  );
+}
+
+test("a read that drops the focused comment's row leaves the focus on the row that now stands in its place", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { container, unmount } = await dropFocusedComment("j", "second");
+    expect(
+      focusedRow(container),
+      "a read that dropped the focused comment's row left the focus on no row of the tree, or not on the next row"
+    ).toBe("third");
+    await expectReadersPlace(container, "third");
+    unmount();
+  } finally {
+    names.mockRestore();
+  }
+});
+
+test("a read that drops the focused comment's row, the tree's last, leaves the focus on the row before it", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { container, unmount } = await dropFocusedComment("{End}", "third");
+    expect(
+      focusedRow(container),
+      "a read that dropped the tree's last row, which held the focus, left the focus on no row of the tree, or not on the row before it"
+    ).toBe("second");
+    await expectReadersPlace(container, "second");
+    unmount();
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// A read that drops the row being edited takes the editor's focus out with it, and the nearest
+// row still drawn takes the focus, as for any row. The editing ends with it, as Escape ends it:
+// the page draws the document's editor nowhere, the panel holds the facts of the row the focus
+// went to, and the tree holds that row as any other. Left on, the editing waited for a row no
+// read draws, and the tree held every row the focus came to as the edited one: a Tab out of the
+// tree kept that row's body and its facts in Details.
+test("a read that drops the row being edited ends the editing, and a Tab out of the tree lets go of the row the focus went to", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const last = node({ id: "comment-2", text: "The last words.", type: "comment" });
+  const { view } = await caretInStatement(user, [last]);
+  const { control } = controlOutside();
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  await act(async () => view.reread(node({ children: [first, last], id: KEY, type: "issue" })));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await waitFor(() =>
+    expect(
+      focusedRow(view.container),
+      "the focus did not go to the row now in the dropped row's place"
+    ).toBe("comment-2")
+  );
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
+  );
+  expect(
+    document.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`),
+    "the editor's box is still drawn"
+  ).toBeNull();
+  expect(
+    view.focusedNode()?.id,
+    "the panel does not hold the facts of the row the focus went to"
+  ).toBe("comment-2");
+
+  await user.tab();
+  expect(document.activeElement, "Tab did not leave the outline").toBe(control);
+  const row = rowsFor(view.container, "comment-2")[0];
+  if (row === undefined) throw new Error("the last comment's row is not drawn");
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row Tab left kept its body or its focused look").toBe(true)
+  );
+  expect(view.focusedNode(), "the panel still holds the facts of the row Tab left").toBeUndefined();
 });
 
 // What a following decided is its own: a following that landed on a comment's row leaves the
