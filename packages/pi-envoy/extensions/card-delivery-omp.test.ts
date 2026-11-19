@@ -1688,3 +1688,65 @@ test.skipIf(skip)(
     }),
   480_000
 );
+
+/** The entries Oh My Pi's SQL store holds for the session `file` names, each line parsed. */
+function storeEntries(database: string, file: string): Record<string, unknown>[] {
+  return (sqlSessionText(database, file) ?? "")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/** The role of a message entry, or undefined for any other entry. */
+function entryRole(entry: Record<string, unknown>): unknown {
+  const { message } = entry;
+  return entry.type === "message" && typeof message === "object" && message !== null
+    ? (message as Record<string, unknown>).role
+    : undefined;
+}
+
+// Oh My Pi stores every entry of a session once any entry of it is an assistant message, on any
+// branch of its tree, and appends a stored card at the leaf it has then. The stored-card check reads
+// only the branch the session is on (`storedEntries`, `storeHoldsBranch`). A person's edit of the
+// first prompt moves the leaf to before it, a branch with no reply, where a low card is stored, and
+// a move back to the reply leaves that card on a branch the check never reads again: the store
+// holds it, and its frame is never answered done for the life of the process, holding a place of
+// the session consumer's ack-pending and its resume point (dispatch://INFRA-3686/spec R5).
+test.skipIf(skip)(
+  "a low card stored on a branch with no reply, then left for one with a reply, is answered done",
+  async () => {
+    const session = await startSession({ storage: "sql" });
+    await session.command({ type: "prompt", message: "First task." });
+    const first = await session.nextTurn("the first model request");
+    first.reply([text("Done.")]);
+    await session.settled();
+    const file = (await session.state()).sessionFile;
+    if (file === undefined) throw new Error("get_state named no session file");
+    const database = path.join(session.root, "sessions.db");
+    const entries = await session.until("the first reply in the store", () => {
+      const held = storeEntries(database, file);
+      return held.some((entry) => entryRole(entry) === "assistant") ? held : undefined;
+    });
+    const prompt = entries.find((entry) => entryRole(entry) === "user");
+    const reply = entries.find((entry) => entryRole(entry) === "assistant");
+    if (typeof prompt?.id !== "string" || typeof reply?.id !== "string") {
+      throw new Error("the store holds no prompt and reply with ids");
+    }
+    // The person edits the first prompt: the leaf moves to before it.
+    await session.command({ type: "navigate_tree", entryId: prompt.id });
+    const low = marked("low-tree");
+    const words = await session.relayWatched(
+      "the session to take the low card",
+      daemonEnvelope(low.text, low.label, "low")
+    );
+    await session.until("the low card in the store", () =>
+      sqlSessionText(database, file)?.includes(low.text) ? true : undefined
+    );
+    await noRequestFor(session, 12_000, 1);
+    // The person goes back to the first reply without sending the edit.
+    await session.command({ type: "navigate_tree", entryId: reply.id });
+    await noRequestFor(session, 12_000, 1);
+    expect(words).toContain("done");
+  },
+  180_000
+);
