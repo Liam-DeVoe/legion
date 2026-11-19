@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/redact"
@@ -47,6 +48,16 @@ type populationTwin struct {
 type populationExported struct {
 	Name string
 	Rs   []reqRecExported
+}
+
+type collectorTwin struct {
+	mu    sync.Mutex
+	items []reqRecTwin
+}
+
+type collectorExported struct {
+	Mu    sync.Mutex
+	Items []reqRecExported
 }
 
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
@@ -95,6 +106,15 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		// which no printer follows, so their rows use the pointer kind's own twins.
 		{Name: "loadtest.step", Kind: "pointer", Boxed: &step{pops: []*population{pop}}},
 		{Name: "loadtest.requestLoad", Kind: "pointer", Boxed: load},
+		// The collector a requestLoad holds its records in. It holds a lock, so its row prints it
+		// through a pointer, never as a value.
+		{
+			Name:     "loadtest.collector.reqRec",
+			Kind:     "pointer",
+			Boxed:    recs,
+			Same:     &collectorTwin{items: []reqRecTwin{{"issues.list", 409, redacttest.Code}}},
+			Exported: &collectorExported{Items: []reqRecExported{{"issues.list", 409, redacttest.Code}}},
+		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { redacttest.PrintTest(t, h) })
 	}

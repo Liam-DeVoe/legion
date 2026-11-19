@@ -135,6 +135,10 @@
         "test": "print-loadtest.requestLoad"
       },
       {
+        "holder": "github.com/sjawhar/envoy/loadtest.collector[github.com/sjawhar/envoy/loadtest.reqRec]",
+        "test": "print-loadtest.collector.reqRec"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/internal/redact.RemoteNumber",
         "test": "print-redact.RemoteNumber"
       },
@@ -1910,6 +1914,13 @@
       "package": "./loadtest",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.requestLoad",
       "production": "github.com/sjawhar/envoy/loadtest.requestLoad: every printer at every placement"
+    },
+    {
+      "id": "print-loadtest.collector.reqRec",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.collector.reqRec",
+      "production": "github.com/sjawhar/envoy/loadtest.collector[github.com/sjawhar/envoy/loadtest.reqRec]: every printer at every placement"
     },
     {
       "id": "print-redact.RemoteNumber",
