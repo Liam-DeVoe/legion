@@ -219,13 +219,15 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 }
 
 // The option table itself: which arguments name a file gh would send as content, in both
-// spellings of each, and which name no file at all. The entries that answer nothing are the
-// table's boundary, and each is a call that must not be refused over a file nobody named.
+// spellings of each, and which name no file at all, and which option names standard input. The
+// entries that answer nothing are the table's boundary, and each is a call that must not be
+// refused over a file nobody named.
 func TestTheFilesAGhCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		args []string
-		want []GhFile
+		name  string
+		args  []string
+		want  []GhFile
+		stdin string
 	}{
 		{
 			name: "a separate --body-file",
@@ -265,23 +267,43 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{
 			name: "a field read from a file",
 			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-F", "body=@body.md"},
-			want: []GhFile{{Option: "-F", Path: "body.md"}},
+			want: []GhFile{{Option: "-F", Path: "body.md", Field: "body"}},
 		},
 		{
 			name: "an attached --field read from a file",
 			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "--field=body=@body.md"},
-			want: []GhFile{{Option: "--field", Path: "body.md"}},
+			want: []GhFile{{Option: "--field", Path: "body.md", Field: "body"}},
+		},
+		{
+			name: "a separate --field read from a file",
+			args: []string{"api", "graphql", "--field", "query=@query.graphql"},
+			want: []GhFile{{Option: "--field", Path: "query.graphql", Field: "query"}},
 		},
 		{
 			name: "the same file named twice",
 			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-F", "body=@body.md", "--body-file", "body.md"},
-			want: []GhFile{{Option: "-F", Path: "body.md"}},
+			want: []GhFile{{Option: "-F", Path: "body.md", Field: "body"}},
 		},
 		{name: "a field whose value is a literal", args: []string{"api", "x", "-F", "body=text"}},
 		{name: "a raw field, which sends its value literally", args: []string{"api", "x", "-f", "body=@body.md"}},
 		{name: "a --field naming a project's field", args: []string{"project", "field-list", "1", "--field", "Status"}},
-		{name: "a body option whose value is standard input", args: []string{"pr", "comment", "1", "--body-file", "-"}},
-		{name: "a field read from standard input", args: []string{"api", "x", "-F", "body=@-"}},
+		{name: "a body option whose value is standard input", args: []string{"pr", "comment", "1", "--body-file", "-"}, stdin: "--body-file"},
+		{name: "a field read from standard input", args: []string{"api", "x", "-F", "body=@-"}, stdin: "--field"},
+		{name: "a long field read from standard input", args: []string{"api", "x", "--field", "body=@-"}, stdin: "--field"},
+		{name: "gh api's request body on standard input", args: []string{"api", "x", "--input", "-"}, stdin: "--input"},
+		{name: "gh api's attached request body on standard input", args: []string{"api", "x", "--input=-"}, stdin: "--input"},
+		{name: "release notes on standard input", args: []string{"release", "create", "v0", "--notes-file", "-"}, stdin: "--notes-file"},
+		// -F with no `=` is one of three options whose input is text, and the leaf alone says which.
+		{name: "a short -F of standard input", args: []string{"pr", "comment", "1", "-F", "-"}, stdin: "-F"},
+		{
+			name:  "a file beside standard input",
+			args:  []string{"api", "x", "--input", "-", "-F", "body=@body.md"},
+			want:  []GhFile{{Option: "-F", Path: "body.md", Field: "body"}},
+			stdin: "--input",
+		},
+		// Only one of two options can have the input, so the guard is told it does not know.
+		{name: "two options of standard input that differ", args: []string{"api", "x", "--input", "-", "-F", "body=@-"}},
+		{name: "one option of standard input twice", args: []string{"api", "x", "-F", "title=@-", "-F", "body=@-"}, stdin: "--field"},
 		{name: "a secret's env file", args: []string{"secret", "set", "NAME", "--env-file", "secrets.env"}},
 		{name: "a template of the repository", args: []string{"pr", "create", "--template", "pull_request_template.md"}},
 		{name: "a gist's positional files", args: []string{"gist", "create", "note.md"}},
@@ -294,11 +316,12 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{name: "a short cluster whose last letter is the option", args: []string{"pr", "create", "-dF", "body.md"}},
 		{name: "a short option with its value attached by an equals sign", args: []string{"pr", "create", "-F=body.md"}},
 		{name: "an option past a double dash", args: []string{"repo", "clone", "invented-org/invented-repo", "--", "--body-file", "body.md"}},
+		{name: "standard input past a double dash", args: []string{"repo", "clone", "invented-org/invented-repo", "--", "--input", "-"}},
 		{name: "an option with no value at all", args: []string{"pr", "comment", "1", "--body-file"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ghFileArgs(tc.args); !slices.Equal(got, tc.want) {
-				t.Fatalf("ghFileArgs(%q) = %v, want %v", tc.args, got, tc.want)
+			if got, stdin := ghFileArgs(tc.args); !slices.Equal(got, tc.want) || stdin != tc.stdin {
+				t.Fatalf("ghFileArgs(%q) = %v, %q; want %v, %q", tc.args, got, stdin, tc.want, tc.stdin)
 			}
 		})
 	}
@@ -353,11 +376,11 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	})
 }
 
-// A JSON body is read decoded as well as raw. A string's escapes are text GitHub stores and
-// shows — `\u0074` is the letter t — and an escape inside a name parts a word the rules read
-// whole, so a request body that spells a host in escapes names that host as surely as one that
-// spells it out. Both doors a JSON body comes through are driven here: `gh api --input <file>`
-// and the standard input the shared check's exit-4 handshake buffers.
+// A JSON body is read decoded. A string's escapes are text GitHub stores and shows — `\u0074` is
+// the letter t — and an escape inside a name parts a word the rules read whole, so a request body
+// that spells a host in escapes names that host as surely as one that spells it out. Both doors a
+// JSON body comes through are driven here: `gh api --input <file>` and the standard input the
+// shared check's exit-4 handshake buffers.
 func TestAJsonBodysEscapesAreRead(t *testing.T) {
 	// The host, with the first letter of each of its three labels written as a JSON escape, so
 	// no pattern of the rule file matches the bytes of the document itself.
@@ -376,10 +399,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 			Repo: "invented-org/invented-repo",
 		})
 		report := refusal(t, err)
-		if len(report.Lines) != 1 || !namesClass(report.Lines[0], leakguardtest.RulesHostClass) ||
-			!strings.Contains(report.Lines[0], "decoded as JSON") {
-			t.Fatalf("the report is %q, want one line of the decoded record naming the class", report.Lines)
-		}
+		reports(t, report.Lines, body+", JSON .body: "+leakguardtest.RulesHostClass)
 	})
 	t.Run("the buffered standard input", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
@@ -389,7 +409,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 			Repo:  "invented-org/invented-repo",
 		})
 		report := refusal(t, err)
-		reports(t, report.Lines, "the gh call's standard input, decoded as JSON: "+leakguardtest.RulesHostClass)
+		reports(t, report.Lines, "the gh call's standard input, JSON .body: "+leakguardtest.RulesHostClass)
 	})
 	t.Run("a JSON body naming nothing is cleared", func(t *testing.T) {
 		body := filepath.Join(t.TempDir(), "request.json")

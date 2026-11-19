@@ -1,0 +1,310 @@
+package leakguard
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+)
+
+// The tests of a gh call read one field at a time: each of them drives the fixture's two-word
+// rule, `<name>[^\n]*<word>`, over a call whose two words stand in two fields GitHub stores apart,
+// which passes, and in one field, which is refused. Each joined form is refused by the rule
+// itself (refusedWhole), so a pass is the reader's and not a rule that never matched.
+
+// The fixture's two words, and the two-word rule's class.
+const (
+	pairName  = leakguardtest.PairName
+	pairWord  = leakguardtest.PairWord
+	pairClass = leakguardtest.PairClass
+)
+
+// ghFieldCall is the error GhCall answers req with, under a guard whose destination is public: a
+// shared check that clears the call, and one that asks for its standard input first where the
+// call has one.
+func ghFieldCall(t *testing.T, req GhRequest) error {
+	t.Helper()
+	check := passes
+	if req.Stdin != nil {
+		check = leakguardtest.Reading(0, "")
+	}
+	req.Repo = "invented-org/invented-repo"
+	_, err := guardWith(t, leakguardtest.Write(t, t.TempDir(), check), Public).GhCall(bound(t), req)
+	return err
+}
+
+// cleared fails the test unless err is nil.
+func cleared(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("the call was refused: %v", err)
+	}
+}
+
+// refusedWhole fails the test unless the fixture's rules refuse text read as one record: the
+// joined form of a write whose fields the guard reads apart.
+func refusedWhole(t *testing.T, text string) {
+	t.Helper()
+	if err := fixtureRules(t).pass(bound(t), "the joined text", []Record{{Label: "the joined text", Text: text}}); err == nil {
+		t.Fatalf("the rules clear %q read whole, so a pass of its fields proves nothing", text)
+	}
+}
+
+// fieldFile writes text to a file of the test's own named name, and answers its path.
+func fieldFile(t *testing.T, name, text string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// reviewDocument is a pull request review as `gh api --input` sends one: compact, on one line,
+// with body the review's body and comment the body of its one comment.
+func reviewDocument(t *testing.T, body, comment string) string {
+	t.Helper()
+	type reviewComment struct {
+		Path string `json:"path"`
+		Line int    `json:"line"`
+		Body string `json:"body"`
+	}
+	document, err := json.Marshal(struct {
+		Body     string          `json:"body"`
+		Event    string          `json:"event"`
+		Comments []reviewComment `json:"comments"`
+	}{Body: body, Event: "COMMENT", Comments: []reviewComment{{Path: "main.go", Line: 19, Body: comment}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(document)
+}
+
+// A JSON body is read one string at a time, as GitHub stores it: the fixture's two words in two
+// fields of one compact review, which a raw read joins on one line, pass; the same two words in
+// one field are refused, and the report names the field by its JSON path. A duplicate key's
+// first value is read as well as its last. A text that is not exactly one document is read raw,
+// and standard input named by an option other than --input is text GitHub stores as it stands.
+func TestGhJSONReadsOneFieldAtATime(t *testing.T) {
+	const endpoint = "repos/invented-org/invented-repo/pulls/1/reviews"
+	apart := reviewDocument(t, "the "+pairName+" notes", "a "+pairWord+" aside")
+	together := reviewDocument(t, "a clean review", "the "+pairName+" and the "+pairWord)
+	refusedWhole(t, apart)
+	if strings.Contains(apart, "\n") {
+		t.Fatalf("the review %q is on more than one line, so a raw read of it would not join its fields", apart)
+	}
+	t.Run("two fields of --input <file> pass", func(t *testing.T) {
+		body := fieldFile(t, "review.json", apart)
+		cleared(t, ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", body}}))
+	})
+	t.Run("two fields of --input - pass", func(t *testing.T) {
+		cleared(t, ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(apart)}))
+	})
+	t.Run("two fields of standard input the caller names --input pass", func(t *testing.T) {
+		cleared(t, ghFieldCall(t, GhRequest{
+			Args:        []string{"api", endpoint, "--input", "-"},
+			Stdin:       strings.NewReader(apart),
+			Files:       []GhFile{},
+			StdinOption: "--input",
+		}))
+	})
+	t.Run("one field of --input <file> is refused", func(t *testing.T) {
+		body := fieldFile(t, "review.json", together)
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", body}})
+		reports(t, refusal(t, err).Lines, body+", JSON .comments[0].body: "+pairClass)
+	})
+	t.Run("one field of --input - is refused", func(t *testing.T) {
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(together)})
+		reports(t, refusal(t, err).Lines, "the gh call's standard input, JSON .comments[0].body: "+pairClass)
+	})
+	t.Run("a duplicate key's first value is read", func(t *testing.T) {
+		body := fieldFile(t, "review.json", `{"body":"the `+pairName+` and the `+pairWord+`","body":"a clean review"}`)
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", body}})
+		reports(t, refusal(t, err).Lines, body+", JSON .body: "+pairClass)
+	})
+	t.Run("a name is read as well as a value", func(t *testing.T) {
+		body := fieldFile(t, "gist.json", `{"files":{"the `+pairName+` and the `+pairWord+`.md":{"content":"a clean file"}}}`)
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", "gists", "--input", body}})
+		reports(t, refusal(t, err).Lines, body+`, JSON .files."the `+pairName+` and the `+pairWord+`.md" (name): `+pairClass)
+	})
+	t.Run("a body of two documents is read raw", func(t *testing.T) {
+		body := fieldFile(t, "review.json", `{"body":"the `+pairName+` notes"} {"body":"a `+pairWord+` aside"}`)
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", body}})
+		reports(t, refusal(t, err).Lines, body+": "+pairClass)
+	})
+	t.Run("a Markdown body is read raw", func(t *testing.T) {
+		markdown := "# Review\n\nthe " + pairName + " and the " + pairWord + "\n"
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(markdown)})
+		reports(t, refusal(t, err).Lines, "the gh call's standard input: "+pairClass)
+	})
+	// A comment's body given on standard input is the comment GitHub shows, JSON or not, so the
+	// two fields of a document given that way stand on its one line.
+	t.Run("standard input the argv names --body-file - is read as text", func(t *testing.T) {
+		err := ghFieldCall(t, GhRequest{Args: []string{"pr", "comment", "1", "--body-file", "-"}, Stdin: strings.NewReader(apart)})
+		reports(t, refusal(t, err).Lines, "the gh call's standard input: "+pairClass)
+	})
+	t.Run("standard input the caller names --body-file is read as text", func(t *testing.T) {
+		err := ghFieldCall(t, GhRequest{
+			Args:        []string{"pr", "comment", "1", "--body-file", "-"},
+			Stdin:       strings.NewReader(apart),
+			Files:       []GhFile{},
+			StdinOption: "--body-file",
+		})
+		reports(t, refusal(t, err).Lines, "the gh call's standard input: "+pairClass)
+	})
+	// A caller that parsed the call but names no option of its standard input knows nothing of
+	// it, and the table is not consulted for it: the input is read both ways.
+	t.Run("standard input nothing names is read raw", func(t *testing.T) {
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(apart), Files: []GhFile{}})
+		reports(t, refusal(t, err).Lines, "the gh call's standard input: "+pairClass)
+	})
+	t.Run("standard input nothing names is read decoded", func(t *testing.T) {
+		// The name with its l written as a JSON escape, so that the raw read does not match.
+		escaped := `{"body":"the ` + strings.Replace(pairName, "l", `\u006c`, 1) + ` and the ` + pairWord + `"}`
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(escaped), Files: []GhFile{}})
+		reports(t, refusal(t, err).Lines, "the gh call's standard input, JSON .body: "+pairClass)
+	})
+}
+
+// The argv is read one argument at a time, and a field's value apart from every other: the
+// fixture's two words as the title and the body of one call pass, the joined argv would match,
+// and the two in one field are refused, the report naming the field. Every spelling of the four
+// field options is read so, a field's name as well as its value, and every other argument, those
+// past a bare `--` among them, is a record of its own.
+func TestGhJSONArgumentsReadOneFieldAtATime(t *testing.T) {
+	const endpoint = "repos/invented-org/invented-repo/issues"
+	t.Run("two fields pass", func(t *testing.T) {
+		args := []string{"api", endpoint, "-f", "title=" + pairName, "-f", "body=" + pairWord}
+		refusedWhole(t, strings.Join(args, " "))
+		cleared(t, ghFieldCall(t, GhRequest{Args: args}))
+	})
+	both := "the " + pairName + " and the " + pairWord
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"-f", []string{"api", endpoint, "-f", "title=a clean title", "-f", "body=" + both}, "the gh call's field body"},
+		{"-f attached", []string{"api", endpoint, "-fbody=" + both}, "the gh call's field body"},
+		{"--raw-field", []string{"api", endpoint, "--raw-field", "body=" + both}, "the gh call's field body"},
+		{"--raw-field attached", []string{"api", endpoint, "--raw-field=body=" + both}, "the gh call's field body"},
+		{"-F", []string{"api", endpoint, "-F", "body=" + both}, "the gh call's field body"},
+		{"--field attached", []string{"api", endpoint, "--field=body=" + both}, "the gh call's field body"},
+		{"a field's name", []string{"api", "gists", "-f", "files[" + both + ".md][content]=a clean file"}, "the gh call's field files[" + both + ".md][content] (name)"},
+		{"an argument", []string{"pr", "create", "--title", both}, "the gh call's argument 3"},
+		{"an argument past a double dash", []string{"api", endpoint, "--", "-f", "body=" + both}, "the gh call's argument 4"},
+	} {
+		t.Run(tc.name+" is refused", func(t *testing.T) {
+			reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: tc.args})).Lines, tc.want+": "+pairClass)
+		})
+	}
+}
+
+// graphQLMutation is a one-line createIssue mutation whose title and body literals hold title
+// and body as written, escapes and all: its literals are 1 the repository's id, 2 the title and
+// 3 the body.
+func graphQLMutation(title, body string) string {
+	return `mutation { createIssue(input: {repositoryId: "R_invented", title: "` + title + `", body: "` + body + `"}) { issue { number } } }`
+}
+
+// graphQLBody is a `gh api graphql --input` request body holding query.
+func graphQLBody(t *testing.T, query string) string {
+	t.Helper()
+	document, err := json.Marshal(map[string]any{"query": query, "variables": map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(document)
+}
+
+// A GraphQL query is read one string literal at a time, decoded, as GitHub stores each: the
+// fixture's two words as a mutation's title and body pass, though the query holds both on its
+// one line, and the two in one literal are refused, the report naming the literal. A name written
+// with an escape inside a literal is the name GitHub stores; a block string is read decoded; a
+// comment holds no literal; and a query that does not lex is read as written. Each of the query's
+// three sources is read so — a `query=` field, a `-F query=@<file>` file and a JSON body's
+// `query` — and a REST call's `query` field is a field like any other.
+func TestGhJSONGraphQLStringsReadOneFieldAtATime(t *testing.T) {
+	apart := graphQLMutation("the "+pairName+" notes", "a "+pairWord+" aside")
+	together := graphQLMutation("a clean title", "the "+pairName+" and the "+pairWord)
+	refusedWhole(t, apart)
+	field := func(query string) GhRequest {
+		return GhRequest{Args: []string{"api", "graphql", "-f", "query=" + query}}
+	}
+	const literal = "the gh call's field query, GraphQL string "
+	t.Run("a title and a body pass", func(t *testing.T) {
+		cleared(t, ghFieldCall(t, field(apart)))
+	})
+	t.Run("one literal holding both is refused", func(t *testing.T) {
+		reports(t, refusal(t, ghFieldCall(t, field(together))).Lines, literal+"3: "+pairClass)
+	})
+	t.Run("a name written with an escape is refused", func(t *testing.T) {
+		for _, escape := range []string{`\u006c`, `\u{6C}`} {
+			query := graphQLMutation("the "+strings.Replace(pairName, "l", escape, 1)+" and the "+pairWord, "a clean body")
+			if strings.Contains(query, pairName) {
+				t.Fatalf("the query %q spells the name in its own bytes, so it proves nothing", query)
+			}
+			reports(t, refusal(t, ghFieldCall(t, field(query))).Lines, literal+"2: "+pairClass)
+		}
+	})
+	t.Run("a block string is read decoded", func(t *testing.T) {
+		query := "mutation { createIssue(input: {repositoryId: \"R_invented\", title: \"a clean title\", body: \"\"\"\n" +
+			"      the " + pairName + " and the " + pairWord + "\n" +
+			"      says \\\"\"\" and goes\n" +
+			"    \"\"\"}) { issue { number } } }"
+		err := ghFieldCall(t, field(query))
+		want := matchLine(literal+"3", pairClass, pairName+" and the "+pairWord, 1, "the "+pairName+" and the "+pairWord)
+		if lines := refusal(t, err).Lines; len(lines) != 1 || lines[0] != want {
+			t.Fatalf("the report is %q, want %q", lines, want)
+		}
+	})
+	t.Run("a comment holds no literal", func(t *testing.T) {
+		query := "# \"the " + pairName + " and the " + pairWord + "\" is a comment\n" + apart
+		cleared(t, ghFieldCall(t, field(query)))
+	})
+	for _, tc := range []struct{ name, query string }{
+		{"an unterminated literal", `mutation { createIssue(input: {title: "the ` + pairName + ` and the ` + pairWord + `}) }`},
+		{"a bad escape", graphQLMutation(`the `+pairName+` \q and the `+pairWord, "a clean body")},
+		{"an unterminated block string", `mutation { createIssue(input: {body: """the ` + pairName + ` and the ` + pairWord + `}) }`},
+	} {
+		t.Run("a query with "+tc.name+" is read as written", func(t *testing.T) {
+			reports(t, refusal(t, ghFieldCall(t, field(tc.query))).Lines, "the gh call's field query: "+pairClass)
+		})
+	}
+	t.Run("a query file lexes", func(t *testing.T) {
+		cleared(t, ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "-F", "query=@" + fieldFile(t, "query.graphql", apart)}}))
+		query := fieldFile(t, "query.graphql", together)
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "-F", "query=@" + query}})
+		reports(t, refusal(t, err).Lines, query+", GraphQL string 3: "+pairClass)
+	})
+	t.Run("a query file the caller parsed lexes", func(t *testing.T) {
+		query := fieldFile(t, "query.graphql", together)
+		err := ghFieldCall(t, GhRequest{
+			Args:  []string{"api", "graphql", "--field", "query=@" + query},
+			Files: []GhFile{{Option: "--field", Path: query, Field: "query"}},
+		})
+		reports(t, refusal(t, err).Lines, query+", GraphQL string 3: "+pairClass)
+	})
+	t.Run("a JSON body's query lexes", func(t *testing.T) {
+		refusedWhole(t, graphQLBody(t, apart))
+		cleared(t, ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "--input", fieldFile(t, "request.json", graphQLBody(t, apart))}}))
+		body := fieldFile(t, "request.json", graphQLBody(t, together))
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "--input", body}})
+		reports(t, refusal(t, err).Lines, body+", JSON .query, GraphQL string 3: "+pairClass)
+	})
+	t.Run("a JSON body's query on standard input lexes", func(t *testing.T) {
+		cleared(t, ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "--input", "-"}, Stdin: strings.NewReader(graphQLBody(t, apart))}))
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "--input", "-"}, Stdin: strings.NewReader(graphQLBody(t, together))})
+		reports(t, refusal(t, err).Lines, "the gh call's standard input, JSON .query, GraphQL string 3: "+pairClass)
+	})
+	t.Run("the endpoint is found past gh api's options", func(t *testing.T) {
+		cleared(t, ghFieldCall(t, GhRequest{Args: []string{"api", "-H", "X-Invented: 1", "--paginate", "-iX", "POST", "graphql", "-f", "query=" + apart}}))
+	})
+	t.Run("a REST call's query field is read as written", func(t *testing.T) {
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", "-X", "GET", "search/issues", "-f", "query=" + apart}})
+		reports(t, refusal(t, err).Lines, "the gh call's field query: "+pairClass)
+	})
+}

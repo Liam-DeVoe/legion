@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +22,14 @@ type GhRequest struct {
 	// only where the shared check asks for it, and what is read comes back from GhCall for the
 	// caller to hand gh in its place.
 	Stdin io.Reader
+	// StdinOption is the option whose value named standard input (`-`, or `@-` for a field), by
+	// its long name as gh spells it: `--input`, `--body-file`, `--notes-file`, `--from-file` or
+	// `--field`. It says what the input is (stdinRecords): `gh api --input -` makes it the
+	// request body, a JSON document GitHub parses, and each other option text GitHub stores as
+	// it stands. "" is a caller that does not know. Where such a caller also handed no Files, the
+	// guard reads the option out of the argv (ghFileArgs); where nothing knows, it reads the
+	// input both ways.
+	StdinOption string
 	// Repo is the destination repository, as "owner/name". Empty where the caller knows no
 	// destination, which the guard reads as public (Guard.scanThrough).
 	Repo string
@@ -155,16 +163,22 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	if !public {
 		return answer, nil
 	}
-	records := []Record{{Label: "the gh call's arguments", Text: strings.Join(req.Args, " ")}}
-	if len(answer.Stdin) > 0 {
-		records = append(records, jsonAlso(Record{Label: "the gh call's standard input", Text: string(answer.Stdin)})...)
-	}
-	// The text of each file the call would send, read here and not before the visibility answer:
-	// a private or internal destination runs no rule pass, and reading its files would cost the
-	// opens for nothing.
-	files := req.Files
+	// What the call would send, read here and not before the visibility answer: a private or
+	// internal destination runs no rule pass, and reading its files would cost the opens for
+	// nothing. The files, and the option that named standard input, are the caller's parse where
+	// it handed one and the argv's table where it did not.
+	files, stdinOption := req.Files, req.StdinOption
 	if files == nil {
-		files = ghFileArgs(req.Args)
+		var named string
+		files, named = ghFileArgs(req.Args)
+		if stdinOption == "" {
+			stdinOption = named
+		}
+	}
+	graphQL := ghAPIGraphQL(req.Args)
+	records := ghArgRecords(req.Args, graphQL)
+	if len(answer.Stdin) > 0 {
+		records = append(records, stdinRecords(Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}, stdinOption, graphQL)...)
 	}
 	for _, named := range files {
 		text, err := readGhFile(named)
@@ -172,73 +186,258 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 			return answer, err
 		}
 		record := Record{Label: named.Path, Text: text}
-		if named.Option == inputOption {
-			records = append(records, jsonAlso(record)...)
-			continue
+		switch {
+		case graphQL && named.Field == graphQLQuery:
+			records = append(records, graphQLRecords(record)...)
+		case named.Option == inputOption:
+			records = append(records, jsonBody(record, graphQL)...)
+		default:
+			records = append(records, record)
 		}
-		records = append(records, record)
 	}
 	return answer, rules.pass(ctx, whatGhCall, records)
 }
 
-// jsonAlso is record and, where its text is a JSON document, a second record of the strings
-// that document decodes to.
+// ghArgRecords is the records of args, a gh call's argv: one of each argument, and none that
+// joins two. An argument is "the gh call's argument <i>", i its index in args, and holds the
+// argument as it was written. A field, the `<name>=<value>` given to -f, --raw-field, -F or
+// --field in either spelling (`-f name=value`, `-fname=value`, `--raw-field=name=value`), is two
+// records: "the gh call's field <name>", which holds the value after the first `=`, and "the gh
+// call's field <name> (name)", which holds the name. A call's fields are values GitHub stores
+// apart — the title and the body of `gh api …/issues -f title=… -f body=…`, a gist's file name
+// in `-f 'files[<name>][content]=…'` — and a rule that needs two words on one line matches only
+// where one of them holds both. The joined argv would put every field on one line.
 //
-// A JSON string's escapes hide its text from the rules: `\u0074` is a letter no pattern reads,
-// and an escape inside a name parts the two halves of a word two of these rules need whole. What
-// GitHub stores is the decoded string, so the decoded string is what a rule must read; the raw
-// bytes are read as well, since a name can stand unescaped in a part of the document no string
-// of it decodes to. The shared check reads a JSON text both ways for this same reason (its
-// README's decode_all).
+// A field's value is the literal string it is: gh does the JSON escaping, so a `\u0074` written
+// in an argument reaches GitHub's REST API as those six characters, and the rules read what
+// GitHub would show. The one field that is not is a GraphQL query, `query` in a `gh api
+// graphql` call (graphQL), whose literals GitHub's own parser decodes: it is read one literal at
+// a time (graphQLRecords). A `-F query=@<path>` reads the query from the file, which is read so
+// (GhFile.Field), and the field's own value is then the path, read as written.
 //
-// Two of a gh call's records are JSON and get this, and two are not:
-//
-//   - `gh api --input <file>`, whose whole file is the request body GitHub parses as JSON, and
-//     the buffered standard input, which is that same body for `gh api --input -` and the shared
-//     check's exit-4 handshake has already read. Both are decoded where they parse, and a text
-//     that is no JSON document — a Markdown body on standard input — is left as the one record
-//     it was.
-//   - The argv. `gh api -f name=value` and `-F name=value` send the value as the literal string
-//     it is, gh doing the escaping, so a `\u0074` written in an argument reaches GitHub's REST
-//     API as those six characters and the rules read what GitHub would show. A GraphQL query is
-//     the exception: `gh api graphql -f query=…` hands GitHub a document whose string literals
-//     GitHub's own parser decodes, and this pass reads the query as it was written.
-//   - A `-F name=@<path>` field's file, whose bytes gh makes one JSON string of, escaping them
-//     itself: the file holds the text GitHub shows, which is the record already read.
-func jsonAlso(record Record) []Record {
-	var held any
-	if err := json.Unmarshal([]byte(record.Text), &held); err != nil {
-		return []Record{record}
+// The reader knows no option's arity but the four fields', which is the direction it errs in:
+// an argument it takes for a field is read as a name and a value, and one it takes for anything
+// else is read whole. Arguments past a bare `--` are read as arguments, with no field among
+// them: gh sends them to nobody, and reading them costs nothing.
+func ghArgRecords(args []string, graphQL bool) []Record {
+	records := make([]Record, 0, len(args))
+	argument := func(i int) {
+		records = append(records, Record{Label: "the gh call's argument " + strconv.Itoa(i), Text: args[i]})
 	}
-	var decoded strings.Builder
-	jsonStrings(held, &decoded)
-	if decoded.Len() == 0 {
-		return []Record{record}
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			for ; i < len(args); i++ {
+				argument(i)
+			}
+			break
+		}
+		option, value, attached := ghFieldArg(args[i])
+		if option == "" {
+			argument(i)
+			continue
+		}
+		if !attached {
+			argument(i)
+			if i+1 == len(args) {
+				break
+			}
+			i++
+			value = args[i]
+		}
+		name, text, found := strings.Cut(value, "=")
+		if !found {
+			// `-f <name>` with no value is gh's empty array (`key[]`), or the value of some
+			// other command's option: either way the argument is read whole.
+			argument(i)
+			continue
+		}
+		label := "the gh call's field " + name
+		records = append(records, Record{Label: label + " (name)", Text: name})
+		field := Record{Label: label, Text: text}
+		fromFile := (option == "-F" || option == "--field") && strings.HasPrefix(text, "@")
+		if graphQL && name == graphQLQuery && !fromFile {
+			records = append(records, graphQLRecords(field)...)
+			continue
+		}
+		records = append(records, field)
 	}
-	// The label says which record this is of, so a report names the one the writer can find. The
-	// record carries no Path, as the record it is decoded from carries none (Record.Path).
-	return []Record{record, {Label: record.Label + ", decoded as JSON", Text: decoded.String()}}
+	return records
 }
 
-// jsonStrings writes every string a decoded JSON document holds, an object's names as well as
-// its values, one to a line. An object's names are written in order, so that two runs over one
-// document read the same text: Go hands a map's keys out in no order of its own.
-func jsonStrings(value any, out *strings.Builder) {
-	switch held := value.(type) {
-	case string:
-		out.WriteString(held)
-		out.WriteString("\n")
-	case []any:
-		for _, item := range held {
-			jsonStrings(item, out)
+// ghFieldArg reads arg as a field option of gh's: the option, -f, --raw-field, -F or --field;
+// its value where arg holds it (attached), as `--field=<value>`, `-F<value>` and, as pflag reads
+// a short option, `-F=<value>` do; and "" for an argument that is no field option.
+func ghFieldArg(arg string) (option, value string, attached bool) {
+	switch {
+	case arg == "-f" || arg == "-F" || arg == "--raw-field" || arg == "--field":
+		return arg, "", false
+	case strings.HasPrefix(arg, "--raw-field=") || strings.HasPrefix(arg, "--field="):
+		option, value, _ = strings.Cut(arg, "=")
+		return option, value, true
+	case strings.HasPrefix(arg, "-f") || strings.HasPrefix(arg, "-F"):
+		return arg[:len("-f")], strings.TrimPrefix(arg[len("-f"):], "="), true
+	}
+	return "", "", false
+}
+
+// stdinRecords is the records of record, the call's buffered standard input, by the option that
+// named it (GhRequest.StdinOption). Named by `--input`, it is the request body, read as JSON
+// (jsonBody). Named by any other option — `--body-file -`, `--notes-file -`, `--from-file -`,
+// `-F <name>=@-` — it is text GitHub stores as it stands, one record: gh makes one JSON string
+// of a field's bytes itself, and a body option's input is the body. Named by nothing known, it
+// is read both ways, the raw record and the strings of a JSON document beside it, which errs
+// toward reading more.
+func stdinRecords(record Record, option string, graphQL bool) []Record {
+	switch option {
+	case inputOption:
+		return jsonBody(record, graphQL)
+	case "":
+		fields, _ := jsonFields(record, graphQL)
+		return append([]Record{record}, fields...)
+	}
+	return []Record{record}
+}
+
+// jsonBody is the records of record, a request body GitHub parses as JSON: the strings of the
+// document where its text is exactly one (jsonFields), and record itself, raw, where it is not.
+// A text that is not one document is no body GitHub parses, and is read as the one record it
+// was: a Markdown body named by `--input` by mistake is still read.
+//
+// Two of a gh call's records are such a body: `gh api --input <file>`, whose whole file is the
+// request body, and standard input named by `gh api --input -`, which the shared check's exit-4
+// handshake has buffered. A `-F <name>=@<path>` field's file is not, since gh makes one JSON
+// string of its bytes, escaping them itself: the file holds the text GitHub shows.
+func jsonBody(record Record, graphQL bool) []Record {
+	if fields, ok := jsonFields(record, graphQL); ok {
+		return fields
+	}
+	return []Record{record}
+}
+
+// jsonFields is the records of the strings record's text holds where that text is exactly one
+// JSON document, and false where it is not: no JSON at all, a document with more after it, or
+// two documents. A string is one record, an object's names and values alike, labelled
+// "<record>, JSON <path>" and a name "<record>, JSON <path> (name)", the path written as jq
+// writes it (`.body`, `.comments[0].body`, `."a b"`, and `.` for the document itself).
+//
+// A body is read one string at a time because GitHub stores it one string at a time: a review's
+// body and each of its comments' bodies are texts of their own, shown apart, and a rule that
+// needs two words on one line (`<name>[^\n]*<word>`) matches only where one stored text holds
+// both. A compact document puts every field on one line, so a raw read of it would join a name
+// in the review's body to an unrelated word in its fifth comment, and refuse a write that
+// publishes neither beside the other.
+//
+// No raw read of one document is needed beside its strings. Every text GitHub stores from a JSON
+// body is a decoded string value, and the bytes between the strings — the punctuation, the
+// numbers, `true`, `false`, `null` and the whitespace — hold none: a number and the three
+// literals are values of the schema's, stored as no text of the caller's, and make no record. The
+// decoded string is also the one a rule must read: a string's escapes hide its text from the
+// rules, `\u0074` being a letter no pattern reads in the bytes, and an escape inside a name parts
+// the halves of a word. The document is read as tokens rather than as a value, so every value of
+// a duplicate key is read, though a parser keeps one of them: which one is GitHub's parser's to
+// say, and the guard does not guess.
+//
+// In a `gh api graphql` call (graphQL), the document's top-level `query` is a GraphQL query, and
+// is read one literal at a time (graphQLRecords), labelled "<record>, JSON .query, GraphQL string
+// <k>".
+func jsonFields(record Record, graphQL bool) ([]Record, bool) {
+	decoder := json.NewDecoder(strings.NewReader(record.Text))
+	// A number is kept as its text rather than parsed, so that one past a float64's range is a
+	// number still, and not an error that sends the document to the raw read.
+	decoder.UseNumber()
+	var fields []Record
+	// open are the arrays and objects the next token stands inside, the outermost first.
+	var open []jsonOpen
+read:
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, false
 		}
-	case map[string]any:
-		for _, name := range slices.Sorted(maps.Keys(held)) {
-			out.WriteString(name)
-			out.WriteString("\n")
-			jsonStrings(held[name], out)
+		// at is the path of the value token is or opens.
+		at := ""
+		if n := len(open); n > 0 {
+			inner := &open[n-1]
+			switch {
+			case token == json.Delim('}') || token == json.Delim(']'):
+				open = open[:n-1]
+				if len(open) == 0 {
+					break read
+				}
+				continue
+			case inner.array:
+				at = inner.path + "[" + strconv.Itoa(inner.next) + "]"
+				inner.next++
+			case inner.member == "":
+				// The decoder hands an object nothing but a string where a name stands.
+				name, _ := token.(string)
+				inner.member = inner.path + jqMember(name)
+				fields = append(fields, Record{Label: jsonLabel(record.Label, inner.member) + " (name)", Text: name})
+				continue
+			default:
+				at, inner.member = inner.member, ""
+			}
+		}
+		switch value := token.(type) {
+		case json.Delim:
+			open = append(open, jsonOpen{path: at, array: value == '['})
+			continue
+		case string:
+			field := Record{Label: jsonLabel(record.Label, at), Text: value}
+			if graphQL && at == "."+graphQLQuery {
+				fields = append(fields, graphQLRecords(field)...)
+			} else {
+				fields = append(fields, field)
+			}
+		}
+		if len(open) == 0 {
+			break
 		}
 	}
+	// The document is the whole text only where what follows it is whitespace to the end.
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, false
+	}
+	return fields, true
+}
+
+// jsonOpen is an array or an object of a JSON document being read (jsonFields): its own path, ""
+// for the document itself; for an array, the index of its next element; and for an object, the
+// path of the member whose value comes next, "" where a name comes next.
+type jsonOpen struct {
+	path   string
+	array  bool
+	next   int
+	member string
+}
+
+// jsonLabel is the label of the string at path of the document record labels.
+func jsonLabel(record, path string) string {
+	if path == "" {
+		path = "."
+	}
+	return record + ", JSON " + path
+}
+
+// jqMember is the step of a jq path to the member name: `.name` for a name jq writes bare, a
+// letter or an underscore and then letters, digits and underscores, and `."name"` quoted as JSON
+// quotes it for every other, so that a name holding a newline or a quote cannot break the label
+// it stands in.
+func jqMember(name string) string {
+	bare := name != ""
+	for i, c := range name {
+		letter := c == '_' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+		bare = bare && (letter || i > 0 && '0' <= c && c <= '9')
+	}
+	if bare {
+		return "." + name
+	}
+	var quoted strings.Builder
+	encoder := json.NewEncoder(&quoted)
+	encoder.SetEscapeHTML(false)
+	// A string always encodes: the error is a writer's, and a Builder's write never fails.
+	_ = encoder.Encode(name)
+	return "." + strings.TrimSuffix(quoted.String(), "\n")
 }
 
 // maxGhFile is the most this package reads from one file a gh call would send, and from the
@@ -252,13 +451,16 @@ func jsonStrings(value any, out *strings.Builder) {
 const maxGhFile = 1 << 20
 
 // GhFile is one file a gh call would send as content: the option that named it, which a setup
-// failure names, and the path the argv wrote, which is the record's label.
+// failure names; the path the argv wrote, which is the record's label; and, for a file a field
+// names (`--field <name>=@<path>`, `-F <name>=@<path>`), the field's name, "" for every other
+// option. The name is what says that a file is a GraphQL query, `query` in a `gh api graphql`
+// call, which is read one literal at a time (graphQLRecords).
 type GhFile struct {
-	Option, Path string
+	Option, Path, Field string
 }
 
-// inputOption is `gh api`'s request body, the one file option whose file is itself a JSON
-// document (jsonAlso).
+// inputOption is `gh api`'s request body, the one option whose file, and whose standard input,
+// is itself a JSON document (jsonBody, stdinRecords).
 const inputOption = "--input"
 
 // ghFileOptions are the options whose whole value is the path of a file gh sends to GitHub as
@@ -278,10 +480,11 @@ var ghFileOptions = map[string]bool{
 }
 
 // ghFileArgs are the files args would have gh send to GitHub as content, each named once and in
-// the order the argv writes them. A gh call carries its text in a file as readily as in an
-// argument — `gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F body=@body.md` is how a
-// Legion role writes a pull request's body — so each file's text is a record of its own beside
-// the record of the argv, which holds the file's name and never its text.
+// the order the argv writes them, and the option that named standard input. A gh call carries
+// its text in a file as readily as in an argument — `gh api --method PATCH
+// repos/<owner>/<repo>/pulls/<n> -F body=@body.md` is how a Legion role writes a pull request's
+// body — so each file's text is a record of its own beside the records of the argv, which hold
+// the file's name and never its text.
 //
 // This is the fallback, for a caller that hands the guard a bare argv (GhRequest.Files nil). The
 // caller that can do better does: `legion gh` parses the command with gh's own help of the leaf,
@@ -313,7 +516,13 @@ var ghFileOptions = map[string]bool{
 //
 // A value of `-`, and an `@-`, is standard input rather than a file. The shared check's exit-4
 // handshake buffers that input and GhCall records it already (askAgain), so there is nothing
-// here to open.
+// here to open. What is answered instead is the option that named it, which says what the input
+// is (GhRequest.StdinOption), by its long name: `--input -`, `--input=-`, `--body-file -` and the
+// other file options answer their own name, and `-F <name>=@-` and `--field <name>=@-` answer
+// `--field`. A `-F -` answers `-F`: it is --body-file, --notes-file or --from-file as the leaf
+// says, and each of the three makes its input text GitHub stores as it stands. Two options that
+// name standard input and differ answer "", since only one of them can have the input, and the
+// guard then reads it both ways.
 //
 // Four things are deliberately left out:
 //
@@ -341,8 +550,9 @@ var ghFileOptions = map[string]bool{
 //
 // Arguments past a bare `--` are read as nothing: gh's parser takes no option after one, so a
 // `--body-file` there is a word of some other program's and names no file gh would send.
-func ghFileArgs(args []string) []GhFile {
+func ghFileArgs(args []string) ([]GhFile, string) {
 	var files []GhFile
+	stdin, stdinNamed := "", false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -367,27 +577,36 @@ func ghFileArgs(args []string) []GhFile {
 			i++
 			value = args[i]
 		}
-		path := value
+		path, named, fieldName := value, option, ""
 		if field {
-			_, after, found := strings.Cut(value, "=")
+			name, after, found := strings.Cut(value, "=")
 			switch {
 			case found && strings.HasPrefix(after, "@"):
-				path = strings.TrimPrefix(after, "@")
+				path, named, fieldName = strings.TrimPrefix(after, "@"), "--field", name
 			case found || option != "-F":
 				continue
 			}
 		}
 		// A path of "-" is standard input, and a file named twice is read once: a second record
 		// of one file is a second open and a second line of the same report.
-		if path == "" || path == "-" {
+		if path == "-" {
+			switch {
+			case !stdinNamed:
+				stdin, stdinNamed = named, true
+			case stdin != named:
+				stdin = ""
+			}
+			continue
+		}
+		if path == "" {
 			continue
 		}
 		if slices.ContainsFunc(files, func(file GhFile) bool { return file.Path == path }) {
 			continue
 		}
-		files = append(files, GhFile{Option: option, Path: path})
+		files = append(files, GhFile{Option: option, Path: path, Field: fieldName})
 	}
-	return files
+	return files, stdin
 }
 
 // readGhFile is the text of one file a gh call would send. A file that cannot be opened, cannot
