@@ -158,41 +158,17 @@ func signedReasoning(signature string) (agentloop.Block, bool) {
 	if signature == "" {
 		return agentloop.Block{}, false
 	}
-	var item nativeItem
+	var item conversation.OpenAIResponsesItem
 	if json.Unmarshal([]byte(signature), &item) != nil || item.Type != "reasoning" || item.ID == "" || item.EncryptedContent == nil {
 		return agentloop.Block{}, false
 	}
-	return item.reasoning(), true
+	return reasoningBlock(&item), true
 }
 
-// nativeItem is the part of an OpenAI Responses output item the loop reads.
-type nativeItem struct {
-	Type             string  `json:"type"`
-	ID               string  `json:"id"`
-	Role             string  `json:"role"`
-	Phase            string  `json:"phase"`
-	EncryptedContent *string `json:"encrypted_content"`
-	Summary          []struct {
-		Text string `json:"text"`
-	} `json:"summary"`
-	Content []struct {
-		Type    string `json:"type"`
-		Text    string `json:"text"`
-		Refusal string `json:"refusal"`
-	} `json:"content"`
-	CallID    string `json:"call_id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-// reasoning is a reasoning item as a block agentloop sends back as the item: its id and its
+// reasoningBlock is a reasoning item as a block agentloop sends back as the item: its id and its
 // encrypted content as they came, its summaries joined.
-func (item nativeItem) reasoning() agentloop.Block {
-	summaries := make([]string, len(item.Summary))
-	for i, s := range item.Summary {
-		summaries[i] = s.Text
-	}
-	block := agentloop.Block{Kind: agentloop.ReasoningBlock, Text: strings.Join(summaries, "\n\n"), ItemID: item.ID}
+func reasoningBlock(item *conversation.OpenAIResponsesItem) agentloop.Block {
+	block := agentloop.Block{Kind: agentloop.ReasoningBlock, Text: item.SummaryText(), ItemID: item.ID}
 	if item.EncryptedContent != nil {
 		block.Encrypted = *item.EncryptedContent
 	}
@@ -214,7 +190,7 @@ func nativeBlocks(m conversation.Message) ([]agentloop.Block, error) {
 	var blocks, pendingReasoning []agentloop.Block
 	removedMessage, anyRemoved, replayable := false, false, false
 	for i, raw := range m.Native.Items {
-		var item nativeItem
+		var item conversation.OpenAIResponsesItem
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return nil, fmt.Errorf("output item %d: %w", i+1, err)
 		}
@@ -225,7 +201,7 @@ func nativeBlocks(m conversation.Message) ([]agentloop.Block, error) {
 			}
 			removedMessage = false
 			if item.EncryptedContent != nil && item.ID != "" {
-				pendingReasoning = append(pendingReasoning, item.reasoning())
+				pendingReasoning = append(pendingReasoning, reasoningBlock(&item))
 			}
 		case "message":
 			if item.Role != "assistant" {

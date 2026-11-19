@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Role is who a message is from, as the provider request carries it.
@@ -106,6 +107,39 @@ type Native struct {
 	Items []json.RawMessage
 	// Payload is the whole payload object the session holds.
 	Payload json.RawMessage
+}
+
+// OpenAIResponsesItem is the part of an OpenAI Responses output item, one of the Items of
+// OpenAIResponsesHistory, that the daemon reads: a reasoning item's id, encrypted content and
+// summary, a message's role, phase and content parts, and a function call's call id, name and
+// arguments.
+type OpenAIResponsesItem struct {
+	Type             string  `json:"type"`
+	ID               string  `json:"id"`
+	Role             string  `json:"role"`
+	Phase            string  `json:"phase"`
+	EncryptedContent *string `json:"encrypted_content"`
+	Summary          []struct {
+		Text string `json:"text"`
+	} `json:"summary"`
+	Content []struct {
+		Type    string `json:"type"`
+		Text    string `json:"text"`
+		Refusal string `json:"refusal"`
+	} `json:"content"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// SummaryText is a reasoning item's summaries, their texts joined with a blank line between each
+// two.
+func (item *OpenAIResponsesItem) SummaryText() string {
+	summaries := make([]string, len(item.Summary))
+	for i, s := range item.Summary {
+		summaries[i] = s.Text
+	}
+	return strings.Join(summaries, "\n\n")
 }
 
 // Message is one message of the rebuilt conversation.

@@ -894,7 +894,7 @@ var nestedKeys = []memberGroup{
 		{Name: "gh_seconds", Default: "`30`", RequiredBy: "no",
 			Description: "How many seconds one `gh` call may run."},
 		{Name: "gh_output_chars", Default: "`60000`", RequiredBy: "no",
-			Description: "How many characters of a `gh` call's output the model reads; the rest is cut with a note saying how much."},
+			Description: "How many characters of a `gh` call's output the model reads; the rest is cut with a note saying how much. It also bounds the daemon's own `gh` reads for an answer, the lookup of a call's comment or review after a restart among them, at `gh_output_chars` times `gh_calls` characters, and a read past that bound is refused rather than cut."},
 		{Name: "gh_calls", Default: "`20`", RequiredBy: "no",
 			Description: "How many `gh` calls one answer may make."},
 		{Name: "concurrent", Default: "`4`", RequiredBy: "no",

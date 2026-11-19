@@ -282,7 +282,7 @@ func Run(ctx context.Context, call Call) Result {
 	ctx, cancel := context.WithTimeout(ctx, call.Bounds.GHCall)
 	defer cancel()
 	if review {
-		if why := a.headRefusal(ctx, pr); why != "" {
+		if why := a.headRefusal(ctx, pr, readLimit(call.Bounds)); why != "" {
 			return a.refuse(ctx, call.Seq, run, started, why)
 		}
 	}
@@ -321,14 +321,15 @@ func Run(ctx context.Context, call Call) Result {
 
 // headRefusal is the reason a review on pr is refused once the pull request's head is read, ""
 // for none: its current head, read from GitHub by the daemon's own read (Answer.read: routed, the
-// scrubbed environment, the answer's empty working directory, one `answers: gh head read` line),
-// is not Agent.Head, the head the agent's recorded round read and the review's footer names, or
-// could not be read. A review App's review decides a round only when the head its footer names is
-// the pull request's current one (workflow's refusesRound), so a review naming the head the round
-// read decides nothing once a push has moved the pull request past it, and naming the new one
-// would say the agent read code it never read: the round waits for the reviewer itself.
-func (a *Answer) headRefusal(ctx context.Context, pr pullRequest) string {
-	out, err := a.read(ctx, headReadLine, []string{"api", "repos/" + pr.repo + "/pulls/" + pr.number, "--jq", ".head.sha"})
+// scrubbed environment, the answer's empty working directory, gh's answer at most limit
+// characters, one `answers: gh head read` line), is not Agent.Head, the head the agent's recorded
+// round read and the review's footer names, or could not be read. A review App's review decides a
+// round only when the head its footer names is the pull request's current one (workflow's
+// refusesRound), so a review naming the head the round read decides nothing once a push has moved
+// the pull request past it, and naming the new one would say the agent read code it never read:
+// the round waits for the reviewer itself.
+func (a *Answer) headRefusal(ctx context.Context, pr pullRequest, limit int) string {
+	out, err := a.read(ctx, headReadLine, []string{"api", "repos/" + pr.repo + "/pulls/" + pr.number, "--jq", ".head.sha"}, limit)
 	current := strings.TrimSpace(string(out))
 	switch {
 	case err != nil:

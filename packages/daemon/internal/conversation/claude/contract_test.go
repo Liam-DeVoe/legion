@@ -529,7 +529,7 @@ func handLine(rig *claudeRig, uuid, parent, fields string) string {
 	if parent != "" {
 		parentJSON = quote(parent)
 	}
-	return `{"parentUuid":` + parentJSON + `,"isSidechain":false,` + fields + `,"uuid":` + quote(uuid) + `,"timestamp":` + quote(isoTime(time.Now())) +
+	return `{"parentUuid":` + parentJSON + `,"isSidechain":false,` + fields + `,"uuid":` + quote(uuid) + `,"timestamp":` + quote(conversation.ISOTime(time.Now())) +
 		`,"userType":"external","entrypoint":"sdk-cli","cwd":` + quote(rig.work) + `,"sessionId":"` + sessionID + `","version":"` + PinnedVersion + `"}` + "\n"
 }
 

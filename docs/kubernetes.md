@@ -1511,6 +1511,7 @@ answers:
 - `bounds.gh_seconds` (30): How long one `gh` call may run.
 
 - `bounds.gh_output_chars` (60000): How much of a `gh` call's output the model reads; the rest is cut with a note saying how much.
+  It also bounds the daemon's own `gh` reads for an answer, the lookup of a call's comment or review after a restart among them, at `gh_output_chars` times `gh_calls` characters, and a read past that bound is refused rather than cut.
 
 - `bounds.gh_calls` (20): `gh` calls per answer.
 

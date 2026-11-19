@@ -19,6 +19,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -1587,6 +1588,36 @@ func TestLookupFindsTheCommentByItsAnswerKey(t *testing.T) {
 	}
 	if row, _ := f.calls.row(question, 3); row.Result != nil {
 		t.Errorf("Lookup wrote to the call record: %+v", row)
+	}
+}
+
+// A restart's lookup takes gh's answer up to gh_output_chars characters for each of gh_calls
+// (readLimit), a multi-byte character counting once: an answer of exactly that many is read and
+// the comment found, also where one call's gh_output_chars alone is short of it, and one
+// character more is refused with an error naming the bound rather than read whole.
+func TestLookupRefusesAnAnswerPastItsBound(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{})
+	body := "Done — é.\n\n" + footer(implementer, question, 2, "")
+	comments := fmt.Sprintf(`[[{"id":12,"html_url":"https://github.com/acme/widgets/pull/5#issuecomment-12","body":%q}]]`, body)
+	setBehaviour(t, f.stand, behaviour{Responses: map[string]string{"api repos/acme/widgets/issues/5/comments --paginate --slurp": comments}})
+	if err := f.calls.StartAnswerToolCall(context.Background(), store.AnswerToolCall{Question: question, Seq: 2, Args: []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", body}, App: "implement", Owner: "acme", StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	chars := utf8.RuneCountInString(comments)
+	found := Found{Exists: true, URL: "https://github.com/acme/widgets/pull/5#issuecomment-12", ID: 12}
+	for _, at := range []config.AnswerBounds{
+		{GHCall: 20 * time.Second, GHOutputChars: chars, GHCalls: 1},
+		{GHCall: 20 * time.Second, GHOutputChars: (chars + 1) / 2, GHCalls: 2},
+	} {
+		if got, err := Lookup(context.Background(), f.answer, 2, at); err != nil || got != found {
+			t.Errorf("Lookup under %d characters for each of %d calls of an answer of %d = %+v, %v; want %+v", at.GHOutputChars, at.GHCalls, chars, got, err, found)
+		}
+	}
+	past := config.AnswerBounds{GHCall: 20 * time.Second, GHOutputChars: chars - 1, GHCalls: 1}
+	got, err := Lookup(context.Background(), f.answer, 2, past)
+	want := fmt.Sprintf("printed %d characters, past the %d a read of the daemon's own takes (answers.bounds.gh_output_chars times answers.bounds.gh_calls)", chars, chars-1)
+	if err == nil || !strings.Contains(err.Error(), want) || got != (Found{}) {
+		t.Errorf("Lookup under %d characters of an answer of %d = %+v, %v; want an error containing %q", chars-1, chars, got, err, want)
 	}
 }
 

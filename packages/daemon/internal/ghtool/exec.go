@@ -1,7 +1,6 @@
 package ghtool
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -179,23 +177,11 @@ func (a *Answer) route(ctx context.Context, argv []string) (ghroute.Target, stri
 	return target, filepath.Base(dir), dir, nil
 }
 
-// help is the real gh's help of a command path, `gh <path> --help`, run as a call runs, refused
-// when gh answers it with an error, as ghroute.ReadHelp refuses it for a pane.
+// help is the real gh's help of a command path, `gh <path> --help`, read under env as a pane's
+// `legion gh` reads it (ghroute.ReadHelp): bounded, its process group stopped past the bound or at
+// ctx's end, run under leakguard.RunByRealGhVar, and refused when gh answers it with an error.
 func (a *Answer) help(ctx context.Context, env []string) func(path []string) (string, error) {
-	return func(path []string) (string, error) {
-		cmd := exec.CommandContext(ctx, a.host.GH, append(slices.Clone(path), "--help")...)
-		cmd.Env, cmd.Dir = env, a.cwd
-		procgroup.Configure(cmd)
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("gh answered its help with %v: %s", err, strings.TrimSpace(stderr.String()))
-		}
-		if stdout.Len() == 0 {
-			return "", errors.New("gh printed no help")
-		}
-		return stdout.String(), nil
-	}
+	return func(path []string) (string, error) { return ghroute.ReadHelp(ctx, a.host.GH, env, path) }
 }
 
 // runGH runs gh with argv under the call's environment, configDir its GH_CONFIG_DIR, in the

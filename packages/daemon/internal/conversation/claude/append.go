@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -144,7 +143,7 @@ func (s *Session) writer(now time.Time) (*lineWriter, error) {
 	w := &lineWriter{
 		parent: s.Leaf,
 		common: commonOut{UserType: "external", Entrypoint: "sdk-cli", Cwd: s.Cwd, SessionID: s.ID, Version: version, GitBranch: s.GitBranch},
-		at:     isoTime(now),
+		at:     conversation.ISOTime(now),
 		effort: s.ThinkingLevel,
 	}
 	if s.Torn {
@@ -161,7 +160,7 @@ func AppendFile(path string, s *Session, a conversation.Append, now time.Time) e
 	if err != nil {
 		return err
 	}
-	return writeAfter(path, s, data)
+	return conversation.WriteAfter(path, "transcript", s.Size, data)
 }
 
 // AppendDeliveryFile appends d to the transcript at path, which s was read from, in the same one
@@ -171,30 +170,7 @@ func AppendDeliveryFile(path string, s *Session, d conversation.Delivery, now ti
 	if err != nil {
 		return err
 	}
-	return writeAfter(path, s, data)
-}
-
-// writeAfter appends data to the transcript at path in one O_APPEND write, refusing with an error
-// that Is conversation.ErrMoved when the file is no longer the size s was read at.
-func writeAfter(path string, s *Session, data []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
-	if err != nil {
-		return err
-	}
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return err
-	}
-	if info.Size() != s.Size {
-		_ = file.Close()
-		return fmt.Errorf("transcript %s: %w: read %d bytes, now %d", path, conversation.ErrMoved, s.Size, info.Size())
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("append to transcript %s: %w", path, err)
-	}
-	return file.Close()
+	return conversation.WriteAfter(path, "transcript", s.Size, data)
 }
 
 // lineWriter writes lines one per line, each conversation line chained to the one before.
@@ -261,7 +237,7 @@ func (w *lineWriter) assistant(m assistantMessageOut) (string, error) {
 }
 
 func (w *lineWriter) write(v any) error {
-	encoded, err := marshal(v)
+	encoded, err := conversation.Marshal(v)
 	if err != nil {
 		return err
 	}
@@ -288,20 +264,6 @@ func assistantBlockOut(b conversation.Block) (any, error) {
 	}
 	return nil, fmt.Errorf("a %s block in a model turn", b.Type)
 }
-
-// marshal is JSON as JavaScript's JSON.stringify writes it: no HTML escaping, no trailing newline.
-func marshal(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
-}
-
-// isoTime is JavaScript's Date.prototype.toISOString.
-func isoTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
 // newUUID is a random (version 4) UUID, the form of Claude Code's line uuids.
 func newUUID() string {

@@ -423,7 +423,7 @@ func TestThePinnedOhMyPiResumesTheConversationTheReaderRebuilds(t *testing.T) {
 // record, a branch summary, an extension's custom message. Each resumed request is the reader's
 // conversation, then the follow-up.
 func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *testing.T) {
-	stamp := func() string { return isoTime(time.Now()) }
+	stamp := func() string { return conversation.ISOTime(time.Now()) }
 	for _, testCase := range []struct {
 		name string
 		// records is what is written after the first run: entries is the first run's entry ids

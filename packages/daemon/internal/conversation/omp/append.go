@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -140,7 +139,7 @@ func AppendFile(path string, s *Session, a conversation.Append, now time.Time) e
 	if err != nil {
 		return err
 	}
-	return writeAfter(path, s, data)
+	return conversation.WriteAfter(path, "session", s.Size, data)
 }
 
 // AppendDeliveryFile appends d to the session file at path, which s was read from, in the same
@@ -150,30 +149,7 @@ func AppendDeliveryFile(path string, s *Session, d conversation.Delivery, now ti
 	if err != nil {
 		return err
 	}
-	return writeAfter(path, s, data)
-}
-
-// writeAfter appends data to the session file at path in one O_APPEND write, refusing with an
-// error that Is conversation.ErrMoved when the file is no longer the size s was read at.
-func writeAfter(path string, s *Session, data []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
-	if err != nil {
-		return err
-	}
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return err
-	}
-	if info.Size() != s.Size {
-		_ = file.Close()
-		return fmt.Errorf("session %s: %w: read %d bytes, now %d", path, conversation.ErrMoved, s.Size, info.Size())
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("append to session %s: %w", path, err)
-	}
-	return file.Close()
+	return conversation.WriteAfter(path, "session", s.Size, data)
 }
 
 // AppendSQL appends a to the session Oh My Pi's session table holds at path, which s was read
@@ -234,7 +210,7 @@ func (w *entryWriter) message(m any) error {
 	if err != nil {
 		return err
 	}
-	return w.line(id, messageEntryOut{Type: "message", ID: id, ParentID: w.parentID(), Timestamp: isoTime(w.now), Message: m})
+	return w.line(id, messageEntryOut{Type: "message", ID: id, ParentID: w.parentID(), Timestamp: conversation.ISOTime(w.now), Message: m})
 }
 
 func (w *entryWriter) custom(customType string, data any) error {
@@ -242,11 +218,11 @@ func (w *entryWriter) custom(customType string, data any) error {
 	if err != nil {
 		return err
 	}
-	return w.line(id, customEntryOut{Type: "custom", CustomType: customType, Data: data, ID: id, ParentID: w.parentID(), Timestamp: isoTime(w.now)})
+	return w.line(id, customEntryOut{Type: "custom", CustomType: customType, Data: data, ID: id, ParentID: w.parentID(), Timestamp: conversation.ISOTime(w.now)})
 }
 
 func (w *entryWriter) line(id string, entry any) error {
-	encoded, err := marshal(entry)
+	encoded, err := conversation.Marshal(entry)
 	if err != nil {
 		return err
 	}
@@ -255,20 +231,6 @@ func (w *entryWriter) line(id string, entry any) error {
 	w.parent = id
 	return nil
 }
-
-// marshal is JSON as JavaScript's JSON.stringify writes it: no HTML escaping, no trailing newline.
-func marshal(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
-}
-
-// isoTime is JavaScript's Date.prototype.toISOString.
-func isoTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
 // turnContent is a model turn's content as Oh My Pi records it for the API, the session id of each
 // of its tool calls by the call's id, and the provider payload. An Anthropic turn's blocks are
@@ -308,34 +270,17 @@ func turnContent(a conversation.Append, turn conversation.Turn) ([]any, map[stri
 	var content []any
 	var calls []string
 	for _, raw := range turn.Native {
-		var item struct {
-			Type    string `json:"type"`
-			ID      string `json:"id"`
-			Phase   string `json:"phase"`
-			Summary []struct {
-				Text string `json:"text"`
-			} `json:"summary"`
-			Content []struct {
-				Type    string `json:"type"`
-				Text    string `json:"text"`
-				Refusal string `json:"refusal"`
-			} `json:"content"`
-			CallID    string `json:"call_id"`
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		}
+		var item conversation.OpenAIResponsesItem
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return nil, nil, nil, fmt.Errorf("an output item: %w", err)
 		}
 		switch item.Type {
 		case "reasoning":
-			var summaries []string
 			hasSummary := false
 			for _, part := range item.Summary {
-				summaries = append(summaries, part.Text)
 				hasSummary = hasSummary || part.Text != ""
 			}
-			thinking := strings.Join(summaries, "\n\n")
+			thinking := item.SummaryText()
 			if thinking == "" && len(item.Content) > 0 && item.Content[0].Type == "reasoning_text" {
 				thinking = item.Content[0].Text
 			}
@@ -349,7 +294,7 @@ func turnContent(a conversation.Append, turn conversation.Turn) ([]any, map[stri
 					text.WriteString(part.Refusal)
 				}
 			}
-			signature, err := marshal(textSignature{V: 1, ID: item.ID, Phase: item.Phase})
+			signature, err := conversation.Marshal(textSignature{V: 1, ID: item.ID, Phase: item.Phase})
 			if err != nil {
 				return nil, nil, nil, err
 			}

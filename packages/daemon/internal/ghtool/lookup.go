@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -33,7 +34,8 @@ type Found struct {
 // or reviews of the pull request or issue the call wrote to, with the routed owner's credentials
 // as the call ran with them, and answers the one whose Legion footer carries the call's answer key
 // (<question>.<seq>), or none. A call the record does not hold, one that has a result, and one
-// whose target cannot be read are errors; a call posting no comment or review is ErrNotAWrite.
+// whose target cannot be read are errors, a read gh answered with more than readLimit characters
+// among them; a call posting no comment or review is ErrNotAWrite.
 func Lookup(ctx context.Context, a *Answer, seq int, bounds config.AnswerBounds) (Found, error) {
 	recorded, ok, err := a.host.Calls.AnswerToolCall(ctx, a.question, seq)
 	switch {
@@ -49,7 +51,8 @@ func Lookup(ctx context.Context, a *Answer, seq int, bounds config.AnswerBounds)
 	}
 	ctx, cancel := context.WithTimeout(ctx, bounds.GHCall)
 	defer cancel()
-	place, err := a.placeOf(ctx, recorded.Args)
+	limit := readLimit(bounds)
+	place, err := a.placeOf(ctx, recorded.Args, limit)
 	if err != nil {
 		return Found{}, fmt.Errorf("gh call %s.%d: %w", a.question, seq, err)
 	}
@@ -57,7 +60,7 @@ func Lookup(ctx context.Context, a *Answer, seq int, bounds config.AnswerBounds)
 	if place.list {
 		argv = append(argv, "--paginate", "--slurp")
 	}
-	out, err := a.read(ctx, lookupLine, argv)
+	out, err := a.read(ctx, lookupLine, argv, limit)
 	if err != nil {
 		return Found{}, fmt.Errorf("gh call %s.%d: read %s: %w", a.question, seq, place.endpoint, err)
 	}
@@ -104,7 +107,7 @@ var apiPlaces = []struct {
 // and a closing or reopening comment, the issue comments of its pull request or issue; for pr
 // review, the pull request's reviews; for a gh api write, the endpoint it posted to read back. A
 // pr command naming its pull request by branch has its number read from GitHub.
-func (a *Answer) placeOf(ctx context.Context, argv []string) (place, error) {
+func (a *Answer) placeOf(ctx context.Context, argv []string, limit int) (place, error) {
 	words := commandWords(argv)
 	key := writeOf(words)
 	spec, ok := writes[key]
@@ -131,7 +134,7 @@ func (a *Answer) placeOf(ctx context.Context, argv []string) (place, error) {
 	if (key == "pr close" || key == "pr reopen") && len(parsed.given("comment")) == 0 {
 		return place{}, ErrNotAWrite
 	}
-	repo, number, err := a.target(ctx, parsed, words[0] == "pr")
+	repo, number, err := a.target(ctx, parsed, words[0] == "pr", limit)
 	if err != nil {
 		return place{}, err
 	}
@@ -147,7 +150,7 @@ var githubIssueURL = regexp.MustCompile(`(?i)^https?://(?:www\.)?github\.com/([^
 
 // target is the repository (OWNER/REPO) and number a pr or issue command's arguments name, as
 // namedTarget reads them, a pr command's branch read from GitHub with `gh pr view`.
-func (a *Answer) target(ctx context.Context, parsed parsedArgs, pr bool) (string, string, error) {
+func (a *Answer) target(ctx context.Context, parsed parsedArgs, pr bool, limit int) (string, string, error) {
 	repo, number, selector, err := namedTarget(parsed)
 	if err != nil || number != "" {
 		return repo, number, err
@@ -155,7 +158,7 @@ func (a *Answer) target(ctx context.Context, parsed parsedArgs, pr bool) (string
 	if !pr || selector == "" {
 		return "", "", fmt.Errorf("its selector %q names no pull request or issue the gh tool can read", selector)
 	}
-	out, err := a.read(ctx, lookupLine, []string{"pr", "view", selector, "-R", repo, "--json", "number", "--jq", ".number"})
+	out, err := a.read(ctx, lookupLine, []string{"pr", "view", selector, "-R", repo, "--json", "number", "--jq", ".number"}, limit)
 	if err != nil {
 		return "", "", fmt.Errorf("read the pull request of %q in %s: %w", selector, repo, err)
 	}
@@ -212,12 +215,26 @@ const (
 	headReadLine = "answers: gh head read"
 )
 
+// readLimit is how many characters of gh's stdout a read of the daemon's own takes (Answer.read):
+// gh_output_chars for each of gh_calls, the most gh output one answer hands its model over all its
+// calls, and the largest int where that product is larger. A restart's lookup reads every comment
+// or review of the pull request or issue its call wrote to, which anyone can add to on a public
+// repository, so the read is bounded; it is not bounded at one call's gh_output_chars, which a
+// pull request's comments, as the REST API answers them, pass early: 32 answered 211,415 bytes.
+func readLimit(bounds config.AnswerBounds) int {
+	if bounds.GHCalls > 0 && bounds.GHOutputChars > math.MaxInt/bounds.GHCalls {
+		return math.MaxInt
+	}
+	return bounds.GHOutputChars * bounds.GHCalls
+}
+
 // read runs a read of the daemon's own, argv, as a call runs (routed, the scrubbed environment,
 // the answer's empty working directory), and answers its whole stdout; a gh exiting non-zero is an
-// error naming its stderr. It records nothing: it is no call of the model's, but a restart's
-// lookup or the head a review is checked against (Answer.headRefusal). It logs one line, line its
-// message.
-func (a *Answer) read(ctx context.Context, line string, argv []string) ([]byte, error) {
+// error naming its stderr, and a stdout of more than limit characters (readLimit) an error naming
+// the bound, of which no more than limit characters were kept. It records nothing: it is no call
+// of the model's, but a restart's lookup or the head a review is checked against
+// (Answer.headRefusal). It logs one line, line its message.
+func (a *Answer) read(ctx context.Context, line string, argv []string, limit int) ([]byte, error) {
 	_, owner, dir, err := a.route(ctx, argv)
 	if err != nil {
 		return nil, err
@@ -225,8 +242,9 @@ func (a *Answer) read(ctx context.Context, line string, argv []string) ([]byte, 
 	cmd := exec.CommandContext(ctx, a.host.GH, argv...)
 	cmd.Env, cmd.Dir = a.env(dir), a.cwd
 	procgroup.Configure(cmd)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	stdout := &cappedOutput{limit: limit}
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = stdout, &stderr
 	err = cmd.Run()
 	exit := -1
 	if cmd.ProcessState != nil {
@@ -237,7 +255,11 @@ func (a *Answer) read(ctx context.Context, line string, argv []string) ([]byte, 
 	if err != nil {
 		return nil, fmt.Errorf("gh %s: %v: %s", strings.Join(argv, " "), err, strings.TrimSpace(stderr.String()))
 	}
-	return stdout.Bytes(), nil
+	if stdout.chars > limit {
+		return nil, fmt.Errorf("gh %s printed %d characters, past the %d a read of the daemon's own takes (answers.bounds.gh_output_chars times answers.bounds.gh_calls)",
+			strings.Join(argv, " "), stdout.chars, limit)
+	}
+	return stdout.kept, nil
 }
 
 // item is a GitHub comment or review as the REST API answers it.
