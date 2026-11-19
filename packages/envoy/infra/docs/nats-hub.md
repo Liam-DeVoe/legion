@@ -445,7 +445,7 @@ rate.
 The listener keeps one count for each sending session. The count starts at the burst and gains
 one message every 60 seconds divided by the rate, up to the burst.
 The limit is each listener pod's own: what that lets a session send with more than one pod, and
-when a pod's counts are full again, is stated under Sender limit in `packages/envoy/AGENTS.md`.
+when a pod's counts are full again, is stated on the docs site's Envoy page ("The sender limit").
 The sender is the session that a secrets-broker token proves, else the request's
 `source_session`.
 A message with another `source`, such as `dispatch` or `envoy`, is not counted, with a
@@ -770,7 +770,7 @@ The release that adds `listener.senderMessagesPerMinute` and `listener.senderMes
 neither variable for a hub that sets neither input, so such a hub keeps its VM. Setting, changing
 or removing either input changes the listener's `docker run` command in the cloud-config, so it
 replaces the VM once, with the outage below, and the new VM's listener starts with every sender's
-count full (Sender limit in `packages/envoy/AGENTS.md`).
+count full (the docs site's Envoy page, "The sender limit").
 The cloud-config is the instance
 template's `user-data`, and a template cannot change. The group then replaces its VM at once
 (`PROACTIVE`, minimal action `REPLACE`), deleting it before it creates the next (`RECREATE`, no
@@ -1215,8 +1215,8 @@ new one stays up and not ready for as long as what holds its start lasts (below)
 Service's port 9020 refuses connections while no listener pod is ready, and its port 4222 serves
 through it. Setting, changing or removing the listener's `senderMessagesPerMinute` or
 `senderMessageBurst` is a change of the listener's environment, so it rolls the pod the same way.
-The new pod's listener starts with every sender's count full (Sender limit in
-`packages/envoy/AGENTS.md`).
+The new pod's listener starts with every sender's count full (the docs site's Envoy page, "The
+sender limit").
 
 What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
 listener answers 204 from its first answer without reading the bus, and which exits 0 whatever

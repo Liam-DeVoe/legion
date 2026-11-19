@@ -3166,8 +3166,8 @@ boots`:
 The listener keeps one count for each sending session. The count starts at the burst and gains
 one message every 60 seconds divided by the rate, up to the burst. The limit is each listener
 pod's own, each of `gcp:Dispatch`'s `listenerReplicas` pods included: what that lets a session
-send with more than one pod, and when a pod's counts are full again, is stated under Sender limit
-in `packages/envoy/AGENTS.md`.
+send with more than one pod, and when a pod's counts are full again, is stated on the docs site's
+Envoy page ("The sender limit").
 
 The sender is the session that a secrets-broker token proves, else the request's
 `source_session`. The listener does not count a message with another `source`, such as
@@ -3939,7 +3939,8 @@ credential-free session user holding `SessionPermissions`, are checked against r
 2.15.1 servers, the plain image and the hub's alpine one (`internal/testnats.Images`), the
 session user's refusal of the stream's stored-message get included, as are a session consumer the
 listener's user creates, pulls, acks, restarts and deletes, both of its role lane queue groups,
-and the session user's refusal of a consumer create; `AGENTS.md` in this directory says how.
+and the session user's refusal of a consumer create, in `core/permissions_live_test.go` under the
+`natslive` tag; `AGENTS.md` in this directory gives the command that runs it.
 
 `ListenerHostPermissions(machineID)` is the grant of a listener's own NATS user, one no session
 shares: `ListenerPermissions(machineID)`, the session consumers' calls included, then a plain

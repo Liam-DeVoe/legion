@@ -739,8 +739,8 @@ only while the send has made no forward. After an earlier forward of the same se
 as any answer then does, since that forward may have stored the message. A repeat that finds the
 count at 0 is refused as a new message is, because the listener reads the count first.
 
-The limit is each listener pod's own: what that lets a session send with more than one pod, and
-when a pod's counts are full again, is stated under Sender limit in `packages/envoy/AGENTS.md`.
+The limit is each listener pod's own: N pods let a session send up to N times the limit, one pod
+can refuse what another takes, and a restarted or new pod counts from full.
 The start log states the limit in one line, `listener sender limit: <rate> messages a minute,
 <burst> at once, for each agent session in this process`, or `listener sender limit: none`. Where
 the rate is 1, the line reads `1 message a minute`. The `envoy-infra` components take the two

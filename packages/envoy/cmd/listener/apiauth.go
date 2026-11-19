@@ -48,9 +48,9 @@ const (
 
 // newListenerRequests registers envoy_listener_requests_total, the census the removal of the
 // shared token and of the open /v1 is gated on: both credential="shared_token" and
-// credential="none" must read zero on every deployed listener before they go. A pod counts only
-// what it admits, so a machine's listener reads zero only when each of its pods does, the active
-// and every standby.
+// credential="none" must read zero on every deployed listener for 72 hours before they go. A pod
+// counts only what it admits, so a machine's listener reads zero only when each of its pods does,
+// the active and every standby.
 func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_listener_requests_total",
 		"Requests /v1 admitted, by the credential that admitted each (shared_token, none, oidc, google, broker) and the route it reached")

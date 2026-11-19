@@ -102,12 +102,13 @@ type DeleteConditions struct {
 	// same session id. Empty compares no instance.
 	ClientInstanceID string
 	// NotRegisteredAfter is the moment the delete belongs to, in unix milliseconds: the entry
-	// is removed only while it was last written at or before it (SessionEntry.UpdatedAt). It
-	// is what the Legion daemon's clean stop of a role whose agent process has ended carries
-	// (dispatch://INFRA-392): a death a probe judged, whose moment is the probe's, or a
-	// suspension whose stop ended a live process, whose moment is when that stop returned. So
-	// the registration the relaunch of that claim writes under the same session id, which is
-	// newer than the stop, stays. Zero or negative compares no moment.
+	// is removed only while it was last written at or before it (SessionEntry.UpdatedAt, on the
+	// clock of the listener pod that took that registration, which with two pods may be another
+	// pod than the one the delete reaches). It is what the Legion daemon's clean stop of a role
+	// whose agent process has ended carries (dispatch://INFRA-392): a death a probe judged, whose
+	// moment is the probe's, or a suspension whose stop ended a live process, whose moment is when
+	// that stop returned. So the registration the relaunch of that claim writes under the same
+	// session id, which is newer than the stop, stays. Zero or negative compares no moment.
 	NotRegisteredAfter int64
 }
 

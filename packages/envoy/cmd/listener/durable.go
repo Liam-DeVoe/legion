@@ -89,7 +89,9 @@ const durableRefusedLine = "subscribe refused, shutting down"
 //
 // Recreating the durable would drop its cursor, so the listener leaves it to an operator, and the
 // refusal names every such setting the durable carries and says how to recreate it without
-// replaying the stream.
+// replaying the stream. That recreate keeps the cursor only while no pod of the machine id runs,
+// standbys included: a lease holder that finds the durable missing creates it at deliver policy
+// all.
 func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 	var settings []string
 	if config.Heartbeat != 0 {

@@ -27,7 +27,7 @@ import (
 // shares them, while every pod serves every route. So each pod counts the messages it serves, and
 // with N pods a session can send up to N times the limit in all; one pod can refuse a message
 // while another takes it; and a pod that restarts, or the new pod a roll starts, counts from full.
-// packages/envoy/AGENTS.md (Sender limit) is the operator's statement of this.
+// The docs site's Envoy page ("The sender limit") is the operator's statement of this.
 type senderLimit struct {
 	perMinute int
 	burst     int

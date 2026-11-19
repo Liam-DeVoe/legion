@@ -13,12 +13,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -588,24 +590,50 @@ func TestDispatchCertPublishExitsOnSIGTERM(t *testing.T) {
 // answers a GET only as the metadata-only PartialObjectMetadata the gate asks for
 // (partialMetadataAccept), and fails the test on a GET that does not ask for it, which would read
 // the Secret's private key.
+//
+// The server's handler and the test both read and change what it holds, and only under mu: the
+// test through state and change. The gate reaches the handler from a child process, so nothing
+// else orders the handler's goroutine before or after the test's own reads and writes.
 type frontDoorLedger struct {
-	mu                  sync.Mutex
+	url string
+	mu  sync.Mutex
+	s   ledgerState
+}
+
+// ledgerState is what a frontDoorLedger holds and counts.
+type ledgerState struct {
 	rv                  int
 	claims, nodes       string
 	requests, writes    int
 	claimWrites         int
 	conflicts           int
 	conflictOnce        bool // moves the resourceVersion between the next read and its write
-	url                 string
 	annotationsReceived []map[string]string
 	extra               map[string]string // further annotations the GET answers, never written
 }
 
+// state is what the ledger holds, read under its lock: a copy, which no later request changes.
+func (l *frontDoorLedger) state() ledgerState {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.s
+	s.annotationsReceived = slices.Clone(l.s.annotationsReceived)
+	s.extra = maps.Clone(l.s.extra)
+	return s
+}
+
+// change has edit change what the ledger holds, under its lock.
+func (l *frontDoorLedger) change(edit func(s *ledgerState)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	edit(&l.s)
+}
+
 func newFrontDoorLedger(t *testing.T, claims string) *frontDoorLedger {
 	t.Helper()
-	l := &frontDoorLedger{rv: 7, claims: claims}
+	l := &frontDoorLedger{s: ledgerState{rv: 7, claims: claims}}
 	fields := func() map[string]*string {
-		return map[string]*string{dispatchCertificateClaimsAnnotation: &l.claims, dispatchFrontDoorNodesAnnotation: &l.nodes}
+		return map[string]*string{dispatchCertificateClaimsAnnotation: &l.s.claims, dispatchFrontDoorNodesAnnotation: &l.s.nodes}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+frontDoorTestToken {
@@ -614,7 +642,7 @@ func newFrontDoorLedger(t *testing.T, claims string) *frontDoorLedger {
 		}
 		l.mu.Lock()
 		defer l.mu.Unlock()
-		l.requests++
+		l.s.requests++
 		switch r.Method {
 		case http.MethodGet:
 			if got := r.Header.Get("Accept"); got != partialMetadataAccept {
@@ -623,7 +651,7 @@ func newFrontDoorLedger(t *testing.T, claims string) *frontDoorLedger {
 				return
 			}
 			annotations := map[string]string{}
-			for key, value := range l.extra {
+			for key, value := range l.s.extra {
 				annotations[key] = value
 			}
 			for key, field := range fields() {
@@ -647,14 +675,14 @@ func newFrontDoorLedger(t *testing.T, claims string) *frontDoorLedger {
 				Annotations       map[string]string `json:"annotations,omitempty"`
 				ManagedFields     []any             `json:"managedFields"`
 			}{
-				"example-dispatch-tailnet-tls", "dispatch", "00000000-0000-0000-0000-000000000000", strconv.Itoa(l.rv), "2026-01-01T00:00:00Z", annotations,
+				"example-dispatch-tailnet-tls", "dispatch", "00000000-0000-0000-0000-000000000000", strconv.Itoa(l.s.rv), "2026-01-01T00:00:00Z", annotations,
 				[]any{map[string]any{"fieldsV1": map[string]any{"f:metadata": map[string]any{"f:annotations": map[string]any{
 					"f:" + dispatchCertificateClaimsAnnotation: map[string]any{}, "f:" + dispatchFrontDoorNodesAnnotation: map[string]any{},
 				}}}}},
 			}}, "", "  ")
-			if l.conflictOnce {
-				l.conflictOnce = false
-				l.rv++
+			if l.s.conflictOnce {
+				l.s.conflictOnce = false
+				l.s.rv++
 			}
 			_, _ = w.Write(body)
 		case http.MethodPatch:
@@ -673,24 +701,24 @@ func newFrontDoorLedger(t *testing.T, claims string) *frontDoorLedger {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if patch.Metadata.ResourceVersion != strconv.Itoa(l.rv) {
-				l.conflicts++
+			if patch.Metadata.ResourceVersion != strconv.Itoa(l.s.rv) {
+				l.s.conflicts++
 				http.Error(w, `{"reason":"Conflict"}`, http.StatusConflict)
 				return
 			}
-			l.writes++
-			l.annotationsReceived = append(l.annotationsReceived, patch.Metadata.Annotations)
+			l.s.writes++
+			l.s.annotationsReceived = append(l.s.annotationsReceived, patch.Metadata.Annotations)
 			for key, field := range fields() {
 				value, ok := patch.Metadata.Annotations[key]
 				if !ok {
 					continue
 				}
-				if key == dispatchCertificateClaimsAnnotation && value != l.claims {
-					l.claimWrites++
+				if key == dispatchCertificateClaimsAnnotation && value != l.s.claims {
+					l.s.claimWrites++
 				}
 				*field = value
 			}
-			l.rv++
+			l.s.rv++
 			_, _ = w.Write([]byte("{}"))
 		default:
 			http.Error(w, "unexpected "+r.Method, http.StatusMethodNotAllowed)
@@ -699,70 +727,6 @@ func newFrontDoorLedger(t *testing.T, claims string) *frontDoorLedger {
 	t.Cleanup(server.Close)
 	l.url = server.URL + "/api/v1/namespaces/dispatch/secrets/example-dispatch-tailnet-tls"
 	return l
-}
-
-// The server above answers on its own goroutines, and one of them can still be serving the gate's
-// last request while the test body reads what the handler recorded, so every field of
-// frontDoorLedger is touched under mu. These are the test side of that lock.
-func (l *frontDoorLedger) requestCount() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.requests
-}
-
-func (l *frontDoorLedger) writeCount() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.writes
-}
-
-func (l *frontDoorLedger) claimWriteCount() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.claimWrites
-}
-
-func (l *frontDoorLedger) conflictCount() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.conflicts
-}
-
-func (l *frontDoorLedger) claimsNow() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.claims
-}
-
-func (l *frontDoorLedger) nodesNow() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.nodes
-}
-
-func (l *frontDoorLedger) receivedNow() []map[string]string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]map[string]string(nil), l.annotationsReceived...)
-}
-
-func (l *frontDoorLedger) setNodes(nodes string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.nodes = nodes
-}
-
-func (l *frontDoorLedger) setExtra(extra map[string]string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.extra = extra
-}
-
-// setConflictOnce has the next read move the resourceVersion before its write.
-func (l *frontDoorLedger) setConflictOnce() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.conflictOnce = true
 }
 
 // partialMetadataAccept is the Accept header that has the API server answer a GET with the
@@ -804,10 +768,11 @@ func (p *gatePod) gate(t *testing.T, l *frontDoorLedger) (bool, string) {
 	return err == nil, stdout + stderr
 }
 
-// registeredIn reports whether the ledger's registry names p's own current node, and only once.
-func registeredIn(l *frontDoorLedger, p *gatePod) bool {
+// registeredIn reports whether nodes, a ledger's registry, names p's own current node, and only
+// once.
+func registeredIn(nodes string, p *gatePod) bool {
 	n := 0
-	for _, e := range strings.Fields(l.nodesNow()) {
+	for _, e := range strings.Fields(nodes) {
 		parts := strings.Split(e, "/")
 		if len(parts) == 3 && parts[1] == p.name && parts[2] == gateNodeID(p.name) {
 			n++
@@ -833,25 +798,28 @@ func TestDispatchCertificateBudgetClaims(t *testing.T) {
 	p := newGatePod(t, frontDoorTestPod+"a")
 	ok, out := p.gate(t, l)
 	require.True(t, ok, out)
-	require.Equal(t, 1, l.writeCount(), out)
-	require.Equal(t, 1, l.claimWriteCount(), out)
-	require.Contains(t, l.claimsNow(), "/"+p.name)
-	require.Len(t, strings.Fields(l.claimsNow()), dispatchCertificateClaimsPerWeek)
-	require.True(t, registeredIn(l, p), l.nodesNow())
+	s := l.state()
+	require.Equal(t, 1, s.writes, out)
+	require.Equal(t, 1, s.claimWrites, out)
+	require.Contains(t, s.claims, "/"+p.name)
+	require.Len(t, strings.Fields(s.claims), dispatchCertificateClaimsPerWeek)
+	require.True(t, registeredIn(s.nodes, p), s.nodes)
 
 	q := newGatePod(t, frontDoorTestPod+"b")
 	ok, out = q.gate(t, l)
 	require.False(t, ok, out)
-	require.Equal(t, 1, l.writeCount(), "a pod past the budget writes nothing")
+	s = l.state()
+	require.Equal(t, 1, s.writes, "a pod past the budget writes nothing")
 	require.Contains(t, out, "no claim left")
-	require.False(t, registeredIn(l, q))
+	require.False(t, registeredIn(s.nodes, q))
 
 	require.NoError(t, os.Remove(p.flag))
 	ok, out = p.gate(t, l)
 	require.True(t, ok, out)
-	require.Equal(t, 1, l.claimWriteCount(), out)
+	s = l.state()
+	require.Equal(t, 1, s.claimWrites, out)
 	require.Contains(t, out, "this pod holds claim")
-	require.True(t, registeredIn(l, p))
+	require.True(t, registeredIn(s.nodes, p))
 }
 
 // A claim older than the claim window no longer counts, and is dropped when the ledger is next
@@ -861,8 +829,9 @@ func TestDispatchCertificateBudgetForgetsOldClaims(t *testing.T) {
 	p := newGatePod(t, frontDoorTestPod+"a")
 	ok, out := p.gate(t, l)
 	require.True(t, ok, out)
-	require.Len(t, strings.Fields(l.claimsNow()), dispatchCertificateClaimsPerWeek, l.claimsNow())
-	require.NotContains(t, l.claimsNow(), "other2")
+	s := l.state()
+	require.Len(t, strings.Fields(s.claims), dispatchCertificateClaimsPerWeek, s.claims)
+	require.NotContains(t, s.claims, "other2")
 }
 
 // The registry is not the claims: another pod's write keeps every entry younger than the keep
@@ -872,30 +841,34 @@ func TestDispatchCertificateBudgetRegistryOutlivesTheClaims(t *testing.T) {
 	old := time.Now().Add(-8 * 24 * time.Hour).Unix()
 	ancient := time.Now().Add(-31 * 24 * time.Hour).Unix()
 	l := newFrontDoorLedger(t, fmt.Sprintf("%d/%sb", old, frontDoorTestPod))
-	l.setNodes(fmt.Sprintf("%d/%sb/nbCNTRL %d/%sgone/ngoneCNTRL %d/%sa/nSTALE", old, frontDoorTestPod, ancient, frontDoorTestPod, old, frontDoorTestPod))
+	l.change(func(s *ledgerState) {
+		s.nodes = fmt.Sprintf("%d/%sb/nbCNTRL %d/%sgone/ngoneCNTRL %d/%sa/nSTALE", old, frontDoorTestPod, ancient, frontDoorTestPod, old, frontDoorTestPod)
+	})
 	p := newGatePod(t, frontDoorTestPod+"a")
 	ok, out := p.gate(t, l)
 	require.True(t, ok, out)
-	require.Contains(t, l.nodesNow(), "/"+frontDoorTestPod+"b/nbCNTRL")
-	require.NotContains(t, l.nodesNow(), "ngoneCNTRL")
-	require.Contains(t, l.nodesNow(), "/"+frontDoorTestPod+"a/nSTALE")
-	require.True(t, registeredIn(l, p), l.nodesNow())
+	s := l.state()
+	require.Contains(t, s.nodes, "/"+frontDoorTestPod+"b/nbCNTRL")
+	require.NotContains(t, s.nodes, "ngoneCNTRL")
+	require.Contains(t, s.nodes, "/"+frontDoorTestPod+"a/nSTALE")
+	require.True(t, registeredIn(s.nodes, p), s.nodes)
 }
 
 // Two pods cannot take one claim: a write against a resourceVersion another write has moved is
 // refused, the pod does not advertise, and its next pass reads the ledger again.
 func TestDispatchCertificateBudgetClaimNeedsTheCurrentLedger(t *testing.T) {
 	l := newFrontDoorLedger(t, gateClaimsAt(time.Hour, 2*time.Hour))
-	l.setConflictOnce()
+	l.change(func(s *ledgerState) { s.conflictOnce = true })
 	p := newGatePod(t, frontDoorTestPod+"a")
 	ok, out := p.gate(t, l)
 	require.False(t, ok, out)
-	require.Zero(t, l.writeCount())
-	require.Equal(t, 1, l.conflictCount())
+	s := l.state()
+	require.Zero(t, s.writes)
+	require.Equal(t, 1, s.conflicts)
 	require.Contains(t, out, "the write was refused")
 	ok, out = p.gate(t, l)
 	require.True(t, ok, out)
-	require.Equal(t, 1, l.writeCount())
+	require.Equal(t, 1, l.state().writes)
 }
 
 // A pod whose cache holds the certificate with more than 31 days left advertises with no claim: it
@@ -907,15 +880,16 @@ func TestDispatchCertificateBudgetCachedCertificateSpendsNothing(t *testing.T) {
 	writeFrontDoorCert(t, p.paths.cache(), frontDoorTestFQDN, frontDoorTestFQDN, time.Now().Add(60*24*time.Hour))
 	ok, out := p.gate(t, l)
 	require.True(t, ok, out)
-	require.Zero(t, l.claimWriteCount())
-	require.True(t, registeredIn(l, p), l.nodesNow())
+	s := l.state()
+	require.Zero(t, s.claimWrites)
+	require.True(t, registeredIn(s.nodes, p), s.nodes)
 	require.Contains(t, out, "the cache holds the certificate")
 
 	q := newGatePod(t, frontDoorTestPod+"b")
 	writeFrontDoorCert(t, q.paths.cache(), frontDoorTestFQDN, frontDoorTestFQDN, time.Now().Add(20*24*time.Hour))
 	ok, out = q.gate(t, l)
 	require.False(t, ok, "a certificate due for renewal buys no advertisement without a claim:\n%s", out)
-	require.False(t, registeredIn(l, q))
+	require.False(t, registeredIn(l.state().nodes, q))
 }
 
 // A pod whose cache is empty but whose mounted Secret holds the certificate (a pod started before
@@ -929,8 +903,9 @@ func TestDispatchCertificateBudgetCopiesThePublishedCertificate(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(p.paths.secret, "acme-account.key.pem"), []byte("account key"), 0o644))
 	ok, out := p.gate(t, l)
 	require.True(t, ok, out)
-	require.Zero(t, l.claimWriteCount())
-	require.True(t, registeredIn(l, p), l.nodesNow())
+	s := l.state()
+	require.Zero(t, s.claimWrites)
+	require.True(t, registeredIn(s.nodes, p), s.nodes)
 	for file, mode := range map[string]os.FileMode{frontDoorTestFQDN + ".crt": 0o644, frontDoorTestFQDN + ".key": 0o600, "acme-account.key.pem": 0o600} {
 		info, err := os.Stat(filepath.Join(p.paths.cache(), file))
 		require.NoError(t, err, "%s is copied into the cache", file)
@@ -964,12 +939,13 @@ func TestDispatchCertificateBudgetNeedsThePodsOwnNodeID(t *testing.T) {
 	require.NoError(t, os.Remove(p.nodeIDFile))
 	ok, out := p.gate(t, l)
 	require.False(t, ok, out)
-	require.Zero(t, l.requestCount())
+	require.Zero(t, l.state().requests)
 	require.Contains(t, out, "node id is not read yet")
 	require.NoError(t, os.WriteFile(p.nodeIDFile, []byte(gateNodeID(p.name)+"\n"), 0o644))
 	ok, out = p.gate(t, l)
 	require.True(t, ok, out)
-	require.True(t, registeredIn(l, p), l.nodesNow())
+	s := l.state()
+	require.True(t, registeredIn(s.nodes, p), s.nodes)
 }
 
 // The gate keeps the registry naming this pod's current node: a pass with the flag set and its
@@ -981,18 +957,20 @@ func TestDispatchCertificateBudgetReRegisters(t *testing.T) {
 	p := newGatePod(t, frontDoorTestPod+"a")
 	ok, out := p.gate(t, l)
 	require.True(t, ok, out)
-	require.True(t, registeredIn(l, p), l.nodesNow())
-	writes, claims := l.writeCount(), l.claimWriteCount()
+	s := l.state()
+	require.True(t, registeredIn(s.nodes, p), s.nodes)
+	writes, claims := s.writes, s.claimWrites
 
 	ok, out = p.gate(t, l)
 	require.True(t, ok, out)
-	require.Equal(t, writes, l.writeCount(), "a pass with the entry in place writes nothing")
+	require.Equal(t, writes, l.state().writes, "a pass with the entry in place writes nothing")
 
-	l.setNodes("")
+	l.change(func(s *ledgerState) { s.nodes = "" })
 	ok, out = p.gate(t, l)
 	require.True(t, ok, out)
-	require.True(t, registeredIn(l, p), l.nodesNow())
-	require.Equal(t, claims, l.claimWriteCount())
+	s = l.state()
+	require.True(t, registeredIn(s.nodes, p), s.nodes)
+	require.Equal(t, claims, s.claimWrites)
 	require.Contains(t, out, "recording it again")
 
 	require.NoError(t, os.WriteFile(p.nodeIDFile, []byte("nNewNodeCNTRL\n"), 0o644))
@@ -1000,10 +978,11 @@ func TestDispatchCertificateBudgetReRegisters(t *testing.T) {
 	require.True(t, ok, out)
 	flag, err := os.ReadFile(p.flag)
 	require.NoError(t, err)
-	require.Contains(t, l.nodesNow(), "/"+p.name+"/nNewNodeCNTRL")
-	require.Contains(t, l.nodesNow(), "/"+p.name+"/"+gateNodeID(p.name))
+	s = l.state()
+	require.Contains(t, s.nodes, "/"+p.name+"/nNewNodeCNTRL")
+	require.Contains(t, s.nodes, "/"+p.name+"/"+gateNodeID(p.name))
 	require.True(t, strings.HasPrefix(string(flag), "nNewNodeCNTRL "), "the flag names the new node first: %q", flag)
-	require.Equal(t, claims, l.claimWriteCount())
+	require.Equal(t, claims, s.claimWrites)
 }
 
 // A node id that is not alphanumeric, as no StableNodeID is, is never written into the gate's
@@ -1016,8 +995,9 @@ func TestDispatchCertificateBudgetRefusesAnInjectedNodeID(t *testing.T) {
 	require.NoError(t, os.WriteFile(p.nodeIDFile, []byte(injected+"\n"), 0o644))
 	ok, out := p.gate(t, l)
 	require.False(t, ok, out)
-	require.Zero(t, l.requestCount())
-	require.Zero(t, l.writeCount())
+	s := l.state()
+	require.Zero(t, s.requests)
+	require.Zero(t, s.writes)
 	require.Contains(t, out, "not alphanumeric")
 }
 
@@ -1027,7 +1007,7 @@ func TestDispatchCertificateBudgetWritesOnlyItsTwoAnnotations(t *testing.T) {
 	p := newGatePod(t, frontDoorTestPod+"a")
 	ok, out := p.gate(t, l)
 	require.True(t, ok, out)
-	received := l.receivedNow()
+	received := l.state().annotationsReceived
 	require.Len(t, received, 1)
 	var keys []string
 	for key := range received[0] {
@@ -1046,15 +1026,16 @@ func TestDispatchCertificateBudgetWritesOnlyItsTwoAnnotations(t *testing.T) {
 func TestDispatchCertificateBudgetSkipsAMalformedEpoch(t *testing.T) {
 	malformed := fmt.Sprintf("08/%sother8 0177/%sother9 99999999999999999999999/%sother10", frontDoorTestPod, frontDoorTestPod, frontDoorTestPod)
 	l := newFrontDoorLedger(t, malformed+" "+gateClaimsAt(time.Hour, 2*time.Hour))
-	l.setNodes(fmt.Sprintf("09/%sgone/ngoneCNTRL", frontDoorTestPod))
+	l.change(func(s *ledgerState) { s.nodes = fmt.Sprintf("09/%sgone/ngoneCNTRL", frontDoorTestPod) })
 	p := newGatePod(t, frontDoorTestPod+"a")
 	ok, out := p.gate(t, l)
 	require.True(t, ok, out)
 	require.NotContains(t, out, "Illegal number")
 	require.NotContains(t, out, "arithmetic")
-	require.Equal(t, 1, l.claimWriteCount(), out)
-	require.Contains(t, l.claimsNow(), "/"+p.name)
-	require.True(t, registeredIn(l, p), l.nodesNow())
+	s := l.state()
+	require.Equal(t, 1, s.claimWrites, out)
+	require.Contains(t, s.claims, "/"+p.name)
+	require.True(t, registeredIn(s.nodes, p), s.nodes)
 }
 
 // The gate reads its ledger by the annotation's exact key: a key that differs only where the
@@ -1063,12 +1044,14 @@ func TestDispatchCertificateBudgetSkipsAMalformedEpoch(t *testing.T) {
 // TestDispatchCertificateBudgetClaims's open week.
 func TestDispatchCertificateBudgetReadsOnlyItsOwnAnnotation(t *testing.T) {
 	l := newFrontDoorLedger(t, gateClaimsAt(time.Hour, 2*time.Hour, 3*time.Hour))
-	l.setExtra(map[string]string{strings.Replace(dispatchCertificateClaimsAnnotation, ".", "x", 1): gateClaimsAt(100 * 24 * time.Hour)})
+	l.change(func(s *ledgerState) {
+		s.extra = map[string]string{strings.Replace(dispatchCertificateClaimsAnnotation, ".", "x", 1): gateClaimsAt(100 * 24 * time.Hour)}
+	})
 	p := newGatePod(t, frontDoorTestPod+"a")
 	ok, out := p.gate(t, l)
 	require.False(t, ok, out)
 	require.Contains(t, out, "no claim left")
-	require.Zero(t, l.claimWriteCount(), out)
+	require.Zero(t, l.state().claimWrites, out)
 }
 
 // A ledger value a hand edit left holding a quote, which the gate's read cuts short at the
@@ -1080,8 +1063,9 @@ func TestDispatchCertificateBudgetDropsAnEntryItCannotWrite(t *testing.T) {
 	p := newGatePod(t, frontDoorTestPod+"a")
 	ok, out := p.gate(t, l)
 	require.True(t, ok, out)
-	require.Equal(t, 1, l.claimWriteCount(), out)
-	require.Contains(t, l.claimsNow(), "/"+p.name)
-	require.NotContains(t, l.claimsNow(), `quoted`)
-	require.Len(t, strings.Fields(l.claimsNow()), 2, l.claimsNow())
+	s := l.state()
+	require.Equal(t, 1, s.claimWrites, out)
+	require.Contains(t, s.claims, "/"+p.name)
+	require.NotContains(t, s.claims, `quoted`)
+	require.Len(t, strings.Fields(s.claims), 2, s.claims)
 }

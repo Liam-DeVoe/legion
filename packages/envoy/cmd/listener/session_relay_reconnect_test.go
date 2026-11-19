@@ -23,7 +23,7 @@ import (
 // restarts the running relay rather than replacing its run (sessionRelays.registered), so the
 // backoff that run had reached is the one the reconnect meets: without this, a run that had met
 // a few failed restarts would cost its session 30 s at every later reconnect, which is what the
-// fragment pr2404-session-pull-reconnect.yaml and AGENTS.md say it does not.
+// fragment pr2404-session-pull-reconnect.yaml and relayReconnected's comment say it does not.
 func TestASessionRelayRestartsAtOnceWhenItsPullsConnectionReconnects(t *testing.T) {
 	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_relay_reconnect_")
 	agent := contracts.LegacyAgentSubject(sessionID)
