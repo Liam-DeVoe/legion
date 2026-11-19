@@ -95,12 +95,16 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 166 (dispatch://INFRA-3931:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 175 (dispatch://INFRA-3931:
 the daemon block of `GET /legion/v1/state` carries `stateSeq`, the sequence of the newest state
 event the project's daemon committed, read in the body's own snapshot, so a reader of the state
 events starts after a whole read at `stateSeq + 1`; the reader this plugin parses the state
 through takes the key as optional, because a caller from a pod whose claims record a contract
-under 166 is served the block without it, `api.stateFor`, `withoutStateSeq`), after contract 160
+under 175 is served the block without it, `api.stateFor`, `withoutStateSeq`), after contract 168
+(cybermonklabs/legion#4488: the completion that ends the retro rates the plan the issue ran, so
+`POST /legion/v1/handoff/complete` takes `planRating` and `planReason`, which the `legion` tool's
+`handoff_complete` sends as `plan_rating` and `plan_reason`; no shape of `GET /legion/v1/state`
+moves), after contract 160
 (INFRA-2009: the cache trimmer in an issue pod's launcher process, which moves the daemon's answer
 to its hello (`volumeTrim`) and adds the launcher's `launcher_volume_report` frame, and puts
 `runtime.kubernetes.volume_trim` in the state's settings block, which the plugin parses loosely,
