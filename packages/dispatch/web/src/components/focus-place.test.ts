@@ -6,6 +6,7 @@ import { PANEL_ATTRIBUTE, takesText, useKeymap } from "../features/shell/keymap"
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
 import { inRow, useFocusRescue } from "./focus-place";
+import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
 // away fires a `focusout` in Chromium while it is still in the page, and none at all in Firefox
@@ -1016,8 +1017,8 @@ test("a control hidden after the reader scrolled it out of sight stays out of si
 });
 
 /** A box that scrolls by itself, laid out from 100 px to 400 px down the window, holding one row
- *  per label - an Inbox row carrying the one checkbox a row marks itself by - appended to
- *  `parent`. */
+ *  per label - an Inbox row, carrying the row marker as the Inbox draws it, and the one checkbox
+ *  a row marks itself by - appended to `parent`. */
 function rowBoxIn(
   parent: Element,
   ...labels: string[]
@@ -1029,6 +1030,7 @@ function rowBoxIn(
   const rows = labels.map((label) => {
     const row = document.createElement("div");
     row.setAttribute("data-inbox-row", label);
+    row.setAttribute(ROW_MARKER_ATTRIBUTE, "");
     row.tabIndex = -1;
     const mark = document.createElement("input");
     mark.type = "checkbox";
@@ -1849,6 +1851,7 @@ test("an agent's row taken away by its session's end hands the focus to no other
         const agents = ["One", "Two", "Three"].map((label) => {
           const row = document.createElement("article");
           row.setAttribute("data-agent-row", label);
+          row.setAttribute(ROW_MARKER_ATTRIBUTE, "");
           row.tabIndex = -1;
           const mark = document.createElement("input");
           mark.type = "checkbox";

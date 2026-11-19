@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, useState } from "react";
 
 import { useFocusRescue } from "./focus-place";
+import { ROW_MARKER } from "./row-marker";
 import { SelectionBar } from "./SelectionBar";
 
 /**
@@ -324,10 +325,10 @@ test("the bar going with a control the reader scrolled out of sight hands the fo
   }
 });
 
-/** Three rows, each an Inbox row carrying its mark, a control of the page's own outside them, and
- *  the bar over them: the page the hand-off is read on when a refetch, not the reader, empties the
- *  selection. The rows sit in no scroll box, so a loss the reader did not cause leaves the focus on
- *  the body rather than pulled into any row. */
+/** Three rows, each an Inbox row carrying the row marker and its mark, a control of the page's
+ *  own outside them, and the bar over them: the page the hand-off is read on when a refetch, not
+ *  the reader, empties the selection. The rows sit in no scroll box, so a loss the reader did not
+ *  cause leaves the focus on the body rather than pulled into any row. */
 function MarkedTable({
   count,
   returnFocus,
@@ -339,7 +340,7 @@ function MarkedTable({
     <>
       <button type="button">Filter</button>
       {["CORE-1", "CORE-2", "CORE-3"].map((key) => (
-        <div data-inbox-row={key} key={key}>
+        <div data-inbox-row={key} key={key} {...ROW_MARKER}>
           <input aria-label={`Select ${key}`} type="checkbox" />
         </div>
       ))}

@@ -4,6 +4,7 @@ import { PANEL_ATTRIBUTE, takesText } from "../features/shell/keymap";
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
+import { ROW_MARKER_SELECTOR } from "./row-marker";
 
 /** What the keyboard focus can reach: a link, a form control that is not `disabled`, or anything
  *  given a Tab stop of its own. A control refused with `aria-disabled` is one, since it keeps its
@@ -145,13 +146,11 @@ export function useFocusPlace(
  *  (`pressedOn`), since the focus goes back to its opener when it goes. */
 const DIALOG = `[role="dialog"], [${PANEL_ATTRIBUTE}]`;
 
-/** What a row of a table or list is: a `<tr>`, anything given a row role, or an Inbox row. A loss
- *  the reader did not cause lands in none of these, and in no control inside one. */
-const ROW = 'tr, [role="row"], [data-inbox-row]';
-
-/** Whether `element` is a row (`ROW`) or inside one. */
+/** Whether `element` is a row of a table or list or inside one: whether it or an element around
+ *  it carries the one marker every row carries where it is drawn (`ROW_MARKER_SELECTOR`). A loss
+ *  the reader did not cause lands in no row, and in no control inside one. */
 export function inRow(element: Element): boolean {
-  return element.closest(ROW) !== null;
+  return element.closest(ROW_MARKER_SELECTOR) !== null;
 }
 
 /** The one checkbox a row draws for its mark (the project List's `Select <key>`, the Inbox's
@@ -515,7 +514,7 @@ export function readerPressLive(): boolean {
  *  reader's own, and the focus goes back to the trigger that opened it. */
 function pressPlaces(element: Element): Element[] {
   const places: Element[] = [element];
-  const row = element.closest(ROW);
+  const row = element.closest(ROW_MARKER_SELECTOR);
   if (row !== null) places.push(row);
   const region = element.closest(PRESS_REGION);
   if (region !== null) places.push(region);
@@ -550,10 +549,7 @@ export function causedByReader(element: Element): boolean {
  *  rest in it (a checkbox a click leaves unfocused, as WebKit does). */
 export function pressOnRowMark(): boolean {
   const press = recentPress();
-  return (
-    press !== null &&
-    pressedOn(press).some((each) => each.closest(ROW) !== null && each.matches(MARK))
-  );
+  return press !== null && pressedOn(press).some((each) => inRow(each) && each.matches(MARK));
 }
 
 /** Answers a loss the reader can no longer see, in a region still in the page: nothing scrolls,
@@ -810,7 +806,7 @@ function landBox(box: HTMLElement): boolean {
  *  Answers whether the focus landed. */
 function landQuietly(candidate: HTMLElement, region: Element): boolean {
   if (!candidate.isConnected || !rendered(candidate) || takesText(candidate)) return false;
-  const row = candidate.closest(ROW);
+  const row = candidate.closest(ROW_MARKER_SELECTOR);
   if (row === null) return focusNoScroll(candidate);
   const box = boxAround(row, region);
   return box !== null && landBox(box);

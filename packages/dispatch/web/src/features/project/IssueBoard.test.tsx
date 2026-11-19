@@ -17,6 +17,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { installCountingStorage } from "../../__tests__/counting-storage";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -629,6 +630,48 @@ test("a board refetch asked for while a move is unanswered waits for the answer,
   } finally {
     cleanup();
     patchIssue.mockRestore();
+  }
+});
+
+// A Board card is a row of its column's list. A refetch that takes the card holding the focus off
+// the board - another reader moved its issue on - is a loss the reader did not cause, so the app
+// shell's focus rescue, mounted here on the board's main content as the shell mounts it, hands
+// the focus into no other card: the reader's next key acts on no card they did not pick.
+test("a card a refetch takes away from under the focus hands it to no other card", async () => {
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue(keyboardIssues);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={["/projects/CORE"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>
+            <IssueBoard project="CORE" />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
+    const title = bravo.querySelector<HTMLElement>("[data-issue-link]");
+    if (title === null) throw new Error("CORE-2's card draws no title link");
+    act(() => title.focus());
+
+    listIssues.mockResolvedValue(keyboardIssues.filter((entry) => entry.key !== "CORE-2"));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: boardListKey });
+    });
+    await waitFor(() => expect(bravo).not.toBeInTheDocument());
+    await afterRescue();
+
+    expect(document.activeElement?.closest("[data-board-card]") ?? null).toBeNull();
+    expect(within(board).getByRole("article", { name: "CORE-3 Charlie" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
+    getMyState.mockRestore();
   }
 });
 

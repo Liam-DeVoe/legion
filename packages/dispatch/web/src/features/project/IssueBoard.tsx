@@ -27,6 +27,7 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
+import { ROW_MARKER } from "../../components/row-marker";
 import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { copyText } from "../../lib/clipboard";
@@ -153,6 +154,7 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
       style={style}
       {...attributes}
       {...listeners}
+      {...ROW_MARKER}
     >
       {/* Below `xl` every anchor is `inline-flex` with centred items (the 44 px touch rule in
           styles.css), so the key and title are stacked and start-aligned explicitly. */}
