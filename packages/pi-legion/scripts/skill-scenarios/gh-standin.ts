@@ -25,8 +25,9 @@
 //   a name not on it is refused as gh refuses it, `Unknown JSON field: "<f>"` with the list, exit
 //   1, before any request; a name on it that the route's answer does not hold, of the object or of
 //   any object of a list, is a request the rig does not model. The fields picked print in the order
-//   gh prints them, by name. `--jq`/`-q` runs jq over what the call prints, as gh does; `--slurp`
-//   with `--paginate` prints the one page in a list, and with a `--jq` is not modeled.
+//   gh prints them, by name. `--jq`/`-q` runs jq over what the call prints, as gh does;
+//   `--paginate` on a REST read follows every page a route's program gives (below), `--slurp`
+//   with it prints the pages in one list, and `--slurp` with a `--jq` is not modeled.
 // A call no route matches, and a call its route matched but does not model, is a request the rig
 // does not model: it answers `rig: request not modeled: gh <argv...>` on stderr, exits 1, and its
 // record carries `unmodeled: true`, so the run is the rig's error rather than the role's
@@ -700,17 +701,48 @@ if (command === "api") {
   } else {
     // A GET sends its fields as the query, as gh 2.98.0 does (measured in the review of
     // 76cc2379: `-X GET …/actions/runs -f head_sha=… -f event=pull_request` sends
-    // `GET …/actions/runs?event=pull_request&head_sha=…`): after any query the endpoint names,
-    // each field escaped as Go's url.QueryEscape escapes it, in the order Go's url.Values encodes
-    // them, by name. A GET that also hands over a body (--input) is not modeled.
+    // `GET …/actions/runs?event=pull_request&head_sha=…`): gh adds them to the query the
+    // endpoint names and writes the whole query as Go's url.Values encodes it, every parameter by
+    // name, each escaped as url.QueryEscape escapes it. A GET that also hands over a body
+    // (--input) is not modeled. A REST read gh pages (--paginate) asks for 100 a page where it
+    // names no per_page (measured, 2026-11-19, GH_DEBUG=api: `--paginate …/pulls/4148/comments`
+    // sends `…/pulls/4148/comments?per_page=100`).
     const queried = method === "GET" && Object.keys(apiFields).length > 0;
+    const paging = method === "GET" && has("--paginate");
+    const [bare = "", named = ""] = endpoint.split(/\?(.*)/s);
+    const pairs: [string, string][] = named
+      .split("&")
+      .filter((pair) => pair !== "")
+      .map((pair): [string, string] => {
+        const [name = "", ...value] = pair.split("=");
+        try {
+          return [
+            decodeURIComponent(name.replace(/\+/g, " ")),
+            decodeURIComponent(value.join("=").replace(/\+/g, " ")),
+          ];
+        } catch {
+          return refuse();
+        }
+      });
     if (queried) {
       if (input !== undefined) refuse();
-      endpoint += `${endpoint.includes("?") ? "&" : "?"}${Object.keys(apiFields)
-        .sort()
-        .map((key) => `${queryEscape(key)}=${queryEscape(String(apiFields[key]))}`)
-        .join("&")}`;
+      pairs.push(
+        ...Object.keys(apiFields).map((key): [string, string] => [key, String(apiFields[key])])
+      );
     }
+    const perPage = paging && !pairs.some(([name]) => name === "per_page");
+    if (queried)
+      endpoint = `${bare}?${[
+        ...pairs,
+        ...(perPage ? [["per_page", "100"] as [string, string]] : []),
+      ]
+        .map((pair, index) => ({ pair, index }))
+        .sort((a, b) =>
+          a.pair[0] < b.pair[0] ? -1 : a.pair[0] > b.pair[0] ? 1 : a.index - b.index
+        )
+        .map(({ pair: [key, value] }) => `${queryEscape(key)}=${queryEscape(value)}`)
+        .join("&")}`;
+    else if (perPage) endpoint += `${endpoint.includes("?") ? "&" : "?"}per_page=100`;
     request = [
       "gh",
       "api",
@@ -934,29 +966,63 @@ if (matched.graphql === true) {
 }
 // A program reads the world's own answer; GitHub's measured error for a state the world does not
 // hold yet (an attempt before the re-run) is answered as it stands.
+// A REST read gh pages (--paginate) gets every page the route's program gives, as gh follows
+// GitHub's `Link: rel="next"` from page to page: GitHub links the next page of a list that
+// states its count (`total_count`) while the pages so far hold fewer, and of a bare array while
+// the page was full and another follows. A route with no program answers its one page.
+let pages: unknown[] | undefined;
 if (matched.program !== undefined && answer.github === undefined) {
-  const program = Bun.spawnSync(
-    [
-      "jq",
-      "-c",
-      "--argjson",
-      "flags",
-      JSON.stringify(flags),
-      "--argjson",
-      "query",
-      JSON.stringify(query),
-      "--argjson",
-      "json",
-      String(fields !== undefined),
-      "--argjson",
-      "now",
-      String(Math.floor(Date.parse(at) / 1000)),
-      matched.program,
-    ],
-    { env: childEnv, stdin: new TextEncoder().encode(JSON.stringify(output)) }
-  );
-  if (program.exitCode !== 0) refuse();
-  output = JSON.parse(program.stdout.toString());
+  const world = output;
+  const run = (asked: Record<string, string>): unknown => {
+    const program = Bun.spawnSync(
+      [
+        "jq",
+        "-c",
+        "--argjson",
+        "flags",
+        JSON.stringify(flags),
+        "--argjson",
+        "query",
+        JSON.stringify(asked),
+        "--argjson",
+        "json",
+        String(fields !== undefined),
+        "--argjson",
+        "now",
+        String(Math.floor(Date.parse(at) / 1000)),
+        matched.program as string,
+      ],
+      { env: childEnv, stdin: new TextEncoder().encode(JSON.stringify(world)) }
+    );
+    if (program.exitCode !== 0) refuse();
+    return JSON.parse(program.stdout.toString());
+  };
+  output = run(query);
+  if (command === "api" && method === "GET" && endpoint !== "graphql" && has("--paginate")) {
+    /** The list of a page: the page itself, or the one list beside the count of an object. */
+    const listOf = (page: unknown): unknown[] | undefined => {
+      if (Array.isArray(page)) return page;
+      if (typeof page !== "object" || page === null || !("total_count" in page)) return undefined;
+      const lists = Object.values(page).filter(Array.isArray);
+      return lists.length === 1 ? lists[0] : undefined;
+    };
+    const per = Number(query.per_page);
+    let number = Number(query.page ?? "1");
+    pages = [output];
+    for (;;) {
+      const last = pages[pages.length - 1];
+      const list = listOf(last);
+      if (list === undefined || !(per > 0)) break;
+      const more = Array.isArray(last)
+        ? list.length === per
+        : number * per < Number((last as { total_count: unknown }).total_count);
+      if (!more) break;
+      number += 1;
+      const next = run({ ...query, page: String(number) });
+      if (Array.isArray(next) && next.length === 0) break;
+      pages.push(next);
+    }
+  }
 }
 if (fields !== undefined && status === 0) {
   // A route that answers text, or a field its answer does not hold, is not what --json reads; a
@@ -976,7 +1042,11 @@ if (fields !== undefined && status === 0) {
     Object.fromEntries([...new Set(fields)].sort().map((field) => [field, record[field]]));
   output = Array.isArray(output) ? output.map(picked) : picked(output as Record<string, unknown>);
 }
-if (has("--slurp")) output = [output];
+// `--slurp` prints every page in one list, and ends paging.
+if (has("--slurp")) {
+  output = pages ?? [output];
+  pages = undefined;
+}
 
 // The count of calls each route has answered outlives this process in fixtures.json, with the body
 // where this call edited the pull request's and the review it sent with its inline comments: one
@@ -1031,18 +1101,29 @@ renameSync(temporary, `${run}/fixtures.json`);
 closeSync(lock);
 lock = undefined;
 if (edit !== undefined) kept = edit;
-let text = typeof output === "string" ? output : JSON.stringify(output);
+// The pages of a paged read print as gh 2.98.0 prints them (measured, 2026-11-19, two pages of
+// cybermonklabs/legion: `pulls/4148/comments?per_page=3` printed one array of the six,
+// `commits/<sha>/check-runs?…&per_page=1` the two objects one after the other, nothing between);
+// a `--jq` filter runs over each page, its outputs one after another.
+const printed = pages ?? [output];
+let text = pages?.every(Array.isArray)
+  ? JSON.stringify(pages.flat())
+  : printed.map((page) => (typeof page === "string" ? page : JSON.stringify(page))).join("");
 let filtered = false;
 if (filter !== undefined && status === 0) {
-  const jq = Bun.spawnSync(["jq", "-r", filter], {
-    env: childEnv,
-    stdin: new TextEncoder().encode(text),
-  });
-  text = jq.stdout.toString();
+  text = "";
   filtered = true;
-  if (jq.exitCode !== 0) {
-    process.stderr.write(jq.stderr.toString());
-    exit(1, false);
+  for (const page of printed) {
+    const jq = Bun.spawnSync(["jq", "-r", filter], {
+      env: childEnv,
+      stdin: new TextEncoder().encode(typeof page === "string" ? page : JSON.stringify(page)),
+    });
+    text += jq.stdout.toString();
+    if (jq.exitCode !== 0) {
+      if (text !== "") process.stdout.write(text);
+      process.stderr.write(jq.stderr.toString());
+      exit(1, false);
+    }
   }
 }
 // `gh api` prints the body GitHub sent as it stands, with no newline after it, whether the request

@@ -77,3 +77,24 @@ answers follow (no file: each is stated here and in the comment of the code that
   answered; `repository(owner:"CyberMonkLabs",name:"Legion")` answers the repository, as does the
   REST `repos/CyberMonkLabs/Legion`: owner and name match without regard to case;
   `object(expression:"main~1")` answers a commit (a revision expression the rig does not model).
+- Measured on 2026-11-19 through the fold's read-only measure-gh.sh (its request log names each):
+  - `--paginate` of a REST read: `pulls/4148/comments?per_page=3` (six comments, two pages) printed
+    one JSON array of the six, the second page's items joined to the first's with `,`;
+    `commits/05e64382.../check-runs?check_name=ci-ok&filter=all&per_page=1` (two pages) printed the
+    two objects one after the other with nothing between and no newline after; and a paged read that
+    names no per_page, `--paginate pulls/4148/comments`, is sent as `pulls/4148/comments?per_page=100`
+    (GH_DEBUG=api).
+  - The jobs of each attempt of run 44406867953, whose attempt 2 re-ran its failed jobs:
+    attempt 1 lists 58 jobs (2 failure, 41 success, 15 skipped), attempt 2 lists 58 (43 success,
+    15 skipped), all at run_attempt 2. The 2 failed jobs were re-run; each of the 56 others is
+    carried to attempt 2 with an id and a check run of its own (its check_run_url names its own id),
+    its attempt-1 conclusion, steps, runner and started_at and completed_at, and a new created_at.
+- Measured by the reviewer on 2026-11-19 (infra-1303-github-fields-measured): a check run, a job and
+  a run of GitHub Actions as GitHub answers each, which red_model writes key for key; and that a
+  commit's default check-runs read keeps the latest of each name in each check suite
+  (`commits/b789479b99.../check-runs?check_name=pr-title` answers five pr-title runs of five suites,
+  as `filter=all` does).
+  - The pull requests a `workflow_dispatch` run names: each of the 30 latest workflow_dispatch runs
+    of cybermonklabs/legion lists one; run 44457284390 (event workflow_dispatch, head 38c89d64...
+    on legion/INFRA-3135, which is the current head of the open #3729) lists #3729 in the minimal
+    shape, and the check runs of its check suite (120342313542) list #3729 too.

@@ -1696,7 +1696,25 @@ route_defs() {
       + $name + "\u0027. (repository)\n"), exit:1};
     def no_pr($number): {stderr:("GraphQL: Could not resolve to a PullRequest with the number of "
       + $number + ". (repository.pullRequest)\n"), exit:1};
-    def until_posted($post): {follows:$post, replies:[{stdout:[]}, {unmodeled:true}]};'
+    def until_posted($post): {follows:$post, replies:[{stdout:[]}, {unmodeled:true}]};
+    # The node id GitHub gives an object: its kind, `_`, and the url-safe base64, unpadded, of the
+    # MessagePack array of a number and the ids (each in its shortest MessagePack form). Read from
+    # the node ids the reviewer measured on cybermonklabs/legion (2026-11-19,
+    # infra-1303-github-fields-measured): a check run CR_kwDORFy7ds8AAAAfaVpVaA is [0, 1146927990,
+    # 134911513960], the repository id and its own; a run WFR_kwLORFy7ds8AAAAKUpvh-Q is [2, the
+    # repository id, the run id]; a check suite CS_kwDO… [0, …]; the repository R_kgDORFy7dg [0,
+    # 1146927990]. Each comes back byte for byte from node_id.
+    def big_endian($n; $count): [range($count - 1; -1; -1) as $i | ($n / pow(2; 8 * $i) | floor) % 256];
+    def msgpack: if . < 128 then [.] elif . < 256 then [204, .]
+      elif . < 65536 then [205] + big_endian(.; 2) elif . < 4294967296 then [206] + big_endian(.; 4)
+      else [207] + big_endian(.; 8) end;
+    def base64url: . as $b | "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" as $abc
+      | [range(0; $b | length; 3) as $i | $b[$i:$i + 3] as $c
+         | ($c[0] * 65536 + ($c[1] // 0) * 256 + ($c[2] // 0)) as $n
+         | [18, 12, 6, 0][0:($c | length) + 1] | map($abc[($n / pow(2; .) | floor) % 64:][:1]) | join("")]
+      | join("");
+    def node_id($prefix; $kind; $ids):
+      $prefix + "_" + ([144 + ($ids | length) + 1, $kind] + ($ids | map(msgpack) | add) | base64url);'
 }
 
 # The programs routes run over their answers, each printed whole by a function of its own, as
@@ -1812,19 +1830,23 @@ EOF
 
 # The check runs of a commit, as GitHub answers its check-runs endpoint (measured on
 # cybermonklabs/legion 05e64382, whose CI run has two attempts, 2026-11-18, github-answers/
-# README.txt): with no `filter`, or any value but `all`, the latest check run of each name, by its
-# completion (GitHub's default, `latest`: 64 check runs, one per name, `ci-ok` its attempt-2
-# success alone), and with `filter=all` every check run the commit holds (122, `ci-ok` its success
-# and its attempt-1 failure); `check_name` and `status` keep the check runs of that name or
-# status, and the page the query asks. The program runs over every check run the world holds at
-# the commit, in their order; any other parameter (`app_id`, …) is not read.
+# README.txt): with no `filter`, or any value but `all`, the latest check run of each name in each
+# check suite, by its completion (GitHub's default, `latest`: 64 check runs, one per name,
+# `ci-ok` its attempt-2 success alone, the re-run's check runs staying in their run's suite; and
+# per suite, not per name across the commit, measured by the reviewer on b789479b99, 2026-11-19:
+# `check_name=pr-title` answers the five pr-title runs of five suites, as `filter=all` does), and
+# with `filter=all` every check run the commit holds (122, `ci-ok` its success and its attempt-1
+# failure); `check_name` and `status` keep the check runs of that name or status, and the page
+# the query asks. The program runs over every check run the world holds at the commit, in their
+# order, each naming its suite (`check_suite.id`); any other parameter (`app_id`, …) is not read.
 check_runs_program() {
   program_defs
   cat <<'EOF'
 reads(["filter", "check_name", "status", "per_page", "page"])
 | (.check_runs | to_entries) as $all
 | (if $query.filter == "all" then $all
-   else [$all | group_by(.value.name)[] | max_by([.value.completed_at, .value.id])] | sort_by(.key)
+   else [$all | group_by([.value.name, .value.check_suite.id])[]
+         | max_by([.value.completed_at, .value.id])] | sort_by(.key)
    end | map(.value))
 | map(select(($query.check_name == null or .name == $query.check_name)
     and ($query.status == null or .status == $query.status)))
@@ -1832,12 +1854,12 @@ reads(["filter", "check_name", "status", "per_page", "page"])
 EOF
 }
 
-# The jobs of a run or of one of its attempts, as GitHub answers them: of the run, with no
-# `filter` or `filter=latest`, the jobs of its latest attempt, and with `filter=all` those of
-# every attempt (measured on cybermonklabs/legion run 44406867953, two attempts, 2026-11-18: 58
-# jobs, all of attempt 2, and 116 with `filter=all`); the page the query asks, the count of the
-# whole list beside it. The program runs over {jobs, all}, the latest jobs and every job of every
-# attempt as the world holds them; another `filter` or parameter is not read.
+# The jobs of a run, as GitHub answers them: with no `filter` or `filter=latest`, the jobs of its
+# latest attempt, and with `filter=all` those of every attempt (measured on cybermonklabs/legion
+# run 44406867953, two attempts, 2026-11-18: 58 jobs, all of attempt 2, and 116 with
+# `filter=all`); the page the query asks, the count of the whole list beside it. The program runs
+# over {jobs, all}, the latest jobs and every job of every attempt as the world holds them; another
+# `filter` or parameter is not read.
 jobs_program() {
   program_defs
   cat <<'EOF'
@@ -1846,6 +1868,57 @@ reads(["filter", "per_page", "page"])
    elif $query.filter == "all" then .all
    else error("a filter the rig does not read") end)
 | {total_count:length, jobs:paged}
+EOF
+}
+
+# The jobs of one attempt of a run, as GitHub answers them: every job of that attempt, and the
+# page the query asks, the count of the whole list beside it. The endpoint takes `per_page` and
+# `page` alone; a `filter` is no parameter of it, and GitHub answers whatever it says as if it were
+# absent, as it answers an unknown `filter` on a commit's check runs (measured, check_runs_program;
+# the architect's ruling of 2026-11-19). Any other parameter is not read.
+attempt_jobs_program() {
+  program_defs
+  cat <<'EOF'
+reads(["filter", "per_page", "page"])
+| .jobs | {total_count:length, jobs:paged}
+EOF
+}
+
+# A run, or one attempt of it, as GitHub answers it: with `exclude_pull_requests=true` it lists no
+# pull request, as GitHub's runs list does (measured on cybermonklabs/legion, 2026-11-18,
+# runs_query_program), and the endpoints document the parameter (gh run view sends it). A page
+# (`per_page`, `page`) is nothing to one object, which gh asks for when it pages the read
+# (--paginate); any other parameter is not read.
+run_program() {
+  program_defs
+  cat <<'EOF'
+reads(["exclude_pull_requests", "per_page", "page"])
+| if $query.exclude_pull_requests == "true" then .pull_requests = [] else . end
+EOF
+}
+
+# The check suites of a commit, as GitHub answers its check-suites endpoint: those holding a check
+# run named `check_name`, those of the app `app_id`, and the page the query asks, the count of the
+# whole list beside it; GitHub documents the four (the review of 6b97edd6, P2). The program runs over
+# {check_suites, names}, the suites as the world holds them and the names of the check runs of
+# each suite by its id; any other parameter is not read.
+check_suites_program() {
+  program_defs
+  cat <<'EOF'
+reads(["check_name", "app_id", "per_page", "page"])
+| .names as $names
+| [.check_suites[] | select(($query.check_name == null
+                              or ($names[(.id|tostring)] // [] | index($query.check_name)) != null)
+                             and ($query.app_id == null or (.app.id|tostring) == $query.app_id))]
+| {total_count:length, check_suites:paged}
+EOF
+}
+
+# The annotations of a check run, and the page the query asks; any other parameter is not read.
+annotations_program() {
+  program_defs
+  cat <<'EOF'
+reads(["per_page", "page"]) | paged
 EOF
 }
 
@@ -2308,6 +2381,9 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
       {match:api_post("pulls/" + $n + "/reviews"), review:$review},
       {match:$line_comment, stdout:{id:6003, html_url:($url+"#discussion_r6003")}},
       ({match:api("issues/" + $n + "/comments")} + until_posted($issue_comment)),
+      # A limit, ruled off the measured path (the architect, 2026-11-19): the list answers every kept
+      # review whatever its `per_page` and `page` ask, where GitHub answers that page (no archived
+      # read of it carried a query, 0 of 126).
       ({match:api("pulls/" + $n + "/reviews"), reviews:"list"} + until_posted($line_comment)),
       ({match:api("pulls/" + $n + "/reviews/(?<id>\\d+)"), reviews:"one"} + until_posted($line_comment)),
       ({match:api("pulls/" + $n + "/reviews/(?<id>\\d+)/comments"), reviews:"review_comments"}
@@ -2355,8 +2431,14 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
       {match:rest("GET"; "pulls/" + $n;
                   "(?=.*\\s--header\\s[Aa]ccept:\\u001f*application/vnd\\.github(?:\\.v3)?\\.diff(?:\\s|$))"),
        stdout:($diff + "\n")},
+      # A limit, ruled off the measured path (the architect, 2026-11-19): the files answer whole
+      # whatever `per_page` and `page` ask, where GitHub answers that page (0 of 4 archived reads
+      # carried a query).
       {match:api("pulls/" + $n + "/files"), stdout:$files},
       {match:api("pulls"), head_read:"pulls", stdout:[$pull], program:$pulls_query},
+      # The pull request answers whatever parameter its read carries: GitHub ignores a parameter
+      # the endpoint does not take, so the answer is GitHub, but it is no read of every parameter
+      # (the architect, 2026-11-19, named a limit).
       {match:api("pulls/" + $n), head_read:"pull", stdout:$pull},
       {match:rest("PATCH"; "pulls/" + $n; json_only), head_read:"pull", stdout:$pull},
       # Another pull request number, its reviews or its comments: the 404 of GitHub (measured).
@@ -2662,7 +2744,8 @@ red_fixture() {
   local world=$1 model=$R/red-model.json routes=$R/red-routes.json required base base_sha
   red_model "$world" >"$model" || fail "red_fixture: no model of world '$world'"
   run_routes "$model" >"$routes" || fail "red_fixture: no routes of world '$world'"
-  jq --slurpfile model "$model" --slurpfile routes "$routes" "$(red_model_defs)$(route_defs)"'
+  jq --slurpfile model "$model" --slurpfile routes "$routes" \
+    --arg check_suites "$(check_suites_program)" "$(red_model_defs)$(route_defs)"'
     $routes[0] as $new
     # The reads of the head worker_fixture marks `head_read` answer the red where they stand, and
     # what the head settles at once the re-run is pressed: the pull request (its rollup and its
@@ -2672,10 +2755,11 @@ red_fixture() {
     # is pressed. The check suites of the head are one of GitHub Actions per run of the head, each
     # with what the run holds: its suite id and node id, branch, commit, status and conclusion,
     # pull requests and times. A field of a suite a run does not hold (before, after, its count of
-    # check runs, whether it can be re-requested) is in no answer.
+    # check runs, whether it can be re-requested) is in no answer. Their read takes its query
+    # (check_suites_program), over the names of the check runs each suite holds in that state.
     | def check_suite: {id:.check_suite_id, node_id:.check_suite_node_id, head_branch,
         head_sha, status, conclusion, url:($api + "/check-suites/" + (.check_suite_id|tostring)),
-        pull_requests, app:{id:15368, slug:"github-actions"}, created_at, updated_at,
+        pull_requests, app:actions_app, created_at, updated_at,
         check_runs_url:($api + "/check-suites/" + (.check_suite_id|tostring) + "/check-runs")};
       .routes |= map(
         if .head_read == "pr"
@@ -2724,8 +2808,12 @@ red_fixture() {
         elif .head_read == "check-suites"
         then (moving(.match; [0, 1] | map(. as $state
                 | [$runs[].states[$state].run | check_suite] as $suites
-                | {stdout:{total_count:($suites|length), check_suites:$suites}}))
-              + {head_read:"check-suites"})
+                | ((if $state == 0 then $red_checks else $settled_checks end) + $uncounted
+                   | group_by(.check_suite.id)
+                   | map({key:(.[0].check_suite.id|tostring), value:map(.name)}) | from_entries)
+                  as $names
+                | {stdout:{check_suites:$suites, names:$names}}))
+              + {head_read:"check-suites", program:$check_suites})
         else . end)
     # The answers for a repository other than the world (`repo_refusal`, worker_fixture) stand
     # ahead of every route, as GitHub refuses such a read whatever it asks.
@@ -2778,6 +2866,56 @@ red_defs() {
             map(. as $j | ([$later[] | select(.name == $j.name)] | first) // $j));
       # The check suite of a run: a rig id made as the run ids are, the run id less a million.
       def check_suite_id($run): $run - 1000000;
+      # The app of every check run and check suite of GitHub Actions, as GitHub answered it on
+      # cybermonklabs/legion (check-runs/135286572101, measured by the reviewer, 2026-11-19,
+      # infra-1303-github-fields-measured/cr_ok.json; the same in cr_fail.json).
+      def actions_app: {
+        id:15368,
+        client_id:"Iv1.05c79e9ad1f6bdfa",
+        slug:"github-actions",
+        node_id:"MDM6QXBwMTUzNjg=",
+        owner:{
+          login:"github",
+          id:9919,
+          node_id:"MDEyOk9yZ2FuaXphdGlvbjk5MTk=",
+          avatar_url:"https://avatars.githubusercontent.com/u/9919?v=4",
+          gravatar_id:"",
+          url:"https://api.github.com/users/github",
+          html_url:"https://github.com/github",
+          followers_url:"https://api.github.com/users/github/followers",
+          following_url:"https://api.github.com/users/github/following{/other_user}",
+          gists_url:"https://api.github.com/users/github/gists{/gist_id}",
+          starred_url:"https://api.github.com/users/github/starred{/owner}{/repo}",
+          subscriptions_url:"https://api.github.com/users/github/subscriptions",
+          organizations_url:"https://api.github.com/users/github/orgs",
+          repos_url:"https://api.github.com/users/github/repos",
+          events_url:"https://api.github.com/users/github/events{/privacy}",
+          received_events_url:"https://api.github.com/users/github/received_events",
+          type:"Organization",
+          user_view_type:"public",
+          site_admin:false},
+        name:"GitHub Actions",
+        description:"Automate your workflow from idea to production",
+        external_url:"https://help.github.com/en/actions",
+        html_url:"https://github.com/apps/github-actions",
+        created_at:"2018-07-30T09:30:17Z",
+        updated_at:"2026-06-18T16:17:48Z",
+        permissions:{
+          actions:"write", administration:"read", artifact_metadata:"write",
+          attestations:"write", checks:"write", code_quality:"write",
+          contents:"write", copilot_requests:"write", deployments:"write",
+          discussions:"write", drives:"write", issues:"write",
+          merge_queues:"write", metadata:"read", models:"read",
+          packages:"write", pages:"write", pull_requests:"write",
+          repository_hooks:"write", repository_projects:"write", security_events:"write",
+          statuses:"write", vulnerability_alerts:"read"},
+        events:[
+          "branch_protection_rule", "check_run", "check_suite", "create", "delete",
+          "deployment", "deployment_status", "discussion", "discussion_comment", "fork",
+          "gollum", "issues", "issue_comment", "label", "merge_group",
+          "milestone", "page_build", "public", "pull_request", "pull_request_review",
+          "pull_request_review_comment", "push", "registry_package", "release", "repository",
+          "repository_dispatch", "status", "watch", "workflow_dispatch", "workflow_run"]};
       # The workflow of a run, one of the three of the world, each with a rig id of its own (`ci`,
       # also for the run by hand; `title` in `f`; `e2e` in `e`), and the URL of the attempt before
       # an attempt after the first, as the runs of GitHub name it (measured on cybermonklabs/legion run
@@ -2845,8 +2983,8 @@ red_defs() {
 # the head, each in its two states, before the re-run and after it, with their jobs, and the check
 # runs of the head in each state, the counted set among them as its reads answer it.
 red_model() {
-  local world=$1 facts pr head branch check job step summary log log_gone test_name world_log
-  local run_id job_id red_id lanes required base base_sha title run_name partner partner_summary
+  local world=$1 facts pr head branch check job step log log_gone test_name world_log
+  local run_id job_id red_id lanes required base base_sha title run_name partner head_commit
   facts=$(red_world "$world") || fail "red_fixture: '$world' is no world of red-at-the-head"
   # The pull request, its head and branch, the base it merges into and the base commit, and its
   # title, which every run of the head carries as its display title: worker_fixture's world.
@@ -2872,7 +3010,6 @@ red_model() {
     job='build (linux-x64)'
     test_name=''
     step='Set up Bun'
-    summary='The job failed while it installed its tools.'
     log='Error: Failed to download https://bun.sh/download/bun-v1.4.4/bun-linux-x64.zip: HTTP 504 Gateway Timeout'
     ;;
   d)
@@ -2880,7 +3017,6 @@ red_model() {
     job='test (widgets)'
     test_name='greet.test.ts > trims the name'
     step='Run bun test .'
-    summary='1 of 2 tests in the repository root failed.'
     log='(fail) greet.test.ts > trims the name [1.00ms]'
     ;;
   f)
@@ -2888,8 +3024,7 @@ red_model() {
     job='title'
     test_name=''
     step='Check the pull request title'
-    summary="The title \"feat: greet() ($worker_key)\" has no scope: the pattern is <type>(<scope>): <subject>."
-    log=$summary
+    log="The title \"feat: greet() ($worker_key)\" has no scope: the pattern is <type>(<scope>): <subject>."
     # The title check runs in a workflow of its own, named for it, as this repository's
     # pr-title.yaml runs one: the run and the job are the check's own, and the `ci` run that holds
     # lint and typecheck is another run of the head.
@@ -2900,7 +3035,6 @@ red_model() {
     job='test (notify)'
     test_name='notify > retries a refused send'
     step='Run bun test packages/notify'
-    summary=$lanes
     log='(fail) notify > retries a refused send [3.00ms]'
     ;;
   *)
@@ -2908,7 +3042,6 @@ red_model() {
     job='test (notify)'
     test_name='notify > retries a refused send'
     step='Run bun test packages/notify'
-    summary='1 of 412 tests in packages/notify failed.'
     log='(fail) notify > retries a refused send [3.00ms]'
     # The log of attempt 1 of the run of the red is past GitHub's retention in world `h`, so each
     # read of it answers the 410 GitHub answers for such a log (log_gone below).
@@ -2923,28 +3056,93 @@ red_model() {
   # `ci` beside the red lane (`aggregate`, worlds `i` and `j`), or the red lane under the red
   # aggregate (`over_lane`, world `g`). Each is a job of the run of the red and a check run of
   # its own, as every job of a run is on GitHub; every other world has none.
-  partner='' partner_summary=''
+  partner=''
   if jq -e .aggregate <<<"$facts" >/dev/null; then
-    partner=$required partner_summary=$lanes
+    partner=$required
   elif jq -e .over_lane <<<"$facts" >/dev/null; then
-    partner=$job partner_summary='1 of 412 tests in packages/notify failed.'
+    partner=$job
   fi
+  # The commit of the head as a run names it (`head_commit`), read from the remote the pull request
+  # is on: its tree, its message, the time it was committed, and its author and committer.
+  head_commit=$(git -C "$R/remote.git" log -1 --format='%T%x00%an%x00%ae%x00%cn%x00%ce%x00%ct%x00%B' "$head" |
+    jq -Rsc --arg id "$head" 'split("\u0000") as [$tree, $an, $ae, $cn, $ce, $ct, $message]
+      | {id:$id, tree_id:$tree, message:($message | sub("\n+$"; "")), timestamp:($ct | tonumber | todate),
+         author:{name:$an, email:$ae}, committer:{name:$cn, email:$ce}}') ||
+    fail "red_fixture: no commit $head in $R/remote.git"
   # The failing line this world's log read answers, as the world knows it: a world whose read
   # answers an error (h) leaves none, since the role reads no line there.
   world_log=$log
   [ "$log_gone" = false ] || world_log=''
   jq -n --arg world "$world" --arg head "$head" --argjson pr "$pr" --arg repo "$worker_repo" \
     --arg branch "$branch" --arg base "$base" --arg base_sha "$base_sha" --arg title "$title" \
-    --arg check "$check" --arg job "$job" --arg step "$step" --arg summary "$summary" \
+    --arg check "$check" --arg job "$job" --arg step "$step" \
     --arg log "$log" --argjson log_gone "$log_gone" --arg world_log "$world_log" \
     --arg test_name "$test_name" --argjson facts "$facts" --arg lanes "$lanes" \
     --arg required "$required" --arg run_name "$run_name" --arg partner "$partner" \
-    --arg partner_summary "$partner_summary" --argjson run_id "$run_id" \
-    --argjson job_id "$job_id" --argjson red_id "$red_id" "$(red_defs)"'
-    def entry($id; $name; $conclusion; $output; $at):
+    --argjson run_id "$run_id" --argjson head_commit "$head_commit" \
+    --argjson job_id "$job_id" --argjson red_id "$red_id" "$(route_defs)$(red_defs)"'
+    # The objects of the head in the shape GitHub answers them, key for key and in the order GitHub
+    # writes the keys (measured by the reviewer on cybermonklabs/legion, 2026-11-19,
+    # infra-1303-github-fields-measured: a check run, a job and a run of GitHub Actions), each field
+    # from the world: the node id GitHub gives the object (node_id, route_defs); the user that
+    # triggers every run, the one user of the world, rig[bot], the Bot that opened the pull request
+    # (worker_fixture), whose id and node id and avatar the world does not hold, so they are left
+    # out; the repository as a run names it, whose owner is a login and its URLs alone, for the same
+    # reason; and the pull request as a check run or a run of its head names it, the minimal shape
+    # GitHub gives it there (measured: url, id, number, its head and base with their repository).
+    # A check run and its job share the node id of the check run; a run, its check suite and the
+    # repository each have their own (the repository id is the world one, route_defs, 1).
+    def node($kind; $id): node_id($kind; (if $kind == "WFR" then 2 else 0 end); [1, $id]);
+    def user($login):
+      ($login | @uri) as $path
+      | {login:$login, gravatar_id:"", url:("https://api.github.com/users/" + $path),
+         html_url:(if ($login | endswith("[bot]"))
+                   then "https://github.com/apps/" + ($login | rtrimstr("[bot]"))
+                   else "https://github.com/" + $login end),
+         followers_url:("https://api.github.com/users/" + $path + "/followers"),
+         following_url:("https://api.github.com/users/" + $path + "/following{/other_user}"),
+         gists_url:("https://api.github.com/users/" + $path + "/gists{/gist_id}"),
+         starred_url:("https://api.github.com/users/" + $path + "/starred{/owner}{/repo}"),
+         subscriptions_url:("https://api.github.com/users/" + $path + "/subscriptions"),
+         organizations_url:("https://api.github.com/users/" + $path + "/orgs"),
+         repos_url:("https://api.github.com/users/" + $path + "/repos"),
+         events_url:("https://api.github.com/users/" + $path + "/events{/privacy}"),
+         received_events_url:("https://api.github.com/users/" + $path + "/received_events")}
+        + (if ($login | endswith("[bot]")) then {type:"Bot"} else {} end)
+        + {user_view_type:"public", site_admin:false};
+    def actor: user("rig[bot]");
+    ($repo | split("/")) as [$owner, $name]
+    | def repository_full:
+        {id:1, node_id:node_id("R"; 0; [1]), name:$name, full_name:$repo, private:false, owner:user($owner),
+         html_url:("https://github.com/" + $repo), description:null, fork:false, url:$api}
+        + ([["forks", "/forks"], ["keys", "/keys{/key_id}"],
+            ["collaborators", "/collaborators{/collaborator}"], ["teams", "/teams"],
+            ["hooks", "/hooks"], ["issue_events", "/issues/events{/number}"], ["events", "/events"],
+            ["assignees", "/assignees{/user}"], ["branches", "/branches{/branch}"], ["tags", "/tags"],
+            ["blobs", "/git/blobs{/sha}"], ["git_tags", "/git/tags{/sha}"],
+            ["git_refs", "/git/refs{/sha}"], ["trees", "/git/trees{/sha}"],
+            ["statuses", "/statuses/{sha}"], ["languages", "/languages"],
+            ["stargazers", "/stargazers"], ["contributors", "/contributors"],
+            ["subscribers", "/subscribers"], ["subscription", "/subscription"],
+            ["commits", "/commits{/sha}"], ["git_commits", "/git/commits{/sha}"],
+            ["comments", "/comments{/number}"], ["issue_comment", "/issues/comments{/number}"],
+            ["contents", "/contents/{+path}"], ["compare", "/compare/{base}...{head}"],
+            ["merges", "/merges"], ["archive", "/{archive_format}{/ref}"],
+            ["downloads", "/downloads"], ["issues", "/issues{/number}"], ["pulls", "/pulls{/number}"],
+            ["milestones", "/milestones{/number}"],
+            ["notifications", "/notifications{?since,all,participating}"],
+            ["labels", "/labels{/name}"], ["releases", "/releases{/id}"],
+            ["deployments", "/deployments"]]
+           | map({key:(.[0] + "_url"), value:($api + .[1])}) | from_entries);
+      def repo_minimal: {id:1, url:$api, name:$name};
+      def pull_minimal:
+        {url:($api + "/pulls/" + ($pr|tostring)), id:$pr, number:$pr,
+         head:{ref:$branch, sha:$head, repo:repo_minimal},
+         base:{ref:$base, sha:$base_sha, repo:repo_minimal}};
+    # A check run before the fields GitHub derives from its job (linked, below).
+    def entry($id; $name; $conclusion; $at):
       {id:$id, name:$name, status:"completed", conclusion:$conclusion, started_at:$at,
-       completed_at:$at, html_url:("https://github.com/" + $repo + "/runs/" + ($id|tostring)),
-       app:{slug:"github-actions"}, output:$output};
+       completed_at:$at};
     "2026-03-04T10:00:00Z" as $t0
     | "2026-03-04T10:15:00Z" as $t_hand
     | "2026-03-04T10:31:08Z" as $t1
@@ -2952,20 +3150,36 @@ red_model() {
     | (if $run_name == "ci" then $run_id else $run_id + 2 end) as $ci_run
     | (if $facts.over_lane then [$red_id + 3, $red_id] else [$red_id, $red_id + 3] end)
       as [$lane_check, $aggregate_check]
+    # The workflow each run of the head belongs to, by the run id.
+    | ({($run_id|tostring):$run_name, ($ci_run|tostring):"ci", ($run_id - 1 | tostring):"e2e",
+        ($run_id + 1 | tostring):"ci"}) as $workflow_name_of
     # The jobs of the head, each the job of one check run (its check_run_url), each with an id of
     # its own. The run of the red holds the failing lane and, beside it, lint and typecheck (in `f`
     # those two are the jobs of the `ci` run, the title check running in a run of its own) and,
     # where the head carries an aggregate over the lane, the aggregate `ci` job that needs the
-    # lanes. Its attempt 2 is the re-run of its failed jobs: the lane and the aggregate. The spent
-    # e2e run of `e` holds its two attempts, and the by-hand run of `k` its one job.
+    # lanes. The spent e2e run of `e` holds its two attempts, and the by-hand run of `k` its one
+    # job. A job carries the node id of its check run (measured: the two share it), runs on a
+    # hosted runner of the label cybermonklabs/legion runs its CI on (measured, ubuntu-24.04),
+    # whose id the world does not hold: it is made from the job id in the range GitHub gives
+    # hosted runners (10 digits, measured), and named `GitHub Actions <id>` as GitHub names one.
     | def job($id; $run; $attempt; $name; $conclusion; $step_name; $at; $check_id):
-        {id:$id, run_id:$run, run_attempt:$attempt, head_sha:$head, name:$name,
-         status:"completed", conclusion:$conclusion, started_at:$at, completed_at:$at,
-         html_url:("https://github.com/" + $repo + "/actions/runs/" + ($run|tostring) + "/job/"
-                   + ($id|tostring)),
-         check_run_url:($api + "/check-runs/" + ($check_id|tostring)),
-         steps:[{number:1, name:"Set up job", status:"completed", conclusion:"success"},
-                {number:2, name:$step_name, status:"completed", conclusion:$conclusion}]};
+        (1000000000 + $id) as $runner
+        | {id:$id, run_id:$run, workflow_name:$workflow_name_of[($run|tostring)], head_branch:$branch,
+           run_url:($api + "/actions/runs/" + ($run|tostring)), run_attempt:$attempt,
+           node_id:node("CR"; $check_id), head_sha:$head,
+           url:($api + "/actions/jobs/" + ($id|tostring)),
+           html_url:("https://github.com/" + $repo + "/actions/runs/" + ($run|tostring) + "/job/"
+                     + ($id|tostring)),
+           status:"completed", conclusion:$conclusion, created_at:$at, started_at:$at,
+           completed_at:$at, name:$name,
+           steps:[{name:"Set up job", status:"completed", conclusion:"success", number:1,
+                   started_at:$at, completed_at:$at},
+                  {name:$step_name, status:"completed", conclusion:$conclusion, number:2,
+                   started_at:$at, completed_at:$at}],
+           check_run_url:($api + "/check-runs/" + ($check_id|tostring)),
+           labels:["ubuntu-24.04"], runner_id:$runner,
+           runner_name:("GitHub Actions " + ($runner|tostring)), runner_group_id:0,
+           runner_group_name:"GitHub Actions"};
       [job($job_id + 1; $ci_run; 1; "lint"; "success"; "Run bun lint"; $t0; $red_id - 2),
        job($job_id + 2; $ci_run; 1; "typecheck"; "success"; "Run bun typecheck"; $t0; $red_id - 1)]
       as $ci_jobs
@@ -2973,24 +3187,52 @@ red_model() {
        + (if $run_name == "ci" then $ci_jobs else [] end)
        + (if $paired then [job($job_id + 3; $run_id; 1; $required; "failure"; "Check the lanes";
                               $t0; $aggregate_check)] else [] end)) as $red_jobs
+    # Attempt 2 of the run of the red is the re-run of its failed jobs, the lane and the
+    # aggregate, and it lists every job of the run, as GitHub lists one (measured on
+    # cybermonklabs/legion run 44406867953, 2026-11-19, github-answers/README.txt: 58
+    # jobs at attempt 2, 2 re-run and 56 carried). A job it did not re-run is carried to attempt 2
+    # with an id and a check run of its own (the commit lists 122 check runs where 64 names stand,
+    # github-answers/README.txt), its attempt-1 conclusion, steps, runner and times, and the time
+    # the re-run made it (created_at), in the order of attempt 1.
+    | def carried($job; $id; $check_id):
+        $job + {id:$id, run_attempt:2, node_id:node("CR"; $check_id),
+                url:($api + "/actions/jobs/" + ($id|tostring)),
+                html_url:("https://github.com/" + $repo + "/actions/runs/" + ($job.run_id|tostring)
+                          + "/job/" + ($id|tostring)),
+                created_at:$t1, check_run_url:($api + "/check-runs/" + ($check_id|tostring))};
+      (if $run_name == "ci"
+       then [carried($ci_jobs[0]; $job_id + 7; $red_id + 5), carried($ci_jobs[1]; $job_id + 8; $red_id + 6)]
+       else [] end) as $carried_jobs
     | ([job($job_id + 4; $run_id; 2; $job; $after; $step; $t1; $lane_check + 1)]
+       + $carried_jobs
        + (if $paired then [job($job_id + 5; $run_id; 2; $required; $after; "Check the lanes"; $t1;
                               $aggregate_check + 1)] else [] end)) as $rerun_jobs
     # Each run is one check suite of GitHub Actions, as GitHub gives a workflow run one: its id is a
-    # rig id made as the run ids are (the run id less a million), its node id in the CS_ shape. It
-    # names its workflow and the attempt before it (red_defs).
+    # rig id made as the run ids are (the run id less a million). It names its workflow and the
+    # attempt before it (red_defs), the file of its workflow under .github/workflows (`ci.yaml`,
+    # as cybermonklabs/legion names its CI; `pr-title.yaml`; `e2e.yaml`), no workflow it calls, the
+    # commit of the head as the remote holds it, the user that triggered it, and the pull request,
+    # whose head the run ran at, whatever triggered it: a `workflow_dispatch` run of the head of
+    # an open pull request names it too (measured on cybermonklabs/legion, 2026-11-19,
+    # github-answers/README.txt: every one of the 30 latest workflow_dispatch runs lists one pull
+    # request; run 44457284390, at the current head of #3729, lists #3729, and so do its check runs).
     | def run($id; $name; $event; $attempt; $conclusion; $at):
-        {id:$id, name:$name, display_title:$title, event:$event, status:"completed",
-         conclusion:$conclusion, check_suite_id:check_suite_id($id),
-         check_suite_node_id:("CS_rig" + (check_suite_id($id)|tostring)),
-         head_sha:$head, head_branch:$branch, run_number:$pr,
-         run_attempt:$attempt,
-         html_url:("https://github.com/" + $repo + "/actions/runs/" + ($id|tostring)),
-         jobs_url:($api + "/actions/runs/" + ($id|tostring) + "/jobs"),
-         created_at:$at, updated_at:$at, run_started_at:$at,
-         pull_requests:(if $event == "pull_request"
-                        then [{number:$pr, head:{sha:$head, ref:$branch}}] else [] end),
-         workflow_id:workflow_id($name), previous_attempt_url:previous_attempt($id; $attempt)};
+        ($api + "/actions/runs/" + ($id|tostring)) as $url
+        | {id:$id, name:$name, node_id:node("WFR"; $id), head_branch:$branch, head_sha:$head,
+           path:(".github/workflows/" + {ci:"ci.yaml", title:"pr-title.yaml", e2e:"e2e.yaml"}[$name]),
+           display_title:$title, run_number:$pr, event:$event, status:"completed",
+           conclusion:$conclusion, workflow_id:workflow_id($name),
+           check_suite_id:check_suite_id($id), check_suite_node_id:node("CS"; check_suite_id($id)),
+           url:$url, html_url:("https://github.com/" + $repo + "/actions/runs/" + ($id|tostring)),
+           pull_requests:[pull_minimal],
+           created_at:$at, updated_at:$at, actor:actor, run_attempt:$attempt,
+           referenced_workflows:[], run_started_at:$at, triggering_actor:actor,
+           jobs_url:($url + "/jobs"), logs_url:($url + "/logs"),
+           check_suite_url:($api + "/check-suites/" + (check_suite_id($id)|tostring)),
+           artifacts_url:($url + "/artifacts"), cancel_url:($url + "/cancel"),
+           rerun_url:($url + "/rerun"), previous_attempt_url:previous_attempt($id; $attempt),
+           workflow_url:($api + "/actions/workflows/" + (workflow_id($name)|tostring)),
+           head_commit:$head_commit, repository:repository_full, head_repository:repository_full};
       # The runs of the head, each in the two states of the head, before the re-run and after it:
       # only the run of the red moves, to its attempt 2.
       ([{id:$run_id, states:[
@@ -3018,58 +3260,60 @@ red_model() {
     | ([$runs[].states[1].attempts[][]] | unique_by(.id)) as $all_jobs
     | ($all_jobs | map({key:(.check_run_url | split("/") | last), value:.}) | from_entries)
       as $job_of
-    # A check run carries the head it ran at, the check suite of the run its job belongs to, and
-    # the pull requests of that run, as the check runs of GitHub do.
+    # A check run in the shape GitHub answers a check run of GitHub Actions (measured): its node id
+    # (its job carries the same), the head it ran at, an external id in the shape of GitHub (a
+    # UUID, which the world does not hold: made from the check run id), its page, which is the page
+    # of its job, an output with no title, summary or text and the count of its annotations (the
+    # annotations route below answers one for a check that failed, none for one that passed), the
+    # check suite of the run its job belongs to, the GitHub Actions app, and the pull requests of
+    # that run: the pull request while the head is its head, which it is for the whole run (no
+    # push moves it), the by-hand `workflow_dispatch` run of `k` among them (measured, above).
     | ($runs | map({key:(.id|tostring), value:.states[0].run.pull_requests}) | from_entries)
       as $pull_requests_of
-    | def linked: ($job_of[(.id|tostring)].run_id) as $run
-        | . + {details_url:$job_of[(.id|tostring)].html_url, head_sha:$head,
-               check_suite:{id:check_suite_id($run)}, pull_requests:$pull_requests_of[($run|tostring)]};
+    | def linked: $job_of[(.id|tostring)] as $job
+        | {id, name, node_id:node("CR"; .id), head_sha:$head,
+           external_id:("00000000-0000-5000-8000-" + ("000000000000" + (.id|tostring))[-12:]),
+           url:($api + "/check-runs/" + (.id|tostring)), html_url:$job.html_url,
+           details_url:$job.html_url, status, conclusion, started_at, completed_at,
+           output:{title:null, summary:null, text:null,
+                   annotations_count:(if .conclusion == "failure" then 1 else 0 end),
+                   annotations_url:($api + "/check-runs/" + (.id|tostring) + "/annotations")},
+           check_suite:{id:check_suite_id($job.run_id)}, app:actions_app,
+           pull_requests:$pull_requests_of[($job.run_id|tostring)]};
       ($runs | map({key:(.id|tostring), value:.states[0].run.name}) | from_entries) as $workflow_of
     # The superseded runs the commit endpoint carries in a world where the one re-run of the head
     # is spent (`spent`, world `e`): the e2e check of attempt 1 that failed and the one of attempt
     # 2 that replaced it, as `filter=all` lists them. They decide nothing — the page lets no role
     # judge the spend on that endpoint — and the spend itself is in the runs of the head.
-    | (if $facts.spent then
-         [entry($red_id - 4; "e2e"; "failure";
-                {title:"e2e", summary:"The e2e lane ended with no result."}; $t0),
-          entry($red_id - 3; "e2e"; "success";
-                {title:"e2e", summary:"The re-run of the e2e lane passed."}; $t0)]
+    | (if $facts.spent then [entry($red_id - 4; "e2e"; "failure"; $t0), entry($red_id - 3; "e2e"; "success"; $t0)]
        else [] end) as $earlier
     # The check paired with the red ($partner): the aggregate `ci` the base requires, red over the
     # failing lane (`i`, `j`), the shape of the base of cybermonklabs/legion itself, which
     # requires the aggregate `ci-ok` over its test lanes; or, in `g`, the failing lane under the
     # red aggregate. Its id comes after the by-hand run of `k`, so no two checks share one.
-    | (if $paired
-       then [entry($red_id + 3; $partner; "failure"; {title:$partner, summary:$partner_summary}; $t0)]
-       else [] end) as $partners
-    | ([entry($red_id - 2; "lint"; "success"; {title:"lint", summary:"No lint error."}; $t0),
-        entry($red_id - 1; "typecheck"; "success"; {title:"typecheck", summary:"No type error."}; $t0)]
+    | (if $paired then [entry($red_id + 3; $partner; "failure"; $t0)] else [] end) as $partners
+    | ([entry($red_id - 2; "lint"; "success"; $t0), entry($red_id - 1; "typecheck"; "success"; $t0)]
        + $earlier
-       + [entry($red_id; $check; "failure"; {title:$check, summary:$summary}; $t0)]
+       + [entry($red_id; $check; "failure"; $t0)]
        + $partners | map(linked)) as $red_checks
     # The attempt the re-run makes of each check it re-runs, which `filter=all` lists beside the
     # attempt it replaces: a pass where the world settles green, the same failure where it stays
-    # red. It re-runs the red and its partner, the failed jobs of the one run of the red.
-    | def attempt($id; $name; $failed):
-        entry($id; $name; $after;
-              {title:$name,
-               summary:(if $facts.after == "green" then "The re-run of " + $name + " passed."
-                        else $failed end)};
-              $t1);
-      ($red_checks + [attempt($red_id + 1; $check; $summary)]
-       + ($partners | map(attempt(.id + 1; .name; .output.summary))) | map(linked)) as $settled_checks
+    # red. It re-runs the red and its partner, the failed jobs of the one run of the red; the check
+    # runs of the jobs it carried to attempt 2 keep their attempt-1 conclusions and times.
+    | def attempt($id; $name): entry($id; $name; $after; $t1);
+      ($red_checks + [attempt($red_id + 1; $check)]
+       + ($partners | map(attempt(.id + 1; .name)))
+       + (if $run_name == "ci"
+          then [entry($red_id + 5; "lint"; "success"; $t0), entry($red_id + 6; "typecheck"; "success"; $t0)]
+          else [] end)
+       | map(linked)) as $settled_checks
     | ($settled_checks | group_by(.name) | map(max_by(.id))) as $latest
     | (($red_checks | group_by(.name) | map(max_by(.id)))) as $shown
     # The check of the by-hand `workflow_dispatch` run at that head, in a world whose commit
     # endpoint carries one (`by_hand`, world `k`): the counted set never holds it. It is the later
-    # run of that check name there, so a role that reads the spend from the commit endpoint reads
-    # the one re-run of the head as already spent.
-    | (if $facts.by_hand then
-         [entry($red_id + 2; $check; "failure";
-                {title:$check,
-                 summary:("A by-hand workflow_dispatch run of " + $check + " failed.")}; $t_hand)
-          | linked]
+    # run of that check name there, in a check suite of its own, so a role that reads the spend
+    # from the commit endpoint reads the one re-run of the head as already spent.
+    | (if $facts.by_hand then [entry($red_id + 2; $check; "failure"; $t_hand) | linked]
        else [] end) as $uncounted
     # What the counted set answers, in order: the state the role first reads, and the state the
     # head settles at once the re-run is pressed. A counted set that has not reported the red when
@@ -3205,7 +3449,8 @@ run_routes() {
     --arg rerun_help "$(rerun_help)" --arg rerun_usage "$(rerun_usage)" --arg view_usage "$(view_usage)" \
     --arg run_view_program "$(run_view_program)" --arg run_list "$(run_list_program)" \
     --arg runs_query "$(runs_query_program)" --arg jobs_query "$(jobs_program)" \
-    "$(red_model_defs)$(route_defs)"'
+    --arg attempt_jobs "$(attempt_jobs_program)" --arg run_program "$(run_program)" \
+    --arg annotations "$(annotations_program)" "$(red_model_defs)$(route_defs)"'
       ($runs[0]) as $red_run
     | ([$runs[].id]) as $run_ids
     | ([$settled_checks[], $uncounted[] | .id] | unique) as $check_ids
@@ -3262,19 +3507,20 @@ run_routes() {
                                                                         | del(.jobs)]}))
         + {program:$run_list}),
        ($runs[] | . as $w | ($w.id|tostring) as $id
-        | run_route(api("actions/runs/" + $id); $w; {stdout:.run}),
+        | (run_route(api("actions/runs/" + $id); $w; {stdout:.run}) + {program:$run_program}),
           (run_route(api("actions/runs/" + $id + "/jobs"); $w;
                      latest as $jobs | {stdout:{jobs:$jobs, all:[.attempts[][]]}}) + {program:$jobs_query}),
           (range(1; ($w.states[1].attempts|length) + 1) as $n
-           | run_route(api("actions/runs/" + $id + "/attempts/" + ($n|tostring)); $w;
-                       if .attempts[$n - 1] == null then github("attempt-404")
-                       elif $n == (.attempts|length) then {stdout:.run}
-                       else {stdout:(.run + {run_attempt:$n, conclusion:"failure",
-                                             updated_at:.run.created_at,
-                                             previous_attempt_url:previous_attempt($w.id; $n)})} end),
+           | (run_route(api("actions/runs/" + $id + "/attempts/" + ($n|tostring)); $w;
+                        if .attempts[$n - 1] == null then github("attempt-404")
+                        elif $n == (.attempts|length) then {stdout:.run}
+                        else {stdout:(.run + {run_attempt:$n, conclusion:"failure",
+                                              updated_at:.run.created_at,
+                                              previous_attempt_url:previous_attempt($w.id; $n)})} end)
+              + {program:$run_program}),
              (run_route(api("actions/runs/" + $id + "/attempts/" + ($n|tostring) + "/jobs"); $w;
                         if .attempts[$n - 1] == null then github("attempt-jobs-404")
-                        else {stdout:{jobs:.attempts[$n - 1]}} end) + {program:$jobs_query})),
+                        else {stdout:{jobs:.attempts[$n - 1]}} end) + {program:$attempt_jobs})),
           ([range(1; ($w.states[1].attempts|length) + 1)] as $attempts
            | ({match:api("actions/runs/" + $id + "/attempts/(?!" + ids($attempts) + "(?:[/?\\s]|$))\\d+")}
               + github("attempt-404")),
@@ -3317,17 +3563,19 @@ run_routes() {
          ({match:api($other_job + "/logs")} + github("joblog-404")),
          ({match:api_post($other_job + "/rerun")} + github("jobrerun-404")),
        # A check run by its id, and its annotations: none for a check that passed, and for one
-       # that failed the annotation the runner writes for any failed step, which names no test.
+       # that failed the annotation the runner writes for any failed step, which names no test;
+       # the annotations read takes its page (annotations_program).
        ($check_ids[] | . as $id
         | check_route(api("check-runs/" + ($id|tostring)); $id; {stdout:.}; github("checkrun-404")),
-          check_route(api("check-runs/" + ($id|tostring) + "/annotations"); $id;
-                      {stdout:(if .conclusion == "failure"
-                               then [{path:".github", start_line:1, end_line:1,
-                                      start_column:null, end_column:null,
-                                      annotation_level:"failure", title:"",
-                                      message:"Process completed with exit code 1.",
-                                      raw_details:""}]
-                               else [] end)}; github("annotations-404"))),
+          (check_route(api("check-runs/" + ($id|tostring) + "/annotations"); $id;
+                       {stdout:(if .conclusion == "failure"
+                                then [{path:".github", start_line:1, end_line:1,
+                                       start_column:null, end_column:null,
+                                       annotation_level:"failure", title:"",
+                                       message:"Process completed with exit code 1.",
+                                       raw_details:""}]
+                                else [] end)}; github("annotations-404"))
+           + {program:$annotations})),
        ("check-runs/(?!" + ids($check_ids) + "(?:[/?\\s]|$))\\d+") as $other_check
        | ({match:api($other_check)} + github("checkrun-404")),
          ({match:api($other_check + "/annotations")} + github("annotations-404")),

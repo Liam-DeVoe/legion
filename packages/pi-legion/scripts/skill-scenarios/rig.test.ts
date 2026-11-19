@@ -1664,6 +1664,11 @@ const RED_ID = { lint: 9_000_000 + RED_PR - 2, typecheck: 9_000_000 + RED_PR - 1
 const RED_RED_ID = 9_000_000 + RED_PR;
 /** The aggregate check of worlds i and j; the attempt the re-run makes of it is the next id. */
 const RED_CI_ID = RED_RED_ID + 3;
+/** The check runs and the jobs the re-run of the failed jobs carries to attempt 2 where the run of
+ * the red holds lint and typecheck (every world but f): GitHub gives each carried job an id and a
+ * check run of its own (measured, rig.sh's red_model). */
+const RED_CARRIED = { lint: RED_RED_ID + 5, typecheck: RED_RED_ID + 6 };
+const RED_CARRIED_JOB = { lint: RED_JOB_ID + 7, typecheck: RED_JOB_ID + 8 };
 const RED_RUN_URL = `https://github.com/${RED_REPO}/actions/runs/${RED_RUN_ID}`;
 const ghStandin = path.join(import.meta.dir, "gh-standin.ts");
 
@@ -1694,6 +1699,10 @@ function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
     "runs_query_program",
     "check_runs_program",
     "jobs_program",
+    "attempt_jobs_program",
+    "run_program",
+    "check_suites_program",
+    "annotations_program",
     "run_view_program",
     "rerun_flags",
     "rerun_help",
@@ -1720,8 +1729,22 @@ function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
   return run;
 }
 /** A run directory whose fixtures.json and world.json red_fixture has turned red over `world`,
- * over the world worker_fixture really writes. */
-const redFixture = (world: string) => builtWorld(world);
+ * over the world worker_fixture really writes, built for the one row that calls it: the world of
+ * a row that writes into it, which presses the re-run, posts a review, a comment or an edit,
+ * names a listener or has the rig report the check, or reads what its own calls leave behind
+ * (calls.jsonl, fixtures.json's counts). */
+const ownFixture = (world: string) => builtWorld(world);
+/** The same world for the rows that only read it, built once per world for the whole file and
+ * shared, so the file builds a world it reads once rather than once a row: none of those rows
+ * presses, posts, edits, reports or reads what its calls leave behind, and the routes answer by
+ * the count of the press alone (gh-standin.ts, `follows`), which no read moves, so no row's reads
+ * change another's answer. */
+const sharedWorlds = new Map<string, string>();
+const redFixture = (world: string) => {
+  const built = sharedWorlds.get(world) ?? builtWorld(world);
+  sharedWorlds.set(world, built);
+  return built;
+};
 /** The routes of a run's fixtures.json, each by its match and its marks. */
 type Route = { match: string; head_read?: string; repo_refusal?: boolean; publish?: unknown };
 const routesOf = (run: string): Route[] =>
@@ -1875,7 +1898,8 @@ function runsAre(world: RedWorld, when: "before" | "after"): Record<string, stri
 /** The settlement the Envoy listener renders for a state of the head, as red_fixture writes it
  * for the re-run to publish and for the rig's own report of the check: `notify` is the id of the
  * run of `test (notify)` that state holds, the red's own or the attempt the re-run made, and `ci`
- * the id of the run of the aggregate that state holds, in worlds i and j alone. */
+ * the id of the run of the aggregate that state holds, in worlds i and j alone. Once the re-run
+ * made its attempt, lint and typecheck are the check runs it carried to attempt 2. */
 const settlement = (notify: number, passed: string[], failed: string[], ci?: number) => ({
   kind: "checks",
   repo: RED_REPO,
@@ -1883,9 +1907,9 @@ const settlement = (notify: number, passed: string[], failed: string[], ci?: num
   sha: RED_HEAD,
   check_runs: [
     ...(ci === undefined ? [] : [{ name: "ci", id: ci }]),
-    { name: "lint", id: RED_ID.lint },
+    { name: "lint", id: notify === RED_RED_ID ? RED_ID.lint : RED_CARRIED.lint },
     { name: "test (notify)", id: notify },
-    { name: "typecheck", id: RED_ID.typecheck },
+    { name: "typecheck", id: notify === RED_RED_ID ? RED_ID.typecheck : RED_CARRIED.typecheck },
   ],
   generation: 2,
   snapshot: RED_HEAD.slice(0, 8),
@@ -1964,7 +1988,7 @@ describe("red_fixture", () => {
   test.each([
     ...settling,
   ])("world %s: reading the head again, with no re-run between, answers red again", async (world) => {
-    const run = redFixture(world);
+    const run = ownFixture(world);
 
     const first = await readHead(run);
     const again = await readHead(run);
@@ -2003,7 +2027,9 @@ describe("red_fixture", () => {
 
   // Catches: a world `e` whose head's runs carry no second attempt, which is where the page
   // reads the spend, and a second attempt in every world, which would spend the re-run of the
-  // eleven others.
+  // eleven others. It reads the twelve worlds, so it has a bound of its own, about four times
+  // its time alone: 51.74 s (the tester, 2026-11-19, at 6b97edd6) and 47.83 s on fold12, each
+  // alone on the pod's own PATH with nothing else running on the pod.
   test("the head's runs answer attempt 1 in every world, and the spent head's attempt 2", async () => {
     const seen: Record<string, string[]> = {};
     for (const world of RED_WORLDS) {
@@ -2022,12 +2048,13 @@ describe("red_fixture", () => {
       // The title check runs in a workflow of its own; lint and typecheck in the `ci` run beside.
       f: [`${RED_RUN_ID}\ttitle\t1\tfailure`, `${RED_RUN_ID + 2}\tci\t1\tsuccess`],
     });
-  });
+  }, 210_000);
 
   // The page reads the spend on each earlier attempt of a run whose `run_attempt` is above 1.
   // Catches: a world `e` whose attempt read answers no jobs (the catch-all's runs list), which
   // leaves a role following the page unable to judge the spend, and an attempt answer in every
-  // world.
+  // world. It reads the twelve worlds, so it has a bound of its own, about four times its time
+  // alone: 50.14 s on fold12 (2026-11-19), alone on the pod's own PATH with nothing else running.
   test("the spent head's attempt 1 answers the superseded e2e failure, in world e alone", async () => {
     const seen: Record<string, string[]> = {};
     for (const world of RED_WORLDS) {
@@ -2044,7 +2071,7 @@ describe("red_fixture", () => {
     const answered = RED_WORLDS.filter((world) => seen[world].join("\n") === attempt.join("\n"));
     expect(seen.e).toEqual(attempt);
     expect(answered).toEqual(["e"]);
-  });
+  }, 210_000);
 
   // The commit endpoint of world `e` keeps the superseded e2e runs, which the page lets no role
   // judge the spend on. Catches: a seed that moved them out with the spend, which would leave the
@@ -2075,6 +2102,8 @@ describe("red_fixture", () => {
   // that as its reason. Seven more runs of that batch and of round 6's read `commits/null/…` or
   // `commits/trunk/…` and were answered the same red.
   // On GitHub a ref no commit has is a 422, whose body gh prints on stdout (measured on gh 2.98.0, 2026-11-18).
+  // Its bound: 19.74 s alone on the pod's own PATH at fold12 (the implementer, 2026-11-19), the
+  // shared worlds a, i and j built in it, so 80 s, about four times that.
   test("a read of a commit other than the head answers none of the head's red", async () => {
     for (const world of ["a", "i", "j"]) {
       const run = redFixture(world);
@@ -2114,7 +2143,7 @@ describe("red_fixture", () => {
         namesHeadRed: false,
       });
     }
-  });
+  }, 80_000);
 
   // Catches: a `--json` read that names a field the world's record lacks, or a field gh does not
   // know, answered exit 0 with the field left out, where GitHub answers every field the command
@@ -2197,6 +2226,8 @@ describe("red_fixture", () => {
   // named head (RED_ROLLUP_QUERY), whether the call names the commit in its `oid` field or inline.
   // The base's rollup reads as GitHub's for a commit with no check, a commit the rig does not know
   // as no object at all, and the head's own read, by oid or by its branch, keeps the head's red.
+  // It builds three worlds, so it has a bound of its own, about four times its time alone: 22.60 s
+  // on fold12 (2026-11-19), alone on the pod's own PATH with nothing else running on the pod.
   test("a GraphQL rollup read of a commit other than the head answers none of the head's red", async () => {
     const unknown = "0123456789abcdef0123456789abcdef01234567";
     const inline =
@@ -2240,7 +2271,7 @@ describe("red_fixture", () => {
         branch: "FAILURE",
       });
     }
-  });
+  }, 100_000);
 
   // Catches: a read of the runs of another commit or branch, the base's among them, answered with
   // the runs of the head, through the REST read of the runs or `gh run list`, so the base reads as
@@ -2314,7 +2345,7 @@ describe("red_fixture", () => {
   // where gh prints its help. Neither may move the head, and the re-run of the head's own run
   // still settles it.
   test("a re-run of a check run id is refused and leaves the head red; the head's own run settles it", async () => {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     const refused = await gh(run, ["run", "rerun", String(RED_RED_ID), "--failed"]);
     const help = await gh(run, ["run", "rerun", "--help"]);
     const before = await readHead(run);
@@ -2343,8 +2374,10 @@ describe("red_fixture", () => {
     });
   });
 
-  // Catches: a title check whose output names another title than the pull request's own, which
-  // the role reads as a red of some other change.
+  // Catches: a title check whose log names another title than the pull request's own, which the
+  // role reads as a red of some other change; and a check run whose output holds words GitHub
+  // Actions never writes there (its output has no title, summary or text: measured by the
+  // reviewer on cybermonklabs/legion, 2026-11-19), which a role could read the red from.
   test("the title check's output names the pull request's own title", async () => {
     const run = redFixture("f");
     const title = await gh(run, [
@@ -2365,7 +2398,7 @@ describe("red_fixture", () => {
     const log = await gh(run, ["run", "view", String(RED_RUN_ID), "--log-failed"]);
     const said = `The title "${RED_TITLE}" has no scope: the pattern is <type>(<scope>): <subject>.`;
     expect(title.stdout).toBe(`${RED_TITLE}\n`);
-    expect(summary.stdout).toBe(`${said}\n`);
+    expect(summary.stdout).toBe("null\n");
     // gh prints a log line as `<job>\t<step>\t<time> <line>`, with GitHub's BOM before the time
     // on the first line of a step (measured, runview-job-log).
     expect(log.stdout).toBe(
@@ -2436,7 +2469,9 @@ describe("red_fixture", () => {
   // job 135117329305 of cybermonklabs/legion, 2026-11-18: joblog-live and runview-job-log of the
   // measurements): the REST log without the one BOM at its start, a gh log without the BOM at the
   // first line of each step, a line without GitHub's timestamp, a log that does not end in a
-  // newline, and an ESC byte, which gh refuses to print without --allow-escape-sequences.
+  // newline, and an ESC byte, which gh refuses to print without --allow-escape-sequences. It
+  // builds two worlds, so it has a bound of its own, about four times its time alone: 15.47 s on
+  // fold12 (2026-11-19), alone on the pod's own PATH with nothing else running on the pod.
   test("a job log reads as GitHub sends it and gh prints it: its BOMs, timestamps and last newline", async () => {
     const BOM = "\uFEFF";
     const stamped = (line: string) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z /.test(line);
@@ -2477,7 +2512,7 @@ describe("red_fixture", () => {
       }
     }
     expect(seen).toEqual(seen.map((read) => ({ ...read, bom: true, stamps: true, end: true })));
-  });
+  }, 70_000);
 
   // Catches: a counted set in a shape of the rig's own, which a role that reads it as GitHub
   // answers one — the state, the one page of contexts with the cursor of its last node, and a
@@ -2532,7 +2567,7 @@ describe("red_fixture", () => {
   // as the head's one re-run already spent, and one the counted set holds too, which would make
   // the two reads agree and leave the world measuring nothing.
   test("world k: the commit endpoint answers a by-hand failure the counted set does not hold", async () => {
-    const run = redFixture("k");
+    const run = ownFixture("k");
     const before = await readHead(run);
     // Two failing runs of the one check name at the commit, the second a by-hand run's, against
     // one counted run of it.
@@ -2551,16 +2586,18 @@ describe("red_fixture", () => {
     );
     expect(JSON.parse(counted.stdout)).toEqual([1, RED_RED_ID]);
     // The by-hand run is a run of its own at that head, which is what puts it outside the set
-    // GitHub counts for the pull request: its check run links to the job of that run.
+    // GitHub counts for the pull request: its check run links to the job of that run and sits in
+    // that run's check suite, though it names the pull request, as a workflow_dispatch run at the
+    // current head of an open pull request does on GitHub (measured, github-answers/README.txt).
     const byHand = await gh(run, [
       "api",
       `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?filter=all`,
       "--jq",
-      `.check_runs[] | select(.id == ${RED_RED_ID + 2}) | [.details_url, .output.summary] | @tsv`,
+      `.check_runs[] | select(.id == ${RED_RED_ID + 2}) | [.details_url, .check_suite.id, (.pull_requests | map(.number) | join(","))] | @tsv`,
     ]);
     expect(byHand.stdout).toBe(
       `https://github.com/${RED_REPO}/actions/runs/${RED_RUN_ID + 1}/job/${RED_JOB_ID + 6}\t` +
-        "A by-hand workflow_dispatch run of test (notify) failed.\n"
+        `${RED_RUN_ID + 1 - 1_000_000}\t${RED_PR}\n`
     );
     // The re-run clears the counted run and leaves the by-hand one, which is why a role that
     // reads the commit endpoint for the head's state reads it red after a green re-run.
@@ -2577,7 +2614,7 @@ describe("red_fixture", () => {
   // leave the role nothing to wait on. red_report is the rig reporting the check between the
   // turns: the counted set reports it, the run learns when, and the settlement wakes the role.
   test("world l: the counted set reports the red only once the rig reports it", async () => {
-    const run = redFixture("l");
+    const run = ownFixture("l");
     const unreported = await readHead(run);
     expect({
       rollup: unreported.rollup,
@@ -2659,11 +2696,13 @@ describe("red_fixture", () => {
   // The row builds the twelve worlds and makes six calls in each, so it has a bound of its own:
   // measured alone, 70.74 s with the pod's own git first on PATH and 47.08 s with plain git first
   // (the tester, 2026-11-18, at a201b17c), and 60.82 s with the pod's own git on the fold of the
-  // review of 76cc2379 (2026-11-18), over the suite's 60 s default.
+  // review of 76cc2379 (2026-11-18), over the suite's 60 s default; 74.31 s on fold12
+  // (2026-11-19), alone on the pod's own PATH with nothing else running on the pod. The bound is
+  // about four times the slowest.
   test("every call the page names is answered by its own route, in every world", async () => {
     const seen: unknown[] = [];
     for (const world of RED_WORLDS) {
-      const run = redFixture(world);
+      const run = ownFixture(world);
       await gh(run, [
         "api",
         `repos/${RED_REPO}/actions/runs?head_sha=${RED_HEAD}&event=pull_request`,
@@ -2738,14 +2777,16 @@ describe("red_fixture", () => {
           (["g", "i", "j"].includes(world) ? `${RED_JOB_ID + 3}\tci\tfailure\n` : ""),
       }))
     );
-  }, 240_000);
+  }, 300_000);
 
   // Catches: a `--required` read answered by the route for every check, which hands a role every
   // lane where GitHub hands it the required set alone (the review of red-at-the-head.md:86), a
   // required read that stays red after a green re-run, and a read without the flag that lost a
   // check to the new route. The base requires the one aggregate check `ci` (red_fixture), which
   // the heads of worlds `g`, `i` and `j` report; every other head answers gh's own `no required
-  // checks reported` and exits 1.
+  // checks reported` and exits 1. It reads the twelve worlds, so it has a bound of its own, about
+  // four times its time alone: 68.78 s (the tester, 2026-11-19, at 6b97edd6) and 57.80 s on
+  // fold12, each alone on the pod's own PATH with nothing else running on the pod.
   test("gh pr checks --required answers the required check alone, and a read without it every check", async () => {
     const none = {
       stdout: "",
@@ -2762,7 +2803,7 @@ describe("red_fixture", () => {
     };
     const seen: unknown[] = [];
     for (const world of RED_WORLDS) {
-      const run = redFixture(world);
+      const run = ownFixture(world);
       const required = ["pr", "checks", String(RED_PR), "--required"];
 
       const before = await gh(run, required);
@@ -2826,7 +2867,7 @@ describe("red_fixture", () => {
         };
       })
     );
-  });
+  }, 280_000);
 
   /** The route of one read of the base's required set in `run`: the one route that takes `gh api
    * GET` of `endpoint` under the world's repository. */
@@ -2919,7 +2960,9 @@ describe("red_fixture", () => {
   // Catches: a world whose fixture lacks one of the five reads of the base's required set, which
   // would answer the 404 there, and a fixture that carries them behind another route, where the
   // generic check-runs route takes the prompt's two reads again: red_fixture writes them in every
-  // world (required_set_fixture), ahead of every other route.
+  // world (required_set_fixture), ahead of every other route. It reads the twelve worlds, so it
+  // has a bound of its own, about four times its time alone: 47.94 s on fold12 (2026-11-19),
+  // alone on the pod's own PATH with nothing else running on the pod.
   test("every world's fixture carries the five reads of the base's required set, ahead of every other route", () => {
     // Which of the five comes first is incidental, since each read lands on a route of its own
     // (the row above), so the first five routes of each world are compared with them sorted.
@@ -2940,7 +2983,7 @@ describe("red_fixture", () => {
     expect(
       seen.filter(({ routes, required }) => routes.join("\n") !== required.join("\n"))
     ).toEqual([]);
-  });
+  }, 200_000);
 
   // Catches: a world i or j whose counted set loses the aggregate the base requires, in any read
   // of it or in the settlement the re-run publishes; an aggregate in another run than its lane's,
@@ -2964,7 +3007,7 @@ describe("red_fixture", () => {
     const seen: unknown[] = [];
     try {
       for (const world of ["i", "j"] as const) {
-        const run = redFixture(world);
+        const run = ownFixture(world);
         paneListener(run, `http://127.0.0.1:${server.port}`);
         /** `ci` beside the lane under it, as each read of the head answers the two, with the run
          * each counted check names and every run of `ci` at the commit. */
@@ -2984,7 +3027,7 @@ describe("red_fixture", () => {
             "api",
             `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?filter=all`,
             "--jq",
-            '.check_runs[] | select(.name == "ci") | [.id, .conclusion, .output.summary] | @tsv',
+            '.check_runs[] | select(.name == "ci") | [.id, .conclusion, .output.annotations_count] | @tsv',
           ]);
           return {
             rollup: pair(head.rollup),
@@ -3005,7 +3048,6 @@ describe("red_fixture", () => {
     } finally {
       server.stop(true);
     }
-    const lanes = "1 of 6 lanes failed: test (notify).";
     const runOf = ["ci", "lint", "test (notify)", "typecheck"].map(
       (name) => `${name}\t${RED_RUN_ID}`
     );
@@ -3017,7 +3059,8 @@ describe("red_fixture", () => {
       required: [["ci", verdict]],
       runOf,
     });
-    const red = `${RED_CI_ID}\tfailure\t${lanes}`;
+    // A failed check run holds the one annotation the runner writes, a passed one none.
+    const red = `${RED_CI_ID}\tfailure\t1`;
     const lane = { check: "test (notify)", job: "test (notify)" };
     expect(seen).toEqual([
       {
@@ -3025,14 +3068,14 @@ describe("red_fixture", () => {
         before: { ...both("fail"), ci: [red] },
         after: {
           ...both("pass"),
-          ci: [red, `${RED_CI_ID + 1}\tsuccess\tThe re-run of ci passed.`],
+          ci: [red, `${RED_CI_ID + 1}\tsuccess\t0`],
         },
         ...lane,
       },
       {
         world: "j",
         before: { ...both("fail"), ci: [red] },
-        after: { ...both("fail"), ci: [red, `${RED_CI_ID + 1}\tfailure\t${lanes}`] },
+        after: { ...both("fail"), ci: [red, `${RED_CI_ID + 1}\tfailure\t1`] },
         ...lane,
       },
     ]);
@@ -3061,7 +3104,7 @@ describe("red_fixture", () => {
     });
     try {
       for (const world of ["a", "b"] as const) {
-        const run = redFixture(world);
+        const run = ownFixture(world);
         paneListener(run, `http://127.0.0.1:${server.port}`);
         const rerun = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
         expect(rerun.exit).toBe(0);
@@ -3237,10 +3280,12 @@ describe("red_fixture", () => {
   // replies with them, a mark the gh stand-in drops when it writes fixtures.json back (a re-run
   // pressed before the report writes it, as a pull request body edit does), which would leave
   // world l's counted set unreported for good, and a mark in a world the rig reports nothing in.
+  // It builds the twelve worlds, so it has a bound of its own, about four times its time alone:
+  // 53.38 s on fold12 (2026-11-19), alone on the pod's own PATH with nothing else running.
   test("world l marks the routes red_report trims, and the mark outlives the stand-in's writes", async () => {
     // In the order the routes stand in fixtures.json: worker_fixture's own, each turned red where
     // it stands, and the `--required` read red_fixture adds.
-    const run = redFixture("l");
+    const run = ownFixture("l");
     const counted = countedOf(run);
     expect(RED_WORLDS.filter((world) => marked(redFixture(world)).length > 0)).toEqual(["l"]);
 
@@ -3260,13 +3305,13 @@ describe("red_fixture", () => {
         (match) => fixtures.routes.find((route) => route.match === match)?.replies?.length
       )
     ).toEqual(counted.map(() => 2));
-  });
+  }, 220_000);
 
   // Catches: a red_report that rewrites fixtures.json without the lock every gh stand-in call
   // holds from its read of the file to its write back: a call between its read and its write would
   // put back the answers the report dropped, or the report would drop the call's count.
   test("red_report rewrites fixtures.json only once it holds the lock a gh call holds", async () => {
-    const run = redFixture("l");
+    const run = ownFixture("l");
     // The lock as a gh call holds it, taken before the report starts: the holder prints once it
     // has the lock, and lets it go when its stdin closes.
     const holder = Bun.spawn(
@@ -3308,7 +3353,7 @@ describe("the reads of the repository and the pull request", () => {
   // or in a format gh does not print, which a role reading the head's pull request by its branch
   // takes for none.
   test("gh pr list answers the one open pull request its filters admit, as gh prints it", async () => {
-    const run = builtWorld("a");
+    const run = redFixture("a");
     const json = await gh(run, ["pr", "list", "--head", `legion/${RED_KEY}`, "--json", "number"]);
     const closed = await gh(run, ["pr", "list", "--state", "closed", "--json", "number"]);
     const text = await gh(run, ["pr", "list"]);
@@ -3321,7 +3366,7 @@ describe("the reads of the repository and the pull request", () => {
 
   // Catches: a diff or a list of files the remote does not hold between the base and the head.
   test("gh pr diff, its names and the files read answer the base..head diff of the remote", async () => {
-    const run = builtWorld("a");
+    const run = redFixture("a");
     const head = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8")).head;
     const diff = await gh(run, ["pr", "diff", String(RED_PR)]);
     const names = await gh(run, ["pr", "diff", String(RED_PR), "--name-only"]);
@@ -3341,7 +3386,7 @@ describe("the reads of the repository and the pull request", () => {
   // Catches: a job log through the API that names another failure than the world's, a log for a
   // job the world has none of, and a passing job whose log claims a failure.
   test("the job log through the API holds the failing line of a failed job, and 404s another id", async () => {
-    const run = builtWorld("a");
+    const run = redFixture("a");
     const failing = await gh(run, ["api", `repos/${RED_REPO}/actions/jobs/${RED_JOB_ID}/logs`]);
     const passing = await gh(run, ["api", `repos/${RED_REPO}/actions/jobs/${RED_JOB_ID + 1}/logs`]);
     const other = await gh(run, ["api", `repos/${RED_REPO}/actions/jobs/${RED_RED_ID}/logs`]);
@@ -3705,7 +3750,7 @@ describe("the reads of the repository and the pull request", () => {
   // Catches: a reviewer that reads its own login through GraphQL and is answered another than
   // the one `gh api user` answers, the login every kept review carries, or is refused.
   test("the GraphQL viewer's login is the login gh api user answers", async () => {
-    const run = builtWorld("i");
+    const run = redFixture("i");
     const viewer = await gh(run, [
       "api",
       "graphql",
@@ -3721,7 +3766,7 @@ describe("the reads of the repository and the pull request", () => {
 
   // Catches: `gh --version` refused, and a version other than the one the rig measured gh by.
   test("gh --version answers gh 2.98.0", async () => {
-    expect((await gh(builtWorld("a"), ["--version"])).stdout).toBe(
+    expect((await gh(redFixture("a"), ["--version"])).stdout).toBe(
       "gh version 2.98.0 (2026-08-20)\nhttps://github.com/cli/cli/releases/tag/v2.98.0\n"
     );
   });
@@ -3729,7 +3774,7 @@ describe("the reads of the repository and the pull request", () => {
   // Catches: a GraphQL read of the pull request answered from fields the object does not hold,
   // and one that asks a field the rig cannot state (its reviews) answered at all.
   test("a GraphQL read of the pull request answers the fields its object holds, and no other", async () => {
-    const run = builtWorld("a");
+    const run = redFixture("a");
     const query = (fields: string) =>
       `query=query{repository(owner:"example",name:"widgets"){pullRequest(number:${RED_PR}){${fields}}}}`;
     const held = await gh(run, [
@@ -3756,7 +3801,7 @@ describe("the reads of the repository and the pull request", () => {
   // Catches: a read of the base, the repository, a tree, a ref or the root contents answered from
   // anything but the remote the fixture pushed, and a branch the remote has not got answered.
   test("the base, the repository, its trees, refs and contents answer the remote", async () => {
-    const run = builtWorld("a");
+    const run = redFixture("a");
     /** One read of `endpoint` under the repository, or of the repository itself where it is "". */
     const read = async (endpoint: string, filter: string) =>
       (
@@ -3832,7 +3877,7 @@ test("rerun_pressed takes the call that published the head's settlement, and no 
     fetch: () => Response.json({ ok: status === 200 }, { status }),
   });
   try {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     const pressed = () => bash(`${fn("rerun_pressed")}\nR=$1\nrerun_pressed 0`, [run]).code;
     const press = () => gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
     await gh(run, ["run", "rerun", "--help"]);
@@ -4479,7 +4524,7 @@ describe("a request the routes do not name is answered as GitHub answers it, or 
   // sends as a POST, answered as a read and kept nowhere, so the role's review reads back as none
   // and its comment as never posted.
   test("a write with fields and no -X is the POST gh sends, and is kept as GitHub keeps it", async () => {
-    const run = redFixture("i");
+    const run = ownFixture("i");
     const reviews = `repos/${RED_REPO}/pulls/${RED_PR}/reviews`;
     const sent = await gh(run, [
       "api",
@@ -4528,7 +4573,7 @@ describe("a request the routes do not name is answered as GitHub answers it, or 
   // `pulls` query whose filters are ignored; another attempt answered with the newest; and a
   // re-run of another job (lint, which passed) taken as the press of the red's own.
   test("another pull request, filter, attempt or job is refused as gh refuses it, or as unmodeled", async () => {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     const answer = async (args: string[]) => {
       const read = await gh(run, args);
       return [read.stdout, read.stderr, read.exit];
@@ -4579,7 +4624,7 @@ describe("a request the routes do not name is answered as GitHub answers it, or 
   // `-R src/dir`-like text refused as another repository; and the job flag written as gh takes it,
   // `-j<id>`, answered with the usage error rather than as the press.
   test("an encoded branch, a body that holds flag text and a joined -j each read as gh sends them", async () => {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     const branch = await gh(run, [
       "api",
       `repos/${RED_REPO}/branches/legion%2F${RED_KEY}`,
@@ -4605,7 +4650,7 @@ describe("a request the routes do not name is answered as GitHub answers it, or 
   // Catches (M6b): `gh run rerun <id> --help` taken as the press: gh prints its help and re-runs
   // nothing, so the head must read red after it as before.
   test("gh run rerun <id> --help prints gh's help and presses nothing", async () => {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     const help = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--help"]);
     const checks = await gh(run, ["pr", "checks", String(RED_PR)]);
     expect([help.exit, help.stdout.split("\n")[0], checks.exit]).toEqual([
@@ -4637,7 +4682,7 @@ describe("a request the routes do not name is answered as GitHub answers it, or 
   // (`--json`) refused as a request the rig does not model, where gh 2.98.0 refuses it itself
   // before any request (measured), so the run is the role's to score.
   test("gh api with a flag it does not take answers gh's own refusal", async () => {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     const read = await gh(run, [
       "api",
       `repos/${RED_REPO}/actions/runs/${RED_RUN_ID}`,
@@ -4657,7 +4702,7 @@ describe("a request the routes do not name is answered as GitHub answers it, or 
   // request a field a line to no terminal (measured); a view whose body does not follow an edit
   // of it; and a view after a review, whose reviewers line is not measured, answered at all.
   test("gh pr view with no --json prints the pull request as gh does, and follows its body", async () => {
-    const run = redFixture("i");
+    const run = ownFixture("i");
     const view = () => gh(run, ["pr", "view", String(RED_PR), "--repo", RED_REPO]);
     // The fields as the same pull request answers them under --json.
     const pr = JSON.parse(
@@ -4726,6 +4771,8 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
   const lint = `${RED_ID.lint} lint success`;
   const typecheck = `${RED_ID.typecheck} typecheck success`;
   const red = `${RED_RED_ID} test (notify) failure`;
+  const carriedLint = `${RED_CARRIED.lint} lint success`;
+  const carriedTypecheck = `${RED_CARRIED.typecheck} typecheck success`;
 
   // Catches (C1): the commit's check runs answered GitHub's `filter=all` list to every read: after
   // a green re-run the default read still held the failed attempt of `test (notify)`, world e's
@@ -4734,7 +4781,7 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
   // cybermonklabs/legion 05e64382, github-answers/README.txt); a parameter the route does not read
   // was answered as if absent.
   test("the head's check runs answer the latest of each name, or every one with filter=all", async () => {
-    const a = redFixture("a");
+    const a = ownFixture("a");
     const before = await checkRuns(a);
     await gh(a, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
     const appId = [
@@ -4756,11 +4803,20 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
       eAll: await checkRuns(e, "?filter=all&per_page=100"),
     }).toEqual({
       before: ["3", lint, typecheck, red],
-      after: ["3", lint, typecheck, `${RED_RED_ID + 1} test (notify) success`],
-      afterAll: ["4", lint, typecheck, red, `${RED_RED_ID + 1} test (notify) success`],
-      lintOnly: ["1", lint],
+      // The re-run carried lint and typecheck to attempt 2 as check runs of their own (red_model).
+      after: ["3", `${RED_RED_ID + 1} test (notify) success`, carriedLint, carriedTypecheck],
+      afterAll: [
+        "6",
+        lint,
+        typecheck,
+        red,
+        `${RED_RED_ID + 1} test (notify) success`,
+        carriedLint,
+        carriedTypecheck,
+      ],
+      lintOnly: ["1", carriedLint],
       inProgress: ["0"],
-      lintField: ["1", lint],
+      lintField: ["1", carriedLint],
       appId: unmodeled(appId),
       e: ["4", lint, typecheck, `${RED_RED_ID - 3} e2e success`, red],
       eAll: [
@@ -4901,7 +4957,7 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
   // answered as a query; and the repository's owner and name matched with regard to case, where
   // GitHub matches them without (measured).
   test("a page, a filter, a parameter, an expression, a mutation and a name in another case", async () => {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
     const actor = ["api", `repos/${RED_REPO}/actions/runs?actor=rig`, "--jq", ".total_count"];
     const created = ["api", `repos/${RED_REPO}/actions/runs?created=>2026-01-01`];
@@ -4954,11 +5010,13 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
       pulls: ["0"],
       runs: ["[1,0]"],
       jobs: [
-        "4",
+        "6",
         `${RED_JOB_ID} 1 failure`,
         `${RED_JOB_ID + 1} 1 success`,
         `${RED_JOB_ID + 2} 1 success`,
         `${RED_JOB_ID + 4} 2 success`,
+        `${RED_CARRIED_JOB.lint} 2 success`,
+        `${RED_CARRIED_JOB.typecheck} 2 success`,
       ],
       actor: unmodeled(actor),
       created: unmodeled(created),
@@ -4976,7 +5034,7 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
   // `previous_attempt_url`, the pull's `head.repo`. Each is the world's own: the head, the run's
   // check suite and pull request, the run's workflow, the attempt before it, the repository.
   test("a check run, a run and the pull carry the fields GitHub's objects hold", async () => {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
     const runs = `repos/${RED_REPO}/actions/runs/${RED_RUN_ID}`;
     expect({
@@ -4997,13 +5055,388 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
         "[.head.repo.full_name, .base.repo.full_name] | @json",
       ]),
     }).toEqual({
-      checkRuns: [RED_ID.lint, RED_ID.typecheck, RED_RED_ID + 1].map(
+      checkRuns: [RED_RED_ID + 1, RED_CARRIED.lint, RED_CARRIED.typecheck].map(
         (id) => `[${id},"${RED_HEAD}",${RED_RUN_ID - 1_000_000},[${RED_PR}]]`
       ),
       run: [`[2,1,"https://api.github.com/${runs}/attempts/1"]`],
       attempt1: ["[1,null]"],
       pull: [`["${RED_REPO}","${RED_REPO}"]`],
     });
+  });
+});
+
+// The review of 6b97edd6, under the architect's ruling of 2026-11-19 02:55Z: the reads of the
+// head that still answered what they do not model (K1, P1 to P5), the jobs of an attempt a re-run
+// made (b), and the objects GitHub answers as the reviewer measured them on cybermonklabs/legion
+// (a, infra-1303-github-fields-measured). Each row is the reviewer's probe.
+describe("the reads of the head answer as GitHub does, objects and pages included", () => {
+  /** A call's output lines where it exits 0, else its stderr and exit. */
+  const lines = async (run: string, args: string[]) => {
+    const read = await gh(run, args);
+    return read.exit === 0 ? outputLines(read.stdout) : [read.stderr, read.exit];
+  };
+  const unmodeled = (args: string[]) => [`rig: request not modeled: gh ${args.join(" ")}\n`, 1];
+  /** The check suite of a run of the head (red_model: the run id less a million). */
+  const suite = (run: number) => run - 1_000_000;
+
+  // Catches (K1): the default check-runs read keeping one check run of a name across the commit,
+  // where GitHub keeps the latest of each name in each check suite (measured by the reviewer on
+  // b789479b99: the default read answers five pr-title runs of five suites, as filter=all does):
+  // world k's by-hand run, a suite of its own, hid the counted failure before the press, and the
+  // re-run's success hid the by-hand failure after it.
+  test("the default check-runs read keeps the latest of each name in each check suite", async () => {
+    const run = ownFixture("k");
+    const read = () =>
+      lines(run, [
+        ...["api", `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs`, "--jq"],
+        '.check_runs[] | "\\(.id) \\(.name) \\(.conclusion) \\(.check_suite.id)"',
+      ]);
+    const before = await read();
+    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const counted = suite(RED_RUN_ID);
+    const byHand = `${RED_RED_ID + 2} test (notify) failure ${suite(RED_RUN_ID + 1)}`;
+    expect({ before, after: await read() }).toEqual({
+      before: [
+        `${RED_ID.lint} lint success ${counted}`,
+        `${RED_ID.typecheck} typecheck success ${counted}`,
+        `${RED_RED_ID} test (notify) failure ${counted}`,
+        byHand,
+      ],
+      after: [
+        `${RED_RED_ID + 1} test (notify) success ${counted}`,
+        `${RED_CARRIED.lint} lint success ${counted}`,
+        `${RED_CARRIED.typecheck} typecheck success ${counted}`,
+        byHand,
+      ],
+    });
+  });
+
+  // Catches (P1): an attempt's jobs answered as none for `filter=all`, the spend read's endpoint
+  // (red-at-the-head.md), where GitHub's attempt-jobs endpoint takes per_page and page alone and
+  // answers the attempt's jobs whatever `filter` says; and its page ignored.
+  test("an attempt's jobs are every job of that attempt, whatever filter says", async () => {
+    const run = redFixture("a");
+    const jobs = (query: string) =>
+      lines(run, [
+        ...["api", `repos/${RED_REPO}/actions/runs/${RED_RUN_ID}/attempts/1/jobs${query}`],
+        ...["--jq", "[.total_count, [.jobs[].id]] | @json"],
+      ]);
+    const attempt1 = `[3,[${RED_JOB_ID},${RED_JOB_ID + 1},${RED_JOB_ID + 2}]]`;
+    expect({
+      all: await jobs("?filter=all"),
+      latest: await jobs("?filter=latest"),
+      none: await jobs(""),
+      page: await jobs("?per_page=1&page=2"),
+    }).toEqual({
+      all: [attempt1],
+      latest: [attempt1],
+      none: [attempt1],
+      page: [`[3,[${RED_JOB_ID + 1}]]`],
+    });
+  });
+
+  // Catches (P2): the head's check suites answered whole whatever `check_name`, `app_id`,
+  // `per_page` and `page` asked, the four parameters GitHub documents and filters on; and another
+  // parameter answered as if absent.
+  test("the head's check suites read check_name, app_id and the page", async () => {
+    const run = redFixture("k");
+    const suites = (query: string) =>
+      lines(run, [
+        ...["api", `repos/${RED_REPO}/commits/${RED_HEAD}/check-suites${query}`],
+        ...["--jq", "[.total_count, [.check_suites[].id]] | @json"],
+      ]);
+    const bogus = [
+      ...["api", `repos/${RED_REPO}/commits/${RED_HEAD}/check-suites?bogus=1`],
+      ...["--jq", ".total_count"],
+    ];
+    expect({
+      lint: await suites("?check_name=lint"),
+      otherApp: await suites("?app_id=1"),
+      actions: await suites("?app_id=15368"),
+      page: await suites("?per_page=1&page=2"),
+      bogus: await lines(run, bogus),
+    }).toEqual({
+      lint: [`[1,[${suite(RED_RUN_ID)}]]`],
+      otherApp: ["[0,[]]"],
+      actions: [`[2,[${suite(RED_RUN_ID)},${suite(RED_RUN_ID + 1)}]]`],
+      page: [`[2,[${suite(RED_RUN_ID + 1)}]]`],
+      bogus: unmodeled(bogus),
+    });
+  });
+
+  // Catches (P3): a run and an attempt of it listing their pull request under
+  // `exclude_pull_requests=true`, a parameter both endpoints document and gh run view sends.
+  test("a run and an attempt of it read exclude_pull_requests", async () => {
+    const run = redFixture("a");
+    const count = (path: string) =>
+      lines(run, [
+        "api",
+        `repos/${RED_REPO}/actions/runs/${RED_RUN_ID}${path}`,
+        "--jq",
+        ".pull_requests | length",
+      ]);
+    expect({
+      run: await count("?exclude_pull_requests=true"),
+      attempt: await count("/attempts/1?exclude_pull_requests=true"),
+      plain: await count(""),
+    }).toEqual({ run: ["0"], attempt: ["0"], plain: ["1"] });
+  });
+
+  // Catches (P4): a check run's annotations answered whole on every page, where GitHub answers
+  // an empty page past the end.
+  test("a check run's annotations take their page", async () => {
+    const run = redFixture("a");
+    const count = (query: string) =>
+      lines(run, [
+        "api",
+        `repos/${RED_REPO}/check-runs/${RED_RED_ID}/annotations${query}`,
+        "--jq",
+        "length",
+      ]);
+    expect([await count(""), await count("?per_page=1&page=5")]).toEqual([["1"], ["0"]]);
+  });
+
+  // Catches (P5): `--paginate` stopping at the first page of a REST read, where gh follows
+  // GitHub's `Link: rel="next"` and prints every page (objects one after another, nothing between:
+  // measured on cybermonklabs/legion, 2026-11-19); and the request gh sends for a paged read that
+  // names no per_page, which asks for 100 (measured, GH_DEBUG=api).
+  test("--paginate prints every page a read's paging gives, as gh joins them", async () => {
+    const a = ownFixture("a");
+    const f = redFixture("f");
+    const checkRuns = `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs`;
+    const page = async (n: number) =>
+      (await gh(a, ["api", `${checkRuns}?per_page=2&page=${n}`])).stdout;
+    const pages = (await page(1)) + (await page(2));
+    const joined = await gh(a, ["api", "--paginate", `${checkRuns}?per_page=2`]);
+    await gh(a, ["api", "--paginate", checkRuns, "--jq", ".total_count"]);
+    const requests = readFileSync(path.join(a, "calls.jsonl"), "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as { request?: string }).request);
+    expect({
+      checkRuns: await lines(a, [
+        "api",
+        "--paginate",
+        `${checkRuns}?per_page=1`,
+        "--jq",
+        ".check_runs[].id",
+      ]),
+      runs: await lines(f, [
+        ...["api", "--paginate", `repos/${RED_REPO}/actions/runs?head_sha=${RED_HEAD}&per_page=1`],
+        ...["--jq", ".workflow_runs[].id"],
+      ]),
+      joined: [joined.stdout, joined.exit],
+      request: requests.at(-1),
+    }).toEqual({
+      checkRuns: [String(RED_ID.lint), String(RED_ID.typecheck), String(RED_RED_ID)],
+      runs: [String(RED_RUN_ID), String(RED_RUN_ID + 2)],
+      joined: [pages, 0],
+      request: `gh api GET ${checkRuns}?per_page=100 --paginate --jq .total_count`,
+    });
+  });
+
+  // Catches (b): attempt 2 of a re-run of the failed jobs listing the re-run jobs alone, where
+  // GitHub lists every job of the run at attempt 2 (measured on cybermonklabs/legion run
+  // 44406867953: 58 jobs at attempt 2, 2 re-run, 56 carried, each carried job with an id and a
+  // check run of its own, its attempt-1 conclusion, steps and times, and a new creation time).
+  test("attempt 2 lists every job of the run, the ones it did not re-run carried", async () => {
+    const run = ownFixture("a");
+    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const attempt = (n: number) =>
+      lines(run, [
+        ...["api", `repos/${RED_REPO}/actions/runs/${RED_RUN_ID}/attempts/${n}/jobs`, "--jq"],
+        '.jobs[] | [.id, .name, .run_attempt, .conclusion, .created_at, .started_at, (.check_run_url | split("/") | last)] | @tsv',
+      ]);
+    const t0 = "2026-03-04T10:00:00Z";
+    const t1 = "2026-03-04T10:31:08Z";
+    expect({ one: await attempt(1), two: await attempt(2) }).toEqual({
+      one: [
+        `${RED_JOB_ID}\ttest (notify)\t1\tfailure\t${t0}\t${t0}\t${RED_RED_ID}`,
+        `${RED_JOB_ID + 1}\tlint\t1\tsuccess\t${t0}\t${t0}\t${RED_ID.lint}`,
+        `${RED_JOB_ID + 2}\ttypecheck\t1\tsuccess\t${t0}\t${t0}\t${RED_ID.typecheck}`,
+      ],
+      two: [
+        `${RED_JOB_ID + 4}\ttest (notify)\t2\tsuccess\t${t1}\t${t1}\t${RED_RED_ID + 1}`,
+        `${RED_CARRIED_JOB.lint}\tlint\t2\tsuccess\t${t1}\t${t0}\t${RED_CARRIED.lint}`,
+        `${RED_CARRIED_JOB.typecheck}\ttypecheck\t2\tsuccess\t${t1}\t${t0}\t${RED_CARRIED.typecheck}`,
+      ],
+    });
+  });
+
+  // Catches (a): a check run, a job or a run missing a key GitHub answers, holding one GitHub does
+  // not (an `actor` on a check run or a job), or holding the world's words where GitHub Actions
+  // holds none (the output of a check run): measured by the reviewer on cybermonklabs/legion,
+  // 2026-11-19 (check-runs/135286572101, actions/jobs/134911513960, actions/runs/44335620601),
+  // each key in the order GitHub writes it.
+  test("a check run, a job and a run carry the keys GitHub answers, in its order", async () => {
+    const run = redFixture("a");
+    const json = async (endpoint: string) =>
+      JSON.parse((await gh(run, ["api", `repos/${RED_REPO}/${endpoint}`])).stdout);
+    const checkRun = await json(`check-runs/${RED_RED_ID}`);
+    const job = await json(`actions/jobs/${RED_JOB_ID}`);
+    const workflowRun = await json(`actions/runs/${RED_RUN_ID}`);
+    const api = `https://api.github.com/repos/${RED_REPO}`;
+    const repo = { id: 1, url: api, name: "widgets" };
+    expect({
+      checkRun: Object.keys(checkRun),
+      job: Object.keys(job),
+      step: Object.keys(job.steps[0]),
+      run: Object.keys(workflowRun),
+    }).toEqual({
+      checkRun: [
+        "id",
+        "name",
+        "node_id",
+        "head_sha",
+        "external_id",
+        "url",
+        "html_url",
+        "details_url",
+        "status",
+        "conclusion",
+        "started_at",
+        "completed_at",
+        "output",
+        "check_suite",
+        "app",
+        "pull_requests",
+      ],
+      job: [
+        "id",
+        "run_id",
+        "workflow_name",
+        "head_branch",
+        "run_url",
+        "run_attempt",
+        "node_id",
+        "head_sha",
+        "url",
+        "html_url",
+        "status",
+        "conclusion",
+        "created_at",
+        "started_at",
+        "completed_at",
+        "name",
+        "steps",
+        "check_run_url",
+        "labels",
+        "runner_id",
+        "runner_name",
+        "runner_group_id",
+        "runner_group_name",
+      ],
+      step: ["name", "status", "conclusion", "number", "started_at", "completed_at"],
+      run: [
+        "id",
+        "name",
+        "node_id",
+        "head_branch",
+        "head_sha",
+        "path",
+        "display_title",
+        "run_number",
+        "event",
+        "status",
+        "conclusion",
+        "workflow_id",
+        "check_suite_id",
+        "check_suite_node_id",
+        "url",
+        "html_url",
+        "pull_requests",
+        "created_at",
+        "updated_at",
+        "actor",
+        "run_attempt",
+        "referenced_workflows",
+        "run_started_at",
+        "triggering_actor",
+        "jobs_url",
+        "logs_url",
+        "check_suite_url",
+        "artifacts_url",
+        "cancel_url",
+        "rerun_url",
+        "previous_attempt_url",
+        "workflow_url",
+        "head_commit",
+        "repository",
+        "head_repository",
+      ],
+    });
+    expect({
+      output: checkRun.output,
+      pages: [checkRun.url, checkRun.html_url, checkRun.details_url],
+      nodes: [
+        checkRun.node_id === job.node_id,
+        checkRun.node_id.slice(0, 4),
+        workflowRun.node_id.slice(0, 4),
+      ],
+      app: checkRun.app.slug,
+      suite: [checkRun.check_suite.id, workflowRun.check_suite_id],
+      pullRequests: checkRun.pull_requests,
+      actors: [
+        "actor" in checkRun,
+        "actor" in job,
+        workflowRun.actor.login,
+        workflowRun.actor.type,
+        workflowRun.triggering_actor.login,
+      ],
+      head: [
+        workflowRun.head_commit.id,
+        workflowRun.repository.full_name,
+        workflowRun.head_repository.full_name,
+      ],
+    }).toEqual({
+      output: {
+        title: null,
+        summary: null,
+        text: null,
+        annotations_count: 1,
+        annotations_url: `${api}/check-runs/${RED_RED_ID}/annotations`,
+      },
+      pages: [
+        `${api}/check-runs/${RED_RED_ID}`,
+        `${RED_RUN_URL}/job/${RED_JOB_ID}`,
+        `${RED_RUN_URL}/job/${RED_JOB_ID}`,
+      ],
+      nodes: [true, "CR_k", "WFR_"],
+      app: "github-actions",
+      suite: [suite(RED_RUN_ID), suite(RED_RUN_ID)],
+      pullRequests: [
+        {
+          url: `${api}/pulls/${RED_PR}`,
+          id: RED_PR,
+          number: RED_PR,
+          head: { ref: `legion/${RED_KEY}`, sha: RED_HEAD, repo },
+          base: { ref: "main", sha: RED_BASE, repo },
+        },
+      ],
+      actors: [false, false, "rig[bot]", "Bot", "rig[bot]"],
+      head: [RED_HEAD, RED_REPO, RED_REPO],
+    });
+  });
+
+  // Catches: a node id in another shape than GitHub's, which route_defs' node_id reads from the
+  // ids the reviewer measured: each of them comes back byte for byte.
+  test("node_id gives back the node ids GitHub gave", () => {
+    const nodeId = (args: string) =>
+      bash(
+        `${fn("route_defs")}\njq -nr --arg repo ${RED_REPO} "$(route_defs)"'node_id(${args})'`,
+        []
+      ).stdout.trim();
+    expect([
+      nodeId('"CR"; 0; [1146927990, 134911513960]'),
+      nodeId('"WFR"; 2; [1146927990, 44335620601]'),
+      nodeId('"CS"; 0; [1146927990, 120014807360]'),
+      nodeId('"R"; 0; [1146927990]'),
+    ]).toEqual([
+      "CR_kwDORFy7ds8AAAAfaVpVaA",
+      "WFR_kwLORFy7ds8AAAAKUpvh-Q",
+      "CS_kwDORFy7ds8AAAAb8XChQA",
+      "R_kgDORFy7dg",
+    ]);
   });
 });
 
@@ -5048,11 +5481,12 @@ describe("GitHub's answers, as measured", () => {
 
   // Catches: an error the rig answers in other bytes than GitHub's, or with no body where gh prints
   // the one GitHub sent (the round-5 rig printed `gh: Not Found (HTTP 404)` alone for every one),
-  // and a commit the call named left out of the answer that names it. It runs under the file's
-  // minute: measured alone on 2026-11-19, 8.4 s and 17.2 s with a Legion pod's own git first on
-  // PATH and 14.9 s with plain git first.
+  // and a commit the call named left out of the answer that names it. Measured alone on
+  // 2026-11-19, 8.4 s and 17.2 s with a Legion pod's own git first on PATH, 14.9 s with plain git
+  // first, and 15.70 s on fold12 on the pod's own PATH with nothing else running on the pod; the
+  // bound is about four times the slowest.
   test("every REST error the rig answers is GitHub's measured answer", async () => {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     const repo = `repos/${RED_REPO}`;
     const other = "2".repeat(40);
     const cases: [string[], string, string?][] = [
@@ -5106,7 +5540,7 @@ describe("GitHub's answers, as measured", () => {
       githubAnswer("joblog-410")
     );
     expect(ghCalls(run).some((call) => "unmodeled" in call)).toBe(false);
-  });
+  }, 70_000);
 
   // Catches: a request of another repository than the world's (runs of rounds 6 and 9 read and
   // wrote skills-rig/project) refused as unmodeled where GitHub answers its 404, answered with
@@ -5114,7 +5548,7 @@ describe("GitHub's answers, as measured", () => {
   // measured answered rather than refused. It runs under the file's minute: measured alone on
   // 2026-11-19, 9.2 s with a Legion pod's own git first on PATH and 6.9 s with plain git first.
   test("each request of another repository the archived runs make is GitHub's measured 404", async () => {
-    const run = redFixture("a");
+    const run = ownFixture("a");
     const repo = "repos/skills-rig/project";
     const cases: [string[], string][] = [
       [["api", repo], "repo-404-repo"],

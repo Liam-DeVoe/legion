@@ -360,6 +360,56 @@ test("a route's program reads the call's flags and query as gh sends them, and -
   );
 });
 
+// Catches: a `--paginate` REST read that prints only its first page, where gh follows GitHub's
+// `Link: rel="next"` and prints every page, the pages of an array as one array and the pages of an
+// object one after another with nothing between (measured, 2026-11-19, two pages of
+// cybermonklabs/legion each); a `--jq` run over the whole rather than each page; a `--slurp` that
+// lists one page; and a paged read that names no per_page sent without the 100 gh asks for
+// (measured, GH_DEBUG=api).
+test("--paginate follows the pages a route's program gives and prints them as gh joins them", async () => {
+  const page =
+    '(($query.per_page // "30") | tonumber) as $per | (($query.page // "1") | tonumber) as $page' +
+    " | .[($page - 1) * $per:$page * $per]";
+  const { gh, calls } = world([
+    {
+      match: "^gh api GET repos/example/widgets/pulls\\?",
+      stdout: [{ n: 1 }, { n: 2 }, { n: 3 }],
+      program: page,
+    },
+    {
+      match: "^gh api GET repos/example/widgets/check-runs\\?",
+      stdout: [{ id: 1 }, { id: 2 }, { id: 3 }],
+      program: `(${page}) as $runs | {total_count: length, check_runs: $runs}`,
+    },
+  ]);
+  const array = await gh("api", "--paginate", "repos/example/widgets/pulls?per_page=2");
+  const object = await gh("api", "--paginate", "repos/example/widgets/check-runs?per_page=2");
+  const filtered = await gh(
+    "api",
+    "--paginate",
+    "repos/example/widgets/check-runs?per_page=2",
+    "--jq",
+    ".check_runs[].id"
+  );
+  const slurped = await gh(
+    "api",
+    "--paginate",
+    "--slurp",
+    "repos/example/widgets/pulls?per_page=2"
+  );
+  const whole = await gh("api", "--paginate", "repos/example/widgets/pulls");
+  expect([array.stdout, object.stdout, filtered.stdout, slurped.stdout, whole.stdout]).toEqual([
+    '[{"n":1},{"n":2},{"n":3}]',
+    '{"total_count":3,"check_runs":[{"id":1},{"id":2}]}{"total_count":3,"check_runs":[{"id":3}]}',
+    "1\n2\n3\n",
+    '[[{"n":1},{"n":2}],[{"n":3}]]',
+    '[{"n":1},{"n":2},{"n":3}]',
+  ]);
+  expect(calls().at(-1)?.request).toBe(
+    "gh api GET repos/example/widgets/pulls?per_page=100 --paginate"
+  );
+});
+
 /** The template of each review the routes below keep. */
 const REVIEW = {
   id: 7001,
@@ -645,12 +695,16 @@ test("a call is read as gh resolves it: long flags, one argument after another, 
 // Catches: a --json read that drops a field gh refuses or the world does not hold and answers
 // exit 0 without it, where gh 2.98.0 refuses an unknown field with its list (measured) and the
 // rig cannot say what GitHub holds for the other; fields printed in the order the call names them
-// rather than gh's; and `--paginate --slurp` printed as one page rather than a list of pages.
+// rather than gh's; and `--paginate --slurp` printed as one page rather than a list of pages, the
+// read sent as gh sends a paged read that names no per_page, asking for 100 (measured).
 test("--json picks gh's fields by name, refuses one gh does not know, and leaves one the world lacks unmodeled", async () => {
   const { gh, calls } = world([
     { match: "^gh pr view 1000(?:\\s|$)", stdout: { title: "t", number: 1000, headRefOid: HEAD } },
     { match: "^gh pr list(?:\\s|$)", stdout: [{ number: 1, title: "a", state: "OPEN" }] },
-    { match: "^gh api GET repos/example/widgets/pulls(?:\\s|$)", stdout: [{ number: 1000 }] },
+    {
+      match: "^gh api GET repos/example/widgets/pulls\\?per_page=100(?:\\s|$)",
+      stdout: [{ number: 1000 }],
+    },
   ]);
   const picked = await gh("pr", "view", "1000", "--json", "title,number");
   const listed = await gh("pr", "list", "--json", "title,number");
