@@ -334,6 +334,7 @@ echo "PASS: a probe not admitted in words that are not the server's FAILs lines 
 # on, so the stand-in, a live sleep, stays. The check waits 10 s for it and reads UNKNOWN, naming
 # it, rather than timing a hub that cannot have dropped it. A broker that leaves, as in (a), where
 # the stand-in is a zombie of this shell until this shell reaps it, passes.
+# shellcheck disable=SC2016 # the function's text, expanded by the check's bash, not here
 check_env=('BASH_FUNC_kill%%=() { if [ "${1:-}" = -KILL ] && [ "${2:-}" = "${DEV_STACK_BROKER_PIDS#* }" ]; then return 0; fi; builtin kill "$@"; }')
 run_check
 check_env=()
