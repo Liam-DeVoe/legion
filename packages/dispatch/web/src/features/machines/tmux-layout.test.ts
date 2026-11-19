@@ -566,7 +566,7 @@ for (const [version, recordings] of [
         }));
       expect({ name: recording.name, read }).toEqual({
         name: recording.name,
-        read: recording.panes,
+        read: [...recording.panes],
       });
       if (version === "tmux 3.8") {
         expect(layout.panes.every((pane) => pane.index !== undefined)).toBe(true);

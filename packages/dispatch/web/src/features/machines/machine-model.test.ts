@@ -276,7 +276,8 @@ test("the model names a pane as the layout parser does, so a drawing can match t
 });
 
 test("a window is drawn at the size the session its layout came from reported beside it", () => {
-  const window = (reports: Agent[]) => machineGrouping(reports, "devbox").servers[0].sessions[0].windows[0];
+  const window = (reports: Agent[]) =>
+    machineGrouping(reports, "devbox").servers[0].sessions[0].windows[0];
   // The freshest report carries no layout, so the layout and its size are the older session's:
   // the two are one reading of tmux, and the size of another reading may be of another moment.
   const sized = window([
