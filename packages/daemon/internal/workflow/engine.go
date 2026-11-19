@@ -1354,9 +1354,10 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 // start the restart queues hands the step's entry to that other claim, whose step was entered for
 // it after the caller read the step, and starting it again would send the retry's task to an agent
 // the caller did not ask about. A restart that names no claim is the architect's or the operator's
-// of the role's step as it stands, and is never refused here.
+// of the role's step as it stands, and is never refused here. Only a phase worker's claim is named
+// (api's restartWorkedPhase), so role is a phase worker's wherever asked is set.
 func (e *Engine) stepMovedRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, asked claim.Token) (*intake.Refusal, error) {
-	if asked == "" || role == "" || role == claim.RoleArchitect {
+	if asked == "" {
 		return nil, nil
 	}
 	now, err := e.workerClaim(ctx, tx, issue, role)

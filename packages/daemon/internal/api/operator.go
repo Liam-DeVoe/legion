@@ -406,7 +406,7 @@ func secureBearerEqual(expected [sha256.Size]byte, given string) bool {
 // That claim is read before any lock the launch takes, so the launch and the task are asked with
 // its standing (worksStep, supervise.Standing): the launch judges again under the machine's lock
 // that the record still names the claim on the role's step. A step that moved to another claim
-// before it is refused with nothing launched and no task given (refuseStepMoved), and a claim this
+// before it is refused with nothing launched and no task given (refuseMovedSpawn), and a claim this
 // request stored for it is retired as the outbox retires a claim it stored for an issue that left
 // the workflow, so no tree's cleanup waits on a claim nothing will run. A move after the launch
 // finds the request under way, and its task goes as it would have before the move.
@@ -464,7 +464,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 					s.logFailure("api: retire a claim the spawn stored for a step that moved", "claim", token, "error", err)
 				}
 			}
-			s.refuseStepMoved(w, r, "spawn", req.Issue, req.Role, token, "nothing was launched or sent")
+			s.refuseMovedSpawn(w, r, req.Issue, req.Role, token)
 			return
 		}
 		s.operatorFailure(w, "spawn", token, err)
@@ -517,20 +517,19 @@ func (s *server) worksStep(issue string, role claim.Role, token claim.Token) fun
 	}
 }
 
-// refuseStepMoved answers a request whose first act on token, the claim it read as the worker on
+// refuseMovedSpawn answers a spawn whose launch of token, the claim it read as the worker on
 // role's step of issue, found the step another claim's under the machine's lock
-// (supervise.ErrStepLeft): undone says what the request left undone, and the answer names the
-// claim the record names there now, read again here, so the caller can ask again of the step as
-// it stands.
-func (s *server) refuseStepMoved(w http.ResponseWriter, r *http.Request, request, issue string, role claim.Role, token claim.Token, undone string) {
+// (supervise.ErrStepLeft): nothing was launched or sent, and the answer names the claim the record
+// names there now, read again here, so the operator can ask again of the step as it stands.
+func (s *server) refuseMovedSpawn(w http.ResponseWriter, r *http.Request, issue string, role claim.Role, token claim.Token) {
 	now, err := s.workerToken(r.Context(), issue, role)
 	if err != nil {
-		s.operatorFailure(w, request, token, err)
+		s.operatorFailure(w, "spawn", token, err)
 		return
 	}
 	writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
-		"%s refused: the %s's step of %s moved from claim %s to claim %s under the request; %s, so ask again",
-		request, role, issue, token, now, undone)))
+		"spawn refused: the %s's step of %s moved from claim %s to claim %s under the request; nothing was launched or sent, so ask again",
+		role, issue, token, now)))
 }
 
 // drawExperiments draws the tree-unit experiments the project declares for tree, for the open

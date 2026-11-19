@@ -51,8 +51,10 @@ type roleForReader struct {
 // plan.Supported holds every task's steps to today's order with an implementer among them),
 // or reads the retro's own phase and the phase of the last step of a parent's task, neither of
 // which is admitted (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held
-// before its retro for the issues beneath it), or never reads admitted at all because a check
-// before it refuses that phase, which is what each named test holds it to.
+// before its retro for the issues beneath it), or reads the phase a held issue's retry restores
+// only past the refusal of a plan's own hold, which is the one hold an issue at admitted takes
+// (Engine.retryOrEscalate, for the retry of a named claim), or never reads admitted at all because
+// a check before it refuses that phase, which is what each named test holds it to.
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -73,6 +75,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}:         {calls: 1, test: "TestArchitectUnchangedByAWorkersCompletionAtAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:         {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:           {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
+	{file: "internal/workflow/engine.go", fn: "Engine.retryOrEscalate"}:      {calls: 1, test: "TestARestartNamingAClaimRestartsNoStepAnotherClaimWorks"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:             {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:           {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                   {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
