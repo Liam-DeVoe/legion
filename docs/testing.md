@@ -320,10 +320,10 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
 `envoy-go-race-api`, the job that runs it by itself, through `packages/envoy/scripts/database-skips.sh`,
-which gives it 70 minutes (`--timeout 70m`) and counts its skips
+which gives it 32 minutes (`--timeout 32m`) and counts its skips
 (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps); `text-checks`
 runs its fifteen source-guard tests by name.
-`docs` runs under `-race` in `envoy-go-race-docs`, which gives it 46 (`-timeout 46m`).
+`docs` runs under `-race` in `envoy-go-race-docs`, which gives it 56 (`-timeout 56m`).
 A plain run covers, by name, the few tests of those two packages that the race build leaves out or runs smaller.
 `envoy-go` runs those of `docs` in the race-impossible call of its unit step.
 Those of `api` are its xid window tests, whose assertion is a wall-clock time measured in the test's own process, so they run away from that call's load: alone on the runner, as the first test step of `envoy-go-checks` (`.github/workflows/ci-job-envoy-go-checks.yaml`).
@@ -370,7 +370,7 @@ Go's own detector finds a closure that reaches its object:
 
 ```sh
 cd packages/envoy
-GODEBUG=checkfinalizers=1 go test -count=1 -timeout 33m ./internal/dispatch/docs/
+GODEBUG=checkfinalizers=1 go test -count=1 -timeout 30m ./internal/dispatch/docs/
 ```
 
 It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable from cleanup or cleanup argument` line per site naming that site's file and line, and ends the run with `fatal error: detected possible issues with cleanups and/or finalizers`.
@@ -540,7 +540,7 @@ A test stays serial when any of these is true of it:
   It keeps its bound and stays serial: a bound widened to a give-up wait can no longer fail for the defect the test exists for.
   A quiet window, an assertion that nothing arrives within a span, is the one case where that reason does not hold: load stretches only the span a broken product has to show itself in, so a quiet window can lose its reach under load but cannot fail a correct product.
   So the rule leaves it to judgment, and INFRA-1075 (#2733) judged each one: some tests are serial for their quiet window, and their `// Serial:` lines say so (the role-keep hour rows of `cmd/listener/role_keep_hour_test.go`, whose windows outlast a sweep the product schedules, among them), while quiet windows stand in tests it made parallel — a `noException`, the quiet argument of `expectFrames`, a `NextMsg` that must time out, or a `select` whose timer case is the passing one — among them tests whose claim is that absence (`TestPublishRouteSendsNothingToASenderHoldingTheRole`'s 300 ms in `cmd/listener/confirmed_test.go`).
-  Each of those tests passed in both runs of each of the six measurement pairs INFRA-1075 took: at 84ca8f33 (runs 43514262740 and 43519308059), at da325bf0 (runs 43793235477 and 43797411630), at 2e36a371 (runs 43810293311 and 43814304800), at 3f3eefd1 (runs 43882061650 and 43882413752), at 4cc2e266 (runs 44078406008 and 44097184245) and at 4f1f4436 (runs 44175873364 and 44195030350).
+  Each of those tests passed in both runs of each of the seven measurement pairs INFRA-1075 took: at 84ca8f33 (runs 43514262740 and 43519308059), at da325bf0 (runs 43793235477 and 43797411630), at 2e36a371 (runs 43810293311 and 43814304800), at 3f3eefd1 (runs 43882061650 and 43882413752), at 4cc2e266 (runs 44078406008 and 44097184245) and at 4f1f4436 (runs 44175873364 and 44195030350), each on x64 runners, and at 31649808 (runs 44544482617 and 44544557129), whose envoy-go lane ran on arm64 runners but for envoy-go-checks.
 
 - It reads the whole process: a dump of every goroutine (`runtime.Stack(buf, true)`), a goroutine count or `runtime.ReadMemStats`, which count a parallel test's goroutines and allocations as its own.
 

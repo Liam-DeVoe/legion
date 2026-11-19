@@ -174,10 +174,10 @@ else:
     print(read.workdir, read.script)' "$@"; }
 check "envoy-go's count runs the broker's packages less the race lane's, and its command" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Count the database broker suites' skips" "")" \
-    "packages/envoy go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | xargs go test -json -count=1 -timeout 20m")"
+    "packages/envoy go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | xargs go test -json -count=1 -timeout 8m")"
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
-    "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"
+    "packages/envoy go test -json -count=1 -race -timeout 32m ./internal/dispatch/api/")"
 check "the race step with one more argument, which the entry does not list, is refused" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" " --race")" "refused")"
 

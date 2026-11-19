@@ -32,18 +32,16 @@ env:
 jobs:
   envoy-go-race-api:
     runs-on: ubuntu-24.04-arm
-    # R6 sizes this job from one measurement pair alone, runs 44175873364 and 44195030350 at
-    # 4f1f4436 (dispatch://INFRA-1075, check 6224bb0e): internal/dispatch/api, its one package,
-    # took 959.3 s on the slower run, and the job 1,158 s (run 44175873364, job 134367428185).
-    # Main's #4456 came after that pair and runs the step through database-skips.sh with its own
-    # --timeout 70m, so the step's limit and this bound are main's until the R6 commit after the
-    # next pair sets both from that pair.
-    # The step's --timeout 70m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 70 minutes, which is 76, under the job's 90. 70 minutes is
-    # twice the longest measured run: the package took 32.6 minutes under the race detector on a
-    # dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had.
-    timeout-minutes: 90
+    # R6 sizes both numbers from one measurement pair alone, runs 44544482617 and 44544557129 at
+    # 31649808 (dispatch://INFRA-1075, check 6224bb0e). The step's --timeout is the smallest whole
+    # minute at which its slowest package, on the slower run of the pair, takes at most half of
+    # it: internal/dispatch/api, this job's one package, 942.6 s (run 44544482617, job
+    # 135631500555), 942.6 / 30 = 31.42, so 32m; database-skips.sh (main's #4456) passes it to go
+    # test as -timeout. The job's bound is its larger time in the pair, 1,086 s (run 44544482617,
+    # job 135631500555), 18.10 minutes, plus that -timeout plus 6: 18.10 + 32 + 6 = 56.10, so 57.
+    # The limit must fire before the runner cancels the job, so a hung test prints the dump that
+    # names it.
+    timeout-minutes: 57
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -96,7 +94,7 @@ jobs:
       # which the upload step below publishes: the stream and its -count=1 are envoy-go-race's, for
       # the reason its own step gives, and the log is what the script prints rather than a replay.
       - name: Race-test the Dispatch API
-        run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m --keep "$RUNNER_TEMP/go-test-json/race-api.json" ./internal/dispatch/api/
+        run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 32m --keep "$RUNNER_TEMP/go-test-json/race-api.json" ./internal/dispatch/api/
         working-directory: packages/envoy
       # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
       - name: Upload the go test -json stream

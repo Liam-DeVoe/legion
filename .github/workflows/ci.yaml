@@ -5826,13 +5826,13 @@ jobs:
   # enforced by the other through the reread fan-out, and signal a process to watch it fail
   # readiness while it serves a request out past the old shutdown budget.
   #
-  # They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and
-  # they are kept out of it: each `go test` call of that step is held to a -timeout sized from
-  # its slowest package's measured time (for the package list, which runs cmd/broker, the
-  # -timeout .github/workflows/ci-job-envoy-go.yaml sizes), which rows of tens of seconds each
+  # They build only under the `multiprocess` tag, so envoy-go's run of cmd/broker leaves them
+  # out, and they are kept out of it: cmd/broker runs in envoy-go's database-skips count, under a
+  # --timeout sized from its slowest package's measured time (the --timeout
+  # .github/workflows/ci-job-envoy-go.yaml sizes), which rows of tens of seconds each
   # would move - these wait out a migration race, a ten-second
-  # fan-out window and a twelve-second drain - and the memory tests already took that step red
-  # at 600 s when it ran under go test's default ten-minute deadline (run 37116639565). A job of
+  # fan-out window and a twelve-second drain - and the memory tests already took envoy-go's unit
+  # step red at 600 s when it ran under go test's default ten-minute deadline (run 37116639565). A job of
   # their own rather than a step in dispatch-multiprocess, whose Postgres service and shape this
   # copies, so that each runs only on what it reads: the broker's closure (broker_multiprocess)
   # shares little with the Dispatch server's (dispatch_multiprocess). They need no NATS and no

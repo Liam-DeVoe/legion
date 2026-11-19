@@ -2830,10 +2830,11 @@ except ValueError as refusal:
 # split_alone <root> <lane> <named> [<steps>]: the two halves alone_split makes of the walk over
 # <root> with the race lane <lane>, as derived reads it (its one job is a-race-job), and ALONE_TESTS
 # replaced by <named>, a space-separated list of <package under root>:<test>. Echoes "alone: " and
-# the alone call over the first half, then "rest: " and the race-impossible call over the second,
-# then "steps: " and the share alone_jobs gives each alone step of <steps>, a space-separated list
-# of <job>:<race job> that replaces ALONE_STEPS, each as <job>=<its packages>. Echoes
-# "RAISED: <what it refused>" where a refusal ends it.
+# the alone call over the first half, under a -timeout of 30m as the lane's one job has, then
+# "rest: " and the race-impossible call over the second, then "steps: " and the share alone_jobs
+# gives each alone step of <steps>, a space-separated list of <job>:<race job> that replaces
+# ALONE_STEPS, each as <job>=<its packages>. Echoes "RAISED: <what it refused>" where a refusal
+# ends it.
 split_alone() {
   (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
 import sys
@@ -2847,10 +2848,10 @@ reads.ALONE_TESTS = {}
 for entry in named:
     package, test = entry.split(":")
     reads.ALONE_TESTS.setdefault(f"{root}/{package}", set()).add(test)
-reads.ALONE_STEPS = tuple(reads.AloneStep(*entry.split(":"), "alone.json") for entry in steps)
+reads.ALONE_STEPS = tuple(reads.AloneStep(*entry.split(":"), "alone.json", "30m") for entry in steps)
 try:
     alone, rest = reads.alone_split(root, reads.race_impossible_tests(root))
-    print("alone:", reads.alone_call(alone))
+    print("alone:", reads.alone_call(alone, "30m"))
     print("rest:", reads.race_impossible_call(rest))
     print("steps:", " ".join(step.job + "=" + ",".join(share) for step, share in reads.alone_jobs(alone).items()))
 except ValueError as refusal:
@@ -2863,9 +2864,6 @@ except ValueError as refusal:
 # lane raised it (the test job of runs at 08eb0094 and at ca715109).
 impossible_timeout=$(cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts \
   python3 -c 'import ci_job_reads as reads; print(reads.RACE_IMPOSSIBLE_TIMEOUT)')
-# The alone steps' -timeout, read for the same reason.
-alone_timeout=$(cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts \
-  python3 -c 'import ci_job_reads as reads; print(reads.ALONE_TIMEOUT)')
 
 # race_tree: a lane of two packages, one of them a tree, holding every form the walk reads. Echoes
 # its root.
@@ -3019,7 +3017,7 @@ echo "case: the walk's wall-clock tests run alone and the call runs the rest"
 root=$(race_alone)
 out=$(split_alone "$root" "lane/a lane/b" "lane/b:TestStorm" "a-job:a-race-job")
 check "the alone half is every xid window test and each named one, over their packages, one at a time" \
-  "$(contains "$out" "^alone: go test -json -count=1 -p 1 -timeout $alone_timeout -run '.(TestStorm|TestXidWindowBeta|TestXidWindowsGamma).' ./lane/a ./lane/b$")"
+  "$(contains "$out" "^alone: go test -json -count=1 -p 1 -timeout 30m -run '.(TestStorm|TestXidWindowBeta|TestXidWindowsGamma).' ./lane/a ./lane/b$")"
 check "the call runs the rest" \
   "$(contains "$out" "^rest: go test -json -count=1 -timeout $impossible_timeout -run '.(TestAlpha|TestQuiet).' ./lane/a ./lane/b$")"
 check "and the alone step of the race job that runs those packages takes both" \
