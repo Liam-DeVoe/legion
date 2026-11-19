@@ -31,6 +31,43 @@ always did.
 
 It makes no fetch of its own: every byte it sends upstream is one a client sent it. It is Python
 3 from the runner image, with nothing to install.
+
+How each client meets it. Measured in a Legion issue pod on 2026-11-07 with curl 8.14.1, bun
+1.4.4, gh 2.98.0, git 2.47.3 and node v24.22.1, against a proxy that answers as this one does,
+counting the proxy's own log lines per request; a runner carries other versions.
+
+  Which variable each reads. curl over plain http reads http_proxy and not HTTP_PROXY. curl, bun
+  and gh over https read https_proxy and HTTPS_PROXY. git reads https_proxy: with HTTPS_PROXY
+  alone, its request went direct. node 24's fetch reads https_proxy only beside
+  NODE_USE_ENV_PROXY=1, and HTTPS_PROXY never. A step that is not about which name a client
+  reads sets all four names and NODE_USE_ENV_PROXY=1.
+
+  A 504 to CONNECT is not a 504 from the origin. The first is a tunnel that never opened, the
+  second an HTTP response, and curl takes them down different paths:
+
+                         no --retry            --retry 3                --retry 3 --retry-all-errors
+    origin answers 504   1 try, exit 0, 504    4 tries, 7.07 s, exit 0  4 tries, exit 0
+    this proxy, CONNECT  1 try, exit 56        1 try, exit 56           4 tries, 7.04 s, exit 56
+
+  So --retry alone retries no failed tunnel (`curl: (56) CONNECT tunnel failed, response 504`),
+  and a result says which of the two it faulted. And curl exits 0 on a 504 it never got past,
+  the error body in its output file, so only --fail or a read of %{http_code} fails the step:
+  `curl -sS --retry 3 --max-time 10 -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:18090/`
+  against an origin answering 504 printed 504 and exited 0.
+
+  --max-time bounds one attempt, not the retries. Against --mode stall,
+  `curl -sS --retry 3 --retry-all-errors --max-time 5 -o /dev/null https://api.github.com/` made
+  4 attempts of 5.00 s with waits of 1, 2 and 4 s between them: 27.06 s, exit 28. The bound on
+  the whole sequence is --retry-max-time.
+
+  bun retries by itself, for under two seconds. With registry.npmjs.org answering 504,
+  `bun install` made 6 attempts in 1.67 s and in 1.73 s over two runs, the waits growing from
+  0.06 s to 0.87 s, then stopped with `error: ProxyConnectFailed (504) downloading package
+  manifest`. gh made one request (`Get "https://api.github.com/rate_limit": Gateway Timeout`)
+  and git one (`CONNECT tunnel failed, response 504`), with no retry of their own.
+
+  Count a run's attempts from this proxy's stderr, one line per request, and not from the
+  client's error, which says nothing of how long it tried.
 """
 
 from __future__ import annotations

@@ -337,6 +337,17 @@ The forms a role types, the rule that a pin names a coordinate as well as a vers
 `skills/legion-worker/references/tools.md`.
 The worker image ships that skill, so a role reads it where it works, and a tool no runner reaches is the image change that reference spells out, with the grep that finds its sites.
 
+### A pod sends every host past a proxy
+
+An issue pod of the deployment measured here carries `no_proxy=*` and `NO_PROXY=*` in every role's environment:
+`printf 'no_proxy=[%s] NO_PROXY=[%s]\n' "$no_proxy" "$NO_PROXY"` printed `no_proxy=[*] NO_PROXY=[*]` on 2026-11-07 and again on 2026-11-19.
+No file of this repository writes that value; it reaches the roles with the pod's environment.
+`*` matches every host, so a client that reads either name ignores `http_proxy` and `https_proxy` and goes to the origin.
+With a proxy that answered 504 for `registry.npmjs.org` named in all four proxy variables and the two names left as the pod sets them, `bun install` installed its package and the proxy logged no request; the same run with both names cleared failed, and curl, gh and git behaved the same way.
+So a download fault rig in a pod, such as `.github/scripts/ci-fault-proxy.py`, clears both names for the one command it tests, as `.github/scripts/ci-tools-proof.sh` does on a runner, and never for the whole shell:
+`env no_proxy= NO_PROXY= https_proxy=http://127.0.0.1:<port> <command>`.
+A rig that skips this injects nothing, and its run passes for the wrong reason.
+
 ### A test database in the pod
 
 A role whose change owes a Postgres test has one in its own pod.

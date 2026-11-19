@@ -528,6 +528,16 @@ RUN test -n "$LEGION_REVISION" \
 # variable the final stage's ENV sets is one `runtime.kubernetes.pod.env` may not set
 # (sandbox/operatorpod.go ImageEnv). A go.env default leaves GOPROXY to an operator, a role or a
 # command that names its own. The process environment outranks go.env, so each of those wins.
+# Because the file proxy comes first, a module this cache holds never reaches the network, which a
+# download fault rig must allow for. In an issue pod on 2026-11-07,
+# `go get github.com/pkg/errors@v0.9.1` succeeded with proxy.golang.org, sum.golang.org and
+# github.com all answering 504. A module the cache does not hold goes to proxy.golang.org and then,
+# past the `|`, to `direct`: with all three faulted, `go get github.com/mikefarah/yq/v4@v4.44.3`
+# made 4 requests of proxy.golang.org and died in git (`invalid version: git ls-remote … CONNECT
+# tunnel failed, response 504`). The checksum database is a third host: with proxy.golang.org
+# alone faulted, the module came through `direct` and the build went on; with sum.golang.org
+# faulted as well, it failed at `verifying module: … Get "https://sum.golang.org/lookup/…":
+# Gateway Timeout`. A rig faults all three, and names a module the cache does not hold.
 # ghcr.io/cybermonklabs/legion/ci, the copy of debian:trixie-slim (.github/ci-images.yaml)
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS toolchain
 ARG UV_VERSION
@@ -813,6 +823,13 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # because it is only a Recommends of gcc-14, and Recommends stay out here as everywhere. cgo stays off
 # by default all the same (the final stage's `ENV CGO_ENABLED=0` and the toolchain stage's go.env line
 # say how).
+# No make is on this list, so `command -v make` prints nothing in a pod while cc and gcc are there
+# (the plugin stage installs make for its own install alone). A dependency whose install falls back
+# to node-gyp fails in a pod for that reason: in node_modules/better-sqlite3,
+# `bunx --package node-gyp@11.4.2 node-gyp rebuild` printed `gyp ERR! stack Error: not found: make`
+# (2026-11-07). The exit status of such an install in a pod says nothing about its downloads, so
+# judge it by what it fetched (its download lines, a fault proxy's log, the lockfile's sha512), run
+# it again with --ignore-scripts, and leave the full install to CI's runner, which has make.
 # python3-yaml: Debian's PyYAML for the image's python3, so `python3 -c "import yaml"` answers in a
 # pod. Six of this repository's own gates run python3 with `import yaml`:
 # .github/scripts/check-action-pins.sh, check-bun-version.sh, check-ci-images.sh,
