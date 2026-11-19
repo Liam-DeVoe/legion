@@ -1453,10 +1453,11 @@ func (s *outboxScene) framesSince(at time.Time) map[*testSession][]sessionFrame 
 }
 
 // requireTakeOver waits for p to take the publisher hold at or after since, then to log its first
-// batch, and for a session to take a comment written since since; and requires the take within
-// standbyTakesWithin of since, the moment what happened to the publisher before p, and the batch
-// and the comment each within takeOverWithin of it.
-func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since time.Time, what string) {
+// batch, and for a session to take a comment written since since. It requires the log line's take
+// within takeWithin: callers whose requirement names the database take use a later
+// holdWrites.requireTakeWithin reading for that bound, because the line follows post-take work.
+// The batch and comment each answer within takeOverWithin of it.
+func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since time.Time, what string, takeWithin time.Duration) {
 	t.Helper()
 	took := p.waitForOutboxLine(t, tookHold, since, 2*takeOverWithin)
 	batch := p.waitForOutboxLine(t, sentBatch, took.at, 2*takeOverWithin)
@@ -1473,7 +1474,7 @@ func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since ti
 		at     time.Time
 		within time.Duration
 	}{
-		{"the other process took the publisher hold", took.at, standbyTakesWithin},
+		{"the other process took the publisher hold", took.at, takeWithin},
 		{"the other process logged its first batch", batch.at, takeOverWithin},
 		{"a session took a comment written since", arrived, takeOverWithin},
 	} {
@@ -2013,7 +2014,7 @@ func TestAKilledPublisherIsReplacedWithin6Seconds(t *testing.T) {
 
 	killed, killedBy := writes.signalAfterRenewal(t, publisher, holder, syscall.SIGKILL, 0)
 	publisher.WaitExit(t, "SIGKILL")
-	scene.requireTakeOver(t, survivor, killed, "the publisher was killed")
+	scene.requireTakeOver(t, survivor, killed, "the publisher was killed", standbyTakesWithin)
 	writes.requireTakeWithin(t, holder, killedBy, "the kill", standbyTakesWithin)
 	written := scene.writtenCount()
 	waitUntil(t, outboxDeliveryWithin, "eight more comments written", func() bool { return scene.writtenCount() >= written+8 })
@@ -2366,7 +2367,7 @@ func (s *outboxScene) handOver(t *testing.T, publisher *dispatchProcess, what st
 
 	at := time.Now()
 	cut()
-	s.requireTakeOver(t, s.pair.other(publisher), at, what)
+	s.requireTakeOver(t, s.pair.other(publisher), at, what, standbyTakesWithin)
 	released := publisher.waitForOutboxLine(t, releasedHold, at, 2*takeOverWithin)
 	if released.reason != "NATS lost" {
 		t.Errorf("the publisher released the hold for %q after %s, want NATS lost: %s", released.reason, what, released.text)
@@ -2444,7 +2445,7 @@ func frozenPublisherRow(t *testing.T, stop frozenStop) {
 	stopped := frozen.at
 	writing := scene.writeAtRate(t, 4, standby)
 	defer writing()
-	scene.requireTakeOver(t, standby, stopped, "the publisher was stopped")
+	scene.requireTakeOver(t, standby, stopped, "the publisher was stopped", takeOverWithin)
 	writes.requireTakeWithin(t, holder, frozen.atBy, "the stop", standbyTakesWithin)
 	if frozen.tookOver != nil {
 		frozen.tookOver(t)
@@ -2853,7 +2854,7 @@ func TestASlowPublisherLosesTheHoldAnswersItsWriteInFlightNamedAndStandsBy(t *te
 	}
 	writing := scene.writeAtRate(t, 4, publisher)
 	defer writing()
-	scene.requireTakeOver(t, publisher, killed, "the other process was killed")
+	scene.requireTakeOver(t, publisher, killed, "the other process was killed", standbyTakesWithin)
 	writes.requireTakeWithin(t, taker, killedBy, "the kill", standbyTakesWithin)
 	writing()
 	scene.waitDelivered(t)
