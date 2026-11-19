@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { basename } from "node:path";
 import { SHELL_COMMAND_REPORT_SEPARATOR } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -85,6 +86,32 @@ export interface ShellCommandResult {
    *  at any moment: what it keeps only grows, and stops at `SHELL_OUTPUT_BYTES`. The module's own
    *  count of what a command cost the session, which nothing here decides on. */
   readonly keptBytes: number;
+}
+
+/** Tests only: the file `runShellCommand` appends one `ShellCommandRecord` to as each command it
+ *  started ends, one JSON line each, so a test across the process boundary reads the limit the
+ *  session armed for a command and what ended it rather than timing the reply. Unset, as every
+ *  deployment runs, nothing is written. */
+export const SHELL_RECORD_FILE = "ENVOY_SHELL_RECORD_FILE";
+
+/** One command's line in `SHELL_RECORD_FILE`: the command, the delay its limit was armed for, and
+ *  what ended it: the limit's timer (`limit`), a stop before it (`stop`), or its own end
+ *  (`exit`). */
+export interface ShellCommandRecord {
+  readonly command: string;
+  readonly armedMs: number;
+  readonly endedBy: "limit" | "stop" | "exit";
+}
+
+/** Appends `line` to the file `SHELL_RECORD_FILE` names, where it names one; never throws. */
+function recordShellCommand(line: ShellCommandRecord): void {
+  const file = process.env[SHELL_RECORD_FILE];
+  if (file === undefined || file === "") return;
+  try {
+    appendFileSync(file, `${JSON.stringify(line)}\n`);
+  } catch {
+    // The tests' seam only: a write it cannot make changes nothing the command answers.
+  }
 }
 
 /** The command a person's message says to run, or undefined for a message that is no command: the
@@ -330,7 +357,9 @@ export async function runShellCommand(
     child.kill("SIGKILL");
     killGroup(child.pid);
   };
-  const limit = setTimeout(() => kill("limit"), options.limitMs);
+  // The delay the limit is armed for, as `SHELL_RECORD_FILE` records it.
+  const armedMs = options.limitMs;
+  const limit = setTimeout(() => kill("limit"), armedMs);
   options.started?.(() => kill("stop"));
   try {
     await child.exited;
@@ -342,6 +371,7 @@ export async function runShellCommand(
     killGroup(child.pid);
     runningGroups.delete(child.pid);
   }
+  recordShellCommand({ command, armedMs, endedBy: ended ?? "exit" });
   await drained(reads);
   const output = printable(printed.text());
   const cut = output.length > SHELL_OUTPUT_MAX;

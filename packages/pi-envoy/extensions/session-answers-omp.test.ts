@@ -6,8 +6,9 @@ import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
 import {
   ANSWERS_WAIT_RECORD_FILE,
   isSessionAnswersText,
-  renderSessionAnswers as renderAnswers,
+  renderSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
+  SESSION_ANSWERS_MARKER,
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers";
 import {
@@ -17,6 +18,7 @@ import {
   messageStream,
   ompRoot,
   type Request,
+  resumeId,
   serveStandin,
   spawnRpc,
   writeStandinProfile,
@@ -30,31 +32,38 @@ import { settled } from "@legion/test-fixtures/wait";
 // Oh My Pi keeps nothing a `context` handler returns, so what reaches the model, where the list
 // sits and where the binary puts its cache anchors can only be read off the requests it sends. One
 // stand-in is the model gateway, the Envoy listener and Dispatch, whose answers route serves a list
-// each case controls. LEGION_TEST_OMP names the binary, as in dispatch-first-omp.test.ts. A run
-// without one skips, except on GitHub Actions.
+// each case controls. The file also holds one case on Envoy cards, (s), because it needs the same
+// harness, its deliveries and its restart: the `delivered:` line src/card-age.ts adds to a card
+// keeps its bytes across a resume. LEGION_TEST_OMP names the binary, as in
+// dispatch-first-omp.test.ts. A run without one skips, except on GitHub Actions.
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 
-/** What the stand-in's answers route does: list `items` at once, accept and never answer, or
- *  answer as a Dispatch build older than the route does. */
+/** What the stand-in's answers route does: list `items` at once, accept and never answer, answer
+ *  as a Dispatch build older than the route does, or answer `status` with Dispatch's JSON error
+ *  body. */
 type Route =
   | {
       readonly kind: "list";
       readonly items: readonly SessionAnswer[];
     }
   | { readonly kind: "hang" }
-  | { readonly kind: "missing" };
+  | { readonly kind: "missing" }
+  | { readonly kind: "error"; readonly status: number };
 
 /** One thing the session is told over RPC, in order, or a change in the answers route before the
  *  next one: a prompt, a manual compaction, a `/btw` side question, a handoff, or an Envoy
- *  delivery (`DELIVERER`) that starts a turn or, quiet, only joins the conversation. */
+ *  delivery (`DELIVERER`) that starts a turn or, quiet, only joins the conversation. A restart
+ *  ends omp and starts it again over the same session (`--resume`), as a pod's next life resumes
+ *  the session its idle release left. */
 type Step =
   | { readonly prompt: string }
   | { readonly compact: true }
   | { readonly btw: string }
   | { readonly handoff: true }
   | { readonly deliver: string; readonly quiet?: true }
-  | { readonly route: Route };
+  | { readonly route: Route }
+  | { readonly restart: true };
 
 /**
  * An extension standing in for an Envoy delivery, which the stand-in's Envoy listener cannot
@@ -62,23 +71,27 @@ type Step =
  * `extensions/envoy.ts` sends a delivery, `deliverAs: "steer"` and `triggerTurn: true`, and
  * `/deliver-quiet <text>` the same with no turn. The host queues a send and `sendMessage`
  * returns nothing to await, so the quiet command polls for the condition itself: it returns once
- * the branch holds the message.
+ * the branch holds one more entry with the text than before it sent, the text as an entry's JSON
+ * holds it (a newline escaped), so a text of several lines and one the branch holds already are
+ * waited for too.
  */
 const DELIVERER = `export default function deliverer(pi) {
   for (const [name, triggerTurn] of [["deliver", true], ["deliver-quiet", false]]) {
     pi.registerCommand(name, {
       description: "Send an envoy-message",
       handler: async (args, context) => {
+        const encoded = JSON.stringify(args).slice(1, -1);
+        const holding = () =>
+          context.sessionManager
+            .getBranch()
+            .filter((entry) => entry.type === "custom_message" && JSON.stringify(entry).includes(encoded))
+            .length;
+        const before = holding();
         pi.sendMessage(
           { customType: "envoy-message", content: args, display: true },
           { deliverAs: "steer", triggerTurn }
         );
-        while (
-          !triggerTurn &&
-          !context.sessionManager
-            .getBranch()
-            .some((entry) => entry.type === "custom_message" && JSON.stringify(entry).includes(args))
-        ) {
+        while (!triggerTurn && holding() === before) {
           await Bun.sleep(10);
         }
       },
@@ -181,8 +194,31 @@ function textOf(message: unknown): string {
     .join("");
 }
 
-/** The request's one list (or failure line), a user message of its own with no cache anchor, and
- *  its text. */
+// What the extension appends, as literals of this file rather than imports of its exports: the
+// same file runs against an older build of the extension, which does not export them, and must
+// fail there on the bytes a request carries rather than on an import.
+
+/** The sentence each list a request appends carries after the list, as its second text block. */
+const REPLACES =
+  "This list replaces every earlier list of people's answers in this conversation, and every earlier line saying the list could not be read: read only the newest one as current.";
+
+/** The list a request appends when an item of the newest list sent was withdrawn and the read
+ *  has no list to give: its first block. */
+const NO_ITEM = `${SESSION_ANSWERS_MARKER}\n\nNo item: every item an earlier list showed was withdrawn or is now older than 72 hours.`;
+
+/** How the failure line, which stands in for a list that could not be read, begins. */
+const FAILURE_MARKER = "[Dispatch: people's answers from the last 72 hours could not be read (";
+
+/** A list's text as a request carries it: the stand-in model takes text only (`input: [text]`),
+ *  and the binary sends such a model a message's text blocks joined with a newline in one text,
+ *  so the list arrives as `list`, a newline and the sentence. */
+function sentList(list: string | undefined): string {
+  if (list === undefined) throw new Error("the list renders nothing");
+  return `${list}\n${REPLACES}`;
+}
+
+/** The request's one answers message, a list (`sentList`) or the failure line, a user message of
+ *  its own with no cache anchor, and its text as the request carries it. */
 function listOf(request: Request): string {
   const lists = messagesOf(request).filter((message) => isSessionAnswersText(textOf(message)));
   expect(lists).toHaveLength(1);
@@ -198,14 +234,65 @@ function lastListOf(request: Request): string {
   return listOf(request);
 }
 
+/** Every answers message of the request, a list or the failure line, in order: its index among the
+ *  request's messages and its text. */
+function listsOf(request: Request): { readonly index: number; readonly text: string }[] {
+  return messagesOf(request).flatMap((message, index) =>
+    isSessionAnswersText(textOf(message)) ? [{ index, text: textOf(message) }] : []
+  );
+}
+
 /** Whether any message of the request is a list or the failure line. */
 function carriesList(request: Request): boolean {
   return messagesOf(request).some((message) => isSessionAnswersText(textOf(message)));
 }
 
-/** The request's messages without its list. */
+/** The request's messages without its answers messages. */
 function withoutList(request: Request): unknown[] {
   return messagesOf(request).filter((message) => !isSessionAnswersText(textOf(message)));
+}
+
+/** Messages as JSON with their cache anchors set aside: the binary sends an anchored text message
+ *  as a block with `cache_control` and an unanchored one as a plain string, which the Messages API
+ *  reads as that one text block, so both are written as blocks and the anchors dropped. */
+function bare(messages: readonly unknown[]): string {
+  return JSON.stringify(
+    messages.map((message) =>
+      typeof message === "object" && message !== null && "content" in message
+        ? {
+            ...message,
+            content:
+              typeof message.content === "string"
+                ? [{ type: "text", text: message.content }]
+                : message.content,
+          }
+        : message
+    )
+  ).replaceAll(/,?"cache_control":\{[^}]*\}/g, "");
+}
+
+/**
+ * Checks that each of `requests` begins with every message of the one before it, the same content
+ * once the cache anchors are set aside (`bare`): the prefix the next request reads from the prompt
+ * cache. When a pair differs, the first message that differs is printed from both before the check
+ * fails, so a failure names the message that changed.
+ */
+function expectPrefixes(requests: readonly Request[]): void {
+  for (const [index, next] of requests.entries()) {
+    const previous = requests[index - 1];
+    if (previous === undefined) continue;
+    const before = messagesOf(previous);
+    const head = messagesOf(next).slice(0, before.length);
+    if (bare(head) !== bare(before)) {
+      const at = before.findIndex((message, place) => bare([message]) !== bare([head[place]]));
+      console.log(
+        `request ${index} does not begin with request ${index - 1}: message ${at} of ` +
+          `${before.length} was ${JSON.stringify(before[at])} and is ` +
+          `${JSON.stringify(head[at] ?? null)}`
+      );
+    }
+    expect(bare(head)).toBe(bare(before));
+  }
 }
 
 /** A cached list's read time and the reason its header gives, from the header's second line. */
@@ -218,15 +305,6 @@ function cachedOf(text: string): { readonly readAt: string; readonly reason: str
 }
 
 const MINUTE = 60_000;
-
-/** The list text a request must carry, as the extension renders it: every case renders a list
- *  with answers in its window, so the rendering is text, and a case that rendered none fails here
- *  rather than comparing against nothing. */
-function renderSessionAnswers(...args: Parameters<typeof renderAnswers>): string {
-  const rendered = renderAnswers(...args);
-  if (rendered === undefined) throw new Error("the expected list renders nothing");
-  return rendered;
-}
 
 /** A person's answer to the session's ask, written `minutesAgo` minutes ago. */
 function answer(id: string, text: string, minutesAgo: number): SessionAnswer {
@@ -265,10 +343,10 @@ function deadlineNamed(text: string): number {
   return Number(named[1]);
 }
 
-/** The warning the extension logged when a request kept the list placed before over a read that
- *  failed (`unshownFailure`), from Oh My Pi's own log under the session's `home`, which a warning
- *  reaches as it is written. The extension logs it once until a read answers, so the session's
- *  log holds exactly one. */
+/** The warning the extension logged when a request kept the answers messages sent over a read
+ *  that failed (`readFailed`), from Oh My Pi's own log under the session's `home`, which a warning
+ *  reaches as it is written. The extension logs it once per failure episode, which runs until a
+ *  read answers, so the session's log holds exactly one. */
 async function hiddenFailure(home: string): Promise<string> {
   const logs = path.join(home, ".omp", "logs");
   const files = await Promise.all(
@@ -292,7 +370,7 @@ async function hiddenFailure(home: string): Promise<string> {
  * its target once). With `warm`, the profile's model catalog is built before the session starts.
  * Once the steps have settled, `until` is awaited before omp's stdin closes. Returns every request
  * the stand-in served, in order of arrival, the main loop's turns among them, and how many requests
- * had arrived when each step was sent (`sentAfter`, route changes left out).
+ * had arrived when each step was sent (`sentAfter`, route changes and restarts left out).
  */
 async function runSession(
   binary: string,
@@ -377,6 +455,13 @@ async function runSession(
           { status: 404 }
         );
       }
+      if (current.kind === "error") {
+        // What Dispatch answers a read it cannot serve: its JSON error body, with the status.
+        return Response.json(
+          { code: "UNAVAILABLE", error: "the database is unavailable" },
+          { status: current.status }
+        );
+      }
       return Response.json({
         session_id: decodeURIComponent(answers[1] ?? ""),
         since: new Date(Date.now() - 72 * 60 * MINUTE).toISOString(),
@@ -449,32 +534,45 @@ async function runSession(
   // side turn was served.
   let settle: ((frame: object) => boolean) | undefined;
   let stepSettled = Promise.withResolvers<void>();
-  const rpc = spawnRpc(
-    binary,
-    {
-      extensions,
-      home,
-      workspace,
-      sessions,
-      env: {
-        ENVOY_URL: base,
-        DISPATCH_URL: base,
-        DISPATCH_TOKEN: "session-answers-token",
-        [ANSWERS_WAIT_RECORD_FILE]: waitRecord,
+  /** omp over the session, with `args` after the harness's flags; its cleanup goes on `cleanup`
+   *  after the stand-in's, so it is killed before the stand-in stops. Every life of the session
+   *  appends to the one wait record. */
+  const start = (args: readonly string[]) =>
+    spawnRpc(
+      binary,
+      {
+        extensions,
+        home,
+        workspace,
+        sessions,
+        env: {
+          ENVOY_URL: base,
+          DISPATCH_URL: base,
+          DISPATCH_TOKEN: "session-answers-token",
+          [ANSWERS_WAIT_RECORD_FILE]: waitRecord,
+        },
+        args,
+        onFrame: (frame) => {
+          if (settle?.(frame)) {
+            settle = undefined;
+            stepSettled.resolve();
+          }
+        },
       },
-      onFrame: (frame) => {
-        if (settle?.(frame)) {
-          settle = undefined;
-          stepSettled.resolve();
-        }
-      },
-    },
-    cleanup
-  );
+      cleanup
+    );
+  let rpc = start([]);
   const sentAfter: number[] = [];
   for (const step of steps) {
     if ("route" in step) {
       route = step.route;
+      continue;
+    }
+    if ("restart" in step) {
+      // omp exits once its stdin closes, as a pod's process ends at its idle release, and the
+      // next process resumes the session from its transcript, as the pod's next life does.
+      await rpc.end();
+      rpc = start(["--resume", await resumeId(sessions)]);
       continue;
     }
     if ("btw" in step) {
@@ -599,7 +697,7 @@ test.skipIf(skipped)(
     expect(carriesList(first as Seen)).toBe(false);
     // Compared after JSON parsing: the text the model reads, not its escaped bytes.
     const list = lastListOf(second as Seen);
-    expect(list).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(list).toBe(sentList(renderSessionAnswers([item], { now: Date.now() })));
     expect(list).toContain(item.text);
   }
 );
@@ -624,7 +722,7 @@ test.skipIf(skipped)(
     const third_ = JSON.stringify(messagesOf(third as Seen));
     expect(third_).not.toContain("First question.");
     expect(third_).toContain(session.summary);
-    expect(listOf(third as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(third as Seen)).toBe(sentList(renderSessionAnswers([item], { now: Date.now() })));
   }
 );
 
@@ -647,7 +745,7 @@ test.skipIf(skipped)(
     expect(parentID).toBeString();
     const first = session.turns.find(isSubagentTurn);
     if (first === undefined) throw new Error("the subagent sent no Messages request");
-    expect(listOf(first)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first)).toBe(sentList(renderSessionAnswers([item], { now: Date.now() })));
     // Every read, the subagent's included, asked for the parent's list.
     expect(new Set(session.answers.map((request) => request.path))).toEqual(
       new Set([`/api/v1/agents/${parentID}/answers`])
@@ -703,7 +801,7 @@ test.skipIf(skipped)(
     const [first, ...rest] = session.turns;
     expect(rest).toEqual([]);
     const list = listOf(first as Seen);
-    expect(list).toBe(renderSessionAnswers(items, { now: Date.now() }));
+    expect(list).toBe(sentList(renderSessionAnswers(items, { now: Date.now() })));
     for (const item of items) expect(list).toContain(item.text);
   }
 );
@@ -724,7 +822,10 @@ test.skipIf(skipped)(
       { prompt: "First question." },
     ]);
 
-    const list = listOf(session.turns[0] as Seen);
+    const carried = listOf(session.turns[0] as Seen);
+    // The cap is the list's, the first block's: the sentence comes after the list.
+    expect(carried.endsWith(`\n${REPLACES}`)).toBe(true);
+    const list = carried.slice(0, -`\n${REPLACES}`.length);
     expect(list.length).toBeLessThan(8_000);
     // Shown items are the newest, a strict prefix: the first left out ends the list.
     const shown = items.map((item) => list.includes(item.text));
@@ -737,7 +838,7 @@ test.skipIf(skipped)(
         `\n\n${leftOut} older items left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`
       )
     ).toBe(true);
-    expect(list).toBe(renderSessionAnswers(items, { now: Date.now() }));
+    expect(carried).toBe(sentList(renderSessionAnswers(items, { now: Date.now() })));
   }
 );
 
@@ -801,12 +902,12 @@ test.skipIf(skipped)(
     const [cachedFirst, cachedSecond] = cached.turns;
     if (cachedFirst === undefined || cachedSecond === undefined) throw new Error("no turn 2");
     const placed = listOf(cachedFirst);
-    expect(placed).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(placed).toBe(sentList(renderSessionAnswers([item], { now: Date.now() })));
     expect(listOf(cachedSecond)).toBe(placed);
     expect(textOf(messagesOf(cachedSecond).at(-1))).toBe("Second question.");
     // Turn 2 sends turn 1's bytes again, which name no deadline, so the deadline the session
     // waited is read from its own record of the read those bytes hide: the warning the extension
-    // logs for it (`unshownFailure`), which gives that read's reason.
+    // logs for it (`readFailed`), which gives that read's reason.
     heldNoLonger(cached, cachedSecond, await hiddenFailure(cached.home));
 
     // The subagent's first request: Dispatch hangs from the parent's delegating turn on, so the
@@ -827,7 +928,9 @@ test.skipIf(skipped)(
     const carried = listOf(subFirst);
     const carriedCache = cachedOf(carried);
     expect(carriedCache.reason).toBe(deadline);
-    expect(carried).toBe(renderSessionAnswers([item], { now: Date.now(), cached: carriedCache }));
+    expect(carried).toBe(
+      sentList(renderSessionAnswers([item], { now: Date.now(), cached: carriedCache }))
+    );
     heldNoLonger(sub, subFirst, carried);
   }
 );
@@ -870,10 +973,28 @@ test.skipIf(skipped)(
     const [n, next, ...rest] = session.turns;
     if (n === undefined || next === undefined) throw new Error("want two turns");
     expect(rest).toEqual([]);
-    // Each list shows a new item, so each is the last message, with no cache_control, and they
-    // differ.
-    expect(lastListOf(n)).toBe(renderSessionAnswers([older], { now: Date.now() }));
-    expect(lastListOf(next)).toBe(renderSessionAnswers([newer, older], { now: Date.now() }));
+    // N+1 begins with every message of N, N's list included, so a change appends a list after
+    // N+1's last message rather than move or edit the one N sent, which stays right after the
+    // message it followed.
+    expectPrefixes([n, next]);
+    const [placed] = listsOf(n);
+    if (placed === undefined) throw new Error("request N carries no list");
+    expect(placed.index).toBe(messagesOf(n).length - 1);
+    const lists = listsOf(next);
+    expect(lists.map(({ index }) => index)).toEqual([placed.index, messagesOf(next).length - 1]);
+    expect(textOf(messagesOf(next)[placed.index - 1])).toBe("First question.");
+    // Neither list carries a cache anchor.
+    for (const { index } of lists) {
+      expect(messagesOf(next)[index]).toMatchObject({ role: "user" });
+      expect(JSON.stringify(messagesOf(next)[index])).not.toContain("cache_control");
+    }
+    // Each list shows a new item, so each went after its request's last message, and they differ.
+    const olderList = sentList(renderSessionAnswers([older], { now: Date.now() }));
+    expect(lastListOf(n)).toBe(olderList);
+    expect(lists.map(({ text }) => text)).toEqual([
+      olderList,
+      sentList(renderSessionAnswers([newer, older], { now: Date.now() })),
+    ]);
     // N's messages through its last cache_control-bearing one are N+1's first, byte for byte.
     const messages = messagesOf(n);
     const anchor = messages.findLastIndex((message) =>
@@ -909,7 +1030,7 @@ test.skipIf(skipped)(
       throw new Error("want three turns");
     }
     expect(rest).toEqual([]);
-    const expected = renderSessionAnswers([item], { now: Date.now() });
+    const expected = sentList(renderSessionAnswers([item], { now: Date.now() }));
     expect(lastListOf(first)).toBe(expected);
     const listAt = (request: Request) =>
       messagesOf(request).findIndex((message) => isSessionAnswersText(textOf(message)));
@@ -922,23 +1043,7 @@ test.skipIf(skipped)(
       expect(textOf(messagesOf(request)[listAt(request) - 1])).toBe("First question.");
     }
     // Turn 2's messages through its last cache anchor, which comes after the list, are turn 3's
-    // first, the same content once the anchors are set aside: the binary sends an anchored text
-    // message as a block with `cache_control` and an unanchored one as a plain string, which the
-    // Messages API reads as that one text block.
-    const bare = (messages: readonly unknown[]) =>
-      JSON.stringify(
-        messages.map((message) =>
-          typeof message === "object" && message !== null && "content" in message
-            ? {
-                ...message,
-                content:
-                  typeof message.content === "string"
-                    ? [{ type: "text", text: message.content }]
-                    : message.content,
-              }
-            : message
-        )
-      ).replaceAll(/,?"cache_control":\{[^}]*\}/g, "");
+    // first, the same content once the anchors are set aside (`bare`).
     const anchor = messagesOf(second).findLastIndex((message) =>
       JSON.stringify(message).includes("cache_control")
     );
@@ -946,6 +1051,242 @@ test.skipIf(skipped)(
     expect(bare(messagesOf(third).slice(0, anchor + 1))).toBe(
       bare(messagesOf(second).slice(0, anchor + 1))
     );
+  }
+);
+
+// What people wrote reaches a request without changing a byte an earlier request sent: every
+// answers message a request carried stays where it went, with its bytes, and a change goes after
+// the last message as a list of its own, with the sentence saying the newest list is the current
+// one. Each case checks the prefix and the places first, and the texts after, so a build that
+// moves or takes out a list sent fails on the bytes at that list's place.
+test.skipIf(skipped)(
+  "(p) after a compaction, a new answer, an edit and two retractions each go after the last message, and every request begins with the one before it",
+  async () => {
+    const first = answer("ask_p1", "Take the first way.", 3);
+    const second = answer("ask_p2", "Keep the old flag too.", 2);
+    // The first answer changed by its author: Dispatch keeps its id and time and stamps the edit.
+    const edited: SessionAnswer = {
+      ...first,
+      text: "Take the first way, behind the flag.",
+      edited_at: new Date().toISOString(),
+    };
+    const session = await runSession(binary(), [
+      { route: { kind: "list", items: [first] } },
+      { prompt: "First question." },
+      { prompt: "Second question." },
+      { prompt: "Third question." },
+      { compact: true },
+      { prompt: "Fourth question." },
+      { prompt: "Fifth question." },
+      { route: { kind: "list", items: [second, first] } },
+      { prompt: "Sixth question." },
+      { route: { kind: "list", items: [second, edited] } },
+      { prompt: "Seventh question." },
+      // Each retraction leaves the read while the answer's time is inside the window.
+      { route: { kind: "list", items: [second] } },
+      { prompt: "Eighth question." },
+      { route: { kind: "list", items: [] } },
+      { prompt: "Ninth question." },
+      { prompt: "Tenth question." },
+    ]);
+
+    expect(session.turns).toHaveLength(10);
+    // The turns after the compaction, which summarized the message the first list followed.
+    const turns = session.turns.slice(3);
+    const messages = turns.map(messagesOf);
+    expect(JSON.stringify(messages[0])).not.toContain("First question.");
+    expect(JSON.stringify(messages[0])).toContain(session.summary);
+    expectPrefixes(turns);
+    // The fourth question's request ends with a list and the fifth's with its prompt; each change
+    // adds one list after the last message; the turn with no change adds none.
+    const lists = turns.map(listsOf);
+    expect(lists.map((sent) => sent.length)).toEqual([1, 1, 2, 3, 4, 5, 5]);
+    expect(
+      turns.map((request, index) => lists[index]?.at(-1)?.index === messagesOf(request).length - 1)
+    ).toEqual([true, false, true, true, true, true, false]);
+    expect(textOf(messages[1]?.at(-1))).toBe("Fifth question.");
+    expect(lists[6]).toEqual(lists[5]);
+    expect(textOf(messages[6]?.at(-1))).toBe("Tenth question.");
+
+    for (const sent of lists.slice(2, 6)) {
+      expect(sent.at(-1)?.text.endsWith(`\n${REPLACES}`)).toBe(true);
+    }
+    expect(textOf(messages[5]?.at(-1))).toBe(`${NO_ITEM}\n${REPLACES}`);
+    const now = Date.now();
+    expect(lists[6]?.map(({ text }) => text)).toEqual([
+      sentList(renderSessionAnswers([first], { now })),
+      sentList(renderSessionAnswers([second, first], { now })),
+      sentList(renderSessionAnswers([second, edited], { now })),
+      sentList(renderSessionAnswers([second], { now })),
+      `${NO_ITEM}\n${REPLACES}`,
+    ]);
+  }
+);
+
+// The model reads that a read failed only when the read has no list to give: the failure line,
+// appended once and kept as a list is. A recovery to an empty window has nothing new to say, and a
+// failed read that gives the cached list with the same items keeps the list sent.
+test.skipIf(skipped)(
+  "(q) after a compaction, a 503, a recovery to an empty window and a list: the failure line once, nothing for the recovery, the list after the last message",
+  async () => {
+    const item = answer("ask_q", "Read it once Dispatch is back.", 1);
+    const session = await runSession(binary(), [
+      { prompt: "First question." },
+      { prompt: "Second question." },
+      { compact: true },
+      { prompt: "Third question." },
+      { prompt: "Fourth question." },
+      { route: { kind: "error", status: 503 } },
+      { prompt: "Fifth question." },
+      { prompt: "Sixth question." },
+      { route: { kind: "list", items: [] } },
+      { prompt: "Seventh question." },
+      { route: { kind: "list", items: [item] } },
+      { prompt: "Eighth question." },
+    ]);
+
+    expect(session.turns).toHaveLength(8);
+    const turns = session.turns.slice(2);
+    const messages = turns.map(messagesOf);
+    expect(JSON.stringify(messages[0])).not.toContain("First question.");
+    expect(JSON.stringify(messages[0])).toContain(session.summary);
+    expectPrefixes(turns);
+    // The first failed read, with nothing cached that renders, puts the failure line after the
+    // last message; the second failure and the recovery to an empty window add nothing and end
+    // with their prompts; the list goes after the last message, the failure line kept at its place.
+    const lists = turns.map(listsOf);
+    expect(lists.map((sent) => sent.length)).toEqual([0, 0, 1, 1, 1, 2]);
+    const [failure] = lists[2] ?? [];
+    if (failure === undefined) throw new Error("the first failed read's request carries nothing");
+    expect(failure.index).toBe((messages[2]?.length ?? 0) - 1);
+    expect(lists[3]).toEqual([failure]);
+    expect(lists[4]).toEqual([failure]);
+    expect(textOf(messages[3]?.at(-1))).toBe("Sixth question.");
+    expect(textOf(messages[4]?.at(-1))).toBe("Seventh question.");
+    expect(lists[5]?.[0]).toEqual(failure);
+    expect(lists[5]?.[1]?.index).toBe((messages[5]?.length ?? 0) - 1);
+
+    console.log(`(q) the failure line: ${failure.text}`);
+    expect(failure.text).toStartWith(FAILURE_MARKER);
+    // The failure line alone, with no sentence after it.
+    expect(failure.text).toEndWith("); run `dispatch answers`.]");
+    expect(lists[5]?.[1]?.text).toBe(sentList(renderSessionAnswers([item], { now: Date.now() })));
+
+    // A failed read that gives the cached list, with the same item, keeps the list sent where it
+    // went, with its bytes, and adds nothing.
+    const cached = await runSession(binary(), [
+      { route: { kind: "list", items: [item] } },
+      { prompt: "First question." },
+      { route: { kind: "hang" } },
+      { prompt: "Second question." },
+    ]);
+    const [read, held, ...rest] = cached.turns;
+    if (read === undefined || held === undefined) throw new Error("want two turns");
+    expect(rest).toEqual([]);
+    expectPrefixes([read, held]);
+    expect(listsOf(read)).toHaveLength(1);
+    expect(listsOf(held)).toEqual(listsOf(read));
+    expect(textOf(messagesOf(held).at(-1))).toBe("Second question.");
+    expect(listsOf(read)[0]?.text).toBe(
+      sentList(renderSessionAnswers([item], { now: Date.now() }))
+    );
+  }
+);
+
+// A pod's process ends at its idle release, and its next life resumes the session from the
+// session file, with no memory of where a list went: the session holds it.
+test.skipIf(skipped)(
+  "(r) a list placed, then a restart: the resumed process's first request carries it at its old place with its bytes",
+  async () => {
+    const item = answer("ask_r", "Pick it up where you left it.", 1);
+    const session = await runSession(binary(), [
+      { route: { kind: "list", items: [item] } },
+      { prompt: "First question." },
+      { prompt: "Second question." },
+      { prompt: "Third question." },
+      { restart: true },
+      { prompt: "Fourth question." },
+    ]);
+
+    const [, , before, resumed, ...rest] = session.turns;
+    if (before === undefined || resumed === undefined) throw new Error("want four turns");
+    expect(rest).toEqual([]);
+    expectPrefixes([before, resumed]);
+    const [placed] = listsOf(before);
+    if (placed === undefined) throw new Error("the request before the restart carries no list");
+    expect(listsOf(resumed)).toEqual([placed]);
+    expect(textOf(messagesOf(before)[placed.index - 1])).toBe("First question.");
+    expect(textOf(messagesOf(resumed)[placed.index - 1])).toBe("First question.");
+    expect(textOf(messagesOf(resumed).at(-1))).toBe("Fourth question.");
+
+    expect(placed.text).toBe(sentList(renderSessionAnswers([item], { now: Date.now() })));
+  }
+);
+
+// Every request shows each Envoy card with `delivered:`, the time the session got it
+// (src/card-age.ts). The session records that time when it first uses it, so a process that resumes
+// the session shows the card with the bytes the process before it sent. A resumed process can also
+// write the same card again before its first request, as it replays a card whose ledger record the
+// process before it never wrote: that write takes the time the session records, and the card
+// already sent keeps its text. The duplicate is written quiet, with no turn, so its `message_end`
+// comes before the resumed process's first request; a duplicate that starts a turn is written after
+// that request's `context` handler has fixed the card's time. The restart, a whole process's exit
+// and the next one's start, puts the duplicate's write more than a second past the first, in
+// another second of the line.
+test.skipIf(skipped)(
+  "(s) an Envoy card keeps its delivered line after a resume, also when the resumed process writes it again before its first request",
+  async () => {
+    const card = [
+      "envoy:",
+      "  id: evt-s-card",
+      "  from: rec-peer",
+      "  topic: agent.rec",
+      `  at: ${new Date(Date.now() - 3 * MINUTE).toISOString()}`,
+      "  message: Card delivered before the restart",
+    ].join("\n");
+    const session = await runSession(binary(), [
+      { deliver: card },
+      { prompt: "First question." },
+      { restart: true },
+      // The same card, its event id and text, written again by the resumed process before its
+      // first request.
+      { deliver: card, quiet: true },
+      { prompt: "Second question." },
+    ]);
+
+    const [a, b, c, ...rest] = session.turns;
+    if (a === undefined || b === undefined || c === undefined) throw new Error("want three turns");
+    expect(rest).toEqual([]);
+    /** The texts of the request's card messages, in order: the first is the card the first
+     *  process wrote. */
+    const cardsOf = (request: Request): string[] =>
+      messagesOf(request)
+        .map(textOf)
+        .filter((text) => text.includes("\n  id: evt-s-card\n"));
+    const oldCard = (request: Request): string => {
+      const [found] = cardsOf(request);
+      if (found === undefined) throw new Error("the request carries no card");
+      return found;
+    };
+    // Printed whether or not the case passes, so a failure shows the line in every request.
+    const lines = [a, b, c].map(
+      (request) => /^ {2}delivered: .*$/m.exec(oldCard(request))?.[0] ?? "(no delivered line)"
+    );
+    // The resumed process writes the card again only after it was sent there, once it has
+    // started, and the first process fixed its time before request A: in the order the stand-in
+    // saw them, the duplicate went out after request A.
+    console.log(
+      `(s) the old card's delivered line in requests A, B and C: ${JSON.stringify(lines)}; ` +
+        `the card went to the resumed process again once ${session.sentAfter[2]} requests had ` +
+        `arrived, request A being request ${a.index}`
+    );
+
+    expectPrefixes([b, c]);
+    const sent = oldCard(a);
+    for (const request of [b, c]) expect(oldCard(request)).toBe(sent);
+    expect(sent).toMatch(/^ {2}delivered: /m);
+    // The resumed process wrote the card again before C.
+    expect(cardsOf(c)).toHaveLength(2);
   }
 );
 
@@ -1003,8 +1344,9 @@ test.skipIf(skipped)(
     // The main loop's turns on both sides carry the list, read fresh: no read was left hanging.
     const [first, second, ...rest] = session.turns;
     expect(rest).toEqual([]);
-    expect(listOf(first as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(second as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    const expected = sentList(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first as Seen)).toBe(expected);
+    expect(listOf(second as Seen)).toBe(expected);
     // And waited on nothing by the session's own record (R4): one wait for each main turn's read,
     // each ended by its answer, and none for the side turn, so no side turn awaited a timer of
     // the read's.
@@ -1041,8 +1383,9 @@ test.skipIf(skipped)(
 
     const [first, second, ...rest] = session.turns;
     expect(rest).toEqual([]);
-    expect(listOf(first as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(second as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    const expected = sentList(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first as Seen)).toBe(expected);
+    expect(listOf(second as Seen)).toBe(expected);
   }
 );
 
@@ -1089,8 +1432,9 @@ test.skipIf(skipped)(
     expect(textOf(compacted.at(-1))).toBe("Third question.");
     expect(shapeOf(compacted)).toEqual(shapeOf(withoutList(third)));
     expect(carriesList(compaction)).toBe(false);
-    expect(listOf(third)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(fourth)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    const expected = sentList(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(third)).toBe(expected);
+    expect(listOf(fourth)).toBe(expected);
   }
 );
 
@@ -1131,8 +1475,9 @@ test.skipIf(skipped)(
     expect(textOf(compacted.at(-1))).toContain("ENVOY-DELIVERY: CI finished.");
     expect(shapeOf(compacted)).toEqual(shapeOf(withoutList(delivered)));
     expect(carriesList(compaction)).toBe(false);
-    expect(listOf(delivered)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(fourth)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    const expected = sentList(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(delivered)).toBe(expected);
+    expect(listOf(fourth)).toBe(expected);
   }
 );
 
@@ -1174,8 +1519,9 @@ test.skipIf(skipped)(
     expect(JSON.stringify(compacted)).toContain("QUIET-ONE: a notice.");
     expect(JSON.stringify(compacted)).toContain("First question.");
     expect(carriesList(compaction)).toBe(false);
-    expect(listOf(first)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(second)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    const expected = sentList(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first)).toBe(expected);
+    expect(listOf(second)).toBe(expected);
   }
 );
 

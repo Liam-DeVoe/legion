@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  A `!command` appends `{ command, armedMs, endedBy }` to the file `ENVOY_SHELL_RECORD_FILE` names
+  as it ends: the limit it was armed for, and whether the limit, a stop or its own end ended it.
+  Only tests set the variable; unset, nothing is written.
+time: 2026-11-19T12:00:00Z
+custom:
+    Issue: pr4437
