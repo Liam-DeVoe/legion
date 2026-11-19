@@ -524,12 +524,13 @@ func privateProjects(secrets []SecretProject) []string {
 	return projects
 }
 
-// JudgeDispatchBound is how long the model judge may wait on Dispatch at one point of a run: all of
-// its reads before the model together — the policy check's (JudgePolicy), the project check's
-// (JudgeProject) and the issue check's, which package judge's Dispatch phase holds under one
-// JudgeDispatch — and, at the decision, the reads its approval makes before its transaction
-// (applyDecisionAttempt). A read it cuts short fails its check, and the request waits for its
-// person.
+// JudgeDispatchBound is how long the model judge may wait on Dispatch at one point of a run: its
+// reads before the ask together — the policy check's (JudgePolicy), the project check's
+// (JudgeProject) and the issue read's two GETs, which package judge's Dispatch phase holds under
+// one JudgeDispatch — and, at the decision, the reads its approval makes before its transaction
+// (applyDecisionAttempt). The ask read the reason may cite has a bound of its own of the same
+// length (judge's dispatchBound), on the run's context. A read it cuts short hands the request to
+// its person.
 const JudgeDispatchBound = 5 * time.Second
 
 // JudgeRowReserve is the part of a judge run's time no read of Dispatch may spend: JudgeDispatch
@@ -672,11 +673,12 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // decisionFacts is what the approve path reads of Dispatch for recordID before its transaction:
 // the state of each project the request's names are tagged with and the projects its credential
 // may still name (projectFacts), which the transaction's evaluation reads, and whether who may
-// decide the record at all. A person may when the person rule shows them the record (mayDecide).
-// The model judge may when the request is still of no private project (judgeMayDecide, over the
-// tagged projects' states alone, the ones its run's check read), which its run checked before the
-// model, and which a project turning private during the run or an adoption by an enrollment
-// naming a private project can have changed since. Both rules read the projects of two
+// decide the record at all. A person may when the person rule shows them the record (mayDecide),
+// to approve it or to refuse it. The model judge's grant may when the request is still of no
+// private project (judgeMayDecide, over the tagged projects' states alone, the ones its run's check
+// read), which its run checked before the model, and which a project turning private during the
+// run or an adoption by an enrollment naming a private project can have changed since; the judge's
+// refusal does not come here (applyDecisionAttempt). Both rules read the projects of two
 // credentials: the one the request hangs off now, which an adoption rewrites, and the one that
 // asked, which the append-only record names and the pending lists and the approval page read, so a
 // request either of them would hide from a reader is one that reader does not decide. For the

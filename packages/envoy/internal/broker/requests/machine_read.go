@@ -1355,17 +1355,17 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // not passed, so neither statement lists it until its hold has ended (handed over, or run out),
 // and past its deadline it reads expired, as every request does.
 //
-// An agent_secret record waiting on $2, record.AnyoneApprover, is listed for the person its
-// notify column names, and for everyone where it names none (responsiblePerson), in both
-// statements. A launcher_credential record carries no notify, so the filter lists it for everyone.
+// An agent_secret record waiting on $2, record.AnyoneApprover, is read with the person its notify
+// column names (responsiblePerson), and PendingForApprover chooses whose list holds it (listedFor).
+// A launcher_credential record carries no notify, so it is listed for everyone.
 const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
-		s.state, ` + recordDeadlineSQL + `, ` + credentialColumns + `, ` + currentCredentialColumns + `
+		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), ` + credentialColumns + `, ` + currentCredentialColumns + `
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
 	left join enrollments cur on cur.id = req.enrollment_id
 	cross join lateral (select ` + recordStateSQL + ` as state offset 0) s
-	where (cr.approver = $1 or cr.approver = $2 and (cr.notify is null or cr.notify = $1)) and `
+	where (cr.approver = $1 or cr.approver = $2) and `
 
 // credentialColumns are the enrollment's columns namedProjects reads, over a left join aliased
 // enr, in the order a scan into enrollmentRow's Kind, Operator, Subject and Projects takes them. A
@@ -1440,10 +1440,12 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // An approver's records are every record naming approver; every request for a shared human-tier
 // secret, whose approver is record.AnyoneApprover, that names approver as the person responsible
 // for the agent that made it, or names no such person (credential_requests.notify, Create's
-// responsiblePerson), so it waits where everyone sees it; and every service's machine login, whose
-// approver is record.AnyoneApprover too. Who may decide is not this list's to say: anyone signed
-// in decides a shared secret's request from its page whether or not it is listed for them
-// (record.MayDecide). A service's login a broker from before that rule opened names a person
+// responsiblePerson), so it waits where everyone sees it, or names a person who may not see it
+// (listedFor); and every service's machine login, whose approver is record.AnyoneApprover too. A
+// private project's request is on no list of a person outside the project (MaySee). Who may
+// decide is not this list's to say: anyone signed in decides a shared secret's request from its
+// page whether or not it is listed for them (record.MayDecide), within the person rule. A
+// service's login a broker from before that rule opened names a person
 // instead and is listed for that person alone, though anyone who types its code may decide it
 // (record.MayDecide). Whether an agent_secret record is still pending is read from its request
 // row: every writer moves the request out of 'pending' together with the record's terminal event
@@ -1485,13 +1487,14 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	type seen struct {
 		sessionProjects []string
 		reason          string
+		notify          string
 	}
 	var reads []seen
 	for rows.Next() {
-		var id, kind, canonical, requestSession, enrollmentSession, state string
+		var id, kind, canonical, requestSession, enrollmentSession, state, notify string
 		var createdAt, expiresAt time.Time
 		var asked, current enrollmentRow
-		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt,
+		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify,
 			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
 			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
 			return nil, err
@@ -1508,20 +1511,22 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 			Session: Session{Request: requestSession, Enrollment: enrollmentSession},
 			State:   state, ExpiresAt: expiresAt,
 		})
-		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason})
+		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason, notify: notify})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	rows.Close()
-	// A private project's request is left off the list of everyone outside the project: its
-	// names and its reason are that project's (MaySee). A request Dispatch cannot answer for is
-	// left off too, failing closed for that row alone, and the rest of the list is answered: an
-	// outage of Dispatch hides only the rows that ask it something (logRowUnanswered).
+	// Each agent-secret row is on the lists listedFor chooses: a private project's request is left
+	// off the list of everyone outside the project, since its names and its reason are that
+	// project's (MaySee), and a request is listed for the person responsible for it unless that
+	// person may not see it. A request Dispatch cannot answer for is left off too, failing closed
+	// for that row alone, and the rest of the list is answered: an outage of Dispatch hides only the
+	// rows that ask it something (logRowUnanswered).
 	visible := out[:0]
 	for i, p := range out {
 		if p.Kind == record.KindAgentSecret {
-			ok, err := m.maySeeRecord(ctx, "record "+p.RecordID, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
+			ok, err := m.listedFor(ctx, p, approver, reads[i].notify, reads[i].sessionProjects, reads[i].reason)
 			switch {
 			case errors.Is(err, ErrProjectAccessUnavailable):
 				m.logRowUnanswered("pending "+p.RecordID, err, "list", "pending", "record", p.RecordID)
@@ -1535,6 +1540,26 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		visible = append(visible, p)
 	}
 	return visible, nil
+}
+
+// listedFor answers whether reader's list holds the agent-secret row p, whose record names notify
+// as the person responsible for the agent that made it ("" for none, and for a record naming
+// reader itself as its approver). The row is listed for that person, as responsiblePerson chose,
+// and for everyone where it names none, so a person who has nothing to do with the agent is not
+// asked. Where that person may not see the row (MaySee: it belongs to a private project they are
+// not on, from when it was made or since), it is listed for everyone instead, so a request no
+// longer waits where nobody sees it. Either way it is listed only for a reader who may see it.
+// notify's MaySee is read first, so a row listed for its own person costs another reader no read
+// of the person rule, and a row touching no project asks Dispatch nothing at all.
+func (m *Machine) listedFor(ctx context.Context, p PendingSummary, reader, notify string, sessionProjects []string, reason string) (bool, error) {
+	row := "record " + p.RecordID
+	if notify != "" && notify != record.CanonicalLogin(reader) {
+		theirs, err := m.maySeeRecord(ctx, row, notify, p.Identifiers, sessionProjects, reason)
+		if err != nil || theirs {
+			return false, err
+		}
+	}
+	return m.maySeeRecord(ctx, row, reader, p.Identifiers, sessionProjects, reason)
 }
 
 // requestedIdentifiers is what the record whose canonical body is canonical asks for, and the

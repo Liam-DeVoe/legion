@@ -7,12 +7,13 @@
 import { expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 const makeDirectory = temporaryDirectories("print-trade");
 const SCRIPT = join(import.meta.dir, "print-trade.ts");
-const ACCESS_TOKEN = "the-access-token-the-trade-minted-not-a-secret";
-const ACCOUNT_TOKEN = "the-introspecting-account-token";
+const ACCESS_TOKEN = fixtureSecret("access");
+const ACCOUNT_TOKEN = fixtureSecret("account");
 
 interface Seen {
   readonly path: string;
@@ -51,7 +52,7 @@ function broker(answer: { status: number; body: Record<string, unknown> }) {
 async function run(url: string, account: boolean) {
   const dir = makeDirectory();
   const tokenFile = join(dir, "exchange-token");
-  await writeFile(tokenFile, "projected.service.account.token\n");
+  await writeFile(tokenFile, `${fixtureSecret("pod")}\n`);
   const accountFile = join(dir, "account-token");
   await writeFile(accountFile, `${ACCOUNT_TOKEN}\n`);
   const env: Record<string, string> = {

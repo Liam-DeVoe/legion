@@ -1662,8 +1662,10 @@ func (m *Machine) ApplyJudgeDecision(ctx context.Context, recordID, modelID stri
 // JudgeHold is how long the model judge holds a request it decides, from the moment the request
 // is written (requests.judge_until): while it lasts the request is on no person's list and no
 // person may decide it, and after it the judge may write nothing more. A run is bounded at
-// runBudget, 35 seconds (judge.runBudget), so a hold that runs out is one whose run the broker
-// lost — it stopped serving mid-run — and the request is then its person's, on their list.
+// runBudget, 35 seconds (judge.runBudget), so a hold runs out in two cases: the broker lost the
+// run (it stopped serving mid-run), or the run's approval answered nothing and LogJudged could not
+// read whether it applied, a row that ends no hold (JudgedAppliedUnknown). The request is then its
+// person's, on their list.
 const JudgeHold = 2 * time.Minute
 
 // ErrJudgeHolds is a person's decision refused while the model judge holds the request.
@@ -1767,8 +1769,8 @@ const judgedKind = "request.judged"
 // LogJudged writes the model judge's verdict on recordID alone — one request.judged audit row, in
 // a transaction of its own, against the request the record names and the enrollment that request
 // hangs off now — and hands a request the judge held to its person: it ends the hold
-// (judge_until) in the same transaction. It writes no decision event, no grant and no state
-// change.
+// (judge_until) in the same transaction, unless the row says applied unknown (below), which ends
+// no hold. It writes no decision event, no grant and no state change.
 //
 // There are two ways to write that row because a verdict and a decision are two things.
 // ApplyJudgeDecision writes the verdict inside the approval it makes, so the reasoning cannot be
@@ -2106,16 +2108,21 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	set := m.Policy.Get()
 	// What Dispatch holds, read on the pool before the transaction takes its locks, and whether
 	// the one deciding may decide this record at all (decisionFacts: the person rule for a person;
-	// for the model judge its project rule, asked again afresh and under JudgeDispatch). The
-	// transaction checks that the request still hangs off the enrollment read here, and makes
-	// another attempt when it moved.
+	// for the model judge's grant its project rule, asked again afresh and under JudgeDispatch).
+	// The transaction checks that the request still hangs off the enrollment read here, and makes
+	// another attempt when it moved. The judge's refusal reads none of it: a refusal grants
+	// nothing, its reason reaches only the agent that asked, and the transaction reads the facts
+	// only to grant (requester), so the judge refuses for good whatever project the request
+	// belongs to, and a Dispatch outage cannot turn a final refusal into a hand-over.
 	pre, err := m.readDecision(ctx, recordID)
 	if err != nil {
 		return Decision{}, false, err
 	}
-	facts, err := m.decisionFacts(ctx, recordID, who, pre, set)
-	if err != nil {
-		return Decision{}, false, err
+	var facts projectFacts
+	if approve || !who.isJudge() {
+		if facts, err = m.decisionFacts(ctx, recordID, who, pre, set); err != nil {
+			return Decision{}, false, err
+		}
 	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {

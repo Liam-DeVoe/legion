@@ -685,11 +685,13 @@ the pending and grant lists, with a line in the broker's log naming its record; 
 listed and decided as before. A decision reads the projects of both credentials a request has had:
 the one that asked, which the lists and the page read, and the one it hangs off now, which a
 session that moved to another box makes it; a person either would hide it from does not decide
-it. The model judge leaves every private project's request to a person
-([the model judge](#the-model-judge)), and its approval asks Dispatch again, afresh and not from
-the 30 seconds of answers the broker keeps, before it is written, so a project that turned private
-while the judge was reading, or a session that took the request over and names a private project,
-leaves the request to a person. A sign-in started from a private project's request names no
+it. The model judge grants no private project's request
+([the model judge](#the-model-judge)): its check leaves such a request to a person, and its
+approval asks Dispatch again, afresh and not from the 30 seconds of answers the broker keeps,
+before it is written, so a project that turned private while the judge was reading, or a session
+that took the request over and names a private project, leaves the request to a person. Its
+refusal asks Dispatch nothing, and is final whatever project the request belongs to. A sign-in
+started from a private project's request names no
 approver to the provider, since the approver is part of what the page hides.
 
 ## Requests and grants
@@ -1249,7 +1251,10 @@ names; for a Legion worker pod, the assignee of the Dispatch issue its claim nam
 reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for after three seconds. Where none of these
 names a person — a pod with no claim, a broker with no judge settings, a Dispatch that did not
 answer in time, an issue nobody is assigned to, a machine whose fleet names nobody — it waits in
-every person's Inbox, so no request waits where nobody sees it. A Dispatch read that failed or ran
+every person's Inbox, so no request waits where nobody sees it. Where that person may not see the
+request, because it belongs to a private project they are not on, from when it was made or since,
+it waits in the Inbox of everyone who may
+([A private project's secrets](#a-private-projects-secrets)). A Dispatch read that failed or ran
 out of its three seconds is logged at WARN, naming the issue
 ([Health and logs](/legion/broker/operate/#health-and-logs)), so a broker that cannot read Dispatch
 is seen to list those requests for everyone. Who is asked changes nobody's right
@@ -1385,7 +1390,8 @@ Every run ends the request one of three ways:
 - **Refusal**, which is final: a `deny` verdict, a policy that now denies a key, or a key withheld
   from the session. The request is denied under the judge's actor, and the agent reads
   `the model judge refused this request: <reason>. This request will not be granted. Tell whoever
-  gave you this work.`; `agent-secrets` exits 77. Nothing tells the agent to try again.
+  gave you this work.`; `agent-secrets` exits 77. Nothing tells the agent to try again. A refusal
+  grants nothing, so it asks Dispatch nothing, and stands while Dispatch cannot answer.
 - **Hand-over**, when the judge cannot decide: any other check fails, the model cannot be reached,
   gives no verdict or does not answer within the 20 seconds, or a Dispatch read fails. The request
   goes to its person once, as an ordinary card on the broker page. A run the broker lost, when it
@@ -1440,7 +1446,9 @@ slow to answer then fails the approval, and the request goes to its person. A ru
 writes its `request.judged` row on a context of its own, which the run's deadline does not cancel,
 so an approval that failed late still leaves its row; one whose answer was lost after it applied
 leaves only the row it wrote itself, one still committing is waited for, for half the time the row
-has, and where even that cannot tell, the row it writes says `applied` `unknown`. The broker
+has, and where even that cannot tell, the row it writes says `applied` `unknown`. Such a row
+ends no hold, since the approval may still be committing: the request reaches its person when the
+two minutes end, as a lost run's does. The broker
 writes nothing in Dispatch — no ask, no comment, no status — and reads nothing that belongs to a
 person. It reaches its model at the endpoint its settings name, presenting the broker machine's
 own Google identity token for the audience they name, or, where `BROKER_JUDGE_MODEL_ACCOUNT` names
