@@ -367,10 +367,22 @@ func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, fact intake.Ha
 // (PhaseStatus). The process of the step's role is stopped with its session kept (the op
 // step_stop, whose source is the daemon's, said as its reason), except for accepting, whose
 // architect is the owner itself and runs no process of Legion's for the step, and a phase no role
-// works. The task's state is the caller's to have read: a task done or left is no task to stop
-// (StopTask refuses it).
+// works. The stop's row names the claim of the agent that ran the step, read here in the fact's
+// transaction (workerClaim), and the outbox stops that claim: a restart of the task before the row
+// runs enters the first step and writes its agent on the role's row, and a row resolved when it
+// runs would stop that agent and leave the stopped step's running. The task's state is the
+// caller's to have read: a task done or left is no task to stop (StopTask refuses it).
 func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, why, said string, end StepEnd) error {
 	from := record.StandsAt(issue)
+	role := phase.RoleFor(from)
+	stops := role != "" && role != claim.RoleArchitect
+	var agent claim.Token
+	if stops {
+		var err error
+		if agent, err = e.workerClaim(ctx, tx, issue, role); err != nil {
+			return err
+		}
+	}
 	if err := e.endStep(ctx, tx, issue, end); err != nil {
 		return err
 	}
@@ -387,11 +399,11 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a task is stopped", "issue", issue.Key, "tree", issue.Tree, "task", w.Task, "from", from, "reason", why)
-	role := phase.RoleFor(from)
-	if role == "" || role == claim.RoleArchitect {
+	if !stops {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: said})
+	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Claim: agent,
+		Generation: issue.Generation, Reason: said})
 }
 
 // stopUnreturned stops w's task of issue, whose step standing in issue.Phase failed with no step
