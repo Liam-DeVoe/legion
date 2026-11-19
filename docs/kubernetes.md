@@ -2312,6 +2312,37 @@ Read against that time, its trees are quiet for the whole of the gap, and the fi
 The cost is one notice per tree, cleared by that tree's next movement, which stamps `moved_at` again and lets the measure start from a time the daemon watched.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back below the release that trims an issue pod's volume
+
+The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
+Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-2009`, and its number moved more than once while it was open, each time `main`'s own number or another open pull request's reached the one it held.
+So the release before it is whichever release of `main` precedes that entry, and the rule below applies to a rollback to it.
+A daemon of any release without that entry knows neither, and it decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so a `volume-near-full` row still queued when that image is pinned can never be decoded.
+
+**That row does not fail alone, and that is the part worth knowing before the rollback.**
+`WaitingNotices` reads every waiting notice row of the project, a row on its retry backoff included (`record/store.go`), `pacedCatchUps` returns on the first row it cannot decode (`daemon/daemon.go`), and its one caller is the daemon's state read.
+So one such row fails `GET /legion/v1/state` for the whole project — the state the controller reads, the state `legion state` prints, and the state every architect's `read_state` and every after-merge check depend on — and it fails on every attempt, since the row has no attempt cap and no dead letter.
+This is the chain `store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql` records as this repository's own incident; the trimmer is on by default and writes this notice on exactly the pods that are in trouble, so a deployment that has run it is likely to hold such a row.
+The same row breaks one more reader of that set: `releaseWaiting` (`daemon/notice_exceptions.go`), which releases the notices a ready architect is owed, returns on the first row it cannot decode as well, so every release for the architects that became ready since the last one logs `release the notices waiting for ready architects` at Error for the whole project, and the notices it would have released wait out their own backoff instead.
+Delivery itself is not held, since `earlierNoticeFor` passes over a row it cannot decode, and the delete below ends both effects.
+
+No migration of that earlier release deletes these rows, so unlike the `waiting-for-slot` row above this one is the operator's.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+with dropped as (
+  delete from outbox where kind = 'notice' and payload->>'kind' = 'volume-near-full'
+  returning issue, payload->'volume'->>'podUid' as pod_uid
+)
+delete from pod_volume_notices where (issue, pod_uid) in (select issue, pod_uid from dropped);
+```
+
+The statement deletes those rows and, in the same statement, every row of `pod_volume_notices` for each pod one of them was of: the counts the daemon's bounds on this notice read (`store/volume_notices.go`), which a daemon of the earlier release never reads or deletes.
+A pod the rollback leaves running keeps its trimmer and the identifier that trimmer minted, so without the second half that pod's next report, once the newer release is pinned again, would be counted against a notice that never reached its architect, and the three-notice bound or the hour could hold it back.
+`psql` answers `DELETE` with the number of count rows the statement deleted, not the number of notices.
+With the counts gone, nothing of these notices need come back except one kind: a notice of a filling volume is reported again by its trimmer at its next sweep that ends above the low mark once the newer release is pinned again, but the notice that a trimmer switched itself off is not, since that trimmer sends nothing more until its roles container restarts.
+The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim` is a key an earlier loader refuses by name, so take the block out of `legion.yaml` before pinning that image, and a pod of the earlier release's own worker image runs no trimmer at all.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
@@ -2340,7 +2371,7 @@ A turn that still runs at the bound ends with the pod.
 The daemon reads nothing of the pod's disk before it replaces the pod: a role's own push is what keeps its work, and work a role did not push before the pod goes, a failed claim's included, is lost with the disk; an operator who wants such work kept runs [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) before the roll.
 A role whose running plugin predates the contract that added the op is asked all the same:
 its message tells it to push its work and end its turn, and its round ends at the bound whatever it does, so its pod is replaced like every other and the role resumes in its own session on the new image.
-A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below), unless that plugin takes no task, a contract below 157 (`supervise.TaskTakeContract`): the idle release takes such a role's pod instead of waiting for its round ("Contract discipline" below).
+A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below), unless that plugin takes no task, a contract below 168 (`supervise.TaskTakeContract`): the idle release takes such a role's pod instead of waiting for its round ("Contract discipline" below).
 What holds a round past its bound is a claim an operator's own suspension holds, a pod replacement the cluster refuses, no process in the round's pod, or two pods at once,
 and the daemon reports such a round to the project's controller as `update-stalled`, once, after the bound has passed.
 After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
@@ -2371,6 +2402,11 @@ The supervisor then logs `supervise: the process was displaced through no fault 
 It charges neither a launch failure nor a death.
 A turn the role was in is lost: its task is taken back under its number and taken again once the session resumes, as a moved address's relaunch does.
 The annotation lives on the Sandbox, so a daemon restarted mid-replacement reads it as well.
+
+A launch that replaces a pod of the Sandbox's own that has already ended suspends the Sandbox first where it is not suspended yet, and where the ended pod's status carries a reason of its own — `Evicted` above all — the same merge patch records that end on the Sandbox in two annotations: `legion.dev/ended-pod`, the ended pod's uid, and `legion.dev/ended-pod-end`, the pod's reason and the kubelet's message, cut at 400 characters as a claim's pod end is (`suspendRecordingEnd`, `internal/runtime/sandbox/relaunch.go`).
+An eviction ends every role of the pod, and the roles are checked one after another, so a sibling's launch can replace the evicted pod before a role's check reads it.
+A role recorded in that pod and checked after the replacement finds no pod of its uid, and reads the eviction from those two annotations instead, as its pod end and in its detail (`withEndedPod`, `internal/runtime/sandbox/observe.go`), so its claim keeps the eviction as the end it died of, as a role whose check read the pod itself does.
+The record is keyed by the pod's uid, so it says nothing of a role recorded in a later pod, and it lives on the Sandbox, so a restarted daemon reads it too; a Sandbox a migrating launch deletes and creates again does not carry it over.
 
 A route change the plugin calls is a contract bump by `version.go`'s rule, and since LEGION-164 a contract bump is brought in place at the daemon's first boot on it, with no pod replacement and no runbook step:
 the boot pass ("Contract discipline" below) brings every registered claim whose recorded contract differs from the daemon's onto the current plugin, and the relaunched role loads the release's published plugins installed in its pod:
@@ -2842,8 +2878,8 @@ this release finds no row for that tree, runs it in no arm — so it too changes
 Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
 Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
 
-**Tasks the worker takes (daemon API contract 157).**
-A release at contract 157 hands a worker its task as a value it takes, not as a prompt the daemon pushes:
+**Tasks the worker takes (daemon API contract 168).**
+A release at contract 168 hands a worker its task as a value it takes, not as a prompt the daemon pushes:
 the daemon writes the number of each claim's task under the claim's token in the task bucket `legion_tasks` on Envoy's NATS, the Envoy listener relays each value to the session that holds the claim's role, and the worker asks the daemon to take the task (`POST /legion/v1/claims/take`) once its host is idle, so the worker stream carries no task at all.
 The daemon opens the bucket at every boot before it supervises anything, creating it where it does not exist yet, and refuses to boot when it cannot, naming the bucket and the subject its NATS user was refused ([Configuration](#configuration) lists the daemon user's grant, and what a daemon whose grant lacks only the bucket's other subjects, which that open does not use, logs once it runs);
 a daemon whose NATS user is the pane seed's, the session user every pane shares, holds no grant on the bucket and is refused all the same, told to take a user of its own (`nats_daemon_nkey_seed_file`).
@@ -2870,7 +2906,7 @@ Nothing stops step 3 before step 2:
 a daemon of this release refuses to boot only where its NATS user cannot open or create the bucket, and with no listener relaying the values a worker reads its value only at its registration, right after its ready, at each regain of its role and at each new epoch of its relay (`bootLegionClaim`, `packages/pi-shared/src/legion-claim-core.ts`).
 `legion state` then names every running claim whose value nobody reported seeing for a whole `worker_take_timeout_seconds` (`task values nobody reported seeing`, `unseenTaskValues` in `--json`), which charges no worker: the daemon writes such a value again once per that bound.
 
-A worker whose plugin is below contract 157 (`supervise.TaskTakeContract`) takes no task, so step 3 moves it as soon as the daemon can ("Contract discipline" below):
+A worker whose plugin is below contract 168 (`supervise.TaskTakeContract`) takes no task, so step 3 moves it as soon as the daemon can ("Contract discipline" below):
 a worker the stale-plugin lane can relaunch is relaunched onto the current plugin even inside the pod update round the image change opens, and a Claude Code role in a pod, whose plugin only its pod's image moves, has its pod released by the idle release once it is in no turn, its unpushed work saved as a bundle first ([Idle release](#idle-release)).
 That release runs on the idle release's tick, so a daemon whose idle release is off (`runtime.kubernetes.idle_release.idle_minutes: 0`) makes none:
 each such Claude Code role waits for its pod's update round, which replaces the pod at its bound at the latest, and its operator replaces those pods sooner, beside the two restarts above, by deleting each one's issue Sandbox once its roles have pushed (`kubectl -n legion delete sandbox <name>`).
@@ -2886,7 +2922,7 @@ A pending task's `take_told` names each of the claim's records whose `toldBy` is
 It drops the push path's three marks on a pending task, which a task the worker takes has no use for:
 `pending_task_deliveries.delivered_at`, `marked_by` and `prompted`.
 
-To roll this release back to contract 152, the release just before it, stop the daemon and run the nineteen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261117200337:
+To roll this release back to contract 160, the release just before it, stop the daemon and run the nineteen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261117200337:
 every database this release migrated records 20261117200337_update_ask_marks_at_delivery above this migration's own 20261113175649, so the version the store reports is that release's before the block and after it, and the block deletes no row but this migration's.
 
 ```sh
@@ -2918,7 +2954,7 @@ SQL
 It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>` for the supervise rows whose payload carried the key, fourteen more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
 a rerun prints a `NOTICE` for each of the seventeen columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
 The three `add column`s come first because the earlier release cannot read the claims table without them:
-its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 152), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
+its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 160), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
 They come back at the defaults their own migrations gave them, which that release reads as a task it has queued and not yet sent:
 it sends an unconfirmed pending task at its claim's next ready, as it sends any task it queued itself, and reads a confirmed one as a turn under way.
 The `update` takes `origin` back out of every supervise row of the outbox, as the phase entry's block takes out `entry` and `resendEntry`:
@@ -2934,10 +2970,12 @@ an accepted take's confirmation is applied once under an event id that names the
 Nothing else reads a number across the rollback, since the earlier release's worker takes no value and the epochs and revisions start empty again.
 The block needs no migration recorded after this one to build on the fourteen columns it drops, and at this release none of the twelve recorded after it touches them:
 20261113181500_architect_stalled_notices adds the table `architect_stalled_notices`, 20261113182000_architect_entry_upgrade writes the root architects' `phases` rows, their claims' `given_entry` and `served_entry` and that table's marks, 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns, 20261114031356_merge_queue_removal rewrites `outbox_kind_check`, 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, 20261116165926_role_holders_publish rewrites `outbox_kind_check` again and adds the unique index `outbox_role_holders_publish_issue_unique`, 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named` and ends each task a reviewer's row stores with the review round's two sentences, 20261117000528_outbox_kinds_with_the_step_record rewrites `outbox_kind_check` a third time, 20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads `issues` and `phases`, 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, 20261117112334_pull_request_statuses adds `pull_requests.statuses`, and 20261117200337_update_ask_marks_at_delivery clears `claims.update_tasked_at` where that claim's ask still waits in the outbox.
-Contract 152 carries all twelve, so the rollback to it runs this block alone and leaves the twelve standing.
+Contract 160 carries all twelve, so the rollback to it runs this block alone and leaves the twelve standing.
+Contract 160's own two migrations, 20261111090000_volume_trim_notices and 20261111091500_claim_pod_end, are numbered below this one, so every database records them before it, and neither touches the fourteen columns.
 The earlier release also refuses this release's two keys, `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, as keys it does not know (`unknown key worker_take_timeout_seconds`), so take them out of `legion.yaml` before you pin it, where the file sets them.
 A rollback past this release to contract 87, across 20261111225552_phase_entry, crosses every release between the two, and runs their ways back newest first, with the daemon stopped and before the earlier image is pinned:
 this block;
+then the statement of [Rolling back below the release that trims an issue pod's volume](#rolling-back-below-the-release-that-trims-an-issue-pods-volume), contract 160's, which deletes every queued `volume-near-full` notice, since no earlier release can decode one, with the counts of each pod it was of;
 then the steps of [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose witness reads `phases.entry` before the phase entry's block drops it and whose `delete` re-arms 20261117064152_step_starts_roll_forward;
 then the way back in the header of `20261117112334_pull_request_statuses.up.sql`, which no earlier release needs, since none names `pull_requests.statuses`, and which clears for the roll-forward a list of commit statuses that no earlier release keeps current;
 then the way back of [Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read), which contract 87's strict decode of a start row needs, since this release writes `roundNamed` on a reviewer's;
@@ -2948,10 +2986,12 @@ then the five statements of [Rolling back the release whose update round ends at
 then the steps of [Rolling back the release that frees the slot past review](#rolling-back-the-release-that-frees-the-slot-past-review) (contract 111) and of [Rolling back the release that names what nothing starts](#rolling-back-the-release-that-names-what-nothing-starts) (contract 98);
 and last the phase entry's block above (contract 94).
 Contracts 144, 141 and 137 run no SQL on the way back, but each adds a key to `legion.yaml` that the releases before it refuse, and the contract 146 section above gives the step of each, taken before the earlier image is pinned;
-contract 151 runs none either, and the `runtime.kubernetes.sandbox` key 151 adds is taken out by the step of "Rolling back" under [Issue pods in microVMs](#issue-pods-in-microvms) below.
+contract 151 runs none either, and the `runtime.kubernetes.sandbox` key 151 adds is taken out by the step of "Rolling back" under [Issue pods in microVMs](#issue-pods-in-microvms) below;
+and the `runtime.kubernetes.volume_trim` block contract 160 adds, which every earlier loader refuses by name, is taken out by the step of contract 160's own section above.
 Contracts 141, 133 and 132 have no way back of their own in the store: 20261111045636_experiment_assignments adds the table `experiment_assignments`, 20261112070503_pull_request_state_read_at adds `pull_requests.state_read_at`, with a default, cybermonklabs/legion#3983's 20261113082415_claim_ended_work, which landed at contract 133 too, adds `claims.ended_work`, nullable, and 20261111214351_issue_released_for_wait adds `issues.released_for_wait_at`, nullable, and no earlier release names any of them.
 Contract 123's migration, 20261113090512_phase_entry_moved_back, needs no statement on the way back (its header names the one statement its roll-forward runs), and neither do contract 152's 20261117000528_outbox_kinds_with_the_step_record and 20261117004117_step_starts, which the step records' steps leave standing, nor its 20261117200337_update_ask_marks_at_delivery, which only clears marks; contracts 151, 144, 137 and 104 add no migration.
-The release before the phase entry reads the three marks as contract 152 does, and neither contract 146's block, the step records' steps, the commit statuses', the reviewed commit's nor the phase entry's touches this migration's columns.
+Nor does contract 160's 20261111091500_claim_pod_end, whose `claims.pod_end` an earlier release leaves unread and unwritten; the table `pod_volume_notices` its 20261111090000_volume_trim_notices adds stands too, read by no earlier release.
+The release before the phase entry reads the three marks as contract 160 does, and neither contract 146's block, the step records' steps, the commit statuses', the reviewed commit's nor the phase entry's touches this migration's columns.
 The roll-forward after them applies again, in version order, every migration those ways back re-armed: the phase entry's first, then 20261113110610_drop_claim_update_answer_marks, which the update round's way back re-arms, then this one and contract 146's four after it, so this migration's second fill reads the `served_entry` the phase entry's second fill wrote, before 20261113182000 settles each root architect at entry 1 again, and 20261116234034_phase_reviewed_head, 20261117064152_step_starts_roll_forward and 20261117112334_pull_request_statuses last.
 The `20261113175649` is the identifier of `20261113175649_task_numbers.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
@@ -2976,7 +3016,7 @@ The pod update round is untouched by all this: it replaces a pod and its disk, s
 
 A claim in an open pod update round is the one stale claim the lane leaves alone:
 it is served on the contract it records until the round ends, since the round replaces its pod and the role comes back in the new pod on the new image's plugin (`StaleRefusesCalls` in `internal/supervise/plugin.go`, `staleForTheLane` in `internal/daemon/daemon.go`).
-That rule is reversed for a claim whose plugin takes no task, a contract below 157 (`supervise.TaskTakeContract`, `TakesNoTask`), the contract at which a worker takes its task rather than being sent it:
+That rule is reversed for a claim whose plugin takes no task, a contract below 168 (`supervise.TaskTakeContract`, `TakesNoTask`), the contract at which a worker takes its task rather than being sent it:
 on its old contract such a claim takes none of its tasks until its round ends, and the rollout that moves a project's daemon and worker image together opens a round over every issue pod (`PodDrift`), so every such worker of the fleet would wait out a round.
 So such a claim is refused inside a round as outside one, and the lane relaunches it onto the current plugin there, whose process then takes its tasks.
 
@@ -3025,7 +3065,7 @@ the process would come up on the same image's plugin, register the same contract
 Such a claim is therefore relaunched by nothing, and the rule is the runtime and the role's backend together, never the backend alone (`noPluginInstall`, `packages/daemon/internal/daemon/daemon.go`):
 no `StalePlugin` is posted for a Claude Code claim of a pod at any contract, round or no round (`refreshStalePlugins`), and a registration of that claim still on the old contract is accepted, uncharged, rather than relaunched (`staleRegistration`).
 What carries it is the update round over its pod, which asks it like every other role and ends at its bound whatever it answers, so the new image reaches it with nothing asked of an operator.
-A Claude Code role in a pod whose plugin takes no task (its registered process below contract 157, `supervise.TaskTakeContract`) is the exception, since it waits for a prompt this daemon never sends:
+A Claude Code role in a pod whose plugin takes no task (its registered process below contract 168, `supervise.TaskTakeContract`) is the exception, since it waits for a prompt this daemon never sends:
 the idle release takes its pod instead ([Idle release](#idle-release)), without waiting out the idle period and past the three holds that keep a pod behind for a relaunch or a round to replace (the pod's image, a live claim's contract, an open round), the workspace's unpushed work saved as a bundle first as at every release.
 Every other condition of the release holds such a pod as it holds any pod (a turn in progress, background work its session reported, a reminder due, a root's wait on a person), so a role in a turn has its pod released at that turn's end, and the role comes back in a pod built from the configured image, whose claude-envoy takes its tasks.
 Such a release logs `idle release: releasing an issue's pod whose Claude Code role runs a plugin that takes no task, so the role comes back on the configured image` with the `claim`, its `pluginContract` and `taskTakeContract`, and each role's stop gives that reason.
@@ -3129,6 +3169,7 @@ runtime:
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
     memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher; a microVM issue pod runs the guest watch instead (The memory guard in an issue pod, Memory in a microVM pod, below)
       issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
+    volume_trim: { enabled: true, high_percent: 85, low_percent: 70, min_age_minutes: 15, interval_seconds: 60 }   # optional, the defaults: the cache trimmer in each issue pod's launcher (below)
 bind: <the daemon host's own address, or 0.0.0.0 once advertise_host names one>
 advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<namespace>.svc, every pod dials instead of bind, at worker_stream_port>
 worker_stream_port: <the port advertise_host or bind serves it on>
@@ -3173,8 +3214,8 @@ One directory is per role, its state home at `/legion/scratch/state/<role>`, hol
 it is per role for a mechanism, not isolation, since every role of the issue can write it:
 Oh My Pi names its browser broker's lock from the state root, the name is an abstract unix socket, an abstract socket name is one name across a network namespace, and every role of a pod shares the pod's, so one state home would block every role's broker but the first.
 An operator's arithmetic is therefore the issue's: one set of four, one Go pair, and one state home per role the issue runs.
-The project controller's pod has a volume of the same size — its Sandbox's own, not its pod's — holding the scratch of its one role.
-Nothing prunes `/legion/scratch`: it grows for the life of the pod, which is the life of the disk it sits on, and this change raises `issue_volume`'s default from `20Gi` to `50Gi` (`defaultIssueVolume`, `packages/daemon/internal/config/kubernetes.go`)
+The project controller's pod has a volume of the same size — its Sandbox's own, not its pod's — holding the scratch of its one role, and nothing prunes that volume: the controller's launcher serves its one role and runs no cache trimmer (`serveVolumeTrim`, `packages/daemon/internal/launcher/launcher.go`).
+On an issue pod, the caches its cache trimmer holds are the only part of `/legion/scratch` that anything prunes ("A cache trimmer in each issue pod's launcher process" below): the rest grows for the life of the pod, which is the life of the disk it sits on, and this change raises `issue_volume`'s default from `20Gi` to `50Gi` (`defaultIssueVolume`, `packages/daemon/internal/config/kubernetes.go`)
 — a default every project takes rather than a line of one deployment, so the apply this change needs is the image digest alone, with no deployment edit.
 The size rides in the pod's own ephemeral claim template, evaluated when the kubelet creates the claim, so every pod created after that apply gets 50 GiB and a pod already running keeps the size it started with.
 The disk size is one of the keys of the `legion.dev/pod-shape` record a Sandbox carries ([The disk dies with its pod](#the-disk-dies-with-its-pod)), so a running issue pod is brought onto the new size by its update round, once every role in it has answered or at the round's bound, and the controller's pod, which no round covers, by the next launch into it.
@@ -3186,10 +3227,109 @@ the volume this change was written on reached **17 GiB of its 20, 3.0 GiB free**
 — an intermediate layout no shipped image ever produced, since a role at the merge base is told no `GOCACHE`, no `GOMODCACHE` and no `BUN_INSTALL_CACHE_DIR`, and the Go pair is new on the volume here.
 A disk that dies with its pod fills no slower than one that outlived it:
 the same clone, the same caches, the same size, and a single pod's life is long enough to fill 50 GiB, since a pod lives as long as the issue runs without being stopped or replaced.
-There are two remedies, and the quick one destroys work:
+
+A cache trimmer in each issue pod's launcher process deletes the oldest entries of four of those directories when the volume reaches a mark, and leaves everything else on the volume alone; the controller's pod runs none.
+Every `interval_seconds`, 60 by default, it reads the volume with one `statfs` and compares the used bytes over the used plus the available bytes, which is the fraction `df` prints, against two marks.
+It compares that fraction unrounded, and `df` rounds its percentage up, so `df -h /legion` in the pod can print a number less than one point above the fraction the trimmer acted on: `df` printed 10% on a volume whose fraction was 9.26 per cent (`packages/daemon/internal/launcher/volumeusage.go`), and a volume `df` shows at 85% can still be below the default high mark.
+At or above `high_percent`, 85 by default, it sweeps, unless the sweep before it freed under one point of the volume and was not stopped by the settings, which holds sweeping off for the next ten intervals: it lists every eligible entry of the four roots with its time and deletes them oldest first, and it stops at the first fresh reading at or below `low_percent`, 70 by default, when three readings in a row show no decrease, when no entry is left eligible, when its own five-minute budget runs out, which it asks between entries and between the batches of an entry's directories but not inside a root's or a Go cache shard's own listing, read whole first, on a `/proc` read the kernel refused, when the volume cannot be read or the child it deletes through ends, or on a stop from the daemon or the container.
+Once it has begun deleting, it takes the end of its budget and a stop from the daemon or the container between entries, or while it reads an entry's tree again just before removing it, and never once that removal has begun: a removal already under way runs to its end, so the removal of one large entry can run past the container's stop, and the container's kill at the end of its grace can come while it runs, which leaves that entry part-removed on the volume, an ordinary entry to the next sweep (`sweep`, `packages/daemon/internal/launcher/volumetrim.go`).
+It deletes no entry a process of the pod held — open, mapped, or as its working or root directory — at its latest read of `/proc`, which it takes at the sweep's start and again before an entry and again just before its removal, each time the last read is a second old, the launcher and the child it deletes through aside; none whose newest modification time is inside `min_age_minutes`, 15 by default — an hour more than that for an entry of the Go build cache, below — none holding a directory more than 64 levels below it, which its walk of the entry's tree does not open, so the entry's newest time is never read and the entry is passed over (`walkEntries`, `packages/daemon/internal/launcher/volumeguard.go`); none whose kind is not the kind its row names below, and it never unlinks a root itself.
+Every directory of the volume it reads is opened one element at a time, each open naming a single name in a directory it already holds and refusing a symbolic link at that name, so the kernel resolves no path of the volume to open one; the open blocks on nothing, so a named pipe where a cache root belongs is skipped rather than waited on.
+The deletions themselves are made by a child of the launcher, and it removes an entry bottom up through descriptors, as Rust's `std::fs::remove_dir_all` does since CVE-2022-21658: each directory is opened as one name in the directory it is in and refused if that name is a symbolic link, each name is unlinked from its parent's descriptor, and a name that is a link is unlinked as a link and never opened, so the removal follows no link a role leaves in an entry, nor one a role swaps in for a subdirectory while the removal is inside it (`removeEntryAt`, `packages/daemon/internal/launcher/volumedir_linux.go`).
+That child runs in a mount namespace of its own, built from the one list a role's own namespace is built from: every directory a role is given something of its own at is an empty filesystem of that child's instead — the roles directory `/var/run/legion/roles`, the home mounts directory `/var/run/legion/home` where the pod's shared configuration home is mounted, the image home `/home/legion` that every role's own home is built over, the fixed root's own mount points, and the container's `/tmp`, `/var/tmp`, lock directories, shared memory, pseudo-terminals and message queues — with a procfs of the child's own PID namespace where a role is given one, its working directory at the root of that namespace, and `/legion`, which is what it deletes in, as the container mounted it.
+The child leaves two paths as the container holds them, the two a role's namespace replaces that are not directories: `/dev/ptmx`, which in a role's namespace opens into that role's own pseudo-terminals, and `/var/run/legion/testpg.log`, the empty root-owned file the image makes, which in a role's namespace of a pod that serves a test database is that database's log, bound read-only from under the roles directory before the cover goes over it (`prepareRoleNamespace`, `packages/daemon/internal/launcher/roleinit_linux.go`).
+A removal unlinks a name that is not a directory as the name it is and never recurses through it (`replaced`, `packages/daemon/internal/launcher/roleinit.go`).
+Since both namespaces are built from that one list, which holds directories alone, a directory added to it for a role's is covered for the deleter in the same edit.
+So a link a removal did follow would reach only what the role that left it could already delete itself, by its own path, as the same uid.
+That is the bound and the whole of it: the six roles of a pod share one uid and `/legion` is wholly visible to that child, so containment takes nothing away from what a role can delete of its own volume, and what it removes is the reach across the role-isolation boundary into what the container holds for the roles and no role holds itself — another role's private, state and agent-secrets directories under the roles directory (not its state home under `/legion/scratch/state`, which is on the volume), its launcher token, the shared configuration home, the home each role starts from, and whatever the container keeps at the paths where a role has its own.
+A sweep whose child will not start deletes nothing and says why in the pod's log.
+`runtime.kubernetes.volume_trim` sets all five values, and `enabled: false` hands the pod's launcher no settings, on which its trimmer reads and deletes nothing.
+A change to them reaches a running pod at its next connection to the daemon, which every daemon restart gives it, and no pod is replaced for it: a pod told `enabled: false` stops sweeping and keeps its trimmer, which takes up an answer that carries settings again within ten seconds, its poll of the settings in force, and reads the volume one `interval_seconds` after that — the same for a daemon rolled back to a release that does not know this work and the roll-forward after it.
+Only a launcher that is PID 1 of its PID namespace, which in an issue pod is the container's first process, runs a trimmer at all, as only that launcher runs the memory guard, or in a microVM pod the guest watch in its place, and sweeps the clone's stale git locks ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)): a sweep deletes no entry a process of the pod is using, it reads what each process uses from `/proc`, and the container's first process sees every role's processes.
+A launcher started any other way, by hand inside a role among them, can see that role's processes alone and would then delete a cache entry a process of another role is using, so it writes one `launcher: volume trim: off reason=the launcher is pid <n>, …` line, behind no role's prefix, and builds no trimmer: it reads and deletes nothing, it sends the daemon no report whatever settings the daemon's answers carry, and its stop waits for no trimmer (`serveVolumeTrim`, `packages/daemon/internal/launcher/launcher.go`).
+
+The loader takes a null value, of the block or of any member, as unset, so the default stands: an `enabled:` left blank is `true`, not `false` (`describedMembers`, `packages/daemon/internal/config/config.go`).
+It refuses the file, naming the key, on any of these (`readVolumeTrim`, `packages/daemon/internal/config/kubernetes.go`):
+
+- a mark that is not an integer from 1 to 99, or a `low_percent` that is not below `high_percent`;
+
+- a `min_age_minutes` that is not an integer from 1 to 10080, which is seven days, or an `interval_seconds` that is not an integer from 1 to 3600;
+
+- an `enabled` that is not a YAML boolean: `off` and `yes` are strings to this loader, so it refuses them rather than reading them as `false` and `true`;
+
+- a block that is not a mapping, or one that names a member the loader does not know or names one member twice.
+
+What it may delete, and what one entry is in each:
+
+- `/legion/scratch/tmp` — one directory whose name is `go-build` followed by decimal digits and nothing else, which is how Go names the build directories it makes in `$TMPDIR` (`os.MkdirTemp` with the pattern `go-build`, `cmd/go/internal/work/action.go`), removed whole, and nothing else of the temporary directory, so a role's own directory named `go-build-repro` or `go-builder` stays:
+  a role's clones, toolchains and databases live there too, under names the role chose, and no program can tell a role's cache from a role's work.
+
+- `/legion/go/build` — one regular file or directory whose name ends `-a` or `-d`, inside a shard directory, which is a directory named as Go names its 256, by two lowercase hex digits (any other directory of the cache root is passed over and counted in one line per sweep), judged by its newest modification time taken an hour further back than `min_age_minutes`, the directory form removed whole.
+  That is what Go's own trim deletes (`trimSubdir`, `cmd/go/internal/cache/cache.go`), and the hour is the allowance that trim makes too: Go moves an entry's time on use at most once an hour, so one a build used a minute ago can read fifty-nine minutes old.
+  The cache root's own `trim.txt` and `README` are in no shard, so they are never entries.
+
+- `/legion/scratch/cache` — one immediate child that is a directory, each a whole tool's cache the next run rebuilds, except `ms-playwright` and `legion-claude-code`.
+  The loss of those two is a browser install that blocks every other role behind a ten-minute lock and a Claude launch that fails, rather than a rebuild.
+
+- `/legion/scratch/bun/install/cache` — one immediate child that is a directory.
+  The root itself is a live `flock` target, which is why no root of this list is ever unlinked.
+
+What it never writes to or deletes: `/legion/workspaces`, `/legion/repos`, `/legion/feed`, `/legion/scratch/state`, `/legion/scratch/data`, `/legion/go/mod`, `/legion/uv/cache`, `/legion/uv/python`, `/legion/scratch/leak-check`, and the two children of the cache home above.
+`packages/daemon/internal/launcher/volumepaths.go` carries both lists written out, because the launcher's own process knows none of those paths except the leak check's, which it takes from the installer's own constant, and a test holds every path the pod renderer puts on the volume, the start environment of the implementer on each backend that runs it included, to being named by one of the two (`TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists`).
+
+The trimmer writes its lines behind the prefix `architect: volume trim: ` in the `roles` container's log, every one but the lines of the stack that follow the line of a panic it recovered from, which carry `architect: ` alone: among them one at its start naming the settings in force, one per interval reading naming what it decided, and one per sweep naming the bytes it freed, or, where its last reading of the volume is above its first, the bytes the volume grew by while it ran, and why it stopped, or, for a sweep the settings stopped, that they did.
+A sweep that ends with the volume still above the low mark sends the daemon one report, unless the settings stopped it, and the daemon turns that, within the bounds below, into one `volume-near-full` notice to the nearest architect at or above the issue whose claim runs, else the tree's architect, naming sizes, each with the bytes of its files not modified for more than an hour and for more than a day.
+A sweep that reaches the low mark sends none.
+The size walk measures each directory two levels under `/legion`, each regular file beside those directories in a child of `/legion`, and, whole, each child of `/legion` that holds no directory of its own: the ones in `/legion/scratch` first, then the ones in `/legion/go`, then the rest.
+Where it measured more than fifty, it keeps the largest fifty as it goes, still in the order it measured them, and counts the rest, and the report carries those fifty and that count (`walkResult.keep`, `packages/daemon/internal/launcher/volumewalk.go`).
+Each size is the apparent size of the files under the directory it names, or of the one file it names (a file's length, whatever blocks it holds), and a file linked under more than one name is counted under each name, as bun links its install cache into a workspace's `node_modules`, so the sizes can sum past the used bytes that same notice gives (`measureTree`, `packages/daemon/internal/launcher/volumewalk.go`).
+A size the walk could read only in part, because the kernel refused a read under it or because it holds a directory more than 64 levels below it, which the walk does not open (`volumeWalkDepth`, `packages/daemon/internal/launcher/volumewalk.go`), is told as at least the bytes the walk could read, with how many reads the walk did not make there and the first of them, named by the size's path and the name not read — `<dir>/<name>` for a name in the directory, `<dir>/.../<name> (depth N)` for one N levels below it, never the path between; neither ends anything, and the walk goes on to its end.
+Only a walk its one-minute budget or the container's stop cut is told as cut, and each target a walk measured none of, and `/legion` or a child of it where the walk did not list one in full — a directory it could not open or list or a file whose lstat was refused, named with the read the kernel refused and its answer (`openat: permission denied`) and never as a size, or, of a cut walk, one the cut left unmeasured — is named as such; the trimmer's own line for that walk says the same facts.
+The launcher bounds what one report carries — how many sizes, how many names it could not measure, how many refused `/proc` reads and how many recovered faults, with each path, reason and stack cut in runes — and the report and the notice say how many entries that bound left out: a directory name under `/legion/scratch` is a name a role chose, and a report over the one-mebibyte line limit is one no connection carries at all.
+The daemon holds every report to the same caps on those four lists — 50 sizes, 50 unmeasured names, 25 refused `/proc` reads and 3 faults (`VolumeReportSizes` and the three beside it, `packages/daemon/internal/shimwire/frames.go`) — and refuses a report that holds more entries in any of them, whatever sent it (`LauncherVolumeReport.Validate`).
+For each report of an issue it records whose tree is live, the daemon writes one line of its own behind the prefix `volume near full: `: one when it writes the notice and one when a bound holds it back, each naming the issue, the pod, the trimmer, the episode and the count so far; a report it drops before that, one the frame's own rule refuses or one it could not record, is a warning behind `launcher volume: ` instead.
+Those bounds are at most three notices for one trimmer and episode and at most one an hour for one pod: a report skips the hour but not the three where a rise raised its episode, and the report that the trimmer has switched itself off is told whatever the counts say.
+A panic in a line the trimmer's logger writes can skip what follows that line in the same interval, and the launcher, PID 1 of the `roles` container, keeps running.
+Such a panic is counted as a fault toward the three in a row of that kind of work that switch the trimmer off, but for four kinds of line, which are counted in no row: the lines the trimmer's loop writes about a panic it caught itself and the line that says the trimmer is off, whose panics the loop drops; the four kinds of line a sweep writes once it has settled why it ends — that the child it deletes through could not be started or ended, that the volume could not be read at its end, and, one line for each root past the bound, how many more of its entries it passed over than it named — whose panics the sweep drops, so the interval still acts on that sweep's outcome, with the pause, the recovery or the report it calls for; and the lines of the trimmer's last report, where a panic ends the trimmer unless that report is held by then, which the trimmer then still tries until a connection takes it, the container stops or an answer from the daemon that carries no settings discards it (`run` and `sweep`, `packages/daemon/internal/launcher/volumetrim.go`, and `switchOff` and `deliverLast`, `packages/daemon/internal/launcher/volumereport.go`).
+Where a line written once the last report was sent or discarded panics, the line that names what the report's bound left out (`saidLeftOut`), the line that says the report was sent or the line that says an answer with no settings discarded it (`deliverLast`), the trimmer ends with a line that says its last report panicked and was not tried again, although the daemon has that report or, after the last of those lines, the trimmer had discarded it as that answer has it do.
+A reported sweep, here and below, is one that ends above the low mark and that the settings did not stop: its start is read before the interval writes its lines about it and makes its report, so one whose line or report then panics, which is counted as a fault and sends no report, counts too.
+A rise is read only at the start of a reported sweep, and never from a reading inside a pause or below the high mark: it is the lower of that start and the start of the reported sweep before it standing five points or more above the episode's anchor.
+The anchor of the first episode, and of one the volume's fall to the low mark or below raised, is the lowest start of its reported sweeps, which each later one that starts lower lowers; the anchor of an episode a rise raised is the lower of the two starts that raised it, and never moves; either is a reading taken before a sweep, never the figure a report carried (`riseAt`, `packages/daemon/internal/launcher/volumetrim.go`).
+So a volume that keeps filling raises a new episode at each five points its sweep starts climb, read one reported sweep after the first that starts five points or more above the anchor — one interval later where that sweep frees a point or more and leaves the volume at or above the high mark, and an interval and its ten-interval pause, eleven intervals, where it frees less — while a peak that one start reads, or a smaller climb, raises no episode, its reports staying under the three and the hour.
+The exception is a transient high, such as 97%, that two reported sweep starts in a row read: the rise it raises is anchored there, and a fill from lower down then raises no episode until two starts stand five points above it, and none at all where it is above 95%, until a recovery starts a new chain.
+Each rise lifts the anchor five points or more and a reading is at most 100%, so before a recovery a chain whose anchor is A at its first rise holds at most (100 − A) / 5 rises, rounded down.
+Every anchor is the start of a sweep at or above the high mark it ran by, so a chain anchored at the high mark holds at most (100 − `high_percent`) / 5, three at the default of 85; one anchored under a high mark raised later can hold more than the new mark's figure, up to its own anchor's (anchored at 50 and then run at 85, up to ten; starts of 50, 52 and 80 and then two each of 85, 90, 95 and 100 raise five, since the first sweep under the new mark pairs its start with the last under the old), and none holds more than nineteen, from an anchor of 2, the lowest high mark the settings allow.
+An anchor above 95% can never be passed, since a reading is at most 100%, and from one of 95% a rise needs two reported sweeps in a row that start at exactly 100.0%, not one reading.
+Each reading of the trimmer's own at or below the low mark, an interval's or a sweep's last, after one at or above the high mark, starts a new chain of rises, its anchor taken afresh; a fall while the trimmer waits for settings it can run is not read, so when it runs again the episode and its chain go on as it left them, unless its first reading then is at or below the low mark, which is a recovery.
+A sweep stops at its first reading at or below the low mark, so one that ends exactly there is a recovery and sends no report, and every sweep the settings did not stop either reports or recovers, but one that panics, which is counted as a fault and does neither: a panic in the sweep itself, one of the lines it writes before it has settled why it ends included, leaves its start unread, while a sweep that ended above the low mark and then panics in a line the interval writes about it (the line of the rise its start raised, its `the sweep ended` line or the pause's) or in the making or the delivery of its report is a reported sweep whose start has been read, and the ten-interval pause after it, where it freed under one point, stands.
+So a volume that cycles can be told about each cycle: its recovery episode's reports wait for the pod's hour, but a rise, raised in each cycle where two reported sweeps in a row start five points or more above the lowest start of that cycle's reported sweeps before them, is told without waiting.
+Each rise episode of a cycle costs up to three notices that skip the hour, and a cycle whose anchor is A at its first rise holds up to (100 − A) / 5 rise episodes, rounded down, so a cycle costs at most three times that many notices that skip the hour, nine at the default high mark of 85, besides its recovery episode's reports, which come at most one an hour.
+Measured for one pod over a day of 60-second intervals, through the trimmer's loop and the daemon's bounds, with each sweep taken as instant, and with the least fill rate each cycle needs on a 49 GiB volume (`df`'s used plus available): the bytes the cycle's sweeps free, which the roles wrote in that cycle, over the cycle's length, a reported sweep that pauses taken to free nothing, one that does not to free one point, and the sweep that leaves 69.9% to free from where the last reported sweep left the volume down to 69.9%:
+
+- sweeps that pause between reported starts of 86%, 91% and 92%, and then one that leaves 69.9%: 42 notices a day at a 35-minute cycle (18.6 GiB an hour), 33 at 45 minutes (14.4 GiB an hour), 41 at 71 (9.2 GiB an hour) and 8 at six hours (1.8 GiB an hour);
+
+- that fill going on to reported starts of 93% and 94%, so that its rise episode has three reports: 76 at 57 minutes (12.4 GiB an hour) and 49 at 90 (7.9 GiB an hour);
+
+- the starts of 86%, 91% and 92% with no pause: 289 at 5 minutes (142 GiB an hour) and 48 at 62 (11.4 GiB an hour); with 93% and 94% after them, 619 at 7 (118 GiB an hour) and 73 at 62 (13.3 GiB an hour);
+
+- pauses, and starts of 86%, 91% to 94% and 96% to 99%, which make two rise episodes a cycle: 86 at 101 minutes (8.5 GiB an hour);
+
+- no pause, and starts of 85%, three of 90%, three of 95% and four of 100%, which make three rise episodes a cycle: 999 at 13 minutes (90.7 GiB an hour); or two of 86%, four of 91% and three of 96%, which make two: 656 at 11 (91.1 GiB an hour).
+
+With one interval between the marks after the sweep that leaves 69.9%, the volume climbs back from there to its first start, 15.1 points or more, 7.4 GiB or more, in the two minutes after that sweep.
+The shortest cycle of each fill has none: the volume is back at that start the next interval, within one minute of the sweep, and each such cycle is a minute shorter and costs more, as 43 at 34 minutes (19.1 GiB an hour), 78 at 56 (12.7 GiB an hour), 87 at 100 (8.6 GiB an hour), 721 at 10 for the fill of two rise episodes with no pause (100 GiB an hour) and 1,081 at 12 for that of three (98.2 GiB an hour); a longer cycle of the same fill is a longer wait between the marks.
+
+The measurement injects the volume's readings and does not hold its sweeps to the minimum age, `min_age_minutes`, 15 by default (`defaultVolumeTrim`, `packages/daemon/internal/config/kubernetes.go`), so some of its rows cannot happen at the default.
+An entry younger than the minimum age is never deleted, so what the sweeps delete in the 15 minutes after the sweep that leaves 69.9% was already on the volume when that sweep ran, 34.3 GiB in all.
+The 5-minute cycle of starts of 86%, 91% and 92% with no pause (289 a day) cannot happen at the default: the sweeps of those 15 minutes delete 35.4 GiB, more than the volume holds when they begin.
+The 7-minute cycle of the same starts with 93% and 94% after them (619 a day) needs a pod that holds under about 6.7 GiB the trimmer cannot delete: the sweeps of those 15 minutes delete 27.5 GiB of the 34.3.
+A Go build cache entry is deleted only once it is 75 minutes old, the minimum age and Go's own hour (`goCacheMtimeSlack`, `packages/daemon/internal/launcher/volumetrim.go`).
+In every row of 90 GiB an hour or more, the sweeps of the 75 minutes after the sweep that leaves 69.9% delete more than 100 GiB, and of that the Go build cache can be at most the 34.3 GiB that was on the volume when that sweep ran, about a third of it or less.
+
+When the trimmer cannot bring the volume down, there are two remedies a person makes, and the quick one destroys work:
 restart the issue, and its next pod brings an empty disk of its own, taking the turn's unpushed changes and every cache the pod had built with the old one ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 The other leaves the turn where it is, and is the one that follows.
-The remedy for a volume near full is manual, because nothing prunes, and it accounts for every directory this layout creates:
+The remedy for a volume the trimmer cannot bring down is manual, and it accounts for every directory this layout creates:
 each is on the delete list or among the exemptions under it, and a test holds the two lists to what the runtime renders (`TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume`).
 
 Delete list — `chmod -R u+w` first, then remove, these being the paths the issue's roles share and the next build or install rebuilds:
@@ -3208,6 +3348,10 @@ Exempt, each for a reason the list above does not hold:
 
 - `/legion/scratch/state/<role>` — per-role, and Oh My Pi's logs, Chromium's profiles and the installed plugin generation rather than a cache; small.
   Oh My Pi's state-class directories (`run/daemons`, `logs`, `browser-profiles`, `reports`, `terminal-sessions`) hang under `$XDG_STATE_HOME/omp`, so they are this path's and not the shared data home's.
+  A Claude Code role's `CLAUDE_CONFIG_DIR` is this path's `claude` directory, its transcripts, its plugin data and the rest of Claude Code's own state, so it is held back with the rest of the path.
+
+- `/legion/scratch/leak-check` — the shared public leak check the pod's launcher installs once before any role starts, and which every role's `legion gh`, pushes and shim read; installed software rather than a cache.
+  Nothing installs it again while the pod's launcher runs, so once it is gone every `legion gh` write, every push and every agent start of the issue's roles refuses.
 
 - `/legion/scratch/data` — the shared `XDG_DATA_HOME`, the data-class home of the tools that honour it.
   Nothing re-derives it: the caches above are rebuilt by the next build or install, where what a tool stores in its data home is gone when it is deleted.
@@ -3226,7 +3370,7 @@ So delete `tmp` with the role stopped, not merely between its turns;
 the rest of the list is reclaimable between turns, when no role is mid-build or mid-install.
 Do not leave it out of the list either, because a temporary directory sounds transient:
 a role at the merge base is told no `TMPDIR` at all and its temporaries died with the container, where here a killed build's residue lives as long as the issue does
-— one interrupted `go build` left **851 MB in a single `go-build*` tree** on this branch's volume, more than everything else the reclaim found.
+— one interrupted `go build` left **851 MB in a single Go build tree** on this branch's volume, more than everything else the reclaim found.
 As for the rest: a role mid-build rebuilds what it loses, but deleting `$BUN_INSTALL_CACHE_DIR` under a role installing its plugin pair takes the `flock` inode with it, so a second role enters the critical section while the first is inside it and both fill one cold cache entry (measured:
 with no delete the second waits the full bound; with the directory deleted and remade mid-install it does not).
 The install block cannot prevent that and does not claim to
@@ -3239,7 +3383,8 @@ run without the `chmod` the reclaim frees the cheap half and keeps the expensive
 The non-zero exit is the one mercy in that shape, since a scripted remedy fails loudly rather than silently.
 Size it knowing that moving these writes onto the volume removes the alarm they used to ring:
 an ephemeral-storage overrun was a kubelet eviction with a pod event naming the container, where ENOSPC on the PVC is no event at all and surfaces as unexplained failures in jj, in the session transcripts, in `workspace-init` and in the CodeGraph build
-— and nothing in this repository reads a PVC's usage.
+— and the one reader of that usage is the pod's own cache trimmer, one `statfs` of `/legion` every interval and more while it sweeps, which tells the daemon when a sweep leaves the volume above its low mark or when the trimmer switches itself off, and tells nobody anything else while the volume is healthy.
+Nothing reads the claim's own usage from Kubernetes.
 
 Ephemeral storage is what the `roles` container writes outside every volume:
 its root filesystem, the node's disk — the image's own content and whatever a recipe writes outside the told directories
@@ -3521,7 +3666,7 @@ the daemon's permission test (`internal/daemon/nats_permissions_test.go`) create
 The stored-message get reaches a deployment with the envoy-infra release that carries it:
 until then the daemon runs as before, and only the lag's oldest message is `unavailable`.
 The task bucket's entries are not optional in that way, though a boot asks only those the bucket's open uses:
-a daemon of contract 157 or later refuses to boot, naming the bucket and the subject refused ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), when its user lacks the bucket stream's info, or, where the bucket does not exist yet, the account info, the notification stream's info, the create, or, when another daemon created the bucket first, the update.
+a daemon of contract 168 or later refuses to boot, naming the bucket and the subject refused ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), when its user lacks the bucket stream's info, or, where the bucket does not exist yet, the account info, the notification stream's info, the create, or, when another daemon created the bucket first, the update.
 A grant that lacks any other of them boots, and each call that needs the missing subject is refused, logged as below (`NATS refused the daemon a permission`) with that subject:
 without the key writes no value is written and no worker is handed a task (`supervise: the task value could not be written; it is written again at the claim's next chance` at warn);
 without the gets a registration's answer carries no value (`api: the registration answers no task value: the task bucket could not be read` at warn) and `claims/task` answers 500 `TASK_VALUE_UNAVAILABLE`;
@@ -4399,7 +4544,7 @@ architect, planner, implementer, tester, reviewer, merger):
    As the container's PID 1 the launcher does three things:
 
    - It reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
-     Nor does it reap a process it runs for a step of its own (the test database's start script, the jj and git of a workspace restore, and the leak-check install's run of the check), which its `pidGuard` holds until that step's own wait has read the exit: a step whose exit the reaper took first would fail with `waitid: no child processes`, or under gVisor at times `wait: no child processes` or `waitid: no such process`, which for the leak-check install refuses the role's launch.
+     Nor does it reap a process it runs for a step of its own (the test database's start script, the jj and git of a workspace restore, the leak-check install's run of the check, and each cache trimmer sweep's deleter), which its `pidGuard` holds until that step's own wait has read the exit: a step whose exit the reaper took first would fail with `waitid: no child processes`, or under gVisor at times `wait: no child processes` or `waitid: no such process`, which for the leak-check install refuses the role's launch.
 
    - It runs a gVisor pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
      In a microVM issue pod it runs the guest watch instead, which steers the pod's own kernel to stop a command ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
@@ -4509,7 +4654,7 @@ The lower layer has no mount under it because Linux refuses an overlay over one 
 gVisor allows it today, and the layout does not lean on that.
 `/tmp` and `/var/tmp` are binds of the role's own directories on `role-homes`;
 `/run/lock`, `/var/lock` and `/dev/shm` are private small memory filesystems;
-`/dev/pts` is a new devpts instance holding only the terminals the role opens (`newinstance`, `ptmxmode=0666`, with `/dev/ptmx` bound to it where the image's is a node), and `/dev/mqueue` is mounted from the role's own IPC namespace, so it shows only that namespace's message queues (`privateDevices`, `roleinit_linux.go`); `/proc` is the role's own.
+`/dev/pts` is a new devpts instance holding only the terminals the role opens (`newinstance`, `ptmxmode=0666`, with `/dev/ptmx` bound to it where the image's is a node), and `/dev/mqueue` is mounted from the role's own IPC namespace, so it shows only that namespace's message queues (`privateTerminals` and `privateQueues`, `roleinit_linux.go`); `/proc` is the role's own.
 role-init follows no link on the way to a mount point in the role's own layers:
 a link an earlier generation of the role left there (a `~/.cache` linked elsewhere, say) is removed and the directory or empty file the mount needs is made in its place, logged as `role-init: <path> was
 a link, which role-init does not follow on the way to a mount point: replaced it with the mount
@@ -5842,7 +5987,7 @@ Outside every role it protects:
 
 - the launcher itself, which serves every role;
 
-- each process the launcher runs for a step of its own (the test database's start script, the jj and git of a workspace restore, and the leak-check install's run of the check, which its `pidGuard` holds), with every process under it;
+- each process the launcher runs for a step of its own (the test database's start script, the jj and git of a workspace restore, the leak-check install's run of the check, and each cache trimmer sweep's deleter, which its `pidGuard` holds), with every process under it;
 
 - the test database's server, the launcher's direct child whose executable is `postgres` and whose working directory is the test database's data directory, with every backend under it:
   ending one backend makes the server end and restart every backend, which stops every role's test database at once ([A test database in the pod](#a-test-database-in-the-pod)).
@@ -6084,7 +6229,7 @@ A `failed` claim is the exception: it runs no turn on the pod, so the round asks
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.
 The end of a turn is no answer at any contract: only the `ready_for_update` call answers the round.
-A claim whose plugin takes no task, a contract below 157 (`supervise.TaskTakeContract`), is asked like any other but not left on that plugin for the round's length: the stale-plugin lane relaunches it onto the current plugin inside the round, and the idle release takes the pod of a Claude Code role on such a plugin ("Contract discipline" above).
+A claim whose plugin takes no task, a contract below 168 (`supervise.TaskTakeContract`), is asked like any other but not left on that plugin for the round's length: the stale-plugin lane relaunches it onto the current plugin inside the round, and the idle release takes the pod of a Claude Code role on such a plugin ("Contract discipline" above).
 An answer stands until the round ends, through every later turn of that role, and the daemon refuses an answered role's take of a new task until the round ends (the hold `update-round`, `answeredOpenRound`), writing the task's value again at the round's end:
 work a later turn commits and does not push goes with the disk, since the answer is not taken back for it.
 The id is what makes the answer that round's:
@@ -6206,7 +6351,7 @@ The pod of a root that waits on a person's answer in `awaiting_person` is kept u
 A pod held past the idle period is held for one of those reasons, and the daemon records which one.
 One more reason holds a pod that is otherwise idle: a saved bundle of its unpushed work that no pod has restored yet (`bundle_unrestored`, below).
 
-The rule changes for one claim: a live Claude Code role in the pod whose registered process runs a plugin that takes no task, a contract below 157 (`supervise.TaskTakeContract`), whose plugin no relaunch can move because it is the image's own (`oldPlugin` and `IdleRelease` in `internal/workflow/idle.go`).
+The rule changes for one claim: a live Claude Code role in the pod whose registered process runs a plugin that takes no task, a contract below 168 (`supervise.TaskTakeContract`), whose plugin no relaunch can move because it is the image's own (`oldPlugin` and `IdleRelease` in `internal/workflow/idle.go`).
 Its pod, where it does not run the configured image, is released without waiting out the idle period and past the image, contract and update-round holds, while every other reason above still holds it, so a role in a turn has its pod released at that turn's end; its pod, where it runs the configured image already, is kept and the claim logged once as an Error, since a release would bring the same plugin back ("Contract discipline" above).
 That release is the three acts below like any other, the bundle saved first, and its role stops name why it was made rather than an idle period.
 It runs on the idle release's own tick, so with `idle_minutes: 0` it does not run at all: such a pod waits for its update round, and the operator replaces it sooner at the rollout ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).

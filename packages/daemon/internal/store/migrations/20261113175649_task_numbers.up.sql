@@ -164,10 +164,15 @@
 -- step_record rows it adds to outbox, 20261117112334_pull_request_statuses adds
 -- pull_requests.statuses, and 20261117200337_update_ask_marks_at_delivery clears
 -- claims.update_tasked_at where that claim's ask still waits in the outbox. The release before
--- this one, contract 152, carries all twelve, so the rollback to it runs this block alone and
--- leaves the twelve standing. A rollback past it — to contract 87, across
--- 20261111225552_phase_entry — crosses every release between the two and runs their ways back
--- newest first, with the daemon stopped, as docs/kubernetes.md lists them: this block; the step
+-- this one, contract 160, carries all twelve, so the rollback to it runs this block alone and
+-- leaves the twelve standing. Contract 160's own two migrations,
+-- 20261111090000_volume_trim_notices and 20261111091500_claim_pod_end, are numbered below this one,
+-- so every database records them before it, and neither touches the fourteen columns. A rollback
+-- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
+-- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
+-- them: this block; contract 160's statement, which deletes every queued volume-near-full notice,
+-- since no earlier release can decode one, with the counts of each pod it was of
+-- (docs/kubernetes.md, "Rolling back below the release that trims an issue pod's volume"); the step
 -- records' way back, which keeps each issue's witness while the phase entries it reads stand and
 -- re-arms 20261117064152_step_starts_roll_forward; the commit statuses' block in
 -- 20261117112334_pull_request_statuses's header, which no earlier release needs, since none names
@@ -187,8 +192,11 @@
 -- 20261113090512_phase_entry_moved_back, contract 152's
 -- 20261117000528_outbox_kinds_with_the_step_record and 20261117004117_step_starts, which the step
 -- records' way back leaves standing, and its 20261117200337_update_ask_marks_at_delivery need no
--- statement on the way back, and contracts 151, 144, 137 and 104 add no migration. The release
--- before the phase entry reads the three marks as the release before this one does, and neither
+-- statement on the way back, and contracts 151, 144, 137 and 104 add no migration. Nor does
+-- contract 160's 20261111091500_claim_pod_end, whose claims.pod_end an earlier release leaves
+-- unread and unwritten; the table pod_volume_notices its 20261111090000_volume_trim_notices adds
+-- stands too, read by no earlier release. The release before the phase entry reads the three
+-- marks as the release before this one does, and neither
 -- contract 146's block, the step records', the commit statuses', the reviewed commit's nor the
 -- phase entry's touches this migration's columns. The roll-forward after them applies again, in
 -- version order, every migration those ways back re-armed: the phase entry's first, then
