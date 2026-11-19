@@ -168,6 +168,75 @@ test("an event arriving while the reader is in the history leaves their entry wh
   }
 });
 
+// The history draws every day before the reader's today folded. A reader reading today's entries
+// as midnight passes is still on that day: an event that arrives after midnight opens the new
+// day at the head of the history, and the entry the reader reads stays drawn where it was, as it
+// does for any other arrival. Found by the tester: the day the reader was in folded to one line
+// under them once the first render after midnight read the new date.
+test("an event arriving just after midnight leaves the entry the reader reads where it was", async () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  setSystemTime(new Date(2026, 10, 19, 23, 59, 50, 0));
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 12 }, (_, index) => claim(12 - index))
+  );
+  const layout = installRowLayout();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <IssueHistory
+            activityAddress={undefined}
+            issue={issue}
+            item={undefined}
+            state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+            visitMark={99}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    ).unmount;
+    await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(12));
+    setScrollY(300);
+    const reading = document.querySelectorAll<HTMLElement>("[data-event-seq]")[8];
+    const seq = reading?.getAttribute("data-event-seq");
+    const before = reading?.getBoundingClientRect().top;
+
+    // Midnight passes; the first event of the new day arrives.
+    setSystemTime(new Date(2026, 10, 20, 0, 0, 30, 0));
+    act(() => {
+      prependEventToLog(queryClient, claim(13));
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-event-seq="13"]'),
+        "the new day's event is not drawn"
+      ).not.toBeNull()
+    );
+
+    const still = document.querySelector<HTMLElement>(`[data-event-seq="${seq}"]`);
+    expect(
+      still,
+      "the entry the reader read went from the history as midnight passed"
+    ).not.toBeNull();
+    expect(still?.getBoundingClientRect().top).toBe(before);
+  } finally {
+    unmount?.();
+    layout.restore();
+    restoreReads();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});
+
 /** A message an agent wrote outside every thread a person wrote in, `ago` seconds ago: a thread
  *  of the history whose first turn's event no page of the log read here holds. */
 function agentMessage(id: string, ago: number): MessageRead {
