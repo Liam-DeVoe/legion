@@ -996,7 +996,7 @@ function seedIssuePage(client: QueryClient, key: string, page: LandingIssuePage)
 /** A project's board and the tabs beside it. */
 function seedBoardPage(client: QueryClient, project: string, page: LandingBoardPage): void {
   // The project's open issues, the read the board makes for itself (`projectIssuesQuery`, whose
-  // key `features/project/issue-filters.ts` builds).
+  // key `projectIssuesQueryKey` builds).
   if (page.issues !== null) {
     client.setQueryData(projectIssuesQuery(project, [], true).queryKey, page.issues);
   }

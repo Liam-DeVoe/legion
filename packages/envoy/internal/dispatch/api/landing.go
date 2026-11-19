@@ -684,8 +684,9 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 	state, err := s.loadUserState(ctx, caller.ID)
 	page.UserState = landingPart(ctx, "issue.user_state", state, err)
 
-	// Shaped as the comments route shapes them, over a reader of their own, which the coverage
-	// part below registers with too, so the page reads the stored trees once for both.
+	// Shaped as the comments route shapes them, over the page's reader, which the coverage part
+	// below registers with too and which resolves at the end, so the page reads the stored trees
+	// once for both.
 	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, issueOwner(key), "")
 	reader := s.readDisplayTrees(ctx, trees)
 	page.Comments = shapedComments(landingPart(ctx, "issue.comments", comments, err), reader)
