@@ -1022,6 +1022,12 @@ function reachesDispatch(status: number): boolean {
   return status >= 500;
 }
 
+/** Whether `method` is a read, a GET or a HEAD: the request `holdWrites` sends and `personTyped`
+ *  marks nothing on (`#holdUnlessRead`, `#personTypedHeader`). */
+function isReadMethod(method: string): boolean {
+  return method === "GET" || method === "HEAD";
+}
+
 /**
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
@@ -2274,7 +2280,7 @@ export class DispatchClient {
   /** Throws `DispatchWriteHeld` for a request a client made with `holdWrites` would send that is
    *  not a GET or a HEAD, before it presents the credential, so nothing is sent. */
   #holdUnlessRead(method: string, url: string, body: EncodedBody | undefined): void {
-    if (this.#holdWrites && method !== "GET" && method !== "HEAD") {
+    if (this.#holdWrites && !isReadMethod(method)) {
       throw new DispatchWriteHeld(
         method,
         url,
@@ -2286,13 +2292,13 @@ export class DispatchClient {
   /** `DISPATCH_PERSON_TYPED_HEADER` for a request that is not a GET or a HEAD from a client made
    *  with `personTyped`, and nothing otherwise. */
   #personTypedHeader(method: string): Readonly<Record<string, string>> {
-    return this.#personTyped && method !== "GET" && method !== "HEAD"
+    return this.#personTyped && !isReadMethod(method)
       ? { [DISPATCH_PERSON_TYPED_HEADER]: "1" }
       : {};
   }
 
-  /** One request of a read, presenting the credential for it, and the headers it presented;
-   *  `signal` aborts it beside the client's own signal. */
+  /** One request of a read, a PUT or a DELETE (`#send`), presenting the credential for it, and
+   *  the headers it presented; `signal` aborts it beside the client's own signal. */
   async #sendOnce(
     method: string,
     url: string,

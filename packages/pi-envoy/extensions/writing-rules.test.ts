@@ -9,8 +9,6 @@ import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { createStandInHost, type SessionContext } from "../test/stand-in-host";
 
-const RULES_TOKEN = fixtureSecret("dsp");
-
 // The written rules under Oh My Pi (INFRA-3231, R6): the `dispatch` command refuses once the
 // session's first write of a comment, and its first after each compaction, showing the rules
 // Dispatch sends for that write's reader. The plugin's `session_compact` handler counts each
@@ -51,6 +49,7 @@ restoreEnvironment([
   "DISPATCH_STATE_DIR",
 ]);
 
+const RULES_TOKEN = fixtureSecret("dsp");
 const SESSION = "ses_writing_rules";
 const RULES = "# Write without slop\n\nThe rules the stand-in Dispatch sends.\n";
 

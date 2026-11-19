@@ -130,10 +130,10 @@ const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
 
-/** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
- *  behind in its compact variant - the card a decision block hosts, which is what the reading
- *  column shows for a question written as one - while it is still shut. The card carries the
- *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
+/** The "Add a note" disclosure an `AskCard` folds its answer box behind in its compact variant -
+ *  the card a decision block hosts, which is what the reading column shows for a question written
+ *  as one - while it is still shut. The card carries the handle (`AskCard.tsx`), as it carries
+ *  `data-ask-answer` and `data-ask-option`. */
 const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
 
 /** The row that holds keyboard focus itself — not one merely containing a focused control. */

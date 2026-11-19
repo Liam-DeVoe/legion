@@ -548,8 +548,9 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 	if err != nil {
 		return issueWritten{}, err
 	}
+	hasSpec := create.Spec != nil && strings.TrimSpace(*create.Spec) != ""
 	var markdown string
-	if create.Spec != nil && strings.TrimSpace(*create.Spec) != "" {
+	if hasSpec {
 		markdown = *create.Spec
 	}
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
@@ -608,7 +609,7 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 		// The spec's blocks come from the rendering the seed read back above, so they are worked
 		// out here, before the write phase's first statement takes the transaction's id, and never
 		// between two of its statements (INFRA-636's window).
-		if advice != nil && create.Spec != nil && strings.TrimSpace(*create.Spec) != "" {
+		if advice != nil && hasSpec {
 			advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
 		}
 	}
