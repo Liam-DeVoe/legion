@@ -344,7 +344,8 @@ PY
 # row <name>: that row of the fixture manifest. The `whole` row pushes its archive as it stands,
 # the `inner` row pushes the member of its archive, the `packaged` row is an npm row, which
 # needs no copy at all, and the `odd` row names a second source this repository reads from no
-# service.
+# service. Each row's max_time is 60, the bound on one attempt of a curl, for the reason
+# ci-tools.test.sh gives: an origin on a busy machine can be held off the CPU past a bound of 7.
 row() {
   case "$1" in
     whole)
@@ -356,7 +357,7 @@ row() {
     primary_source: github-release
     primary: $WHOLE_URL
     second_source: ghcr-mirror
-    max_time: 7
+    max_time: 60
     mirror_from: $WHOLE_URL
     mirror_member: ""
 YAML
@@ -370,7 +371,7 @@ YAML
     primary_source: github-release
     primary: ""
     second_source: ghcr-mirror
-    max_time: 7
+    max_time: 60
     mirror_from: $INNER_URL
     mirror_member: ./inner
 YAML
@@ -383,7 +384,7 @@ YAML
     digest_of: the binary the npm package holds
     primary: ""
     second_source: npm
-    max_time: 7
+    max_time: 60
     npm_package: "@fixture/packaged"
     npm_member: package/bin/packaged
 YAML
@@ -396,7 +397,7 @@ YAML
     digest_of: the fixture's release tarball, whole
     primary: ""
     second_source: s3
-    max_time: 7
+    max_time: 60
 YAML
       ;;
     *)
