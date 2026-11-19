@@ -172,7 +172,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
+	event, err := s.deps.Events.AppendAfterWrite(r.Context(), tx, projectOwner(key).event(
 		"settings.architecture_source.updated", actor, map[string]any{"source": source, "deleted": false},
 	))
 	if err != nil {
@@ -250,7 +250,7 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
+	event, err := s.deps.Events.AppendAfterWrite(r.Context(), tx, projectOwner(key).event(
 		"settings.architecture_source.updated", actor, map[string]any{"source": source, "deleted": true},
 	))
 	if err != nil {

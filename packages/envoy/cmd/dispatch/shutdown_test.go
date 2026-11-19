@@ -121,10 +121,8 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
 	// The edit's settlement queues behind the same lock two seconds in, so a count of waiters
-	// could pass with the title change still on its way: watch the title change's own statement,
-	// the issue-row lock a PATCH takes first (api's lockIssueRows). It runs in the Dispatch
-	// process, so its backend is named by that statement rather than by a pool of its own.
-	if pid := storetest.WaitForStatementBehind(t, database, holder, renameLock, 10*time.Second); pid == 0 {
+	// could pass with the title change still on its way: watch the title change's own backend.
+	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
 
@@ -140,17 +138,20 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
-// renameLock is the statement with which a PATCH of an issue locks the issue's row before it
-// writes (lockIssueRows in internal/dispatch/api/issue_parent.go), as pg_stat_activity shows it.
-const renameLock = `select parent_key from issues where key = $1 for no key update`
-
-// A write in flight at SIGTERM can wait on a lock past the HTTP drain's share and the document
-// service's, here a title change behind another writer that holds the issue until 3 s before the
-// shutdown's deadline. The database is answering, so Dispatch keeps the request's connection open
-// until the write commits and its answer is sent, and only then closes the pool: a write that
-// finishes before the deadline is committed and answered, however late in it.
+// A write in flight at SIGTERM can be waiting on another writer's lock, here a title change behind
+// another writer that holds the issue's owner lock. The database is answering, so Dispatch keeps
+// the request's connection open until the write commits and its answer is sent, and only then
+// closes the pool: a write still waiting when the signal comes is committed and answered before
+// exit. The signal comes about 2 s into the wait and the lock is let go 6 s into it: a write waits
+// on an owner lock no longer than that wait's bound (store's lockWait, ten seconds) and is refused
+// 503 past it, and the spawned process runs under that production bound, since the test's shorter
+// one rides a request's context (store.WithLockWaitForTest), which no request to another process
+// carries. So the hold stays 4 s inside the bound.
 func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.T) {
-	const lockHeldAfterSIGTERM = stopGrace - shutdownMargin - 3*time.Second
+	const (
+		signalIntoTheWait  = 2 * time.Second
+		releaseIntoTheWait = 6 * time.Second
+	)
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
 	process.waitHealthy(t)
@@ -171,16 +172,19 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
+	queued := time.Now()
 
+	time.Sleep(time.Until(queued.Add(signalIntoTheWait)))
 	signalled := process.Terminate(t)
 	select {
 	case <-process.Exited:
 		t.Errorf("Dispatch exited %v after SIGTERM, with the write still waiting on the lock", time.Since(signalled))
-	case <-time.After(time.Until(signalled.Add(lockHeldAfterSIGTERM))):
+	case <-time.After(time.Until(queued.Add(releaseIntoTheWait))):
 	}
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
+	t.Logf("released the issue lock %v into the title change's wait, %v after SIGTERM", time.Since(queued), time.Since(signalled))
 	process.WaitExit(t, "SIGTERM")
 	t.Logf("exited %v after SIGTERM", time.Since(signalled))
 	select {
@@ -889,8 +893,8 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	}
 }
 
-// lockIssue holds the issue's row in a transaction of the test's own, as another writer would,
-// and rolls it back when the test ends if the test has not.
+// lockIssue holds the issue's owner lock (store.LockOwner) in a transaction of the test's own, as
+// another writer of the issue would, and rolls it back when the test ends if the test has not.
 func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 	t.Helper()
 	ctx := context.Background()
@@ -899,10 +903,55 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 		t.Fatalf("begin the lock holder: %v", err)
 	}
 	t.Cleanup(func() { _ = holder.Rollback(ctx) })
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, key); err != nil {
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(key)); err != nil {
 		t.Fatalf("lock the issue: %v", err)
 	}
 	return holder
+}
+
+// waitForRenameBehind waits up to within for the title change's backend to queue behind holder's
+// lock on the issue, and returns its process id, or 0 if it did not. The title change runs in the
+// Dispatch process, so its backend is found by its statement, the owner-lock statement a PATCH
+// sends first (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the
+// same statement for the same lock, but only once it holds its document's lock, an advisory lock
+// of its own; the title change holds none of those while it waits. Both hold the owner lock's
+// gate, which every write of this build takes shared in that same statement before it waits on
+// the owner (store.OwnerLockGateNamespace, migration 20261115200014), so the gate is the one
+// advisory lock that tells the two apart by nothing and is left out of the exclusion.
+func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, within time.Duration) uint32 {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(within)
+	for {
+		rows, err := database.Pool.Query(ctx, `
+			select pid from pg_stat_activity
+			where datname = current_database() and query = $1
+			  and pid not in (
+			    select pid from pg_locks
+			    where locktype = 'advisory' and granted
+			      and not (objsubid = 2 and classid = $2::oid and objid = $3::oid))
+		`, store.OwnerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
+		if err != nil {
+			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
+		}
+		pids, err := pgx.CollectRows(rows, pgx.RowTo[uint32])
+		if err != nil {
+			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
+		}
+		for _, pid := range pids {
+			queued, err := storetest.QueuedBehind(ctx, holder, pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queued {
+				return pid
+			}
+		}
+		if time.Now().After(deadline) {
+			return 0
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch

@@ -242,9 +242,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	room := socketRoom(r)
 	// A request that can only be refused costs no place: one that presents no credential the
-	// identity service could resolve - no sign-in cookie, or one whose signature does not verify -
-	// is told so from the request alone, with nothing read (identity.Presents), and refused 401 as
-	// the caller's resolution would refuse it.
+	// identity service could resolve - no sign-in cookie, or one whose signature does not verify,
+	// or behind IAP no assertion - is told so from the request alone, with nothing read
+	// (identity.Presents), and refused 401 as the caller's resolution would refuse it.
 	if !identity.Presents(s.identity, r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -267,9 +267,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The caller's resolution carries the place (admission.WithPlace): where the caller's sign-in
-	// confirmation has lapsed, it is renewed with the sign-in issuer, which reads no pool, so the
-	// resolution gives the place back for that wait and holds it only for the renewal's own reads
-	// and writes (identity.Membership.Confirm). The issue's read takes it again below.
+	// confirmation has lapsed, it is renewed with the sign-in issuer, and behind IAP the assertion's
+	// verification may read IAP's key set again; neither reads the pool, so the resolution gives
+	// the place back for that wait and holds it only for its own reads and writes
+	// (identity.Membership.Confirm, identity.IAPIdentity.Login). The issue's read takes it again
+	// below.
 	actor, err := s.requestActor(r.WithContext(admission.WithPlace(r.Context(), place)))
 	if err != nil {
 		if errors.Is(err, identity.ErrSignInUnavailable) {

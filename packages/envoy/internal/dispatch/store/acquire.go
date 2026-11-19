@@ -130,7 +130,7 @@ func defaultAcquireBound(name string) time.Duration {
 
 // ErrPoolBusy is a call a bound of this server's own, and not the caller's context, ended
 // before the database answered it, and after which nothing the caller asked for can have
-// committed. Seven calls produce it:
+// committed. Eight calls produce it:
 //
 //   - an acquire that ran out its pool's acquire bound while the caller was still waiting,
 //     every connection of that pool having stayed taken for the whole bound (poolBusy);
@@ -148,7 +148,11 @@ func defaultAcquireBound(name string) time.Duration {
 //     (RanOutTheRollbackBound);
 //   - a lapsed sign-in's refresh that gave its place of the request pool's share outside
 //     admission back for the issuer's wait and was refused a place again for its own reads and
-//     writes (identity.Membership's retake), before any of them ran.
+//     writes (identity.Membership's retake), before any of them ran;
+//   - a wait for a transaction advisory lock another transaction holds that ran out its bound
+//     (lockWait) - a read-phase owner lock's, or another lock a write takes (LockWithinBound) -
+//     which leaves its transaction as it was before the lock and fails the caller, whose
+//     transaction then rolls back (leaveBoundedWait).
 //
 // The caller may retry; a request answers it as busy rather than as a failure. An acquire's
 // error wraps context.DeadlineExceeded too, so errors.Is finds both, and IsPoolBusy tells any
@@ -608,11 +612,12 @@ func configurePool(config *pgxpool.Config, name string, bound time.Duration) *ac
 	}
 	config.ConnConfig.RuntimeParams["application_name"] = applicationNamePrefix + name
 	// An idle transaction is bounded wherever it can hold a lock a request's write waits on - an
-	// issue row, a document's advisory lock - since no request's write sets a lock_timeout: a
-	// transaction orphaned there, its connection abandoned and its close never reaching
-	// Postgres, holds those locks until Postgres ends it, and this bound is what ends it. Every
-	// separate pool's configuration is a copy of the request pool's (Pool.newSeparate), so each
-	// pool sets the setting here or deletes it.
+	// issue's owner lock, a document's advisory lock - since a request's write waits for a
+	// document's lock with no lock_timeout, and for an owner lock or its own other advisory
+	// locks only up to lockWait: a transaction orphaned there, its connection abandoned and its
+	// close never reaching Postgres, holds those locks until Postgres ends it, and this bound is
+	// what ends it. Every separate pool's configuration is a copy of the request pool's
+	// (Pool.newSeparate), so each pool sets the setting here or deletes it.
 	//
 	// The request, background, outbox and room-appends pools carry it on every connection,
 	// since none of their transactions sits idle longer by design. A request's longest wait is

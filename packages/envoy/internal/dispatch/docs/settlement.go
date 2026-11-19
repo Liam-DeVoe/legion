@@ -165,12 +165,12 @@ type settlementPass struct {
 	}
 	snapshotCursor int64
 	credit         settlementVersionCredit
-	// issueClosed is the document's issue row as this pass's transaction locked it
-	// (lockArtifactOwner): true for a closed issue, false for an open one and for a document of
-	// no issue, so its zero value is open. A closed issue's document settles as an open one's
-	// does, and every rule of the settlement that differs on a closed issue goes by this row,
-	// never by the room's record of the issue (roomState.closed): a close this process has not
-	// heard of yet leaves that record open.
+	// issueClosed is the document's issue row as this pass's transaction read it under the
+	// issue's owner lock (lockArtifactOwner): true for a closed issue, false for an open one and
+	// for a document of no issue, so its zero value is open. A closed issue's document settles as
+	// an open one's does, and every rule of the settlement that differs on a closed issue goes by
+	// this row, never by the room's record of the issue (roomState.closed): a close this process
+	// has not heard of yet leaves that record open.
 	issueClosed bool
 	// slots holds a suppression slot for each update this pass writes into the room, in the order
 	// the room's persistence worker is handed them, and updates holds those updates. stamp is the
@@ -242,26 +242,27 @@ func skipUnreadableSettlement(room string, err error) bool {
 //
 // A closed issue's document settles as an open one's does. Nothing that arms a settlement, or
 // decides whether one goes on, reads whether the issue is closed. The settlement reads the issue's
-// state only to decide what it writes, and only from the issue row each pass's transaction locks
-// (settlementPass.issueClosed). The issue's close ends a settlement it finds armed or running only
-// as every move of the room's generation does (closeRecordLocked), and the document's
-// pending-settlement row leaves that settlement to resume. The one settlement a closed issue ends
-// besides is one whose room took an update the append gate refused because the issue closed more
-// than closeMargin before the room took it: that room holds text the store never will, so the
-// settlement saves nothing of it, fails no room and counts no failure, and the room's close and
-// the resumption after it settle the document from the store (endOnRefusedUpdate).
+// state only to decide what it writes, and only from the issue row each pass's transaction reads
+// under the issue's owner lock (settlementPass.issueClosed). The issue's close ends a settlement
+// it finds armed or running only as every move of the room's generation does
+// (closeRecordLocked), and the document's pending-settlement row leaves that settlement to
+// resume. The one settlement a closed issue ends besides is one whose room took an update the
+// append gate refused because the issue closed more than closeMargin before the room took it:
+// that room holds text the store never will, so the settlement saves nothing of it, fails no room
+// and counts no failure, and the room's close and the resumption after it settle the document
+// from the store (endOnRefusedUpdate).
 //
 // A removed document owes no settlement: its removal (api.removeArtifact) deletes its versions,
 // its stored updates and its pending-settlement row with its artifacts row, and closes its room on
 // every process once it has committed. A settlement already past its generation check when that
-// commit lands - one that queued behind the removal for the document's owner row, or that started
+// commit lands - one that queued behind the removal for the document's owner lock, or that started
 // before this process's eviction or another process's announcement reached its room - stops short
-// on the row that has gone: the owner row its pass locks (settlePass) or the room's load reads
-// nothing. It ends there, saying nothing and retrying nothing, so no retry warms a room over the
-// row (documentRemoved).
+// on the row that has gone: the owner row its pass reads under the owner lock (settlePass) or the
+// room's load reads nothing. It ends there, saying nothing and retrying nothing, so no retry warms
+// a room over the row (documentRemoved).
 //
 // The settlement runs in passes (settlePass), none of which renders the document while it holds the
-// document's owner row. A pass that commits a part of the settlement - a stamp, repairs - or plans
+// document's owner lock. A pass that commits a part of the settlement - a stamp, repairs - or plans
 // the repairs, or finds the document moved under its read, is followed by another, at most
 // maxSettlePasses in all and maxSettleRereads reads again.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
@@ -431,7 +432,7 @@ func (p *settlementPass) stoppedShort(err error) settleOutcome {
 // the settlement reports when the pass ends it (settleDone). The pass takes its transaction from
 // the pool the settlement opened for every read and write of its own (settleRoomWithin).
 //
-// Nothing renders the document under its owner row's lock, which serialises every writer of the
+// Nothing renders the document under its owner's lock, which serialises every writer of the
 // issue. Before it opens its transaction the pass takes what its version credits
 // (settlementTake), copies the live tree and renders it, both the markdown and the block offsets
 // its version stores; when the tree lacks block ids it also renders a stamped copy, which says
@@ -468,7 +469,7 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 	owner, open, err := lockArtifactOwner(ctx, tx, s.room)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		// The document has gone: a removal deleted every row of it under the owner row this
+		// The document has gone: a removal deleted every row of it under the owner lock this
 		// pass took or waited for (api.removeArtifact). Nothing is left to version and nothing
 		// is owed - the pending-settlement row and the pending authors went with the artifact
 		// row - so the pass ends here rather than reading a version that cannot exist. The room
@@ -478,11 +479,12 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 	case err != nil:
 		return settleDone, pass.stoppedShort(err)
 	}
-	// The issue's state is the row this transaction now holds locked, not the room's record of
-	// it: a close commits on that row, so a close this process has not heard of yet is read here,
-	// and no close commits until this pass's transaction ends.
+	// The issue's state is read under the owner's lock this transaction now holds, in the
+	// statement after it (lockArtifactOwner), not the room's record of it: a close takes that lock
+	// too, so a close this process has not heard of yet is read here, and no close commits until
+	// this pass's transaction ends.
 	pass.owner, pass.issueClosed = owner, !open
-	// The owner row is read and locked in this transaction, so the repairs settlement injects
+	// The owner is read under its lock in this transaction, so the repairs settlement injects
 	// below do not read it again: that read would be a second pooled connection taken while
 	// this transaction holds one, which is what deadlocks the pool.
 	ctx = withOwnerVerified(ctx)
@@ -498,8 +500,9 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 		// holds the stamp's pending row.
 		return pass.commitStamp(ctx)
 	}
-	// Recorded before reconcileAskBlocks reads the durable authors, so a block the stamp renamed is
-	// found under its minted id there too.
+	// Queued before reconcileAskBlocks reads the durable authors, so a block the stamp renamed is
+	// found under its minted id there too: the write phase has not run, so that read takes the rows
+	// this queued from the ledger (transactionRecordedAskAuthors).
 	if err := recordStampedAskAuthors(ctx, tx, s.room, pass.renamed, pass.carried); err != nil {
 		return settleDone, pass.abandon(err)
 	}
@@ -544,11 +547,12 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 // back, so the store takes no connection admission counts for requests (commitSettlement).
 //
 // The transaction's first statement bounds its own idle time (store.BoundIdleInTransaction). It
-// takes the document's owner row and advisory lock, which every request writing the document waits
-// on with no lock_timeout, so one orphaned with its connection would hold them until Postgres
-// noticed; the settlements pool's connections carry no bound of their own, because the
-// settlement's warm-up load folds on that pool in a read that may sit idle for longer. A
-// transaction it could not bound is rolled back here.
+// takes the document owner's lock, which every request writing the document waits on until the
+// owner lock's wait runs out, and the document's advisory lock, which such a request waits on with
+// no lock_timeout, so one orphaned with its connection would hold them until Postgres noticed; the
+// settlements pool's connections carry no bound of their own, because the settlement's warm-up load
+// folds on that pool in a read that may sit idle for longer. A transaction it could not bound is
+// rolled back here.
 func (p *settlementPass) begin(parent context.Context) (context.Context, error) {
 	ledger := &Ledger{service: p.service, ownTx: true, treePool: p.settlements}
 	ctx := withRoomCursor(store.WithTransactionTracking(withLedger(parent, ledger)), p.cursor)
@@ -560,6 +564,11 @@ func (p *settlementPass) begin(parent context.Context) (context.Context, error) 
 		_ = tx.Rollback(context.WithoutCancel(ctx))
 		return nil, err
 	}
+	// Settlement decides everything before it writes anything: every write of the stages after
+	// take goes through write and queues on this ledger, and the queue runs back to back right
+	// before the commit, so the transaction holds a transaction id only for those statements, not
+	// while it renders the document, walks its anchors or carries an approval.
+	ledger.writer = tx
 	p.ledger, p.tx = ledger, tx
 	return ctx, nil
 }
@@ -735,25 +744,31 @@ func (p *settlementPass) commitFailed(advanced bool, err error) settleOutcome {
 	return p.abandon(err)
 }
 
-// appendEvents appends events in this pass's transaction. Each event that carries a reconciled
-// source's text stamps that source's new mention edges with the event that introduced them: the
-// version event for the document itself, and each ask's own opened/edited event. writeVersionTx
-// reconciled the edges earlier in this transaction, so stamping runs after the append and never
-// touches sequence allocation.
+// appendEvents queues events in this pass's transaction, as one step of its write phase. Each
+// event that carries a reconciled source's text stamps that source's new mention edges with the
+// event that introduced them: the version event for the document itself, and each ask's own
+// opened/edited event. writeVersionTx reconciled the edges earlier in this transaction, so
+// stamping runs after the append, naming the event's id as the id sequence left it
+// (refs.QueueStamp), and never touches sequence allocation. What it appends joins the ledger's
+// events, after those the version write appended, which the pass publishes once it commits
+// (committed). An ask event that names thread_logins has its insert read them
+// (settlementEventLogins), after the ask writes queued before it.
 func (p *settlementPass) appendEvents(ctx context.Context, events []model.Event) error {
-	for _, planned := range events {
-		appended, appendErr := p.service.events.Append(ctx, p.tx, planned)
-		if appendErr != nil {
-			return appendErr
-		}
-		if sourceKind, sourceID, ok := referenceSource(planned, p.room); ok {
-			if err := refs.Stamp(ctx, p.tx, sourceKind, sourceID, appended.ID); err != nil {
+	if len(events) == 0 {
+		return nil
+	}
+	sink := eventSink(ctx)
+	return write(ctx, p.tx, func(b *store.WriteBatch) error {
+		for _, planned := range events {
+			if err := p.service.events.QueueAppendWithLogins(b, planned, settlementEventLogins(planned), sink); err != nil {
 				return err
 			}
+			if sourceKind, sourceID, ok := referenceSource(planned, p.room); ok {
+				refs.QueueStamp(b, sourceKind, sourceID)
+			}
 		}
-		p.published = append(p.published, appended)
-	}
-	return nil
+		return nil
+	})
 }
 
 // committed ends a pass whose transaction committed: its writes reach the room's persistence, and
@@ -813,7 +828,7 @@ func (p *settlementPass) applyStamp(ctx context.Context) (settleStep, settleOutc
 		s.discardSuppressedPersistence(room, p.slots...)
 		return settleDone, settleOutcome{}
 	}
-	// An open live write is not in the room yet, and since this settlement holds the owner row,
+	// An open live write is not in the room yet, and since this settlement holds the owner's lock,
 	// the write's transaction has already committed: the cursor this settlement versions against
 	// includes its row. Write no version; finishLiveWrite arms a settlement once it is published.
 	superseded := state.roomGeneration != p.generation
@@ -887,6 +902,10 @@ func (p *settlementPass) commitStamp(ctx context.Context) (settleStep, settleOut
 	// The authors the stamp carried, recorded in the transaction that stores the stamp: whichever
 	// process settles the stamped document next finds a renamed block's author under its minted id.
 	if err := recordStampedAskAuthors(ctx, p.tx, room, p.renamed, p.carried); err != nil {
+		return settleDone, p.abandon(err)
+	}
+	// The write phase: every statement this pass decided on, in the order it made them.
+	if err := p.ledger.runQueue(ctx, nil); err != nil {
 		return settleDone, p.abandon(err)
 	}
 	if advanced, err := s.commitSettlement(ctx, p.tx, p.ledger, room, authorCapture{}, nil); err != nil {
@@ -978,7 +997,6 @@ func (p *settlementPass) commitRepairs(ctx context.Context) (settleStep, settleO
 	if !repaired {
 		return settleMoved, settleOutcome{}
 	}
-	p.published = make([]model.Event, 0, len(p.reconciliation.events)+1)
 	// The room holds whatever the repairs left in it, so what is left to store them runs apart
 	// from the settlement's deadline, under a bound of its own (finishInRoom): a deadline falling
 	// between the write and the commit would fail the room over updates the room already holds.
@@ -1039,6 +1057,11 @@ func (p *settlementPass) commitRepairs(ctx context.Context) (settleStep, settleO
 	if err := p.appendEvents(ctx, p.reconciliation.events); err != nil {
 		return settleDone, p.abandon(err)
 	}
+	// The write phase: every statement this pass decided on, in the order it made them.
+	if err := p.ledger.runQueue(ctx, nil); err != nil {
+		return settleDone, p.abandon(err)
+	}
+	p.published = p.ledger.events
 	if advanced, err := s.commitSettlement(ctx, p.tx, p.ledger, room, authorCapture{state: state}, func(err error) {
 		// The room forgets the author of each ask block the commit indexed under the commit's own
 		// hold, so no reader that finds the block's ask row committed then finds the room still
@@ -1117,19 +1140,22 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 		return settleDone, p.abandon(fmt.Errorf("store the room's updates through the settlement's read: %w", err))
 	}
 	// The second read of a refused update's second order (roomRefusedUpdate), after the last
-	// store write of this pass and before its commit: what it would commit is rendered from a tree
-	// that holds an update the room's closed issue refused.
+	// store write of this pass was gated (flushThrough and storeRepair decide in the read phase
+	// what the write phase stores) and before its commit: what it would commit is rendered from a
+	// tree that holds an update the room's closed issue refused.
 	if p.roomRefusedUpdate() {
 		return settleDone, p.endOnRefusedUpdate(p.slots...)
 	}
-	snapshotCursor, err := currentUpdateCursor(ctx, p.tx, room)
+	// The head the version records (doc_update_version) counts what this transaction has queued
+	// and not yet written (transactionHead): the pass's appends are among them.
+	snapshotCursor, err := transactionHead(ctx, p.tx, room)
 	if err != nil {
 		return settleDone, p.abandon(err)
 	}
 	p.snapshotCursor = snapshotCursor
-	// The version's authors, taken once those appends are stored: the pending authors then hold
-	// the authors they wrote, so a credit the take did not bound whose update this pass stored is
-	// listed too.
+	// The version's authors, taken once those appends are queued: the pending authors then hold
+	// the authors they write (transactionPendingAuthors), so a credit the take did not bound whose
+	// update this pass stores is listed too.
 	if err := p.takeCredit(ctx); err != nil {
 		return settleDone, p.abandon(err)
 	}
@@ -1162,15 +1188,14 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	if versioning {
 		settledVersion++
 	}
-	p.published = make([]model.Event, 0, len(p.reconciliation.events)+1)
 	// Every update this settlement read is settled once it commits, so the row that left the
 	// settlement to a later load goes with that commit. It goes before the first event this
 	// settlement appends. A transaction marking this document owed as a copy (owedCopiesOf) holds
-	// its row until it commits, and this settlement then waits for it holding its owner row and
+	// its row until it commits, and this settlement then waits for it holding its owner lock and
 	// room lock, which that transaction never takes; nor does it take what this settlement goes on
-	// to lock, its events locking only this document's owner row. The pending authors stay unless
-	// this settlement's version lists them (deleted below): a settlement that writes no version
-	// lists no one.
+	// to lock, its events locking only this document's owner and owner row. The pending authors
+	// stay unless this settlement's version lists them (deleted below): a settlement that writes no
+	// version lists no one.
 	//
 	// The row's latest edit source goes with it, and the settlement after a reopen still names it:
 	// before a closed issue's document settled, the row stood through the closed period, and that
@@ -1183,7 +1208,8 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	// same edits, named none then: each forgets the editor an earlier settlement kept. One on a
 	// closed issue whose credit is only the kept editor (settlementVersionCredit.kept), its version
 	// adding none of their text, keeps that same editor, so the reopen still finds the editor of
-	// the text the closed issue's versions hold.
+	// the text the closed issue's versions hold. The delete and the keep are queued, as every write
+	// of this settlement is, for its write phase.
 	var kept *model.Actor
 	if p.issueClosed && !p.credit.actor.SameAs(SettlementActor) {
 		kept = &p.credit.actor
@@ -1232,13 +1258,12 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 		// reopen, which would start from that row's from_version (openEditNotice), carries the
 		// edits this version saves.
 		if p.issueClosed {
-			if _, err := p.tx.Exec(ctx, dropEditNotice, room); err != nil {
-				return settleDone, p.abandon(fmt.Errorf("delete the closed issue's document's edit notice: %w", err))
+			if err := writeExec(ctx, p.tx, "delete the closed issue's document's edit notice", dropEditNotice, room); err != nil {
+				return settleDone, p.abandon(err)
 			}
 		} else if err := s.recordEditNotice(ctx, p.tx, room, result.version.Number, p.credit.authors, p.credit.capture.latest); err != nil {
 			return settleDone, p.abandon(err)
 		}
-		p.published = append(p.published, p.ledger.events...)
 		// A document body cites nodes whose rows carry a backlink count, so the version event
 		// names what this settle moved exactly as a message or comment write does.
 		versionEvent := model.Event{
@@ -1257,6 +1282,11 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	if err := p.appendEvents(ctx, p.reconciliation.events); err != nil {
 		return settleDone, p.abandon(err)
 	}
+	// The write phase: every statement this pass decided on, in the order it made them.
+	if err := p.ledger.runQueue(ctx, nil); err != nil {
+		return settleDone, p.abandon(err)
+	}
+	p.published = p.ledger.events
 	// The commit marks the in-flight credits the version listed consumed before it releases the
 	// room's state, and the room updates this pass stored marked stored (commitSettlement); a
 	// settlement that writes no version takes out none. The room forgets the author of each ask

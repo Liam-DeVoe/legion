@@ -159,7 +159,7 @@ func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 func (s *server) announceAskSnooze(w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, askID string) bool {
 	event, err := s.askSnoozeEvent(r.Context(), tx, actor, askID)
 	if err == nil {
-		event, err = s.appendEvent(r.Context(), tx, event)
+		event, err = s.deps.Events.AppendAfterWrite(r.Context(), tx, event)
 	}
 	if err == nil {
 		err = tx.Commit(r.Context())

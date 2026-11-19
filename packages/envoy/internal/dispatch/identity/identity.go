@@ -4,6 +4,7 @@ package identity
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -14,6 +15,17 @@ import (
 // ErrNoIdentity means the request did not prove a person: no cookie or header, a cookie whose
 // session has ended, or a person whose membership could not be confirmed.
 var ErrNoIdentity = errors.New("no identity")
+
+// ErrCredentialExpired means a request's credential has expired and nothing else is wrong with it:
+// an Identity-Aware Proxy assertion past its exp that IAP signed, whose signature IAP's key set
+// verifies, for this deployment's audience, naming a person Rule still admits (IAPIdentity,
+// oidc.IAPExpiredError). An expired assertion wrong in any other way is plain ErrNoIdentity. It is
+// ErrNoIdentity to every caller, so WriteError answers it 401 NO_IDENTITY and it admits nobody. A
+// websocket's heartbeat re-checks the assertion its upgrade verified, and reads this as the end of
+// that assertion's life rather than of the person's: the socket closes with a code on which the
+// page reopens it at once, and the reopened socket's fresh assertion is judged again
+// (api.whileCallerResolves).
+var ErrCredentialExpired = fmt.Errorf("%w: the credential has expired", ErrNoIdentity)
 
 // ErrSignInUnavailable means a sign-in needed the sign-in issuer and could not reach it: a sign-in
 // starting or completing before this process has discovered the issuer, or a lapsed confirmation
@@ -29,12 +41,12 @@ type Identity interface {
 
 // Presents reports whether r presents a credential i could resolve at all, judged on r alone with
 // nothing read: a session cookie signed with one of a CookieIdentity's keys
-// (auth.SessionFromRequest), a HeaderIdentity's header, and nothing on a server nobody signs in to
-// (NoBrowserIdentity). Login refuses every other request ErrNoIdentity before it reads anything, so
-// work that holds what it resolves the caller under - a document socket's place of the request
-// pool's share outside admission (docs.Service.ServeHTTP) - asks this first, and a request that
-// can only be refused costs none of it. An Identity of another kind cannot say, and is answered
-// true: its Login decides.
+// (auth.SessionFromRequest), a HeaderIdentity's header, an IAPIdentity's assertion header
+// (HasIAPAssertion), and nothing on a server nobody signs in to (NoBrowserIdentity). Login refuses
+// every other request ErrNoIdentity before it reads anything, so work that holds what it resolves
+// the caller under - a document socket's place of the request pool's share outside admission
+// (docs.Service.ServeHTTP) - asks this first, and a request that can only be refused costs none of
+// it. An Identity of another kind cannot say, and is answered true: its Login decides.
 func Presents(i Identity, r *http.Request) bool {
 	p, ok := i.(presenter)
 	return !ok || p.presents(r)

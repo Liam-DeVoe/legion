@@ -107,13 +107,20 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	if discovery.JWKSURI == "" {
 		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", issuer)
 	}
+	return NewKeysAt(discovery.JWKSURI), nil
+}
+
+// NewKeysAt returns the key source for the key set published at jwksURI, for an issuer that
+// publishes no discovery document to name it: Identity-Aware Proxy, whose set is at a fixed
+// address (IAPKeySetURL). It reads nothing: the first Key reads the set.
+func NewKeysAt(jwksURI string) *Keys {
 	return &Keys{
 		Lifetime:     DefaultKeysLifetime,
 		MinRefresh:   DefaultKeysMinRefresh,
 		FetchTimeout: DefaultKeysFetchTimeout,
 		HTTPClient:   &http.Client{},
-		jwksURI:      discovery.JWKSURI,
-	}, nil
+		jwksURI:      jwksURI,
+	}
 }
 
 // Key answers the public key a token naming kid and signed with alg is to be checked against. An
@@ -160,6 +167,22 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 		return nil, err
 	}
 	return selectKey(fresh, kid, alg)
+}
+
+// WouldRead reports whether Key, asked now for kid and alg, would read the issuer's key set before
+// it answers: a set never read, one older than Lifetime, or a kid the set does not hold while the
+// miss window is open (MinRefresh). It reads nothing, waits on nothing and opens no window, so a
+// caller asks it before Key to decide what to give up for the read's length (up to FetchTimeout).
+// Its answer is the cache as it stands: a Key that runs after the set's Lifetime ends, or after
+// another caller's read, can answer otherwise.
+func (k *Keys) WouldRead(kid, alg string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.fetched.IsZero() || time.Since(k.fetched) >= k.Lifetime {
+		return true
+	}
+	_, err := selectKey(k.keys, kid, alg)
+	return errors.Is(err, ErrNoKey) && (k.missed.IsZero() || time.Since(k.missed) >= k.MinRefresh)
 }
 
 // state is the cached set and when it was fetched, the zero time standing for a set never read.

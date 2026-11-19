@@ -268,7 +268,7 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 // Every writer of a mapping goes through here: the PUT, the DELETE and the boot seed
 // (SeedRepoProjects).
 func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, actor model.Actor, projects ...string) (*model.RepoProject, error) {
-	if _, err := tx.Exec(ctx, `
+	if err := store.LockWithinBound(ctx, tx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-repo-project'), hashtext($1))
 	`, repo); err != nil {
 		return nil, fmt.Errorf("lock repository mapping %s: %w", repo, err)
@@ -429,7 +429,7 @@ func parseRepoRename(repo string, raw *string) (*string, error) {
 // (lockRepoProjectWrite) and takes no other mapping's, so this lock is always the last one
 // taken and two renames cannot wait on each other.
 func refuseRepoRenameChain(ctx context.Context, tx pgx.Tx, repo, renamedTo string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-repo-rename'), 0)`); err != nil {
+	if err := store.LockWithinBound(ctx, tx, `select pg_advisory_xact_lock(hashtext('dispatch-repo-rename'), 0)`); err != nil {
 		return fmt.Errorf("lock the repository renames: %w", err)
 	}
 	var pointedAt string

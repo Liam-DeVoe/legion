@@ -51,9 +51,9 @@ const (
 	// DeliveryReconcileLease is delivery.Reconcile's.
 	DeliveryReconcileLease = "delivery-reconcile"
 	// IssueAskRepairLease is api.RunIssueAskRepair's: the repair of closed and reopened issues'
-	// asks. Two passes running at once are correct - they serialise on each issue's row, and the
-	// second finds nothing left - but they would read the same documents for the same result,
-	// which is reason enough for one process to run it each interval.
+	// asks. Two passes running at once are correct - they serialise on each issue's owner lock,
+	// and the second finds nothing left - but they would read the same documents for the same
+	// result, which is reason enough for one process to run it each interval.
 	IssueAskRepairLease = "issue-ask-repair"
 	// ServerProcessesLease is processes.RunPrune's: the prune of the server process registry, so
 	// one process prunes per PruneInterval however many serve the database.
@@ -93,14 +93,16 @@ type Leases interface {
 // artifacts and the migration runner are each a single key (the enumeration in docs/copied_asks.go,
 // at lockProjectCopies) - so a lease can never collide with one of those, whatever its name hashes
 // to. Within the two-key space the other namespaces are the copy locks'
-// (docs.copiedAsksLockNamespace, "COPY"), the test hooks' (the api package's
-// testHookLockNamespace, "HOOK", taken only under DISPATCH_TEST_HOOKS), a conditional edit's
-// admission's (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
+// (docs.copiedAsksLockNamespace, "COPY"), the owner locks' (store.OwnerLockNamespace, "OWNR"),
+// the owner lock gate's (store.OwnerLockGateNamespace, "OWNG"), the test hooks' (the api
+// package's testHookLockNamespace, "HOOK", taken only under
+// DISPATCH_TEST_HOOKS), a conditional edit's admission's
+// (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
 // lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite)
 // and the rename graph's own (api's refuseRepoRenameChain), each a first key of its own, so a
-// lease's second key, its
-// name's hashtext, separates the leases from each other and from nothing else.
+// lease's second key, its name's hashtext, separates the leases from each other and from nothing
+// else.
 const leaseNamespace int32 = 0x4C4F4F50
 
 // takeLease tries for a lease without queueing behind its holder, and freeLease gives it back. Both

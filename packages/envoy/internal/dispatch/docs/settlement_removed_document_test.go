@@ -73,8 +73,10 @@ func TestASettlementThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
 	}
 
 	// The settlement, which reads the artifacts row the removal has deleted but not committed,
-	// and then waits for the issue row the removal holds. Its generation is the room's as it
-	// stands now: a settlement armed meanwhile would be the room's own.
+	// and then waits for the issue's owner lock the removal holds, in the owner lock's own
+	// statement (store.OwnerLockStatement, `... as owner_lock`), which is what its backend shows
+	// while it waits. Its generation is the room's as it stands now: a settlement armed meanwhile
+	// would be the room's own.
 	state := service.room(artifactID)
 	state.mu.Lock()
 	generation := state.roomGeneration
@@ -87,7 +89,7 @@ func TestASettlementThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
 		outcomes <- outcome
 		returned <- outcome.err
 	}()
-	waitForLockWait(t, ctx, database, "%closed_at is null from issues%", returned)
+	waitForLockWait(t, ctx, database, "%as owner_lock%", returned)
 	if err := removal.Commit(ctx); err != nil {
 		t.Fatalf("commit the removal: %v", err)
 	}

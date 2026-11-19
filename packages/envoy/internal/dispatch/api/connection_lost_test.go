@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -42,7 +44,7 @@ func TestAnEditWhoseReportRollbackRunsOutItsBoundIsRefusedDatabaseBusy(t *testin
 	handler, _, _ := newTestServer(t, testServerOptions{
 		dialRequestPool: socket.Dial,
 		settle:          time.Hour,
-		adviceQueryHook: func(_ context.Context, _ queryer, query string) error {
+		adviceQueryHook: func(_ context.Context, _ pgx.Tx, query string) error {
 			if query == "superseded_approval" && editing.Load() {
 				socket.StallAfter("rollback to savepoint ")
 			}
@@ -81,7 +83,7 @@ func TestAnEditWhoseBackendIsTerminatedBeforeItsCommitIsRefusedDatabaseBusy(t *t
 	var database *store.Store
 	handler, opened, _, _ := newRegisteredTestServer(t, testServerOptions{
 		settle: time.Hour,
-		adviceQueryHook: func(ctx context.Context, q queryer, query string) error {
+		adviceQueryHook: func(ctx context.Context, q pgx.Tx, query string) error {
 			if query != "superseded_approval" || terminated.Swap(true) {
 				return nil
 			}

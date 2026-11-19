@@ -86,16 +86,21 @@
 # Environment: LOADTEST_ROOT (default ${TMPDIR:-/tmp}/dispatch-loadtest); LOADTEST_SRC (default: the
 # checkout holding this script); LOADTEST_DISPATCH_SRC (default LOADTEST_SRC: the checkout
 # envoy-dispatch is built from); the ports, which follow LOADTEST_ROOT (common.sh: the root's block
-# k of the path's sha256 modulo 200 gives postgres 10000+10k, proxy 10001+10k, nats 10002+10k,
-# nats_monitor 10003+10k, listener 10004+10k, dispatch 10005+10k, pprof 10006+10k, metrics
-# 10007+10k, proxy_stats 10008+10k, envoy_proxy 10009+10k), so two roots on one machine hold the
-# same 10 ports about 1 pair in 200 and otherwise none, and a collision is refused by start, not
-# shared; setup also refuses a port that lies inside the machine's ephemeral range (common.sh:
-# check_ephemeral_ports), which an outbound connection would take from the stack;
-# LOADTEST_PG_PORT, LOADTEST_PROXY_PORT, LOADTEST_PROXY_STATS_PORT (the proxy's wire counts),
-# LOADTEST_NATS_PORT, LOADTEST_NATS_MONITOR_PORT, LOADTEST_LISTENER_PORT, LOADTEST_DISPATCH_PORT,
-# LOADTEST_PPROF_PORT, LOADTEST_METRICS_PORT and LOADTEST_ENVOY_PROXY_PORT each override their own
-# port, read by setup into stack.json (`stack.sh status` prints them); LOADTEST_PROXY_RTT (1ms);
+# k of the path's sha256 modulo 200 gives postgres B+10k, proxy B+1+10k, nats B+2+10k,
+# nats_monitor B+3+10k, listener B+4+10k, dispatch B+5+10k, pprof B+6+10k, metrics B+7+10k,
+# proxy_stats B+8+10k, envoy_proxy B+9+10k, where B is 10000 unless the ephemeral range,
+# ip_local_port_range, starts below 12000, and then the 2000 ports just below it, so no stack port
+# is inside that range; setup refuses when no 2000 ports fit below it above 1023), so two roots on
+# one machine hold the same 10 ports about 1 pair in 200 and otherwise none, and a collision is
+# refused by start, not shared; setup moves a port stack.json recorded inside the machine's
+# ephemeral range to the root's default and refuses one a LOADTEST_*_PORT sets inside it
+# (common.sh: check_ephemeral_ports), which an outbound connection would take from the stack, and
+# start refuses a port inside it (check_port); LOADTEST_EPHEMERAL_RANGE_FILE reads the range from
+# another file than /proc/sys/net/ipv4/ip_local_port_range, for a test; LOADTEST_PG_PORT,
+# LOADTEST_PROXY_PORT, LOADTEST_PROXY_STATS_PORT (the proxy's wire counts), LOADTEST_NATS_PORT,
+# LOADTEST_NATS_MONITOR_PORT, LOADTEST_LISTENER_PORT, LOADTEST_DISPATCH_PORT, LOADTEST_PPROF_PORT,
+# LOADTEST_METRICS_PORT and LOADTEST_ENVOY_PROXY_PORT each override their own port, read by setup
+# into stack.json (`stack.sh status` prints them); LOADTEST_PROXY_RTT (1ms);
 # LOADTEST_PG_DIRECT=1 starts Dispatch on Postgres without the proxy;
 # LOADTEST_ENVOY_RTT=<duration> starts Dispatch with ENVOY_URL through a latency proxy
 # (envoy_proxy) in front of the listener;
@@ -240,15 +245,18 @@ stack_set() {
 set_pid() { stack_set '.pids[$n] = $p' --arg n "$1" --argjson p "$2"; }
 
 # write_stack_json writes stack.json on the first setup, with this root's ports (stack_ports: the
-# defaults that follow LOADTEST_ROOT, each one overridden by its LOADTEST_*_PORT). A later setup
-# keeps the ports the file records and moves only those whose variable this environment sets, so a
-# rerun with no port variable set keeps the stack's ports. It adds a port key that stack.json lacks
-# (one that a newer stack.sh added, such as metrics) even while the stack runs, but refuses to move
-# or drop a port stack.json holds while the stack runs. The name, tokens and pids are kept.
+# defaults that follow LOADTEST_ROOT, below the machine's ephemeral range, each one overridden by its
+# LOADTEST_*_PORT). A later setup keeps the ports the file records and moves only those whose
+# variable this environment sets, and those inside the ephemeral range (port_in_ephemeral), which a
+# stack recorded before its blocks moved below that range holds: those take this root's default. So
+# a rerun with no port variable set keeps the stack's ports. It adds a port key that stack.json
+# lacks (one that a newer stack.sh added, such as metrics) even while the stack runs, but refuses
+# to move or drop a port stack.json holds while the stack runs. The name, tokens and pids are kept.
 write_stack_json() {
-  local ports k p var args=()
+  local ports k p var defaults args=()
+  defaults=$(stack_ports "$ROOT") || die "no block of the stack's ports fits below this machine's ephemeral range (common.sh, port_base, says why above)"
   if [ ! -f "$STACK" ]; then
-    while read -r k p; do args+=(--argjson "$k" "$p"); done < <(stack_ports "$ROOT")
+    while read -r k p; do args+=(--argjson "$k" "$p"); done <<<"$defaults"
     ports=$(jq -n "${args[@]}" '$ARGS.named')
     (
       umask 077
@@ -264,19 +272,25 @@ write_stack_json() {
   while read -r k p; do recorded[$k]=$p; done < <(jq -r '(.ports // {}) | to_entries[] | "\(.key) \(.value)"' "$STACK")
   while read -r k p; do
     var=${PORT_VAR[$k]}
-    args+=(--argjson "$k" "${!var:-${recorded[$k]:-$p}}")
-  done < <(stack_ports "$ROOT")
+    if [ -n "${!var:-}" ]; then
+      args+=(--argjson "$k" "${!var}")
+    elif [ -n "${recorded[$k]:-}" ] && ! port_in_ephemeral "${recorded[$k]}"; then
+      args+=(--argjson "$k" "${recorded[$k]}")
+    else
+      args+=(--argjson "$k" "$p")
+    fi
+  done <<<"$defaults"
   ports=$(jq -n "${args[@]}" '$ARGS.named')
   if [ "$(jq -c .ports "$STACK")" != "$(jq -c . <<<"$ports")" ]; then
     local moved
     moved=$(jq -r --argjson ports "$ports" '.ports | to_entries | map(select($ports[.key] != .value) | .key) | join(", ")' "$STACK")
     if [ -n "$moved" ]; then
       for k in "${PROCESSES[@]}"; do
-        running "$k" && die "the port variables in the environment move ports of $STACK ($moved) while $k is running; stack.sh stop first"
+        running "$k" && die "the port variables in the environment, or the ephemeral range, move ports of $STACK ($moved) while $k is running; stack.sh stop first"
       done
     fi
     stack_set '.ports = $ports' --argjson ports "$ports"
-    note "ports in $STACK updated from the environment: $(jq -c . <<<"$ports")"
+    note "ports in $STACK updated from the environment and the ephemeral range ($(ephemeral_range)): $(jq -c . <<<"$ports")"
   fi
   stack_set '.root = $root' --arg root "$ROOT"
 }
@@ -449,10 +463,15 @@ port_holder() {
 # (common.sh: a block out of 200, so about 1 pair of roots in 200 collides), and then all 9 ports
 # are the same, so the refusal names the block and both remedies. It says that only of a port this
 # root's block still sets: a port stack.json recorded under another block, or one a LOADTEST_*_PORT
-# overrides, is held by whoever holds it, which this root's block says nothing about.
+# overrides, is held by whoever holds it, which this root's block says nothing about. It refuses
+# first, whoever holds it, a port inside the machine's ephemeral range, which any outgoing
+# connection may take as its source port before this process binds it.
 check_port() {
   local name=$1 key=$2 p holders block
   p=$(port "$key")
+  if port_in_ephemeral "$p"; then
+    die "port $p ($key, for $name) is inside this machine's ephemeral range $(ephemeral_range | tr ' ' '-') (ip_local_port_range), so any outgoing connection may take it as its source port before $name binds it; rerun stack.sh setup with no port variable set, which moves every recorded port inside that range to this root's block below it, or set ${PORT_VAR[$key]} to a port outside that range and rerun stack.sh setup with it set, then stack.sh start"
+  fi
   port_open "$p" || return 0
   holders=$(port_holder "$p")
   [ -n "$holders" ] &&
@@ -811,10 +830,9 @@ EOF
 cmd_start() {
   need_stack
   [ -f "$PGDATA/PG_VERSION" ] || die "no Postgres data directory at $PGDATA; run stack.sh setup first"
-  # Every port a stopped process needs is checked before anything starts: free here, and outside
-  # the range the kernel gives to outbound connections (a stack.json from before the port base
-  # moved below that range still records one inside it).
-  check_ephemeral_ports "$(recorded_ports)"
+  # Every port a stopped process needs is checked before anything starts (check_port): free here,
+  # and outside the range the kernel gives to outbound connections (a stack.json from before the
+  # port base moved below that range still records one inside it, until a setup moves it).
   local p k
   for p in "${START_ORDER[@]}"; do
     running "$p" && continue

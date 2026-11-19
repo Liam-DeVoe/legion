@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -579,6 +581,37 @@ func TestWriteAdviceAnswersWhoOwnsTheIssuesStatus(t *testing.T) {
 	}
 }
 
+// A write that reads its advice before it writes the issue row (writeAdviceBefore: a create, a
+// patch) answers who owns the issue's status for the row as the write leaves it, which no read of
+// the table can see yet (legionManagedStatusOfRow): a session's create of an issue labelled legion,
+// whose row does not exist when the advice is read, and a session's patch that adds the label to
+// an issue in triage, whose stored row does not hold it yet, are each told that Legion owns it.
+func TestWriteAdviceAnswersWhoOwnsTheStatusOfTheRowTheWriteLeaves(t *testing.T) {
+	handler := newTestHandler(t)
+	createAdviceProject(t, handler, "ROWOWNED")
+	actor := adviceSessionActor("session-row-owner")
+
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "ROWOWNED", "title": "Rotate the signing keys", "labels": []string{"legion"}, "force": true,
+		"actor": actor,
+	})
+	advice := adviceFromResponse(t, created.Code, created.Body.String())
+	if advice.LegionManagedStatus == nil || !*advice.LegionManagedStatus {
+		t.Fatalf("a session's create labelled legion: legion_managed_status = %v, want true: %s",
+			advice.LegionManagedStatus, created.Body.String())
+	}
+
+	plain := createAdviceIssue(t, handler, "ROWOWNED", "Tidy the runbook", nil)
+	patched := sessionRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+plain.Key, map[string]any{
+		"labels_add": []string{"legion"}, "actor": actor,
+	})
+	advice = adviceFromResponse(t, patched.Code, patched.Body.String())
+	if advice.LegionManagedStatus == nil || !*advice.LegionManagedStatus {
+		t.Fatalf("a session's patch adding the legion label: legion_managed_status = %v, want true: %s",
+			advice.LegionManagedStatus, patched.Body.String())
+	}
+}
+
 // The walk runs where its answer is used and nowhere else: an issue past triage prints no triage
 // line whatever the answer would be, so an ordinary write on an ordinary issue gains no query.
 func TestWriteAdviceLeavesWhoOwnsTheStatusUnaskedPastTriage(t *testing.T) {
@@ -793,27 +826,24 @@ func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
 }
 
 // A session's write on an issue with a long event history still answers its advice, with the full
-// count of the session's writes. The advice's queries run under adviceAllowance, the 500 ms bound
-// writeAdvice puts on the request's context, and a count that runs past that bound is cancelled and
-// costs the write its advice, so a count that is answered ran inside the bound. The hook reads that
-// the bound stood on the context the count runs on. The write's wall-clock time depends on the
+// count of the session's writes. The advice's queries run under the 500 ms statement_timeout
+// writeAdvice sets on its savepoint, and a count that runs past that bound is cancelled and costs
+// the write its advice, so a count that is answered ran inside the bound. The hook reads that the
+// bound stood on the savepoint the count runs on. The write's wall-clock time depends on the
 // machine and is not checked.
 func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
-	// left is how long the count's context had left when the hook ran, and set whether it had a
-	// deadline at all.
-	type countBound struct {
-		left time.Duration
-		set  bool
-	}
-	bound := make(chan countBound, 1)
-	served.adviceQueryHook = func(ctx context.Context, _ queryer, query string) error {
+	bound := make(chan string, 1)
+	served.adviceQueryHook = func(ctx context.Context, tx pgx.Tx, query string) error {
 		if query != "session_writes_since_human" {
 			return nil
 		}
-		deadline, set := ctx.Deadline()
+		var setting string
+		if err := tx.QueryRow(ctx, `select current_setting('statement_timeout')`).Scan(&setting); err != nil {
+			return err
+		}
 		select {
-		case bound <- countBound{left: time.Until(deadline), set: set}:
+		case bound <- setting:
 		default:
 		}
 		return nil
@@ -828,11 +858,16 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 		t.Fatalf("begin event seed: %v", err)
 	}
 	defer tx.Rollback(context.Background())
+	// The seed appends to the issue's event log as a writer does: under its owner lock, its
+	// sequence read in the statement after it.
+	if err := store.LockOwner(context.Background(), tx, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("lock issue for event seed: %v", err)
+	}
 	var lastSeq int
 	if err := tx.QueryRow(context.Background(), `
-		select last_seq from issues where key = $1 for update
+		select last_seq from issues where key = $1
 	`, issue.Key).Scan(&lastSeq); err != nil {
-		t.Fatalf("lock issue for event seed: %v", err)
+		t.Fatalf("read issue sequence for event seed: %v", err)
 	}
 	if _, err := tx.Exec(context.Background(), `
 		insert into events (issue_key, seq, type, actor, payload, notify)
@@ -859,10 +894,9 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 		t.Fatalf("session write count = %d, want %d", advice.SessionWritesSinceHuman, seededEvents+1)
 	}
 	select {
-	case counted := <-bound:
-		if !counted.set || counted.left <= 0 || counted.left > adviceAllowance {
-			t.Fatalf("the advice counted the session's writes with %s left of its context (deadline set: %t), want the %s writeAdvice sets",
-				counted.left, counted.set, adviceAllowance)
+	case setting := <-bound:
+		if setting != "500ms" {
+			t.Fatalf("the advice counted the session's writes under statement_timeout %q, want the 500ms writeAdvice sets", setting)
 		}
 	default:
 		t.Fatal("the advice answered without running its count of the session's writes")
@@ -870,10 +904,10 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 }
 
 // A session's write whose advice query cannot finish still commits, without its advice. The
-// failing query sleeps for two seconds, and adviceAllowance, the 500 ms bound writeAdvice puts on
-// the request's context, ends it: the query is cancelled at that bound, and the server logs the
-// advice as omitted for that reason (errAdviceAllowanceEnded), so the write did not wait out the
-// two seconds. The write's wall-clock time depends on the machine and is not checked.
+// failing query sleeps for two seconds, and the 500 ms statement_timeout on the advice's savepoint
+// (writeAdvice) ends it: Postgres cancels it for that timeout, and the server logs the advice as
+// omitted for that reason, so the write did not wait out the two seconds. The write's wall-clock
+// time depends on the machine and is not checked.
 func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
 	handler, database := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "FAIL")
@@ -886,8 +920,8 @@ func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
 	})
 	omitted := logs.Lines(`msg="dispatch: write advice omitted"`)
 	if !strings.Contains(omitted, "query=session_writes_since_human") ||
-		!strings.Contains(omitted, errAdviceAllowanceEnded.Error()) {
-		t.Fatalf("the failing advice query was not ended by the advice's allowance; the server logged:\n%s", logs.String())
+		!strings.Contains(omitted, "canceling statement due to statement timeout") {
+		t.Fatalf("the failing advice query was not ended by the advice's statement_timeout; the server logged:\n%s", logs.String())
 	}
 	if response.Code != http.StatusCreated {
 		t.Fatalf("message with failed advice: status=%d body=%s", response.Code, response.Body.String())
@@ -1003,12 +1037,12 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 		deps:              deps,
 		lifetime:          t.Context(),
 		suggestionTimeout: suggestionTimeout,
-		adviceQueryHook: func(ctx context.Context, q queryer, got string) error {
+		adviceQueryHook: func(ctx context.Context, tx pgx.Tx, got string) error {
 			if got != query {
 				return nil
 			}
-			var slept any
-			return q.QueryRow(ctx, "select pg_sleep(2)").Scan(&slept)
+			_, err := tx.Exec(ctx, "select pg_sleep(2)")
+			return err
 		},
 	}
 	mux := http.NewServeMux()

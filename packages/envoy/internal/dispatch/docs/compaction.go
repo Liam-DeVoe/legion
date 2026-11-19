@@ -270,7 +270,7 @@ func (p *PgVersioned) writeCompaction(ctx context.Context, pool *store.RawPool, 
 		if p.duringCompactionWrite != nil {
 			p.duringCompactionWrite(room, tx)
 		}
-		recovered, err := p.recoverPruneTx(ctx, tx, room)
+		_, recovered, err := p.recoverPruneTx(ctx, tx, room)
 		if err != nil {
 			return err
 		}

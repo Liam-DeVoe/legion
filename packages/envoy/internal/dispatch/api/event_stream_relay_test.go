@@ -428,7 +428,7 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 //
 // This is the branch merge 02f52aea lost with this branch's
 // TestAHubRereadsTheGapAnotherReaderProvedWhileItRead: the hub no longer reads the log, so the
-// relay's read holds it (eventStreamRelay.read, events.Horizon.Behind).
+// relay's read holds it (eventStreamRelay.read, events.Horizon.Gap).
 func TestARelayRereadsTheGapAnotherReaderProvedWhileItRead(t *testing.T) {
 	// Settlement is held off, so nothing of the seeded specs commits an event behind the
 	// relay's back: only this test's own appends wake it, and after the rollback nothing
@@ -477,36 +477,36 @@ func TestARelayRereadsTheGapAnotherReaderProvedWhileItRead(t *testing.T) {
 	}
 }
 
-// The gap re-read's own backoff, which that race decides the horizon of: the first gap waits
-// eventRelayGapMin, a gap the horizon has not moved under doubles the wait to eventRelayGapMax,
-// and a gap over a horizon that moved waits from eventRelayGapMin again, since a horizon that
-// moves is the gap closing from below and the next re-read is the one worth making soon. A read
-// that left no gap open schedules nothing at all.
+// The gap re-read's own backoff, which that race decides the horizon of: the first held gap
+// (events.GapHeld) waits eventRelayGapMin, a held gap the horizon has not moved under doubles the
+// wait to eventRelayGapMax, and a held gap over a horizon that moved waits from eventRelayGapMin
+// again, since a horizon that moves is the gap closing from below and the next re-read is the one
+// worth making soon. A read that left no gap open schedules nothing at all.
 func TestTheGapRereadWaitsFromTheStartAgainWhenTheHorizonMoves(t *testing.T) {
 	var gaps eventGapReread
 	defer gaps.stop()
 
-	gaps.schedule(10, true)
+	gaps.schedule(10, events.GapHeld)
 	if gaps.wait != eventRelayGapMin {
 		t.Fatalf("the first gap waits %s, want %s", gaps.wait, eventRelayGapMin)
 	}
-	gaps.schedule(10, true)
+	gaps.schedule(10, events.GapHeld)
 	if gaps.wait != 2*eventRelayGapMin {
 		t.Fatalf("a gap over the same horizon waits %s, want the first wait doubled (%s)", gaps.wait, 2*eventRelayGapMin)
 	}
 	for range 10 {
-		gaps.schedule(10, true)
+		gaps.schedule(10, events.GapHeld)
 	}
 	if gaps.wait != eventRelayGapMax {
 		t.Fatalf("a gap the horizon stands still under waits %s, want at most %s", gaps.wait, eventRelayGapMax)
 	}
 
-	gaps.schedule(11, true)
+	gaps.schedule(11, events.GapHeld)
 	if gaps.wait != eventRelayGapMin {
 		t.Fatalf("a gap over a horizon that moved waits %s, want %s", gaps.wait, eventRelayGapMin)
 	}
 
-	gaps.schedule(11, false)
+	gaps.schedule(11, events.GapNone)
 	if gaps.wait != 0 || gaps.due() != nil {
 		t.Fatalf("a read that left no gap scheduled a re-read after %s", gaps.wait)
 	}

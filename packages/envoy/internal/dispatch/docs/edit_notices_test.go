@@ -491,6 +491,55 @@ func TestEditNoticeSweepOwnsAProjectDocumentsNoticeByTheDocument(t *testing.T) {
 	}
 }
 
+// The sweep's claim decides the notice. One moved on behind the sweep after it read it - which no
+// writer holding the document owner's lock can do - is not the notice it read, so the claim's
+// callback refuses it, and the event append the server already ran in the same batch rolls back
+// with it: no event, nothing published, the moved notice left as it stands, no failure reported.
+func TestEditNoticeSweepSendsNothingForANoticeMovedBehindItsClaim(t *testing.T) {
+	service, _ := newTestService(t)
+	document := createProjectDocument(t, service.store, "First.")
+	addPersonsVersion(t, service.store, document, 2, "Second.\n", model.Actor{Kind: "user", ID: "alice@example.com"})
+	ctx := context.Background()
+	service.afterEditNoticeRead = func(artifactID string) {
+		if _, err := service.store.Pool.Exec(ctx, `
+			update document_edit_notices set to_version = to_version + 1 where artifact_id = $1
+		`, artifactID); err != nil {
+			t.Errorf("move the notice on behind the sweep: %v", err)
+		}
+	}
+	var eventsBefore int
+	if err := service.store.Pool.QueryRow(ctx, `select count(*) from events`).Scan(&eventsBefore); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	published, unsubscribe := service.events.Subscribe()
+	defer unsubscribe()
+
+	sent, err := service.sendDueEditNotices(ctx)
+	if err != nil || sent != 0 {
+		t.Fatalf("sweep = %d sent, %v; want none sent and no failure", sent, err)
+	}
+	var eventsAfter, from, to int
+	if err := service.store.Pool.QueryRow(ctx, `select count(*) from events`).Scan(&eventsAfter); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if eventsAfter != eventsBefore {
+		t.Fatalf("events went from %d to %d, want the claim's refusal to roll its batch's append back", eventsBefore, eventsAfter)
+	}
+	if err := service.store.Pool.QueryRow(ctx, `
+		select from_version, to_version from document_edit_notices where artifact_id = $1
+	`, document).Scan(&from, &to); err != nil {
+		t.Fatalf("read the moved notice: %v", err)
+	}
+	if from != 1 || to != 3 {
+		t.Fatalf("notice = %d..%d, want the moved 1..3 left as it stands", from, to)
+	}
+	select {
+	case event := <-published:
+		t.Fatalf("published %s for a notice the sweep did not claim", event.Type)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // A notice whose quiet time has not passed stays, and sends nothing.
 func TestEditNoticeSweepLeavesANoticeThatIsNotDue(t *testing.T) {
 	service, artifactID := newTestService(t)
@@ -658,7 +707,7 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 		}()
 		deadline := time.Now().Add(10 * time.Second)
 		for {
-			waiting, err := storetest.CountLockWaits(context.Background(), service.store, "%from issues where key = $1 for no key update%")
+			waiting, err := storetest.CountLockWaits(context.Background(), service.store, "%as owner_lock%")
 			if err != nil {
 				t.Errorf("count the sweep's lock waits: %v", err)
 				return nil
@@ -767,6 +816,96 @@ func TestEditNoticeSweepSkipsDeletedArtifact(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Fatalf("the sweep logged an error for a deleted document:\n%s", logs.String())
+	}
+}
+
+// A sweep that meets a notice whose document owner's lock another transaction holds past the bound
+// of a lock's wait (store's lockWait), as a holder whose database stopped answering it
+// would, ends that wait at the bound, as every owner lock does: it logs the notice it could not
+// send and leaves it due, gives its background connection back, and goes on to the next due
+// notice, which it sends. The notice it left is sent by a later sweep once the owner is free - the
+// loop's next pass, which a notice still due asks for (editNoticePass). The bound is the test's
+// (store.WithLockWaitForTest) rather than production's ten seconds, and the holder is a
+// transaction of the test's own.
+func TestEditNoticeSweepEndsAnOwnerLockWaitAtItsBoundAndALaterSweepSendsTheNotice(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	service, _ := newTestService(t)
+	held := createProjectDocument(t, service.store, "Held.")
+	free := createProjectDocument(t, service.store, "Free.")
+	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
+	addPersonsVersion(t, service.store, held, 2, "Held, edited.\n", alice)
+	addPersonsVersion(t, service.store, free, 2, "Free, edited.\n", alice)
+	ctx := context.Background()
+	if _, err := service.store.Pool.Exec(ctx, `
+		update document_edit_notices set due_at = due_at - interval '1 minute' where artifact_id = $1
+	`, held); err != nil {
+		t.Fatalf("make the held document's notice the first due: %v", err)
+	}
+	holder, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, holder, store.ArtifactOwner(held)); err != nil {
+		t.Fatalf("take the held document's owner lock: %v", err)
+	}
+
+	const bound = 300 * time.Millisecond
+	type sweepResult struct {
+		sent int
+		err  error
+	}
+	swept := make(chan sweepResult, 1)
+	started := time.Now()
+	go func() {
+		sent, err := service.sendDueEditNotices(store.WithLockWaitForTest(context.Background(), bound))
+		swept <- sweepResult{sent, err}
+	}()
+	var result sweepResult
+	select {
+	case result = <-swept:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		_ = holder.Rollback(ctx)
+		<-swept
+		t.Fatalf("the sweep was still waiting on the held document's owner lock %s after it began, past its wait's "+
+			"bound of %s: it holds its background connection for as long as the holder stands", waited.Round(time.Millisecond), bound)
+	}
+	if result.err != nil || result.sent != 1 {
+		t.Fatalf("the sweep beside the held owner = %d sent, %v; want the free document's notice sent", result.sent, result.err)
+	}
+	if edits := humanEdits(t, service.store, free); len(edits) != 1 {
+		t.Fatalf("the free document's edit notices = %d, want 1: the sweep did not go on past the held one", len(edits))
+	}
+	if edits := humanEdits(t, service.store, held); len(edits) != 0 {
+		t.Fatalf("the held document's edit notices = %d, want none while its owner is held", len(edits))
+	}
+	if _, open := readEditNotice(t, service, held); !open {
+		t.Fatal("the held document's notice is no longer due: the sweep that could not send it dropped it")
+	}
+	if logged := logs.String(); !strings.Contains(logged, `msg="dispatch: send an edit notice" artifact=`+held) {
+		t.Fatalf("the sweep did not log the notice it could not send:\n%s", logged)
+	}
+	if waiting, _ := storetest.OwnerLockWaiters(t, service.store); waiting != 0 {
+		t.Fatalf("%d sessions still wait on an owner lock after the sweep returned, want none", waiting)
+	}
+	background, err := service.store.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+	if acquired := background.Stat().AcquiredConns(); acquired != 0 {
+		t.Fatalf("the background pool has %d connections out after the sweep returned, want none", acquired)
+	}
+
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("let the held document's owner lock go: %v", err)
+	}
+	if sent, err := service.sendDueEditNotices(store.WithLockWaitForTest(ctx, bound)); err != nil || sent != 1 {
+		t.Fatalf("the next sweep, with the owner free = %d sent, %v; want the held document's notice sent", sent, err)
+	}
+	if edits := humanEdits(t, service.store, held); len(edits) != 1 {
+		t.Fatalf("the held document's edit notices after the next sweep = %d, want 1", len(edits))
 	}
 }
 

@@ -181,6 +181,39 @@ func TestKeyReadsTheSetOnceForConcurrentCallers(t *testing.T) {
 	}
 }
 
+// WouldRead answers, before each Key, whether that Key reads the set, and reads nothing itself: yes
+// for a set never read, no for a key the fresh set holds, yes for a key id the set does not hold
+// while the miss window is open and no once that read has opened it, and yes again once the set's
+// Lifetime is up.
+func TestWouldReadAnswersWhetherKeyReadsTheSet(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	for _, step := range []struct {
+		name, kid string
+		lifetime  time.Duration
+		reads     bool
+	}{
+		{name: "a set never read", kid: "exchange-key", lifetime: DefaultKeysLifetime, reads: true},
+		{name: "a key the fresh set holds", kid: "exchange-key", lifetime: DefaultKeysLifetime, reads: false},
+		{name: "a key id the set does not hold, the window open", kid: "never-published", lifetime: DefaultKeysLifetime, reads: true},
+		{name: "a key id the set does not hold, inside the window", kid: "never-published", lifetime: DefaultKeysLifetime, reads: false},
+		{name: "a set past its Lifetime", kid: "exchange-key", lifetime: 0, reads: true},
+	} {
+		keys.Lifetime = step.lifetime
+		before := issuer.JWKSFetches()
+		if got := keys.WouldRead(step.kid, testAlgorithm); got != step.reads {
+			t.Errorf("%s: WouldRead(%q) = %t, want %t", step.name, step.kid, got, step.reads)
+		}
+		if fetches := issuer.JWKSFetches(); fetches != before {
+			t.Fatalf("%s: WouldRead read the key set (%d reads, want %d)", step.name, fetches, before)
+		}
+		_, _ = keys.Key(context.Background(), step.kid, testAlgorithm)
+		if read := issuer.JWKSFetches() > before; read != step.reads {
+			t.Errorf("%s: Key read the set %t, where WouldRead answered %t", step.name, read, step.reads)
+		}
+	}
+}
+
 func TestNewKeysRefusesAnIssuerThatDoesNotDiscover(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.FailDiscovery(http.StatusInternalServerError)

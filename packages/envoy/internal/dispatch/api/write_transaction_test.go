@@ -38,25 +38,25 @@ func backendState(t *testing.T, database *store.Store, pid int32) (state string,
 // nothing of the write is committed, and the connection it held goes back to the pool out of its
 // transaction rather than being destroyed.
 //
-// The cancel lands inside the transaction, at the superseded-approval advice, which is the last
-// read a document edit makes under its locks (supersededApprovalAdvice). From there the handler
-// has the event row, the version row, the document's advisory lock, the artifact owner row and
-// the document's writer gate, and the event id it drew holds the event horizon every live reader
-// of the instance waits on.
+// The cancel lands inside the transaction, in a document edit's read phase, at the first of its
+// two document reports (supersededApprovalAdvice). There the edit holds the document's writer gate,
+// its owner lock and its request-pool connection in a transaction, and its version and event are
+// queued on the document ledger, not yet written.
 //
-// What the write does then is all-or-nothing and immediate: the commit is not started for a
-// request already gone (store.CommitRefusal), so no version lands, and the deferred rollback
-// sends its ROLLBACK on a context of its own (store.RollbackContext), so the backend leaves its
-// transaction and the pooled connection survives. Before this, the commit ran on anyway - it is
-// detached from the client by design - and committed a write whose answer nobody would read,
-// holding every one of those locks for as long as it took.
+// What the write does then is all-or-nothing and immediate: a request already gone reaches no
+// commit - its next statement is refused on the cancelled context, and the commit is not started
+// for it either (store.CommitRefusal) - so no version lands, and the deferred rollback sends its
+// ROLLBACK on a context of its own (store.RollbackContext), so the backend leaves its transaction
+// and the pooled connection survives. Before this, the commit ran on anyway - it is detached from
+// the client by design - and committed a write whose answer nobody would read, holding every one
+// of those locks for as long as it took.
 func TestAWriteWhoseClientGoesAwayEndsItsTransactionAtOnce(t *testing.T) {
 	var canceled context.CancelFunc
 	var backend int32
 	entered := make(chan struct{})
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
 		settle: time.Hour,
-		adviceQueryHook: func(ctx context.Context, q queryer, query string) error {
+		adviceQueryHook: func(ctx context.Context, q pgx.Tx, query string) error {
 			if query != "superseded_approval" {
 				return nil
 			}
@@ -123,21 +123,22 @@ func TestAWriteWhoseClientGoesAwayEndsItsTransactionAtOnce(t *testing.T) {
 	}
 }
 
-// Write advice does not hold the event horizon: it runs after the write committed, on the pool,
-// so the transaction that drew the write's event id has already ended by the time the first
-// advice query runs. A reader waiting for a horizon proven after that write (events.Horizon.Await,
-// the event stream relay's start, a `GET /api/v1/references?since=` read) therefore waits on the
-// write's transaction alone and not on the five to nine round trips that decorate its answer.
+// Write advice does not hold the event horizon: it runs in the write's read phase (writeAdvice),
+// before the write's first statement gives its transaction an id, so a reader waiting for a
+// horizon proven after the advice began (events.Horizon.Await, the event stream relay's start, a
+// `GET /api/v1/references?since=` read) waits on nothing the advice does, however long its five
+// to nine round trips take.
 //
-// The hook holds the session's open-asks query until the test releases it. Run inside the write's
-// transaction, as the advice was, that hold would keep the transaction open and Await could not
-// answer until it ended.
+// The hook holds the session's open-asks query, inside the comment's transaction, until the test
+// releases it. Await must answer meanwhile, at or above every event committed before it. Run
+// after the write's statements, as the advice once was, that hold would keep a transaction with
+// an id open below Await's observation, and Await could not answer until it ended.
 func TestWriteAdviceDoesNotHoldTheEventHorizon(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		settle: time.Hour,
-		adviceQueryHook: func(ctx context.Context, q queryer, query string) error {
+		adviceQueryHook: func(ctx context.Context, q pgx.Tx, query string) error {
 			if query != "your_open_asks" {
 				return nil
 			}
@@ -164,7 +165,8 @@ func TestWriteAdviceDoesNotHoldTheEventHorizon(t *testing.T) {
 		t.Fatal("the comment never reached its open-asks advice query")
 	}
 
-	// The comment has committed: its event is in the log, read on a connection of its own.
+	// The comment's transaction is open and its advice held: every event committed so far is in
+	// the log, read on a connection of its own.
 	committed := eventHead(t, database)
 	awaiting, stop := context.WithTimeout(t.Context(), 10*time.Second)
 	defer stop()
@@ -173,7 +175,7 @@ func TestWriteAdviceDoesNotHoldTheEventHorizon(t *testing.T) {
 		t.Fatalf("await the event horizon while the write's advice is held: %v", err)
 	}
 	if safe < committed {
-		t.Fatalf("the event horizon is %d while the write's advice is held, want it at or above the write's event %d", safe, committed)
+		t.Fatalf("the event horizon is %d while the write's advice is held, want it at or above the head %d committed before it", safe, committed)
 	}
 	close(release)
 	if response := awaitResponse(t, answered); response.Code != http.StatusCreated {

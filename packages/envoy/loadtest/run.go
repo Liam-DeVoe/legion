@@ -124,7 +124,9 @@ type runConfig struct {
 	// busyGate is what run-step.sh's quiet-box gate read before the step (-box-busy-gate,
 	// -box-busy-gate-max); no readings for a step run without the gate.
 	busyGate busyGate
-	editors  editorConfig
+	// xactInterval is the transaction-id hold sampler's interval; 0 turns the sampler off.
+	xactInterval time.Duration
+	editors      editorConfig
 	// args are the run's flags as meta.json records them: the normalized flag list, the token
 	// values redacted and the URL passwords removed (recordedArgs).
 	args []string
@@ -200,6 +202,7 @@ func runLoad(args []string) error {
 	boxBusyBefore := fs.Float64("box-busy-before", -1, "the box's busy fraction read before Dispatch started (loadgen box-busy); default: read it now")
 	boxBusyGate := fs.String("box-busy-gate", "", "the readings of the box's busy fraction that run-step.sh's quiet-box gate took before the step (loadgen box-busy), comma separated, the last the one the step started on; default: no gate ran")
 	boxBusyGateMax := fs.Float64("box-busy-gate-max", -1, "the busy fraction the quiet-box gate held its readings to (LOADTEST_MAX_BUSY_BEFORE); required with -box-busy-gate")
+	xactInterval := fs.Duration("xact-interval", defaultXactInterval, "interval of the transaction-id hold sampler (0 turns it off)")
 	editors := fs.Int("editors", 0, "browser editors on document websockets (0: none)")
 	editorRate := fs.Float64("editor-rate", 2, "updates per second per editor")
 	editorDocs := fs.Int("editor-docs", 10, "documents the editors share: the first N seeded specs in key order")
@@ -324,6 +327,8 @@ func runLoad(args []string) error {
 		return fmt.Errorf("-live must be 0 or more")
 	case *boxBusyBefore > 1 || !finite(*boxBusyBefore):
 		return fmt.Errorf("-box-busy-before must be a fraction between 0 and 1")
+	case *xactInterval < 0:
+		return fmt.Errorf("-xact-interval must be 0 or more")
 	case *restartAt < 0 || *restartAt >= *duration:
 		return fmt.Errorf("-restart-at must be 0 (no restart) or inside the window (less than -duration)")
 	case *mentionFrac < 0 || *mentionFrac > 1 || !finite(*mentionFrac):
@@ -451,7 +456,7 @@ func runLoad(args []string) error {
 		loopListeners: loopEndpoints, driverTopics: *driverTopics, receiptDeadline: *receiptDeadline,
 		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore, busyGate: gate,
 		serverCPUs: serverCPUs, serverCPUCount: serverCPUCount, generatorCPUs: os.Getenv("LOADTEST_GENERATOR_CPUS"),
-		cgroupRoot: cgroupCPURoot,
+		cgroupRoot: cgroupCPURoot, xactInterval: *xactInterval,
 		// Fewer editors than documents edit only as many documents as there are editors.
 		editors:  editorConfig{editors: *editors, rate: *editorRate, docs: min(*editorDocs, max(*editors, 1))},
 		args:     recordedArgs(fs),
@@ -670,8 +675,11 @@ type summary struct {
 	Populations     []populationSummary `json:"populations,omitempty"`
 	Resources       *resourcesSummary   `json:"resources"`
 	CommitOrderLock lockSummary         `json:"commit_order_lock"`
-	UngrantedLocks  ungrantedSummary    `json:"ungranted_locks"`
-	Sessions        sessionsSummary     `json:"sessions"`
+	// XIDHolds is the transaction-id hold sampler's summary; null only in a summary.json written
+	// by a loadgen without the sampler.
+	XIDHolds       *xactSummary     `json:"xid_holds"`
+	UngrantedLocks ungrantedSummary `json:"ungranted_locks"`
+	Sessions       sessionsSummary  `json:"sessions"`
 	// BoxBusyBefore and BoxBusyGate are meta.json's box_busy_before and box_busy_gate side by
 	// side: the box's busy fraction just before the step, and the reading of run-step.sh's
 	// quiet-box gate the step started on. Each is null when it was not read, the gate's for a step
@@ -823,9 +831,9 @@ func execute(cfg runConfig, sf seedFile) error {
 	if len(cfg.schedule) > 0 {
 		schedText = cfg.schedule.String()
 	}
-	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s schedule=%s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d live-resume=%t live-stale=%d restart-at=%s mention-frac=%.2f mentions=%d rng-seed=%d editors=%d editor-rate=%g editor-docs=%d heap-samples=%t marker-nonce=%s",
+	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s schedule=%s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d live-resume=%t live-stale=%d restart-at=%s mention-frac=%.2f mentions=%d rng-seed=%d xact-interval=%s editors=%d editor-rate=%g editor-docs=%d heap-samples=%t marker-nonce=%s",
 		cfg.name, cfg.sourceName(), cfg.sessions, cfg.events, cfg.requests, schedText, cfg.mix.Name, cfg.routes.Source, cfg.warmup, cfg.duration, cfg.grace, cfg.human,
-		cfg.live, cfg.liveResume, cfg.liveStale, cfg.restartAt, cfg.mentionFrac, cfg.mentions, cfg.rngSeed,
+		cfg.live, cfg.liveResume, cfg.liveStale, cfg.restartAt, cfg.mentionFrac, cfg.mentions, cfg.rngSeed, cfg.xactInterval,
 		cfg.editors.editors, cfg.editors.rate, cfg.editors.docs, cfg.heapSamples, formatNonce(nonce))
 	if cfg.loop != nil {
 		lg.Printf("loop seed %s: %d proposals of project %s, plan %s", cfg.loopSeedPath, len(cfg.loop.Proposals), cfg.loop.Project, cfg.loop.PlanID)
@@ -1369,14 +1377,16 @@ func (st *step) requestPath(p *population, r *rand.Rand) (*route, string) {
 }
 
 // probes are the 5 s sampler, the lock probe (1 s), the ungranted-lock sampler (1 s), the
-// accept-backlog sampler (1 s), the transaction-id probe, the profiles, the rooms' and the pod's
-// cpu.stat window readings and, in a step with editors, the room sampler (100 ms).
+// accept-backlog sampler (1 s), the transaction-id hold sampler (-xact-interval), the
+// transaction-id probe, the profiles, the rooms' and the pod's cpu.stat window readings and, in a
+// step with editors, the room sampler (100 ms).
 type probes struct {
 	smp      *sampler
 	smpDone  chan struct{} // closed when the sampler, which runs until ctx ends, has returned
 	lp       *lockProbe
 	ls       *lockSampler
 	acc      *acceptSampler
+	xs       *xactSampler
 	xidsPerS *float64
 	xidErr   error // why xidsPerS is nil
 	// roomsStart and roomsEnd are the rooms' counters at the window's start and end (readWindow);
@@ -1391,11 +1401,12 @@ type probes struct {
 
 // startProbes starts the probes. The two lock samplers run from 20 s into the window to its end,
 // the accept-backlog sampler from the step's start to the window's end, the room sampler from the
-// window's start to its end. The sampler reads pulls' counts at each sample, when pulls is not
+// window's start to its end, and the transaction-id hold sampler, unless -xact-interval 0 turned
+// it off, over the whole window. The sampler reads pulls' counts at each sample, when pulls is not
 // nil, and Dispatch's heap every 15 s under -heap-samples.
 func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
 	p := &probes{smp: newSampler(st.cfg.ep), smpDone: make(chan struct{}), lp: &lockProbe{}, ls: &lockSampler{},
-		acc: newAcceptSampler(st.cfg.ep.dispatch)}
+		acc: newAcceptSampler(st.cfg.ep.dispatch), xs: &xactSampler{tr: newXactTracker(st.cfg.xactInterval)}}
 	p.smp.pulls = pulls
 	p.smp.heapSamples = st.cfg.heapSamples
 	p.wg.Go(func() { p.acc.loop(ctx, st.start, st.winStart, st.winEnd, st.lg) })
@@ -1410,6 +1421,9 @@ func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
 	pg := st.cfg.ep.pg
 	p.wg.Go(func() { p.lp.loop(ctx, pg, lockFrom, st.winEnd, st.lg) })
 	p.wg.Go(func() { p.ls.loop(ctx, pg, lockFrom, st.winEnd, st.lg) })
+	if st.cfg.xactInterval > 0 {
+		p.wg.Go(func() { p.xs.loop(ctx, pg, "dispatch", st.winStart, st.winEnd, st.lg) })
+	}
 	p.wg.Go(func() { p.xidsPerS, p.xidErr = xidRate(ctx, pg, st.winStart, st.winEnd, st.lg) })
 	p.wg.Go(func() { st.profile(ctx) })
 	p.wg.Go(func() {
@@ -1580,6 +1594,8 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 		sum.Events.CommitsError = commitsErr.Error()
 		st.lg.Printf("commits: %v", commitsErr)
 	}
+	xh := pr.xs.tr.summary(pr.xs.errors, sum.Events.Committed)
+	sum.XIDHolds = &xh
 	editorsSent := 0
 	if ed != nil {
 		sum.Editors = ed.summary(durS)

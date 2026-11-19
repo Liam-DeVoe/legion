@@ -28,7 +28,7 @@ func (st *settlement) documentRemoved(ctx context.Context, q Queryer) bool {
 	return removed
 }
 
-// readLocked is what the pass reads once its transaction holds the document's owner row: the
+// readLocked is what the pass reads once its transaction holds the document's owner lock: the
 // latest version, the document's cursor lock, the gate the room's instance passes, the room's
 // updates through the pass's read stored, the update cursor its version would record, and the
 // authors that version would credit. It answers settleOn where the pass goes on, and the step
@@ -146,16 +146,17 @@ func (p *settlementPass) readLocked(ctx context.Context, parent context.Context)
 }
 
 // takeCredit reads whom a version of this pass would list: the pending authors as this pass's
-// lock holds them - no append or write changes them until its transaction ends - the latest edit
-// source the document's pending-settlement row holds and whether it is the document's closed edit
-// source (readSettlementEditSource), which every process's appends and commits write under this
-// lock, and the document's latest person sender as the stored updates and commits recorded it
+// lock holds them, the ones its queue has yet to write among them (transactionPendingAuthors) -
+// no append or write changes them until its transaction ends - the latest edit source the
+// document's pending-settlement row holds and whether it is the document's closed edit source
+// (readSettlementEditSource), which every process's appends and commits write under this lock,
+// and the document's latest person sender as the stored updates and commits recorded it
 // (readLastPerson), which names who edited last once the room holds no in-flight credit that
 // decides (latestEditSource). The in-flight credits are the ones the pass's take bounded
 // (settlementAuthors). The ask blocks' sources the pass read stay (applyStamp). The version lists
 // the pending authors and deletes them; a pass that writes no version leaves them for the next.
 func (p *settlementPass) takeCredit(ctx context.Context) error {
-	owed, err := readPendingAuthors(ctx, p.tx, p.room)
+	owed, err := transactionPendingAuthors(ctx, p.tx, p.room)
 	if err != nil {
 		return err
 	}

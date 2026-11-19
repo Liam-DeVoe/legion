@@ -24,39 +24,42 @@
 # are refused as "not visible"; (g) a record of another PID namespace whose pid is a live process
 # here (this test's own) is refused as "not visible", without naming that process as the holder;
 # (i) a root always gets the same set of ports, these two roots get two sets that share none (two
-# roots in general share all 8 when their paths hash into one block of the 200, which stack.sh
-# refuses), every port of every block lies in 1024-65535 and no two ports of two blocks meet, and a
-# LOADTEST_*_PORT overrides its own port alone; (j) a port inside the machine's ephemeral port
-# range is refused, naming the range, the port and the LOADTEST_*_PORT that moves it, while a
-# range file that cannot be read or parsed refuses nothing; (k) a CPU list taskset refuses, and
-# two CPU lists that share a CPU, are refused naming them, and one list alone passes; (l) a CPU pin
-# is taken to bind only when it slows two busy loops 1.6x (affinity_verdict over two given
-# durations, no loop timed), and the refusal gives the measurement and names gVisor when
-# /proc/version or dmesg shows it; (m) Dispatch's GOMAXPROCS is the server list's CPU count when the
-# list is set, nproc otherwise, a LOADTEST_GOMAXPROCS that differs from the count is refused naming
-# both, and a step's meta.json that records a GOMAXPROCS other than its list's count is refused;
-# (n) wait_for_window prints the window start of a step that opens its window, not the zero time
-# its meta.json holds until then, never takes the window of an earlier run left in the step's
-# directory, and returns non-zero within a second of the end of a step that ends without a window,
-# giving its not-run record's exit status and reason, or saying that it left none; (o) the pin's
-# check (check_cpu_affinity, its timings faked) passes on a try after two that fall short, refuses
-# after three that fall short naming all three, keeps no verdict of a pin that does not bind, keeps
-# one that binds for the later steps of the same boot, which take it without measuring, and
-# measures again on a boot whose id differs or cannot be read; (p) the quiet-box gate
-# (wait_for_quiet_box, its readings and pauses faked) starts a step at once on a reading at or under
-# LOADTEST_MAX_BUSY_BEFORE (0.10, the bar itself included), pauses 30 s and reads again while the
-# box is busier, starting on a quiet reading and naming the ones before it, refuses once its pauses
-# reach LOADTEST_QUIET_WAIT (900 s: 31 readings), naming every reading, the bar and the wait,
-# follows both variables (75 s: pauses of 30, 30 and 15 s; 0: one reading), and refuses a bar, a
-# wait or a reading that is not one; (q) the pod's CPU quota is read from cgroup v2's cpu.max, else
-# cgroup v1's cpu.cfs_quota_us and cpu.cfs_period_us, as their text and in whole CPUs rounded down
-# (quota_cpus), and `max`, -1 and a root with neither file are no quota; (r) beside the server list
-# under a CPU quota, LOADTEST_GENERATOR_CPUS=auto and an unset list are the first CPUs of the pod
-# outside the server list that the quota leaves, at least one (a quota of 8 beside 0,1 on a pod of
-# 0-13: six CPUs, none of 0,1), and a given list too wide for the quota is refused naming the quota,
-# both lists and auto's list, while one that fits stands; without a quota an unset or given list
-# stands as it is and auto is every CPU of the pod outside the server list; auto without the server
-# list is refused.
+# roots in general share all 10 when their paths hash into one block of the 200, which stack.sh
+# refuses), every port of every block lies in 1024-65535, outside this machine's ephemeral range,
+# and no two ports of two blocks meet, and a LOADTEST_*_PORT overrides its own port alone; (j) a
+# port inside the machine's ephemeral port range is refused, naming the range, the port and the
+# LOADTEST_*_PORT that moves it, while a range file that cannot be read or parsed refuses nothing;
+# (k) a CPU list taskset refuses, and two CPU lists that share a CPU, are refused naming them, and
+# one list alone passes; (l) a CPU pin is taken to bind only when it slows two busy loops 1.6x
+# (affinity_verdict over two given durations, no loop timed), and the refusal gives the
+# measurement and names gVisor when /proc/version or dmesg shows it; (m) Dispatch's GOMAXPROCS is
+# the server list's CPU count when the list is set, nproc otherwise, a LOADTEST_GOMAXPROCS that
+# differs from the count is refused naming both, and a step's meta.json that records a GOMAXPROCS
+# other than its list's count is refused; (n) wait_for_window prints the window start of a step
+# that opens its window, not the zero time its meta.json holds until then, never takes the window
+# of an earlier run left in the step's directory, and returns non-zero within a second of the end
+# of a step that ends without a window, giving its not-run record's exit status and reason, or
+# saying that it left none; (o) the pin's check (check_cpu_affinity, its timings faked) passes on a
+# try after two that fall short, refuses after three that fall short naming all three, keeps no
+# verdict of a pin that does not bind, keeps one that binds for the later steps of the same boot,
+# which take it without measuring, and measures again on a boot whose id differs or cannot be
+# read; (p) the quiet-box gate (wait_for_quiet_box, its readings and pauses faked) starts a step at
+# once on a reading at or under LOADTEST_MAX_BUSY_BEFORE (0.10, the bar itself included), pauses
+# 30 s and reads again while the box is busier, starting on a quiet reading and naming the ones
+# before it, refuses once its pauses reach LOADTEST_QUIET_WAIT (900 s: 31 readings), naming every
+# reading, the bar and the wait, follows both variables (75 s: pauses of 30, 30 and 15 s; 0: one
+# reading), and refuses a bar, a wait or a reading that is not one; (q) the pod's CPU quota is read
+# from cgroup v2's cpu.max, else cgroup v1's cpu.cfs_quota_us and cpu.cfs_period_us, as their text
+# and in whole CPUs rounded down (quota_cpus), and `max`, -1 and a root with neither file are no
+# quota; (r) beside the server list under a CPU quota, LOADTEST_GENERATOR_CPUS=auto and an unset
+# list are the first CPUs of the pod outside the server list that the quota leaves, at least one (a
+# quota of 8 beside 0,1 on a pod of 0-13: six CPUs, none of 0,1), and a given list too wide for the
+# quota is refused naming the quota, both lists and auto's list, while one that fits stands;
+# without a quota an unset or given list stands as it is and auto is every CPU of the pod outside
+# the server list; auto without the server list is refused; (s) Linux's default ephemeral range
+# and a gVisor pod's (16000-65535) keep the blocks at 10000, a range that covers that block (one
+# from 11000, or from 10500) moves every default port below it, and a range with no room for 2000
+# ports above 1023 is refused naming both ranges unless every port variable is set.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -509,10 +512,12 @@ case_stack_ports() {
     source "$1"
     declare -A seen=()
     bad=""
+    base=$(port_base)
     for ((k = 0; k < PORT_BLOCKS; k++)); do
       for key in "${PORT_KEYS[@]}"; do
-        p=$(default_port "$key" "$k")
+        p=$(default_port "$key" "$k" "$base")
         ((p >= 1024 && p <= 65535)) || bad+="block $k $key is on port $p, outside 1024-65535; "
+        ! port_in_ephemeral "$p" || bad+="block $k $key is on port $p, inside the ephemeral range $(ephemeral_range); "
         [ -z "${seen[$p]:-}" ] || bad+="block $k $key and ${seen[$p]} are both on port $p; "
         seen[$p]="block $k $key"
       done
@@ -1037,6 +1042,51 @@ case_quiet_box() {
   printf 'PASS: the quiet-box gate starts on a reading at or under its bar, waits 30 s a pause up to its wait, refuses past it naming every reading, and follows both variables\n'
 }
 
+# range_file LOW HIGH: a file holding an ephemeral range as /proc/sys/net/ipv4/ip_local_port_range
+# does, for LOADTEST_EPHEMERAL_RANGE_FILE.
+range_file() {
+  local file="${temporary_dir}/range-$1-$2"
+  printf '%s\t%s\n' "$1" "$2" >"$file"
+  printf '%s\n' "$file"
+}
+
+# case_ports_below_ephemeral_range: every default port lies below the machine's ephemeral range, so
+# no outgoing connection of the stack can take a stack port as its source port first. Linux's
+# default range (32768-60999) and a gVisor pod's (16000-65535) leave the blocks at 10000-11999, as
+# does a range this machine cannot read; ranges that cover that block, from 11000 and from 10500,
+# move them to the 2000 ports below the range; and a range starting too low for 2000 ports above
+# 1023 is refused naming both ranges, unless every port variable is set.
+case_ports_below_ephemeral_range() {
+  out=""
+  local root=/legion/scratch/tmp/lt-one ports low rc max linux gvisor unread pg
+  linux=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file 32768 60999)")
+  gvisor=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file 16000 65535)")
+  unread=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="${temporary_dir}/no-such-range")
+  [ "$linux" = "$unread" ] && [ "$gvisor" = "$unread" ] ||
+    { out="$linux"$'\n'"$gvisor"$'\n'"$unread" fail "(s) Linux's default range or a gVisor pod's moved the blocks from 10000"; return; }
+  pg=$(awk '$1 == "postgres" {print $2}' <<<"$linux")
+  ((pg % 10 == 0 && pg >= 10000 && pg < 12000)) ||
+    { out="$linux" fail "(s) Linux's default range did not keep the blocks at 10000"; return; }
+  for low in 11000 10500; do
+    ports=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file "$low" 65535)") ||
+      { out="$ports" fail "(s) a range from $low refused the stack's ports"; return; }
+    max=$(awk '{print $2}' <<<"$ports" | sort -n | tail -1)
+    ((max < low)) || { out="$ports" fail "(s) a range from $low left port $max inside it"; return; }
+    (($(awk '{print $2}' <<<"$ports" | sort -n | head -1) >= low - 2000)) ||
+      { out="$ports" fail "(s) a range from $low put a port more than 2000 below it"; return; }
+  done
+  out=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file 1500 65535)" 2>&1) && rc=0 || rc=$?
+  ((rc != 0)) || { fail "(s) a range from 1500 left room for 2000 ports above 1023"; return; }
+  [[ $out == *"1500-65535"* && $out == *"2000 ports"* ]] || { fail "(s) the refusal does not name the range and the ports the stack needs"; return; }
+  out=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file 1500 65535)" LOADTEST_PG_PORT=1100 \
+    LOADTEST_PROXY_PORT=1101 LOADTEST_PROXY_STATS_PORT=1102 LOADTEST_NATS_PORT=1103 LOADTEST_NATS_MONITOR_PORT=1104 \
+    LOADTEST_LISTENER_PORT=1105 LOADTEST_DISPATCH_PORT=1106 LOADTEST_PPROF_PORT=1107 LOADTEST_METRICS_PORT=1108 \
+    LOADTEST_ENVOY_PROXY_PORT=1109 2>&1) ||
+    { fail "(s) every port variable set, a range from 1500 still refused the stack"; return; }
+  out=""
+  printf 'PASS: the default ports sit below the ephemeral range, and a range with no room below it is refused naming both\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -1057,7 +1107,8 @@ case_wait_for_window || failed=$((failed + 1))
 case_quiet_box || failed=$((failed + 1))
 case_cpu_quota || failed=$((failed + 1))
 case_generator_cpus || failed=$((failed + 1))
+case_ports_below_ephemeral_range || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 19 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 20 cases failed\n' "$failed" >&2
   exit 1
 fi

@@ -809,7 +809,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, issueOwner(*document.IssueKey).event("decision.kept", actor, map[string]any{
+	event, err := s.deps.Events.AppendAfterWrite(r.Context(), tx, issueOwner(*document.IssueKey).event("decision.kept", actor, map[string]any{
 		"artifact_id":     document.ID,
 		"block_id":        blockID,
 		"changed_version": keep.ChangedVersion,

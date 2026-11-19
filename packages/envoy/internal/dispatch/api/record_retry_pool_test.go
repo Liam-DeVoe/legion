@@ -35,9 +35,12 @@ func TestARecordRetryTakesNoRequestPoolConnection(t *testing.T) {
 		{
 			table: "near_copy_checks",
 			write: func() {
-				served.recordNearCopyCheck(context.Background(), nearCopyCheckRow{
-					id: nearCopyID, project: "RETRY", actor: actor, title: "Orchard pickers cannot log a crate", issue: issue,
-				}, &nearCopyCheck{outcome: nearCopyPassed})
+				// The row is built as the create builds it (newNearCopyCheckRow), which encodes the
+				// candidates the write binds and the column refuses null for.
+				check := &nearCopyCheck{outcome: nearCopyPassed}
+				row := newNearCopyCheckRow(nearCopyID, "RETRY", actor, "Orchard pickers cannot log a crate", "", "", check)
+				row.issue = issue
+				served.recordNearCopyCheck(context.Background(), row, check)
 			},
 			written: `select count(*) from near_copy_checks where id = $1::uuid`,
 			key:     nearCopyID,

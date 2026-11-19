@@ -725,7 +725,7 @@ func (i *Importer) project(
 	changed := locked.lastCommit == nil || *locked.lastCommit != commit || locked.lastError != nil
 	var event model.Event
 	if changed {
-		event, err = i.events.Append(ctx, tx, model.Event{
+		event, err = i.events.AppendAfterWrite(ctx, tx, model.Event{
 			ProjectKey: &source.Project,
 			Type:       "architecture.synced",
 			Actor:      SystemActor,
@@ -889,7 +889,7 @@ func (i *Importer) recordFailure(ctx context.Context, source loadedSource, failu
 	changed := locked.lastError == nil || *locked.lastError != message
 	var event model.Event
 	if changed {
-		event, err = i.events.Append(ctx, tx, model.Event{
+		event, err = i.events.AppendAfterWrite(ctx, tx, model.Event{
 			ProjectKey: &source.Project,
 			Type:       "architecture.sync_failed",
 			Actor:      SystemActor,
