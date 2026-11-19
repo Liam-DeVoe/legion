@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A phase worker in a turn of its own gets one note with its next tool result when its task
+  waits for that turn to end, and a role whose turn holds another role's phase task gets one
+  note naming that role and task within a minute and two tool boundaries. While the take is
+  pending, the phase reminder starts no continuation and sends no timer reminder, and a stall
+  abort sends no restart message, so the task is the next turn.

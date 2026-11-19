@@ -1407,8 +1407,9 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * longer owed and its value deleted. `hold` is read as a string, not an enum of today's holds
  * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `session-not-held`,
- * `adoption`), since a worker acts on none of them by name and a hold a later daemon adds must not
- * refuse the answer (contract 174). */
+ * `adoption`), since a hold a later daemon adds must not refuse the answer (contract 174). A
+ * worker acts on one by name: a take refused `in-turn` during the turn going now counts as pending
+ * until that turn ends, since the daemon writes the value again then (contract 179). */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
   z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),

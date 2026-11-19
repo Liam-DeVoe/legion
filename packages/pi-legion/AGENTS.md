@@ -95,7 +95,10 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 174 (dispatch://INFRA-2811:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 179 (dispatch://INFRA-4130:
+the answer of `claims/task` gains an optional `holds`, the takes of the issue's other claims held
+behind the caller's turn, which the claim session reads at a tool result and notes to the agent),
+after contract 174's take (dispatch://INFRA-2811:
 a claim's task is a value its worker takes over `claims/task`, `claims/task-seen` and
 `claims/take`, and the daemon sends no prompt frame), after contract 168's plan rating
 (cybermonklabs/legion#4488: `POST /legion/v1/handoff/complete` takes `planRating` and
@@ -788,6 +791,22 @@ host is idle again and its take can ask for a task the daemon queued. A WAITING 
 cancelled, so a generation counter, bumped by everything that makes an armed timer stale (a turn
 starting, a settle, a session change, the phase closing, a reminder going out), is the whole
 defence against two timers reminding twice.
+
+A task the claim's take holds is the next turn, so no reminder goes before it (dispatch://INFRA-4130
+R6): while the take is pending (`TaskTake.pending`: an owed value not asked about, a take in
+flight, an accepted take whose turn has not started, or a take refused `in-turn` during the run
+going now) the settle returns no continuation and arms the timer instead, counting nothing, a
+timer that fires sends nothing and arms itself again, and a stall abort sends no restart message,
+which the watchdog records as not sent. A take refused by any other hold is not pending, so the
+reminding goes on. Two notes reach a running turn through the `tool_result` handler's
+`additionalContext`, which Oh My Pi hands the model as a `developer` message in its next request,
+starting no turn and joining no queue: a phase worker's own task that waits for the run to end
+(`taskWaitingNote`, once per task number), and, for every claim session, each take of another claim
+of the issue that the daemon holds behind this claim's turn (`heldTakeNote`, once per role and
+number). The claim session reads the second from the `holds` of its own `claims/task`, started at a
+tool result while a run is going, at most once a minute and bounded at 3 s, and the tool result
+does not wait for it; an answer that comes after the run's end is dropped. A subagent's tool result
+carries neither note.
 
 A count of reminders the worker has done nothing about climbs by one per delivered reminder and
 drops to zero as soon as anything happens — a real tool call in the settling message (a `toolCall`
