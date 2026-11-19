@@ -360,19 +360,27 @@ github_apps:
 }
 
 // seedRoot files a root issue of the run in Dispatch, in progress and labelled legion, and seeds
-// the daemon's store with it in at, admitted, its lifecycle open, and its architect's claim and
-// each of mid's mid-launch, as a daemon that stopped with them launching leaves it: the boot
-// launches each into the issue's pod. The architect's claim is seeded because nothing else makes
-// it for a root past admitted: admission's promotion of a queued root starts a root's architect
+// the daemon's store with it in at, admitted, its lifecycle open, its design gate open on the
+// issue's spec where at is past admitted, and its architect's claim and each of mid's mid-launch,
+// as a daemon that stopped with them launching leaves it: the boot launches each into the issue's
+// pod. The architect's claim is seeded because nothing else makes it for a root past admitted:
+// admission's promotion of a queued root starts a root's architect
 // (workflow.Engine.StartArchitect), and the entry sweep weighs no root without an architect
-// claim. It leaves out ServingGeneration, which on an architect's claim says it ran before. It
-// returns the issue's key.
+// claim. It leaves out ServingGeneration, which on an architect's claim says it ran before. The
+// gate is seeded because a root past admitted stood at its opening: under `gates.design: off` the
+// architect's registration of the spec step opens it, and the waiting line starts no member of a
+// tree whose gate is shut (record.Waiting, record.TreeGate.Open), so a child set todo under a
+// root seeded without it would wait at admitted, its architect on the stand-in registering
+// nothing. It returns the issue's key.
 func (r *kindTreeRig) seedRoot(title string, at phase.Phase, mid ...claim.Role) string {
 	t := r.t
 	t.Helper()
 	key := r.newIssue(title, "")
 	r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"status": "in_progress"}, http.StatusOK, nil)
 	listed := r.dispatch.issue(key)
+	if at != phase.Admitted && listed.PrimaryArtifactID == "" {
+		t.Fatalf("Dispatch shows no primary document for %s, which its design gate names", key)
+	}
 	ctx := context.Background()
 	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
@@ -381,6 +389,13 @@ func (r *kindTreeRig) seedRoot(title string, at phase.Phase, mid ...claim.Role) 
 			Rank: listed.Rank, LastDispatchSeq: listed.LastSeq,
 		}); err != nil {
 			return err
+		}
+		if at != phase.Admitted {
+			approved := 1
+			if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec,
+				ArtifactID: listed.PrimaryArtifactID, LatestVersion: 1, ApprovedVersion: &approved}); err != nil {
+				return err
+			}
 		}
 		return r.admit(ctx, tx, key)
 	}); err != nil {

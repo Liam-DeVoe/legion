@@ -1170,6 +1170,9 @@ type handoffDispatchIssue struct {
 	Title   string `json:"title"`
 	Rank    string `json:"rank"`
 	LastSeq int64  `json:"last_seq"`
+	// PrimaryArtifactID is the document Dispatch made with the issue: a root's spec, which its
+	// architect registers as its design gate.
+	PrimaryArtifactID string `json:"primary_artifact_id"`
 }
 
 func (d *handoffDispatch) issue(key string) handoffDispatchIssue {
