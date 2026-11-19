@@ -3902,11 +3902,16 @@ leaves half:
 - `ssh` carries no signal to the command it runs, so killing the local `ssh` is nothing to the
   load. The load is started through a small `sh` that records the pid of the `loadgen run`
   itself on the load machine before it `exec`s it, and the step's stop kills that pid over a
-  connection of its own — `TERM`, then `KILL` after 10 s — and removes the file.
-- A bash script with no trap for a signal dies of it and never runs its `EXIT` trap, so `step`
-  traps `INT` and `TERM` beside `EXIT`, and ends with the status a shell killed by that signal
-  has (130 and 143). The load is waited on in the background, so the trap runs the moment the
-  signal arrives rather than when that `ssh` returns, which for a step's load is an hour away.
+  connection of its own — `TERM`, then `KILL` after 10 s — waits until that pid has left the
+  machine's process table, and removes the file. A kill that cannot show its process gone — the
+  pid still there 10 s after its `KILL`, or an `ssh` that did not reach the machine or timed out —
+  names it and keeps the file, and the kill needs no file on this pod to do any of it.
+- `step` traps `INT` and `TERM` beside `EXIT`, so a stop ends the step through `step_interrupt`,
+  which runs the cleanup, says what the stop ended — naming each part it could not show gone,
+  and a part whose own stop the signal cut short — and ends with the status a shell killed by
+  that signal has (130 and 143). The load is waited on in the background, so the trap runs the
+  moment the signal arrives rather than when that `ssh` returns, which for a step's load is an
+  hour away.
 
 ## What this harness does not do
 

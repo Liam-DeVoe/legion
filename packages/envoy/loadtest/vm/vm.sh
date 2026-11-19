@@ -245,7 +245,8 @@
 # kill over ssh reaches the load rather than an ssh that has already gone; and it is waited on in
 # the background here, so a signal runs this script's trap at once rather than when that ssh
 # returns, which for a step's load is an hour away. run_step traps INT and TERM as well as EXIT,
-# because a bash script with no trap for a signal dies of it and never runs its EXIT trap.
+# so that a stop ends the step through step_interrupt, which runs the cleanup, says what the stop
+# ended and exits with the status a shell killed by that signal has.
 #
 # The run directory is ${LOADTEST_VM_ROOT:-$TMPDIR/dispatch-loadtest-vm}/<run id>: state.json
 # (mode 600, the deployment file's values that the run was started with), the run's OS Login
@@ -304,7 +305,9 @@ TUNNEL_POLL_SECONDS=2
 # is given to leave that machine's process table after the SIGKILL that follows (remote_kill). The
 # second bound is read off the machine's clock rather than counted in naps, so it holds whatever a
 # nap costs, and the wait goes on until that clock has passed it, so it lasts at least that long
-# whatever part of a second the clock had reached at the SIGKILL.
+# whatever part of a second the clock had reached at the SIGKILL. The kill's ssh is bounded by
+# SSH_SECONDS as every ssh is, so a kill whose two bounds come to more than that ends at it, saying
+# that nothing shows its process gone.
 REMOTE_TERM_SECONDS=10
 REMOTE_GONE_SECONDS=10
 # The port the tunnel listens on, on the load machine, and the command that opens it there. Both
@@ -752,10 +755,16 @@ on_vm_for() {
 # which still names a live process. Any other end of the remote command -- the machine not
 # reached, the ssh timed out, the script cut short -- says nothing of the process, so it returns 1
 # too, naming WHAT, FILE and the ssh's exit and what it said. Each WHAT it returns 1 for is added
-# to REMOTE_LEFT, which step_interrupt reads.
+# to NOT_GONE, and STOPPING names WHAT while the kill runs; step_interrupt reads both.
+#
+# It needs nothing of this pod but the ssh. What the ssh says goes into the kill's own output,
+# beside the line `pid=N` with which the script on the load machine names a pid still there at its
+# bound, and that line is found by its mark wherever the ssh's own lines fall around it. So a run
+# directory that takes no new file -- a full disk, no free inode, no write permission -- never
+# stops a kill before it signals, and an interrupt that ends the script during one leaves no file.
 remote_kill() {
-  local what=$1 file=$2 out errors said rc=0
-  errors=$(mktemp "$RUN_DIR/.kill-err.XXXXXX") || die "making a file for the ssh's errors in $RUN_DIR failed"
+  local what=$1 file=$2 out said rc=0 left=$'\n''pid=([0-9]+)'$'\n'
+  STOPPING=$what
   # shellcheck disable=SC2016 # expanded by the load machine's sh
   out=$(on_vm "$LOAD_VM" sh -c '
     pid=$(cat "$1" 2>/dev/null)
@@ -771,7 +780,7 @@ remote_kill() {
         end=$(($(date +%s) + $3))
         while kill -0 "$pid" 2>/dev/null; do
           if [ "$(date +%s)" -gt "$end" ]; then
-            echo "$pid"
+            echo "pid=$pid"
             exit 3
           fi
           sleep 1
@@ -779,16 +788,19 @@ remote_kill() {
       fi
     fi
     rm -f "$1"
-    exit 0' sh "$file" "$REMOTE_TERM_SECONDS" "$REMOTE_GONE_SECONDS" 2>"$errors") || rc=$?
-  said=$(<"$errors")
-  said=${said//$'\n'/ }
-  rm -f -- "$errors"
-  case $rc in
-    0) return 0 ;;
-    3) note "$what (pid $out) is still in the $LOAD_VM VM's process table $REMOTE_GONE_SECONDS s after its SIGKILL; $file there still names it" ;;
-    *) note "ending $what ($file on the $LOAD_VM VM) failed: its ssh exited $rc and said '${said:-nothing}', so nothing shows it gone" ;;
-  esac
-  REMOTE_LEFT="${REMOTE_LEFT:+$REMOTE_LEFT; }$what"
+    exit 0' sh "$file" "$REMOTE_TERM_SECONDS" "$REMOTE_GONE_SECONDS" 2>&1) || rc=$?
+  if ((rc == 0)); then
+    STOPPING=""
+    return 0
+  fi
+  if ((rc == 3)) && [[ $'\n'$out$'\n' =~ $left ]]; then
+    note "$what (pid ${BASH_REMATCH[1]}) is still in the $LOAD_VM VM's process table $REMOTE_GONE_SECONDS s after its SIGKILL; $file there still names it"
+  else
+    said=${out//$'\n'/ }
+    note "ending $what ($file on the $LOAD_VM VM) failed: its ssh exited $rc and said '${said:-nothing}', so nothing shows it gone"
+  fi
+  NOT_GONE="${NOT_GONE:+$NOT_GONE; }$what"
+  STOPPING=""
   return 1
 }
 
@@ -2244,10 +2256,12 @@ tunnel_start() {
 
 # tunnel_stop: the step's tunnel closed, whatever ended the step. run_step sets it as an EXIT
 # trap before it opens one, so a refusal, an interrupt and a failure anywhere below all close it;
-# it does nothing when no tunnel is open, and it never changes the exit status it runs under.
+# it does nothing when no tunnel is open, and it never changes the exit status it runs under. The
+# flag is cleared in the one command that names the stop in STOPPING, so no interrupt finds the
+# one done without the other.
 tunnel_stop() {
   [ -n "${TUNNEL_OPEN:-}" ] || return 0
-  TUNNEL_OPEN=""
+  TUNNEL_OPEN="" STOPPING="the profiling tunnel"
   tunnel_kill || true
   return 0
 }
@@ -2312,13 +2326,14 @@ pg_watch_start() {
 # pg_watch_stop: that collector stopped by its own pid and reaped. It writes its file on TERM and
 # ends 0; one that refused at its start -- no connection, or a database without
 # pg_stat_statements -- is already gone, and its status is the note below rather than a step
-# failure, as every other reading of a step is.
+# failure, as every other reading of a step is. STOPPING names it until its wait has returned.
 pg_watch_stop() {
   [ -n "${PG_WATCH_PID:-}" ] || return 0
   local pid=$PG_WATCH_PID rc=0
-  PG_WATCH_PID=""
+  PG_WATCH_PID="" STOPPING="Postgres's collector (pid $pid)"
   kill -TERM "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || rc=$?
+  STOPPING=""
   ((rc == 0)) ||
     note "loadgen pg-statements ended with exit $rc (its output is $RUN_DIR/logs/pg-statements.log); the step keeps whatever it wrote"
 }
@@ -2373,16 +2388,18 @@ load_wait() {
 # recorded there. Both, because neither does the other's work: the ssh's death leaves the load
 # running on that machine, and the remote kill alone leaves this pod waiting on an ssh with
 # nothing left to carry. It does each thing once, so a step that ends normally and then runs its
-# EXIT trap kills no pid twice.
+# EXIT trap kills no pid twice; each flag is cleared in the one command that names its stop in
+# STOPPING.
 load_stop() {
   local pid=${LOAD_SSH_PID:-}
   if [ -n "$pid" ]; then
-    LOAD_SSH_PID=""
+    LOAD_SSH_PID="" STOPPING="the ssh that carries the step's load (pid $pid)"
     kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
+    STOPPING=""
   fi
   [ -n "${LOAD_REMOTE:-}" ] || return 0
-  LOAD_REMOTE=""
+  LOAD_REMOTE="" STOPPING="the step's loadgen run"
   load_kill || true
   return 0
 }
@@ -2408,22 +2425,28 @@ step_cleanup() {
   return 0
 }
 
-# step_interrupt SIGNAL: a step stopped by a signal. A bash script with no trap for a signal dies
-# of it and never runs its EXIT trap, so an operator's INT or TERM left every remote part of the
-# step alive; these traps run this instead, and it ends the script with the status a shell killed
-# by that signal has, so a caller reads the stop as a stop. It says what the stop ended once the
-# cleanup has ended it: a part of the load machine's that the cleanup did not show gone is named
-# as such (REMOTE_LEFT, which remote_kill fills), never as ended.
+# step_interrupt SIGNAL: a step stopped by a signal. These traps run it on INT and TERM, and it
+# ends the script with the status a shell killed by that signal has, so a caller reads the stop as
+# a stop. It says what the stop ended once the cleanup has ended it: a part that a cleanup of this
+# step did not show gone is named as such, never as ended. That is each part a kill ran out on
+# (NOT_GONE, which remote_kill fills), and the part whose stop the signal cut short (STOPPING). A
+# signal runs its trap between two commands, so it can land inside a stop that has cleared its
+# part's flag -- the step's own cleanup at its end, or its EXIT trap's -- and the cleanup below
+# then finds nothing to stop there; the stop named in STOPPING is what nothing has shown gone.
 step_interrupt() {
   local signal=$1 code=143
   trap - EXIT INT TERM
   [ "$signal" != INT ] || code=130
-  REMOTE_LEFT=""
+  if [ -n "${STOPPING:-}" ]; then
+    note "the stop of $STOPPING was cut short by SIG$signal, so nothing shows it gone"
+    NOT_GONE="${NOT_GONE:+$NOT_GONE; }$STOPPING"
+    STOPPING=""
+  fi
   step_cleanup
-  if [ -z "$REMOTE_LEFT" ]; then
+  if [ -z "${NOT_GONE:-}" ]; then
     note "step ${STEP_NAME:-} is stopped by SIG$signal: the load on the $LOAD_VM VM, the profiling tunnel, the sampler and Postgres's collector are ended with it"
   else
-    note "step ${STEP_NAME:-} is stopped by SIG$signal, but what it started on the $LOAD_VM VM is not all shown gone: $REMOTE_LEFT (each named above)"
+    note "step ${STEP_NAME:-} is stopped by SIG$signal, but what it started is not all shown gone: $NOT_GONE (each named above)"
   fi
   exit "$code"
 }
@@ -2570,9 +2593,12 @@ run_step() {
   # acquire waiters through it, and criterion (e) is judged on nothing without them. The traps end
   # every part of the step however the step ends -- a refusal below, an interrupt, a failure of
   # the ssh that carries the load, a failure of the collection after it -- and INT and TERM are
-  # trapped beside EXIT because a script with no trap for a signal never reaches its EXIT trap.
+  # trapped beside EXIT so that a stop ends through step_interrupt, which says what it ended.
   endpoints "$(pprof_tunnel_url)"
   seconds=$(($(duration_seconds "$warmup") + $(duration_seconds "$duration") + 20 + RUN_SLACK_SECONDS))
+  # What this step's own cleanups leave not shown gone, which step_interrupt names; a series runs
+  # many steps in one process, and an earlier step's parts are not this one's.
+  NOT_GONE=""
   trap step_cleanup EXIT
   trap 'step_interrupt INT' INT
   trap 'step_interrupt TERM' TERM
