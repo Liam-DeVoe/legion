@@ -38,6 +38,8 @@ import {
   leaveData,
   neverAnswering,
   owners,
+  readsAfterRename,
+  removingInChild,
   rowMs,
   rowOf,
   scratch,
@@ -334,6 +336,57 @@ test.skipIf(!onLinux)(
   // What the row waits for, summed by the fixtures' program (`rowMs`): two sweeps, their three
   // holder reads, and the holder's end between them.
   rowMs(heldThenGone)
+);
+
+/** What the next row waits for (`Waits`): the other start's removal, a child, with its claim, at
+ *  most `claimEventMs`; and one sweep, a child, whose holder read before its claim of the data
+ *  directory meets that removal and a process under the claim, and leaves the directory. */
+const removalUnderClaim: Waits = { children: 2, reads: 1, bounds: [] };
+
+// Two starts at once on one dead mark: the first claims the data directory, renaming it to a name
+// that holds the first start's pid and start (`claimForRemoval`), and removes it, with directories
+// of it open while it does. Where the second start looked at the directory before that rename and
+// reads what the processes name after it, the first start's open directories lead into it: on
+// 2026-11-19 the second start then named the first as a process that still held it, and left its
+// mark, in 6 of 80 runs of the binaries row of two starts at once on a shared Linux machine. The
+// row's reader reads the claim as the directory, as the kernel does after that rename
+// (`readsAfterRename`). Beside the other start, a process that claimed nothing has a directory
+// under the claim for its working directory, and holds the directory still.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start's holder read does not read another start's removal of a dead stack's data directory under that start's own claim as a process that holds it, and still reads a process that names a path under the claim as one",
+  async () => {
+    const row = rowOf(removalUnderClaim);
+    const { tmp, run } = scratch();
+    const data = join(run, "worker-0", "pgdata");
+    leaveData(data);
+    const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
+    const tail = Bun.which("tail");
+    if (tail === null) throw new Error("no tail on PATH to hold a directory");
+    let removal: { claimed: string; claimer: Subprocess } | undefined;
+    let holder: StandIn | undefined;
+    try {
+      removal = await removingInChild(row, data);
+      holder = standIn(join(removal.claimed, "d0"), [tail, "-f", "/dev/null"]);
+
+      const lines = await startSweep(row, tmp, {
+        reader: readsAfterRename(data, removal.claimed),
+      }).lines;
+
+      expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
+      expect(holding(lines, "removed")).toEqual([]);
+      expect(holding(lines, `${mark} (${data}, which `)).toEqual([
+        expect.stringContaining(`, which tail ${holder.pid} still holds)`),
+      ]);
+      expect(holding(lines, `${basename(process.execPath)} ${removal.claimer.pid}`)).toEqual([]);
+    } finally {
+      holder?.stop();
+      if (removal !== undefined) await endChild(removal.claimer);
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): the other start's removal,
+  // and one sweep with its holder read.
+  rowMs(removalUnderClaim)
 );
 
 /** What the next row waits for (`Waits`): the holder, a child, with its arguments and its end,

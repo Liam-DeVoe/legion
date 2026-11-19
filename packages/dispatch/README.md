@@ -268,7 +268,8 @@ directory, and the postmaster that serves from a data directory, are claimed by
 a rename to `<path>.removing-<pid>-<start>`, the claimer's pid and start. The
 rename is the claim: one of two renames wins, and a start killed after it
 leaves no other file behind. A start renames only a directory that no process
-of its user holds, read just before the rename. A
+of its user holds, read just before the rename; another start's descriptors
+under a claim of its own are its removal, and hold nothing. A
 container is claimed by Docker's own removal, which removes it for one
 `docker rm` and refuses it, or finds it gone, for the other. The start that
 holds the claim removes the part and says "removed", of a postmaster only where
@@ -278,10 +279,11 @@ waits for it, for at most 140 s: twice the
 claimer's longest stop of a postmaster (60 s after SIGQUIT, as `pg_ctl` waits,
 and 10 s after SIGKILL), so the removal of the directory after the stop has as
 long again; the removal of a data directory of 20,000 files took under a second
-on a shared Linux machine on 2026-11-17. At the bound the start leaves that
-part and its mark, names the claim on one line, and goes on, and a later start
-removes it. A claim whose claimer died before its removal the next start claims
-again.
+on a shared Linux machine on 2026-11-17, and 141 and 187 s on one whose disk
+other sessions loaded, on 2026-11-19. At the bound the start leaves that part
+and its mark to the claim, names the claim on one line, and goes on; the
+claimer's removal goes on too. A claim whose claimer died before its removal
+the next start claims again.
 
 What a start leaves and names, and what you do to remove it by hand:
 

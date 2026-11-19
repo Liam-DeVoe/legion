@@ -244,15 +244,17 @@ export async function stopStack(stack: Stack | undefined): Promise<void> {
   await exited(stack.child, childMs, `the stack in ${stack.dir}`).catch(() => {});
 }
 
-/** Runs the pool's start in a child with `env`, and answers what it printed. */
-export async function startPool(env: Record<string, string | undefined>): Promise<Child["output"]> {
+/** Runs the pool's start in a child with `env`, and answers its pid and what it printed. */
+export async function startPool(
+  env: Record<string, string | undefined>
+): Promise<{ readonly pid: number; readonly stdout: string; readonly stderr: string }> {
   const child = spawn(startScript, env);
   child.process.stdin.end();
   const code = await exited(child, childMs, "a start of the pool");
   // The pipes end as it exits; their last chunks may still be on the way to `output`.
   await Promise.race([child.drained, sleep(10_000)]);
   if (code !== 0) throw new Error(`a start of the pool exited ${code}: ${child.output.stderr}`);
-  return child.output;
+  return { pid: child.pid, ...child.output };
 }
 
 /** A whole start of the pool (`poolScript`) that serves, with what it printed. */

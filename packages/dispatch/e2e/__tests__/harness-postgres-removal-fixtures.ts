@@ -29,7 +29,13 @@ import type { Subprocess } from "bun";
 
 import { type Machine, machine, type RemovalBounds } from "../harness-postgres-container-removal";
 import * as marks from "../harness-postgres-marks";
-import { type StatReader, statMs, statReader, statStartMs } from "../harness-postgres-processes";
+import {
+  claimInfix,
+  type StatReader,
+  statMs,
+  statReader,
+  statStartMs,
+} from "../harness-postgres-processes";
 import { stopMs } from "../harness-postgres-removal";
 import { type StandIn, standIn } from "./planted-marks";
 
@@ -288,6 +294,79 @@ for (const path of paths) {
 `,
     ],
   };
+}
+
+/** A stand-in for the reader a start's holder read runs (`StatReader`), with this process's mount
+ *  table: it reads where each path leads as the start's own reader does, but each path that is
+ *  `to` or under it as the same path under `from`: what the kernel answers once `from` has been
+ *  renamed to `to`, as another start's claim of a directory renames it (`claimForRemoval` of
+ *  `e2e/harness-postgres-removal.ts`). A row so runs a holder read that looked at `from` before
+ *  that rename and reads what the processes name after it, an order no row can time: the start
+ *  looks at the directory and reads `/proc` with no `await` between them. */
+export function readsAfterRename(from: string, to: string): StatReader {
+  return {
+    mounts: "/proc/self/mountinfo",
+    run: [
+      process.execPath,
+      "--eval",
+      `
+const { readFileSync, statSync, writeSync } = require("node:fs");
+const from = ${JSON.stringify(from)};
+const to = ${JSON.stringify(to)};
+const paths = readFileSync(0, "utf8").split("\\0");
+writeSync(1, "ready\\n");
+for (const path of paths) {
+  const read = path === to || path.startsWith(to + "/") ? from + path.slice(to.length) : path;
+  let line = "-";
+  try {
+    const stats = statSync(read, { bigint: true });
+    line = stats.dev + ":" + stats.ino;
+  } catch {}
+  writeSync(1, line + "\\n");
+}
+`,
+    ],
+  };
+}
+
+/** Another start's removal of `CLAIM_PATH` under its claim, as a child of this file runs it: the
+ *  claim's name, `<path>.removing-<pid>-<start>` with the child's own pid and start
+ *  (`claimInfix`), is a directory the child makes with a directory `d0` in it, and the child holds
+ *  `d0` open, as `rmSync` holds each directory it empties, until it is killed, for at most 600 s.
+ *  The path comes in the environment, as a start's own arguments name none. */
+const removingScript = `
+const { mkdirSync, openSync, readFileSync } = require("node:fs");
+setTimeout(() => process.exit(1), 600_000);
+const stat = readFileSync("/proc/self/stat", "utf8");
+const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+const claimed = process.env.CLAIM_PATH + ${JSON.stringify(claimInfix)} + process.pid + "-" + start;
+mkdirSync(claimed + "/d0", { recursive: true });
+globalThis.held = openSync(claimed + "/d0", "r");
+console.log(claimed);
+`;
+
+/** Another start's removal of `path` under its claim, in a child of this file (`removingScript`).
+ *  `path` keeps its name, so the row's sweep reads it as it was before that claim
+ *  (`readsAfterRename`). Answers once the child printed its claim, and charges `row` for the child
+ *  (`Row`). */
+export async function removingInChild(
+  row: Row,
+  path: string
+): Promise<{ claimed: string; claimer: Subprocess }> {
+  row.child(`the removal of ${path} under another start's claim`);
+  const claimer = Bun.spawn([process.execPath, "--eval", removingScript], {
+    env: { ...process.env, CLAIM_PATH: path },
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  try {
+    const claimed = `${path}${claimInfix}${claimer.pid}-${marks.startOf(readFileSync(`/proc/${claimer.pid}/stat`, "utf8"))}`;
+    expect((await firstLineOf(claimer)).trim()).toBe(claimed);
+    return { claimed, claimer };
+  } catch (error) {
+    await endChild(claimer);
+    throw error;
+  }
 }
 
 /** What a stand-in reader's clock holds (`neverAnswering`), for each reader that waited on a path

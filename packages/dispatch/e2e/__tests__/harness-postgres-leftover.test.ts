@@ -308,6 +308,9 @@ for (const provider of [
   );
 }
 
+/** What the next row waits for (`Waits`): one start of the pool, waited for at most `childMs`. */
+const oneStartOfMarks: Waits = { children: 0, reads: 0, bounds: [childMs] };
+
 test.skipIf(skipBinaries)(
   "binaries provider: a start leaves the mark of a stack that runs, of another boot, PID namespace or time namespace or of no /proc, and a mark it cannot read, and names each one it left",
   async () => {
@@ -365,10 +368,9 @@ test.skipIf(skipBinaries)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row drives one start of the pool, a `bun` child that reads the row's marks and removes
-  // one data and one socket directory. It read 0.04 to 0.08 s on a shared Linux machine under a
-  // load of about 300, on 2026-11-17; 300 s leaves a cold `bun` and a slow disk room.
-  300_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one start of the pool at
+  // its bound.
+  rowMs(oneStartOfMarks)
 );
 
 /** What the next row waits for (`Waits`): two starts of the image provider in this process, the
@@ -517,6 +519,17 @@ test.skipIf(skipImage)(
   rowMs(sevenPlanted)
 );
 
+/** How long the next row may take over its 20,000 files: three times the 116 s from a run's start
+ *  to its first start's first claim, which the writes of those files, the start of `bun test` and
+ *  the starts' own `bun` start took together, the longest of 40 runs on a shared Linux machine
+ *  under a load of about 600, on 2026-11-19. */
+const manyFilesMs = 360_000;
+
+/** What the next row waits for (`Waits`): its writes of 20,000 files (`manyFilesMs`), and two
+ *  starts of the pool at once, each waited for at most `childMs`. Each start's waits for the other's
+ *  claims of a part (`claimWaitMs` of e2e/harness-postgres-removal.ts each) are inside that bound. */
+const twoOnOneMark: Waits = { children: 0, reads: 0, bounds: [manyFilesMs, childMs] };
+
 test.skipIf(skipBinaries)(
   "binaries provider: a removal that fails is one line and fails no start, and two starts at once that find one dead mark both go on",
   async () => {
@@ -540,8 +553,13 @@ test.skipIf(skipBinaries)(
 
       const env = childEnv(tmp, { variable: pgBinVariable, value: bin });
       const starts = await Promise.all([startPool(env), startPool(env)]);
+      // Both starts' lines, before any check: which start claimed a part first, and what the other
+      // found of it then, is read from the two together, by the pids that their lines name.
+      for (const [index, start] of starts.entries()) {
+        console.error(`start ${index + 1} of two at once, pid ${start.pid}:\n${start.stderr}`);
+      }
 
-      for (const start of starts) {
+      for (const [index, start] of starts.entries()) {
         expect(start.stdout).toContain(refused);
         // Each start names the removal that fails on one line, and the dead mark both found at
         // most once, beside a line that says it waits for the other start's claim of a part.
@@ -549,10 +567,28 @@ test.skipIf(skipBinaries)(
           .split("\n")
           .filter((line) => !line.includes(": waits for another start's claim of "))
           .join("\n");
-        expect(linesWith(told, failing.data)).toHaveLength(1);
-        expect(linesWith(told, "is not removed")).toHaveLength(1);
-        expect(linesWith(told, gone.data).length).toBeLessThanOrEqual(1);
+        const failed = linesWith(told, failing.data);
+        expect(failed).toHaveLength(1);
+        expect(failed[0]).toContain(`${failing.sockets} could not be removed`);
+        const dead = linesWith(told, gone.data);
+        expect(dead.length).toBeLessThanOrEqual(1);
+        // The other start's removal of the dead mark's 20,000 files may outlast this start's wait
+        // for its claim (`claimWaitMs`): a loaded disk made it take 141 and 187 s on a shared Linux
+        // machine on 2026-11-19. This start then leaves the mark to that claim, and its one line of
+        // it says so, naming the other start's claim; every other line that says a part is not
+        // removed is the removal that fails.
+        const other = starts[1 - index]?.pid;
+        const waitedOut = dead.filter((line) =>
+          line.includes(
+            `is not removed: ${gone.data} is claimed by another start that still runs, as ${gone.data}.removing-${other}-`
+          )
+        );
+        expect(linesWith(told, "is not removed")).toEqual([...failed, ...waitedOut]);
         expect([runs.data, runs.mark].filter((path) => start.stderr.includes(path))).toEqual([]);
+        // No process holds a directory of these marks: a start that leaves one as held names the
+        // other start's removal under its claim as a holder (`outsideOwnClaims` of
+        // e2e/harness-postgres-processes.ts), as 6 of 80 runs of this row did on 2026-11-19.
+        expect(linesWith(start.stderr, "a process of this user still holds")).toEqual([]);
       }
       // Together the two starts say "removed" once of each directory of the dead mark: one start
       // renamed it first and removed it, and the other says that another start removed it. A line
@@ -575,11 +611,9 @@ test.skipIf(skipBinaries)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row writes 20,000 files and drives two starts of the pool at once, each a `bun` child that
-  // reads three marks and removes what it finds dead. It read 0.6 to 0.9 s on a shared Linux
-  // machine under a load of about 300 to 400, on 2026-11-17; 300 s leaves a cold `bun` and a slow
-  // disk room.
-  300_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): its writes of 20,000 files
+  // and the two starts of the pool at their bound.
+  rowMs(twoOnOneMark)
 );
 
 /** What each of the next rows waits for (`Waits`): one stack's Postgres start, an initdb and a

@@ -438,6 +438,21 @@ function whyUnread(path: string): string {
   }
 }
 
+/** `paths`, each path that the process `pid` names, but those in a directory that process claimed
+ *  itself (`claimInfix`): a start that claimed a dead stack's directory holds descriptors under the
+ *  claim's name while it removes it. A start whose holder read looked at that directory before the
+ *  claim, and read what the processes name after it, finds those descriptors leading into the
+ *  directory: in 6 of 80 runs of two starts at once on one dead mark, on a shared Linux machine on
+ *  2026-11-19, the second start named the first as a process that still held the directory, and
+ *  left its mark. That is the other start's removal, which holds nothing the stack started. A claim
+ *  holds its claimer's own pid and start, so no path of another process is left out, and no path of
+ *  the claimer's anywhere else. */
+function outsideOwnClaims(pid: string, paths: readonly string[]): string[] {
+  if (!paths.some((path) => path.includes(claimInfix))) return [...paths];
+  const own = `${claimInfix}${pid}-${startOf(readFileSync(`/proc/${pid}/stat`, "utf8"))}`;
+  return paths.filter((path) => !path.split("/").some((part) => part.endsWith(own)));
+}
+
 /** Each process of the user `uid` that still holds `directory`, a directory of a dead stack's
  *  mark, as the kernel shows it: its working directory, a file it holds open, or a path one of its
  *  arguments names (`pathsIn`), read from its working directory where it is relative, is that
@@ -450,13 +465,14 @@ function whyUnread(path: string): string {
  *  a `docker create` that mounts the socket directory, the postmaster such a `pg_ctl` is starting.
  *  A stack is not dead while one of them runs, so a start removes no directory it holds.
  *  `postmaster` is the pid of the postmaster `postmasterOf` verified, which this start stops
- *  itself, and neither it nor a process it started (its parent pid) is counted. A process that
- *  ends while it is read, or whose links this user may not read, holds nothing here, and nothing
- *  holds a directory that is gone. `/proc` is read here; where each path leads is read in a child
- *  that runs `reader` (`StatReader`), all of them within `statMs` (`identities`), and a process
- *  none of whose paths leads into the directory, but one of whose paths has no answer, is one the
- *  start cannot judge (`unread`). Answers each holder and each process it cannot judge, in pid
- *  order (`Holding`). */
+ *  itself, and neither it nor a process it started (its parent pid) is counted; nor is another
+ *  start by its paths under its own claim (`outsideOwnClaims`), which are its removal. A process
+ *  that ends while it is read, or whose links this user may not read, holds nothing here, and
+ *  nothing holds a directory that is gone. `/proc` is read here; where each path leads is read in
+ *  a child that runs `reader` (`StatReader`), all of them within `statMs` (`identities`), and a
+ *  process none of whose paths leads into the directory, but one of whose paths has no answer, is
+ *  one the start cannot judge (`unread`). Answers each holder and each process it cannot judge,
+ *  in pid order (`Holding`). */
 export async function holdersOf(
   directory: string,
   spellings: readonly string[],
@@ -495,11 +511,11 @@ export async function holdersOf(
       named.push({
         process: `${basename(readlinkSync(`/proc/${pid}/exe`))} ${pid}`,
         spelt: args.some((argument) => spellings.some((path) => names(argument, path))),
-        paths: [
+        paths: outsideOwnClaims(pid, [
           cwd,
           ...args.flatMap(pathsIn).map((path) => (isAbsolute(path) ? path : `${cwd}/${path}`)),
           ...open,
-        ],
+        ]),
       });
     } catch {
       // A process that ended, or whose links this user may not read, holds nothing here.
@@ -558,8 +574,11 @@ export async function holdersOf(
  *  kernel shows as the postmaster's working directory, and is found under the name its mark
  *  holds, without the claim. */
 const servedFrom = /^(.+)\/(?:worker-\d+|template)\/pgdata(?:\.removing-\d+-\d+)?$/;
-/** The claim a claimed data directory's name ends in (`claimInfix` and `claimForRemoval` of
- *  `e2e/harness-postgres-removal.ts`). */
+/** What a claimed directory's name holds between the name of the part and the claimer's pid and
+ *  start: a start claims a part for its removal by renaming it to `<part>.removing-<pid>-<start>`
+ *  (`claimForRemoval` of `e2e/harness-postgres-removal.ts`). */
+export const claimInfix = ".removing-";
+/** The claim a claimed data directory's name ends in (`claimInfix`). */
 const claimed = /\.removing-\d+-\d+$/;
 
 /** A postmaster the kernel shows serving from a run directory that this start's listing of its

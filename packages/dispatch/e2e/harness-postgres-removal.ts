@@ -51,7 +51,8 @@
  *  and inode and not by any spelling of it, and the start leaves that directory under its name
  *  with its mark and names it, and a later start judges it again. The postmaster the start
  *  verified, and the processes it started, are not counted: the start stops them itself, and
- *  waits for them to end before the removal.
+ *  waits for them to end before the removal. Nor is another start that claimed the directory and
+ *  removes it, by what it holds under its claim: that is its removal (`holdersOf`).
  *  A line that says `removed` names only what that start itself removed and is gone. A removal
  *  that fails, or a postmaster that fails a check, is one line, keeps its mark for the next
  *  start, and never fails the start. Two starts that find one dead mark at once both try, and the
@@ -106,6 +107,7 @@ import {
   whyUntrusted,
 } from "./harness-postgres-marks";
 import {
+  claimInfix,
   type Holding,
   holdersOf,
   type Postmaster,
@@ -194,13 +196,13 @@ function heldPhrase(path: string, { holders, unread }: Holding): string {
   return `${path}, which ${listOf(phrases)}`;
 }
 
-/** What a claimed name holds between the name of the part and the claimer's pid and start. */
-const claimInfix = ".removing-";
 /** How long a start waits for a claim another start holds and still runs: twice the longest stop
  *  of a postmaster that start may make under its claim (`postmasterQuitMs` and `postmasterKillMs`),
  *  so its removal of the directory after the stop has as long again. The removal of a data
- *  directory of 20,000 files took under a second on a shared Linux machine on 2026-11-17. At the
- *  bound the start leaves the part and its mark for a later start, and names the claim. */
+ *  directory of 20,000 files took under a second on a shared Linux machine on 2026-11-17, and 141
+ *  and 187 s on one whose disk other sessions loaded, on 2026-11-19, past this bound. At the bound
+ *  the start leaves the part and its mark to that claim, names the claim, and goes on; the
+ *  claimer's removal goes on too, and a claim its claimer's death left a later start takes. */
 export const claimWaitMs = 2 * (postmasterQuitMs + postmasterKillMs);
 /** How often a start reads a claim another start holds while it waits for it. */
 const claimPollMs = 100;
