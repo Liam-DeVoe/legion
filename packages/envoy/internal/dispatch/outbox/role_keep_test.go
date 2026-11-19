@@ -72,8 +72,8 @@ type takenKeeps struct {
 	takers []func(publish func() <-chan error) <-chan error
 }
 
-func (p *takenKeeps) WindowUntil(deadline func() time.Time) bus.Sender {
-	return takenKeepsWindow{Sender: p.Client.WindowUntil(deadline), publisher: p}
+func (p *takenKeeps) WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender {
+	return takenKeepsWindow{Sender: p.Client.WindowUntil(ctx, deadline), publisher: p}
 }
 
 type takenKeepsWindow struct {
@@ -147,7 +147,7 @@ type keepRecorder struct {
 	kept []keptPublish
 }
 
-func (p *keepRecorder) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *keepRecorder) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 

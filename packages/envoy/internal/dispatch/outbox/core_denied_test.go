@@ -482,8 +482,8 @@ func (h *holdPassingDuringAcknowledgement) Deadline() time.Time {
 	return time.Now().Add(time.Hour)
 }
 
-func (h *holdPassingDuringAcknowledgement) WindowUntil(deadline func() time.Time) bus.Sender {
-	return passingWindow{Sender: h.Client.WindowUntil(deadline), hold: h}
+func (h *holdPassingDuringAcknowledgement) WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender {
+	return passingWindow{Sender: h.Client.WindowUntil(ctx, deadline), hold: h}
 }
 
 // passingWindow is the hold's window: each send goes out through the client's own window, and the

@@ -1470,7 +1470,7 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 		out    fallbackSend
 		answer <-chan error
 	}
-	sender := deps.Publisher.WindowUntil(hold.Deadline)
+	sender := deps.Publisher.WindowUntil(ctx, hold.Deadline)
 	// One record for the pass, as a batch keeps one for its own window of sends (sendChains):
 	// what the handovers behind this pass's keeps have already handed a role's holder.
 	handed := newKeptHandovers()

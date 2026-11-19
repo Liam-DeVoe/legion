@@ -64,8 +64,9 @@ type Publisher interface {
 	// WindowUntil starts one batch's sends: each is sent without waiting for NATS's answer, all on
 	// one connection or not at all, in no order of its own, and none written at or past deadline,
 	// which a send past it answers bus.ErrWindowDeadline (bus.Client.WindowUntil); sendChains keeps
-	// the order per owner and destination. A nil deadline is none.
-	WindowUntil(deadline func() time.Time) bus.Sender
+	// the order per owner and destination. A nil deadline is none. A send waits for no connection,
+	// and the window's Probe waits for one no longer than ctx, the batch's, lasts.
+	WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender
 	// Connected reports whether the client has a live connection now. A standby takes the
 	// publisher hold only while it does, and a holder whose client has not for natsLossGrace
 	// releases the hold.
@@ -305,7 +306,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	chains := planChains(events)
 
 	changed := deps.Publisher.ConnectionChanged()
-	window := deps.Publisher.WindowUntil(hold.Deadline)
+	window := deps.Publisher.WindowUntil(ctx, hold.Deadline)
 	result.started = time.Now()
 	settled := map[string]struct{}{}
 	var recordErr error
@@ -444,7 +445,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		if connectionReplaced(changed) && deps.Publisher.Connected() {
 			slog.Info("dispatch outbox: the batch's connection was replaced, so the sends it failed are released for the resend on the new one")
 			releaseUnacknowledged = true
-		} else if err := window.Probe(probeTimeout); err != nil {
+		} else if err := window.Probe(probeTimeout); err != nil && !lostToContextEnd(ctx, err) {
 			slog.Error("dispatch outbox: the batch's sends failed and its connection does not answer", "error", err)
 			result.natsLost = true
 			releaseUnacknowledged = true

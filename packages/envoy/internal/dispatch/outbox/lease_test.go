@@ -76,8 +76,8 @@ type countingClient struct {
 	counter *sendCounter
 }
 
-func (c countingClient) WindowUntil(deadline func() time.Time) bus.Sender {
-	return countingSender{Sender: c.Client.WindowUntil(deadline), counter: c.counter}
+func (c countingClient) WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender {
+	return countingSender{Sender: c.Client.WindowUntil(ctx, deadline), counter: c.counter}
 }
 
 type countingSender struct {
@@ -815,7 +815,7 @@ type fenceAfterFirstSend struct {
 	passed atomic.Bool
 }
 
-func (p *fenceAfterFirstSend) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *fenceAfterFirstSend) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 
@@ -882,7 +882,7 @@ type reconnectedQuietly struct {
 
 func (p *reconnectedQuietly) Connected() bool { return p.connected.Load() }
 
-func (p *reconnectedQuietly) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *reconnectedQuietly) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 
@@ -963,6 +963,53 @@ func TestAHolderWhoseClientIsMidReconnectGivesThePublisherUpOnTime(t *testing.T)
 	}
 	if bound := natsLossGrace + 2*statusReadBound + time.Second; took > bound {
 		t.Fatalf("the holder gave the publisher hold up %v after it began, past %v: natsLossGrace, the two bounded reads and a second", took.Round(time.Millisecond), bound)
+	}
+}
+
+// A batch that begins while its client reconnects - the client found its connection lost a
+// moment before, as a batch that a scan starts at the loss's own wake does - ends for NATS lost
+// within probeTimeout of its start: its send does not wait for a reconnect that does not come, and
+// the probe of the connection that follows is the batch's one wait for it. So a holder whose loss
+// a batch finds gives the publisher hold up in the time its grace allows (natsLossGrace), inside
+// the six seconds a standby takes over in, rather than once a send has waited out a reconnect.
+func TestABatchBegunWhileItsClientReconnectsEndsForNATSLostWithinTheProbe(t *testing.T) {
+	_, url := testnats.Start(t)
+	proxy := testnats.StartProxy(t, url)
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	seedIssue(t, database, "T-1", nil)
+	appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
+		Payload: model.Message{ID: "message-reconnecting", IssueKey: new("T-1"), Body: "sent while the client reconnects"},
+	})
+	client, err := bus.ConnectOwningStream([]string{proxy.URL()})
+	if err != nil {
+		t.Fatalf("connect the holder's NATS client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	holder := New(Deps{Store: database, Publisher: client})
+	hold, _ := holder.tryHold(context.Background())
+	if hold == nil {
+		t.Fatal("the outbox did not take the publisher hold")
+	}
+	t.Cleanup(func() { _ = hold.Release(context.Background()) })
+	proxy.Cut()
+	t.Cleanup(proxy.Restore)
+	waitFor(t, outboxHangGuard, "the client reading its connection lost", func() bool { return !client.Connected() })
+
+	batch, err := scanBatch(context.Background(), holder.deps, hold, holder.instance)
+	took := time.Since(batch.started)
+	if err != nil {
+		t.Fatalf("scan the batch: %v", err)
+	}
+	t.Logf("the batch begun while its client reconnected ended %v after its start: natsLost %v, fenced %v, sent %d, published %d",
+		took.Round(time.Millisecond), batch.natsLost, batch.fenced, batch.sent, batch.published)
+	if !batch.natsLost || batch.fenced || batch.published != 0 {
+		t.Fatalf("the batch begun while its client reconnected ended %+v, want it ended for NATS lost, unfenced, with nothing published", batch)
+	}
+	if bound := probeTimeout + time.Second; took > bound {
+		t.Fatalf("the batch begun while its client reconnected ended for NATS lost %v after its start, past %v: probeTimeout and a second",
+			took.Round(time.Millisecond), bound)
 	}
 }
 

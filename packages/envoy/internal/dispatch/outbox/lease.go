@@ -39,8 +39,12 @@ const (
 	// handed a silent connection's hold over 8 to 9 s into the silence. A read that does not
 	// answer within the bound is a client in the middle of a reconnect, and so not connected.
 	statusReadBound = 250 * time.Millisecond
-	// probeTimeout bounds the flush that tells a connection that is gone or silent from one whose
-	// server still answers, after a batch's sends failed for the connection (scanBatch).
+	// probeTimeout bounds the probe that tells a connection that is gone or silent from one whose
+	// server still answers, after a batch's sends failed for the connection (scanBatch), and is the
+	// one wait a batch makes for a connection it does not have: its sends wait for none
+	// (bus.Client.WindowUntil), so a batch begun while its client reconnects ends for NATS lost
+	// within it, inside natsLossGrace, and a reconnect slower than it ends the batch and gives the
+	// hold up where a send used to wait for the reconnect.
 	probeTimeout = 2 * time.Second
 	// holdRetry is how long a standby waits to try the hold again after the database failed to
 	// answer the take or the read of the current hold's lapse, or after a probe of its own NATS
@@ -330,7 +334,7 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 		var lapsed <-chan time.Time
 		if o.deps.Publisher.Connected() {
 			wait := holdRetry
-			if o.answering() {
+			if o.answering(ctx) {
 				var hold *duty.Hold
 				hold, wait = o.tryHold(ctx)
 				if hold != nil {
@@ -356,14 +360,15 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 
 // answering reports whether this process's NATS connection answers: always, unless the process
 // gave the publisher hold up for NATS lost (probeBeforeHold) and no probe of its connection has
-// been answered since, in which case it probes the connection now. A connection that went silent
-// still reports itself connected, so without the probe the process would take back at once the
-// hold it gave up for that very connection, ahead of a standby whose NATS works.
-func (o *Outbox) answering() bool {
+// been answered since, in which case it probes the connection now, within probeTimeout and while
+// ctx lasts. A connection that went silent still reports itself connected, so without the probe
+// the process would take back at once the hold it gave up for that very connection, ahead of a
+// standby whose NATS works.
+func (o *Outbox) answering(ctx context.Context) bool {
 	if !o.probeBeforeHold {
 		return true
 	}
-	if err := o.deps.Publisher.WindowUntil(nil).Probe(probeTimeout); err != nil {
+	if err := o.deps.Publisher.WindowUntil(ctx, nil).Probe(probeTimeout); err != nil {
 		return false
 	}
 	o.probeBeforeHold = false

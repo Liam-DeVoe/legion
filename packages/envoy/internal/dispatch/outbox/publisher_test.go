@@ -126,7 +126,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	list, mentionPending, resolveErr := eventDestinations(ctx, deps, single, found)
 	single.destinationsOf, single.mentionPending = list, mentionPending
 	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
-	sender := deps.Publisher.WindowUntil(nil)
+	sender := deps.Publisher.WindowUntil(ctx, nil)
 	var failures []error
 	for _, dest := range single.destinationsOf {
 		if _, ok := delivered[dest.subject]; ok {
@@ -216,7 +216,7 @@ func (p *recordingPublisher) Publish(item contracts.Envelope) error {
 	return nil
 }
 
-func (p *recordingPublisher) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *recordingPublisher) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 
@@ -266,7 +266,7 @@ func (p *blockingFailPublisher) Publish(contracts.Envelope) error {
 	return errors.New("publisher unavailable")
 }
 
-func (p *blockingFailPublisher) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *blockingFailPublisher) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 
