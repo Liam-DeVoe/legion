@@ -6,7 +6,7 @@ import {
   setPendingCredentialRequests,
 } from "./fake-broker-helpers";
 import { expectInboxCount } from "./inbox-threads";
-import { expect, test } from "./test";
+import { expect, type Locator, test } from "./test";
 import { withAlice } from "./users";
 
 /**
@@ -24,7 +24,10 @@ import { withAlice } from "./users";
  */
 
 /** When the expired rows' deadlines passed, as the broker wrote them: an hour before this run.
- *  Dispatch relays the broker's body unchanged, so the page's `<time>` carries this string. */
+ *  Dispatch relays the broker's machine-login lookup unchanged, so the machine-login page's
+ *  `<time>` carries this string (`lookupMachineLoginV2`); the Inbox's list it reads into a page
+ *  and writes again (`listCredentialRequestsV2`), so its rows' `<time>` carries this instant
+ *  (`expectDeadline`). */
 const deadline = new Date(Date.now() - 3_600_000).toISOString();
 /** When they were asked, an hour before that. */
 const askedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
@@ -109,6 +112,21 @@ const expiredLogin = expiredMachineLogin(
   deadline
 );
 
+/** A date and time as RFC 3339 writes one, with its offset: what a `<time>`'s `datetime` holds. */
+const RFC_3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** Holds the `<time>` of an Inbox row's deadline line to `deadline`'s instant. The list's rows
+ *  carry the deadline as Go writes a time again, RFC 3339 with a fraction's trailing zeros
+ *  dropped (`...29.480Z` comes back `...29.48Z`), so the row compares the instant the attribute
+ *  names and not its text. */
+async function expectDeadline(line: Locator): Promise<void> {
+  const time = line.locator("time");
+  await expect(time).toHaveAttribute("datetime", RFC_3339);
+  await expect
+    .poll(async () => Date.parse(String(await time.getAttribute("datetime"))))
+    .toBe(Date.parse(deadline));
+}
+
 // The pending request beside it is the control: it is a link to its broker page and is the one
 // thing "Needs you" counts, before the dismissal and after it, so the expired row's lack of a
 // link and of a count is its own and not a list that failed to load.
@@ -132,7 +150,7 @@ test("an expired secret request is marked with its deadline, leads to no decisio
     await expect(expired.getByText("Expired", { exact: true })).toBeVisible();
     const passed = expired.getByText(/^Its deadline passed/);
     await expect(passed).toBeVisible();
-    await expect(passed.locator("time")).toHaveAttribute("datetime", deadline);
+    await expectDeadline(passed);
     // No link of any kind: not the broker's page it still names, nor any other decision page.
     await expect(expired.locator("a")).toHaveCount(0);
     await expect(page.locator(`a[href="${retiredSecretPage}"]`)).toHaveCount(0);
@@ -175,7 +193,7 @@ test("an expired machine login is marked with its deadline, leads to no machine-
     await expect(expired.getByText("Expired", { exact: true })).toBeVisible();
     const passed = expired.getByText(/^Its deadline passed/);
     await expect(passed).toBeVisible();
-    await expect(passed.locator("time")).toHaveAttribute("datetime", deadline);
+    await expectDeadline(passed);
     await expect(expired.locator("a")).toHaveCount(0);
     await expect(requests.locator('a[href="/credentials/machine"]')).toHaveCount(1);
     await expectInboxCount(page, 1);

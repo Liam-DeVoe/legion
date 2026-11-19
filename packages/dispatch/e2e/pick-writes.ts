@@ -56,7 +56,7 @@ export interface HeldPatches {
  * under the same `Idempotency-Key`, and the server applies the key once.
  */
 export async function holdIssuePatches(page: Page, issueKey: string): Promise<HeldPatches> {
-  const path = `/api/v1/issues/${issueKey}`;
+  const path = `/api/v2/issues/${issueKey}`;
   const released = Promise.withResolvers<void>();
   const sent: HeldPatch[] = [];
   const forwarded: unknown[] = [];
@@ -114,7 +114,7 @@ export async function refuseIssuePatches(page: Page, issueKey: string): Promise<
   const refused: number[] = [];
   const forwarded: unknown[] = [];
   let refusing = true;
-  await page.route(`**/api/v1/issues/${issueKey}`, async (route) => {
+  await page.route(`**/api/v2/issues/${issueKey}`, async (route) => {
     const request = route.request();
     if (request.method() !== "PATCH") return route.fallback();
     if (refusing) {
@@ -172,19 +172,27 @@ export function logReads(page: Page, matches: (url: URL) => boolean): LoggedRead
   return reads;
 }
 
-/** The read of one issue's detail, `GET /api/v1/issues/<KEY>`. */
+/** The issue page's read of one issue's detail, `GET /api/v2/issues/<KEY>?include=...`: the
+ *  issue's own read naming the details the page draws (`getIssue`, `web/src/api/client.ts`). A
+ *  reference's summary of the issue reads the same path with no `include` (`getIssueSummary`). */
 export function detailRead(issueKey: string): (url: URL) => boolean {
-  return (url) => url.pathname === `/api/v1/issues/${issueKey}`;
+  return (url) => url.pathname === `/api/v2/issues/${issueKey}` && url.searchParams.has("include");
 }
 
-/** A read of a list of issues, `GET /api/v1/issues?<param>=<value>`: a project's list
- *  (`project=CORE`) or the work under a priority (`advances=<id>`). */
+/** A read of a list of issues, `GET /api/v2/issues?<param>=<value>`, each of its pages: a
+ *  project's list (`project=CORE`) or the work under a priority (`advances=<id>`). */
 export function listRead(param: string, value: string): (url: URL) => boolean {
-  return (url) => url.pathname === "/api/v1/issues" && url.searchParams.get(param) === value;
+  return (url) => url.pathname === "/api/v2/issues" && url.searchParams.get(param) === value;
 }
 
-/** The Inbox's read, `GET /api/v1/inbox`. */
-export const inboxRead = (url: URL): boolean => url.pathname === "/api/v1/inbox";
+/** The Inbox's read, `GET /api/v2/asks?include=thread&include=mark`, each of its pages: every
+ *  open ask the reader can see, with its thread and the reader's snooze of it (`getInbox`,
+ *  `web/src/api/client.ts`). A document's question map reads the same path under `source`,
+ *  including neither. */
+export function inboxRead(url: URL): boolean {
+  const include = url.searchParams.getAll("include");
+  return url.pathname === "/api/v2/asks" && include.includes("thread") && include.includes("mark");
+}
 
 /** Whether one of `reads` was sent at or after `since` and has been answered. */
 export function readAnsweredSince(reads: readonly LoggedRead[], since: number): boolean {
