@@ -2,6 +2,6 @@ kind: Changed
 body: |-
   A card carries no reply procedure and states nothing twice: the sender's session, title, time and
   roles each appear once, and a direct card reads `to: you`. Another author's words (a person's, a
-  session's, a worker's summary) come in a block of their own after the card's fields, which those
-  words cannot close. A Dispatch card keeps its reply command. Each plugin notice states the fields
+  session's, a worker's summary, a suggested replacement) come in a block of their own after the
+  card's fields, which those words can neither open nor close. A Dispatch card keeps its reply command. Each plugin notice states the fields
   of its kind.
