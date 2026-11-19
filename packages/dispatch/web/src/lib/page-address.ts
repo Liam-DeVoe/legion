@@ -290,6 +290,33 @@ export type AddressValues<S extends AddressSpec> = {
   [K in keyof S]: S[K] extends AddressParam<infer T> ? T : never;
 };
 
+/** Writes each field `values` holds into `params` through its own parameter's `write`, under the
+ *  name `spec` gives it, and hands `params` back; a parameter whose field `values` leaves out is
+ *  left as it stands. The one way a spec's fields reach a query: `useAddressFields`'s setter
+ *  writes through it, and so does `fieldsAddress`, the link to a page. */
+export function writeAddressFields<S extends AddressSpec>(
+  params: URLSearchParams,
+  spec: S,
+  values: Partial<AddressValues<S>>
+): URLSearchParams {
+  const written = values as Record<string, unknown>;
+  for (const [name, param] of Object.entries(spec)) {
+    if (name in written) param.write(params, name, written[name]);
+  }
+  return params;
+}
+
+/** The address of `pathname` narrowed by `values` and by nothing else, written through `spec`:
+ *  a link to a page is the address that page's own setter writes for the same narrowing, cut
+ *  and encoded by the same parameters. */
+export function fieldsAddress<S extends AddressSpec>(
+  pathname: string,
+  spec: S,
+  values: Partial<AddressValues<S>>
+): string {
+  return addressPath(pathname, writeAddressFields(copyAddress(), spec, values));
+}
+
 /**
  * A page's whole narrowing, read from and written to the address under the page's own names:
  * the values as they stand, and one setter that takes the parameters that changed and leaves
@@ -310,15 +337,8 @@ export function useAddressFields<S extends AddressSpec>(
     return read as AddressValues<S>;
   }, [params, spec]);
   const set = useCallback(
-    (next: Partial<AddressValues<S>>) => {
-      const written = next as Record<string, unknown>;
-      update((current) => {
-        for (const [name, param] of Object.entries(spec)) {
-          if (name in written) param.write(current, name, written[name]);
-        }
-        return current;
-      });
-    },
+    (next: Partial<AddressValues<S>>) =>
+      update((current) => writeAddressFields(current, spec, next)),
     [spec, update]
   );
   return [values, set] as const;

@@ -37,7 +37,7 @@ test("a list-only option label flattens to inline text with no nested list item"
 
 // The digit is the Inbox's key for the option, drawn for the eye: the option's name is still its
 // label, which every screen reader and every test that finds an option by its name reads.
-test("a choice row draws its digit beside its text and keeps its name its label", () => {
+test("a choice row draws its digit beside its text and keeps its name its label", async () => {
   const view = render(
     <AskChoiceRow
       checked={false}
@@ -51,7 +51,8 @@ test("a choice row draws its digit beside its text and keeps its name its label"
   );
 
   try {
-    const radio = screen.getByRole("radio", { name: "Other" });
+    // "Other" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const radio = await screen.findByRole("radio", { name: "Other" });
     expect(radio).toHaveAttribute("data-ask-option", "");
     const digit = view.container.querySelector("kbd");
     expect(digit?.textContent).toBe("4");
@@ -63,7 +64,7 @@ test("a choice row draws its digit beside its text and keeps its name its label"
   }
 });
 
-test("a choice row of a card in a row draws its digit for the row in hand alone, and none without one", () => {
+test("a choice row of a card in a row draws its digit for the row in hand alone, and none without one", async () => {
   const inRow = render(
     <AskChoiceRow
       checked={false}
@@ -94,7 +95,10 @@ test("a choice row of a card in a row draws its digit for the row in hand alone,
   );
   try {
     expect(elsewhere.container.querySelector("kbd")).toBeNull();
-    expect(screen.getByRole("radio", { name: "Ship" })).not.toHaveAttribute("data-ask-option");
+    // "Ship" is a Markdown label, named once the lazy Markdown engine has loaded.
+    expect(await screen.findByRole("radio", { name: "Ship" })).not.toHaveAttribute(
+      "data-ask-option"
+    );
   } finally {
     elsewhere.unmount();
   }
