@@ -7,6 +7,7 @@ import type {
   EditPrecondition,
 } from "@legion/contracts";
 import { ARTIFACT_NAME_EXISTS_RULE, typedBlockIdAttribute } from "@legion/contracts";
+import { goBlankPattern } from "@legion/contracts/go-blank";
 import { actorText } from "../actor-text";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
@@ -52,7 +53,6 @@ import {
   writeResultDetails,
 } from "./results";
 import {
-  goBlankPattern,
   roundTripFailure,
   type StoredTextCheck,
   storedTextCheck,
