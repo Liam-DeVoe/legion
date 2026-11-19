@@ -123,7 +123,7 @@ func (d sessionDial) dial(parent context.Context, ready func(context.Context, *p
 		}
 		select {
 		case <-ctx.Done():
-			if parent.Err() != nil {
+			if errors.Is(parent.Err(), context.Canceled) {
 				return nil, fmt.Errorf("%w (after %d attempts; the start was stopped: %w)", last, attempt+1, parent.Err())
 			}
 			return nil, fmt.Errorf("%w (after %d attempts in %s)", last, attempt+1, resumeLookupTimeout)

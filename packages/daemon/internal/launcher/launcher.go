@@ -603,6 +603,12 @@ type child struct {
 	// (claudeKeeper). It saves until the child has exited, then makes its last save before the
 	// proxy closes (wait).
 	keeper *claudeKeeper
+	// store is the session database the child's environment points it at through a URL file
+	// when no proxy of the generation's own serves it (the postgres session store): the store the
+	// launcher asks once when the child exits with an error, to tell a store that stopped
+	// answering the child from the child's own end (storeAnswers). Nil for a child under the
+	// proxy, whose own connections the proxy sees, and for a child whose sessions are no rows.
+	store *sessionDial
 	// stopBy is when the stop under way, if any, gives up on the child: the end of its grace
 	// (endGeneration), which bounds the keeper's last save. Guarded by manager.mu.
 	stopBy time.Time
@@ -935,7 +941,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 		m.mu.Unlock()
 		return abandon(fmt.Errorf("start child: %w", err))
 	}
-	active := &child{generation: command.Generation, pid: process.cmd.Process.Pid, process: process.cmd.Process, dir: dir, status: process.status, output: process.output, proxy: proxy, keeper: keeper, done: make(chan struct{})}
+	active := &child{generation: command.Generation, pid: process.cmd.Process.Pid, process: process.cmd.Process, dir: dir, status: process.status, output: process.output, proxy: proxy, keeper: keeper, store: unproxiedStore(env, proxy), done: make(chan struct{})}
 	m.child = active
 	result := shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation}
 	m.requests[command.ID] = request{body: body, result: result}
@@ -1003,7 +1009,12 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 // (sessionproxy.Proxy.Fault), with no later connection that reached it, exited on a store that
 // stopped answering it after the start's checks had passed: its exit carries
 // shimwire.SessionStoreUnreachable, which the daemon waits out a minute at a time with the session
-// kept and charges nothing for, where any other exit is the child's own end.
+// kept and charges nothing for, where any other exit is the child's own end. A store no proxy
+// serves, which the child dials itself through its URL file, is asked once when the child exits
+// on its own with an error (storeAnswers), bounded by half of what its grace leaves, as the proxy's
+// proof dial is bounded by half of it: one that refuses or does not answer marks the exit the same
+// way. The ask comes after the exit, so a store that came back in between reads as the child's
+// own end, and a store that failed just then by chance reads as the store's.
 func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	var reported *syscall.WaitStatus
 	if active.status != nil {
@@ -1034,8 +1045,9 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	m.mu.Lock()
 	end := active.stopBy
 	m.mu.Unlock()
+	ownEnd := end.IsZero()
 	// A child that exited on its own is given the whole grace a stop would have given it.
-	if end.IsZero() {
+	if ownEnd {
 		end = time.Now().Add(m.cfg.StopGrace)
 	}
 	active.keeper.finish(end.Add(-sessionDrain))
@@ -1044,6 +1056,13 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 		if fault := active.proxy.Fault(); fault != nil {
 			exit.Session = shimwire.SessionStoreUnreachable
 			m.logf("launcher: generation %d exited after the session database stopped answering its connections: %v",
+				active.generation, fault)
+		}
+	}
+	if active.store != nil && ownEnd && failedExit(exit) {
+		if fault := storeAnswers(*active.store, time.Until(end)/2); fault != nil {
+			exit.Session = shimwire.SessionStoreUnreachable
+			m.logf("launcher: generation %d exited with an error and its session database did not answer the launcher's ask either: %v",
 				active.generation, fault)
 		}
 	}
@@ -1058,6 +1077,45 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	close(active.done)
 	m.mu.Unlock()
 	_ = m.state()
+}
+
+// unproxiedStore is the session database the child's environment points it at through a URL file
+// when proxy, the generation's own, is nil: the postgres session store, whose database the child
+// dials itself (child.store). Nil under the proxy, and for a child whose sessions are no rows.
+func unproxiedStore(env []string, proxy *sessionproxy.Proxy) *sessionDial {
+	if proxy != nil || envValue(env, ompsessions.StorageVariable) != ompsessions.SQLStorage {
+		return nil
+	}
+	store, err := newSessionDial(env, "")
+	if err != nil {
+		return nil
+	}
+	return &store
+}
+
+// failedExit is whether exit is a child's own end with an error: a status other than 0, or a
+// signal. A role-init that failed before it started the shim is no child's end at all.
+func failedExit(exit shimwire.LauncherExit) bool {
+	return exit.Code != 0 && exit.Code != shimwire.LauncherExitSetupFailed
+}
+
+// storeAnswers dials store once, within bound, as the child would: the store's own fault, a dial
+// it refused or never answered (ompsessions.StoreFault), or nil for a store that answered, or
+// answered with a refusal of its own (a login it refused), and for a bound that leaves no time to
+// ask. The dial alone is asked, never the table: a child that failed in a database no Oh My Pi
+// has opened yet would otherwise read as a store fault and be tried for ever.
+func storeAnswers(store sessionDial, bound time.Duration) error {
+	if bound <= 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
+	conn, err := store.connect(ctx)
+	closeSessions(conn)
+	if ompsessions.StoreFault(err) {
+		return err
+	}
+	return nil
 }
 
 func (m *manager) stop(command shimwire.LauncherStop) shimwire.LauncherStopResult {

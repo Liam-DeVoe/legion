@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -35,7 +36,7 @@ func shortenResumeLookup(t *testing.T) {
 // refused before anything starts, even when a file of that name is on disk, and a session the table
 // holds starts with no file on disk at all.
 func TestStartUnderSQLStorageResumesOnlyASessionTheTableHolds(t *testing.T) {
-	_, dsnFile := testdb.DSNFile(t, "legion_launcher_test")
+	dsn, dsnFile := testdb.DSNFile(t, "legion_launcher_test")
 	g := newRig(t)
 	marker := filepath.Join(t.TempDir(), "marker")
 	sessionFile := filepath.Join(t.TempDir(), "sessions", "2026-10-08T12-00-00-000Z_0001.jsonl")
@@ -47,6 +48,16 @@ func TestStartUnderSQLStorageResumesOnlyASessionTheTableHolds(t *testing.T) {
 		return got.Error, got.OK
 	}
 
+	// A database with no session table cannot say whether it held the session: that is the
+	// store's own fault, which the daemon waits out, and never a session it lacks.
+	shortenResumeLookup(t)
+	untabled := g.childStart(4, marker, nil)
+	untabled.Env = append(untabled.Env, ompsessions.StorageVariable+"="+ompsessions.SQLStorage, ompsessions.DSNFileVariable+"="+dsnFile)
+	untabled.ResumeFile = sessionFile
+	if got := g.start(untabled); got.OK || got.Session != shimwire.SessionStoreUnreachable {
+		t.Fatalf("start over a database with no session table = %#v, want the store's fault, %q", got, shimwire.SessionStoreUnreachable)
+	}
+	createSessionTables(t, dsn)
 	refusal, ok := start(5)
 	if ok || !strings.Contains(refusal, "resume session "+sessionFile+": the session table holds no such session") {
 		t.Fatalf("start of a session the table does not hold = %q (ok %t), want the refusal naming it", refusal, ok)
@@ -171,12 +182,7 @@ func TestAResumeUnderSQLStorageWaitsOutAnUnreachableSessionDatabase(t *testing.T
 	shortenResumeLookup(t)
 	// writeURL replaces the URL file whole, as a rename does, so a read never sees half of it.
 	writeURL := func(url string) {
-		staged := dsnFile + ".staged"
-		if err := os.WriteFile(staged, []byte(url+"\n"), 0o600); err != nil {
-			t.Error(err)
-			return
-		}
-		if err := os.Rename(staged, dsnFile); err != nil {
+		if err := replaceURLFile(dsnFile, url); err != nil {
 			t.Error(err)
 		}
 	}
@@ -208,6 +214,20 @@ func TestAResumeUnderSQLStorageWaitsOutAnUnreachableSessionDatabase(t *testing.T
 	}
 	if waited := time.Since(started); waited < resumeLookupTimeout-time.Second {
 		t.Fatalf("the lookup gave up after %s, want it to keep asking for %s", waited, resumeLookupTimeout)
+	}
+}
+
+// createSessionTables makes Oh My Pi's two tables in the database at dsn, as the first Oh My Pi
+// that opens it does.
+func createSessionTables(t *testing.T, dsn string) {
+	t.Helper()
+	conn, err := ompsessions.ConnectURL(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(context.Background())
+	if err := ompsessions.CreateTables(context.Background(), conn); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -254,6 +274,7 @@ func TestAResumeUnderASessionDatabaseIsServedThroughTheProxy(t *testing.T) {
 		return got.Error, got.OK
 	}
 
+	createSessionTables(t, dsn)
 	refusal, ok := start(3)
 	if ok || !strings.Contains(refusal, "resume session "+sessionFile+": the session table holds no such session") {
 		t.Fatalf("start of a session the table does not hold = %q (ok %t), want the refusal naming it", refusal, ok)

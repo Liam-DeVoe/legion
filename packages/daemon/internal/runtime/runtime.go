@@ -604,7 +604,9 @@ type Observation struct {
 	OutOfMemory bool
 	// StoreFault is a Gone of a process that exited after its session store stopped answering
 	// it: the Kubernetes launcher's proxy could not reach the session database for the child's
-	// own connection, with no later one that reached it (shimwire.LauncherExit.Session). The
+	// own connection, with no later one that reached it, or, for a store no proxy serves, the
+	// launcher's own dial of it when the child exited with an error was refused or not answered
+	// (shimwire.LauncherExit.Session). The
 	// process ended on a store that did not answer, which says nothing about the claim or its
 	// session, so the supervisor keeps the session, charges nothing, and starts it again every
 	// minute until the store answers, telling the issue and the controller (supervise's

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -148,5 +149,75 @@ func TestASuspendOfAStartingWorkerStopsTheStartAndChargesNothing(t *testing.T) {
 	h.wantBudgets(Budgets{LaunchFailures: 1}) // the death's charge alone: the cancelled start is charged nothing
 	if c := h.claim(); c.SuspendedBy != SuspendedByOperator || c.Session != session {
 		t.Fatalf("claim %+v, want it suspended by the operator with its session kept", c)
+	}
+}
+
+// A process that exited on a session store that stopped answering it (runtime.Observation's
+// StoreFault) is no death the claim is charged for: the claim keeps its session, waits launching
+// with no process, tells the issue and the controller, and starts the same session again once the
+// minute is out, still charging nothing. The control is the same death on a store that answers,
+// which charges a launch failure and relaunches at once.
+func TestAProcessThatExitedOnAStoreThatStoppedAnsweringIsWaitedOutUncharged(t *testing.T) {
+	for name, storeFault := range map[string]bool{"on a store that stopped answering": true, "control: on a store that answers": false} {
+		t.Run(name, func(t *testing.T) {
+			h := newBareHarness(t)
+			var faults []string
+			h.deps.SessionStoreFault = func(_ Claim, detail string) { faults = append(faults, detail) }
+			h.store.PutClaim(h.ctx, queuedClaim())
+			h.start(queuedClaim())
+			h.reach(StateIdle)
+			resumes := len(h.calls("Resume"))
+
+			h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+				Detail: "role tester reports generation 1 exited (code 1, signal )", StoreFault: storeFault}})
+
+			if !storeFault {
+				h.wantBudgets(Budgets{LaunchFailures: 1})
+				h.wantCalls("Resume", resumes+1)
+				if len(faults) != 0 {
+					t.Fatalf("a death on a store that answers told %d store faults, want none", len(faults))
+				}
+				return
+			}
+			h.wantState(StateLaunching)
+			h.wantBudgets(Budgets{})
+			c := h.claim()
+			if c.Session != session || c.SessionFile != sessionFile || c.Locator != nil {
+				t.Fatalf("claim %+v after the store fault, want its session kept and no process recorded", c)
+			}
+			if len(faults) != 1 || !strings.Contains(faults[0], "exited (code 1") {
+				t.Fatalf("the store fault was told %q, want it told once with the runtime's account of the exit", faults)
+			}
+			h.advance(sessionStoreRetry - time.Second)
+			h.wantCalls("Resume", resumes)
+			h.advance(time.Second)
+			if resumed := h.wantCalls("Resume", resumes+1)[resumes]; resumed.Spec.ResumeSessionFile != sessionFile {
+				t.Errorf("the minute's try is %+v, want the same session %s", resumed.Spec, sessionFile)
+			}
+			h.wantBudgets(Budgets{})
+		})
+	}
+}
+
+// The loss of a recorded session is reported before the fresh agent starts, so a fresh spawn that
+// fails, charged as a launch failure, still leaves the loss reported once: the retry is a spawn of
+// a claim that records no session, which reports nothing.
+func TestALostSessionIsReportedOnceEvenWhenItsFreshSpawnFails(t *testing.T) {
+	h := newBareHarness(t)
+	var reported []string
+	h.deps.SessionLost = func(_ Claim, detail string) { reported = append(reported, detail) }
+	h.store.PutClaim(h.ctx, queuedClaim())
+	h.start(queuedClaim())
+	h.reach(StateIdle)
+	h.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: no OMP session anywhere", testToken, runtime.ErrSessionFileMissing)})
+	h.rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("the pod never came")})
+
+	h.observe(runtime.Gone)
+
+	if len(reported) != 1 || !strings.Contains(reported[0], session) {
+		t.Fatalf("the loss was reported %q, want it reported once, naming %s", reported, session)
+	}
+	if c := h.claim(); c.Session != "" || c.Budgets.LaunchFailures < 2 {
+		t.Fatalf("claim %+v, want the session forgotten and the failed spawn charged beside the death", c)
 	}
 }

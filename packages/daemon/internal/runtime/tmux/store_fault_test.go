@@ -65,7 +65,7 @@ func TestASessionFolderThatCannotBeReadIsWaitedOutAndTheSameSessionResumed(t *te
 			}
 			t.Cleanup(func() { _ = os.Chmod(folder, 0o700) })
 
-			clock := &storeFaultClock{now: time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)}
+			clock := supervisetest.NewClock(time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC))
 			suspended := supervise.Claim{Token: spec.Claim, Project: spec.Project, Tree: spec.Tree, Issue: spec.Issue, Role: spec.Role,
 				Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator,
 				Session: "ses-abc", SessionFile: recorded}
@@ -86,11 +86,11 @@ func TestASessionFolderThatCannotBeReadIsWaitedOutAndTheSameSessionResumed(t *te
 			if err := os.Chmod(folder, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			clock.advance(m, time.Minute-time.Second)
+			clock.Advance(m, time.Minute-time.Second)
 			if opened(f.argvs) {
 				t.Fatalf("the claim was started again before its minute was out: %q", f.argvs)
 			}
-			clock.advance(m, time.Second)
+			clock.Advance(m, time.Second)
 			if !opened(f.argvs) {
 				t.Fatal("the minute's try opened no pane once the session folder answered")
 			}
@@ -109,7 +109,7 @@ func TestASessionFolderThatCannotBeReadIsWaitedOutAndTheSameSessionResumed(t *te
 
 // storeFaultMachine is a claim's machine over f, the tmux runtime of a fake tmux server, from c as
 // the store holds it: an in-memory store, spec as every launch's, and clock as its time.
-func storeFaultMachine(t *testing.T, f *fakeServerRuntime, conns *fake.Conns, spec runtime.SpawnSpec, clock *storeFaultClock, c supervise.Claim) *supervise.Machine {
+func storeFaultMachine(t *testing.T, f *fakeServerRuntime, conns *fake.Conns, spec runtime.SpawnSpec, clock *supervisetest.Clock, c supervise.Claim) *supervise.Machine {
 	t.Helper()
 	m, err := supervise.NewMachine(context.Background(), supervise.Deps{
 		Runtime: f.Runtime, Conns: conns, Store: &storeFaultStore{claim: c}, Specs: storeFaultSpecs{spec}, Clock: clock,
@@ -132,79 +132,6 @@ type storeFaultSpecs struct{ spec runtime.SpawnSpec }
 
 func (s storeFaultSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.SpawnSpec, error) {
 	return s.spec, nil
-}
-
-// storeFaultClock is time that moves only when the test advances it, firing each timer that falls
-// due, in order, on the test's goroutine.
-type storeFaultClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	timers []*storeFaultTimer
-}
-
-type storeFaultTimer struct {
-	at            time.Time
-	f             func()
-	stopped, done bool
-}
-
-func (c *storeFaultClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *storeFaultClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	timer := &storeFaultTimer{at: c.now.Add(d), f: f}
-	c.timers = append(c.timers, timer)
-	return storeFaultCancel{c, timer}
-}
-
-// Sleep returns at once: a launch's backoff costs the test nothing.
-func (c *storeFaultClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-
-// advance moves time forward by d, firing what falls due on the way, and waits for every decision
-// a firing started.
-func (c *storeFaultClock) advance(m *supervise.Machine, d time.Duration) {
-	c.mu.Lock()
-	until := c.now.Add(d)
-	c.mu.Unlock()
-	for {
-		c.mu.Lock()
-		var next *storeFaultTimer
-		for _, timer := range c.timers {
-			if !timer.stopped && !timer.done && !timer.at.After(until) && (next == nil || timer.at.Before(next.at)) {
-				next = timer
-			}
-		}
-		if next == nil {
-			c.now = until
-			c.mu.Unlock()
-			m.Wait()
-			return
-		}
-		next.done, c.now = true, next.at
-		c.mu.Unlock()
-		next.f()
-		m.Wait()
-	}
-}
-
-type storeFaultCancel struct {
-	clock *storeFaultClock
-	timer *storeFaultTimer
-}
-
-func (s storeFaultCancel) Stop() bool {
-	s.clock.mu.Lock()
-	defer s.clock.mu.Unlock()
-	if s.timer.stopped || s.timer.done {
-		return false
-	}
-	s.timer.stopped = true
-	return true
 }
 
 // storeFaultStore is supervise.Store over one claim, in memory.
