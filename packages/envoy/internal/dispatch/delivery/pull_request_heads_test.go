@@ -192,7 +192,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 	}
 
 	reconcile := NewReconcile(pool, client, nil)
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget()); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
 	head := readHead(t, ctx, pool, "acme/widgets", 42)
@@ -755,7 +755,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 
 	now := time.Now()
 	reconcile := NewReconcile(pool, fake.newTestClient(), nil)
-	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
+	if err := reconcile.reconcilePullRequestHeads(ctx, now, newAbsenceBudget()); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
 	for _, repo := range []string{"acme/hidden", "acme/walled"} {

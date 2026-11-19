@@ -294,7 +294,7 @@ func TestARateLimitOnOneInstallationEndsNoReadOfTheReconcileForAnother(t *testin
 	if err := owePullRequestRead(ctx, pool, "other/tools", 5, owedFailure, ""); err != nil {
 		t.Fatal(err)
 	}
-	passErr := NewReconcile(pool, client, events.NewBroker()).reconcilePullRequestHeads(ctx, time.Now())
+	passErr := NewReconcile(pool, client, events.NewBroker()).reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget())
 	if _, ok := githubapp.AsRateLimit(passErr); !ok {
 		t.Errorf("the head pass answered %v, want installation 1's rate limit: a pass that met a limit fails with it", passErr)
 	}

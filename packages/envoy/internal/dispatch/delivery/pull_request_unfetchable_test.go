@@ -63,7 +63,7 @@ func TestBothMarksOfAnAbsentPullRequestRunWithoutTheTimelinesAttributionColumns(
 		storePartialRow(t, ctx, pool, unfetchableRepo, 45)
 		pr := DeliveryPullRequest{Repo: unfetchableRepo, Number: 45}
 
-		if err := NewReconcile(pool, absentGitHub(t).newTestClient(), events.NewBroker()).completePartialPullRequest(ctx, pr, &passRateLimit{}); err != nil {
+		if err := NewReconcile(pool, absentGitHub(t).newTestClient(), events.NewBroker()).completePartialPullRequest(ctx, pr, newAbsenceBudget(), &passRateLimit{}); err != nil {
 			t.Fatalf("complete the partial row: %v", err)
 		}
 

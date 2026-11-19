@@ -124,13 +124,14 @@ const (
 // reads of a pull request a pass and, for each of them that GitHub answers 404, one question of
 // GitHub's GraphQL API, one point of its budget, whether the repository holds it
 // (pullRequestAbsent), and none of them taken from a failure. The failures a pass reads ask the
-// same question for each that GitHub now answers 404, up to PullRequestHeadBatch more, so a pass
-// asks up to 250 in all. A repository the App is not installed on costs one installation lookup a
-// pass however many of its refusals the pass reads (passInstallations). During an outage the
-// refusals a pass reads fail and become failures, so they take failure reads after it. A refusal
-// of a number a repository the App reads does not have ends at its first read, so N such forged
-// envelopes are gone after about N/50 passes; a refusal in a repository the App cannot read stays,
-// and is read at most once a pass, the fewest reads first.
+// same question for each that GitHub now answers 404, up to PullRequestHeadBatch more, so the owed
+// reads of a pass ask up to 250 in all (AbsenceQueriesPerPass), and the completions of the partial
+// pull requests ask within what they leave. A repository the App is not installed on costs one
+// installation lookup a pass however many of its refusals the pass reads (passInstallations).
+// During an outage the refusals a pass reads fail and become failures, so they take failure reads
+// after it. A refusal of a number a repository the App reads does not have ends at its first read,
+// so N such forged envelopes are gone after about N/50 passes; a refusal in a repository the App
+// cannot read stays, and is read at most once a pass, the fewest reads first.
 const RefusedReadsPerPass = 50
 
 // owedReadWriteTimeout bounds each statement of the intake that can wait on a lock of

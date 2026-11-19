@@ -387,7 +387,9 @@ func TestNoInterleavingOfTheWritersLeavesAnOlderHeadThanGitHubsLastAnswer(t *tes
 				note("P writes %v", ev)
 			case op < 12 && running("R") == 0:
 				ops["reconcile"]++
-				w := start("R", false, func(ctx context.Context) error { return reconcile.reconcilePullRequestHeads(ctx, time.Now()) })
+				w := start("R", false, func(ctx context.Context) error {
+					return reconcile.reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget())
+				})
 				note("R%d starts late=%v", w.id, w.late)
 			case op < 13:
 				ops["clock_step"]++
@@ -421,7 +423,7 @@ func TestNoInterleavingOfTheWritersLeavesAnOlderHeadThanGitHubsLastAnswer(t *tes
 		}
 		passes := 0
 		for ; passes < 6 && owedCount(t, ctx, pool, "acme/widgets", number) > 0; passes++ {
-			if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+			if err := reconcile.reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget()); err != nil {
 				t.Fatalf("seq %d: a reconcile pass: %v", seq, err)
 			}
 		}

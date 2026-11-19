@@ -123,7 +123,7 @@ func TestOneAnswerOfGitHubIsTheEvidenceThatEndsARefusal(t *testing.T) {
 				fmt.Fprint(w, kase.answer)
 			})
 			refused := &pullRequestRefusal{err: kase.refusal, owner: "acme", repo: "widgets", number: 7, token: kase.token}
-			absent, err := pullRequestAbsent(t.Context(), fake.newTestClient(), refused)
+			absent, err := pullRequestAbsent(t.Context(), fake.newTestClient(), refused, nil)
 			if err != nil {
 				t.Fatalf("pullRequestAbsent: %v", err)
 			}
@@ -140,7 +140,7 @@ func TestAQuestionGitHubDoesNotAnswerIsNoEvidence(t *testing.T) {
 	fake := newFakeGitHub(t)
 	fake.handle("POST /graphql", func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) })
 	refused := &pullRequestRefusal{err: ErrPullRequestNotFound, owner: "acme", repo: "widgets", number: 7, token: "ghs_token"}
-	absent, err := pullRequestAbsent(t.Context(), fake.newTestClient(), refused)
+	absent, err := pullRequestAbsent(t.Context(), fake.newTestClient(), refused, nil)
 	if absent || err == nil {
 		t.Fatalf("pullRequestAbsent of a dropped connection = %v, %v; want false and the failure", absent, err)
 	}

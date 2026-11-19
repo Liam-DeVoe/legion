@@ -333,7 +333,7 @@ func TestARestRateLimitNamesTheInstallationOfItsToken(t *testing.T) {
 				answerCommitPage(t, w, r, pull)
 			})
 
-			err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePartialPullRequests(ctx)
+			err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePartialPullRequests(ctx, newAbsenceBudget())
 
 			if answered.Load() == 0 {
 				t.Fatalf("GitHub answered no read with a limit, want the %s read limited", limitedRead)

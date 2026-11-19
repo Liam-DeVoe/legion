@@ -6,6 +6,10 @@ package delivery
 // and that answer is a read that succeeded, after which Dispatch keeps nothing for that number.
 
 import (
+	"bytes"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -132,5 +136,85 @@ func TestARepositoryWithNoInstallationCostsAPassOneLookup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// One pass asks GitHub at most AbsenceQueriesPerPass absence queries about the reads it refused
+// with a 404 (pullRequestAbsent). The owed reads take from that budget first, and the completions
+// of the partial rows take what is left. Each partial row past the budget stays partial and
+// unmarked, and the next pass asks about it: nothing is lost (R4). acme/widgets is owed
+// RefusedReadsPerPass refusals and holds 10 partial rows more than the budget leaves after them,
+// each a number it does not have. The batched query of facts answers no repository, so the facts
+// line proves no row absent, and each partial row meets its 404 at its completion. A pass that
+// asks about every refusal, or whose completions have a budget of their own, asks 10 more in the
+// first pass. A pass that marks a row it did not ask about marks 10 more.
+func TestAPassAsksAtMostItsAbsenceQueriesAndTheNextPassAsksAboutTheRest(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	const repo, over = "acme/widgets", 10
+	partials := AbsenceQueriesPerPass - RefusedReadsPerPass + over
+	fake := newFakeGitHub(t)
+	fake.facts = func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{"data": map[string]any{}})
+	}
+	// The merged search and the absence query both go to POST /graphql.
+	fake.absenceRoute.Do(func() {
+		fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read a GraphQL request: %v", err)
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if !bytes.Contains(body, []byte("pullRequest(number: $number)")) {
+				mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
+				return
+			}
+			fake.answerAbsenceQuery(w, r)
+		})
+	})
+	github := serveGitHubPulls(t, fake, repo)
+	noRuns(t, fake)
+	for n := 1; n <= RefusedReadsPerPass; n++ {
+		if err := owePullRequestRead(ctx, pool, repo, 1000+n, owedRefusal, model.RefusedAsPullRequestNotFound); err != nil {
+			t.Fatal(err)
+		}
+	}
+	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	for n := 1; n <= partials; n++ {
+		number := 2000 + n
+		if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+			Repo: repo, Number: number, Title: fmt.Sprintf("feat: gone %d", number),
+			URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, number), Author: "octocat", CreatedAt: &merged, Partial: true,
+		}); err != nil {
+			t.Fatalf("seed partial pull request #%d: %v", number, err)
+		}
+	}
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+
+	for i, want := range []struct{ asked, owed, rows, partial, unfetchable int }{
+		{asked: AbsenceQueriesPerPass, owed: 0, rows: partials, partial: over, unfetchable: partials - over},
+		{asked: over, owed: 0, rows: partials, partial: 0, unfetchable: partials},
+	} {
+		before := github.absenceQueries.Load()
+		reconcile.runOnce(ctx)
+		asked := int(github.absenceQueries.Load() - before)
+		var owed, rows, partial, unfetchable int
+		if err := pool.QueryRow(ctx, `select count(*) from pull_request_reads_owed where repo = $1`, repo).Scan(&owed); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `select count(*), count(*) filter (where partial and unfetchable_at is null), count(*) filter (where unfetchable_at is not null)
+			from delivery_pull_requests where repo = $1`, repo).Scan(&rows, &partial, &unfetchable); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("pass=%d absence_queries=%d owed_after=%d rows=%d partial_unmarked=%d unfetchable=%d", i+1, asked, owed, rows, partial, unfetchable)
+		if asked != want.asked {
+			t.Errorf("pass %d asked %d absence queries, want %d: the owed reads' %d, then the completions' within the pass's %d",
+				i+1, asked, want.asked, RefusedReadsPerPass, AbsenceQueriesPerPass)
+		}
+		if owed != want.owed || rows != want.rows || partial != want.partial || unfetchable != want.unfetchable {
+			t.Errorf("after pass %d: %d reads owed, %d rows, %d partial and unmarked, %d unfetchable; want %d, %d, %d and %d: a row the pass did not ask about stays partial for the next pass",
+				i+1, owed, rows, partial, unfetchable, want.owed, want.rows, want.partial, want.unfetchable)
+		}
 	}
 }

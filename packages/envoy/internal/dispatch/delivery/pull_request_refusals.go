@@ -12,6 +12,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
@@ -72,11 +73,18 @@ const absenceQuery = `query($owner: String!, $name: String!, $number: Int!) {
 // the client the CI reconcile's batched read queries GitHub through (cireconcile.Reconciler.query),
 // held by the token's installation scope and by that installation's GraphQL budget
 // (githubapp.GraphQLInstallationScope). It costs one request, one point of that budget (the count
-// included: `rateLimit { cost }` answers 1), for each read of a 404 or a 410 a pass makes: at
-// most RefusedReadsPerPass from the refusals, and from the failures each that GitHub now refuses
-// so, up to PullRequestHeadBatch more.
-func pullRequestAbsent(ctx context.Context, client *githubapp.Client, refused *pullRequestRefusal) (bool, error) {
+// included: `rateLimit { cost }` answers 1).
+//
+// budget is the pass's absence queries about reads GitHub refused with a 404 or a 410
+// (absenceBudget), and the question takes one of them first. Where none is left, it sends nothing
+// and answers false: no evidence, so the read stays owed, or the row stays partial, for the next
+// pass. A nil budget sends every question: the facts line's, which asks at most once for each
+// pull request it reads (Reconcile.readFactsOf).
+func pullRequestAbsent(ctx context.Context, client *githubapp.Client, refused *pullRequestRefusal, budget *absenceBudget) (bool, error) {
 	if refused == nil || refused.token == "" || !errors.Is(refused.err, ErrPullRequestNotFound) {
+		return false, nil
+	}
+	if budget != nil && !budget.take() {
 		return false, nil
 	}
 	body, status, _, err := client.GraphQL(ctx, refused.token, absenceQuery,
@@ -115,6 +123,32 @@ func pullRequestAbsent(ctx context.Context, client *githubapp.Client, refused *p
 		}
 	}
 	return true, nil
+}
+
+// AbsenceQueriesPerPass is the most absence queries (pullRequestAbsent) that one reconcile pass
+// asks about reads of a pull request that GitHub refused with a 404 or a 410. It is one for each
+// read that the owed reads of a pass can make: PullRequestHeadBatch failures and
+// RefusedReadsPerPass refusals (Reconcile.readOwedPullRequests). The owed reads come first in the
+// pass, so they never meet the bound. The completions of partial pull requests take what the owed
+// reads left (Reconcile.reconcilePartialPullRequests), so a pass with more such refusals than
+// that asks about the first ones and leaves each other row partial for the next pass.
+const AbsenceQueriesPerPass = PullRequestHeadBatch + RefusedReadsPerPass
+
+// absenceBudget is the absence queries that one pass can still ask about refused reads:
+// AbsenceQueriesPerPass at the start (newAbsenceBudget), shared by the owed reads and the
+// completions of the pass.
+type absenceBudget struct{ left atomic.Int32 }
+
+// newAbsenceBudget is the budget of one pass, at AbsenceQueriesPerPass.
+func newAbsenceBudget() *absenceBudget {
+	budget := &absenceBudget{}
+	budget.left.Store(AbsenceQueriesPerPass)
+	return budget
+}
+
+// take takes one query of the budget, and answers false where none is left.
+func (b *absenceBudget) take() bool {
+	return b.left.Add(-1) >= 0
 }
 
 // passInstallations is one reconcile head pass's lookups of the installation that covers each

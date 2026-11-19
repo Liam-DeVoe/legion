@@ -26,9 +26,13 @@ body: |-
     the read only on one answer of GitHub's GraphQL API, asked with the token of the refused read,
     that shows the repository and its pull requests readable (a count of its pull requests) and the
     pull request absent; every
-    other answer leaves the read owed, and no memory of a pass ends one. Each row says why its read
-    is owed, a failure (GitHub did not answer) or a refusal (GitHub cannot give the pull request),
-    and every pass reads each failure before any refusal, with 50 reads a pass for refusals, so
+    other answer leaves the read owed, and no memory of a pass ends one. A pass asks at most 250
+    such questions about the reads GitHub answers 404 or 410, one for each owed read it can make,
+    and the completion of a partial delivery row asks within what the owed reads left: a partial
+    row the pass asks nothing about stays partial, and the next pass reads it again. Each row says
+    why its read is owed, a failure (GitHub did not answer) or a refusal (GitHub cannot give the
+    pull request), and every pass reads each failure before any refusal, with 50 reads a pass for
+    refusals, so
     envelopes that name pull requests GitHub never had take no read from a pull request an outage
     left owed; a pass looks the installation of each repository up once, so a repository the App
     is not installed on costs it one lookup. A rate

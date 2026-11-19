@@ -448,7 +448,7 @@ func TestAPartialRowsCompletionWritesTheResultsRowFromTheSameRead(t *testing.T) 
 	const title = "ATTR-51: the change"
 	fake := newFakeGitHub(t)
 	reads := serveTimelinePull(t, fake, timelineRepo, 51, timelinePull(timelineRepo, 51, title, "legion/ATTR-51"))
-	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePartialPullRequests(ctx); err != nil {
+	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePartialPullRequests(ctx, newAbsenceBudget()); err != nil {
 		t.Fatalf("reconcilePartialPullRequests: %v", err)
 	}
 

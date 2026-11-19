@@ -221,7 +221,7 @@ func TestPR2808EveryWriterGivesTheBranchsIssue(t *testing.T) {
 		}},
 		{"the reconcile, judging again the row an older rule credited", func(t *testing.T) {
 			storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
-			if err := NewReconcile(pool, client, broker).reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+			if err := NewReconcile(pool, client, broker).reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget()); err != nil {
 				t.Fatalf("reconcile the pull request heads: %v", err)
 			}
 		}},
@@ -347,7 +347,7 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) pr2808Pass {
 	}
 	storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
 
-	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget()); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
 	var pass pr2808Pass
