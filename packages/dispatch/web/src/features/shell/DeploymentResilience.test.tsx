@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the window focus events below have no user-event form - the deployment check runs on the tab regaining focus, not on any element.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,7 +7,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "../../api/client";
 import { Timeline } from "../delivery/Timeline";
 import * as markdownEngine from "../refs/markdown-engine";
-import { prefetchChunk, renderChunk } from "./chunk-loads";
+import { chunkLoadsOut, prefetchChunk, renderChunk } from "./chunk-loads";
 import {
   DeploymentResilience,
   installChunkFailureRecovery,
@@ -33,6 +33,15 @@ const recoveryUninstalls = new Set<() => void>();
 function installChunkFailureRecoveryForTest(): void {
   recoveryUninstalls.add(installChunkFailureRecovery());
 }
+
+// Whether a chunk failure reloads depends on which chunk downloads are out (`onlyPrefetchesOut`),
+// and those counts are the module's, for the page. A download an earlier test started and did
+// not wait for - the Markdown engine's warm, a chart's library, another file's tab panel - is
+// still out when the next row starts in a random order, and would decide that row. So each row
+// starts from a page with none out.
+beforeEach(async () => {
+  await waitFor(() => expect(chunkLoadsOut()).toBe(0), { timeout: 30_000 });
+});
 
 afterEach(() => {
   for (const uninstall of recoveryUninstalls) uninstall();

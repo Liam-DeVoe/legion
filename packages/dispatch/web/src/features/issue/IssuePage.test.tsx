@@ -38,6 +38,37 @@ import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { IssuePage } from "./IssuePage";
+import {
+  activityTabChunk,
+  artifactsTabChunk,
+  childrenTabChunk,
+  collaboratorsTabChunk,
+  conversationTabChunk,
+  decisionsTabChunk,
+  planTabChunk,
+  stepsTabChunk,
+  verificationTabChunk,
+} from "./tab-chunks";
+
+// Every tab panel but the Spec's is a chunk of its own (`tab-chunks.ts`), which draws in the
+// page's first commit only once it is in. The rows here are about the tabs, not about that
+// download, and in a random order the row that happens to load a chunk first would decide what
+// every later row sees in its first commit - and one row runs on a held clock, on which no
+// download ends at all. So the chunks are loaded here, with the test file, as the entry's own
+// prefetch of a landed tab would have them in.
+await Promise.all(
+  [
+    activityTabChunk,
+    artifactsTabChunk,
+    childrenTabChunk,
+    collaboratorsTabChunk,
+    conversationTabChunk,
+    decisionsTabChunk,
+    planTabChunk,
+    stepsTabChunk,
+    verificationTabChunk,
+  ].map((tab) => tab.load())
+);
 
 const issue = {
   route_status: null,

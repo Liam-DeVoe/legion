@@ -153,3 +153,11 @@ export function lazyChunk<T extends ComponentType<any>>(
 export function onlyPrefetchesOut(): boolean {
   return prefetchedChunksOut > 0 && renderedChunksOut === 0;
 }
+
+/** How many chunk downloads `prefetchChunk` and `renderChunk` have started and not seen end. The
+ *  recovery reads the page's state through `onlyPrefetchesOut`; a test of that rule reads this to
+ *  start from a page with no download out, which one an earlier test started and did not wait for
+ *  would otherwise leave behind for it. */
+export function chunkLoadsOut(): number {
+  return prefetchedChunksOut + renderedChunksOut;
+}
