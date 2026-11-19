@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { pgConnectionsVariable, pgImageVariable, stackPostgres } from "../harness-postgres";
+import { removalBounds } from "../harness-postgres-container-removal";
 import { docker, psql, removeIds, removeImage } from "./harness-postgres-leftover-fixtures";
 import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
@@ -40,10 +41,19 @@ const watchMs = 8_000;
 
 /** What the row waits for (`Waits`): a `docker create` and a `docker commit` of the row's own
  *  (`makes`), with the `docker cp` between them; one start of the provider, whose waits give up
- *  at 120 s; 8 s of reads; and the stop and the removals. Besides the create and the commit it
- *  read 12.3 to 22.8 s on a shared Linux machine under a load of about 270 to 300, on 2026-11-17;
- *  240 s leaves the 120 s wait and a slow Docker daemon room. */
-const slowInit: Waits = { children: 0, reads: 0, makes: 2, bounds: [240_000] };
+ *  at 120 s; and 8 s of reads. Besides the create and the commit it read 12.3 to 22.8 s on a
+ *  shared Linux machine under a load of about 270 to 300, on 2026-11-17; 240 s leaves the 120 s
+ *  wait and a slow Docker daemon room. Its `finally` then stops the stack, a `docker rm` of its
+ *  container, and removes the row's image, a `docker image rm`, each of which a start's own
+ *  removal gives up at `removalBounds.boundMs` (`ends`): a fixture call that runs out the row's
+ *  deadline leaves them their own time. */
+const slowInit: Waits = {
+  children: 0,
+  reads: 0,
+  makes: 2,
+  bounds: [240_000],
+  ends: [removalBounds.boundMs, removalBounds.boundMs],
+};
 
 test.skipIf(skipped)(
   "image provider: a stack's Postgres answers from the moment its start returns, though the image's own init runs a script after it made the database",

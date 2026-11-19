@@ -70,6 +70,7 @@ import {
   type StackDatabase,
   stackPostgres,
 } from "../harness-postgres";
+import { removalBounds } from "../harness-postgres-container-removal";
 import {
   identityOf,
   markLabel,
@@ -168,13 +169,15 @@ for (const provider of [
 ] as const) {
   /** What the row waits for (`Waits`): the start of three stacks at once, each at most `stackMs`,
    *  the image provider's third of them a container the row makes (`makes`); the third start, a
-   *  whole start of the pool waited for at most `childMs`; and the two stops, each of at most
-   *  `childMs`. */
+   *  whole start of the pool waited for at most `childMs`; and, in its `finally`, the two stops,
+   *  each of at most `childMs`, before it removes what its stacks made (`ends`): a fixture call
+   *  that runs out the row's deadline leaves them their own time. */
   const waits: Waits = {
     children: 0,
     reads: 0,
     makes: provider.variable === pgImageVariable ? 1 : 0,
-    bounds: [stackMs, childMs, childMs, childMs],
+    bounds: [stackMs, childMs],
+    ends: [childMs, childMs],
   };
   test.skipIf(provider.skip)(
     `${provider.title}: v-no-leftover-postgres: the next start removes the Postgres of a stack killed hard, with its data and socket directories, leaves the Postgres of a stack that runs, leaves and names one whose stack it cannot judge, and runs no program a mark names`,
@@ -370,8 +373,15 @@ test.skipIf(skipBinaries)(
 
 /** What the next row waits for (`Waits`): two starts of the image provider in this process, the
  *  first a container's create and start and a readiness wait that gives up at 120 s, the second a
- *  `docker create` refused at once, and the first's stop. It makes no container itself. */
-const twoStarts: Waits = { children: 0, reads: 0, bounds: [240_000] };
+ *  `docker create` refused at once; and, in its `finally`, the first's stop, a `docker rm` of its
+ *  container, which a start's own removal gives up at `removalBounds.boundMs`, before it removes
+ *  what the two made (`ends`). It makes no container itself. */
+const twoStarts: Waits = {
+  children: 0,
+  reads: 0,
+  bounds: [240_000],
+  ends: [removalBounds.boundMs],
+};
 
 test.skipIf(skipImage)(
   "image provider: a stack whose start fails removes no container of another stack, though both stacks have one run name, as two stacks of one pid in two PID namespaces once had",
@@ -413,8 +423,8 @@ test.skipIf(skipImage)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // What the row waits for, summed by the fixtures' program (`rowMs`): the two starts, the wait
-  // and the stop in 240 s, which leaves the wait and a slow Docker daemon room.
+  // What the row waits for, summed by the fixtures' program (`rowMs`): the two starts and the wait
+  // in 240 s, which leaves the wait and a slow Docker daemon room, and the stop of its finally.
   rowMs(twoStarts)
 );
 
@@ -573,9 +583,10 @@ test.skipIf(skipBinaries)(
 );
 
 /** What each of the next rows waits for (`Waits`): one stack's Postgres start, an initdb and a
- *  readiness wait of at most `stackMs`, its kill, one start of the pool, waited for at most
- *  `childMs`, and the stop of the postmaster it left, which 240 s holds. */
-const renamedRun: Waits = { children: 0, reads: 0, bounds: [stackMs, childMs, 240_000] };
+ *  readiness wait of at most `stackMs`, its kill, and one start of the pool, waited for at most
+ *  `childMs`; and, in its `finally`, the stop of the postmaster it left, which 240 s holds
+ *  (`ends`). */
+const renamedRun: Waits = { children: 0, reads: 0, bounds: [stackMs, childMs], ends: [240_000] };
 
 // A developer may rename the run directory of a stack killed hard, to keep its logs. Its postmaster
 // runs on from the new name, and the marks there name the old one, so no start can trust them: the
@@ -628,9 +639,14 @@ for (const renamed of ["kept-run", `${runDirectoryPrefix}kept`] as const) {
  *  (`pidNamespaceRefusal`). Read only where the binaries rows run. */
 const pidNamespaceRefused = skipBinaries ? undefined : pidNamespaceRefusal(file);
 /** What each of the next rows waits for (`Waits`): one stack's start and readiness wait of at most
- *  `stackMs`, one start of the pool waited for at most `childMs`, and the stack's stop, at most
- *  `childMs`. */
-const namespacedStack: Waits = { children: 0, reads: 0, bounds: [stackMs, childMs, childMs] };
+ *  `stackMs`, and one start of the pool waited for at most `childMs`; and, in its `finally`, the
+ *  stack's stop, at most `childMs` (`ends`). */
+const namespacedStack: Waits = {
+  children: 0,
+  reads: 0,
+  bounds: [stackMs, childMs],
+  ends: [childMs],
+};
 
 // A stack in a PID namespace of its own (a sandbox, `unshare --pid`) writes a mark whose owner a
 // start cannot judge, and its postmaster's `postmaster.pid` holds the pid that namespace gives it,

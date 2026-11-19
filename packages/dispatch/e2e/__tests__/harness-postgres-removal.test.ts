@@ -999,7 +999,11 @@ test.skipIf(!onLinux)(
       ]);
       const args = ["create", "--name", name, "--label", `${label}=1`, "postgres"];
 
-      const { ended, lines } = await fixtureDockerInChild(row, docker.bin, args, ranOutMs);
+      const { ended, lines } = await fixtureDockerInChild(row, docker.bin, args, {
+        children: 0,
+        reads: 0,
+        bounds: [ranOutMs],
+      });
 
       const line = `e2e/__tests__/harness-postgres-leftover-fixtures.ts: docker ${args.join(" ")} did not end within the ${ranOutMs / 1000} s the row waits in all, so the row stopped it, and removed container ${standInId.slice(0, 12)} (${name}) it made`;
       expect(ended).toEqual({ error: line });
@@ -1034,6 +1038,84 @@ test.skipIf(!onLinux)(
   // What the row waits for, summed by the fixtures' program (`rowMs`): one child, the fixture
   // call's wait to its deadline and the removal of what the call made.
   rowMs(ranOut)
+);
+
+/** How long the next row's `finally` takes over its stop, as a leftover row's stop of a stack it
+ *  started does: more than the half of `rowRoomMs` that a removal of what the row made has above
+ *  the row's deadline, so the removal after it has time left only where the deadline did not count
+ *  the stop (`Waits.ends`). */
+const endStopMs = rowRoomMs / 2 + 5_000;
+/** The bound the next row's `finally` gives that stop (`Waits.ends`), with room above the time it
+ *  takes for a slow start of the child's sleep. */
+const endBoundMs = endStopMs + 10_000;
+/** What the next row's child waits for (`Waits`): the fixture call's wait to its deadline, and, in
+ *  its `finally`, the stop, before the removal of what the row made. */
+const ranOutThenStop: Waits = { children: 0, reads: 0, bounds: [ranOutMs], ends: [endBoundMs] };
+/** What the next row waits for (`Waits`): the child, and everything the child's row waits for. */
+const ranOutInChild: Waits = { ...ranOutThenStop, children: 1 };
+
+// The image row of the leftovers ran out its deadline on 2026-11-19 with a create that Docker
+// never answered, and its `finally` then stopped a stack it started, for about 30 s, before it
+// removed the container of the stack it had killed: the deadline had counted that stop, so the
+// removal's listing had no time left, and that stack's container stayed, with a mark no later
+// start could judge. A row's deadline now ends its own waits alone, and its `finally` has the time
+// its stops take after it (`Waits.ends`), and then half the room above them for its removals
+// (`Row.cleanup`). The child's create never ends; its `finally` stops for `endStopMs`, and then
+// lists the containers whose mark names the row's run and removes each.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a row whose fixture call runs out the row's deadline still stops what it started in its finally, and then lists and removes the containers of its stacks",
+  async () => {
+    const row = rowOf(ranOutInChild);
+    const { tmp, run } = scratch();
+    const name = `dispatch-e2e-pg-ran-out-stop-${process.pid}`;
+    const label = "dev.legion.dispatch-e2e.ran-out";
+    const killedId = "1".repeat(64);
+    const mark = JSON.stringify({ run });
+    try {
+      const docker = standInDocker(tmp, [
+        'made="$(dirname "$0")/made"',
+        'case "$1" in',
+        `  create) : >"$made"; exec -a "$0" sleep 600 ;;`,
+        `  ps) if [[ " $* " == *" --format "* ]]; then printf '%s %s\\n' ${killedId} ${JSON.stringify(mark)}; elif [ -e "$made" ]; then echo ${standInId}; fi ;;`,
+        `  rm) rm -f "$made"; echo "$4" ;;`,
+        "esac",
+      ]);
+      const args = ["create", "--name", name, "--label", `${label}=1`, "postgres"];
+
+      const { ended } = await fixtureDockerInChild(row, docker.bin, args, ranOutThenStop, {
+        stopMs: endStopMs,
+        run,
+      });
+
+      expect(ended).toEqual({
+        error: expect.stringContaining(`docker ${args.join(" ")} did not end within the `),
+        removed: true,
+      });
+      const calls = docker.calls();
+      expect(calls).toContain(
+        `ps --all --no-trunc --filter label=${marks.markLabel} --format {{.ID}} {{.Label "${marks.markLabel}"}}`
+      );
+      expect(calls).toContain(`rm --force --volumes ${killedId}`);
+      // On the stand-in's clock: the listing came after the deadline and the stop, past the half
+      // of the room a removal had above the deadline where the deadline counted the stop.
+      const ticks = docker.clock();
+      const created = ticks.find((tick) => tick.call.startsWith("create "))?.at ?? Number.NaN;
+      const listed =
+        ticks.find((tick) => tick.call.startsWith("ps ") && tick.call.includes("--format"))?.at ??
+        Number.NaN;
+      expect(listed - created).toBeGreaterThan((ranOutMs + endStopMs) / 1000 - 1);
+      await until(
+        () => docker.running().length === 0,
+        "the end of the docker create the row stopped",
+        claimEventMs
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one child, the fixture
+  // call's wait to its deadline, the stop of its finally, and the removal of what the row made.
+  rowMs(ranOutInChild)
 );
 
 /** What the next rows wait for (`Waits`): one sweep in a child, the bound of its removal of the

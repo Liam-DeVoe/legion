@@ -327,15 +327,21 @@ const readsAfterStop = 2;
  *  which starts a reader that may take `statStartMs` to start and then reads within `statMs`
  *  (`e2e/harness-postgres-processes.ts`); each stop of a postmaster those sweeps make (`stops`),
  *  each of which may take `stopMs` and is followed by `readsAfterStop` holder reads; each call of
- *  its fixtures that makes a container or an image (`makes`), each of which may take `makeMs`; and
+ *  its fixtures that makes a container or an image (`makes`), each of which may take `makeMs`;
  *  every other bound the row waits out (`bounds`, in ms): the bound of a removal, of an `until`, of
- *  a stack's start. */
+ *  a stack's start; and the bound of each wait of its `finally` before it removes what it made,
+ *  such as the stop of a stack it started (`ends`, in ms). Those come after the row's deadline
+ *  (`Row.deadline`), which ends every fixture call of the row's own waits: a call that runs to the
+ *  deadline then leaves the `finally` the time its stops take, and the removals after them the
+ *  room above it (`Row.cleanup`), where a deadline that counted the stops left a removal none, and
+ *  the container of a stack the row killed stayed. */
 export interface Waits {
   readonly children: number;
   readonly reads: number;
   readonly stops?: number;
   readonly makes?: number;
   readonly bounds: readonly number[];
+  readonly ends?: readonly number[];
 }
 
 /** The holder reads a row's sweeps may make in all (`Waits`): those before a claim, and those after
@@ -365,10 +371,11 @@ export function waitsMs(waits: Waits): number {
  *  removal of what a fixture call made that ran out the row's deadline (`Row.deadline`). */
 export const rowRoomMs = 60_000;
 
-/** A row's own limit: everything it waits for (`waitsMs`), with `rowRoomMs` above it. Every row of
- *  the files these fixtures serve that starts a child states its limit so, and no other way. */
+/** A row's own limit: everything it waits for (`waitsMs`), the waits of its `finally`
+ *  (`Waits.ends`), and `rowRoomMs` above them. Every row of the files these fixtures serve that
+ *  starts a child states its limit so, and no other way. */
 export function rowMs(waits: Waits): number {
-  return waitsMs(waits) + rowRoomMs;
+  return waitsMs(waits) + (waits.ends ?? []).reduce((sum, ms) => sum + ms, 0) + rowRoomMs;
 }
 
 /** What a row started so far, held to what its limit counts (`Waits`): each fixture that starts a
@@ -379,10 +386,14 @@ export function rowMs(waits: Waits): number {
  *  `ms` is `waitsMs` of the row's waits, the limit of a child it ends itself, and `deadline` is
  *  when those waits end, from the row's start, on the machine's clock (`machine` of
  *  `e2e/harness-postgres-container-removal.ts`): a fixture call of Docker or Postgres waits until
- *  then and no longer, so it ends within the row's own limit with a reason that names it. */
+ *  then and no longer, so it ends within the row's own limit with a reason that names it.
+ *  `cleanup` is when a fixture call that removes what the row made waits until: after the
+ *  deadline, the waits of the row's `finally` (`Waits.ends`) and half the room above them
+ *  (`rowRoomMs`), so a removal's line, and not the row's own clock, ends the row. */
 export interface Row {
   readonly ms: number;
   readonly deadline: number;
+  readonly cleanup: number;
   child(what: string): void;
   reads(made: number, what: string): void;
   made(what: string): void;
@@ -394,9 +405,11 @@ export function rowOf(waits: Waits): Row {
   let reads = 0;
   let makes = 0;
   const ms = waitsMs(waits);
+  const deadline = machine.now() + ms;
   return {
     ms,
-    deadline: machine.now() + ms,
+    deadline,
+    cleanup: deadline + (waits.ends ?? []).reduce((sum, ms) => sum + ms, 0) + rowRoomMs / 2,
     child: (what) => {
       children += 1;
       if (children > waits.children) {
@@ -796,39 +809,68 @@ const leftoverFixtures = fileURLToPath(
 );
 
 /** One call of the leftover rows' fixture `docker` (`harness-postgres-leftover-fixtures.ts`) in a
- *  child of this file, with the arguments `ARGS` gives, for a row whose deadline is `DEADLINE_MS`
- *  from the child's start: it prints what the call answered, or the message of what it threw. */
+ *  child of this file, with the arguments `ARGS` gives, for a row of the waits `WAITS` that starts
+ *  with the child (`rowOf`): it prints what the call answered, or the message of what it threw.
+ *  The call is the subject of the row that runs the child, so the child's row does not charge it
+ *  as a call that makes a container (`Row.made`): it runs to the deadline `WAITS` sets, and not
+ *  for `makeMs`. Where `RUN` is set it then runs a row's `finally`, as the leftover rows do: a stop
+ *  that takes `STOP_MS`, which the row's `Waits.ends` counts, and then the removal of each container
+ *  whose mark names `RUN` (`removeContainersOf`), and prints whether that removal ended or what it
+ *  threw. */
 const fixtureCallScript = `
-import { docker } from ${JSON.stringify(leftoverFixtures)};
-const ms = Number(process.env.DEADLINE_MS);
-const row = { ms, deadline: Date.now() + ms, child() {}, reads() {}, made() {} };
+import { docker, removeContainersOf } from ${JSON.stringify(leftoverFixtures)};
+import { rowOf } from ${JSON.stringify(fileURLToPath(import.meta.url))};
+const { ARGS = "[]", RUN, STOP_MS, WAITS = "" } = process.env;
+const row = { ...rowOf(JSON.parse(WAITS)), made() {} };
+const ended = {};
 try {
-  console.log(JSON.stringify({ stdout: await docker(row, ...JSON.parse(process.env.ARGS ?? "[]")) }));
+  ended.stdout = await docker(row, ...JSON.parse(ARGS));
 } catch (error) {
-  console.log(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+  ended.error = error instanceof Error ? error.message : String(error);
 }
+if (RUN !== undefined) {
+  await Bun.sleep(Number(STOP_MS));
+  try {
+    await removeContainersOf(row, RUN);
+    ended.removed = true;
+  } catch (error) {
+    ended.removal = error instanceof Error ? error.message : String(error);
+  }
+}
+console.log(JSON.stringify(ended));
 `;
 
 /** Runs the leftover rows' fixture `docker` with `args` in a child whose `docker` is the one in
- *  `bin` (`fixtureCallScript`), for a row whose deadline comes `deadlineMs` after the child starts,
- *  and charges `row` for the child. Answers what the call answered or threw, and the lines it
- *  printed; kills the child and throws where it has not ended within everything the row waits for
- *  (`Row.ms`). */
+ *  `bin` (`fixtureCallScript`), for a row of the waits `waits` that starts with the child, and
+ *  then, where `end` is given, that row's `finally`: a stop of `end.stopMs` and the removal of the
+ *  containers whose mark names `end.run`. Charges `row` for the child. Answers what the call
+ *  answered or threw, what the removal did, and the lines the child printed; kills the child and
+ *  throws where it has not ended within everything the row waits for (`Row.ms`). */
 export async function fixtureDockerInChild(
   row: Row,
   bin: string,
   args: readonly string[],
-  deadlineMs: number
+  waits: Waits,
+  end?: { readonly stopMs: number; readonly run: string }
 ) {
   row.child(`the fixture's docker ${args.join(" ")}`);
   const { stdout, stderr } = await inChild(
     fixtureCallScript,
     bin,
-    { DEADLINE_MS: String(deadlineMs), ARGS: JSON.stringify(args) },
+    {
+      WAITS: JSON.stringify(waits),
+      ARGS: JSON.stringify(args),
+      ...(end === undefined ? {} : { RUN: end.run, STOP_MS: String(end.stopMs) }),
+    },
     row.ms
   );
   return {
-    ended: JSON.parse(stdout) as { stdout?: string; error?: string },
+    ended: JSON.parse(stdout) as {
+      stdout?: string;
+      error?: string;
+      removed?: true;
+      removal?: string;
+    },
     lines: stderr.split("\n"),
   };
 }

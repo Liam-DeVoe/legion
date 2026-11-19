@@ -42,7 +42,7 @@ import {
   stackOwner,
   startOf,
 } from "../harness-postgres-marks";
-import { type Row, rowRoomMs } from "./harness-postgres-removal-fixtures";
+import type { Row } from "./harness-postgres-removal-fixtures";
 import type { ProviderVariable } from "./postgres-provider";
 
 const execFileAsync = promisify(execFile);
@@ -353,16 +353,9 @@ interface Called {
   readonly stderr: string;
 }
 
-/** When a fixture call that removes what the row made ends where the row's deadline has come:
- *  half the room the row's limit leaves above that deadline (`rowRoomMs`), so its line, and not
- *  the row's own clock, ends the row. */
-function cleanupBy(row: Row): number {
-  return row.deadline + rowRoomMs / 2;
-}
-
 /** Runs `program` with `args`, a call of Docker or Postgres that sets up the row `row`, or reads
  *  it, for as long as the row still has time for: until `by`, the row's deadline but for a removal
- *  of what it made (`cleanupBy`), on the machine's clock, as a start's removal runs its `docker rm`
+ *  of what it made (`Row.cleanup`), on the machine's clock, as a start's removal runs its `docker rm`
  *  (`machine` of `e2e/harness-postgres-container-removal.ts`). It sets no time of its own: a shared
  *  daemon took 133 s over one `docker create` on 2026-11-19 while it answered every other call, and
  *  a fixed bound of 120 s gave that call up, and left the container it made. Answers how the call
@@ -441,12 +434,12 @@ export function postmastersOf(dir: string): { pid: number; start: string }[] {
 }
 
 /** Removes what the `docker` call of `args` made, which its row stopped at the row's deadline
- *  (`docker`), within the room above that deadline (`cleanupBy`): the container a `create` or a
+ *  (`docker`), by the row's time for its removals (`Row.cleanup`): the container a `create` or a
  *  `run` names (`--name`), as Docker lists it by that name and by its `--label`'s key, each by its
  *  id (`removeContainer`), or the image a `commit` names, its last argument. Answers what it did,
  *  for the call's line. */
 async function removeMade(row: Row, args: readonly string[]): Promise<string> {
-  const by = cleanupBy(row);
+  const by = row.cleanup;
   const left = () => Math.max(0, by - machine.now());
   if (args[0] === "commit") {
     const image = args.at(-1) ?? "";
@@ -603,19 +596,19 @@ export async function removeImage(name: string): Promise<void> {
 }
 
 /** Removes each container whose mark names `run`, the run directory of a stack the row `row`
- *  started, by the id Docker lists it under, listed within the room above the row's deadline
- *  (`cleanupBy`): a container's name is no one stack's alone. */
+ *  started, by the id Docker lists it under, listed by the row's time for its removals
+ *  (`Row.cleanup`): a container's name is no one stack's alone. */
 export async function removeContainersOf(row: Row, run: string): Promise<void> {
-  await removeIds(await containersOf(row, run, cleanupBy(row)));
+  await removeIds(await containersOf(row, run, row.cleanup));
 }
 
 /** Stops the postmaster of the cluster in `data` with `pg_ctl` of `bin`, as a stack's stop does
- *  (`-m immediate -w`), within the room above the row's deadline (`cleanupBy`): `pg_ctl`'s own
+ *  (`-m immediate -w`), by the row's time for its removals (`Row.cleanup`): `pg_ctl`'s own
  *  wait for the stop, `PGCTLTIMEOUT`, bounds it, and no fixed time of this file's. Throws naming
  *  the stop where that room runs out first. A stop that fails is a postmaster that is gone. */
 export async function stopCluster(row: Row, bin: string, data: string): Promise<void> {
   const args = ["-D", data, "-m", "immediate", "-w", "stop"];
-  const stopped = await untilDeadline(row, join(bin, "pg_ctl"), args, cleanupBy(row));
+  const stopped = await untilDeadline(row, join(bin, "pg_ctl"), args, row.cleanup);
   if (stopped === "late") throw ranOut(row, `${join(bin, "pg_ctl")} ${args.join(" ")}`);
 }
 
