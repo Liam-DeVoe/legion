@@ -1299,6 +1299,222 @@ describe("renderInbound dispatch events", () => {
     ]);
   });
 
+  // Whose ask a reply in an ask's thread is on, as the session reading it decides from the
+  // sessions the payload names as the ask's own (`ask_sessions`). ask-reply-recipients.test.ts
+  // renders the copies a real outbox published; these are the cases those copies do not hold.
+  describe("a reply in an ask's thread, by the session that reads it", () => {
+    const asker = "01a02222-3333-7444-8555-666666666666";
+    const askReply = {
+      id: targetedCommentID,
+      issue_key: "CORE-1",
+      artifact_id: null,
+      author: { kind: "user", id: "alice" },
+      body: "Which pool size do you need?",
+      anchor: null,
+      reply_to: null,
+      ask_id: "ask-1",
+      ask_question: apiQuestion,
+      ask_state: "open",
+      ask_waiting_on: "agent",
+      ask_sessions: [asker],
+      turn: "agent",
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-12T00:00:00Z",
+      mentions: [],
+      deliveries: [],
+      artifact_name: "",
+    };
+    const replyToAsk = {
+      command: "dispatch comment --issue CORE-1 --body ... --reply-to-ask ask-1",
+    };
+    type Card = Record<string, unknown> & { dispatch: Record<string, unknown> };
+    const card = (raw: string, session: string) =>
+      cardOf<Card>(renderInbound(raw, session).content);
+    /** The words of the card's blocks, by the name of the field that holds them. */
+    const wordsOf = (read: { readonly blocks: readonly ReadBlock[] }) =>
+      read.blocks.map(({ name, text }) => [name, text]);
+    /** The reply's event as the outbox publishes it on a session's own topic, correlated to the
+     *  ask; `event` overrides the event's own fields. */
+    const copy = (payload: Record<string, unknown>, event: Record<string, unknown> = {}) =>
+      JSON.stringify(
+        envelope({
+          event_id: "dispatch-ask-reply",
+          source: "dispatch",
+          source_event_id: "8",
+          topic: "notifications.agent.session-reader",
+          payload_summary: "CORE-1 comment created",
+          in_reply_to: "ask-1",
+          payload: JSON.stringify({
+            id: 8,
+            issue_key: "CORE-1",
+            seq: 8,
+            type: "comment.created",
+            actor: { kind: "user", id: "alice" },
+            notify: true,
+            created_at: "2026-09-12T00:00:00Z",
+            ...event,
+            payload,
+          }),
+        })
+      );
+    /** The same reply as the delivery a mention of the reader sent: a targeted frame. */
+    const mention = (payload: Record<string, unknown>) =>
+      JSON.stringify(
+        envelope({
+          event_id: "dispatch-ask-mention",
+          source: "dispatch",
+          payload: targetedCommentFrame(payload),
+        })
+      );
+
+    test("a mention of a session that does not own the ask says so and keeps the mention's reply command, with no turn", () => {
+      const decoded = card(mention(askReply), reader);
+
+      expect(decoded.envoy.dispatch.relation).toBe("mentioned you");
+      expect(decoded.envoy.reply_with).toEqual(replyToAsk);
+      expect(decoded.envoy.dispatch.waiting_on).toBeUndefined();
+      expect(decoded.envoy.dispatch.state).toBe("open");
+    });
+
+    test("a mention of a session that owns the ask is a reply on its own ask, with its turn", () => {
+      const decoded = card(mention(askReply), asker);
+
+      expect(decoded.envoy.dispatch.relation).toBe("replied on your ask");
+      expect(decoded.envoy.reply_with).toEqual(replyToAsk);
+      expect(decoded.envoy.dispatch.waiting_on).toBe("agent");
+    });
+
+    test("a reply on a project document's ask that reached another session is a comment on a document, with no reply command", () => {
+      const document = "a4cf7999-cab2-4326-939d-cb1e76733cc3";
+      const decoded = card(
+        copy(
+          {
+            ...askReply,
+            issue_key: null,
+            artifact_id: document,
+            project_key: "CORE",
+            artifact_slug: "design-notes",
+          },
+          { issue_key: null, artifact_id: document, project: "CORE" }
+        ),
+        reader
+      );
+
+      expect(decoded.envoy.dispatch.relation).toBe("commented on a document");
+      expect(decoded.envoy.reply_with).toBeUndefined();
+      expect(decoded.envoy.dispatch.waiting_on).toBeUndefined();
+      // Which ask the reply is on, and what it says, stay on the card.
+      expect(decoded.envoy.re).toBe("dispatch://CORE/artifact/design-notes/ask/ask-1");
+      expect(decoded.envoy.dispatch.question).toBe(apiQuestion);
+      expect(wordsOf(decoded)).toEqual([["reply", "Which pool size do you need?"]]);
+      expect(decoded.envoy.dispatch.state).toBe("open");
+    });
+
+    // The outbox's stand-in for an event the bus refused keeps ask_sessions whole, whatever its
+    // size, so the session reading it decides from it as it does from the whole event, and a host
+    // that reads the body whole and renders again changes nothing of that.
+    test("a stand-in that carries ask_sessions is the owner's own ask and no other session's, before and after its body is read whole", () => {
+      const { body: _body, ...kept } = askReply;
+      const raw = copy({ ...kept, payload_omitted: true });
+
+      for (const wholeBody of [undefined, askReply.body]) {
+        const owner = cardOf<Card>(renderInbound(raw, asker, undefined, wholeBody).content);
+        expect(owner.envoy.dispatch.relation).toBe("replied on your ask");
+        expect(owner.envoy.reply_with).toEqual(replyToAsk);
+        expect(owner.envoy.dispatch.waiting_on).toBe("agent");
+
+        const other = cardOf<Card>(renderInbound(raw, reader, undefined, wholeBody).content);
+        expect(other.envoy.dispatch.relation).toBe("commented on an issue");
+        expect(other.envoy.reply_with).toBeUndefined();
+        expect(other.envoy.dispatch.waiting_on).toBeUndefined();
+      }
+    });
+
+    // A reply on a project document's ask names that document only in project_key and
+    // artifact_slug, since the owner's own topic names none, and the command that answers the ask
+    // posts into it. The stand-in keeps both whole however long the document's slug, so the
+    // owner's card still carries that command.
+    test("a stand-in of a reply on a project document's ask gives its owner, on its own topic, the command that answers the ask, whatever the slug's length", () => {
+      const document = "a4cf7999-cab2-4326-939d-cb1e76733cc3";
+      const slug = Array.from({ length: 11 }, () => "design-notes-for-the-queue").join("-");
+      expect(JSON.stringify(slug).length).toBeGreaterThan(256);
+      const { body: _body, ...kept } = askReply;
+      const raw = copy(
+        {
+          ...kept,
+          issue_key: null,
+          artifact_id: document,
+          project_key: "CORE",
+          artifact_slug: slug,
+          payload_omitted: true,
+        },
+        { issue_key: null, artifact_id: document, project: "CORE" }
+      );
+
+      const decoded = card(raw, asker);
+
+      expect(decoded.envoy.dispatch.relation).toBe("replied on your ask");
+      expect(decoded.envoy.reply_with).toEqual({
+        command: `dispatch comment --project CORE --artifact ${slug} --body ... --reply-to-ask ask-1`,
+      });
+      expect(decoded.envoy.dispatch.waiting_on).toBe("agent");
+    });
+
+    // A stand-in with no list is one a Dispatch older than ask_sessions sent: the card names no
+    // relation, and keeps the command that answers the ask and whose turn it is, as before the
+    // field.
+    test("a stand-in that carries no ask_sessions shows the card it showed before, with no relation", () => {
+      const { body: _body, ask_sessions: _sessions, ...older } = askReply;
+      const decoded = card(copy({ ...older, payload_omitted: true }), reader);
+
+      expect(decoded.envoy.dispatch).not.toHaveProperty("relation");
+      expect(decoded.envoy.reply_with).toEqual(replyToAsk);
+      expect(decoded.envoy.re).toBe("dispatch://CORE-1/ask/ask-1");
+      expect(decoded.envoy.dispatch).toMatchObject({
+        question: apiQuestion,
+        state: "open",
+        waiting_on: "agent",
+      });
+      // The stand-in carries no words of the reply, and the card says where to read them.
+      expect(wordsOf(decoded)).toEqual([]);
+      expect(decoded.envoy.body_note).toContain(`GET /api/v1/comments/${targetedCommentID}`);
+    });
+
+    // A Dispatch older than `ask_sessions` wrote this reply, or a resend replayed one stored
+    // before it: the card names no relation, and keeps the command that answers the ask and
+    // whose turn it is, as before the field.
+    test("a reply that carries no ask_sessions shows the card it showed before, with no relation", () => {
+      const { ask_sessions: _sessions, ...older } = askReply;
+      const decoded = card(copy(older), reader);
+
+      expect(decoded.envoy.dispatch).not.toHaveProperty("relation");
+      expect(decoded.envoy.reply_with).toEqual(replyToAsk);
+      expect(decoded.envoy.re).toBe("dispatch://CORE-1/ask/ask-1");
+      expect(decoded.envoy.dispatch).toMatchObject({
+        question: apiQuestion,
+        state: "open",
+        waiting_on: "agent",
+      });
+      expect(wordsOf(decoded)).toEqual([["reply", "Which pool size do you need?"]]);
+    });
+
+    test("the ask's own sessions the payload names are no foreign session to note", () => {
+      const follower = "01a03333-4444-7555-8666-777777777777";
+      const owned = { ...askReply, ask_sessions: [asker, follower] };
+
+      expect(card(copy(owned), reader).envoy.note).toBeUndefined();
+      // Another session the body names is still noted.
+      const foreign = "01a04444-5555-7666-8777-888888888888";
+      expect(card(copy({ ...owned, body: `Ask ${foreign} first.` }), reader).envoy.note).toContain(
+        foreign
+      );
+    });
+  });
+
   test("renders a message.created reply as 're: <message ref>', not the parent's text", () => {
     const rootID = "message-1";
     const raw = JSON.stringify(
