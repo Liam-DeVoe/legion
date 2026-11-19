@@ -29,6 +29,16 @@ name: CI job text-checks
 # docs/, a skill under skills/, the committed extract beside the code it pins - and Go's test
 # cache keys on neither, so a cached pass would say nothing about the text as it now stands.
 #
+# The last step holds the Go module files to the code: every module a required job builds is tidy
+# (.github/scripts/check-go-tidy.sh), so none builds in CI only because another module's go.mod or
+# go.sum covers what its own lack. It runs here, where it costs least. Its cost is the modules
+# `go mod tidy` reads that this job's builds do not, which the fetch file's tidy lines add to the
+# entry the job restores: this job's entry already holds the three modules' text checks and the
+# Dispatch server, so they add 387 MB to it as actions/cache stores it (376 MB to 763 MB), where
+# they would add 694 MB to lint's 50 MB go-fetch-lint entry (measured 2026-11-19). And
+# go-fetch-text-checks is restored by this job alone, so no other job restores more, while its key
+# already hashes the module files of both workspaces.
+#
 # The job restores no build cache. The six Go cache families ci.yaml's header lists that hold
 # one are each filled for a job that builds a whole module's binaries or test binaries, and this
 # job builds five packages: measured here, the four calls this job ran before the supervise pins
@@ -113,9 +123,11 @@ jobs:
       # binaries' own builds, and the infra text checks' two import checks (internal/textcheck's
       # moduleDeps), which list the whole import graph of ./core and ./gcp, and the copy-lock
       # guard, which lists the Dispatch server with -export, neither of which the test binaries'
-      # builds load. A fetch while a test runs fails it whenever the module proxy or the checksum
-      # database does, on a change that touched nothing it checks, so this step fetches all of it
-      # first, from the cache restored above, tried again on failure.
+      # builds load, and the tidy check's `go mod tidy -diff` of each module, which reads more
+      # than any build of them (the fetch file's tidy lines). A fetch while a test runs fails it
+      # whenever the module proxy or the checksum database does, on a change that touched nothing
+      # it checks, so this step fetches all of it first, from the cache restored above, tried
+      # again on failure.
       - name: Fetch the modules this job's go steps load
         run: .github/scripts/go-fetch.sh file .github/go-fetch/text-checks.txt
       - name: Check the text packages/envoy pins
@@ -157,6 +169,16 @@ jobs:
       - name: Test the supervise table's two pure pins (no database)
         run: go test -count=1 -run '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$' ./internal/supervise/
         working-directory: packages/daemon
+
+      # `go mod tidy -diff` of every module a required job builds: the modules of the workspaces
+      # the deps and tidy lines of every fetch file under .github/go-fetch/ build in. A module
+      # whose go.mod lacks a requirement, or whose go.sum lacks a line, builds in CI only while
+      # another module covers the gap, and a build that reads it alone fails or fetches; this
+      # names the module and the diff. It reads the module cache alone, with the proxy off, like
+      # every go step of this job, and builds no package:
+      # go-offline: its go list -m names a directory's modules and loads no package; its go mod tidy -diff reads what the fetch step's tidy lines downloaded.
+      - name: Check that every Go module a required job builds is tidy
+        run: .github/scripts/check-go-tidy.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

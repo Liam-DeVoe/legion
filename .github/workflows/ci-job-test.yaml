@@ -190,6 +190,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.go_build_offline_test: go-build-offline.test.sh and what it tests."
         type: string
         required: true
+      check_go_tidy_test:
+        description: "ci.yaml's needs.changes.outputs.check_go_tidy_test: check-go-tidy.test.sh and what it tests."
+        type: string
+        required: true
       go_command_test:
         description: >-
           ci.yaml's needs.changes.outputs.go_command_test: @legion/test-fixtures/go-command, its
@@ -674,6 +678,13 @@ jobs:
       - name: Test the CI filter check
         if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'
         run: .github/scripts/check-ci-filters.test.sh
+
+      # After setup-go: the check that every module a required job builds is tidy, under the real
+      # go, over a module proxy on disk the harness writes and module caches of its own, so it
+      # fetches nothing from the network and reads nothing the fetch above fetched.
+      - name: Test the Go module tidy check
+        if: inputs.changes-result != 'success' || inputs.check_go_tidy_test == 'true'
+        run: .github/scripts/check-go-tidy.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.

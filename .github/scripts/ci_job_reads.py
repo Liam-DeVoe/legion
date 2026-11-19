@@ -2083,6 +2083,32 @@ GUARD_SCRIPT = ("go test -count=1 -run "
                 f"{GUARD_PACKAGE}")
 
 
+# The text-check job's last step: .github/scripts/check-go-tidy.sh, `go mod tidy -diff` of each
+# module of the workspaces the deps and tidy lines of every fetch file build in, which are the
+# three modules. It reads every fetch file to find them, the go.work each line's directory is in
+# (go list -m), and, through tidy, each module's go.mod and go.sum and the imports of every .go
+# file of it under every build tag and for every platform, tests included.
+TIDY_CHECK = ".github/scripts/check-go-tidy.sh"
+TIDY_STEP = "Check that every Go module a required job builds is tidy"
+
+
+def tidy_check_reads():
+    step = at(TEXT_CHECK_JOB, TIDY_STEP)
+    tidy = f"{TIDY_CHECK}:104 runs go mod tidy -diff in each module"
+    return reads(
+        (TIDY_CHECK, f"{step} runs it"),
+        (f"{FETCH_FILES}/*.txt", f"{TIDY_CHECK}:49-92 reads the deps and tidy lines of every fetch file"),
+        ("go.work", f"{TIDY_CHECK}:67 runs go list -m in each line's directory, which reads its workspace"),
+        (f"{INFRA}/go.work", f"{TIDY_CHECK}:67 runs go list -m in each line's directory, which reads its workspace"),
+        *[(f"{module}/{name}", tidy) for module in (DAEMON, ENVOY, INFRA) for name in ("go.mod", "go.sum")],
+        (f"{DAEMON}/**/*.go", f"{tidy}, and tidy reads the imports of every .go file of the module under every tag"),
+        (f"{ENVOY}/**/*.go", f"{tidy}, and tidy reads the imports of every .go file of the module under every tag "
+                             f"(packages/envoy/infra's among them)"),
+    )
+
+
+
+
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
 DISPATCH_SERVER_BUILD = "( flock 9 && go_build_offline packages/envoy ./dispatch-e2e ./cmd/dispatch ) 9>./.dispatch-e2e.lock || exit 1"
@@ -2371,6 +2397,9 @@ SCRIPT_TEST_GATES = [
     harness("go_build_offline_test", "Test the offline Go build the test launchers run",
             f"{SCRIPTS}/go-build-offline.test.sh", [
         (GO_BUILD_OFFLINE, "the script under test: go-build-offline.test.sh links it into a fixture repository"),
+    ]),
+    harness("check_go_tidy_test", "Test the Go module tidy check", f"{SCRIPTS}/check-go-tidy.test.sh", [
+        (f"{SCRIPTS}/check-go-tidy.sh", "the script under test: check-go-tidy.test.sh copies it into each fixture repository"),
     ]),
     harness("select_e2e_proofs_test", "Test the e2e proof selector", f"{SCRIPTS}/select-e2e-proofs.test.sh", [
         (f"{SCRIPTS}/select-e2e-proofs.sh", "the script under test"),
@@ -3331,7 +3360,7 @@ GATES = [
             (DAEMON, [f"./{SUPERVISE_TABLE_PACKAGE}/"],
              f"go test -run of the table's two pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
         ]),
-    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + go_fetch(TEXT_CHECK_JOB, "text-checks")),
+    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + go_fetch(TEXT_CHECK_JOB, "text-checks") + tidy_check_reads()),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's

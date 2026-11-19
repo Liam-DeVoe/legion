@@ -660,7 +660,8 @@ jobs:
   #
   # go-fetch-text-checks: text-checks' fetch, in both workspaces (packages/envoy/infra/go.work binds
   # that module and packages/envoy; the root go.work binds packages/envoy and packages/daemon),
-  # whose module files the key hashes.
+  # whose module files the key hashes, and what `go mod tidy` reads in each of the three modules
+  # for the job's tidy check (the fetch file's tidy lines), which reads no go.work.
   fetch-text-checks:
     runs-on: ubuntu-24.04-arm
     # One download of the modules, the fetch step's 8 s in run 44433142648; a run whose key is

@@ -382,6 +382,7 @@ jobs:
       go_fetch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_fetch_test }}
       go_offline_jobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_offline_jobs_test }}
       go_build_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_build_offline_test }}
+      check_go_tidy_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_go_tidy_test }}
       # The test job's step that runs @legion/test-fixtures/go-command's own rows against the real
       # go, which a test-fixtures job without Go no longer runs.
       go_command_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_command_test }}
@@ -1673,6 +1674,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-build-offline.test.sh'
               - '.github/scripts/go-build-offline.sh'
+            check_go_tidy_test: &check_go_tidy_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-go-tidy.test.sh'
+              - '.github/scripts/check-go-tidy.sh'
             select_e2e_proofs_test: &select_e2e_proofs_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1916,6 +1923,7 @@ jobs:
               - *go_fetch_test
               - *go_offline_jobs_test
               - *go_build_offline_test
+              - *check_go_tidy_test
               - *go_command_test
               - *select_e2e_proofs_test
               - *apt_cache_test
@@ -5396,6 +5404,7 @@ jobs:
       go_fetch_test: ${{ needs.changes.outputs.go_fetch_test }}
       go_offline_jobs_test: ${{ needs.changes.outputs.go_offline_jobs_test }}
       go_build_offline_test: ${{ needs.changes.outputs.go_build_offline_test }}
+      check_go_tidy_test: ${{ needs.changes.outputs.check_go_tidy_test }}
       go_command_test: ${{ needs.changes.outputs.go_command_test }}
       select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
       apt_cache_test: ${{ needs.changes.outputs.apt_cache_test }}
