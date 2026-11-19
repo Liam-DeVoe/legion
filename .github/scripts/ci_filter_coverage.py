@@ -808,12 +808,82 @@ def reads_filters_file(step: dict) -> bool:
     return (step.get("with") or {}).get("filters") == FILTERS_FILE
 
 
+class ItemLineLoader(UniqueKeyLoader):
+    """UniqueKeyLoader that also keeps how each item of each list it composes is written: the line
+    it is on, and the anchor it names when the item is an alias. A composed alias is the very node
+    its anchor made, which carries the anchor's line and no sign that it was an alias, so both are
+    read from the item's own event before it is composed."""
+
+    def __init__(self, stream):
+        super().__init__(stream)
+        self.items: dict[int, list[tuple[int, str | None]]] = {}
+
+    def compose_node(self, parent, index):
+        event = self.peek_event()
+        alias = event.anchor if isinstance(event, yaml.AliasEvent) else None
+        node = super().compose_node(parent, index)
+        if isinstance(parent, yaml.SequenceNode):
+            self.items.setdefault(id(parent), []).append((event.start_mark.line + 1, alias))
+        return node
+
+
+def repeated_items(node, label: str, items: dict, seen: set) -> list:
+    """Each item that one list holds twice as written, in `node` and in every list written inside
+    it, as (the list, the item, the line of its first copy, the line of the repeat). Items are read
+    before any anchor expands: a scalar by its text, quoted or plain alike, and an alias by the
+    anchor it names, so `- *group` written twice is one item twice, while a path that two groups of
+    one list share is no repeat of that list. A list or mapping written inside a list is read as
+    one of its own, and each is read once, where it is written, however many aliases name it."""
+    found: list = []
+    if id(node) in seen:
+        return found
+    seen.add(id(node))
+    if isinstance(node, yaml.MappingNode):
+        for key, value in node.value:
+            found += repeated_items(value, f"{label}'s {key.value}", items, seen)
+    elif isinstance(node, yaml.SequenceNode):
+        first: dict[str, int] = {}
+        for item, (line, alias) in zip(node.value, items.get(id(node), [])):
+            if alias is None and not isinstance(item, yaml.ScalarNode):
+                kind = "list" if isinstance(item, yaml.SequenceNode) else "mapping"
+                found += repeated_items(item, f"the {kind} at line {line} of {label}", items, seen)
+                continue
+            written = f"*{alias}" if alias is not None else item.value
+            if written in first:
+                found.append((label, written, first[written], line))
+            else:
+                first[written] = line
+    return found
+
+
+def check_repeated_items(text: str, problems: list[Annotation]) -> None:
+    """Rule 22: no list of .github/ci-filters.yaml holds one item twice as written, naming the
+    list, the item and the line of each copy. dorny/paths-filter and every rule here read a
+    repeated pattern as one, so the copy changes nothing either selects, and it is a slip of the
+    kind a forward merge leaves without a conflict: one of its two lines was most likely meant to
+    be another path, or to be gone. What two groups that one list names share is not refused,
+    since each group's list holds the path once and the gate takes their union."""
+    loader = ItemLineLoader(text)
+    try:
+        root = loader.get_single_node()
+    except yaml.YAMLError as exc:
+        raise RepositoryInputError(FILTERS_FILE, exc) from exc
+    finally:
+        loader.dispose()
+    seen: set = set()
+    for key, value in root.value if isinstance(root, yaml.MappingNode) else []:
+        for where, written, first, repeat in repeated_items(value, f"filter {key.value}", loader.items, seen):
+            problems.append(error(FILTERS_FILE, f"{where} holds '{written}' twice, at lines {first} and {repeat}: a "
+                                                f"list names each item once, as written, so delete one copy"))
+
+
 def changes_filters(document: dict, problems: list[Annotation]) -> tuple:
     """The filters of .github/ci-filters.yaml, with the quantifier the changes job reads them
     under, and the file's lines, which the rule 17 writer and the listed blocks are read from: the
-    file is read once, and both come from that one read. The steps are read from ci.yaml alone,
-    and no workflow ci.yaml calls: the changes job and its paths-filter step are ci.yaml's, and a
-    called file is reached only through a caller job the changes job already gates.
+    file is read once, and rule 22 (check_repeated_items), the filters and the lines all come from
+    that one read. The steps are read from ci.yaml alone, and no workflow ci.yaml calls: the changes
+    job and its paths-filter step are ci.yaml's, and a called file is reached only through a caller
+    job the changes job already gates.
 
     A paths-filter step that does not hand the action exactly that file is rule 21's refusal
     (check_filter_inputs), and no filter is read from it here: every rule of this check reads the
@@ -821,6 +891,7 @@ def changes_filters(document: dict, problems: list[Annotation]) -> tuple:
     the file, the job has no filter this check knows of. Two steps that both read it under
     different quantifiers would make one filter mean two things, which is refused."""
     text = read_filters_file()
+    check_repeated_items(text, problems)
     lines = text.splitlines()
     steps = filter_input_steps((document.get("jobs") or {}).get("changes") or {})
     if not steps:
