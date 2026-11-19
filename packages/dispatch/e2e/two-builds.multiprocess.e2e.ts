@@ -239,7 +239,7 @@ async function seedEveryRoute(): Promise<Seeded> {
   });
   // The priorities page draws its table only where a priority is written, and a priority's own
   // page draws the work advancing it, so one priority is written with an issue in flight under
-  // it; the two fault lists of the page are drawn whatever they hold.
+  // it; the page's tabs for its two fault lists are drawn whatever those hold.
   const priority = await createPriority({
     description: "Every page is served from either build while a release overlaps the two.",
     owner: "alice",
@@ -464,8 +464,7 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, "Priorities"),
         page.locator('section[aria-label="Priorities"]'),
         page.getByRole("table", { name: "Priorities table" }),
-        page.locator('section[aria-label="In flight under no priority"]'),
-        page.locator('section[aria-label="Priority work in backlog or icebox"]'),
+        page.getByRole("tablist", { name: "Priorities page" }),
       ],
       url: "/priorities",
     },

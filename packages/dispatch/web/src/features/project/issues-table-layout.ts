@@ -32,6 +32,11 @@ export interface LayoutPins {
   readonly flexible: string;
 }
 
+/** What a column that fills the box leaves free at the box's right edge: the box's two borders
+ *  and the widest classic vertical scrollbar (17 px on Windows), so a box whose rows scroll draws
+ *  no sideways scrollbar beside it. */
+const EDGE_ROOM = 20;
+
 /** Every rule a table's layout follows, from its caller: `useTableLayout` reads no other.
  *  Held in a module constant, since the stored layout is read again whenever it changes. */
 export interface LayoutColumns extends StoredColumns {
@@ -42,6 +47,13 @@ export interface LayoutColumns extends StoredColumns {
   readonly minimums?: Readonly<Partial<Record<string, number>>>;
   /** The columns pinned at the left. A table without it pins nothing. */
   readonly pins?: LayoutPins;
+  /** The column that fills the box: in a box 640 px wide or wider it takes the width the other
+   *  shown columns, `trailing` and the box's edge leave, never below its minimum, so nothing
+   *  scrolls sideways while the columns fit. A width the reader dragged it to stays theirs, and
+   *  a phone's box keeps the widths the pins give it. A table without it fills nothing. */
+  readonly fills?: string;
+  /** The width the table draws after its columns - a row's actions - which `fills` leaves. */
+  readonly trailing?: number;
 }
 
 /** A table's layout as `useTableLayout` keeps it: the reader's widths, order and visibility,
@@ -104,7 +116,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
   }, [layoutKey, sizing, order, visibility]);
 
   const responsive = useMemo(() => {
-    const { ids, minimums = {}, pins, sizes = {} } = columns;
+    const { fills, ids, minimums = {}, pins, sizes = {}, trailing = 0 } = columns;
     // Each column at the reader's width, else its starting width, never below its minimum; a
     // column with neither keeps the width its definition gives it.
     const widths: ColumnSizingState = Object.fromEntries(
@@ -113,7 +125,19 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
         return width === undefined ? [] : [[id, Math.max(minimums[id] ?? 0, width)]];
       })
     );
-    if (pins === undefined) return { sizing: widths, pinned: [] };
+    // On a desktop, the column that fills the box takes what the others leave (`fills`).
+    const fill = () => {
+      if (fills === undefined || sizing[fills] !== undefined) return;
+      const others = ids.reduce(
+        (sum, id) => (id === fills || visibility[id] === false ? sum : sum + (widths[id] ?? 0)),
+        trailing
+      );
+      widths[fills] = Math.max(minimums[fills] ?? 0, boxWidth - others - EDGE_ROOM);
+    };
+    if (pins === undefined) {
+      if (boxWidth >= 640) fill();
+      return { sizing: widths, pinned: [] };
+    }
     const { flexible, phone, wide } = pins;
     const covered = (pinned: readonly string[]) =>
       pinned.reduce((sum, id) => sum + (widths[id] ?? 0), 0);
@@ -139,8 +163,9 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
       );
     // At readable minimums, unpin from the right rather than cover the viewport.
     while (pinned.length > 1 && covered(pinned) > budget) pinned.pop();
+    fill();
     return { sizing: widths, pinned };
-  }, [boxWidth, columns, sizing]);
+  }, [boxWidth, columns, sizing, visibility]);
 
   const measure = useCallback(() => {
     const box = scrollRef.current;

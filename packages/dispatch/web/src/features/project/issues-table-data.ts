@@ -25,11 +25,14 @@ export type IssueListing = { readonly project: string } | AdvancesListing;
  * `none` for the work that advances no live priority and `any` for the work that advances one.
  * `statuses`, where it is set, is the whole of what the listing holds - the issues standing in
  * one of those statuses, which is how the priorities page asks for each of its two faults (see
- * `answeredWhole` for when its open read is every row of it). `moved` asks for the time each row
- * standing in backlog or icebox was moved there and who moved it.
+ * `answeredWhole` for when its open read is every row of it). `own` keeps the issues whose own
+ * row names what they advance, and leaves out those that inherit it from an issue above them.
+ * `moved` asks for the time each row standing in backlog or icebox was moved there and who moved
+ * it.
  */
 export type AdvancesListing = {
   readonly advances: string;
+  readonly own?: boolean;
   readonly statuses?: readonly string[];
   readonly moved?: boolean;
 };
@@ -54,7 +57,11 @@ export function answeredWhole(listing: IssueListing): boolean {
 export const listingName = (listing: IssueListing): string =>
   "project" in listing
     ? listing.project
-    : [`advances:${listing.advances}`, ...(listing.statuses ?? [])].join(":");
+    : [
+        `advances:${listing.advances}`,
+        ...(listing.own ? ["own"] : []),
+        ...(listing.statuses ?? []),
+      ].join(":");
 
 /**
  * One project's issues as the table shows them - or, under a scope, every project's issues that

@@ -274,11 +274,13 @@ const NO_PRIORITIES: readonly string[] = [];
  * person's (`ChangedMeanwhile`) are writes of the store, by priority and attribute (`kept`,
  * `keep`, `keeping`), and not the field's or the page's: a row of the table scrolling away takes
  * the field with it, and the field drawn again shows them again, and a description that keeps
- * any is drawn though its disclosure or its row is closed. A write of a priority in `shown` that
- * Dispatch refuses `409 PRIORITY_CHANGED` is the page's to settle with the reader, whether it was
- * pressed here or a reload took it up, before this page was drawn or since
- * (`priorityTextWrite.claims`, `Writes.claim`): the store holds it, kept across a reload, its
- * text is offered beside the field from there, and nothing stands for it on the shell's line.
+ * any is drawn though its disclosure or its row is closed. A write of one of `texts` of a
+ * priority in `shown` that Dispatch refuses `409 PRIORITY_CHANGED` is the page's to settle with
+ * the reader, whether it was pressed here or a reload took it up, before this page was drawn or
+ * since (`priorityTextWrite.claims`, `Writes.claim`): the store holds it, kept across a reload,
+ * its text is offered beside the field from there, and nothing stands for it on the shell's
+ * line. A page that draws no field for a text - the priorities table draws no title's - names
+ * only those it draws, so the shell's line keeps the others.
  * The page reads the priorities again and offers that text once that read has answered, so it
  * never offers the reader's text before it shows the other person's; until then no write of that
  * text of that priority is sent, since any would name a text Dispatch no longer holds, and one
@@ -300,7 +302,10 @@ const NO_PRIORITIES: readonly string[] = [];
  * and a token naming no person are both refused, so a page that offered the controls to them
  * would offer a refusal.
  */
-export function usePriorityWrites(shown: readonly string[] = NO_PRIORITIES) {
+export function usePriorityWrites(
+  shown: readonly string[] = NO_PRIORITIES,
+  texts: readonly EditedText[] = EDITED_TEXTS
+) {
   const queryClient = useQueryClient();
   const writes = useWrites();
   const canWrite = useIsHuman();
@@ -448,14 +453,15 @@ export function usePriorityWrites(shown: readonly string[] = NO_PRIORITIES) {
     },
     [letGo, takeWrites, writes]
   );
-  // The conflicts of the priorities this page shows are its own to settle with the reader, from
-  // the moment it is drawn until it goes or shows others.
+  // The conflicts of the texts this page draws of the priorities it shows are its own to settle
+  // with the reader, from the moment it is drawn until it goes or shows others.
   useEffect(() => {
     if (shown.length === 0) return;
     const page: MountedPage = {
       client: queryClient,
       takes: (write) => {
-        if (!shown.includes(write.detail.id)) return false;
+        if (!shown.includes(write.detail.id) || !texts.includes(write.detail.attribute))
+          return false;
         takeWrites([write.id], refresh());
         return true;
       },
@@ -464,7 +470,7 @@ export function usePriorityWrites(shown: readonly string[] = NO_PRIORITIES) {
     return () => {
       mountedPages.delete(page);
     };
-  }, [queryClient, refresh, shown, takeWrites]);
+  }, [queryClient, refresh, shown, takeWrites, texts]);
   // And those refused before it showed their priority - a reload's, taken up before the page
   // was drawn, one of a row the table did not draw, or one a page that went handed back - which
   // stand on the shell's line until a page that shows their priority takes them, all of them
@@ -472,10 +478,12 @@ export function usePriorityWrites(shown: readonly string[] = NO_PRIORITIES) {
   useEffect(() => {
     const claimed: number[] = [];
     for (const write of conflicts) {
-      if (shown.includes(write.detail.id) && writes.claim(write.id)) claimed.push(write.id);
+      const { attribute, id } = write.detail;
+      if (shown.includes(id) && texts.includes(attribute) && writes.claim(write.id))
+        claimed.push(write.id);
     }
     if (claimed.length > 0) takeWrites(claimed, refresh());
-  }, [conflicts, refresh, shown, takeWrites, writes]);
+  }, [conflicts, refresh, shown, takeWrites, texts, writes]);
   // The page going hands every write it holds back to the shell's line, where the reader's text
   // is offered to copy, until a page drawn later that shows its priority takes it again. React
   // runs a removed tree's cleanups parent first, so a field's own write as it leaves with the

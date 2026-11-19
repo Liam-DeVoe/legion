@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the click below leaves the page with the focus still in the title's field, which user-event has no form for: its click moves the focus first, and the field's blur would write before the page goes.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptWrites } from "../../__tests__/kept-sends-harness";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
@@ -13,10 +13,16 @@ import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
+import { KeymapProvider } from "../shell/KeymapProvider";
 import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { writesOf } from "../writes/write-store";
 import { PriorityPage } from "./PriorityPage";
 import { PRIORITIES_PATH } from "./priority-routes";
+
+/** Where a link or a key the page follows lands: the address, which a test reads. */
+function Landed() {
+  return <output data-testid="landed">{useLocation().pathname}</output>;
+}
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
   return {
@@ -158,22 +164,26 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   // The description is drawn in the documents' own editor, whose handles a test edits through.
   const editors = recordedEditors();
   // The page, the priorities page its link leads to - a stand-in with a way back - the shell's
-  // line of pending writes, which stands above the router as the app's does, and a way to
-  // another priority's page, which the router draws on the same page.
+  // line of pending writes, which stands above the router as the app's does, a way to another
+  // priority's page, which the router draws on the same page, and where any other link or key
+  // the page follows lands.
   const draw = (app: QueryClient) =>
     render(
       <MemoryRouter initialEntries={[`/priorities/${id}`]}>
         <QueryClientProvider client={app}>
           <DocumentRuntime.Provider value={editors.runtime}>
-            <Routes>
-              <Route element={<PriorityPage />} path="/priorities/:id" />
-              <Route
-                element={<Link to={`/priorities/${id}`}>Back to the priority</Link>}
-                path={PRIORITIES_PATH}
-              />
-            </Routes>
-            <PendingWritesIndicator />
-            <Link to="/priorities/runbook">The runbook's page</Link>
+            <KeymapProvider>
+              <Routes>
+                <Route element={<PriorityPage />} path="/priorities/:id" />
+                <Route
+                  element={<Link to={`/priorities/${id}`}>Back to the priority</Link>}
+                  path={PRIORITIES_PATH}
+                />
+                <Route element={<Landed />} path="*" />
+              </Routes>
+              <PendingWritesIndicator />
+              <Link to="/priorities/runbook">The runbook's page</Link>
+            </KeymapProvider>
           </DocumentRuntime.Provider>
         </QueryClientProvider>
       </MemoryRouter>
@@ -208,16 +218,18 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   return { client, editors, listing, patch, priorities, reload, view, writtenElsewhere };
 }
 
-test("the header carries the order, the title in place, the owner and the three counts", async () => {
+test("the header carries the title in place and the owner, and no line of order or counts", async () => {
   page();
   const title = await screen.findByRole("textbox", { name: "Title" });
   expect((title as HTMLInputElement).value).toBe("Rocq and Lean speed work restarted");
-  expect(screen.getByText("P2")).toBeDefined();
+  // The order and the counts are the priorities list's to show (INFRA-3221, R13): this page
+  // carries no line about either.
+  expect(screen.queryByText("#2")).toBeNull();
+  expect(screen.queryByText(/in the order|#\d/)).toBeNull();
+  expect(screen.queryByText(/\b(Active|In flight|Triage, Todo|Backlog, icebox) \d/)).toBeNull();
   // The owner is the picker the page is drawn as: it offers the owners the deployment already
   // uses and takes one nobody has written yet, so it is a combobox and not a plain field.
   expect(screen.getByRole("combobox", { name: "Owner" })).toBeDefined();
-  expect(screen.getByText("Order P2, dragged on the priorities page")).toBeDefined();
-  expect(screen.getByText(/In flight 3 · waiting 11 · in backlog or icebox 5/)).toBeDefined();
   expect(screen.getByRole("link", { name: "‹ Priorities" }).getAttribute("href")).toBe(
     "/priorities"
   );
@@ -226,25 +238,23 @@ test("the header carries the order, the title in place, the owner and the three 
 test("the description is a disclosure that closes, and the work fills the page below it", async () => {
   const user = userEvent.setup();
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"])]);
-  const described = await screen.findByRole("textbox", { name: "Description of P2" });
+  const described = await screen.findByRole("textbox", { name: "Description" });
   expect(await within(described).findByText("Speedruns run again.")).toBeDefined();
   await user.click(screen.getByRole("button", { name: "Description" }));
-  await waitFor(() =>
-    expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull()
-  );
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull());
   expect(screen.getByRole("button", { name: "Description, closed" })).toBeDefined();
   // The work fills the page with the description closed.
   expect(
     await screen.findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
   ).toBeDefined();
   await user.click(screen.getByRole("button", { name: "Description, closed" }));
-  expect(await screen.findByRole("textbox", { name: "Description of P2" })).toBeDefined();
+  expect(await screen.findByRole("textbox", { name: "Description" })).toBeDefined();
 });
 
 test("the description is the documents' editor, with no action on a selection, and its write is the priority's, as markdown", async () => {
   const user = userEvent.setup();
   const { editors, patch } = page();
-  const { box, handle } = await editors.named("Description of P2");
+  const { box, handle } = await editors.named("Description");
   // The editor Dispatch's documents are written in, holding the markdown as it reads: the
   // heading is a heading, and no source is shown.
   expect(box.classList.contains("ProseMirror")).toBe(true);
@@ -276,19 +286,19 @@ test("the description is the documents' editor, with no action on a selection, a
 test("the reader's description kept beside the editor outlives the disclosure closing, and is written when they use it", async () => {
   const user = userEvent.setup();
   const { editors, patch, writtenElsewhere } = page();
-  const { handle } = await editors.named("Description of P2");
+  const { handle } = await editors.named("Description");
   handle.view.focus();
   writeAtEnd(handle, " Mine.");
   // Another person's description reaches the page before the typing rests.
   writtenElsewhere({ description: "Written elsewhere." });
   const notice = () =>
-    screen.queryByRole("alert", { name: "Description of P2, changed by another person" });
+    screen.queryByRole("alert", { name: "Description, changed by another person" });
   expect(notice()).not.toBeNull();
   // Closed while it keeps the reader's text, the description stays drawn with its notice: the
   // reader's text is on the page until they choose.
   await user.click(screen.getByRole("button", { name: "Description" }));
   expect(screen.getByRole("button", { name: "Description, closed" })).toBeDefined();
-  await editors.named("Description of P2");
+  await editors.named("Description");
   const kept = notice();
   if (kept === null) throw new Error("no notice beside the closed description");
   expect(within(kept).getByText(/Speedruns run again\. Mine\./)).toBeDefined();
@@ -300,9 +310,7 @@ test("the reader's description kept beside the editor outlives the disclosure cl
     expected: { description: "Written elsewhere." },
   });
   // With nothing kept, the description is closed, as the reader asked.
-  await waitFor(() =>
-    expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull()
-  );
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull());
 });
 
 test("a title the reader empties writes nothing, and left, shows the title again", async () => {
@@ -358,7 +366,7 @@ test("the title's notice stands outside the heading, which is named by the title
 test("the keyboard reaches the description's editor from the disclosure above it", async () => {
   const user = userEvent.setup();
   const { editors } = page();
-  const { box } = await editors.named("Description of P2");
+  const { box } = await editors.named("Description");
   screen.getByRole("button", { name: "Description" }).focus();
   await user.tab();
   expect(document.activeElement).toBe(box);
@@ -366,7 +374,7 @@ test("the keyboard reaches the description's editor from the disclosure above it
 
 test("a reader who may not write reads the description in the same editor, read-only", async () => {
   const { editors, patch } = page("rocq-lean", [], false);
-  const { box } = await editors.named("Description of P2");
+  const { box } = await editors.named("Description");
   expect(within(box).getByText("Speedruns run again.")).toBeDefined();
   expect(box.getAttribute("contenteditable")).toBe("false");
   expect(box.getAttribute("aria-readonly")).toBe("true");
@@ -376,12 +384,12 @@ test("a reader who may not write reads the description in the same editor, read-
 test("an empty description says none is written to a reader who may not write it", async () => {
   page("legion-first", [], false);
   expect(await screen.findByText("No description is written.")).toBeDefined();
-  expect(screen.queryByRole("textbox", { name: "Description of P1" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull();
 });
 
 test("an empty description is, for a writer, the prompt above the empty editor", async () => {
   const { editors } = page("legion-first");
-  const { box } = await editors.named("Description of P1");
+  const { box } = await editors.named("Description");
   expect(screen.getByText("No description is written. Write one below.")).toBeDefined();
   expect(box.textContent).toBe("");
   expect(box.getAttribute("contenteditable")).toBe("true");
@@ -411,7 +419,7 @@ test("the page carries no tab strip, no version control and no delete", async ()
 
 test("one link out leaves the scope, naming the issues and why", async () => {
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
-  const out = await screen.findByRole("link", { name: "CORE’s issues table" });
+  const out = await screen.findByRole("link", { name: "Open in CORE" });
   expect(out.getAttribute("href")).toBe(
     "/projects/CORE/issues?only=CORE-1%2CCORE-4&onlyLabel=Rocq+and+Lean+speed+work+restarted&nofilter=1"
   );
@@ -425,6 +433,33 @@ test("the work under the priority is the issues table, scoped and under its own 
   ).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
+});
+
+test("j, k, x and Enter act on the work rows, the one table the page draws", async () => {
+  const user = userEvent.setup();
+  page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
+  const work = await screen.findByRole("region", { name: "Work advancing this priority" });
+  const first = await within(work).findByRole(
+    "row",
+    { name: "CORE-1 Work CORE-1" },
+    { timeout: 3000 }
+  );
+  await within(work).findByRole("row", { name: "CORE-4 Work CORE-4" });
+  const focused = () => document.activeElement?.getAttribute("data-issue-row");
+  first.focus();
+  await user.keyboard("j");
+  expect(focused()).toBe("CORE-4");
+  await user.keyboard("k");
+  expect(focused()).toBe("CORE-1");
+  // `x` selects the row in hand, as on a project's table.
+  await user.keyboard("x");
+  await waitFor(() =>
+    expect(within(work).getByRole("checkbox", { name: "Select CORE-1" })).toBeChecked()
+  );
+  expect(within(work).getByRole("checkbox", { name: "Select CORE-4" })).not.toBeChecked();
+  // Enter opens the focused issue.
+  await user.keyboard("{Enter}");
+  expect((await screen.findByTestId("landed")).textContent).toBe("/issues/CORE-1");
 });
 
 test("the margin stands beside the page, with no tabs and no control of its own", async () => {
@@ -448,11 +483,9 @@ test("an id no priority carries says so and gives the way back", async () => {
 test("a description a reload took up and another person's change refused is kept beside the description, closed or not", async () => {
   const user = userEvent.setup();
   const { client, editors, patch } = page();
-  await editors.named("Description of P2");
+  await editors.named("Description");
   await user.click(screen.getByRole("button", { name: "Description" }));
-  await waitFor(() =>
-    expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull()
-  );
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull());
   const mine = "Speedruns run again, every night.\n\nMine.";
   const body = { description: mine, expected: { description: "Speedruns run." } };
   const request = priorityPatchRequest("rocq-lean", body);
@@ -480,7 +513,7 @@ test("a description a reload took up and another person's change refused is kept
   );
   act(() => writesOf(client).resume("alice"));
   const notice = await screen.findByRole("alert", {
-    name: "Description of P2, changed by another person",
+    name: "Description, changed by another person",
   });
   expect(within(notice).getByText(/Speedruns run again, every night\./)).toBeDefined();
   expect(within(notice).getByRole("button", { name: "Use my text" })).toBeDefined();

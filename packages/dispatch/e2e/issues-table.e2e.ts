@@ -1322,8 +1322,16 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
     const shown = await watchShown(page, `Priority of ${issue.key}`);
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", "none"));
-    await page.goto("/priorities");
-    const table = page.getByRole("region", { name: "In flight under no priority" });
+    await page.goto("/priorities?tab=none");
+    const table = page.getByRole("region", { name: "Active under no priority" });
+    // The fault list opens with R6's columns alone; the reader shows the issue's own priority
+    // from the column control, as anyone who picks one there does.
+    await table.getByRole("button", { exact: true, name: "Columns" }).click();
+    await page
+      .getByRole("dialog", { name: "Columns" })
+      .getByRole("checkbox", { name: "Priority" })
+      .check();
+    await page.keyboard.press("Escape");
     const picker = table.getByRole("combobox", { name: `Priority of ${issue.key}` });
     await expect(picker).toHaveValue("3");
 

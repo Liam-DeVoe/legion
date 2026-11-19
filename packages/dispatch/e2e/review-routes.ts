@@ -300,29 +300,46 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // and `ArtifactHeader.tsx` draws the dot inside that header.
     ready: (page) => [page.getByRole("status", { name: "connected" })],
   },
+  // `/priorities` draws one table at a time, on one of three tabs the address names (`?tab=`,
+  // `web/src/features/priorities/PrioritiesPage.tsx`), so each tab is an entry of its own. The
+  // page's own heading is on the screen while the priorities read is still out, over `Loading
+  // priorities`, and a fault's tab stands over its table while that fault list's own issue
+  // listing is still out, so each entry waits for a row the seed wrote: the first priority of
+  // the order, the issue active under no priority, and the parked issue that advances one.
+  // Each fault list is the Issues table, named by the label the page passes it with " table"
+  // after it (`features/project/IssuesTable.tsx`). The rows are `e2e/review-seed.ts`'s, so a
+  // change to that corpus fails these entries rather than a baseline.
   {
     kind: "reviewed",
     layers: bothLayers,
     name: "priorities",
     path: () => "/priorities",
     pattern: "/priorities",
-    // Three facts, because the page draws three tables and a heading proves none of them: the
-    // page's own heading is on the screen while the priorities read is still out, over `Loading
-    // priorities`, and both fault headings stand over their tables while each fault list's own
-    // issue listing is still out (`web/src/features/priorities/PrioritiesPage.tsx`). So each
-    // locator is a row the seed wrote - the first priority of the order, the in-flight issue
-    // that advances none, and the parked issue that advances one - and together they say the
-    // priorities table and both fault lists have their rows rather than their empty words. Each
-    // fault list is the Issues table, named by the label the page passes it with " table"
-    // after it (`features/project/IssuesTable.tsx`). The three issues are
-    // `e2e/review-seed.ts`'s, so a change to that corpus fails this row rather than a baseline.
     ready: (page) => [
-      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
+      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^#1 / }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: bothLayers,
+    name: "priorities-in-flight",
+    path: () => "/priorities?tab=none",
+    pattern: "/priorities",
+    ready: (page) => [
       page
-        .getByRole("table", { exact: true, name: "Issues in flight under no priority table" })
+        .getByRole("table", { exact: true, name: "Active under no priority table" })
         .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: bothLayers,
+    name: "priorities-parked",
+    path: () => "/priorities?tab=parked",
+    pattern: "/priorities",
+    ready: (page) => [
       page
-        .getByRole("table", { exact: true, name: "Priority issues in backlog or icebox table" })
+        .getByRole("table", { exact: true, name: "Parked priority work table" })
         .getByRole("row", { name: /Agents page freshness folds/ }),
     ],
   },

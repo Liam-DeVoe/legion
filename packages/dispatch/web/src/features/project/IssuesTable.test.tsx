@@ -1,8 +1,8 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
@@ -14,7 +14,9 @@ import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
+import { issueTableLayout } from "./issues-table-columns";
 import type { IssueListing } from "./issues-table-data";
+import { useTableLayout } from "./issues-table-layout";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
 import { readLayout } from "./issues-table-storage";
 
@@ -92,6 +94,7 @@ function table(
   search = "",
   full?: Promise<IssueSummary[]>,
   props: {
+    layout?: ComponentProps<typeof IssuesTable>["layout"];
     listing?: IssueListing;
     priorityTitles?: ReadonlyMap<string, string>;
     stateKey?: string;
@@ -2118,4 +2121,142 @@ test("a listing that names its statuses is read with them alone, never with ever
   });
   expect(listing.mock.calls.every(([options]) => options?.status !== undefined)).toBe(true);
   expect(screen.queryByText("Loading closed issues…")).toBeNull();
+});
+
+/** The registry's columns a project's table opens with, by the names the Columns control gives
+ *  them: every one but Updated. With the row's checkbox, which no reader hides, that is 13. */
+const REGISTRY_OPENS = [
+  "Priority",
+  "Queue",
+  "Key",
+  "Title",
+  "Status",
+  "Epic",
+  "Assignee",
+  "Created by",
+  "Labels",
+  "Claimed by",
+  "Open asks",
+  "Created",
+];
+
+/** Whether the Columns control, once open, ticks the column it names `name`. */
+const ticked = (name: string) =>
+  (screen.getByRole("checkbox", { name }) as HTMLInputElement).checked;
+
+// A fault list of the priorities page opens with R6's columns alone (the parked list's set
+// here: the issue, its project, its status, who holds it, how long it has stood, and the move),
+// so it fits a desktop window. Every other column is one tick away under Columns, and no table
+// offers a Reason column until a reason is recorded (dispatch://INFRA-2934).
+test("a table given the columns it opens with shows those alone, with the row's checkbox, and offers every other one unticked", async () => {
+  const user = userEvent.setup();
+  table(
+    [issue("CORE-1", { advances: [{ id: "ship-it", inherited: false }], status: "backlog" })],
+    "",
+    undefined,
+    {
+      layout: {
+        key: "parked",
+        opens: ["key", "title", "status", "claim", "updated", "project", "moved"],
+      },
+      listing: { advances: "ship-it", moved: true },
+      priorityTitles: new Map([["ship-it", "Ship it everywhere"]]),
+      stateKey: "k",
+    }
+  );
+  const list = await screen.findByRole("table", { name: "Priority issues table" });
+  const row = await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
+  // `x` selects with the row's checkbox, which no reader can hide or show, so it stays.
+  expect(within(row).getByRole("checkbox", { name: "Select CORE-1" })).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "Columns" }));
+  const opened = ["Key", "Title", "Status", "Claimed by", "Updated", "Project", "Moved there"];
+  for (const name of opened)
+    expect({ name, ticked: ticked(name) }).toEqual({
+      name,
+      ticked: true,
+    });
+  const others = REGISTRY_OPENS.filter((name) => !opened.includes(name));
+  for (const name of [...others, "Advances"])
+    expect({ name, ticked: ticked(name) }).toEqual({
+      name,
+      ticked: false,
+    });
+  expect(screen.queryByRole("checkbox", { name: "Reason" })).toBeNull();
+  // Ticked, a column the layout opened hidden is drawn.
+  await user.click(screen.getByRole("checkbox", { name: "Advances" }));
+  await waitFor(() =>
+    expect(
+      within(list)
+        .getAllByRole("columnheader")
+        .some((header) => header.textContent?.startsWith("Advances"))
+    ).toBe(true)
+  );
+});
+
+test("a project's table, given no layout, opens with every registry column but Updated", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1")]);
+  const list = await screen.findByRole("table", { name: "Project issues table" });
+  const row = await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(within(row).getByRole("checkbox", { name: "Select CORE-1" })).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "Columns" }));
+  for (const name of REGISTRY_OPENS)
+    expect({ name, ticked: ticked(name) }).toEqual({
+      name,
+      ticked: true,
+    });
+  expect(ticked("Updated")).toBe(false);
+});
+
+test("the widths a layout names reach the layout it builds, over the registry's and the listing columns'", () => {
+  const built = issueTableLayout(["project", "moved"], ["key", "title", "moved"], {
+    claim: { min: 112, size: 112 },
+    moved: { min: 104, size: 120 },
+  });
+  expect([built.sizes?.claim, built.minimums?.claim]).toEqual([112, 112]);
+  expect([built.sizes?.moved, built.minimums?.moved]).toEqual([120, 104]);
+  // A column it names no width for keeps its own.
+  expect([built.sizes?.status, built.minimums?.status]).toEqual([
+    ISSUE_TABLE_COLUMNS.sizes?.status,
+    ISSUE_TABLE_COLUMNS.minimums?.status,
+  ]);
+  expect([built.sizes?.project, built.minimums?.project]).toEqual([120, 96]);
+});
+
+test("a project's table keeps the registry's opening set, sizes and minimums", () => {
+  const built = issueTableLayout([]);
+  expect(built.ids).toEqual(ISSUE_TABLE_COLUMNS.ids);
+  expect(built.hiddenByDefault).toEqual(ISSUE_TABLE_COLUMNS.hiddenByDefault);
+  expect(built.sizes).toEqual(ISSUE_TABLE_COLUMNS.sizes);
+  expect(built.minimums).toEqual(ISSUE_TABLE_COLUMNS.minimums);
+  // Its Title fills nothing: in the 1000 px box a table starts with, it gives up only what keeps
+  // the pinned columns (select 44, priority 140, key 108, title 380) within 60% of the box.
+  expect(built.fills).toBeUndefined();
+  const { result, unmount } = renderHook(() => useTableLayout("fills-none", built));
+  expect(result.current.boxWidth).toBe(1000);
+  expect(result.current.responsive.sizing.title).toBe(380 - (672 - 600));
+  unmount();
+});
+
+// A table given a layout - a fault list of the priorities page - fits a desktop box: its Title
+// takes the width the other shown columns and the row's actions (104 px) leave, less the box's
+// 20 px edge, never below its 116 px minimum. One sizing path: the layout declares it (`fills`)
+// and `useTableLayout` applies it.
+test("a layout's Title fills a desktop box with what the other shown columns and the row's actions leave", () => {
+  const narrow = issueTableLayout(["project"], ["key", "title", "status"]);
+  expect([narrow.fills, narrow.trailing]).toEqual(["title", 104]);
+  const wide = renderHook(() => useTableLayout("fills-narrow", narrow));
+  expect(wide.result.current.boxWidth).toBe(1000);
+  // Select 44, key 108 and status 132 shown, and the row's actions: 1000 - 388 - 20.
+  expect(wide.result.current.responsive.sizing.title).toBe(592);
+  wide.unmount();
+  // With more shown than leave Title its minimum, it stays at that minimum.
+  const full = renderHook(() =>
+    useTableLayout(
+      "fills-full",
+      issueTableLayout(["project"], ["key", "title", "status", "claim", "updated", "project"])
+    )
+  );
+  expect(full.result.current.responsive.sizing.title).toBe(116);
+  full.unmount();
 });

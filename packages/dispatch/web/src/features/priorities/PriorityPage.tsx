@@ -10,12 +10,12 @@ import { issueProject } from "../../lib/issue-key";
 import {
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
+import { useKeymapScope } from "../shell/keymap";
 import { InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
 import { PriorityMargin } from "./PriorityMargin";
@@ -59,6 +59,9 @@ function PriorityView({ id }: { id: string }): ReactNode {
   // (`usePriorityWrites`).
   const shown = useMemo(() => [id], [id]);
   const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites(shown);
+  // The keys every table is walked with (`j`, `k`, `x`, `o`, Enter), which a table registers
+  // in the `project` scope: the work table is the one table this page draws, so they are its.
+  useKeymapScope("project");
   // The way out of this scope, in the issue table's own shape: the issues advancing this
   // priority, project by project, each as that project's table narrowed to them. The chip the
   // address raises there names this priority and gives the whole table back when it is removed.
@@ -114,7 +117,6 @@ function PriorityView({ id }: { id: string }): ReactNode {
         </Link>
         <header className="space-y-2">
           <div className="flex flex-wrap items-center gap-3">
-            <span className={`text-2xl font-semibold ${textMutedOnCanvas}`}>{item.order}</span>
             <h1 className={`min-w-64 flex-1 text-2xl font-semibold ${textPrimaryOnCanvas}`}>
               {canWrite ? (
                 <InPlaceField
@@ -162,11 +164,6 @@ function PriorityView({ id }: { id: string }): ReactNode {
                 <span>{ownerOf(item)}</span>
               </span>
             )}
-            <p>Order {item.order}, dragged on the priorities page</p>
-            <p>
-              In flight {item.inFlight} · waiting {item.waiting} · in backlog or icebox{" "}
-              {item.parked}
-            </p>
           </div>
         </header>
 
@@ -183,7 +180,7 @@ function PriorityView({ id }: { id: string }): ReactNode {
               canWrite={canWrite}
               description={description}
               kept={keptDescription}
-              label={`Description of ${item.order}`}
+              label="Description"
               onKeptChange={(texts) => keep(id, "description", texts)}
               onSave={(next) =>
                 describe(id, next, description, textWriteLabel("description", title, next))
@@ -195,7 +192,6 @@ function PriorityView({ id }: { id: string }): ReactNode {
         <section aria-label="Work advancing this priority" className="space-y-2">
           {byProject.size === 0 ? null : (
             <p className={`text-sm ${textSecondaryOnCanvas}`}>
-              Leave this scope:{" "}
               {[...byProject.entries()]
                 .sort((a, b) => a[0].localeCompare(b[0]))
                 .map(([project, keys]) => (
@@ -204,7 +200,7 @@ function PriorityView({ id }: { id: string }): ReactNode {
                     key={project}
                     to={`/projects/${project}/issues?${selectIssues(new URLSearchParams(), keys, title)}`}
                   >
-                    {project}’s issues table
+                    Open in {project}
                   </Link>
                 ))}
             </p>

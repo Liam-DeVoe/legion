@@ -24,7 +24,8 @@ const DEFAULT_PAGE_SIZE = 50;
 
 /** The address key one control of the table with this prefix is written under: `p.sort` for
  *  the priorities table, `f.` before a column's own filter so no column can take a control's
- *  name. Every table of this page carries a prefix, since the page draws three at once. */
+ *  name. Every table of this page carries a prefix, since the page keeps the view of each of
+ *  its tables in the one address, whichever tab draws it. */
 const viewKey = (prefix: string, name: string) => `${prefix}.${name}`;
 
 /** The view `params` carries for the table with this prefix, over these columns. A filter of a

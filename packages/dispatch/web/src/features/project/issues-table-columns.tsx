@@ -284,21 +284,23 @@ export type ListingColumnId = "project" | "advances" | "moved" | "reason";
  *   and without them the column could name each priority only by its id.
  * - Moved there, on a listing that asks for the move (`moved`): no other listing is answered with
  *   one, so its every cell would be empty, whatever the record holds.
- * - Reason, on that same listing and no other: why the work was moved there. Nothing records a
- *   reason yet, and every cell says so, naming the work that records one (R6).
+ * - Reason has no listing yet: nothing records why work was moved there until
+ *   dispatch://INFRA-2934 does, so no table draws a column of cells that could only say so. Its
+ *   declaration (`LISTING_COLUMNS`) waits for that record.
  */
 export function listingColumns(listing: IssueListing, titled: boolean): ListingColumnId[] {
   const scoped = "advances" in listing;
   return [
     ...(scoped ? (["project"] as const) : []),
     ...(titled ? (["advances"] as const) : []),
-    ...(scoped && listing.moved === true ? (["moved", "reason"] as const) : []),
+    ...(scoped && listing.moved === true ? (["moved"] as const) : []),
   ];
 }
 
 /** The work that records why an issue was moved into backlog or icebox. Until it lands no move
  *  carries a reason, and the Reason cell names it. */
-const MOVE_REASON_WORK = "dispatch://INFRA-2934";
+const MOVE_REASON_ISSUE = "INFRA-2934";
+const MOVE_REASON_WORK = `dispatch://${MOVE_REASON_ISSUE}`;
 
 /**
  * The four listing columns. They name what R6 asks each fault row to name, and none of them
@@ -374,8 +376,12 @@ const LISTING_COLUMNS: readonly {
       accessorFn: () => "",
       // The same words on every row, since no move carries a reason yet: the cell says the
       // record is missing rather than drawing an empty cell a reader could take for no reason.
+      // A column narrower than the words cuts them, and the whole of them is the cell's title.
       cell: () => (
-        <span className={textSecondaryOnCanvas}>
+        <span
+          className={`block truncate ${textSecondaryOnCanvas}`}
+          title={`Not recorded until ${MOVE_REASON_ISSUE}`}
+        >
           Not recorded until <ReferenceLink reference={MOVE_REASON_WORK} />
         </span>
       ),
@@ -383,48 +389,82 @@ const LISTING_COLUMNS: readonly {
   },
 ];
 
-/** The columns a caller may name among those its table opens with shown: the listing columns,
- *  and Updated, which a project's table opens with hidden and a fault list opens with shown,
- *  since R6 asks every fault row to name how long it has stood. */
-export type ShownColumnId = ListingColumnId | "updated";
+/** A column an issues table can open with shown, or give a width of its own: one of the
+ *  registry's (`ColumnId`) or a listing column (`ListingColumnId`). */
+export type IssueTableColumnId = ColumnId | ListingColumnId;
 
-/** Each layout `issueTableLayout` built, by its columns and the ones it opens with shown. */
+/** A column's width where a table's layout names one: where it starts, and the narrowest the
+ *  reader may drag it. */
+export interface IssueTableColumnWidth {
+  readonly size: number;
+  readonly min: number;
+}
+
+/** The widths a table's layout names, by column: each over the registry's or the listing
+ *  column's own. */
+export type IssueTableWidths = Readonly<Partial<Record<IssueTableColumnId, IssueTableColumnWidth>>>;
+
+/** The width every issues table draws after its columns, for a row's actions. */
+export const ROW_ACTIONS_WIDTH = 104;
+
+/** The one column no reader can hide or show (`enableHiding: false`): the row's checkbox, which
+ *  `x` selects with. A layout that names what it opens with keeps it whatever it names. */
+const ALWAYS_SHOWN: ColumnId = "select";
+
+/** Each layout `issueTableLayout` built, by its listing columns, the columns it opens with (or
+ *  none, for a project's opening set) and the widths it names. */
 const layouts = new Map<string, LayoutColumns>();
 
 /**
- * The layout of an issues table with the listing columns `columns` (`listingColumns`) that opens
- * with `shown` shown: the registry's own (`ISSUE_TABLE_COLUMNS`), with those listing columns at
- * their widths, and every column the registry opens hidden or a listing column not in `shown`
- * hidden until the reader shows it. A project's table has none of them and names none; each
- * fault list of the priorities page names its own. Built once for each pair and kept, since the
- * stored layout is read again whenever this object changes (`useTableLayout`).
+ * The layout of an issues table with the listing columns `columns` (`listingColumns`): the
+ * registry's own (`ISSUE_TABLE_COLUMNS`), with those listing columns at their widths. With no
+ * `opens` it opens as a project's table always has: the registry's opening set, Updated hidden,
+ * and every listing column hidden until the reader shows it. With `opens`, it opens with exactly
+ * those columns shown, registry and listing columns alike, and every other one hidden until the
+ * reader shows it from the column control; the row's checkbox stays (`ALWAYS_SHOWN`), and Title
+ * fills a desktop box (`fills`, `useTableLayout`): it takes the width the other shown columns
+ * and the row's actions leave. `widths` puts a column's starting width and minimum in place of
+ * the registry's or the listing column's. A project's table names neither; each fault list of
+ * the priorities page names its own. Built once for each set and kept, since the stored layout
+ * is read again whenever this object changes (`useTableLayout`).
  */
 export function issueTableLayout(
   columns: readonly ListingColumnId[],
-  shown: readonly ShownColumnId[] = []
+  opens?: readonly IssueTableColumnId[],
+  widths: IssueTableWidths = {}
 ): LayoutColumns {
-  const name = `${columns.join(" ")}|${shown.join(" ")}`;
+  const name = `${columns.join(" ")}|${opens === undefined ? "*" : opens.join(" ")}|${JSON.stringify(widths)}`;
   const built = layouts.get(name);
   if (built !== undefined) return built;
   const listing = LISTING_COLUMNS.filter(({ id }) => columns.includes(id));
-  const hidden = {
-    ...ISSUE_TABLE_COLUMNS.hiddenByDefault,
-    ...Object.fromEntries(listing.map(({ id }) => [id, false])),
-  };
+  const ids = [...ISSUE_TABLE_COLUMNS.ids, ...listing.map(({ id }) => id)];
+  const shown = new Set<string>(opens);
+  const named = Object.entries(widths).flatMap(([id, width]) =>
+    width === undefined ? [] : [[id, width] as const]
+  );
   const layout: LayoutColumns = {
     ...ISSUE_TABLE_COLUMNS,
-    ids: [...ISSUE_TABLE_COLUMNS.ids, ...listing.map(({ id }) => id)],
-    hiddenByDefault: Object.fromEntries(
-      Object.entries(hidden).filter(([id]) => !shown.includes(id as ShownColumnId))
-    ),
+    ids,
+    hiddenByDefault:
+      opens === undefined
+        ? {
+            ...ISSUE_TABLE_COLUMNS.hiddenByDefault,
+            ...Object.fromEntries(listing.map(({ id }) => [id, false])),
+          }
+        : Object.fromEntries(
+            ids.filter((id) => id !== ALWAYS_SHOWN && !shown.has(id)).map((id) => [id, false])
+          ),
     sizes: {
       ...ISSUE_TABLE_COLUMNS.sizes,
       ...Object.fromEntries(listing.map(({ id, size }) => [id, size])),
+      ...Object.fromEntries(named.map(([id, { size }]) => [id, size])),
     },
     minimums: {
       ...ISSUE_TABLE_COLUMNS.minimums,
       ...Object.fromEntries(listing.map(({ id, min }) => [id, min])),
+      ...Object.fromEntries(named.map(([id, { min }]) => [id, min])),
     },
+    ...(opens === undefined ? {} : { fills: "title", trailing: ROW_ACTIONS_WIDTH }),
   };
   layouts.set(name, layout);
   return layout;
@@ -433,7 +473,8 @@ export function issueTableLayout(
 export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
-  /** The table's layout (`issueTableLayout`): which listing columns it has. */
+  /** The table's layout (`issueTableLayout`): which listing columns it has, and the narrowest
+   *  each column may be drawn at, its `widths` included. */
   layout: LayoutColumns,
   /** Each priority's title by its id, which the Advances column names a priority by; one this
    *  map does not hold, a priority deleted since it was read, is named by its id. */
@@ -448,7 +489,10 @@ export function useIssueTableColumns(
         ...rendering[column.id],
         id: column.id,
         size: column.size,
-        minSize: (compact ? COMPACT_COLUMN_MIN[column.id] : undefined) ?? COLUMN_MIN[column.id],
+        minSize:
+          (compact ? COMPACT_COLUMN_MIN[column.id] : undefined) ??
+          layout.minimums?.[column.id] ??
+          COLUMN_MIN[column.id],
         enableResizing: column.id !== "select",
         enableSorting: column.sortable !== false,
         enableColumnFilter: column.filter !== undefined,
@@ -468,7 +512,7 @@ export function useIssueTableColumns(
         ...column.rendering(titleOf),
         id: column.id,
         size: column.size,
-        minSize: column.min,
+        minSize: layout.minimums?.[column.id] ?? column.min,
         enableResizing: true,
         enableSorting: false,
         enableColumnFilter: false,

@@ -6,8 +6,7 @@ import {
   type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
-import { textMutedOnSurfaceMuted, textSecondaryOnCanvas } from "../../theme/classes";
-import { IssuesTable } from "../project/IssuesTable";
+import { textMutedOnSurfaceMuted } from "../../theme/classes";
 import { useTableLayout } from "../project/issues-table-layout";
 import { NOTHING_KEPT } from "./field-arrival";
 import { ChangedMeanwhile } from "./InPlaceField";
@@ -27,7 +26,7 @@ import { TableToolbar } from "./priority-table-controls";
 import { compareHeadings, facetCounts, headingOf } from "./priority-table-model";
 import { TableBodyRow } from "./priority-table-rows";
 import { useTableView } from "./priority-table-view";
-import { textWriteLabel, usePriorityWrites } from "./priority-writes";
+import { type EditedText, textWriteLabel, usePriorityWrites } from "./priority-writes";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** What a row of this table is, which its pager and its group headings count in. */
@@ -36,30 +35,27 @@ const NOUN: RowNoun = { many: "priorities", one: "priority" };
 const LAYOUT_KEY = "priorities";
 /** The address prefix of this table's own view, so the two fault lists keep their own. */
 const VIEW_PREFIX = "p";
-/** The address prefix of the work under an opened row, which is the issues table's own view. */
-const WORK_PREFIX = "w";
 /** The priorities a table draws while it draws none. */
 const NONE_DRAWN: readonly string[] = [];
+/** The one text of a priority a row writes: its description. A title is written on the
+ *  priority's own page, so a refused write of one is that page's, or the shell's line's. */
+const ROW_TEXTS: readonly EditedText[] = ["description"];
 
 /**
  * The priorities themselves: one row per priority in the one order, with the counts that say
- * what is happening under each. A reader who may write a priority adds one, renames one, writes
- * its description and drags its order here; every reader opens a row, which shows the whole of
- * that priority's description and the work advancing it, which names every priority each row
- * advances by `titles`, as the priority's own page does. The reader's own texts kept beside a
- * priority's title or description (`ChangedMeanwhile`) stand beside its row, or above the table
- * while the view leaves the row out.
+ * what is happening under each. A reader who may write a priority adds one, writes its
+ * description and drags its order here, and renames it on its own page, which its title links
+ * to; every reader opens a row, which shows the whole of that priority's description. The work
+ * advancing a priority is listed on that priority's own page, so this tab draws one table and
+ * the keys every table is walked with (`j`, `k`, `x`, `o`, Enter) are this table's alone. The
+ * reader's own texts kept beside a priority's description (`ChangedMeanwhile`) stand beside its
+ * row, or above the table while the view leaves the row out.
  */
-export function PrioritiesTable({
-  rows,
-  titles,
-}: {
-  rows: readonly PriorityRow[];
-  /** Each priority's title by its id, which the opened row's work table names a priority by. */
-  titles: ReadonlyMap<string, string>;
-}): ReactNode {
-  const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
+export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): ReactNode {
+  const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
+  // On a desktop the title fills the box: it takes the width the other shown columns leave, so
+  // the table fits the window and nothing scrolls sideways (`PRIORITY_LAYOUT`'s `fills`).
   const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
   const { attachAbove, boxWidth } = layout;
   const [openId, setOpenId] = useState<string>();
@@ -67,7 +63,6 @@ export function PrioritiesTable({
   const [openFilter, setOpenFilter] = useState<string>();
   const items = useMemo(() => buildPriorityItems(rows), [rows]);
   const order = useMemo(() => items.map((item) => item.priority.id), [items]);
-  const open = items.find((item) => item.priority.id === openId);
   // A drag writes the place the reader can see. Under another sort, a grouping or a page of
   // rows that is not the whole order, where a row lands is not where it was dropped, so the
   // handle is not drawn at all.
@@ -79,22 +74,9 @@ export function PrioritiesTable({
 
   const onDragEnd = useCallback(() => setDragging(undefined), []);
   const onOpen = useCallback(
-    (item: PriorityItem) => {
-      const next = openId === item.priority.id ? undefined : item.priority.id;
-      setOpenId(next);
-      // The work under a priority is read by status, as the page's rule says, unless the
-      // reader has already grouped that table by something else.
-      if (next !== undefined && !params.has(`${WORK_PREFIX}.group`))
-        setParams(
-          (current) => {
-            const changed = new URLSearchParams(current);
-            changed.set(`${WORK_PREFIX}.group`, "status");
-            return changed;
-          },
-          { replace: true }
-        );
-    },
-    [openId, params, setParams]
+    (item: PriorityItem) =>
+      setOpenId((was) => (was === item.priority.id ? undefined : item.priority.id)),
+    []
   );
   const model = useDataTable<PriorityItem>({
     rows: items,
@@ -126,14 +108,15 @@ export function PrioritiesTable({
   const { table } = model;
   // The priorities the table draws now: the rows of the page and view the reader is on, drawn or
   // scrolled away, and not those a filter, another page or a closed group leaves out. Each
-  // drawn one's conflicts are the table's to settle with the reader (`usePriorityWrites`); one
-  // it does not draw stays on the shell's line, with the reader's text to copy.
+  // drawn one's refused descriptions are the table's to settle with the reader
+  // (`usePriorityWrites`); one it does not draw stays on the shell's line, with the reader's
+  // text to copy, and so does every refused title.
   const drawnKey = model.displayRows
     .filter(({ row }) => !row.getIsGrouped())
     .map(({ row }) => row.original.priority.id)
     .join("\n");
   const drawn = useMemo(() => (drawnKey === "" ? NONE_DRAWN : drawnKey.split("\n")), [drawnKey]);
-  const { canWrite, describe, keep, keeping, kept, patch, rename } = usePriorityWrites(drawn);
+  const { canWrite, describe, keep, keeping, kept, patch } = usePriorityWrites(drawn, ROW_TEXTS);
 
   const move = useCallback(
     (item: PriorityItem, onto: string) => {
@@ -164,15 +147,13 @@ export function PrioritiesTable({
     },
     [move, order]
   );
-  const onRename = useCallback(
-    (item: PriorityItem, title: string) =>
-      rename(
-        item.priority.id,
-        title,
-        item.priority.title,
-        textWriteLabel("title", item.priority.title, title)
-      ),
-    [rename]
+  const keptDescription = useCallback(
+    (id: string, held: string) => kept(id, "description", held),
+    [kept]
+  );
+  const keepDescription = useCallback(
+    (id: string, texts: readonly string[]) => keep(id, "description", texts),
+    [keep]
   );
   // One object while nothing a row can do changes: every cell reads it
   // (`PriorityRowActionsContext`), and is drawn again when it changes.
@@ -181,38 +162,36 @@ export function PrioritiesTable({
       canReorder,
       canWrite,
       dragging,
-      kept,
+      kept: keptDescription,
       onDragEnd,
       onDragStart: setDragging,
       onDescribe,
-      onKeep: keep,
+      onKeep: keepDescription,
       onMove,
       onOpen,
-      onRename,
       openId,
     }),
     [
       canReorder,
       canWrite,
       dragging,
-      keep,
-      kept,
+      keepDescription,
+      keptDescription,
       onDescribe,
       onDragEnd,
       onMove,
       onOpen,
-      onRename,
       openId,
     ]
   );
-  // The reader's texts kept beside a priority the table no longer draws - one the other
+  // The reader's descriptions kept beside a priority the table no longer draws - one the other
   // person's change took out of the search, or onto another page - which no row shows, so they
-  // are shown above the table, each as its field would show it.
-  const undrawn = keeping.flatMap(({ attribute, id }) => {
+  // are shown above the table, each as its editor would show it.
+  const undrawn = keeping.flatMap(({ id }) => {
     const item = drawn.includes(id) ? undefined : items.find((one) => one.priority.id === id);
     if (item === undefined) return [];
-    const mine = kept(id, attribute, item.priority[attribute]);
-    return mine.length === 0 ? [] : [{ attribute, item, mine }];
+    const mine = keptDescription(id, item.priority.description);
+    return mine.length === 0 ? [] : [{ item, mine }];
   });
   const facets = useMemo(
     () =>
@@ -240,16 +219,15 @@ export function PrioritiesTable({
         >
           <NewPriority />
         </TableToolbar>
-        {undrawn.map(({ attribute, item, mine }) => (
+        {undrawn.map(({ item, mine }) => (
           <ChangedMeanwhile
-            key={`${attribute}:${item.priority.id}`}
-            label={`${attribute === "title" ? "Title" : "Description"} of ${item.order}`}
+            key={item.priority.id}
+            label={`Description of ${item.order}`}
             mine={mine}
-            onKeepTheirs={() => keep(item.priority.id, attribute, NOTHING_KEPT)}
+            onKeepTheirs={() => keepDescription(item.priority.id, NOTHING_KEPT)}
             onUse={(text) => {
-              keep(item.priority.id, attribute, NOTHING_KEPT);
-              if (attribute === "title") onRename(item, text);
-              else onDescribe(item, text);
+              keepDescription(item.priority.id, NOTHING_KEPT);
+              onDescribe(item, text);
             }}
           />
         ))}
@@ -309,19 +287,6 @@ export function PrioritiesTable({
           scrollTestId="priorities-table-scroll"
         />
       </PriorityRowActionsContext.Provider>
-
-      {open === undefined ? null : (
-        <section aria-label={`Work advancing ${open.priority.title}`} className="space-y-2">
-          <h3 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>
-            Work advancing {open.order} {open.priority.title}
-          </h3>
-          <IssuesTable
-            listing={{ advances: open.priority.id }}
-            priorityTitles={titles}
-            stateKey={WORK_PREFIX}
-          />
-        </section>
-      )}
     </section>
   );
 }

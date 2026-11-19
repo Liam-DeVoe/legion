@@ -102,7 +102,7 @@ export function PriorityDescription({
    *  them. */
   kept?: readonly string[];
   /** What the description is called, which names the priority it belongs to: "Description of
-   *  P3". The editor carries it as its accessible name. */
+   *  #3". The editor carries it as its accessible name. */
   label: string;
   onKeptChange?: (kept: readonly string[]) => void;
   onSave: (next: string) => void;

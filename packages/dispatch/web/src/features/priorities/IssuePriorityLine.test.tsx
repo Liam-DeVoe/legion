@@ -38,7 +38,7 @@ function priority(id: string, title: string): PriorityRow {
   };
 }
 
-/** The read's answer, in rank order: the line's order ("P2") is a row's place in this list. */
+/** The read's answer, in rank order: the line's order ("#2") is a row's place in this list. */
 const body: Priorities = {
   priorities: [
     priority("evals-now", "Evals collecting data now"),
@@ -110,7 +110,7 @@ test("the line names the priority an issue advances, by its order and title, and
   const view = renderLine([{ id: "rocq-lean", inherited: false }]);
   try {
     const link = await view.q.findByRole("link", {
-      name: "P2 Rocq and Lean speed work restarted",
+      name: "#2 Rocq and Lean speed work restarted",
     });
     expect(link).toHaveAttribute("href", "/priorities/rocq-lean");
     expect(view.q.getByTestId("issue-advances")).toHaveTextContent("Advances");
@@ -119,7 +119,7 @@ test("the line names the priority an issue advances, by its order and title, and
     await user.click(view.trigger());
     const listbox = await view.picker();
     expect(
-      within(listbox).getByRole("option", { name: "P2 Rocq and Lean speed work restarted" })
+      within(listbox).getByRole("option", { name: "#2 Rocq and Lean speed work restarted" })
     ).toHaveAttribute("aria-selected", "true");
   } finally {
     view.unmountAll();
@@ -130,15 +130,15 @@ test("a priority an issue inherits says so on the same line, and is not the chil
   const user = userEvent.setup();
   const view = renderLine([{ id: "oss-verify", inherited: true }]);
   try {
-    const link = await view.q.findByRole("link", { name: "P3 OSS Verify: curl, TLS and Rustls" });
+    const link = await view.q.findByRole("link", { name: "#3 OSS Verify: curl, TLS and Rustls" });
     expect(link).toHaveAttribute("href", "/priorities/oss-verify");
     view.q.getByText("inherited");
     // The picker offers no row for it: that relation is the ancestor's, and a row is a toggle.
     await user.click(view.trigger());
     const listbox = await view.picker();
     expect(offered(listbox)).toEqual([
-      ["P1 Evals collecting data now", "false"],
-      ["P2 Rocq and Lean speed work restarted", "false"],
+      ["#1 Evals collecting data now", "false"],
+      ["#2 Rocq and Lean speed work restarted", "false"],
     ]);
     await user.keyboard("{Escape}");
     expect(view.patchIssue).not.toHaveBeenCalled();
@@ -172,13 +172,13 @@ test("the picker adds a priority, writing the issue's own set as advances when i
     // Every live priority in rank order, the one the issue advances already ticked.
     await waitFor(() =>
       expect(offered(listbox)).toEqual([
-        ["P1 Evals collecting data now", "true"],
-        ["P2 Rocq and Lean speed work restarted", "false"],
-        ["P3 OSS Verify: curl, TLS and Rustls", "false"],
+        ["#1 Evals collecting data now", "true"],
+        ["#2 Rocq and Lean speed work restarted", "false"],
+        ["#3 OSS Verify: curl, TLS and Rustls", "false"],
       ])
     );
     await user.click(
-      within(listbox).getByRole("option", { name: "P2 Rocq and Lean speed work restarted" })
+      within(listbox).getByRole("option", { name: "#2 Rocq and Lean speed work restarted" })
     );
     // A tick is a draft: the write is the close's, once.
     expect(view.patchIssue).not.toHaveBeenCalled();
@@ -203,14 +203,14 @@ test("a remove writes the issue's own set without that priority, and leaves an i
     { id: "oss-verify", inherited: true },
   ]);
   try {
-    await view.q.findByRole("link", { name: "P1 Evals collecting data now" });
+    await view.q.findByRole("link", { name: "#1 Evals collecting data now" });
     await user.click(view.trigger());
     const listbox = await view.picker();
     expect(offered(listbox)).toEqual([
-      ["P1 Evals collecting data now", "true"],
-      ["P2 Rocq and Lean speed work restarted", "true"],
+      ["#1 Evals collecting data now", "true"],
+      ["#2 Rocq and Lean speed work restarted", "true"],
     ]);
-    await user.click(within(listbox).getByRole("option", { name: "P1 Evals collecting data now" }));
+    await user.click(within(listbox).getByRole("option", { name: "#1 Evals collecting data now" }));
     await user.keyboard("{Escape}");
     await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
     expect(view.patchIssue).toHaveBeenCalledWith(
@@ -230,7 +230,7 @@ test("a close that leaves the set as it was writes nothing", async () => {
     await user.click(view.trigger());
     const listbox = await view.picker();
     const first = await within(listbox).findByRole("option", {
-      name: "P1 Evals collecting data now",
+      name: "#1 Evals collecting data now",
     });
     await user.click(first);
     await user.click(first);
@@ -259,7 +259,7 @@ test("a remove carries the revision it was read at, and a stale one's refusal is
     await user.click(view.trigger());
     const listbox = await view.picker();
     await user.click(
-      await within(listbox).findByRole("option", { name: "P1 Evals collecting data now" })
+      await within(listbox).findByRole("option", { name: "#1 Evals collecting data now" })
     );
     await user.click(view.trigger());
     await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
@@ -289,7 +289,7 @@ test("a close writes the revision the draft was drawn from, though the issue was
     await user.click(view.trigger());
     const listbox = await view.picker();
     await user.click(
-      await within(listbox).findByRole("option", { name: "P2 Rocq and Lean speed work restarted" })
+      await within(listbox).findByRole("option", { name: "#2 Rocq and Lean speed work restarted" })
     );
     view.reread([{ id: "oss-verify", inherited: false }], 57);
     await user.click(view.trigger());
@@ -320,7 +320,7 @@ test("a tick past the most priorities an issue advances is refused in the picker
   try {
     await user.click(view.trigger());
     const listbox = await view.picker();
-    const last = `P${MAX_ISSUE_ADVANCES + 1} Priority ${MAX_ISSUE_ADVANCES + 1}`;
+    const last = `#${MAX_ISSUE_ADVANCES + 1} Priority ${MAX_ISSUE_ADVANCES + 1}`;
     await user.click(await within(listbox).findByRole("option", { name: last }));
     expect(within(listbox).getByRole("option", { name: last })).toHaveAttribute(
       "aria-selected",
@@ -337,7 +337,7 @@ test("a tick past the most priorities an issue advances is refused in the picker
 test("a closed issue reads its priorities and writes none of them", async () => {
   const view = renderLine([{ id: "rocq-lean", inherited: false }], true);
   try {
-    await view.q.findByRole("link", { name: "P2 Rocq and Lean speed work restarted" });
+    await view.q.findByRole("link", { name: "#2 Rocq and Lean speed work restarted" });
     expect(view.trigger()).toBeDisabled();
   } finally {
     view.unmountAll();

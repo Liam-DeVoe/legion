@@ -1,16 +1,25 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  createEvent,
+  // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
 import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
 import { api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
+import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
 import { PrioritiesPage } from "./PrioritiesPage";
 
@@ -127,9 +136,19 @@ function answerListing(issues: readonly IssueSummary[]) {
       );
 }
 
-/** The page as a signed-in person sees it, with the reads it makes answered from `answer`; a
- *  reader who is not a person, and so may not write a priority, where `writer` is false. */
-function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
+/** The address the page is at, and how it got there: a tab writes with replace, and a row the
+ *  keyboard opens pushes. */
+function Address() {
+  const location = useLocation();
+  return (
+    <output data-testid="address">{`${useNavigationType()} ${location.pathname}${location.search}`}</output>
+  );
+}
+
+/** The page as a signed-in person sees it at `at`, with the reads it makes answered from
+ *  `answer`; a reader who is not a person, and so may not write a priority, where `writer` is
+ *  false. */
+function page(answer: Priorities, issues: IssueSummary[] = [], writer = true, at = "/priorities") {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
@@ -156,10 +175,13 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   // An open row's description is drawn in the documents' own editor, which a test edits through.
   const editors = recordedEditors();
   const view = render(
-    <MemoryRouter initialEntries={["/priorities"]}>
+    <MemoryRouter initialEntries={[at]}>
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={editors.runtime}>
-          <PrioritiesPage />
+          <KeymapProvider>
+            <PrioritiesPage />
+            <Address />
+          </KeymapProvider>
         </DocumentRuntime.Provider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -215,7 +237,23 @@ const FIFTEEN = body({
   ],
 });
 
-test("the page draws the priorities table above both fault lists", async () => {
+/** The columns each fault list opens with, by the names its Columns control gives them
+ *  (INFRA-2947, R6): the issue, its title, its status, who holds it, how long it has stood and
+ *  its project. The rest of the Issues table's columns open hidden. */
+const R6_COLUMNS = ["Key", "Title", "Status", "Claimed by", "Updated", "Project"];
+const OTHER_COLUMNS = [
+  "Priority",
+  "Queue",
+  "Epic",
+  "Assignee",
+  "Created by",
+  "Labels",
+  "Open asks",
+  "Created",
+];
+
+test("the page opens on the priorities, and each fault is a tab of its own the address keeps", async () => {
+  const user = userEvent.setup();
   page(
     body({
       ...FIFTEEN,
@@ -224,55 +262,89 @@ test("the page draws the priorities table above both fault lists", async () => {
     }),
     [issue("CORE-1"), issue("CORE-9", ["linkage-closure"], { status: "backlog" })]
   );
-  const priorities = await screen.findByRole("table", { name: "Priorities table" });
-  const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
-  });
-  const parked = await screen.findByRole("table", {
-    name: "Priority issues in backlog or icebox table",
-  });
-  const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
-  expect(headings).toEqual([
+  await screen.findByRole("table", { name: "Priorities table" });
+  // The heading alone heads the page: no line under it, and no heading over any table.
+  expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
     "Priorities",
-    "In flight under no priority",
-    "Priority work in backlog or icebox",
   ]);
-  // The priorities come first, which is what the page's own name says it is about.
-  expect(priorities.compareDocumentPosition(faults) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
-    Node.DOCUMENT_POSITION_FOLLOWING
+  expect(screen.queryByText(/read now|their owner drags/)).toBeNull();
+  // Three tabs, each reading its name and its one count, the priorities chosen while the
+  // address names none.
+  const tabs = screen.getAllByRole("tab");
+  expect(tabs.map((tab) => tab.getAttribute("aria-label"))).toEqual([
+    "Priorities 3",
+    "Active under no priority 1",
+    "Parked priority work 1",
+  ]);
+  expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["true", "false", "false"]);
+  // Only the chosen tab draws its table, so that table is the last thing on the page.
+  expect(screen.getAllByRole("table").map((table) => table.getAttribute("aria-label"))).toEqual([
+    "Priorities table",
+  ]);
+
+  // A fault's tab draws the table of its own rows and no other's, with no line of description
+  // and no counts between the tab and it. The address names the tab, in place of the last.
+  await user.click(screen.getByRole("tab", { name: "Active under no priority 1" }));
+  const faults = await screen.findByRole("table", {
+    name: "Active under no priority table",
+  });
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=none");
+  expect(screen.queryByRole("table", { name: "Priorities table" })).toBeNull();
+  // The tab's panel holds the Issues table alone, under the tab's own name.
+  expect(within(screen.getByRole("tabpanel")).getByRole("region")).toHaveAccessibleName(
+    "Active under no priority"
   );
-  expect(faults.compareDocumentPosition(parked) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
-    Node.DOCUMENT_POSITION_FOLLOWING
-  );
-  // Each fault stands under its rule in plain words, with its count and where it falls.
-  expect(screen.getByText(/advances no priority, its own or one it inherits/)).toBeDefined();
-  expect(screen.getByText(/stands in the backlog or the icebox/)).toBeDefined();
-  expect(screen.getByText(/1 issue · CORE 1/)).toBeDefined();
-  expect(screen.getByText(/1 issue · Linkage closure eval 1/)).toBeDefined();
-  // Each list holds its own fault's rows and no other's.
+  expect(screen.queryByText(/advance no priority|\d+ issues? ·/)).toBeNull();
   expect(await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(within(faults).queryByRole("row", { name: "CORE-9 Work CORE-9" })).toBeNull();
+
+  await user.click(screen.getByRole("tab", { name: "Parked priority work 1" }));
+  const parked = await screen.findByRole("table", { name: "Parked priority work table" });
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=parked");
+  expect(screen.getAllByRole("table")).toEqual([parked]);
+  expect(screen.queryByText(/backlog or the icebox|\d+ issues? ·/)).toBeNull();
   expect(await within(parked).findByRole("row", { name: "CORE-9 Work CORE-9" })).toBeDefined();
   expect(within(parked).queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+
+  await user.click(screen.getByRole("tab", { name: "Priorities 3" }));
+  expect(await screen.findByRole("table", { name: "Priorities table" })).toBeDefined();
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=order");
+});
+
+test("an address naming a fault's tab opens on it", async () => {
+  page(
+    FIFTEEN,
+    [issue("CORE-9", ["linkage-closure"], { status: "backlog" })],
+    true,
+    "/priorities?tab=parked"
+  );
+  expect(await screen.findByRole("table", { name: "Parked priority work table" })).toBeDefined();
+  expect(screen.getByRole("tab", { name: "Parked priority work 0" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(screen.queryByRole("table", { name: "Priorities table" })).toBeNull();
 });
 
 test("each fault table asks the issue listing for its statuses, and the parked one for the move", async () => {
   const user = userEvent.setup();
-  const { listing } = page(FIFTEEN, [
-    issue("CORE-1"),
-    issue("OPS-12", [], { status: "needs_review" }),
-    issue("CORE-9", ["linkage-closure"], {
-      status: "backlog",
-      moved_at: "2026-11-09T12:00:00Z",
-      moved_by: { kind: "user", id: "bob" },
-    }),
-    issue("OPS-4", ["legion-first", "oss-verify"], { status: "icebox" }),
-  ]);
+  const { listing } = page(
+    FIFTEEN,
+    [
+      issue("CORE-1"),
+      issue("OPS-12", [], { status: "needs_review" }),
+      issue("CORE-9", ["linkage-closure"], {
+        status: "backlog",
+        moved_at: "2026-11-09T12:00:00Z",
+        moved_by: { kind: "user", id: "bob" },
+      }),
+      issue("OPS-4", ["legion-first", "oss-verify"], { status: "icebox" }),
+    ],
+    true,
+    "/priorities?tab=none"
+  );
   const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
-  });
-  const parked = await screen.findByRole("table", {
-    name: "Priority issues in backlog or icebox table",
+    name: "Active under no priority table",
   });
   // The narrowing is the server's: the no-priority list names the statuses work is done in, and
   // the parked list backlog and icebox with the move into them. Neither reads a closed issue.
@@ -281,19 +353,6 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     status: ["in_progress", "testing", "needs_review", "retro"],
     open: true,
   });
-  expect(listing).toHaveBeenCalledWith({
-    advances: ["any"],
-    status: ["backlog", "icebox"],
-    moved: true,
-    open: true,
-  });
-  // A fault read names its statuses every time it is made: no read of every closed issue goes
-  // out beside it.
-  const faultReads = listing.mock.calls.filter(([options]) =>
-    ["none", "any"].includes(options?.advances?.[0] ?? "")
-  );
-  expect(faultReads.length).toBeGreaterThan(0);
-  expect(faultReads.every(([options]) => options?.status !== undefined)).toBe(true);
 
   const cellsOf = async (table: HTMLElement, name: string) => {
     const headers = within(table)
@@ -324,9 +383,51 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   expect(faultHeaders.some((text) => text.startsWith("Moved there"))).toBe(false);
   expect(faultHeaders.some((text) => text.startsWith("Reason"))).toBe(false);
 
+  // The list under no priority opens with R6's columns alone, offers every other column of the
+  // Issues table unticked, and does not offer the parked columns at all.
+  await user.click(
+    within(screen.getByRole("region", { name: "Active under no priority" })).getByRole("button", {
+      name: "Columns",
+    })
+  );
+  const menu = screen.getByRole("dialog", { name: "Columns" });
+  for (const name of R6_COLUMNS) expect(within(menu).getByRole("checkbox", { name })).toBeChecked();
+  for (const name of OTHER_COLUMNS)
+    expect(within(menu).getByRole("checkbox", { name })).not.toBeChecked();
+  for (const name of ["Advances", "Moved there", "Reason"])
+    expect(within(menu).queryByRole("checkbox", { name })).toBeNull();
+  await user.keyboard("{Escape}");
+
+  await user.click(screen.getByRole("tab", { name: "Parked priority work 0" }));
+  const parked = await screen.findByRole("table", {
+    name: "Parked priority work table",
+  });
+  // The parked list opens with those, the priority each issue is parked under, and the move.
+  await user.click(
+    within(screen.getByRole("region", { name: "Parked priority work" })).getByRole("button", {
+      name: "Columns",
+    })
+  );
+  const parkedMenu = screen.getByRole("dialog", { name: "Columns" });
+  for (const name of [...R6_COLUMNS, "Advances", "Moved there"])
+    expect(within(parkedMenu).getByRole("checkbox", { name })).toBeChecked();
+  // No reason is recorded for a move until dispatch://INFRA-2934, so the list offers no Reason.
+  expect(within(parkedMenu).queryByRole("checkbox", { name: "Reason" })).toBeNull();
+  for (const name of OTHER_COLUMNS)
+    expect(within(parkedMenu).getByRole("checkbox", { name })).not.toBeChecked();
+  await user.keyboard("{Escape}");
+  // The parked read asks for the work whose own row names a priority, as the parked count does.
+  expect(listing).toHaveBeenCalledWith({
+    advances: ["any"],
+    own: true,
+    status: ["backlog", "icebox"],
+    moved: true,
+    open: true,
+  });
+
   // The parked list names the project, each priority advanced by its title, linking to it, and
-  // when the work was moved there and by whom. A row answered with no move draws an empty Moved
-  // there cell: absent is absent, and that cell does not say a record is missing.
+  // when the work was moved there and by whom. A row answered with no move draws an
+  // empty Moved there cell: absent is absent, and that cell does not say a record is missing.
   const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
   expect(moved("Project").textContent).toBe("CORE");
   expect(within(moved("Updated")).getByRole("time").getAttribute("datetime")).toBe(
@@ -349,26 +450,14 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   ).toEqual(["Legion works reliably first", "OSS Verify"]);
   expect(unrecorded("Moved there").textContent).toBe("");
   expect(within(unrecorded("Moved there")).queryByRole("time")).toBeNull();
-  // Why it was moved there: nothing records that yet, so every row says so, naming the work that
-  // records one as a link to it (R6).
-  for (const reason of [moved("Reason"), unrecorded("Reason")]) {
-    expect(reason.textContent).toBe("Not recorded until INFRA-2934");
-    expect(within(reason).getByRole("link", { name: "INFRA-2934" }).getAttribute("href")).toBe(
-      "/issues/INFRA-2934"
-    );
-  }
 
-  // Nor does the list under no priority offer the parked columns among those a reader may show.
-  await user.click(
-    within(screen.getByRole("region", { name: "In flight under no priority" })).getByRole(
-      "button",
-      { name: "Columns" }
-    )
+  // A fault read names its statuses every time it is made: no read of every closed issue goes
+  // out beside it.
+  const faultReads = listing.mock.calls.filter(([options]) =>
+    ["none", "any"].includes(options?.advances?.[0] ?? "")
   );
-  const menu = screen.getByRole("dialog", { name: "Columns" });
-  expect(within(menu).getByRole("checkbox", { name: "Project" })).toBeChecked();
-  for (const name of ["Advances", "Moved there", "Reason"])
-    expect(within(menu).queryByRole("checkbox", { name })).toBeNull();
+  expect(faultReads.length).toBeGreaterThan(0);
+  expect(faultReads.every(([options]) => options?.status !== undefined)).toBe(true);
 });
 
 test("with no priority the page says so, and offers a writer the way to add the first", async () => {
@@ -389,59 +478,82 @@ test("with no priority a reader who may not write one is shown only the sentence
   expect(screen.queryByRole("button", { name: "New priority" })).toBeNull();
 });
 
-test("a row counts the work in flight, waiting, parked and closed in the last 7 days", async () => {
+test("a row counts the work in flight, waiting and parked, shows its newest event, and what closed when asked", async () => {
+  const user = userEvent.setup();
   page(FIFTEEN);
-  const row = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  const cells = within(row)
-    .getAllByRole("cell")
-    .map((cell) => cell.textContent);
-  // In flight is in_progress, testing, needs_review and retro; waiting is todo and triage; the
-  // third count is backlog and icebox; the fourth is what the read says closed in 7 days.
-  expect(cells.slice(3, 7)).toEqual(["7", "12", "0", "22"]);
-  // The newest event is read as a time, whose words follow the clock.
-  expect(within(row).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
-  const second = screen.getByRole("row", { name: "P2 Linkage closure eval" });
-  expect(
-    within(second)
+  const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  const texts = (of: HTMLElement) =>
+    within(of)
       .getAllByRole("cell")
-      .map((cell) => cell.textContent)
-      .slice(3)
-  ).toEqual(["1", "0", "3", "2", "Never"]);
+      .map((cell) => cell.textContent);
+  // In flight is in_progress, testing, needs_review and retro; waiting is todo and triage; the
+  // third count is backlog and icebox. The newest event is read as a time, whose words follow
+  // the clock. What closed in 7 days opens hidden.
+  expect(
+    screen.getAllByRole("columnheader").map((header) => header.textContent?.replace("Filter", ""))
+  ).toEqual([
+    "#▲",
+    "Priority",
+    "Owner",
+    "Active",
+    "Triage, Todo",
+    "Backlog, icebox",
+    "Newest event",
+  ]);
+  expect(texts(row).slice(3, 6)).toEqual(["7", "12", "0"]);
+  expect(within(row).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
+
+  // Shown under Columns, the fourth count is what the read says closed in 7 days.
+  await user.click(
+    within(screen.getByRole("region", { name: "Priorities" })).getByRole("button", {
+      name: "Columns",
+    })
+  );
+  const menu = screen.getByRole("dialog", { name: "Columns" });
+  expect(within(menu).getByRole("checkbox", { name: "Newest event" })).toBeChecked();
+  await user.click(within(menu).getByRole("checkbox", { name: "Closed, 7 days" }));
+  expect(texts(row).slice(3, 7)).toEqual(["7", "12", "0", "22"]);
+  const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
+  expect(texts(second).slice(3)).toEqual(["1", "0", "3", "2", "Never"]);
 });
 
 test("the first line of a description shows on a closed row and the whole of it when it opens", async () => {
   const user = userEvent.setup();
   const { editors } = page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("CORE-2")]);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   expect(screen.getByText("The first line.")).toBeDefined();
-  await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
+  await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
   // Open, the row holds the whole description in the documents' editor, its line break read as
   // the space a paragraph's soft break is.
-  const { box } = await editors.named("Description of P1");
+  const { box } = await editors.named("Description of #1");
   expect(box.classList.contains("ProseMirror")).toBe(true);
   expect(box.textContent).toBe(
     "The first line. The rest of it, which the row shows when it is open."
   );
 });
 
-test("opening a row lists the work advancing that priority, over every project", async () => {
+test("opening a row shows its description and no work: the work is on the priority's own page", async () => {
   const user = userEvent.setup();
-  const { listing } = page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("OPS-3")]);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
-  const work = await screen.findByRole("region", {
-    name: "Work advancing Legion works reliably first",
-  });
-  expect(await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
-  expect(within(work).queryByRole("row", { name: "OPS-3 Work OPS-3" })).toBeNull();
-  // The narrowing is the server's, and it names no project: a priority belongs to none.
-  expect(listing).toHaveBeenCalledWith({ advances: ["legion-first"], open: true });
+  const { editors, listing } = page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("OPS-3")]);
+  const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
+  await editors.named("Description of #1");
+  // The tab draws one table, whatever is open, and reads no work for it: the way to the work is
+  // the title, a link to the priority's own page.
+  expect(screen.getAllByRole("table").map((table) => table.getAttribute("aria-label"))).toEqual([
+    "Priorities table",
+  ]);
+  expect(screen.queryByRole("region", { name: /^Work advancing/ })).toBeNull();
+  expect(listing).not.toHaveBeenCalledWith({ advances: ["legion-first"], open: true });
+  expect(
+    within(row).getByRole("link", { name: "Legion works reliably first" }).getAttribute("href")
+  ).toBe("/priorities/legion-first");
 });
 
 test("a person who may write adds a priority", async () => {
   const user = userEvent.setup();
   const { create } = page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   await user.click(screen.getByRole("button", { name: "New priority" }));
   await user.type(
     screen.getByRole("textbox", { name: "Title of the new priority" }),
@@ -458,7 +570,7 @@ test("a person who may write adds a priority", async () => {
 test("the New priority title holds no more than an issue title may, so no longer title is sent", async () => {
   const user = userEvent.setup();
   const { create } = page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   await user.click(screen.getByRole("button", { name: "New priority" }));
   const title = screen.getByRole("textbox", {
     name: "Title of the new priority",
@@ -471,143 +583,68 @@ test("the New priority title holds no more than an issue title may, so no longer
   expect(create.mock.calls[0]?.[0]).toEqual({ title: "t".repeat(ISSUE_TITLE_MAX) });
 });
 
-test("a title is renamed where it is read, with no edit mode and no Save button", async () => {
-  const user = userEvent.setup();
-  const { patch } = page(FIFTEEN);
-  const field = await screen.findByRole("textbox", { name: "Title of P2" });
-  await user.clear(field);
-  await user.type(field, "Linkage closure, restarted");
-  await user.tab();
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
-    "linkage-closure",
-    // Named with the title the edit started from, which the server refuses the write over if
-    // another person has written meanwhile.
-    { expected: { title: "Linkage closure eval" }, title: "Linkage closure, restarted" },
-  ]);
-  expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
+test("a title is a link to the priority's own page, where it is renamed, and no field", async () => {
+  page(FIFTEEN);
+  const row = await screen.findByRole("row", { name: "#2 Linkage closure eval" });
+  expect(within(row).getByRole("link", { name: "Linkage closure eval" }).getAttribute("href")).toBe(
+    "/priorities/linkage-closure"
+  );
+  expect(within(row).queryByRole("textbox")).toBeNull();
+  expect(screen.getByRole("columnheader", { name: /^#/ })).toBeDefined();
+  // A long owner is cut to two lines in the row, and its whole text is the cell's tooltip.
+  expect(within(row).getByTitle("BET controller").className).toContain("line-clamp-2");
 });
 
-// A row's title is bounded as the priority's own page bounds it: Dispatch refuses a longer one.
-test("a row's title holds no more than an issue title may, so no longer title is sent", async () => {
+test("the reader's description kept beside a row outlives the row leaving the table, and is written when they use it", async () => {
   const user = userEvent.setup();
-  const { patch } = page(FIFTEEN);
-  const field = (await screen.findByRole("textbox", { name: "Title of P2" })) as HTMLInputElement;
-  expect(field.maxLength).toBe(ISSUE_TITLE_MAX);
-  await user.clear(field);
-  await user.paste("t".repeat(ISSUE_TITLE_MAX + 1));
-  await user.tab();
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
-    "linkage-closure",
-    { expected: { title: "Linkage closure eval" }, title: "t".repeat(ISSUE_TITLE_MAX) },
-  ]);
-});
-
-test("the reader's title kept beside a row outlives the row leaving the table, and is written when they use it", async () => {
-  const user = userEvent.setup();
-  const { patch, writtenElsewhere } = page(FIFTEEN);
-  const field = await screen.findByRole("textbox", { name: "Title of P2" });
-  await user.type(field, ", mine");
-  // Another person's rename reaches the page before the typing rests.
-  writtenElsewhere("linkage-closure", { title: "Linkage closure, theirs" });
+  const { editors, patch, writtenElsewhere } = page(FIFTEEN);
+  await screen.findByRole("row", { name: "#2 Linkage closure eval" });
+  await user.click(screen.getByRole("button", { name: "Open #2 Linkage closure eval" }));
+  const { handle } = await editors.named("Description of #2");
+  handle.view.focus();
+  writeAtEnd(handle, "Mine.");
+  // Another person's description reaches the page before the typing rests.
+  writtenElsewhere("linkage-closure", { description: "Written elsewhere." });
   const notice = () =>
-    screen.queryByRole("alert", { name: "Title of P2, changed by another person" });
+    screen.queryByRole("alert", { name: "Description of #2, changed by another person" });
   expect(notice()).not.toBeNull();
   // A search the row does not match takes it off the table. No row draws the reader's text then,
   // so it stands above the table; cleared, the row is drawn again, with the text beside it.
   const search = screen.getByRole("searchbox", { name: "Search priorities" });
   await user.type(search, "OSS");
-  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title of P2" })).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByRole("row", { name: "#2 Linkage closure eval" })).toBeNull()
+  );
   expect(notice()).not.toBeNull();
   await user.clear(search);
-  await screen.findByRole("textbox", { name: "Title of P2" });
+  await editors.named("Description of #2");
   const kept = notice();
-  if (kept === null) throw new Error("no notice beside the title drawn again");
-  expect(within(kept).getByText("Linkage closure eval, mine")).toBeDefined();
+  if (kept === null) throw new Error("no notice beside the description drawn again");
+  expect(within(kept).getByText(/Mine\./)).toBeDefined();
+  expect(patch).not.toHaveBeenCalled();
   await user.click(within(kept).getByRole("button", { name: "Use my text" }));
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
     "linkage-closure",
-    { expected: { title: "Linkage closure, theirs" }, title: "Linkage closure eval, mine" },
+    { description: "Mine.\n", expected: { description: "Written elsewhere." } },
   ]);
 });
 
-/** The read of FIFTEEN once another person has renamed P2. */
-const RENAMED = body({
-  priorities: (FIFTEEN.priorities ?? []).map((row) =>
-    row.id === "linkage-closure" ? { ...row, title: "Linkage closure, theirs" } : row
-  ),
-});
-
-// A rename of a row the server refused because another person's title landed first is the
-// table's to settle with the reader: their text is kept beside the row's title once the table
-// has read the other person's, the store holds the write for it, and nothing stands for it on
-// the shell's line. Should that title take the row out of the view - here, out of the search -
-// the text is not lost with the row: it stands above the table, and its Use my text writes it
-// over the title the page now reads, and lets the refused write go.
-test("a title another person's change refused is kept beside its row, and above the table once the row leaves the view", async () => {
-  const user = userEvent.setup();
-  const { client, patch, priorities } = page(FIFTEEN);
-  const field = await screen.findByRole("textbox", { name: "Title of P2" });
-  priorities.mockResolvedValue(RENAMED);
-  patch.mockRejectedValueOnce(PRIORITY_TITLE_CHANGED);
-  await user.type(field, ", mine");
-  await user.tab();
-  const notice = () =>
-    screen.queryByRole("alert", { name: "Title of P2, changed by another person" });
-  await waitFor(() => expect(notice()).not.toBeNull());
-  expect(field).toHaveValue("Linkage closure, theirs");
-  expect(writesOf(client).rows()).toMatchObject([{ claimed: true, status: "refused" }]);
-  await user.type(screen.getByRole("searchbox", { name: "Search priorities" }), "OSS");
-  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title of P2" })).toBeNull());
-  const above = notice();
-  if (above === null) throw new Error("no notice for the row the search left out");
-  expect(within(above).getByText("Linkage closure eval, mine")).toBeDefined();
-  await user.click(within(above).getByRole("button", { name: "Use my text" }));
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
-  expect(patch.mock.calls[1]?.slice(0, 2)).toEqual([
-    "linkage-closure",
-    { expected: { title: "Linkage closure, theirs" }, title: "Linkage closure eval, mine" },
-  ]);
-  expect(notice()).toBeNull();
-  await waitFor(() =>
-    expect(
-      writesOf(client)
-        .rows()
-        .filter((row) => row.status === "refused")
-    ).toEqual([])
-  );
-});
-
-// The table settles only the conflicts of the rows it draws: a refusal of a row a search leaves
-// out stays on the shell's line, where the reader's text is offered to copy, rather than being
-// kept beside a row nobody sees. The row drawn again takes it.
-test("a refusal of a row the table does not draw stays on the shell's line, and the row drawn again takes it", async () => {
-  const user = userEvent.setup();
-  const { client } = page(FIFTEEN);
-  await screen.findByRole("textbox", { name: "Title of P2" });
-  const search = screen.getByRole("searchbox", { name: "Search priorities" });
-  await user.type(search, "OSS");
-  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title of P2" })).toBeNull());
-  // A rename of P2 a reload took up, refused because another person renamed it first.
-  const input = {
-    expected: { title: "Linkage closure eval" },
-    title: "Linkage closure eval, mine",
-  };
+/** Keeps in the tab, for a reload to take up, a write of `#2`'s `attribute` as `text` that
+ *  Dispatch refused, another person having written over `expected` first. */
+function keepRefused(key: string, attribute: "description" | "title", text: string, expected = "") {
+  const input =
+    attribute === "title"
+      ? { expected: { title: expected }, title: text }
+      : { description: text, expected: { description: expected } };
   sessionStorage.setItem(
-    "dispatch.write:resumed-rename",
+    `dispatch.write:${key}`,
     JSON.stringify({
       carried: "PATCH",
-      detail: {
-        attribute: "title",
-        expected: input.expected.title,
-        id: "linkage-closure",
-        text: input.title,
-      },
-      key: "resumed-rename",
+      detail: { attribute, expected, id: "linkage-closure", text },
+      key,
       kind: "priority-text",
-      label: "Rename the priority “Linkage closure eval”",
+      label: `${attribute === "title" ? "Rename" : "Description of"} the priority “Linkage closure eval”`,
       login: "alice",
       presentation: "indicator",
       pressedAt: Date.now(),
@@ -617,7 +654,10 @@ test("a refusal of a row the table does not draw stays on the shell's line, and 
         refusal: {
           code: "PRIORITY_CHANGED",
           kind: "api",
-          message: PRIORITY_TITLE_CHANGED.message,
+          message:
+            attribute === "title"
+              ? PRIORITY_TITLE_CHANGED.message
+              : "the description was written meanwhile",
           status: 409,
         },
         status: "refused",
@@ -626,28 +666,49 @@ test("a refusal of a row the table does not draw stays on the shell's line, and 
       version: 1,
     })
   );
+}
+
+// The table settles only the refused descriptions of the rows it draws: one of a row a search
+// leaves out stays on the shell's line, where the reader's text is offered to copy, rather than
+// being kept beside a row nobody sees, and the row drawn again takes it. A row draws no field
+// for its title, so a refused title stays on the shell's line, its row drawn or not, until the
+// priority's own page takes it.
+test("a refused description of a row the table does not draw stays on the shell's line, the row drawn again takes it, and a refused title stays there", async () => {
+  const user = userEvent.setup();
+  const { client } = page(FIFTEEN);
+  await screen.findByRole("row", { name: "#2 Linkage closure eval" });
+  const search = screen.getByRole("searchbox", { name: "Search priorities" });
+  await user.type(search, "OSS");
+  await waitFor(() =>
+    expect(screen.queryByRole("row", { name: "#2 Linkage closure eval" })).toBeNull()
+  );
+  keepRefused("resumed-description", "description", "Mine.");
+  keepRefused("resumed-rename", "title", "Linkage closure eval, mine", "Linkage closure eval");
   const writes = writesOf(client);
   act(() => writes.resume("alice"));
-  expect(writes.rows()).toMatchObject([{ kind: "priority-text", status: "refused" }]);
+  const row = (key: string) => writes.rows().find((write) => write.key === key);
+  expect(row("resumed-description")).toMatchObject({ claimed: false, status: "refused" });
+  expect(row("resumed-rename")).toMatchObject({ claimed: false, status: "refused" });
   expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   await user.clear(search);
   await waitFor(() =>
-    expect(writes.rows()).toMatchObject([
-      { claimed: true, kind: "priority-text", status: "refused" },
-    ])
+    expect(row("resumed-description")).toMatchObject({ claimed: true, status: "refused" })
   );
+  // The row draws its description, closed as it is, with the reader's text beside it.
   const kept = await screen.findByRole("alert", {
-    name: "Title of P2, changed by another person",
+    name: "Description of #2, changed by another person",
   });
-  expect(within(kept).getByText("Linkage closure eval, mine")).toBeDefined();
+  expect(within(kept).getByText("Mine.")).toBeDefined();
+  expect(row("resumed-rename")).toMatchObject({ claimed: false, status: "refused" });
+  expect(screen.queryByRole("alert", { name: /^Title of/ })).toBeNull();
 });
 
 test("a description is written on the open row: the empty editor under the prompt that says none is", async () => {
   const user = userEvent.setup();
   const { editors, patch } = page(FIFTEEN);
-  await screen.findByRole("row", { name: "P3 OSS Verify" });
-  await user.click(screen.getByRole("button", { name: "Open P3 OSS Verify" }));
-  const { box, handle } = await editors.named("Description of P3");
+  await screen.findByRole("row", { name: "#3 OSS Verify" });
+  await user.click(screen.getByRole("button", { name: "Open #3 OSS Verify" }));
+  const { box, handle } = await editors.named("Description of #3");
   expect(screen.getByText("No description is written. Write one below.")).toBeDefined();
   expect(box.textContent).toBe("");
   handle.view.focus();
@@ -664,19 +725,29 @@ test("a description is written on the open row: the empty editor under the promp
 
 test("dragging a row onto another writes the place it landed", async () => {
   const { patch } = page(FIFTEEN);
-  const third = await screen.findByRole("row", { name: "P3 OSS Verify" });
-  const first = screen.getByRole("row", { name: "P1 Legion works reliably first" });
+  const third = await screen.findByRole("row", { name: "#3 OSS Verify" });
+  const first = screen.getByRole("row", { name: "#1 Legion works reliably first" });
+  const handle = within(third).getByRole("button", {
+    name: "Move #3 OSS Verify: drag it, or press the up and down arrows",
+  });
   // user-event has no form for a drag: it drives pointer events, and the order is moved by the
-  // HTML drag-and-drop events the handle listens for.
-  fireEvent.dragStart(
-    within(third).getByRole("button", {
-      name: "Move P3 OSS Verify: drag it, or press the up and down arrows",
-    })
-  );
-  // user-event has no form for a drag.
-  fireEvent.dragOver(first);
-  // user-event has no form for a drop.
-  fireEvent.drop(first);
+  // HTML drag-and-drop events the handle listens for. The drag carries the id it moves, since
+  // Firefox starts no drag that carries nothing, and says it is a move.
+  const setData = mock(() => {});
+  const start = createEvent.dragStart(handle, { dataTransfer: { setData } }) as DragEvent;
+  fireEvent(handle, start);
+  expect(setData).toHaveBeenCalledWith("text/plain", "oss-verify");
+  expect(start.dataTransfer?.effectAllowed).toBe("move");
+  // user-event has no form for a drag over a row either; the row it is over takes a move.
+  const over = createEvent.dragOver(first, { dataTransfer: {} }) as DragEvent;
+  fireEvent(first, over);
+  expect(over.dataTransfer?.dropEffect).toBe("move");
+  expect(over.defaultPrevented).toBe(true);
+  // user-event has no form for a drop, which the row takes for itself rather than letting the
+  // browser open the id it carries.
+  const drop = createEvent.drop(first, { dataTransfer: {} });
+  fireEvent(first, drop);
+  expect(drop.defaultPrevented).toBe(true);
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   // Dragged up, it lands above the row it was dropped on.
   expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
@@ -688,10 +759,10 @@ test("dragging a row onto another writes the place it landed", async () => {
 test("the keyboard moves a priority one place, as the drag does", async () => {
   const user = userEvent.setup();
   const { patch } = page(FIFTEEN);
-  const first = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  const first = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   within(first)
     .getByRole("button", {
-      name: "Move P1 Legion works reliably first: drag it, or press the up and down arrows",
+      name: "Move #1 Legion works reliably first: drag it, or press the up and down arrows",
     })
     .focus();
   await user.keyboard("{ArrowDown}");
@@ -702,20 +773,48 @@ test("the keyboard moves a priority one place, as the drag does", async () => {
   ]);
 });
 
+test("j, k, x and Enter act on the priorities, a row opened or not", async () => {
+  const user = userEvent.setup();
+  const { editors } = page(FIFTEEN, [issue("CORE-1", ["legion-first"])]);
+  const first = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  // An opened row adds no second table, so the keys stay the priorities table's.
+  await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
+  await editors.named("Description of #1");
+  const focused = () => document.activeElement?.getAttribute("aria-label");
+  first.focus();
+  await user.keyboard("j");
+  expect(focused()).toBe("#2 Linkage closure eval");
+  await user.keyboard("j");
+  expect(focused()).toBe("#3 OSS Verify");
+  await user.keyboard("k");
+  expect(focused()).toBe("#2 Linkage closure eval");
+  // `x` is the priorities table's too: the binding takes the key, and since a priority row has
+  // nothing to select, the focus stays where it is and nothing else moves.
+  const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
+  // user-event cannot say whether a key was taken; the event fireEvent dispatches can.
+  expect(fireEvent.keyDown(second, { code: "KeyX", key: "x" })).toBe(false);
+  expect(focused()).toBe("#2 Linkage closure eval");
+  expect(screen.queryAllByRole("checkbox")).toEqual([]);
+  expect(screen.getByTestId("address").textContent).toBe("POP /priorities");
+  // Enter on the focused row opens the priority's own page, as its title link does.
+  await user.keyboard("{Enter}");
+  expect(screen.getByTestId("address").textContent).toBe("PUSH /priorities/linkage-closure");
+});
+
 test("the table's own view is in the address under its prefix", async () => {
   const user = userEvent.setup();
   page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   await user.type(screen.getByRole("searchbox", { name: "Search priorities" }), "linkage");
   await waitFor(() =>
-    expect(screen.queryByRole("row", { name: "P1 Legion works reliably first" })).toBeNull()
+    expect(screen.queryByRole("row", { name: "#1 Legion works reliably first" })).toBeNull()
   );
-  expect(screen.getByRole("row", { name: "P2 Linkage closure eval" })).toBeDefined();
+  expect(screen.getByRole("row", { name: "#2 Linkage closure eval" })).toBeDefined();
 });
 
 test("the page carries no estimate, no forecast, no percentage and no written status", async () => {
   page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   const text = document.body.textContent ?? "";
   expect(/\d+%/.test(text)).toBe(false);
   expect(/estimate|forecast|on track|at risk/i.test(text)).toBe(false);
@@ -723,7 +822,7 @@ test("the page carries no estimate, no forecast, no percentage and no written st
 
 test("the priorities table counts its rows as priorities, as the agreed page reads", async () => {
   page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   // dispatch://INFRA-2947/artifact/priorities-round10-png reads "15 of 15 priorities" under the
   // table: a priority is no issue, and a reader counting the rows is told what they count.
   expect(screen.getByText("3 of 3 priorities")).toBeDefined();
@@ -731,15 +830,20 @@ test("the priorities table counts its rows as priorities, as the agreed page rea
 });
 
 test("a fault row tells no reader that an issue nobody claims is claimed", async () => {
-  page(FIFTEEN, [
-    issue("CORE-1", [], { assignee: "alice" }),
-    issue("CORE-2", [], {
-      assignee: "alice",
-      claim: { actor: { kind: "user", id: "bob" }, at: "2026-11-10T00:00:00Z" },
-    }),
-  ]);
+  page(
+    FIFTEEN,
+    [
+      issue("CORE-1", [], { assignee: "alice" }),
+      issue("CORE-2", [], {
+        assignee: "alice",
+        claim: { actor: { kind: "user", id: "bob" }, at: "2026-11-10T00:00:00Z" },
+      }),
+    ],
+    true,
+    "/priorities?tab=none"
+  );
   const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
+    name: "Active under no priority table",
   });
   await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" });
   const headers = within(faults)
@@ -769,10 +873,11 @@ test("a grouped table counts each group in the plural its rows are called by", a
     }),
     [issue("CORE-1"), issue("CORE-2")]
   );
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  // The grouping control of each table reads "Group by".
   const groupBy = (region: string) =>
     within(screen.getByRole("region", { name: region })).getByRole("combobox", {
-      name: /^Group by/,
+      name: "Group by",
     });
   // No rule makes a plural from a singular: adding "s" to "priority" wrote "2 prioritys", so each
   // table names both words, as its pager does. The priorities table's heading is the one group
@@ -781,9 +886,32 @@ test("a grouped table counts each group in the plural its rows are called by", a
   expect(
     await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
   ).toBeDefined();
+  await user.click(screen.getByRole("tab", { name: "Active under no priority 2" }));
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  await user.selectOptions(groupBy("In flight under no priority"), "status");
+  await user.selectOptions(groupBy("Active under no priority"), "status");
   expect(
     await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })
   ).toBeDefined();
+});
+
+test("no header of the priorities table is longer than 16 characters, whichever columns show", async () => {
+  const user = userEvent.setup();
+  page(FIFTEEN);
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  await user.click(
+    within(screen.getByRole("region", { name: "Priorities" })).getByRole("button", {
+      name: "Columns",
+    })
+  );
+  await user.click(screen.getByRole("checkbox", { name: "Closed, 7 days" }));
+  await user.keyboard("{Escape}");
+  const headers = screen
+    .getAllByRole("columnheader")
+    .map((header) => (header.textContent ?? "").replace(/Filter|[▲▼]/g, "").trim());
+  expect(headers).toContain("Closed, 7 days");
+  for (const header of headers)
+    expect({ header, long: header.length > 16 }).toEqual({
+      header,
+      long: false,
+    });
 });

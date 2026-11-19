@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { PriorityAct } from "../../api/types";
 import { PriorityMargin } from "./PriorityMargin";
@@ -77,10 +78,13 @@ afterEach(() => {
 function margin(acts: PriorityAct[] = HISTORY) {
   const history = spyOn(api, "getPriorityHistory").mockResolvedValue(acts);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // A session's name links to its conversation, so the margin stands inside a router.
   const view = render(
-    <QueryClientProvider client={client}>
-      <PriorityMargin id="rocq-lean" />
-    </QueryClientProvider>
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <PriorityMargin id="rocq-lean" />
+      </QueryClientProvider>
+    </MemoryRouter>
   );
   restores.push(() => {
     view.unmount();
@@ -186,5 +190,66 @@ test("the margin is the history alone: no control of states and no view that can
   for (const word of ["Words anyone wrote", "Questions", "Pinned"]) {
     expect(text).not.toContain(word);
   }
+  // Nor does it draw a pin control, or an entry for a document: the description is no document.
+  expect(within(aside).queryAllByRole("button", { name: /pin/i })).toEqual([]);
+  expect(within(aside).queryAllByRole("link", { name: /pin|document/i })).toEqual([]);
+  expect(/document/i.test(text)).toBe(false);
   expect(within(aside).getAllByRole("listitem")).toHaveLength(HISTORY.length);
+});
+
+// The page saves a field half a second after the typing rests, so one person writing a
+// description writes many acts. The history keeps each; the margin reads a run of them as one.
+test("consecutive writes of one field by one person read as one entry, at the newest", async () => {
+  const write = (at: string, field: string, actor = alice, value = "") => ({
+    actor,
+    asserted: true,
+    at,
+    field,
+    issue: "",
+    value,
+  });
+  margin([
+    write("2026-11-12T10:00:03Z", "description"),
+    write("2026-11-12T10:00:02Z", "description"),
+    write("2026-11-12T10:00:01Z", "description"),
+    // Another field between two runs breaks them.
+    write("2026-11-12T10:00:00Z", "title", alice, "Speedruns"),
+    write("2026-11-12T09:59:59Z", "description"),
+    // And so does another person.
+    write("2026-11-12T09:59:58Z", "description", bob),
+    write("2026-11-12T09:59:57Z", "description"),
+  ]);
+  await screen.findByText("wrote the title “Speedruns”");
+  expect(entries()).toEqual([
+    { at: "2026-11-12T10:00:03Z", who: "alice", words: "wrote the description" },
+    { at: "2026-11-12T10:00:00Z", who: "alice", words: "wrote the title “Speedruns”" },
+    { at: "2026-11-12T09:59:59Z", who: "alice", words: "wrote the description" },
+    { at: "2026-11-12T09:59:58Z", who: "bob", words: "wrote the description" },
+    { at: "2026-11-12T09:59:57Z", who: "alice", words: "wrote the description" },
+  ]);
+});
+
+// A run is one actor's as the history names it - a login, or a session - and not the person
+// behind it: two sessions of one person are two actors, and their writes stay two entries.
+test("writes of one field by two sessions of one person do not fold together", async () => {
+  const session = (id: string) => ({ id, kind: "session", owner: "alice" });
+  const write = (at: string, actor: { id: string; kind: string; owner: string }) => ({
+    actor,
+    asserted: true,
+    at,
+    field: "description",
+    issue: "",
+    value: "",
+  });
+  margin([
+    write("2026-11-12T10:00:03Z", session("session-one")),
+    write("2026-11-12T10:00:02Z", session("session-one")),
+    write("2026-11-12T10:00:01Z", session("session-two")),
+    write("2026-11-12T10:00:00Z", session("session-two")),
+  ]);
+  await screen.findAllByText("wrote the description");
+  expect(entries().map(({ at, words }) => ({ at, words }))).toEqual([
+    { at: "2026-11-12T10:00:03Z", words: "wrote the description" },
+    { at: "2026-11-12T10:00:01Z", words: "wrote the description" },
+  ]);
 });

@@ -4245,7 +4245,7 @@ test("inside NoTooltips a close of the priorities' picker keeps the focus on its
 
           answerReread(reads.answer());
           if (write === "lands") {
-            await scope.findByRole("link", { name: "P1 Evals collecting data now" });
+            await scope.findByRole("link", { name: "#1 Evals collecting data now" });
           } else {
             await scope.findByRole("alert");
           }

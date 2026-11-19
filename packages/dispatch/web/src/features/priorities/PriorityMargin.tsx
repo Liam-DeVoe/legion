@@ -40,10 +40,31 @@ function actWords(act: PriorityAct): string {
   }
 }
 
+/** The history as the margin lists it, newest first: a run of consecutive writes of one field by
+ *  one actor - every save of a field while it is being written, half a second apart - is one
+ *  entry, the newest of the run, at its time. A write of another field, or by another actor,
+ *  between two writes breaks the run, and an `advances` act names an issue of its own, so it
+ *  folds into nothing. The history itself keeps every act; only this list folds them. */
+function foldRuns(acts: readonly PriorityAct[]): PriorityAct[] {
+  const folded: PriorityAct[] = [];
+  for (const act of acts) {
+    const newer = folded.at(-1);
+    const sameRun =
+      newer !== undefined &&
+      act.field !== "advances" &&
+      newer.field === act.field &&
+      newer.actor.kind === act.actor.kind &&
+      newer.actor.id === act.actor.id;
+    if (!sameRun) folded.push(act);
+  }
+  return folded;
+}
+
 /** Everything that happened to the priority, newest first, as the server answers it
  *  (`GET /api/v1/priorities/{id}/history`): each write of its title, description, owner and
  *  order, and each `advances` relation an issue asserted or retracted on it, each naming who
- *  stated it and when, under the day it happened on. */
+ *  stated it and when, under the day it happened on, consecutive writes of one field by one
+ *  actor read as one (`foldRuns`). */
 function PriorityHistory({ id }: { id: string }): ReactNode {
   const history = useQuery(priorityHistoryQuery(id));
   if (history.isPending) return <LoadingSkeleton label="Loading what happened" />;
@@ -59,7 +80,7 @@ function PriorityHistory({ id }: { id: string }): ReactNode {
   let day = "";
   return (
     <ol className="space-y-3">
-      {history.data.map((act) => {
+      {foldRuns(history.data).map((act) => {
         const heading = dayLabel(dateKey(act.at), today);
         const first = heading !== day;
         day = heading;

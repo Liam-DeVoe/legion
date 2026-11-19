@@ -20,9 +20,11 @@ import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import {
+  type IssueTableColumnId,
+  type IssueTableWidths,
   issueTableLayout,
   listingColumns,
-  type ShownColumnId,
+  ROW_ACTIONS_WIDTH,
   useIssueTableColumns,
 } from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
@@ -47,13 +49,11 @@ const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** Status offers Done before the closed issues it would count are read. */
 const DONE_UNLOADED: ReadonlyMap<string, readonly string[]> = new Map([["status", ["done"]]]);
 /** The one layout key of every table scoped to a priority: the work advancing a priority is
- *  one table, drawn under an opened row of the priorities page and on the priority's own page,
- *  so the columns a reader drags there are dragged once rather than once per priority. */
+ *  one table, drawn on each priority's own page, so the columns a reader drags there are
+ *  dragged once rather than once per priority. */
 const SCOPED_LAYOUT_KEY = "priority-work";
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
-
-const ACTION_WIDTH = 104;
 
 export function IssuesTable({
   label,
@@ -65,10 +65,17 @@ export function IssuesTable({
   /** What this list is called, for a reader who cannot see where it sits; by its listing when
    *  unset: a project's issues, or the issues advancing one priority. */
   label?: string;
-  /** The layout this table keeps, under its own key, where it is not its listing's, and the
-   *  columns it opens with shown: each fault list of the priorities page shows its listing
-   *  columns and Updated, which a table opens with hidden (`issueTableLayout`). */
-  layout?: { readonly key: string; readonly shown: readonly ShownColumnId[] };
+  /** The layout this table keeps, under its own key, where it is not its listing's: the whole
+   *  set of columns it opens with shown (`opens`), registry and listing columns alike, every
+   *  other one opening hidden for the reader to show, and the widths it gives any column in
+   *  place of its own (`widths`, `issueTableLayout`). Given one, Title fills a desktop box: it
+   *  takes what the other shown columns leave (`fills`). Each fault list of the priorities page
+   *  gives its own; unset, the table opens as a project's table does. */
+  layout?: {
+    readonly key: string;
+    readonly opens: readonly IssueTableColumnId[];
+    readonly widths?: IssueTableWidths;
+  };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
@@ -89,14 +96,16 @@ export function IssuesTable({
     useTableView(stateKey);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  // The listing columns this table has: the ones its listing gives a use (`listingColumns`).
+  // The columns this table has - the listing columns its listing gives a use (`listingColumns`)
+  // beside the registry's - which it opens with and at which widths.
   const columnsLayout = issueTableLayout(
     listingColumns(listing, priorityTitles !== undefined),
-    ownLayout?.shown
+    ownLayout?.opens,
+    ownLayout?.widths
   );
-  // One stored layout per project, and one for every scoped table: the work advancing a
-  // priority is one table drawn in two places, so a reader who drags a column there drags it
-  // for the priorities page and the priority's own page alike, and not once per priority.
+  // One stored layout per project, and one for every scoped table: the work advancing any
+  // priority is one table, so a reader who drags a column on one priority's page drags it on
+  // every priority's page, and not once per priority.
   const layout = useTableLayout(
     ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY),
     columnsLayout
@@ -435,7 +444,7 @@ export function IssuesTable({
           />
         )}
         scrollTestId="issues-table-scroll"
-        trailingWidth={ACTION_WIDTH}
+        trailingWidth={ROW_ACTIONS_WIDTH}
       />
 
       <IssueTableSelection

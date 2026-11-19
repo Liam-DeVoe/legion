@@ -27,7 +27,7 @@ import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
 
 /** What the line calls each priority the read answered, by its id: its order and its title, as
- *  the priorities page names it ("P7 Rocq and Lean speed work restarted"). The read answers the
+ *  the priorities page names it ("#7 Rocq and Lean speed work restarted"). The read answers the
  *  priorities in rank order, so the order is the row's place in that one list, named by the one
  *  rule the table names it by (`orderLabel`). A priority this map does not hold is named by its
  *  own id, so a line never waits on a second read to say which priority it means. */

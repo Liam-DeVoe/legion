@@ -1463,13 +1463,13 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   // the picker is open its options do, as `MultiSelect` draws them.
   [
     mountNamed("IssuePriorityLine, its own priority and an inherited one"),
-    ["P2 Rocq and Lean speed work restarted", "P1 Evals collecting data now"],
+    ["#2 Rocq and Lean speed work restarted", "#1 Evals collecting data now"],
   ],
   [
     mountNamed("IssuePriorityLine, adding a priority"),
-    ["P1 Evals collecting data now", "P2 Rocq and Lean speed work restarted"],
+    ["#1 Evals collecting data now", "#2 Rocq and Lean speed work restarted"],
   ],
-  [mountNamed("IssuePriorityLine, in a row of Details"), ["P2 Rocq and Lean speed work restarted"]],
+  [mountNamed("IssuePriorityLine, in a row of Details"), ["#2 Rocq and Lean speed work restarted"]],
   [priorityLineAtCap, PRIORITIES_AT_CAP],
   [priorityLineLoading, []],
   [
@@ -2948,8 +2948,8 @@ test("inside NoTooltips the words come from the page's word list and carry their
     (view) => {
       expectMarks(view.container, [
         [PROPERTY_LABELS.advances, "page-chrome"],
-        ["P2 Rocq and Lean speed work restarted", "author-text"],
-        ["P1 Evals collecting data now", "author-text"],
+        ["#2 Rocq and Lean speed work restarted", "author-text"],
+        ["#1 Evals collecting data now", "author-text"],
         [CONTROL_LABELS.advances_inherited, "page-chrome"],
         ["+", "page-chrome"],
       ]);
@@ -2959,7 +2959,7 @@ test("inside NoTooltips the words come from the page's word list and carry their
     // A row of Details draws the label, so the line draws none of its own.
     expectMarks(view.container, [
       [CONTROL_LABELS.add_priority, "page-chrome"],
-      ["P2 Rocq and Lean speed work restarted", "author-text"],
+      ["#2 Rocq and Lean speed work restarted", "author-text"],
     ]);
     expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toEqual([]);
     // The trigger of an issue that advances none is named by the words it draws, then the word
