@@ -22,14 +22,16 @@ window alone. --claim reads one claim alone. --take-timeout is the deployment's 
 worker_take_timeout_seconds (300 when not given), which the log does not always name. Every figure
 is a lower bound but the owed numbers and the turns each number took, which can also count too
 many (the page says when): the log reaches back no further than the current container (--previous
-reads the one before), and only as far as the node kept it. A window that holds no daemon line,
-of the claim asked for, or daemon lines but no task value written, no take answered and no fail
-proved from where a claim stood at --from (a number whose first bound passed in the window with
-no take, or a charge in the window of a worker whose turn began within the second bound after a
-take accepted before --from), prints each verdict as "no evidence" and exits 1: the log of a
-daemon from before the task value, of one not yet rolled out, or of an older container
---previous reads is such a window. A fail carried into the window is evidence; a pass carried in
-is not.`
+reads the one before), and only as far as the node kept it. A window that holds, of the claim
+asked for, a daemon line and a task value written or a take answered judges all three verdicts,
+each a pass or a fail. In any other window, a fail proved from where a claim stood at --from (a
+number whose first bound passed in the window with no take, or a charge in the window of a worker
+whose turn began within the second bound after a take accepted before --from) is evidence for its
+own verdict alone, and every other verdict prints "no evidence": a pass carried into the window is
+no evidence. A window with no daemon line of the claim asked for judges no verdict, and neither
+does the log of a daemon from before the task value, of one not yet rolled out, or of an older
+container --previous reads. The command exits 1 when any verdict prints "no evidence", and 0 when
+it judges all three, a fail included.`
 
 // taskCostStdin is where `legion task-cost` reads the daemon's log: the process's own standard
 // input, which a test replaces.
@@ -40,11 +42,14 @@ var taskCostStdin io.Reader = os.Stdin
 // reader defines (supervise.AddTaskCostFlags), reads the log with that reader
 // (supervise.ReadTaskCost), and prints what the reader answers, adding nothing of its own. Its exit
 // status is 2 for arguments it cannot take, as every command's usage error is, and 1 where it
-// gives no reading a check can pass: a log it could not read, and a window that holds no evidence
-// of the take model (TaskCost.NoEvidence) — no daemon line, or daemon lines but no task value
-// written, no take answered and no fail proved from the state carried into the window — whose
-// verdicts it prints as "no evidence". A reading with no evidence is a failure of the input, not
-// of the arguments, and a check reading the command must never take it for a pass.
+// gives no reading a check can pass: a log it could not read, and a window that does not judge
+// every verdict (TaskCost.EveryVerdictJudged), where one prints "no evidence" — a window with no
+// daemon line, or with daemon lines but no task value written and no take answered, whose only
+// evidence, if any, is a fail proved from the state carried into the window, which judges its own
+// verdict alone. A verdict with no evidence is a failure of the input, not of the arguments, and a
+// check reading the command must never take it for a pass. A window that judges every verdict
+// exits 0, a fail included: the exit says whether the window could be judged, and the verdict
+// lines say what was found.
 func newTaskCostCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "task-cost --from <RFC 3339> --to <RFC 3339> [--claim <token>] [--take-timeout <seconds>]",
@@ -65,7 +70,7 @@ func newTaskCostCommand(stdout, stderr io.Writer) *cobra.Command {
 			return 1
 		}
 		fmt.Fprint(stdout, cost.Text())
-		if cost.NoEvidence() {
+		if !cost.EveryVerdictJudged() {
 			return 1
 		}
 		return 0

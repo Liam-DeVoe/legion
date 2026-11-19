@@ -26,6 +26,12 @@ const taskCostPushPathLog = `{"time":"2026-11-14T09:00:01.000Z","level":"INFO","
 {"time":"2026-11-14T09:01:35.000Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-tester","generation":1}
 `
 
+// taskCostChargedLog is taskCostLog with a charge of the second wait made after the take's turn
+// started, as the daemon's JSON handler writes it: a charge of a worker whose turn began within
+// the second bound after its take, which fails the first verdict.
+const taskCostChargedLog = taskCostLog + `{"time":"2026-11-14T09:01:00.000Z","level":"WARN","msg":"supervise: prompt failure","claim":"legion-infra-infra-2811-tester","wait":"turn-start","bound":1500000000000,"why":"turn-start: the take of task 1 was accepted and no turn started within 25m0s","promptFailures":1,"limit":3}
+`
+
 // taskCost runs `legion task-cost` with stdin piped in, as the documentation site's command
 // pipes the daemon's log to it.
 func taskCost(t *testing.T, stdin string, args ...string) (int, string, string) {
@@ -40,7 +46,8 @@ func taskCost(t *testing.T, stdin string, args ...string) (int, string, string) 
 
 // `legion task-cost` prints what the daemon's own reader answers for the window and the claim it
 // is given, and nothing of its own: its output is supervise's reading of the same lines, and its
-// exit status is 0, or 1 for a reading the reader says holds no evidence (a claim no line names).
+// exit status is 0, or 1 for a reading the reader says does not judge every verdict (a claim no
+// line names).
 func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 	for _, args := range [][]string{
 		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"},
@@ -56,7 +63,7 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 			t.Fatal(err)
 		}
 		wantCode := 0
-		if want.NoEvidence() {
+		if !want.EveryVerdictJudged() {
 			wantCode = 1
 		}
 		code, stdout, stderr := taskCost(t, taskCostLog, args...)
@@ -69,45 +76,75 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 	}
 }
 
-// A window that holds no evidence of the take model, of the claim asked for, is judged by nothing:
-// one that holds no daemon line — an empty standard input, as a wrong kubectl selector pipes, a
-// window the log does not reach, a claim no line names — and one whose daemon lines hold no task
-// value written, no take answered and no fail carried into the window, as the log of a daemon from
-// before the task value does.
-// `legion task-cost` prints the reading, with the line that says why it judges nothing and each of
-// its three verdicts as "no evidence", none as a pass, and exits 1, so a check reading the command
-// cannot take a reading of nothing, or of a daemon the change has not reached, for three passes.
-// Exit 2 stays the usage error's, for arguments the command cannot take.
+// A window that does not judge every verdict, of the claim asked for, prints "no evidence" for
+// each verdict it holds no evidence for, and exits 1. Each of the three verdicts reads "no
+// evidence" in a window that holds no daemon line — an empty standard input, as a wrong kubectl
+// selector pipes, a window the log does not reach, a claim no line names — and in one whose daemon
+// lines hold no task value written, no take answered and no fail carried into the window, as the
+// log of a daemon from before the task value does. A window whose daemon lines hold no task value
+// written and no take answered, but a fail carried into it — a charge of a worker whose turn began
+// within the second bound after a take accepted before the window — judges the first verdict by
+// that fail alone, and the other two read "no evidence". Each prints the line under the count of
+// its lines that says what it judges, and no verdict as a pass, so a check reading the command
+// cannot take a reading of nothing, or of a daemon the change has not reached, for a pass. Exit 2
+// stays the usage error's, for arguments the command cannot take.
 //
-// The negative control is the window that holds the three lines: the command exits 0, and its
-// verdicts are judged, each a pass.
+// The negative controls are the windows that hold the take's own lines, which judge every verdict
+// and exit 0: the three lines, each verdict a pass, and the same lines with the charge, whose first
+// verdict fails and the other two pass, since a fail does not make a judged window exit 1.
 func TestTaskCostExitsOneWhenTheWindowHoldsNoDaemonLine(t *testing.T) {
 	const noLine = "daemon lines in the window: 0\n"
+	const charged = "verdict: no charge of a worker whose turn began within the second bound after its take: fail\n" +
+		"  legion-infra-infra-2811-tester task 1: taken 2026-11-14T09:00:06.000Z, a turn started 2026-11-14T09:00:40.000Z, charged 2026-11-14T09:01:00.000Z (wait turn-start, bound 25m0s)\n"
 	for _, tc := range []struct {
 		name, stdin string
 		args        []string
 		// says is what the output says of the window's lines.
 		says string
+		// fails is the verdict a fail carried into the window judges, with what fails it, "" where
+		// none does.
+		fails string
 	}{
-		{"an empty standard input", "", []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"}, noLine},
-		{"a window the log does not reach", taskCostLog, []string{"--from", "2026-11-13T09:00:00Z", "--to", "2026-11-13T10:00:00Z"}, noLine},
+		{"an empty standard input", "", []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"}, noLine, ""},
+		{"a window the log does not reach", taskCostLog, []string{"--from", "2026-11-13T09:00:00Z", "--to", "2026-11-13T10:00:00Z"}, noLine, ""},
 		{"a claim no line names", taskCostLog, []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z",
-			"--claim", "legion-infra-infra-2811-implementer"}, noLine},
+			"--claim", "legion-infra-infra-2811-implementer"}, noLine, ""},
 		{"daemon lines with no task value written and no take answered", taskCostPushPathLog,
 			[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"},
 			"daemon lines in the window: 4, the first at 2026-11-14T09:00:01.000Z, the last at 2026-11-14T09:01:35.000Z\n" +
-				"task values written and takes answered in the window: 0, so no verdict is judged\n"},
+				"task values written and takes answered in the window: 0, so no verdict is judged\n", ""},
+		{"daemon lines with no task value written and no take answered, and a fail carried into the window", taskCostChargedLog,
+			[]string{"--from", "2026-11-14T09:00:30Z", "--to", "2026-11-14T10:00:00Z"},
+			"daemon lines in the window: 2, the first at 2026-11-14T09:00:40.000Z, the last at 2026-11-14T09:01:00.000Z\n" +
+				"task values written and takes answered in the window: 0, so only a fail carried into the window is judged\n", charged},
 	} {
 		code, stdout, stderr := taskCost(t, tc.stdin, tc.args...)
-		if code != 1 || stderr != "" || !strings.Contains(stdout, tc.says) ||
-			strings.Count(stdout, ": no evidence\n") != 3 || strings.Contains(stdout, ": pass\n") {
-			t.Errorf("%s: legion task-cost %q = %d, stdout %q, stderr %q; want 1, %q, and each of the three verdicts %q, none a pass",
-				tc.name, tc.args, code, stdout, stderr, tc.says, "no evidence")
+		noEvidence := 3
+		if tc.fails != "" {
+			noEvidence = 2
+		}
+		if code != 1 || stderr != "" || !strings.Contains(stdout, tc.says) || !strings.Contains(stdout, tc.fails) ||
+			strings.Count(stdout, ": no evidence\n") != noEvidence || strings.Contains(stdout, ": pass\n") {
+			t.Errorf("%s: legion task-cost %q = %d, stdout %q, stderr %q; want 1, %q, %d verdicts %q and %q, none a pass",
+				tc.name, tc.args, code, stdout, stderr, tc.says, noEvidence, "no evidence", tc.fails)
 		}
 	}
-	code, stdout, stderr := taskCost(t, taskCostLog, "--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z")
-	if code != 0 || stderr != "" || strings.Contains(stdout, "no evidence") || strings.Count(stdout, ": pass\n") != 3 {
-		t.Errorf("legion task-cost over the three lines = %d, stdout %q, stderr %q; want 0 and its three verdicts judged, each a pass", code, stdout, stderr)
+	for _, tc := range []struct {
+		name, stdin string
+		// fails is the verdict the window fails, with what fails it, "" where it fails none, and
+		// passes how many verdicts pass.
+		fails  string
+		passes int
+	}{
+		{"the three lines", taskCostLog, "", 3},
+		{"the three lines and the charge", taskCostChargedLog, charged, 2},
+	} {
+		code, stdout, stderr := taskCost(t, tc.stdin, "--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z")
+		if code != 0 || stderr != "" || strings.Contains(stdout, "no evidence") || strings.Contains(stdout, "task values written and takes answered") ||
+			!strings.Contains(stdout, tc.fails) || strings.Count(stdout, ": pass\n") != tc.passes {
+			t.Errorf("legion task-cost over %s = %d, stdout %q, stderr %q; want 0 and its three verdicts judged, %d a pass and %q",
+				tc.name, code, stdout, stderr, tc.passes, tc.fails)
+		}
 	}
 }
 

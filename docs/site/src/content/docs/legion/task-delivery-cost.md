@@ -51,10 +51,12 @@ The command reads the log on its standard input.
 It ignores each line at `<to>` or after it.
 It writes the figures on its standard output.
 
-The command exits with status 0 when it gives a reading.
-It exits with status 1 when the window holds no evidence of the delivery by task values, and when it cannot read its standard input.
-That is a window with no line of the daemon, or with no line of the claim that `--claim` names.
-It is also a window whose lines hold no task value written, no take answered, and no fail that the state before `<from>` proves in the window, as the verdicts below say.
+The command exits with status 0 when it judges every verdict, also when a verdict fails.
+It exits with status 1 when any verdict gives `no evidence`, and when it cannot read its standard input.
+No check can pass a reading in which a verdict has no evidence.
+Each verdict gives `no evidence` in a window with no line of the daemon, or with no line of the claim that `--claim` names.
+A verdict also gives `no evidence` in a window whose lines hold no task value written and no take answered, unless a fail that the state at `<from>` proves fails that verdict, as the verdicts below say.
+So the status says whether the command could judge the window, and the verdict lines say what the command found.
 It exits with status 2 when it cannot use its arguments.
 It then names the argument that it cannot use, and `legion task-cost --help`, which writes its usage.
 
@@ -96,7 +98,10 @@ So each figure that names a task names its claim too.
 
 - `daemon lines in the window` is the number of the daemon's log lines in the window, with the times of the first and the last.
   With `--claim`, only the lines of that claim count.
-  When these lines hold no task value written, no take answered, and no fail that the state before `<from>` proves in the window, the next line is `task values written and takes answered in the window: 0, so no verdict is judged`, and each verdict gives `no evidence`.
+  When these lines hold no task value written and no take answered, the next line says so.
+  It is `task values written and takes answered in the window: 0, so no verdict is judged` when each verdict gives `no evidence`.
+  It is `task values written and takes answered in the window: 0, so only a fail carried into the window is judged` when a fail that the state at `<from>` proves fails a verdict.
+  That verdict gives `fail`, and each other verdict gives `no evidence`.
 
 - `turns started` and `turns ended` are the workers' turns, by cause.
 
@@ -233,25 +238,16 @@ So each figure that names a task names its claim too.
 
 - The three `verdict` lines each give `pass`, `fail` or `no evidence`.
   A verdict that fails lists each task that fails it, below it.
+  The command counts the evidence for each verdict apart.
+  So it never gives a pass for which it has no evidence, and never hides a fail that it can prove.
 
-  - Each verdict gives `no evidence` when the window holds no evidence of the delivery by task values.
-    Each verdict reads the task values that the daemon wrote and the takes that it answered.
-    It also reads the state of each task at `<from>`, which the lines before `<from>` give: a task that the worker saw and did not take, and a take that the daemon accepted.
+  - The window holds the evidence of the delivery by task values when it holds a line of the daemon, and a line `supervise: a task value was written` or a line `supervise: a take was answered`, with the outcome `accepted`, `refused` or `dropped`.
     With `--claim`, only the lines of that claim count.
+    In such a window, each verdict gives `pass` or `fail`.
 
-    - The window holds no line of the daemon, or no line of the claim that `--claim` names.
-      A wrong selector in the `kubectl` command, or a window that the node no longer keeps, gives this result.
-
-    - The window holds lines of the daemon, but no line `supervise: a task value was written`, no line `supervise: a take was answered`, with the outcome `accepted`, `refused` or `dropped`, and no fail that the state at `<from>` proves in the window.
-      The log of a daemon from before the delivery by task values gives this result: its turns have no cause, and its charges are for prompts that the daemon sent.
-      The log of a daemon that is not rolled out yet gives this result, and so does the log of an older container that `--previous` reads.
-      Such a log does not show how the daemon delivers a task by its value, so check c9 must not read it as three passes.
-      The output then says so below `daemon lines in the window`.
-
-    The state at `<from>` is carried into the window.
-    A fail that this carried state proves in the window is evidence, but a pass that it shows is not.
-    So the command never hides a fail that it can prove, and never gives a pass for which it has no evidence.
-    The state at `<from>` can prove two fails in the window:
+  - The state at `<from>` is carried into the window.
+    The lines before `<from>` give it: a task that the worker saw and did not take, and a take that the daemon accepted.
+    This carried state can prove two fails in the window:
 
     - A task that the worker saw before `<from>` and did not take, when one first bound after `<from>` passes before `<to>`.
       `numbers owed that no take reached within the first bound` lists it, and the third verdict fails for it.
@@ -259,11 +255,26 @@ So each figure that names a task names its claim too.
     - A charge in the window of a worker whose turn began within the second bound after a take that the daemon accepted before `<from>`.
       The first verdict fails for it.
 
+    A fail that the state at `<from>` proves is evidence for its own verdict only.
+    In a window without the evidence of the delivery by task values, that verdict gives `fail`, and each other verdict gives `no evidence`.
+    A pass that the state at `<from>` shows is not evidence.
     A bound that passed before `<from>`, or a charge made before `<from>`, is no evidence for the window.
-    Both fails need lines of the delivery by task values before `<from>`, so the logs above still give `no evidence`.
 
-    A reading with no evidence passes no verdict and fails no verdict, and the command exits with status 1.
-    The output still gives every other figure as the command read it.
+  - Each verdict gives `no evidence` when the window holds no evidence for it.
+    Two kinds of window give `no evidence` for all three verdicts:
+
+    - The window holds no line of the daemon, or no line of the claim that `--claim` names.
+      A wrong selector in the `kubectl` command, or a window that the node no longer keeps, gives this result.
+      Such a window gives no fail either, because no line shows that the daemon ran in the window.
+
+    - The window holds lines of the daemon, but no task value written, no take answered, and no fail that the state at `<from>` proves.
+      The log of a daemon from before the delivery by task values gives this result: its turns have no cause, and its charges are for prompts that the daemon sent.
+      The log of a daemon that is not rolled out yet gives this result, and so does the log of an older container that `--previous` reads.
+      Such a log does not show how the daemon delivers a task by its value, so check c9 must not read it as three passes.
+      Both fails that the state at `<from>` can prove need lines of the delivery by task values before `<from>`, so these logs give no fail.
+
+  A verdict with no evidence neither passes nor fails, and the command exits with status 1 when any verdict gives `no evidence`.
+  The output still gives every other figure as the command read it.
 
   1. `no charge of a worker whose turn began within the second bound after its take`.
      It fails for a charge made while an accepted take stood, if a turn of that claim started no earlier than the start of the second wait of that take, and no later than the charge's limit.

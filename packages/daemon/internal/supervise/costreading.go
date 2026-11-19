@@ -142,23 +142,25 @@ import (
 //     first bound (the figure above, which reads a time owed that no take reached as taken zero
 //     times).
 //
-// A window that holds no evidence of the take model judges nothing: one that holds no daemon
-// line, of the claim asked for — a wrong selector, a window the node no longer keeps — and one
-// that holds daemon lines but no value write (valueWrittenLine), no answer to a take
-// (takeAnsweredLine) and no fail the reading proves from where the claim stood at From — the log
-// of a daemon from before the task value, of one not yet rolled out, or of an older container
-// that `kubectl logs --previous` reads, whose turns name no task and whose charges are the push
-// path's. Each verdict reads "no evidence" rather than a pass or a fail for either
-// (TaskCost.NoEvidence), every other figure is printed as it is read, and `legion task-cost` exits
-// non-zero for it. The rule is one-sided, since the reading never hides a fail it can prove and
-// never prints a pass it has no evidence for: a fail proved from the state carried into the
-// window is evidence, and a pass carried in is not. Such a fail is one of two, each of an event
-// inside the window: a time owed whose first bound passed in the window with no take (the figure
-// above, which judges clock time inside the window alone), and a charge made in the window of a
-// worker whose turn began within the second bound after a take accepted before From (the first
-// verdict, which counts a charge made inside the window alone). So a bound that passed, or a
-// charge made, before From is no evidence, and neither fail comes of a log that holds no line of
-// the take model, as none of those logs does.
+// Evidence counts verdict by verdict, since the reading never prints a pass it has no evidence
+// for and never hides a fail it can prove. A window holds the take model's own evidence when it
+// holds, of the claim asked for, a daemon line and a value write (valueWrittenLine) or an answer
+// to a take (takeAnsweredLine), and such a window judges each verdict, a pass or a fail. Without
+// that evidence, a fail the reading proves from where the claim stood at From is evidence for its
+// own verdict alone, which reads that fail, and each other verdict reads "no evidence" rather than
+// a pass or a fail (TaskCost.EveryVerdictJudged); every other figure is printed as it is read, and
+// `legion task-cost` exits non-zero for such a reading. Such a fail is one of two, each of an
+// event inside the window: a time owed whose first bound passed in the window with no take (the
+// figure above, which judges clock time inside the window alone), which fails the third verdict,
+// and a charge made in the window of a worker whose turn began within the second bound after a
+// take accepted before From (the first verdict, which counts a charge made inside the window
+// alone). So a bound that passed, or a charge made, before From is no evidence. A window that
+// holds no daemon line, of the claim asked for — a wrong selector, a window the node no longer
+// keeps — judges no verdict, a carried fail included, since nothing in it shows the daemon lived
+// through it. Nor does one whose daemon lines hold neither kind of evidence: the log of a daemon
+// from before the task value, of one not yet rolled out, or of an older container that `kubectl
+// logs --previous` reads, whose turns name no task and whose charges are the push path's, holds no
+// line of the take model, and both carried fails need such lines before From.
 //
 // Every figure is a lower bound but two, which can also count too many: the numbers no take
 // reached (above), and the turns each number took, since a run the daemon gave a take inside the
@@ -268,9 +270,8 @@ type TaskCost struct {
 	Taken, Finished int
 	FinishedBy      map[string]int
 	// takesAnswered is how many answers to a take the window held, accepted, refused or dropped,
-	// an answer that repeats one from the record included: with the value writes (WrittenByOrigin)
-	// and the two fails carried into the window (Unreached, ChargedWithinBound), what NoEvidence
-	// reads.
+	// an answer that repeats one from the record included: with the value writes (WrittenByOrigin),
+	// what holdsOwnEvidence reads.
 	takesAnswered int
 	// Unreached is each time a number was owed and its first-wait clock passed the first bound
 	// (Args.Take) with no take, by claim, number and when the bound passed: when the clock last
@@ -1008,29 +1009,64 @@ func cmpKey(a, b costKey) int {
 // lineTime is a line's time as the daemon's log writes it, to the millisecond.
 func lineTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
-// NoEvidence is whether the window holds no evidence of the take model, of the claim asked for:
-// no daemon line, or daemon lines with no value write, no answer to a take (accepted, refused or
-// dropped), and no fail the reading proves from the state carried into the window, which is a
-// time owed in Unreached or a charge in ChargedWithinBound. No daemon line is a wrong selector or
-// a window the node no longer keeps; daemon lines with none of the rest are the log of a daemon
-// from before the task value, of one not yet rolled out, or of an older container that `kubectl
-// logs --previous` reads, none of which holds the lines of the take model either carried fail
-// needs. Such a reading judges nothing: no verdict of it passes or fails (Text), and `legion
-// task-cost` exits 1 for it. The rule is one-sided: a carried fail is evidence, since the reading
-// never hides a fail it can prove, and a carried pass is not, since it never prints a pass it has
-// no evidence for. Each carried fail is of an event inside the window, a bound that passed there
-// (enter) or a charge made there, so a bound that passed, or a charge made, before From is none.
-func (c TaskCost) NoEvidence() bool {
-	return c.Lines == 0 ||
-		(len(c.WrittenByOrigin) == 0 && c.takesAnswered == 0 && len(c.Unreached) == 0 && len(c.ChargedWithinBound) == 0)
+// costVerdict is one of R9's three verdicts: its name as Text prints it, and what fails it.
+type costVerdict struct {
+	name  string
+	fails []string
+}
+
+// verdicts are R9's three verdicts, in the order Text prints them.
+func (c TaskCost) verdicts() [3]costVerdict {
+	return [3]costVerdict{
+		{"no charge of a worker whose turn began within the second bound after its take", c.ChargedWithinBound},
+		{"no write of origin resume to a claim that finished its last task in its session", c.ResumeToFinished},
+		{"each number taken once for each time the record owed it", c.TakenNotOncePerOwed},
+	}
+}
+
+// holdsOwnEvidence is whether the window holds the take model's own evidence, of the claim asked
+// for: a daemon line, and a value write or an answer to a take, accepted, refused or dropped
+// (takesAnswered). Such a window judges every verdict (judges).
+func (c TaskCost) holdsOwnEvidence() bool {
+	return c.Lines > 0 && (len(c.WrittenByOrigin) > 0 || c.takesAnswered > 0)
+}
+
+// judges is whether the window holds evidence for the verdict v: the take model's own evidence
+// (holdsOwnEvidence), which judges each verdict, a pass or a fail; or, in a window with a daemon
+// line, a fail of v, which is evidence for v alone. Without the take model's own evidence, a
+// verdict fails only by a fail the reading proves from the state carried into the window — a
+// charge in ChargedWithinBound, or a time owed in Unreached, which TakenNotOncePerOwed lists —
+// since a write of origin resume is a value write in the window, and a number taken more times
+// than it was owed a take answered in it. So a pass is judged only with the take model's own
+// evidence, since the reading never prints a pass it has no evidence for, and a window with no
+// daemon line judges no fail either, since nothing in it shows the daemon lived through it (the
+// reading's doc comment says why).
+func (c TaskCost) judges(v costVerdict) bool {
+	return c.holdsOwnEvidence() || (c.Lines > 0 && len(v.fails) > 0)
+}
+
+// EveryVerdictJudged is whether the window holds evidence for each of R9's three verdicts
+// (judges), so that each reads a pass or a fail: false where one reads "no evidence", which
+// `legion task-cost` exits 1 for, since no check can pass such a reading. A window without the
+// take model's own evidence is never judged whole, since no fail carried into it fails the second
+// verdict.
+func (c TaskCost) EveryVerdictJudged() bool {
+	for _, v := range c.verdicts() {
+		if !c.judges(v) {
+			return false
+		}
+	}
+	return true
 }
 
 // Text is the reading as `legion task-cost` prints it: one figure to a line, each named as the
 // documentation site's page defines it, and each verdict with what fails it, or "no evidence"
-// where the window holds no evidence of the take model (NoEvidence): no daemon line, or daemon
-// lines but no value write, no take answered and no fail carried into the window, which a line
-// under the count of the lines says.
+// where the window holds no evidence for it (judges). A window with daemon lines but without the
+// take model's own evidence (holdsOwnEvidence) says so in a line under the count of the lines:
+// that no verdict is judged, or, where a fail carried into the window judges its own verdict, that
+// only such a fail is.
 func (c TaskCost) Text() string {
+	verdicts := c.verdicts()
 	var b strings.Builder
 	whose := "every claim"
 	if c.Args.Claim != "" {
@@ -1043,8 +1079,14 @@ func (c TaskCost) Text() string {
 	} else {
 		fmt.Fprintf(&b, "daemon lines in the window: %d, the first at %s, the last at %s\n",
 			c.Lines, lineTime(c.FirstLine), lineTime(c.LastLine))
-		if c.NoEvidence() {
-			fmt.Fprintln(&b, "task values written and takes answered in the window: 0, so no verdict is judged")
+		if !c.holdsOwnEvidence() {
+			so := "no verdict is judged"
+			for _, v := range verdicts {
+				if c.judges(v) {
+					so = "only a fail carried into the window is judged"
+				}
+			}
+			fmt.Fprintf(&b, "task values written and takes answered in the window: 0, so %s\n", so)
 		}
 	}
 	for _, turns := range []struct {
@@ -1074,24 +1116,17 @@ func (c TaskCost) Text() string {
 	fmt.Fprintf(&b, "numbers finished, by what finished each: %s\n", byKey(c.FinishedBy))
 	fmt.Fprintf(&b, "charges by wait: %s\n", byKey(c.ChargesByWait))
 	fmt.Fprintf(&b, "retirements: %d\n", c.Retirements)
-	for _, verdict := range []struct {
-		name  string
-		fails []string
-	}{
-		{"no charge of a worker whose turn began within the second bound after its take", c.ChargedWithinBound},
-		{"no write of origin resume to a claim that finished its last task in its session", c.ResumeToFinished},
-		{"each number taken once for each time the record owed it", c.TakenNotOncePerOwed},
-	} {
+	for _, v := range verdicts {
 		switch {
-		case c.NoEvidence():
-			fmt.Fprintf(&b, "verdict: %s: no evidence\n", verdict.name)
+		case !c.judges(v):
+			fmt.Fprintf(&b, "verdict: %s: no evidence\n", v.name)
 			continue
-		case len(verdict.fails) == 0:
-			fmt.Fprintf(&b, "verdict: %s: pass\n", verdict.name)
+		case len(v.fails) == 0:
+			fmt.Fprintf(&b, "verdict: %s: pass\n", v.name)
 			continue
 		}
-		fmt.Fprintf(&b, "verdict: %s: fail\n", verdict.name)
-		for _, fail := range verdict.fails {
+		fmt.Fprintf(&b, "verdict: %s: fail\n", v.name)
+		for _, fail := range v.fails {
 			fmt.Fprintf(&b, "  %s\n", fail)
 		}
 	}
