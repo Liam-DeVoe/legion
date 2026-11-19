@@ -1801,4 +1801,19 @@ describe("each sentence that counts the Dispatch tool specs", () => {
     );
     expect(counts).toEqual([countInWords(dispatchToolSpecs.length)]);
   });
+
+  // AGENTS.md also lists each spec's command by hand, in the specs' order; a spec that main added
+  // beside this branch's own was left out of the list by the merge. The command of a spec is its
+  // name as `commandName` (envoy-client's `dispatch-command.ts`) derives it.
+  test("packages/contracts/AGENTS.md lists each spec's command once, in the specs' order", () => {
+    const text = readFileSync(resolve(repoRoot, "packages/contracts/AGENTS.md"), "utf8");
+    const list =
+      /the source of the [a-z-]+ Dispatch specs[^\n]*\n([\s\S]*?)It defines their names/.exec(text);
+    const commands = [...(list?.[1] ?? "").matchAll(/`dispatch ([a-z-]+)`/g)].map(
+      (match) => match[1]
+    );
+    expect(commands).toEqual(
+      dispatchToolSpecs.map((spec) => spec.name.replace(/^dispatch_/, "").replaceAll("_", "-"))
+    );
+  });
 });
