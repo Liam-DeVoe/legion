@@ -8,6 +8,12 @@
  *  without a thought about which lane answers it fails here rather than on the day the lane is
  *  ten minutes slower than it was.
  *
+ *  The shard job is not all of it. The same workflow's `embedder` job runs on both lanes, so on
+ *  every pull request: `bun run e2e:embedder`, the rows of `e2e/search-tiers.e2e.ts` against a
+ *  server that embeds at a counting fake, in `chromium` and with no grep. Those rows drive the
+ *  real stack whatever their tags say, so they count toward both numbers, read from the command
+ *  that script runs (`embedderCommand` below).
+ *
  *  Why 330 and not the 350 dispatch://INFRA-1407's R1 names: dispatch://INFRA-1410 and
  *  dispatch://INFRA-1511 land after this head and will each want rows on this lane, and the
  *  parent's own check reads the 350 at the root's last round rather than here. Twenty rows is
@@ -22,6 +28,7 @@
  *  gated exactly as it was. What such a row loses is feedback on the pull request itself.
  */
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   pullRequestLaneProjects,
@@ -32,18 +39,56 @@ import {
 import { rowLimit } from "./bounded-subprocess";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
-/** The rows the pull-request lane schedules, and the rows of the default selection, read from
- *  two listings of one config. The second is read for the stubbed rows alone, and both stubbed
- *  projects are in the default selection, so this file needs no third listing: the three
- *  wall-clock projects carry `default: false` since dispatch://INFRA-1280, so a listing that
- *  names no project holds no row of theirs, and no row of theirs is stubbed. Both start here
- *  rather than inside a test, so the second collects while the first does. */
+/** The `playwright test` command `bun run e2e:embedder` ends in, read from this package's
+ *  `package.json` rather than written here again, so this file lists exactly the rows the
+ *  embedder job runs: the variables set before `playwright`, and the arguments after the config.
+ *  A script of any other shape is refused by name rather than read as a listing of nothing. */
+function embedderCommand(): { environment: Record<string, string>; extra: string[] } {
+  // Read as `e2e/__tests__/row-configurations.test.ts` reads `e2e:clock`.
+  const manifest = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8")
+  ) as { scripts: Record<string, string> };
+  const script = manifest.scripts["e2e:embedder"] ?? "";
+  const words = (script.split("&&").at(-1) ?? "").trim().split(/\s+/);
+  const start = words.indexOf("playwright");
+  const variables = words.slice(0, Math.max(start, 0));
+  if (
+    start === -1 ||
+    words.slice(start, start + 4).join(" ") !==
+      "playwright test --config e2e/playwright.config.ts" ||
+    variables.some((word) => !word.includes("="))
+  ) {
+    throw new Error(
+      `package.json's e2e:embedder script no longer ends in \`[NAME=value ...] playwright test ` +
+        `--config e2e/playwright.config.ts ...\`: ${JSON.stringify(script)}. Read its rows here ` +
+        "the way the embedder job now runs them."
+    );
+  }
+  return {
+    environment: Object.fromEntries(
+      variables.map((word) => [word.slice(0, word.indexOf("=")), word.slice(word.indexOf("=") + 1)])
+    ),
+    extra: words.slice(start + 4),
+  };
+}
+
+/** The rows the pull-request lane schedules, the rows the embedder job runs beside it, and the
+ *  rows of the default selection, read from three listings of one config. The last is read for
+ *  the stubbed rows alone, and both stubbed projects are in the default selection, so this file
+ *  needs no fourth listing: the three wall-clock projects carry `default: false` since
+ *  dispatch://INFRA-1280, so a listing that names no project holds no row of theirs, and no row
+ *  of theirs is stubbed. All three start here rather than inside a test, so they collect at
+ *  once. */
 const lane = retained(
   listing(import.meta.url, "e2e/playwright.config.ts", {}, [
     ...projectArguments(pullRequestLaneProjects),
     "--grep",
     tagged("pr").source,
   ])
+);
+const embedder = embedderCommand();
+const embedderRows = retained(
+  listing(import.meta.url, "e2e/playwright.config.ts", embedder.environment, embedder.extra)
 );
 const defaultSelection = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));
 
@@ -55,7 +100,7 @@ const realStackBudget = 150;
 test(
   "the pull-request lane stays inside its budget, and inside its real-stack share",
   async () => {
-    const rows = rowsOfListing(await lane);
+    const rows = [...rowsOfListing(await lane), ...rowsOfListing(await embedderRows)];
     const realStack = rows.filter((row) => !stubProjectNames.includes(row.project));
     expect(
       rows.length,

@@ -1,6 +1,6 @@
 /** The visual review: one row per page of `e2e/review-routes.ts`'s shot set, each compared
  *  against a committed baseline in light and in dark. The accessibility layer
- *  (`e2e/accessibility.e2e.ts`) reads the same corpus and the same readiness locators, so a
+ *  (`e2e/accessibility-scan.ts`) reads the same corpus and the same readiness locators, so a
  *  finding of one layer is a finding about the page the other shot.
  *
  *  TWO PROJECTS, ONE FILE. The desktop rows run in the `visual` project at 1280x800; the pages a
@@ -83,7 +83,7 @@ import {
 import { withAlice } from "./users";
 import { workspaceSessions } from "./workspace";
 
-/** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
+/** Both schemes in one row, as `e2e/accessibility-scan.ts` reads them: a sign-in and a navigation
  *  paid once rather than twice, and each shot names its scheme. */
 const SCHEMES = ["light", "dark"] as const;
 

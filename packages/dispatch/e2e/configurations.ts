@@ -369,9 +369,9 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  Not refused: `--ui e2e/heavy-bodies.e2e.ts` and `e2e/heavy-bodies.e2e.ts --ui` each reach
  *  the user interface's own path and exit 1 on `ProtocolError: Protocol error
  *  (Browser.getVersion): Internal server error, session closed.`, this container having no X
- *  server, and so do `e2e/claim.e2e.ts --grep -- --ui` and `e2e/heavy-bodies.e2e.ts --grep --
- *  --ui`, where `--grep` takes the `--` as its value and the `--ui` after it is the mode the
- *  held file yields to. `--ui-port=0 e2e/heavy-bodies.e2e.ts` and `--ui-port 0
+ *  server, and so does `e2e/heavy-bodies.e2e.ts --grep -- --ui`, where `--grep` takes the `--`
+ *  as its value and the `--ui` after it is the mode the held file yields to.
+ *  `--ui-port=0 e2e/heavy-bodies.e2e.ts` and `--ui-port 0
  *  e2e/heavy-bodies.e2e.ts` each print a listener of their own - `Listening on
  *  http://localhost:45340` and `Listening on http://localhost:29092`, the ports those runs
  *  chose - and hold it open until the 45-second `timeout` killed them, exit 124.
@@ -387,8 +387,9 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  `postDashCount` counts the tokens after the FIRST `--` of its argv, whether or not an option
  *  took that `--` as its value (`const dashDashIndex = process.argv.indexOf("--")`,
  *  `playwright/lib/program.js:51-53`). With one token after the `--` and one filter, as here,
- *  that keeps no filter. So `--list --output -- e2e/claim.e2e.ts` lists the whole default
- *  selection, 1,373 rows in 191 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
+ *  that keeps no filter. So `--list --output -- e2e/claim-unresponsive.e2e.ts` lists the whole
+ *  default selection, 1,479 rows in 209 files, where `--list --output /tmp/o
+ *  e2e/claim-unresponsive.e2e.ts` lists that file's 4 -
  *  the filter is dropped although `--output` swallowed the `--`, which `--list --output --
  *  --not-a-flag` shows it did, that line exiting 1 with `error: unknown option '--not-a-flag'`
  *  rather than the `error: option '--output <dir>' argument missing` of `--list --output`. What
@@ -396,7 +397,7 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  'e2e/heavy.bodies.e2e.ts'`, written as a regex this reader does not answer for, reached the
  *  runner with no filter and a grep of `--` and exited 1 with `Error: No tests found` above
  *  `Total: 0 tests in 0 files`, and `--list --output -- 'e2e/heavy.bodies.e2e.ts'` lists the
- *  1,373 rows of the default selection. Neither run reaches the wall-clock file the person
+ *  1,479 rows of the default selection. Neither run reaches the wall-clock file the person
  *  named, so the refusal, and the command it prints, is the useful answer to both.
  *
  *  A reader that took any `--ui` of the whole argv for the mode would answer `undefined` for
@@ -419,8 +420,8 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  above, where such a token reaches the runner as no filter and the reader refuses a command
  *  Playwright would run, because the file it names is not what that run would run. A reader
  *  that read more than that refuses commands that DO run the files they name - `--grep
- *  heavy-bodies`, `--reporter list e2e/claim.e2e.ts`, `--shuffle e2e/heavy-bodies.e2e.ts`,
- *  whose path is a seed - which is the failure mode that matters here. */
+ *  heavy-bodies`, `--reporter list e2e/claim-unresponsive.e2e.ts`, `--shuffle
+ *  e2e/heavy-bodies.e2e.ts`, whose path is a seed - which is the failure mode that matters here. */
 export function clockFileOnCommandLine(argv: readonly string[]): string | undefined {
   const command = argv.indexOf("test");
   if (command === -1) return undefined;

@@ -224,8 +224,10 @@ When a row may be added to the browser suite:
 - A row joins the pull-request lane only with the `@pr` tag, and a real-stack row carries that tag
   only when a pull request must see its failure first, with a `// @pr: ` line above it that says
   why. Every stubbed row carries the tag. `e2e/__tests__/pull-request-lane.test.ts` holds the lane
-  to at most 330 rows, at most 150 of them outside the stubbed projects. A row without the tag runs
-  in the full lane: the merge queue, a pull request with the `full-ci` label, and the nightly run.
+  to at most 330 rows, at most 150 of them outside the stubbed projects, and counts in both the two
+  rows the `embedder` job of `.github/workflows/dispatch-browser.yaml` runs on every pull request.
+  A row without the tag runs in the full lane: the merge queue, a pull request with the `full-ci`
+  label, and the nightly run.
 
 - A row that fails and then passes on its retry is flaky, and the `merge` job of
   `.github/workflows/dispatch-browser.yaml` names each one in the run's summary. A row that the

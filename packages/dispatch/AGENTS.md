@@ -1917,26 +1917,12 @@ Address the harness as `127.0.0.1:<port>`, never
 a fixture server. `bun run dispatch:local` runs the same harness by hand,
 seeded and signed in, and leaves it running (below, after the port rules).
 
-Three commands, each copied as it stands and run from this package:
-
 ```bash
-bun run e2e -- e2e/claim.e2e.ts --project=chromium
 bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1
 bun run e2e:clock
 ```
 
-The first runs one ordinary spec file. The second runs one wall-clock file in one engine: those
-rows are read from the clock and their three projects are out of the default selection (the
-`-alone` projects, below), so a command that names such a file names its project too, and it
-names `--workers=1` beside it, so the command a reader copies says the one worker its reading
-rests on rather than taking it from the configuration.
-A wider run is refused for the rows that measure through `e2e/main-thread-hold.ts`:
-`refuseASharedRun` there fails such a row in a run of more than one worker, and
-`e2e/agent-workspace-timing.e2e.ts`, which reads a clock of its own, takes its one worker from
-this command.
-The third runs every wall-clock row in all three engines: `e2e:clock` is
-the one script that names the three projects, and it names `--workers=1` beside them, so the
-command the whole wall-clock run is made of says what its readings rest on. Each of `e2e` and
+Each of `e2e` and
 `e2e:clock` builds `@legion/contracts` and the dashboard first, so a reader running both from an
 unchanged tree can skip the second build by calling what `e2e:clock` calls:
 `bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`.
@@ -3404,14 +3390,7 @@ that table carries the router path it stands for, the URL to open against `e2e/r
 corpus, the locator that says the page is drawn, and which of the two layers reviews it, so the
 count of pages each covers is a program's answer rather than a sentence here.
 
-`e2e/accessibility.e2e.ts` opens every page of that table's scan set, in light and in dark, and
-scans each with `@axe-core/playwright` at `wcag2a`, `wcag2aa`, `wcag21a` and `wcag21aa` - WCAG
-2.0 and 2.1 at levels A and AA, and no best-practice rule, since a best practice is not a
-conformance failure and this gate refuses a pull request. One row per page reads both schemes,
-a reset, a seed and a sign-in paid once rather than twice, and each (route, scheme) prints an
-`A11Y …` line with its counts by impact and attaches the whole axe result to the report. A row
-fails on any serious or critical finding no exclusion entry covers. The rows are untagged, so
-`chromium` runs them and the pass reaches every pull request. What axe decides is the part of
+A row fails on any serious or critical finding no exclusion entry covers. What axe decides is the part of
 WCAG a program can decide, which is a minority of it: a keyboard journey that has to end
 somewhere sensible, a reading order a person judges, a label that is present and wrong rather
 than missing, a focus order that is legal and useless - none of those are findings, and all of

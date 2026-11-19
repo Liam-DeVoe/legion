@@ -156,7 +156,7 @@ test("a tap on a board card's agent link opens the agent rather than dragging th
   await expect(page).toHaveURL(new RegExp(`${livePath(runId)}$`));
 });
 
-// A session title is free text (claim.e2e.ts), and a title with no space in it - an id, a
+// A session title is free text (claim.stub.e2e.ts), and a title with no space in it - an id, a
 // snake_case name - is common. Where the component draws the author of a Conversation turn or
 // reply, such a name must wrap or shorten inside the turn and never widen the page, as the claim
 // chip, the Inbox ask card and the margin already hold at both widths.
