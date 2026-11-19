@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The pull-request body line of a result, recorded or derived from a CI run, keeps a first word longer than 80 characters whole, with `…` only where more words follow it, where it used to cut that word at the 80th character.
+time: 2026-11-19T08:09:40Z
+custom:
+  Issue: pr4491
