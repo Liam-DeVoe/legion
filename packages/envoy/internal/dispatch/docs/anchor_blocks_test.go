@@ -231,16 +231,19 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 // waitForHeldOwnerLock returns once a transaction is waiting on owner's lock, which is where a
 // writer that takes it parks while another transaction holds it (store.LockOwner). The lock's own
 // wait queue is that writer's observable position, read as waitForHeldAnchorRefresh reads the
-// test's own key, so nothing here waits a fixed length for a step to happen; the deadline bounds
-// the wait and the failure names the lock it waited for.
+// test's own key, so nothing here waits a fixed length for a step to happen; the wait gives up at
+// the package's guard and the failure names the lock it waited for. It counts the waiters of the
+// test's own database alone: pg_locks lists every database's advisory locks, and a parallel test of
+// another database waiting on its own owner of the same name would end the wait early.
 func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(roomWait(t))
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted and objsubid = 2
+				and database = (select oid from pg_database where datname = current_database())
 				and classid = ($2::bigint & 4294967295)::oid
 				and objid = (hashtext($1)::bigint & 4294967295)::oid
 		`, owner.LockKey(), int64(store.OwnerLockNamespace)).Scan(&waiting); err != nil {

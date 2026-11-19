@@ -1756,11 +1756,6 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 	}
 }
 
-// TestRequestSessionIDFallbackOrder pins requestSessionID's own fallback order (LEGION-587):
-// OMP_SESSION_ID first, then ENVOY_SESSION_ID, then CLAUDE_CODE_SESSION_ID, empty when none is
-// set. This process's own environment may already carry one of the three (a Pi session sets its
-// own OMP_SESSION_ID), so every case sets all three explicitly rather than relying on any being
-// unset already.
 // TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
 // and, when both are set, the nearer of the two harness processes decides.
 func TestRequestSessionIDCodex(t *testing.T) {
@@ -1794,9 +1789,14 @@ func TestRequestSessionIDCodex(t *testing.T) {
 	}
 }
 
-// Serial: it sets process-wide variables, OMP_SESSION_ID, ENVOY_SESSION_ID and
-// CLAUDE_CODE_SESSION_ID, which requestSessionID (identity.go) reads the session's name from in
-// that order; t.Setenv panics under t.Parallel.
+// TestRequestSessionIDFallbackOrder pins requestSessionID's own fallback order (LEGION-587):
+// OMP_SESSION_ID first, then ENVOY_SESSION_ID, then CLAUDE_CODE_SESSION_ID, empty when none is
+// set. This process's own environment may already carry one of the three (a Pi session sets its
+// own OMP_SESSION_ID), so every case sets all three explicitly rather than relying on any being
+// unset already.
+// Serial: it sets process-wide variables, OMP_SESSION_ID, ENVOY_SESSION_ID,
+// CLAUDE_CODE_SESSION_ID and CODEX_THREAD_ID, which requestSessionID (identity.go) reads the
+// session's name from; t.Setenv panics under t.Parallel.
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
 	cases := []struct {
 		name               string
