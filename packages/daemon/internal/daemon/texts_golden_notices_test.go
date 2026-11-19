@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -54,8 +55,9 @@ func (b *goldenBuild) notices(r goldenRendering) {
 			goldenWant("issue", r.key(99), "phase", phase.Admitted, "to", phase.Planning))
 	}
 
-	// worker-died: a failed worker with the failure's record, an architect of a tree, a look of a
-	// production check, and a role off the phase it works.
+	// worker-died: a failed worker with the failure's record, an architect of a tree, with the
+	// sentence and the pod end, and with the sentence and the death cut, a look of a production
+	// check, and a role off the phase it works.
 	failure := &record.NoticeFailure{Cause: "launch_failures", Detail: r.words("died/detail", 90),
 		LaunchFailures: texts.FailureBudget{Count: 2 + r.n, Limit: 3 + r.n}, Deaths: texts.FailureBudget{Count: r.n, Limit: 5},
 		PromptFailures: texts.FailureBudget{Count: 0, Limit: 3}, PromptRetires: texts.FailureBudget{Count: 1, Limit: 2},
@@ -63,8 +65,16 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	b.notice(r, "failure", arch, workflow.WorkerDied(issue.Key, claim.RoleTester, phase.Testing, failure),
 		goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "failure.cause", "launch_failures",
 			"failure.launchFailures.count", 2+r.n, "failure.launchFailures.limit", 3+r.n))
-	b.notice(r, "tree-architect", claim.RoleController, workflow.WorkerDied(r.key(99), arch, phase.Admitted, nil),
-		goldenWant("issue", r.key(99), "role", arch, "phase", phase.Admitted))
+	tree := workflow.WorkerDied(r.key(99), arch, phase.Admitted, nil)
+	tree.Detail = r.words("died/sentence", 70) + " " + goldenHostile[r.n-1][4]
+	tree.PodEnd = "Evicted: " + r.words("died/pod-end", 80)
+	b.notice(r, "tree-architect", claim.RoleController, tree,
+		goldenWant("issue", r.key(99), "role", arch, "phase", phase.Admitted, "detail", tree.Detail, "pod_end", tree.PodEnd))
+	cut := workflow.WorkerDied(r.key(99), arch, phase.Admitted, nil)
+	cut.Detail, cut.DetailCut = r.words("died/cut-sentence", 400), true
+	cut.Death, cut.DeathCut = "gone: "+r.words("died/first-line", 394), true
+	b.notice(r, "tree-architect-death", claim.RoleController, cut,
+		goldenWant("issue", r.key(99), "role", arch, "detail", cut.Detail, "detail_cut", true, "death", cut.Death, "death_cut", true))
 	look := workflow.WorkerDied(r.key(101), claim.RoleTester, "", failure)
 	look.Look = 3 + r.n
 	b.notice(r, "look", arch, look, goldenWant("issue", r.key(101), "role", claim.RoleTester, "look", 3+r.n))
@@ -72,6 +82,22 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	working.Working = phase.Reviewing
 	b.notice(r, "working", arch, working,
 		goldenWant("issue", issue.Key, "role", claim.RoleImplementer, "phase", phase.Reviewing, "working", phase.Reviewing))
+
+	// A failure whose sentence, death and start each hold line breaks, as a run of refused turns,
+	// an account that ends in the role's log and a launcher's error do: the worker-died, here the
+	// controller's copy, and the held notice below carry each on one line, whole
+	// (workflow's failureOnOneLine).
+	lines := *failure
+	lines.Detail = r.words("died/lines-sentence", 60) + "\n" + r.words("died/lines-provider", 50)
+	lines.Death = "gone: " + r.words("died/lines-death", 40) + "; last lines of tester:\n" + r.words("died/lines-log", 40) + "\n\n" +
+		r.words("died/lines-log-2", 30)
+	lines.StartFailure = r.words("died/lines-start", 40) + "\r\n" + r.words("died/lines-git", 30)
+	oneLine := func(text string) string {
+		return strings.Join(strings.FieldsFunc(text, func(c rune) bool { return c == '\n' || c == '\r' }), " / ")
+	}
+	linesWant := goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "failure.detail", oneLine(lines.Detail),
+		"failure.death", oneLine(lines.Death), "failure.startFailure", oneLine(lines.StartFailure))
+	b.notice(r, "failure-lines", claim.RoleController, workflow.WorkerDied(issue.Key, claim.RoleTester, phase.Testing, &lines), linesWant)
 
 	// worker-stalled: the stall backstop's record, with the last call and with none.
 	{
@@ -104,6 +130,7 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "hold", texts.HoldCarried))
 	b.notice(r, "failure", arch, workflow.HeldFailureNotice(issue.Key, claim.RoleTester, phase.Testing, failure),
 		goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "hold", texts.HoldFailure, "failure.cause", "launch_failures"))
+	b.notice(r, "failure-lines", arch, workflow.HeldFailureNotice(issue.Key, claim.RoleTester, phase.Testing, &lines), linesWant)
 	escalation := r.words("held/escalation", 700) + " " + goldenHostile[r.n-1][5]
 	b.notice(r, "escalation", arch, workflow.HeldEscalationNotice(issue.Key, phase.Testing, escalation, now),
 		goldenWant("issue", issue.Key, "phase", phase.Testing, "hold", texts.HoldEscalation, "reason", string(record.HoldEscalated),
@@ -249,6 +276,38 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "detail", detail))
 	b.notice(r, "store-fault", claim.RoleController, workflow.SessionStoreFaultNotice(issue.Key, claim.RoleTester, phase.Testing, detail),
 		goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "detail", detail))
+
+	// volume-near-full: a sweep that left the volume above its low mark, with a name a role
+	// chose that holds a line break, a size read in part, a walk that was cut and lists the
+	// launcher's bound cut; and the report of a trimmer that switched itself off.
+	pod := "pod-" + r.id("volume/pod")
+	sweep := record.VolumeNearFull{PodUID: pod, Trimmer: r.id("volume/trimmer"), Episode: 1 + r.n,
+		RaisedBy:  []string{shimwire.VolumeEpisodeFirst, shimwire.VolumeEpisodeRise}[r.n-1],
+		UsedBytes: int64(40+r.n) << 30, FreeBytes: int64(3-r.n) << 30, FreedBytes: []int64{2 << 30, -(1 << 20)}[r.n-1],
+		StopReason: r.words("volume/stop", 80), RefusedReads: []string{r.words("volume/refused", 30)}, RefusedReadsOmitted: r.n,
+		Sizes: []record.VolumeSize{
+			{Path: "scratch/" + r.words("volume/planted", 30) + "\n" + goldenHostile[r.n-1][5], Bytes: int64(10+r.n) << 30,
+				BytesOverHour: int64(9+r.n) << 30, BytesOverDay: int64(r.n) << 30},
+			{Path: "caches/" + r.words("volume/cache", 20), Bytes: 1 << 30, BytesOverHour: 1 << 20,
+				Refused: "caches/.../" + r.words("volume/under", 20), Refusals: 2 + r.n},
+		},
+		SizesOmitted: r.n, SizesAt: r.at(120), SizesPartial: true,
+		SizesMissing:        []record.VolumeMissing{{Path: "workspaces/" + r.key(102), Reason: "openat: " + r.words("volume/missing", 30)}},
+		SizesMissingOmitted: r.n, Faults: []string{"panic: " + r.words("volume/fault", 50) + "\ngoroutine 9 [running]:"}, FaultsOmitted: r.n}
+	b.notice(r, "sweep", arch, workflow.VolumeNearFullNotice(issue.Key, sweep),
+		goldenWant("issue", issue.Key, "volume.podUid", pod, "volume.trimmer", sweep.Trimmer, "volume.episode", sweep.Episode,
+			"volume.raisedBy", sweep.RaisedBy, "volume.usedBytes", sweep.UsedBytes, "volume.freeBytes", sweep.FreeBytes,
+			"volume.freedBytes", sweep.FreedBytes, "volume.stopReason", sweep.StopReason, "volume.refusedReads", sweep.RefusedReads,
+			"volume.sizes[0].path", strings.ReplaceAll(sweep.Sizes[0].Path, "\n", `\n`), "volume.sizes[0].bytesOverDay", sweep.Sizes[0].BytesOverDay,
+			"volume.sizes[1].refused", sweep.Sizes[1].Refused, "volume.sizesAt", sweep.SizesAt, "volume.sizesPartial", true,
+			"volume.sizesMissing[0].path", sweep.SizesMissing[0].Path, "volume.sizesOmitted", r.n))
+	off := record.VolumeNearFull{PodUID: pod, Trimmer: r.id("volume/off-trimmer"), Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst,
+		UsedBytes: []int64{0, 45 << 30}[r.n-1], FreeBytes: []int64{0, 1 << 30}[r.n-1], StopReason: r.words("volume/off", 60),
+		Faults: []string{"panic: " + r.words("volume/off-fault-1", 50) + "\ngoroutine 9 [running]:", "panic: " + r.words("volume/off-fault-2", 50),
+			"panic: " + r.words("volume/off-fault-3", 50)}, SwitchedOff: true}
+	b.notice(r, "switched-off", arch, workflow.VolumeNearFullNotice(issue.Key, off),
+		goldenWant("issue", issue.Key, "volume.podUid", pod, "volume.switchedOff", true, "volume.usedBytes", off.UsedBytes,
+			"volume.freeBytes", off.FreeBytes, "volume.stopReason", off.StopReason))
 }
 
 // goldenChildWait is a parent whose own first phase waits for its 30 open children: 25 released

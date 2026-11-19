@@ -546,6 +546,10 @@ func urgencySample(t *testing.T, kind texts.Kind, v texts.Variant) record.Notice
 			map[string]any{"claim": string(mustClaimToken(t, urgencyIssue, claim.RoleImplementer)), "role": "implementer", "state": "ready"}}}
 	case texts.ArchitectStalled:
 		fields["arm"] = string(record.ArchitectTookNothing)
+	case texts.VolumeNearFull:
+		fields["volume"] = map[string]any{"podUid": "pod-1", "trimmer": "trim-1", "episode": 1, "raisedBy": "first",
+			"usedBytes": 48 << 30, "freeBytes": 2 << 30, "freedBytes": 1 << 30, "stopReason": "nothing left older than the minimum age",
+			"sizes": []any{}, "sizesAt": "2026-11-11T09:00:00Z"}
 	}
 	encoded, err = json.Marshal(fields)
 	if err != nil {

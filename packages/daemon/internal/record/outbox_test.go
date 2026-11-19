@@ -1056,6 +1056,14 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Detail: "no session store holds ses_1"}),
 		mustNotice(t, texts.SessionStoreFaultRecord{NoticeHead: head(texts.SessionStoreFault), Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Detail: "the session store did not answer", RetryEvery: "1m0s"}),
+		mustNotice(t, texts.VolumeNearFullRecord{NoticeHead: head(texts.VolumeNearFull),
+			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
+				UsedBytes: 48 << 30, FreeBytes: 2 << 30, FreedBytes: 1 << 30,
+				StopReason: "nothing left older than the minimum age", RefusedReads: []string{"pid 42"},
+				Sizes: []VolumeSize{{Path: "caches/uv", Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
+					Refused: "caches/uv/.../locked (depth 2)", Refusals: 3}},
+				SizesAt: answered, SizesPartial: true, SizesMissing: []VolumeMissing{{Path: "workspaces/LEGION-209", Reason: "openat: permission denied"}},
+				Faults: []string{"read the volume: panic: runtime error\nmain.go:1"}}}),
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))

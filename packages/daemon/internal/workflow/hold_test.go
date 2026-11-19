@@ -156,8 +156,9 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // TestASubArchitectsFailedClaimTellsTheArchitectAboveIt), because the evidence each carries is a
 // decision of its own: the worker-died of a role that does not work the issue's phase names the
 // failure too, since that role's architect decides whether to start it again on the same
-// evidence; the tree architect's own names none, as R5 has it, and neither does the one that ends
-// a closed issue's production-check look, whose reason already names the cause.
+// evidence; the tree architect's own carries no failure record and names the sentence in its
+// detail instead, as R5 has it, and the one that ends a closed issue's production-check look
+// names its look beside the failure record.
 func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 	const sentence = "the planner's process died with its task outstanding, and its relaunches ran out"
 	failed := func(issue string, role claim.Role) intake.ClaimFailed {
@@ -213,16 +214,16 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		}
 	})
 
-	t.Run("a tree architect's claim names none", func(t *testing.T) {
+	t.Run("a tree architect's claim names no failure record and its detail names the sentence", func(t *testing.T) {
 		pool := migratedPool(t)
 		seedIssue(t, pool, root)
 
 		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "architect-failed", failed(root.Key, claim.RoleArchitect), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 			t.Fatalf("ApplyFact the architect's failed claim: %v", err)
 		}
-		died := record.Notice{Kind: "worker-died", Issue: root.Key, Role: claim.RoleArchitect, Phase: phase.Planning}
+		died := record.Notice{Kind: "worker-died", Issue: root.Key, Role: claim.RoleArchitect, Phase: phase.Planning, Detail: sentence}
 		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !sameNotices(got, want) {
-			t.Fatalf("notice rows = %+v, want %+v, naming no failure", got, want)
+			t.Fatalf("notice rows = %+v, want %+v, naming no failure record and the sentence as the detail", got, want)
 		}
 	})
 
@@ -254,8 +255,8 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 			}
 		}
 		if len(died) != 1 || died[0].Issue != "LEGION-209" || died[0].Role != claim.RoleTester || died[0].Look != 1 || died[0].Phase != "" ||
-			died[0].Failure == nil || died[0].Failure.Detail != sentence || died[0].Reason != "" {
-			t.Fatalf("worker-died notices of the ended look = %+v, want one of the tester's look 1 naming the failure %q", died, sentence)
+			died[0].Failure == nil || died[0].Failure.Detail != sentence || died[0].Reason != "" || died[0].Detail != "" {
+			t.Fatalf("worker-died notices of the ended look = %+v, want one of the tester's look 1 naming the failure %q in its record alone", died, sentence)
 		}
 	})
 }

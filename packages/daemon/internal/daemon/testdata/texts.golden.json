@@ -1428,6 +1428,82 @@
     },
     {
       "kind": "worker-died",
+      "variant": "failure-lines",
+      "sample": 1,
+      "reader": "controller",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "worker-died on ALPHA-1100",
+      "payload": {
+        "kind": "worker-died",
+        "role": "tester",
+        "phase": "testing",
+        "issue": "ALPHA-1100",
+        "failure": {
+          "cause": "launch_failures",
+          "detail": "zhbaxx puuo urqypz wvp fygofx jzm nbjep fwfnkask dtmxngt jmp / ygrz ydeqwuhzh cugn ckz ekocwd milzg qebi sppva my",
+          "launchFailures": {
+            "count": 3,
+            "limit": 4
+          },
+          "deaths": {
+            "count": 1,
+            "limit": 5
+          },
+          "promptFailures": {
+            "count": 0,
+            "limit": 3
+          },
+          "promptRetires": {
+            "count": 1,
+            "limit": 2
+          },
+          "death": "gone: isqmjq sichhjrsz enkklhep mkfcac vicxuce; last lines of tester: / czcati kgk nagwr suhjfe cjdtj zlvehvk tb / bmjqgilif plrrvtng jubjtzv ieh",
+          "startFailure": "rgwd hsjo hnozyhne eimobh vddswsld rfjp  / jpak fkwj djvr yth pymo iccrxr"
+        }
+      }
+    },
+    {
+      "kind": "worker-died",
+      "variant": "failure-lines",
+      "sample": 2,
+      "reader": "controller",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "worker-died on BRAVO-2100",
+      "payload": {
+        "kind": "worker-died",
+        "role": "tester",
+        "phase": "testing",
+        "issue": "BRAVO-2100",
+        "failure": {
+          "cause": "launch_failures",
+          "detail": "szm hltqz ohjmj msgknnlj mfhfvimn lzmagis qnbg voyykjqqw trn / ooxhzxs pvl qqsvzdtll oswsz favvvarv alzekfszi way",
+          "launchFailures": {
+            "count": 4,
+            "limit": 5
+          },
+          "deaths": {
+            "count": 2,
+            "limit": 5
+          },
+          "promptFailures": {
+            "count": 0,
+            "limit": 3
+          },
+          "promptRetires": {
+            "count": 1,
+            "limit": 2
+          },
+          "death": "gone: axg swnoor otrq qynsbmfbb chyx jtaw gjfq; last lines of tester: / clvbkgoo ccxmm ohlbkk urygp umuvtjhjw cp / eoklin gskua omjy jvpv hapud j",
+          "startFailure": "thkxmp zai wwkjtyukn gbgp ncjitbao tocil / satrw uxvlyju avgfm zvsbk gzjb"
+        }
+      }
+    },
+    {
+      "kind": "worker-died",
       "variant": "look",
       "sample": 1,
       "reader": "architect",
@@ -1515,7 +1591,9 @@
         "kind": "worker-died",
         "role": "architect",
         "phase": "admitted",
-        "issue": "ALPHA-1099"
+        "issue": "ALPHA-1099",
+        "pod_end": "Evicted: mctflfi bofs vkpr qhzlhxc oorrudwi zjpalpmw dne gsqher yqgfhyge afxvnnw azkpmu j",
+        "detail": "dervuulg tgbflboqh tdulz tackjtrlj ecq udcnlzofl xkafl lqnziu psstpil  a, b"
       }
     },
     {
@@ -1531,7 +1609,49 @@
         "kind": "worker-died",
         "role": "architect",
         "phase": "admitted",
-        "issue": "BRAVO-2099"
+        "issue": "BRAVO-2099",
+        "pod_end": "Evicted: xxcabca bqv nazenkhah upn eooyjtxy vtzczxj sklyrdwwi gzenq xxoz jma nxg ecywwy a",
+        "detail": "dlobf qkkvtmu fijygx vqomj jwowdby zjmiyr lev jgk zjdt ifmqtmoj qiktu  say \"so\""
+      }
+    },
+    {
+      "kind": "worker-died",
+      "variant": "tree-architect-death",
+      "sample": 1,
+      "reader": "controller",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1099",
+      "summary": "worker-died on ALPHA-1099",
+      "payload": {
+        "kind": "worker-died",
+        "role": "architect",
+        "phase": "admitted",
+        "issue": "ALPHA-1099",
+        "detail_cut": true,
+        "death": "gone: xxlchsr iksojb pim gwhcmitp uev haoy tbv cwrgx urlglgr uuefyikp zdrkeox ehz zukqprb fxno kmzyckz pvwljddah kxad tzbtbdhu ndc csd cvmdzd uvbwutpx unpptafbv cfsxha lhmzbdym fvayjz rtzbdyo vwziuwpfy mbpxo twesc kjjwijdof mkv sctlliscf lekfxat nepbkap glkgsqmwy ekzen llgjzb hafa affoefhty zozefsx ekjkg vkwla oeplbzvmf wxu rxhbz omaibfrwy xraz jiqsfd ugwal pwdthnr siwfkr ijwnqec cxg pnwtf yle vws",
+        "death_cut": true,
+        "detail": "qwnixel rfwjk xrn uocbrlzsh oskelzd eanntpyl rzsk nltxkh ztkdlwyq afyc mbihume rna fjjr agq bdlnpdkt gqdtxz jtqw zcmiybl bqefvq lmvgpahrt jhnpwevk hewuh irr njjszje uws gkprvqluj jqmffey gpytmrhbu tpnaya studk ffr ifka sqmmjqhus bxegll ygc wtmmhfm rjuhbi xwyzn xglvdtx xizpyrwyy fzfewo qecomucy jwc gpyctj nedyg pdfsw mmpeonmr obnboc fnnewr kqexvclh aozofc mwnyjtnn lftzeubqb agogf ljve fwhbv bqczv u"
+      }
+    },
+    {
+      "kind": "worker-died",
+      "variant": "tree-architect-death",
+      "sample": 2,
+      "reader": "controller",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2099",
+      "summary": "worker-died on BRAVO-2099",
+      "payload": {
+        "kind": "worker-died",
+        "role": "architect",
+        "phase": "admitted",
+        "issue": "BRAVO-2099",
+        "detail_cut": true,
+        "death": "gone: yxct trdqj qwywk ivmlhcaf zvqozg pvrlqhg hjwqejpuw zrc fgikbajn ojp zwvorisv fwve sul qjdgxua rszbfwj zbv jbpioj iem rmlneqmj fmbia lkwqj nmakocs rqynr xekvtgee uqqxq mamoylm milyve rsm zsx ngl lrwilomz yxgq fgqizepn rvnrg ncsxwv mobbzncjg muug axobqnzkq htli ywlfhmhfm jfsxrk jytc jgpb gkuohv crtj fnvyesdtw cvzp dihikxv brdseiuf tyjnq hprvs eschzcf dlbfdsyoj biq yxdkmo ikyzurl vfzkbrf buaqw ",
+        "death_cut": true,
+        "detail": "msd sizetuklw yoc qrpyr rzcnopuj ztaddzhyf jdnrfo ehazstbqs mnbtlsp tyitug vcilqpki xmqpnxcge hgjezg oihgha loxe aqnq ehm taj oomxrbzhu obxggwggs maffneo wqvlnkqet qgf khrjkn sohegjhuw cwwre kedwfvtbt jpxzepv undlgpr cnxu zcqectv ahuehjt jpuybktwo zazs dnxato tpe bjmkwofea iphp ucztpk ukszwtlk csbskarl jxzny bqpkzb uaqpxu sqavlduxl dzvxnfm zulzqn rqc apvavbrl znmwum ehi mgnbknaw rfzybr ioka kdqdwq"
       }
     },
     {
@@ -1959,6 +2079,84 @@
           },
           "death": "kgntl nisu gouifpik wphxgso euoystl iiez",
           "startFailure": "kdrmsnl bgkkgudr hieaeli kukjj"
+        },
+        "hold": "failure"
+      }
+    },
+    {
+      "kind": "held",
+      "variant": "failure-lines",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "held on ALPHA-1100",
+      "payload": {
+        "kind": "held",
+        "role": "tester",
+        "phase": "testing",
+        "issue": "ALPHA-1100",
+        "failure": {
+          "cause": "launch_failures",
+          "detail": "zhbaxx puuo urqypz wvp fygofx jzm nbjep fwfnkask dtmxngt jmp / ygrz ydeqwuhzh cugn ckz ekocwd milzg qebi sppva my",
+          "launchFailures": {
+            "count": 3,
+            "limit": 4
+          },
+          "deaths": {
+            "count": 1,
+            "limit": 5
+          },
+          "promptFailures": {
+            "count": 0,
+            "limit": 3
+          },
+          "promptRetires": {
+            "count": 1,
+            "limit": 2
+          },
+          "death": "gone: isqmjq sichhjrsz enkklhep mkfcac vicxuce; last lines of tester: / czcati kgk nagwr suhjfe cjdtj zlvehvk tb / bmjqgilif plrrvtng jubjtzv ieh",
+          "startFailure": "rgwd hsjo hnozyhne eimobh vddswsld rfjp  / jpak fkwj djvr yth pymo iccrxr"
+        },
+        "hold": "failure"
+      }
+    },
+    {
+      "kind": "held",
+      "variant": "failure-lines",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "held on BRAVO-2100",
+      "payload": {
+        "kind": "held",
+        "role": "tester",
+        "phase": "testing",
+        "issue": "BRAVO-2100",
+        "failure": {
+          "cause": "launch_failures",
+          "detail": "szm hltqz ohjmj msgknnlj mfhfvimn lzmagis qnbg voyykjqqw trn / ooxhzxs pvl qqsvzdtll oswsz favvvarv alzekfszi way",
+          "launchFailures": {
+            "count": 4,
+            "limit": 5
+          },
+          "deaths": {
+            "count": 2,
+            "limit": 5
+          },
+          "promptFailures": {
+            "count": 0,
+            "limit": 3
+          },
+          "promptRetires": {
+            "count": 1,
+            "limit": 2
+          },
+          "death": "gone: axg swnoor otrq qynsbmfbb chyx jtaw gjfq; last lines of tester: / clvbkgoo ccxmm ohlbkk urygp umuvtjhjw cp / eoklin gskua omjy jvpv hapud j",
+          "startFailure": "thkxmp zai wwkjtyukn gbgp ncjitbao tocil / satrw uxvlyju avgfm zvsbk gzjb"
         },
         "hold": "failure"
       }
@@ -4760,6 +4958,186 @@
         "status": "testing",
         "session": "session-aec6948b-57ad-d5c6-44c5-a1baa95bdf3e",
         "wrote": "done"
+      }
+    },
+    {
+      "kind": "volume-near-full",
+      "variant": "sweep",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "volume-near-full on ALPHA-1100",
+      "payload": {
+        "kind": "volume-near-full",
+        "issue": "ALPHA-1100",
+        "volume": {
+          "podUid": "pod-3e832f05-b492-a3a9-a403-21a500462afc",
+          "trimmer": "dcbb2f6c-d539-f757-a101-4534f01b828e",
+          "episode": 2,
+          "raisedBy": "first",
+          "usedBytes": 44023414784,
+          "freeBytes": 2147483648,
+          "freedBytes": 2147483648,
+          "stopReason": "gvhhis tzjubobwu fnhx bdhwqd nptyptvy asyph wcn fhmwbtege doshkxvg wjop gseemz y",
+          "refusedReads": [
+            "prsbcw wyanpe xrbnywdk dyvbduz"
+          ],
+          "refusedReadsOmitted": 1,
+          "sizes": [
+            {
+              "path": "scratch/jbwbtmqkd nbyvwk kwwslvnr rcaq\\na: b",
+              "bytes": 11811160064,
+              "bytesOverHour": 10737418240,
+              "bytesOverDay": 1073741824
+            },
+            {
+              "path": "caches/kbk gamzi yhq ejznny",
+              "bytes": 1073741824,
+              "bytesOverHour": 1048576,
+              "bytesOverDay": 0,
+              "refused": "caches/.../ddignp pwkal tybnoxu",
+              "refusals": 3
+            }
+          ],
+          "sizesOmitted": 1,
+          "sizesAt": "2026-11-18T11:30:00Z",
+          "sizesPartial": true,
+          "sizesMissing": [
+            {
+              "path": "workspaces/ALPHA-1102",
+              "reason": "openat: zjzukrs uuakob weyd mcv fkdisi"
+            }
+          ],
+          "sizesMissingOmitted": 1,
+          "faults": [
+            "panic: unpxnxdgo rlekrghp bqog cmsojr frcvmo jaerumqb vfj\\ngoroutine 9 [running]:"
+          ],
+          "faultsOmitted": 1
+        }
+      }
+    },
+    {
+      "kind": "volume-near-full",
+      "variant": "sweep",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "volume-near-full on BRAVO-2100",
+      "payload": {
+        "kind": "volume-near-full",
+        "issue": "BRAVO-2100",
+        "volume": {
+          "podUid": "pod-f35a787f-4e16-d548-3002-51b313271cfc",
+          "trimmer": "4cf4b696-5eb4-fcec-1627-42f96b72ac08",
+          "episode": 3,
+          "raisedBy": "rise",
+          "usedBytes": 45097156608,
+          "freeBytes": 1073741824,
+          "freedBytes": -1048576,
+          "stopReason": "ywy ifwjsdvol rfvqn asjrton txht wyr mwfk mkjbwj rqnltrpg glkxzs ill jqy mjcdgn ",
+          "refusedReads": [
+            "xhakrtzy ktdw kwjfybkw lzj uiv"
+          ],
+          "refusedReadsOmitted": 2,
+          "sizes": [
+            {
+              "path": "scratch/rcsg zatwcrxqu ybzoaxp fuzv ff\\nback\\slash",
+              "bytes": 12884901888,
+              "bytesOverHour": 11811160064,
+              "bytesOverDay": 2147483648
+            },
+            {
+              "path": "caches/qkfmjob lcl jgonu ha",
+              "bytes": 1073741824,
+              "bytesOverHour": 1048576,
+              "bytesOverDay": 0,
+              "refused": "caches/.../xvkqzyk ncblxrp kwca",
+              "refusals": 4
+            }
+          ],
+          "sizesOmitted": 2,
+          "sizesAt": "2027-04-07T18:45:00Z",
+          "sizesPartial": true,
+          "sizesMissing": [
+            {
+              "path": "workspaces/BRAVO-2102",
+              "reason": "openat: phacaxm zklalp twlch ihixqefxx"
+            }
+          ],
+          "sizesMissingOmitted": 2,
+          "faults": [
+            "panic: dqa nbvqcsmx znefjoqzl lxyegq dyaaw zwy xazo qocdm\\ngoroutine 9 [running]:"
+          ],
+          "faultsOmitted": 2
+        }
+      }
+    },
+    {
+      "kind": "volume-near-full",
+      "variant": "switched-off",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "volume-near-full on ALPHA-1100",
+      "payload": {
+        "kind": "volume-near-full",
+        "issue": "ALPHA-1100",
+        "volume": {
+          "podUid": "pod-3e832f05-b492-a3a9-a403-21a500462afc",
+          "trimmer": "5cc00ba3-f37b-dbc0-e83c-3aed7623cd41",
+          "episode": 1,
+          "raisedBy": "first",
+          "usedBytes": 0,
+          "freeBytes": 0,
+          "freedBytes": 0,
+          "stopReason": "vqnpxl cuzusqgik ydzx blkjzpwmi sbxlzh hogdveu muresnib uje ",
+          "sizes": [],
+          "sizesAt": "0001-01-01T00:00:00Z",
+          "faults": [
+            "panic: fabtvrk vyedfeuz ugbyvapv tfinaaghs ourddrv qszaan\\ngoroutine 9 [running]:",
+            "panic: hpikvz exfw uomu itflywbj cewz djhpewloq zrljqbxbo",
+            "panic: xqpd cmal xzel fvkyen mdoarmk sfywm zrurkh gyu rjm"
+          ],
+          "switchedOff": true
+        }
+      }
+    },
+    {
+      "kind": "volume-near-full",
+      "variant": "switched-off",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "volume-near-full on BRAVO-2100",
+      "payload": {
+        "kind": "volume-near-full",
+        "issue": "BRAVO-2100",
+        "volume": {
+          "podUid": "pod-f35a787f-4e16-d548-3002-51b313271cfc",
+          "trimmer": "34dcda6a-ec1f-eb30-867d-f4b3c8ae621d",
+          "episode": 1,
+          "raisedBy": "first",
+          "usedBytes": 48318382080,
+          "freeBytes": 1073741824,
+          "freedBytes": 0,
+          "stopReason": "onysxhwpw jqnhq aixmndpf smgxuxt cig gfqjrts ybtkitxrl xnxwz",
+          "sizes": [],
+          "sizesAt": "0001-01-01T00:00:00Z",
+          "faults": [
+            "panic: wie aprsq yyw lhfeq kpiauqx ipfh klikvvu llyksaf p\\ngoroutine 9 [running]:",
+            "panic: npq oatlsrnf qygix yyo zoan lpwis kcqmbp ctnobqt s",
+            "panic: rcyqfs ygcyancb qluz frcj oaebwkx vek cqvicv osuhc"
+          ],
+          "switchedOff": true
+        }
       }
     },
     {

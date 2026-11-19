@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -18,7 +20,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
@@ -298,6 +302,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.listenerWake(ctx, tx, fact)
 	case intake.PodBackstopDue:
 		return e.podBackstopDue(ctx, tx, fact)
+	case intake.VolumeNearFull:
+		return e.volumeNearFull(ctx, tx, fact)
 	case intake.WorkerSilent:
 		return e.workerSilent(ctx, tx, fact)
 	case intake.WorkerBackgroundStalled:
@@ -952,8 +958,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // the four counts the failure left, each against the limit it ran out at (noticeFailure). The
 // worker-died of a role that does not work the issue's phase names it too, since that role's
 // architect decides whether to start it again on the same evidence. The tree architect's own
-// worker-died names none: nobody inside the tree is left to read it, and the operator who
-// relaunches that architect reads the claim's own record (api.ClaimFailureView).
+// worker-died carries no failure record, so it names the sentence as its detail instead, with the
+// pod end when the claim holds one, or else, for a claim that failed because its process died,
+// the first line of the runtime's account of that death (diedOf): it is the one notice of that
+// failure the architect and the controller are sent.
 //
 // A child's own architect works no phase but its child's acceptance (accepting), where no worker
 // runs: the daemon starts it with the child's first phase (StartFirstPhase). Its claim failing
@@ -986,7 +994,9 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, WorkerDied(issue.Key, fact.Role, issue.Phase, nil))
+		died := WorkerDied(issue.Key, fact.Role, issue.Phase, nil)
+		diedOf(&died, fact, false)
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, died)
 	}
 	if fact.Role == claim.RoleArchitect {
 		if !record.InWorkflow(*issue) {
@@ -1018,9 +1028,11 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			died := WorkerDied(issue.Key, fact.Role, "", noticeFailure(fact))
 			died.Look = check.Looks
 			if died.Failure == nil {
-				// A failure that recorded no cause (a fact an older daemon recorded) still
-				// names why the claim failed, in the sentence its site wrote.
-				died.Detail = fact.Reason
+				// A failure that recorded no cause (a fact an older daemon recorded) still names
+				// why the claim failed, in the sentence its site wrote. That sentence is text the
+				// daemon did not write, so it is carried on one line and bounded, as every
+				// worker-died's detail is (oneBoundedLine); a failure record keeps it whole.
+				died.Detail, died.DetailCut = oneBoundedLine(fact.Reason)
 			}
 			return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
 		}
@@ -1055,21 +1067,383 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.noticeWithController(ctx, tx, issue.Key, HeldFailureNotice(issue.Key, fact.Role, from, failure)); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, WorkerDied(issue.Key, fact.Role, from, failure))
+	died := WorkerDied(issue.Key, fact.Role, from, failure)
+	diedOf(&died, fact, failure != nil)
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
 }
 
 // WorkerDied is the worker-died notice of issue that role's claim failed, at the issue's phase
 // (empty where the notice names none, as a production check's look does), with the failure where
-// the daemon recorded its cause.
+// the daemon recorded its cause, its texts on one line (failureOnOneLine).
 func WorkerDied(issue string, role claim.Role, at phase.Phase, failure *record.NoticeFailure) texts.WorkerDiedRecord {
-	return texts.WorkerDiedRecord{NoticeHead: texts.NoticeHead{Kind: texts.WorkerDied, Issue: issue}, Role: role, Phase: at, Failure: failure}
+	return texts.WorkerDiedRecord{NoticeHead: texts.NoticeHead{Kind: texts.WorkerDied, Issue: issue}, Role: role, Phase: at,
+		Failure: failureOnOneLine(failure)}
 }
 
 // HeldFailureNotice is the held notice of issue that role's claim failed in the phase from, which
-// it now holds, with the failure where the daemon recorded its cause (texts.HoldFailure).
+// it now holds, with the failure where the daemon recorded its cause (texts.HoldFailure), its
+// texts on one line (failureOnOneLine).
 func HeldFailureNotice(issue string, role claim.Role, from phase.Phase, failure *record.NoticeFailure) texts.HeldRecord {
 	return texts.HeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.Held, Issue: issue}, Role: role, Phase: from, Hold: texts.HoldFailure,
-		Failure: failure}
+		Failure: failureOnOneLine(failure)}
+}
+
+// failureOnOneLine is failure as a notice carries it: its sentence, its account of the death and
+// its account of the start each whole and on one line (lineJoined), by the rule the worker-died's
+// own detail and death follow. The account of a death ends in a tail of the role's log over many
+// lines, a sentence of refused turns holds the provider's message, and a start's account can run
+// over lines too, so as they came each would be a value over several lines, which the card that
+// shows the notice can write only with an escaped new line. It is a copy where any of the three
+// holds a line break, and failure itself, nil included, where none does: the failure the caller
+// holds is never written, so the held notice and the worker-died built from one value name the
+// same failure, and the claim keeps each text as it came (supervise.Claim.Failure,
+// LastDeathCause and LastStartFailure), where the claim's failure record that read_record serves
+// reads it (api's FailureViewOf).
+func failureOnOneLine(failure *record.NoticeFailure) *record.NoticeFailure {
+	if failure == nil || !hasLineBreak(failure.Detail) && !hasLineBreak(failure.Death) && !hasLineBreak(failure.StartFailure) {
+		return failure
+	}
+	written := *failure
+	written.Detail, written.Death, written.StartFailure = lineJoined(failure.Detail), lineJoined(failure.Death), lineJoined(failure.StartFailure)
+	return &written
+}
+
+// diedOf puts on died what ended the claim's process, on the two paths that name nothing else of
+// it — the tree architect's and the held phase's. It names the supervisor's own sentence
+// (supervise.Claim.Failure, intake.ClaimFailed.Reason) as the notice's detail, then what ended the
+// process: the pod end it was last observed to have died of (supervise.Claim.PodEnd), which is the
+// cause no role chose — an eviction for ephemeral storage above all — or, where the claim holds no
+// pod end and failed because its process died, the first line of the runtime's account of that
+// death (supervise.Claim.LastDeathCause, intake.ClaimFailed.Death) as its death. Any of them the
+// fact does not hold is left out. The sentence and the death are each one line and cut to a bound
+// (oneBoundedLine), and the notice says where it cut one (DetailCut, DeathCut), so neither a
+// provider's message nor a role's log writes a line of its own into the notice, and the notice's
+// size is one this package chose; the pod end is the kubelet's reason and message, bounded where it
+// is built (runtime.PodEnd). Each is a field of its own, so nothing in the sentence reads as the
+// pod end or the death: a provider's message that ends in `the pod ended: Evicted: …` stays inside
+// the detail. All three are persisted on the claim, so the boot's replay of a failure no daemon
+// applied says the same thing (the daemon's replayTerminal).
+//
+// The death is named only where there is no pod end, because on a pod the cluster ended it is
+// the runtime's whole detail (sandbox's Runtime.ended): the pod's reason and the kubelet's
+// message, which are the pod end, and after them a tail of the role's log and the container's.
+// Its first line holds that reason and message too, so beside the pod end it would name the
+// kubelet's message twice.
+//
+// It is named only where the fact's cause is supervise.CauseDied, too: the death is written at
+// every death of the claim and cleared by nothing (supervise's died), so a claim that died, was
+// launched again and then failed for something else — its provider's refusals, its prompt
+// retirements, an agent that never registered — still holds the account of the earlier death,
+// and beside that failure the notice would name an end that did not cause it: an old eviction
+// beside a provider error, which reads as the cluster's fault. A fact whose cause is "" or
+// `unrecorded` does not say the process's death failed it either, so it names no death. The pod
+// end needs no such test: each launch clears it (supervise's launchNow), so a fact that carries
+// one failed with no launch since the death that wrote it.
+//
+// failureCarried says the notice carries a failure record, as the held phase's does whenever the
+// fact names a cause. That record's detail already carries the sentence and its death the
+// runtime's account (noticeFailure), so such a notice names the pod end alone, since repeating
+// either would say one thing twice. The tree architect's notice carries no failure record, and
+// neither does a held phase's whose fact names no cause, so they name the sentence and the pod
+// end, and the tree architect's, where there is no pod end and its claim failed because it died,
+// the death: without them the notice would say nothing of why the claim failed. A held phase's
+// fact that names no cause does not name died either, so it names no death.
+//
+// The two other paths name what they name: a role that does not work the issue's phase names the
+// phase the issue works (Working) beside its failure record, and a checking role of a closed
+// issue names its look (Look) beside its failure record, or the sentence as its detail where the
+// fact names no cause (claimFailed).
+func diedOf(died *texts.WorkerDiedRecord, fact intake.ClaimFailed, failureCarried bool) {
+	if !failureCarried && fact.Reason != "" {
+		died.Detail, died.DetailCut = oneBoundedLine(fact.Reason)
+	}
+	switch {
+	case fact.PodEnd != "":
+		died.PodEnd = lineJoined(fact.PodEnd)
+	case !failureCarried && fact.Cause == supervise.CauseDied && fact.Death != "":
+		died.Death, died.DeathCut = oneBoundedLine(deathFirstLine(fact.Death))
+	}
+}
+
+// oneBoundedLine is a text the daemon did not write as a worker-died carries it in a field of
+// its own — the supervisor's sentence, the first line of the runtime's account of a death — and
+// whether the bound cut it: the text on one line (lineJoined) and cut to runtime.PodEndRunes
+// runes, the bound the pod end beside it is cut to. For a run of refused turns the sentence holds
+// the provider's message as the role's own plugin posted it (supervise's refusalCause, api's
+// turn-outcome route), which can run to a mebibyte over many lines; the claim and a failure
+// record's `detail` keep it whole (noticeFailure). The text is cut at the bound before its line
+// breaks are written, so no more of a mebibyte is read than the bound keeps, and again after,
+// since " / " is longer than the break it replaces. The cut falls between two characters, never
+// inside one.
+func oneBoundedLine(text string) (string, bool) {
+	cut := false
+	if at := runeOffset(text, runtime.PodEndRunes); at < len(text) {
+		text, cut = text[:at], true
+	}
+	text = lineJoined(text)
+	if at := runeOffset(text, runtime.PodEndRunes); at < len(text) {
+		text, cut = text[:at], true
+	}
+	return text, cut
+}
+
+// lineJoined is text as a worker-died writes a text of the runtime's or the supervisor's on one
+// line: each run of line breaks between two pieces of the text written as " / " and any at either
+// end dropped. The pod end goes through it too, since a kubelet's message is the cluster's text and
+// nothing holds it to one line. Text with no line break is returned as it is.
+func lineJoined(text string) string {
+	if !hasLineBreak(text) {
+		return text
+	}
+	return strings.Join(strings.FieldsFunc(text, isLineBreak), " / ")
+}
+
+// hasLineBreak is whether text holds a character that breaks a line (isLineBreak).
+func hasLineBreak(text string) bool {
+	return strings.IndexFunc(text, isLineBreak) >= 0
+}
+
+// lineEscaped is text on one line with every character of it kept: each character that breaks a
+// line (isLineBreak) written as Go writes it in a string, `\n` for a line feed and `\u2028` for
+// the line separator, and every other byte as it was. Text with no line break is returned as it
+// is.
+func lineEscaped(text string) string {
+	at := strings.IndexFunc(text, isLineBreak)
+	if at < 0 {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text) + 8)
+	for at >= 0 {
+		r, size := utf8.DecodeRuneInString(text[at:])
+		quoted := strconv.QuoteRune(r)
+		b.WriteString(text[:at])
+		b.WriteString(quoted[1 : len(quoted)-1])
+		text = text[at+size:]
+		at = strings.IndexFunc(text, isLineBreak)
+	}
+	b.WriteString(text)
+	return b.String()
+}
+
+// linesEscaped is list with each item lineEscaped, and list itself where no item holds a line
+// break, so the list the caller holds is never written to.
+func linesEscaped(list []string) []string {
+	if !slices.ContainsFunc(list, hasLineBreak) {
+		return list
+	}
+	escaped := make([]string, len(list))
+	for i, item := range list {
+		escaped[i] = lineEscaped(item)
+	}
+	return escaped
+}
+
+// isLineBreak is whether r ends a line where the notice is read: a line feed, a carriage return,
+// a vertical tab, a form feed, a next line, or Unicode's line and paragraph separators.
+func isLineBreak(r rune) bool {
+	switch r {
+	case '\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029':
+		return true
+	}
+	return false
+}
+
+// runeOffset is the byte offset of the rune n runes into s, and len(s) where s holds n runes or
+// fewer.
+func runeOffset(s string, n int) int {
+	at := 0
+	for ; n > 0 && at < len(s); n-- {
+		_, size := utf8.DecodeRuneInString(s[at:])
+		at += size
+	}
+	return at
+}
+
+// deathFirstLine is the part of a death the worker-died carries where it carries no failure
+// record: its first line — the verdict and the start of the runtime's account — without the
+// header of a log tail that ends it. The sandbox runtime ends that line with "; last lines of
+// <role>:" and writes the tail of the role's log and of the container's on the lines after it,
+// among them lines a role wrote: carried whole, each of those became a line of the architect's
+// notice. The whole account stays on the claim (supervise.Claim.LastDeathCause), where an
+// operator reads it, and in the `death` of the failure record a notice carries when the fact
+// names a cause (noticeFailure). The line itself can run long — for a pod left unscheduled past
+// the boot timeout it holds the scheduler's message and the pod's events joined (sandbox's
+// Runtime.verdict) — so it is cut where it is written (diedOf, oneBoundedLine).
+func deathFirstLine(death string) string {
+	first, _, cut := strings.Cut(death, "\n")
+	if at := strings.LastIndex(first, "; last lines of "); cut && at >= 0 && strings.HasSuffix(first, ":") {
+		first = first[:at]
+	}
+	return first
+}
+
+// The bounds on what an issue's architect is told about its pod's volume filling, and the two
+// log lines that say which way a report went.
+//
+// A filling pod can report every sweep, and the notice is a wake of the architect's session.
+// VolumeNoticeCap is the most an architect hears for one trimmer and one episode: three is
+// enough to show a trend — it is filling, the trimmer is not keeping up, here is what is in it —
+// and a fourth says nothing the third did not. Two kinds of report pass a bound
+// (volumeNoticeHeldBy): one whose episode a rise raised skips the hour below and not the cap, so
+// each rise episode costs up to three notices however recent the pod's last one was, and the
+// report that the trimmer switched itself off skips both. Every other report of one pod waits
+// VolumeNoticePodInterval from the pod's newest notice, whatever trimmer or episode wrote it, so
+// an episode that ends and another that opens a minute later is still one notice an hour.
+//
+// Both lines begin with VolumeNoticeLinePrefix and each names the issue, the pod, the trimmer,
+// the episode and the count, because the issue's production check reads them from the daemon's
+// log to prove the bounds hold. They are constants so the check and this package name one
+// string.
+const (
+	VolumeNoticeCap         = 3
+	VolumeNoticePodInterval = time.Hour
+
+	VolumeNoticeLinePrefix = "volume near full: "
+	VolumeNoticeWritten    = VolumeNoticeLinePrefix + "the issue's architect was told its pod's volume is filling"
+	VolumeNoticeSuppressed = VolumeNoticeLinePrefix + "a bound held the notice of a sweep that left the pod's volume above its low mark"
+)
+
+// volumeNearFull applies one sweep of an issue pod's volume as that pod's launcher reported it
+// (intake.VolumeNearFull). The launcher reports only a sweep that ended with the volume still
+// above its low mark, and the one report no sweep makes — the trimmer having switched itself off
+// after three faults — so every fact that arrives here is one the architect may need; what this
+// decides is which of them it is told, and it records the telling in the same transaction as the
+// notice.
+//
+// An issue the daemon does not record, and one whose tree lingers after leaving the workflow,
+// write nothing: there is nobody in such a tree to act, as there is nobody for a worker-died of
+// a lingering member. An engine built without the pod tables records nothing either, exactly as
+// it wakes nothing (Config.Pods).
+//
+// The bounds are read and written through the store, never kept here, because a daemon that
+// restarts in the middle of a filling pod's episode would otherwise start the count over and
+// tell that architect three more times — on exactly the pod that keeps reporting.
+func (e *Engine) volumeNearFull(ctx context.Context, tx pgx.Tx, fact intake.VolumeNearFull) (intake.Result, error) {
+	if e.cfg.Pods == nil {
+		return intake.Result{}, nil
+	}
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+		return intake.Result{}, err
+	}
+	report := fact.Report
+	// The pod is the session's, never the report's: a launcher is authenticated for one pod and
+	// cannot name another's volume (sandbox's volumeReported).
+	report.PodUID = fact.PodUID
+	counts, err := e.cfg.Pods.VolumeNoticeCounts(ctx, tx, issue.Key, fact.PodUID, report.Trimmer, report.Episode)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	now := e.now()
+	if held := volumeNoticeHeldBy(report, counts, now); held != "" {
+		e.logOnCommit(ctx, VolumeNoticeSuppressed, "issue", issue.Key, "pod", fact.PodUID, "trimmer", report.Trimmer,
+			"episode", report.Episode, "notices", counts.Notices, "bound", held,
+			"raisedBy", report.RaisedBy, "usedBytes", report.UsedBytes, "freeBytes", report.FreeBytes)
+		return intake.Result{}, nil
+	}
+	// The count and the notice are one write: a notice the listener cannot hand to an architect
+	// that is not there is still a notice spent, and a transaction that rolls back has spent
+	// none.
+	notices, err := e.cfg.Pods.RecordVolumeNotice(ctx, tx, issue.Key, fact.PodUID, report.Trimmer, report.Episode, now)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.notice(ctx, tx, issue.Key, VolumeNearFullNotice(issue.Key, report)); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, VolumeNoticeWritten, "issue", issue.Key, "pod", fact.PodUID, "trimmer", report.Trimmer,
+		"episode", report.Episode, "notices", notices,
+		"raisedBy", report.RaisedBy, "usedBytes", report.UsedBytes, "freeBytes", report.FreeBytes,
+		"switchedOff", report.SwitchedOff)
+	return intake.Result{}, nil
+}
+
+// volumeNoticeHeldBy is the bound that holds report back, and "" for a report that is sent. The
+// order is the order the rules override each other in:
+//
+//   - A trimmer that has switched itself off is sent whatever the counts stand at. The
+//     protection this notice exists for has stopped, on exactly the pod that has been reporting,
+//     and the bounds would otherwise swallow the one report that says so.
+//   - Three notices for one trimmer and episode is all an architect hears of that episode,
+//     however long it runs and whatever raises a reading inside it. A new trimmer identifier is
+//     a new line and starts the count over, which the key gives: a restarted roles container
+//     mints one.
+//   - A report whose episode a rise raised (shimwire.VolumeEpisodeRise) is sent however recent
+//     the pod's last notice was, where one whose episode a recovery raised waits for the hour.
+//     The launcher raises an episode that way at the start of a reported sweep, where the lower
+//     of that start and the one before it stands five points or more above the episode's
+//     anchor, and at no smaller climb (internal/launcher's riseAt). The anchor is the lowest
+//     start of the episode's reported sweeps where no rise raised it, and the floor that raised
+//     it where one did, which never moves, so until a recovery a chain whose anchor is A at its
+//     first rise holds at most (100 − A) / 5 rises, rounded down: (100 − high mark) / 5 for one
+//     anchored at the high mark. An anchor above 95% can never be passed, since a reading is at
+//     most 100%, so no rise follows one; the bound above holds every episode to three notices
+//     however it was raised. This function reads the word alone.
+//   - Everything else waits an hour from the pod's newest notice, whatever trimmer or episode
+//     wrote it — a recovery-raised episode included, which is a volume doing what it did before.
+func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeCounts, now time.Time) string {
+	if report.SwitchedOff {
+		return ""
+	}
+	if counts.Notices >= VolumeNoticeCap {
+		return fmt.Sprintf("%d notices already written for this trimmer and episode", counts.Notices)
+	}
+	if report.RaisedBy == shimwire.VolumeEpisodeRise {
+		return ""
+	}
+	if !counts.LastAt.IsZero() && now.Sub(counts.LastAt) < VolumeNoticePodInterval {
+		return fmt.Sprintf("the pod's last notice was %s ago, inside the %s this bound gives one pod",
+			now.Sub(counts.LastAt).Round(time.Second), VolumeNoticePodInterval)
+	}
+	return ""
+}
+
+// VolumeNearFullNotice is the volume-near-full notice of issue: one sweep of its pod's volume as
+// the pod's launcher reported it, with the pod the session named (texts.VolumeSweep). The notice
+// states the sweep's facts and writes no sentence of them. Every string of it comes from the pod
+// — a path two levels under /legion, which a role of the pod chose (/legion/scratch is writable
+// by the role uid), the reason the kernel gave for a refused read, the trimmer's stop reason and
+// its faults, each a recovered panic with its stack, the trimmer's identifier and what raised its
+// episode — and each is written on one line with every character kept (lineEscaped): a value of
+// a daemon text is one line of the card that shows it, a name a role chose is told as it is on
+// the disk, and a fault keeps its stack. The lists the caller's report holds are copied before
+// any of them is written, never written in place. How the architect reads the fields — a sweep
+// told in the past, since the frame carries no time for it and the launcher holds a report
+// through an outage; a negative freedBytes as the volume growing while the sweep ran; a size as
+// the apparent size of the files at or under its path, with a file linked under several names
+// counted under each; a size with a refused read as a lower bound; the bound that left entries
+// out of a list; a line break written as Go writes it; and the report of a switched-off trimmer,
+// which no sweep made — is the architect's prompt's (prompts/go/architect-common.md), as every
+// reading guide of a daemon text is.
+func VolumeNearFullNotice(issue string, sweep record.VolumeNearFull) texts.VolumeNearFullRecord {
+	sweep.PodUID, sweep.Trimmer = lineEscaped(sweep.PodUID), lineEscaped(sweep.Trimmer)
+	sweep.RaisedBy, sweep.StopReason = lineEscaped(sweep.RaisedBy), lineEscaped(sweep.StopReason)
+	sweep.RefusedReads, sweep.Faults = linesEscaped(sweep.RefusedReads), linesEscaped(sweep.Faults)
+	if slices.ContainsFunc(sweep.Sizes, func(size record.VolumeSize) bool {
+		return hasLineBreak(size.Path) || hasLineBreak(size.Refused)
+	}) {
+		sizes := make([]record.VolumeSize, len(sweep.Sizes))
+		for i, size := range sweep.Sizes {
+			size.Path, size.Refused = lineEscaped(size.Path), lineEscaped(size.Refused)
+			sizes[i] = size
+		}
+		sweep.Sizes = sizes
+	}
+	if slices.ContainsFunc(sweep.SizesMissing, func(missing record.VolumeMissing) bool {
+		return hasLineBreak(missing.Path) || hasLineBreak(missing.Reason)
+	}) {
+		missing := make([]record.VolumeMissing, len(sweep.SizesMissing))
+		for i, one := range sweep.SizesMissing {
+			one.Path, one.Reason = lineEscaped(one.Path), lineEscaped(one.Reason)
+			missing[i] = one
+		}
+		sweep.SizesMissing = missing
+	}
+	return texts.VolumeNearFullRecord{NoticeHead: texts.NoticeHead{Kind: texts.VolumeNearFull, Issue: issue}, Volume: &sweep}
 }
 
 // sessionLost tells the issue, its architect and the controller that a worker's recorded session
@@ -1230,6 +1604,9 @@ func binarySize(bytes uint64) string {
 // cause — a failure recorded before the daemon kept one, replayed at a boot — and such a notice
 // carries no failure record at all rather than a record of zeroes, which would read as a claim
 // that failed with every budget untouched.
+//
+// The notice builders write its texts on one line (WorkerDied, HeldFailureNotice,
+// failureOnOneLine); this value keeps them as the fact gave them.
 func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
 	if fact.Cause == "" {
 		return nil

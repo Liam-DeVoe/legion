@@ -1,6 +1,7 @@
 package texts
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -59,17 +60,28 @@ type PhaseFinishedRecord struct {
 
 // WorkerDiedRecord is the notice that a role's claim failed (workflow's claimFailed): the role,
 // the issue's phase, the phase the issue works where the role does not work it (Working), the
-// look of a production check that lost its checking role, and why the claim failed. Detail is
-// the sentence the failing site wrote, for a failure that recorded no cause and so has no Failure
-// (a fact an older daemon recorded).
+// look of a production check that lost its checking role, and why the claim failed.
+//
+// Failure is the failure record, where the daemon recorded the failure's cause. Detail is the
+// sentence the failing site wrote, where the notice carries no failure record (the tree
+// architect's own notice, and a notice whose failure recorded no cause): on one line, cut where it
+// is longer than the bound of a pod end, which DetailCut marks. PodEnd is the pod end that the
+// claim's process was last found to have died of (an eviction, above all), as the runtime read it
+// off the pod. Death is the first line of the runtime's account of the process's death, where the
+// notice carries no failure record, the claim failed because its process died, and no pod end
+// was read: cut where it is longer than the same bound, which DeathCut marks.
 type WorkerDiedRecord struct {
 	NoticeHead
-	Role    claim.Role     `json:"role,omitempty"`
-	Phase   phase.Phase    `json:"phase,omitempty"`
-	Working phase.Phase    `json:"working,omitempty"`
-	Look    int            `json:"look,omitempty"`
-	Failure *NoticeFailure `json:"failure,omitempty"`
-	Detail  string         `json:"detail,omitempty"`
+	Role      claim.Role     `json:"role,omitempty"`
+	Phase     phase.Phase    `json:"phase,omitempty"`
+	Working   phase.Phase    `json:"working,omitempty"`
+	Look      int            `json:"look,omitempty"`
+	Failure   *NoticeFailure `json:"failure,omitempty"`
+	Detail    string         `json:"detail,omitempty"`
+	DetailCut bool           `json:"detail_cut,omitempty"`
+	PodEnd    string         `json:"pod_end,omitempty"`
+	Death     string         `json:"death,omitempty"`
+	DeathCut  bool           `json:"death_cut,omitempty"`
 }
 
 // The words of what became of a stalled process (WorkerStalledRecord.Stop).
@@ -531,6 +543,78 @@ type StatusReassertedRecord struct {
 	Session string `json:"session"`
 	Wrote   string `json:"wrote"`
 	Status  string `json:"status"`
+}
+
+// VolumeNearFullRecord is the notice that a sweep of the issue pod's volume left that volume above
+// its low mark, or that the pod's cache trimmer switched itself off (workflow's volumeNearFull):
+// the sweep as the pod's launcher reported it, with the pod it was of (VolumeSweep). Its readers'
+// prompt says how to read the sweep's fields.
+type VolumeNearFullRecord struct {
+	NoticeHead
+	Volume *VolumeSweep `json:"volume,omitempty"`
+}
+
+// VolumeSweep is one sweep of an issue pod's volume as the cache trimmer in the pod's launcher
+// reported it (record.VolumeNearFull is this type): the pod; the trimmer's identifier, its
+// episode and what raised the episode; the bytes used and free at the sweep's last reading and the
+// bytes the sweep freed (negative where the used bytes grew while it ran); why the sweep stopped,
+// in the trimmer's own words; the /proc reads the kernel refused; the sizes of the size walk
+// (VolumeSize) with the time they were measured, whether a cut ended the walk early and the
+// targets it did not measure (VolumeMissing); the faults the trimmer recovered from; and whether
+// the trimmer switched itself off. Each Omitted count is how many entries the launcher's bound
+// left out of a list. The keys are the shape main's release keeps in its outbox rows.
+type VolumeSweep struct {
+	PodUID              string          `json:"podUid"`
+	Trimmer             string          `json:"trimmer"`
+	Episode             int             `json:"episode"`
+	RaisedBy            string          `json:"raisedBy"`
+	UsedBytes           int64           `json:"usedBytes"`
+	FreeBytes           int64           `json:"freeBytes"`
+	FreedBytes          int64           `json:"freedBytes"`
+	StopReason          string          `json:"stopReason"`
+	RefusedReads        []string        `json:"refusedReads,omitempty"`
+	RefusedReadsOmitted int             `json:"refusedReadsOmitted,omitempty"`
+	Sizes               []VolumeSize    `json:"sizes"`
+	SizesOmitted        int             `json:"sizesOmitted,omitempty"`
+	SizesAt             time.Time       `json:"sizesAt"`
+	SizesPartial        bool            `json:"sizesPartial,omitempty"`
+	SizesMissing        []VolumeMissing `json:"sizesMissing,omitempty"`
+	SizesMissingOmitted int             `json:"sizesMissingOmitted,omitempty"`
+	Faults              []string        `json:"faults,omitempty"`
+	FaultsOmitted       int             `json:"faultsOmitted,omitempty"`
+	SwitchedOff         bool            `json:"switchedOff,omitempty"`
+}
+
+// MarshalJSON keeps sizes an array on the wire, empty rather than null, as UpdateRound keeps
+// waiting one: the plugin's strict reader refuses a null.
+func (v VolumeSweep) MarshalJSON() ([]byte, error) {
+	type wire VolumeSweep
+	out := wire(v)
+	if out.Sizes == nil {
+		out.Sizes = []VolumeSize{}
+	}
+	return json.Marshal(out)
+}
+
+// VolumeSize is one target of the trimmer's size walk (record.VolumeSize is this type): its path,
+// the bytes of the regular files at or under it, and of those the bytes more than an hour old and
+// more than a day old. Refused names the first read under the path that the walk did not make, and
+// Refusals counts such reads: a size that carries them is a lower bound.
+type VolumeSize struct {
+	Path          string `json:"path"`
+	Bytes         int64  `json:"bytes"`
+	BytesOverHour int64  `json:"bytesOverHour"`
+	BytesOverDay  int64  `json:"bytesOverDay"`
+	Refused       string `json:"refused,omitempty"`
+	Refusals      int    `json:"refusals,omitempty"`
+}
+
+// VolumeMissing is one target the size walk measured none of, or a part of the volume it did not
+// list in full (record.VolumeMissing is this type), with the kernel's answer where a read was
+// refused.
+type VolumeMissing struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // SessionLostRecord is the notice that a worker's recorded session is in no session store

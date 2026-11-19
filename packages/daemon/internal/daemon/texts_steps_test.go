@@ -326,6 +326,20 @@ var goldenSteps = []goldenStep{
 		rolePrompts + "merger.md", "Read the entries to the queue and the removals from it with this command."},
 	{texts.MergeQueueRemoval, " The daemon could not read the pull request from GitHub. So it does not know if GitHub merged it.", "merger",
 		rolePrompts + "merger.md", "`unread: true` means that the daemon could not read the pull request from GitHub, so it does not know if GitHub merged it."},
+	{texts.VolumeNearFull, "the volume %s's roles share on pod %s was still above its low mark when the sweep ended", "architect",
+		goPrompts + "architect-common.md", "The notice tells a past sweep: the volume was above its low mark when that sweep ended, and the notice says nothing of the volume now."},
+	{texts.VolumeNearFull, "and the volume grew by %d bytes while the sweep ran", "architect",
+		goPrompts + "architect-common.md", "A negative `freedBytes` means that the volume grew by that many bytes while the sweep ran."},
+	{texts.VolumeNearFull, "; each size is the apparent size of the files at or under its path, with a file linked under more than one name counted under each name, so the sizes can sum past the bytes the volume uses", "architect",
+		goPrompts + "architect-common.md", "Each size is the apparent size of the files at or under its path, with a file linked under more than one name counted under each name, so the sizes can sum past the bytes the volume uses."},
+	{texts.VolumeNearFull, "; %q holds at least %d bytes (%d older than an hour, %d older than a day, of what the walk could read): the walk could not make %d of its reads under it, the first at %q", "architect",
+		goPrompts + "architect-common.md", "A size with `refused` is a lower bound: `refused` names the first read under its path that the walk did not make, and `refusals` counts those reads."},
+	{texts.VolumeNearFull, "; the size walk was cut before it reached every target", "architect",
+		goPrompts + "architect-common.md", "`sizesPartial: true` means that a cut ended the size walk before it reached every target."},
+	{texts.VolumeNearFull, "the cache trimmer on %s's pod %s has switched itself off and frees nothing more until the pod's roles container restarts (trimmer %q)", "architect",
+		goPrompts + "architect-common.md", "`switchedOff: true` means that the trimmer stopped itself after three faults in a row and frees nothing more until the pod's roles container restarts."},
+	{texts.VolumeNearFull, ": it made no reading of the volume", "architect",
+		goPrompts + "architect-common.md", "its `usedBytes` and `freeBytes` are the trimmer's last reading, or both zero where it made no reading."},
 }
 
 // goldenRepositoryRoot is the repository's root, from this package's directory.

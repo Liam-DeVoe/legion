@@ -51,6 +51,7 @@ const (
 	ChecksRed               Kind = "checks-red"
 	ReviewStuck             Kind = "review-stuck"
 	StatusReasserted        Kind = "status-reasserted"
+	VolumeNearFull          Kind = "volume-near-full"
 	SessionLost             Kind = "session-lost"
 	SessionStoreFault       Kind = "session-store-fault"
 )
@@ -122,6 +123,7 @@ var list = []Entry{
 	{Kind: ChecksRed, Form: Notice, Record: ChecksRedRecord{}, Readers: toArchitect, Urgency: lowToArchitect},
 	{Kind: ReviewStuck, Form: Notice, Record: ReviewStuckRecord{}, Readers: toArchitect},
 	{Kind: StatusReasserted, Form: Notice, Record: StatusReassertedRecord{}, Readers: toArchitect},
+	{Kind: VolumeNearFull, Form: Notice, Record: VolumeNearFullRecord{}, Readers: toArchitect},
 	{Kind: SessionLost, Form: Notice, Record: SessionLostRecord{}, Readers: toArchitectAndController},
 	{Kind: SessionStoreFault, Form: Notice, Record: SessionStoreFaultRecord{}, Readers: toController},
 
