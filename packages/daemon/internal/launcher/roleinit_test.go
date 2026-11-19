@@ -934,7 +934,7 @@ func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := exec.Command(self, "-test.run=^TestTheUncoverProbeReportsAnUnlockedCoverRemoved$")
-	control.Env = append(os.Environ(), uncoverControlEnv+"="+t.TempDir())
+	control.Env = append(os.Environ(), uncoverControlEnv+"="+t.TempDir(), hostproc.ChildEnv(t))
 	control.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
@@ -1082,7 +1082,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	check := exec.Command(self, "-test.run=^TestTheRoleNamespaceCheckRunsARoleGeneration$")
-	check.Env = append(os.Environ(), roleCheckEnv+"="+stageMountPoint(t))
+	check.Env = append(os.Environ(), roleCheckEnv+"="+stageMountPoint(t), hostproc.ChildEnv(t))
 	check.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
@@ -1562,7 +1562,7 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 		t.Fatal(err)
 	}
 	stage := exec.Command(self, "-test.run=^TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills$")
-	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded))
+	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded), hostproc.ChildEnv(t))
 	stage.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
