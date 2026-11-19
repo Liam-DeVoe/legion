@@ -902,19 +902,28 @@ func joinIssueRoom(ctx context.Context, tx pgx.Tx, room, document string) error 
 	return docs.AnnounceDocumentRooms(ctx, tx, room, document)
 }
 
-// documentJoinsIssueRoom is whether a new document of a converted issue, whose ref_key is refKey,
-// is made a fragment of the issue's room: only while the store can hold its address
-// (graphstore.AddressFits). A block of the room is a node keyed by the room's tree, and its
-// in_document and a top-level block's part_of name the node of the document whose fragment holds
-// it, so a document whose own address is past the bound would leave those tuples naming an
-// address no writer of the store may write, and one near the artifacts key's own bound
-// (maxNewArtifactKeyBytes) gives a tuple the repeat key cannot hold at all (graph_tuples_once),
-// which failed its upload. The room's three role documents have short fixed names; only another
-// document of the issue can be that long, and it stays its own room, as every document of an
-// unconverted issue is and as main keeps it: its blocks' addresses hold its ref_key, so they are
-// no nodes of the store either, and every reader serves it as such a room.
-func documentJoinsIssueRoom(refKey string) bool {
-	return graphstore.AddressFits(refKey)
+// documentJoinsIssueRoom is whether a new document of a converted issue, whose slug is slug, is
+// made a fragment of the issue's room: only one of the issue's three role documents - its spec,
+// which createConvertedIssueRoom joins as the issue is created, and its Verification document and
+// plan (roleSlugs), which an upload creates - from its first write (R5 of this branch's spec,
+// version 112). Every other document keeps a room of its own, as every document of an
+// unconverted issue does. The room's state is one update ygo decodes, whose bound the documents in
+// it share (docs' refuseUndecodableSeed refuses a seed past it), so a document no role names would
+// spend that bound for the three, and the heaviest documents the element limit admits filled it in
+// about a dozen uploads. A role document's fixed short name always gives an address the store can
+// hold (graphstore.AddressFits), so the address bound this test once read is never what keeps a
+// document out: a block of the room names the node of the document whose fragment holds it, and a
+// role document's node always fits.
+func documentJoinsIssueRoom(slug string) bool {
+	if slug == "spec" {
+		return true
+	}
+	for _, named := range roleSlugs {
+		if named == slug {
+			return true
+		}
+	}
+	return false
 }
 
 // createDecisionsQuery creates, in tx, the decisions query node of the issue key in project: a

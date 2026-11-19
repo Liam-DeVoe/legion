@@ -1,9 +1,11 @@
 package docs
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -31,7 +33,9 @@ import (
 //     every load builds though no rendering carries them (marginWatch).
 //   - the actor ids its anchor marks carry, which no rendering carries either (anchorWatch).
 //   - the live state it leaves, whose complete update ygo must still decode within its
-//     1,048,576-struct cap (refuseUndecodable).
+//     1,048,576-struct cap (refuseUndecodable). A new document of a converted issue adds its first
+//     text to the issue's room beside the room's other documents, so SeedText checks the room's
+//     state with it the same way (refuseUndecodableSeed).
 //
 // A write that leaves the document no bigger and no heavier than it was passes, so a document
 // already past the bound - stored before it, or grown by browser edits, which no server write
@@ -335,17 +339,79 @@ func elements(size pmdoc.DocumentSize) string {
 // to no more than that is not decoded. A state past the cap is refused whether or not the write
 // grew the document: storing it would leave every read unable to load it.
 func refuseUndecodable(fork *crdt.Doc) error {
-	var clocks uint64
-	for _, clock := range fork.StateVector() {
-		clocks += clock
-	}
-	if clocks <= maxUpdateItems {
+	if clocksOf(fork.StateVector()) <= maxUpdateItems {
 		return nil
 	}
-	state := crdt.EncodeStateAsUpdateV1(fork, nil)
+	return refuseUndecodableState(crdt.EncodeStateAsUpdateV1(fork, nil))
+}
+
+// refuseUndecodableState is the refusal of a write that leaves state, a document's whole state as
+// one update, a state ygo could not decode, or nil.
+func refuseUndecodableState(state []byte) error {
 	if err := crdt.ApplyUpdateV1(newDocumentCopy(), state, nil); err != nil {
 		return fmt.Errorf("%w: this change would leave the document's live state past the %d items ygo decodes in one update; shorten the change, or split the document",
 			ErrDocumentTooLarge, maxUpdateItems)
 	}
 	return nil
+}
+
+// clocksOf is the sum of the clocks of vector, a document's state vector: at least as many as the
+// structs the document holds, since each struct takes at least one clock tick.
+func clocksOf(vector crdt.StateVector) uint64 {
+	var clocks uint64
+	for _, clock := range vector {
+		clocks += clock
+	}
+	return clocks
+}
+
+// refuseUndecodableSeed is refuseUndecodable for seed, a new document's first text in its own
+// fragment of room, the issue room that holds the issue's other documents beside it (SeedText).
+// Every document of a converted issue is a fragment of the room's one state, which a load decodes
+// as one update, so documents that each fit alone can together leave the room past the structs ygo
+// decodes in one, and every document of the issue unable to load. A seed writes no fork of the
+// room, so the room is read here, in tx, under the room's lock, which tx takes now
+// (lockDocumentRoom) and holds through the seed's append, so no append lands between this read and
+// that one: the room's stored updates through its head, decoded as a load decodes them
+// (documentThrough), beside the seed. A state whose clocks sum to no more than the cap is not
+// decoded, as refuseUndecodable decodes none; a refusal is the one a joined write meets, before
+// anything is appended, so nothing is stored.
+func refuseUndecodableSeed(ctx context.Context, tx pgx.Tx, room string, seed []byte) error {
+	if err := lockDocumentRoom(ctx, tx, room); err != nil {
+		return err
+	}
+	head, err := NewPgVersioned(nil).head(ctx, tx, room)
+	if err != nil {
+		return err
+	}
+	var stored *crdt.Doc
+	if head > 0 {
+		if stored, err = documentThrough(room, head, storedUpdates(ctx, tx, room, head), maxUpdateItems); err != nil {
+			return fmt.Errorf("load issue room %s before a document is seeded into it: %w", room, err)
+		}
+	}
+	encoded, err := crdt.EncodeStateVectorFromUpdate(seed)
+	if err != nil {
+		return fmt.Errorf("read the seeded document's clocks: %w", err)
+	}
+	vector, err := crdt.DecodeStateVectorV1(encoded)
+	if err != nil {
+		return fmt.Errorf("read the seeded document's clocks: %w", err)
+	}
+	clocks := clocksOf(vector)
+	if stored != nil {
+		clocks += clocksOf(stored.StateVector())
+	}
+	if clocks <= maxUpdateItems {
+		return nil
+	}
+	parts := [][]byte{seed}
+	if stored != nil {
+		parts = [][]byte{crdt.EncodeStateAsUpdateV1(stored, nil), seed}
+	}
+	state, err := crdt.MergeUpdatesV1(parts...)
+	if err != nil {
+		return fmt.Errorf("merge the seeded document into issue room %s: %w", room, err)
+	}
+	return refuseUndecodableState(state)
 }

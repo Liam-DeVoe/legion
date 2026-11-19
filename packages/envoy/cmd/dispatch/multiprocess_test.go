@@ -3854,10 +3854,11 @@ func (p *dispatchPair) openMarkedEditor(t *testing.T, process *dispatchProcess, 
 	if err != nil {
 		t.Fatalf("send %s's sync marker: %v", login, err)
 	}
+	room, _ := storedRoomOf(t, p, artifactID)
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		var stored bool
 		if err := p.database.Pool.QueryRow(context.Background(),
-			`select exists(select 1 from doc_updates where artifact_id = $1 and update = $2)`, artifactID, update).Scan(&stored); err != nil {
+			`select exists(select 1 from doc_updates where artifact_id = $1 and update = $2)`, room, update).Scan(&stored); err != nil {
 			t.Fatalf("read %s's stored sync marker: %v", login, err)
 		}
 		if stored {
@@ -5054,10 +5055,18 @@ func (p *dispatchProcess) textAndToken(t *testing.T, artifactID string) (string,
 	return document.Markdown, document.Token
 }
 
-// holdsRoom reports whether the process holds a room of the document now (the rooms test hook).
+// holdsRoom reports whether the process holds now the room the document is edited in, as the
+// process's artifact read names it (room): its issue's room for a role document of a converted
+// issue, the document itself otherwise. The rooms test hook lists rooms by their names.
 func (p *dispatchProcess) holdsRoom(t *testing.T, artifactID string) bool {
 	t.Helper()
-	return slices.Contains(p.residentRooms(t), artifactID)
+	var artifact struct {
+		Room string `json:"room"`
+	}
+	if answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID, "", http.StatusOK); json.Unmarshal(answer, &artifact) != nil || artifact.Room == "" {
+		t.Fatalf("the artifact read of %s names no room: %s", artifactID, answer)
+	}
+	return slices.Contains(p.residentRooms(t), artifact.Room)
 }
 
 // roomCloses names what the room-counters hook counted for the document on either process so far
@@ -6532,11 +6541,13 @@ func TestAReadOnTheOtherProcessIsNeverOlderThanTheStore(t *testing.T) {
 	})
 }
 
-// corruptHistory makes the document's stored history one update ygo cannot decode, at the head
-// it stood at, so a rebuild has something to rebuild and no room's cursor moves.
+// corruptHistory makes the stored history of the room the document is edited in (storedRoomOf)
+// one update ygo cannot decode, at the head it stood at, so a rebuild has something to rebuild and
+// no room's cursor moves.
 func corruptHistory(t *testing.T, pair *dispatchPair, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
+	room, _ := storedRoomOf(t, pair, artifactID)
 	tx, err := pair.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the corruption: %v", err)
@@ -6547,7 +6558,7 @@ func corruptHistory(t *testing.T, pair *dispatchPair, artifactID string) {
 		`delete from doc_updates where artifact_id = $1 and version < (select max(version) from doc_updates where artifact_id = $1)`,
 		`update doc_updates set update = decode('deadbeef', 'hex') where artifact_id = $1`,
 	} {
-		if _, err := tx.Exec(ctx, statement, artifactID); err != nil {
+		if _, err := tx.Exec(ctx, statement, room); err != nil {
 			t.Fatalf("corrupt the document's history: %s: %v", statement, err)
 		}
 	}

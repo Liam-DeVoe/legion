@@ -590,12 +590,13 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
 			return
 		}
-		// A document of a converted issue joins the issue's room (joinIssueRoom below) and writes
-		// no role: the part it plays is the query value of its node, a query node of that name
-		// (decision 2 of dispatch://INFRA-1253's plan), which the read projects as its role.
-		// A document whose address the store cannot hold stays its own room (documentJoinsIssueRoom).
+		// A role document of a converted issue - its Verification document or its plan - joins the
+		// issue's room (joinIssueRoom below) and writes no role: the part it plays is the query
+		// value of its node, a query node of that name (decision 2 of this branch's plan), which the
+		// read projects as its role. Every other document keeps a room of its own
+		// (documentJoinsIssueRoom).
 		refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug)
-		joining := kind == "doc" && issueRoom != "" && documentJoinsIssueRoom(refKey)
+		joining := kind == "doc" && issueRoom != "" && documentJoinsIssueRoom(slug)
 		query := ""
 		if joining && role != nil {
 			query, role = *role, nil

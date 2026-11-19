@@ -668,7 +668,9 @@ func mergeUpdates(updates [][]byte) ([]byte, error) {
 // SeedText writes a new document's first text inside the caller's artifact creation transaction:
 // a new room's first Yjs update, which the room is loaded from on first use, or, for a document
 // whose document_rooms row the transaction has written already (targetOf), the first text of the
-// document's own fragment of its issue room, appended to that room beside its other fragments.
+// document's own fragment of its issue room, appended to that room beside its other fragments,
+// refused with ErrDocumentTooLarge where the room with it would no longer load
+// (refuseUndecodableSeed).
 func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -706,6 +708,13 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	update, err := encodeFragmentTree(tree, nil, target.fragment)
 	if err != nil {
 		return "", fmt.Errorf("seed live document tree: %w", err)
+	}
+	// A fragment of an issue room joins the room's other documents in one state, which must still
+	// load with it (refuseUndecodableSeed); a document that is its own room starts it.
+	if target.room != artifactID {
+		if err := refuseUndecodableSeed(ctx, tx, target.room, update); err != nil {
+			return "", err
+		}
 	}
 	if _, err := s.persistence.AppendUpdateTx(ctx, tx, target.room, update, true); err != nil {
 		return "", fmt.Errorf("seed live document: %w", err)
