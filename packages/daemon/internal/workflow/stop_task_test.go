@@ -217,13 +217,12 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 
 		// The twin: an issue with no plan rows held from merging, by a failed merger's claim,
 		// is closed by its merge too: a hold from merging awaits that merge (awaitsMerge), as the
-		// close and the boot's sweep read it, so the architect is told no "not merging".
+		// close and the boot's sweep read it, so the architect is told no "not merging". Its
+		// record is seeded as a store the daemon boots over holds it, before any fact.
 		unplanned := migratedPool(t)
 		held := stepRoot(t, unplanned, phase.Held)
-		applyInTx(t, unplanned, engine, func(ctx context.Context, tx pgx.Tx) error {
-			held.Hold = &record.Hold{From: phase.Merging}
-			return engine.store.PutIssue(ctx, tx, held)
-		})
+		held.Hold = &record.Hold{From: phase.Merging}
+		seedIssue(t, unplanned, held)
 
 		if result := applyFacts(t, unplanned, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
 			t.Fatalf("the merge of the issue with no plan rows was refused: %+v", result.Refusal)
