@@ -151,14 +151,17 @@
 # first reading of that machine's clock past its bound and at none before, and naming the pid
 # whatever lines its ssh writes around the script's; (ee) a kill whose ssh does not reach that
 # machine, or times out, returns 1, naming its pid file, the ssh's exit and what the ssh said;
-# (ff) a step whose earlier tunnel is not shown gone is refused, and an up whose earlier stub
-# embedder is not shown gone stops, each starting none; (gg) a step stopped while its tunnel's
-# kill runs out, or by a signal that lands inside a stop -- of its own cleanup, or tunnel_start's
-# kill of an earlier tunnel -- names that part as not shown gone and never says it ended it;
-# (hh) a kill whose run directory on this pod takes no new file still ends its process, and a step
-# stopped then still ends its load and its tunnel; and (ii) a step stopped between the start of
-# its load, its sampler or its collector and the record of that start names that part as not
-# shown gone, and one stopped just after a kill ran out names that kill's part once.
+# (ff) a step whose earlier tunnel or earlier load is not shown gone is refused, and an up whose
+# earlier stub embedder is not shown gone stops, each starting none; (gg) a step stopped while its
+# tunnel's kill runs out, or by a signal that lands inside a stop -- of its own cleanup, or
+# tunnel_start's kill of an earlier tunnel -- names that part as not shown gone and never says it
+# ended it; (hh) a kill whose run directory on this pod takes no new file still ends its process,
+# and a step stopped then still ends its load and its tunnel; (ii) a step stopped between the start
+# of its load, its sampler or its collector and the record of that start, or just after a stop
+# cleared its part's flag, names that part as not shown gone, and one stopped just after a kill ran
+# out names that kill's part once; and (jj) a stop after a start on the load machine it did not see
+# return waits for that start's record, ends what it records, and names the part as not shown
+# gone when none comes within its bound.
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
@@ -175,19 +178,30 @@ readonly REAL_SLEEP
 # cleanup removes its directory with it, whatever a case has told the fake to refuse.
 REAL_RM=$(command -v rm)
 readonly REAL_RM
+# What the suites share about a stand-in a case has to see end (process_ended, end_process,
+# record_pid, end_recorded), also sourced before the fake sleep goes on PATH.
+# shellcheck source=packages/envoy/loadtest/test-lib.sh
+source "$here/../test-lib.sh"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/vm-test.XXXXXX")
 readonly tmp
 readonly fake=$tmp/fake bin=$tmp/bin
 export FAKE_DIR=$fake
 export LOADTEST_VM_ROOT=$tmp/root
+# The record of every process of this suite that may outlive the case that started it: each fake
+# that runs in the background (the loadgen in each of its modes, on this pod and on the load
+# machine, and the profiling tunnel) and each stand-in a case starts records its own pid and
+# start here by sourcing FAKE_RECORD, and a case records a step it starts with &. reset_fake
+# leaves it, so it holds the whole suite's.
+export FAKE_STARTED=$tmp/started FAKE_RECORD=$tmp/record.sh
+# shellcheck disable=SC2016 # expanded by the fake that sources it
+{ declare -f process_start record_pid; printf 'record_pid "$FAKE_STARTED" "$$"\n'; } >"$FAKE_RECORD"
 
 # A case that fails while a step runs leaves the fake sampler, which vm.sh ends itself when the
-# step ends. Both fake loadgens -- this test's $bin one and the copy up put on the load machine
-# -- are under $tmp, and this test's own process is not, so the pattern reaches neither it nor
-# anything of another run.
+# step ends, and the fake loadgen or tunnel on the load machine, which the step's stop would have
+# ended. The suite's exit ends each process this suite recorded, with every process below it, by
+# its pid, so it reaches no process of another run of this suite, whatever its command line.
 cleanup() {
-  # no-wait: the suite's own exit; nothing reads these processes after it.
-  pkill -f "$tmp/" 2>/dev/null || true
+  end_recorded "$FAKE_STARTED" || true
   "$REAL_RM" -rf -- "$tmp"
 }
 trap cleanup EXIT
@@ -582,6 +596,9 @@ set -u
 REAL_SLEEP=$REAL_SLEEP
 EOF
 cat >>"$bin/loadgen" <<'EOF'
+# Recorded for the suite's exit (FAKE_RECORD): a sampler, a collector, a stub embedder or a load
+# can outlive the case that started it.
+[ -z "${FAKE_RECORD:-}" ] || source "$FAKE_RECORD"
 printf 'loadgen\t%s\n' "$*" >>"$FAKE_DIR/actions.log"
 printf '%s\n' "$*" >>"$FAKE_DIR/loadgen.log"
 cmd=${1:-}
@@ -809,6 +826,7 @@ cat >>"$bin/pprof-tunnel" <<'EOF'
 # block-project-ssh-keys and the load machine has no ~/.ssh at all, so a tunnel command with no
 # identity is refused `publickey` there and leaves no forward at all (dispatch://INFRA-988).
 set -u
+[ -z "${FAKE_RECORD:-}" ] || source "$FAKE_RECORD"
 printf 'tunnel\t%s\n' "$*" >>"$FAKE_DIR/actions.log"
 printf '%s\n' "$*" >>"$FAKE_DIR/tunnel.log"
 forward="" identity="" target=""
@@ -1084,6 +1102,7 @@ victim() {
   # Its standard error goes nowhere: it would only say that the stand-in was killed.
   bash -c '(trap "" TERM; exec "$1" 300) & echo "$!" >"$2"; wait' _ "$REAL_SLEEP" "$tmp/victim" 2>/dev/null &
   VICTIM_PARENT=$!
+  record_pid "$FAKE_STARTED" "$VICTIM_PARENT"
   local t0
   t0=$(clock_us)
   until [ -s "$tmp/victim" ]; do
@@ -1092,6 +1111,13 @@ victim() {
   done
   VICTIM=$(cat "$tmp/victim")
   printf '%s\n' "$VICTIM" >"$1"
+}
+
+# victim_hold: the stand-in's parent stopped, and seen stopped (stop_process), so that from here on
+# it reaps nothing: a parent not yet run since its SIGSTOP reaps a child killed in that moment from
+# the wait it is in, before it stops.
+victim_hold() {
+  stop_process "$VICTIM_PARENT" || victim_fail "the stand-in's parent (pid $VICTIM_PARENT) did not stop within 10 s of its SIGSTOP"
 }
 
 # victim_fail MESSAGE: fail, with the stand-in and its parent ended first, so neither outlives the
@@ -3317,6 +3343,7 @@ for signal in TERM INT; do
   set -m
   bash "$vm" step --config "$config" "$name" 1 --duration 10m >"$tmp/out" 2>&1 &
   step_pid=$!
+  record_pid "$FAKE_STARTED" "$step_pid"
   set +m
   # The load is on: the fake `loadgen run` says it holds the load machine by writing its pid. The
   # wait is for the step, not for a stretch of wall clock: a step that ends before its load is on
@@ -3455,7 +3482,7 @@ kill_ran_out() {
 for kill_case in "${kill_cases[@]}"; do
   read -r fn pid_file <<<"$kill_case"
   victim "$pid_file"
-  kill -STOP "$VICTIM_PARENT"
+  victim_hold
   rm -f -- "$tmp/kill-rc"
   kill_start=$(clock_us)
   # The kill's status and the time it returned, written whole once it has.
@@ -3465,8 +3492,9 @@ for kill_case in "${kill_cases[@]}"; do
     mv -- "$tmp/kill-rc.part" "$tmp/kill-rc"
   ) &
   kill_job=$!
-  # The KILL has landed when the stand-in is a zombie: dead, and not reaped, its parent stopped.
-  until [ "$(awk '{print $3}' "/proc/$VICTIM/stat" 2>/dev/null)" = Z ]; do
+  # The KILL has landed when the stand-in has ended (process_ended): dead, and not reaped, its
+  # parent stopped.
+  until process_ended "$VICTIM"; do
     (($(clock_us) - kill_start <= 60000000)) ||
       victim_fail "$fn sent no KILL that ended the stand-in (pid $VICTIM) within 60 s of its start: $(cat "$tmp/out")"
     "$REAL_SLEEP" 0.1
@@ -3501,12 +3529,16 @@ for kill_case in "${kill_cases[@]}"; do
   [ ! -e "$tmp/kill-rc" ] || read -r kill_rc kill_end <"$tmp/kill-rc"
   # Continued, the parent reaps the stand-in at once, so a kill that returns after that saying its
   # own wait ran out never saw the process leave, which is the fault. Its own bound is right only
-  # for a kill that returned before this case continued the parent, as one does when this case is
-  # held up four minutes between its two reads of the kill. The ssh's bound can show here either
-  # way: the fake ssh's command on the load machine holds the kill's output open until it ends,
-  # where a real ssh's end closes it, so the kill returns once the parent has reaped the stand-in.
-  # It said that nothing shows the stand-in gone, which is right.
-  if kill_ran_out && { [ "$ran_out" = "ssh ran out its $ssh_bound s" ] || ((kill_end <= cont_at)); }; then
+  # when that bound could have run out before this case continued the parent, as it can when this
+  # case is held up four minutes between its two reads of the kill: the bound runs from the kill's
+  # KILL, which came after kill_start, so it is reached no sooner than kill_gone s after
+  # kill_start, and the case asks that of cont_at, which it read before it continued the parent.
+  # The time the kill's subshell read once it had returned is no measure of it, since that read
+  # can come after cont_at whenever the kill returned. The ssh's bound can show here either way:
+  # the fake ssh's command on the load machine holds the kill's output open until it ends, where a
+  # real ssh's end closes it, so the kill returns once the parent has reaped the stand-in. It said
+  # that nothing shows the stand-in gone, which is right.
+  if kill_ran_out && { [ "$ran_out" = "ssh ran out its $ssh_bound s" ] || ((cont_at - kill_start >= kill_gone * 1000000)); }; then
     printf "NOTE: %s's %s before this case continued the stand-in's parent, and the kill said so, which is right\n" "$fn" "$ran_out"
     rm -f -- "$pid_file"
     continue
@@ -3557,7 +3589,7 @@ chmod +x "$tmp/kill-clock/date" "$tmp/kill-clock/ssh"
 for kill_case in "${kill_cases[@]}"; do
   read -r fn pid_file <<<"$kill_case"
   victim "$pid_file"
-  kill -STOP "$VICTIM_PARENT"
+  victim_hold
   : >"$tmp/kill-clock.log"
   PATH=$tmp/kill-clock:$PATH run_fn REMOTE_GONE_SECONDS=1 "$fn"
   ((RC == 1)) || victim_fail "$fn ended with $RC, not 1, with the process it ended (pid $VICTIM) still there: $(cat "$tmp/out")"
@@ -3631,7 +3663,7 @@ pass "a kill whose ssh does not reach the load machine, or times out, returns 1,
 
 reset_fake
 victim "$remote/work/pprof-tunnel.pid"
-kill -STOP "$VICTIM_PARENT"
+victim_hold
 # shellcheck disable=SC2016 # expanded by the shell run_fn starts, where tunnel_start set it
 run_fn REMOTE_GONE_SECONDS=1 eval 'tunnel_start refused || { printf "refused: %s\n" "$TUNNEL_REFUSAL"; exit 1; }'
 ((RC == 1)) ||
@@ -3643,7 +3675,7 @@ grep -qF "refused: the profiling tunnel an earlier step left on the generator VM
 kill -CONT "$VICTIM_PARENT"
 wait "$VICTIM_PARENT" || true
 victim "$remote/work/stub-embed.pid"
-kill -STOP "$VICTIM_PARENT"
+victim_hold
 run_fn REMOTE_GONE_SECONDS=1 stub_embed_start
 ((RC == 1)) ||
   victim_fail "stub_embed_start went on, status $RC, although the stub embedder an earlier up started (pid $VICTIM) was still there: $(cat "$tmp/out")"
@@ -3653,7 +3685,38 @@ grep -qF "the stub embedder an earlier up started on the generator VM is not sho
   victim_fail "stub_embed_start started a stub embedder beside the earlier one it could not end: $(cat "$tmp/out")"
 kill -CONT "$VICTIM_PARENT"
 wait "$VICTIM_PARENT" || true
-pass "a step whose earlier profiling tunnel is not shown gone is refused, naming that tunnel and starting none, and an up whose earlier stub embedder is not shown gone stops, naming it and starting none"
+# A step whose earlier load is not shown gone would measure a deployment that load still drives,
+# and its own load_start would write the pid file that names the earlier one anew, so that no later
+# kill could reach it. So run_step ends whatever that file names before it starts anything, and
+# refuses the step when that load is not shown gone: no tunnel, no load, its directory removed, and
+# the pid file still naming the earlier load. The earlier load is the stand-in under a stopped
+# parent, and the kill runs its own 10 s.
+reset_fake
+run_vm up --config "$config"
+((RC == 0)) || fail "up of the earlier-load row failed: see the output above"
+seeded_run
+load_file=$remote/work/runs/$(cat "$LOADTEST_VM_ROOT/current")/loadgen-run.pid
+victim "$load_file"
+victim_hold
+# load_runs: how many `loadgen run` calls the fake loadgen has recorded.
+load_runs() { if [ -f "$fake/loadgen-run.log" ]; then wc -l <"$fake/loadgen-run.log"; else echo 0; fi; }
+runs_before=$(load_runs)
+run_vm step --config "$config" after-load 1 --duration 10m
+((RC != 0)) ||
+  victim_fail "a step went on, status $RC, although the loadgen run an earlier step left (pid $VICTIM) was still there: $(cat "$tmp/out")"
+grep -qF "step after-load is refused: the step's loadgen run an earlier step left on the generator VM is not shown gone (the line above says why)" "$tmp/out" ||
+  victim_fail "the step's refusal does not name the earlier load it could not end: $(cat "$tmp/out")"
+grep -qF "the step's loadgen run (pid $VICTIM) is still in the generator VM's process table 10 s after its SIGKILL" "$tmp/out" ||
+  victim_fail "the step's kill of the earlier load did not name it (pid $VICTIM): $(cat "$tmp/out")"
+[ "$(cat "$load_file" 2>/dev/null)" = "$VICTIM" ] ||
+  victim_fail "the refused step's pid file $load_file no longer names the earlier load (pid $VICTIM): $(cat "$load_file" 2>/dev/null)"
+[ "$(load_runs)" = "$runs_before" ] ||
+  victim_fail "the refused step started a load beside the earlier one: $(cat "$fake/loadgen-run.log" 2>/dev/null)"
+[ ! -e "$fake/tunnel-up" ] || victim_fail "the refused step opened a profiling tunnel: $(cat "$fake/tunnel-up")"
+[ ! -e "$(run_dir)/steps/after-load" ] || victim_fail "the refused step left its directory $(run_dir)/steps/after-load"
+kill -CONT "$VICTIM_PARENT"
+wait "$VICTIM_PARENT" || true
+pass "a step whose earlier profiling tunnel is not shown gone is refused, naming that tunnel and starting none, an up whose earlier stub embedder is not shown gone stops, naming it and starting none, and a step whose earlier load is not shown gone is refused, naming it, starting nothing and leaving its pid file to name it"
 
 # ---- (gg) a stopped step says that it ended what it started only once that is gone -------------
 
@@ -3663,7 +3726,7 @@ pass "a step whose earlier profiling tunnel is not shown gone is refused, naming
 
 reset_fake
 victim "$remote/work/pprof-tunnel.pid"
-kill -STOP "$VICTIM_PARENT"
+victim_hold
 run_fn REMOTE_GONE_SECONDS=1 TUNNEL_OPEN=1 STEP_NAME=stopped-late step_interrupt INT
 ((RC == 130)) || victim_fail "the interrupted step ended with $RC, not the 130 of a shell killed by SIGINT: $(cat "$tmp/out")"
 grep -qF "(pid $VICTIM) is still in the generator VM's process table 1 s after its SIGKILL" "$tmp/out" ||
@@ -3679,77 +3742,100 @@ wait "$VICTIM_PARENT" || true
 # step's end, under its three traps -- after that stop has cleared its part's flag, so the cleanup
 # step_interrupt runs finds nothing to stop there, or inside the kill of an earlier step's tunnel
 # that tunnel_start runs, where no flag is set at all. The step says the stop was cut short and
-# names the part as not shown gone, and never says it ended it. One row a mark. The tunnel's and
-# the load's stops on the load machine carry two: the stop's own, set in the command that clears
-# its flag, and remote_kill's, set while its ssh runs. In the rows of both, the INT is sent once the
-# KILL has landed (the stand-in a zombie under its stopped parent) and the parent is continued right
-# after it: the kill, given far more than any hold of the sender, sees its process reaped and
-# returns, and bash runs the INT's trap once that ssh's command substitution has returned, with the
-# stop still named. In the row of remote_kill's mark alone, the stop is tunnel_start's kill; in
-# the rows of each stop's own mark alone, the INT comes from the function that names the kill's pid
-# file, after the stop has cleared its flag and before remote_kill's first command, so the kill
-# never runs and its stand-in runs on. The collector and the ssh that carries the load on this pod
-# carry one mark each, and their INT is sent once a stand-in of the step's own has taken the
-# stop's TERM and run on.
+# names the part as not shown gone, and never says it ended it. One row a mark, in three
+# scenarios, each with a fixture of its own:
+#
+#   A kill on the load machine already running (cut_remote). The tunnel's and the load's stops
+#     there carry two marks: the stop's own, set in the command that clears its flag, and
+#     remote_kill's, set while its ssh runs. The INT is sent once the KILL has landed (the
+#     stand-in ended under its stopped parent), and the parent is continued right after it: the
+#     kill, given 240 s, far more than any hold of the sender, sees its process reaped and returns,
+#     and bash runs the INT's trap once that ssh's command substitution has returned, with the stop
+#     still named. In the row of remote_kill's mark alone, the stop is tunnel_start's kill.
+#   An INT before the kill on the load machine starts (cut_mark). In the rows of each stop's own
+#     mark alone, the INT comes from the function that names the kill's pid file, after the stop
+#     has cleared its flag and before remote_kill's first command, so the kill never runs and its
+#     stand-in runs on.
+#   A stop of a process of this pod (cut_local). The collector and the ssh that carries the load
+#     carry one mark each, and their INT is sent once a stand-in of the step's own has taken the
+#     stop's TERM and run on.
 cut_dir=$tmp/cut
-# cut_run FLAG WHEN THEN RUN [MARK]: RUN -- step_cleanup, the end of run_step, or tunnel_start --
-# under run_step's three traps, with FLAG set unless it is -, as run_fn runs a function, and an
-# INT sent to that shell once WHEN is true, followed by THEN. A WHEN of `exit 0` sends none, for a
-# row whose MARK -- the name of the function that names a kill's pid file -- sends its own: that
-# function then sends the INT, once, before it names the file. A FLAG that ends in _PID holds the
-# pid of a stand-in of that shell's own, which writes down each TERM and runs on.
-cut_run() {
+# cut_script BODY: the script that standard input gives, then BODY -- step_cleanup, or tunnel_start
+# -- under run_step's three traps, run in a shell that sourced vm.sh, as run_fn runs a function.
+cut_script() {
   rm -rf -- "$cut_dir"
   mkdir -p -- "$cut_dir"
   {
-    printf 'cut_flag=%q cut_sleep=%q cut_dir=%q cut_mark=%q\n' "$1" "$REAL_SLEEP" "$cut_dir" "${5:-}"
-    printf 'cut_when() { %s; }\n' "$2"
-    printf 'cut_then() { %s; }\n' "$3"
-    printf 'cut_main() { %s; }\n' "$4"
-    cat <<'EOF'
-if [ "$cut_flag" != "${cut_flag%_PID}" ]; then
-  (
-    trap 'echo TERM >>"$cut_dir/term"' TERM
-    echo "$BASHPID" >"$cut_dir/pid"
-    while :; do "$cut_sleep" 0.1; done
-  ) &
-  printf -v "$cut_flag" '%s' "$!"
-  until [ -s "$cut_dir/pid" ]; do "$cut_sleep" 0.05; done
-elif [ "$cut_flag" != - ]; then
-  printf -v "$cut_flag" '%s' 1
-fi
-if [ -n "$cut_mark" ]; then
-  eval "cut_orig_$(declare -f "$cut_mark")"
-  # no-wait: the INT runs this shell's own trap, which ends it, and the case reads what it said.
-  eval "$cut_mark() { [ -e \"\$cut_dir/sent\" ] || { : >\"\$cut_dir/sent\"; kill -INT \"\$\$\"; }; cut_orig_$cut_mark; }"
-fi
-trap step_cleanup EXIT
-trap 'step_interrupt INT' INT
-trap 'step_interrupt TERM' TERM
-(
-  until cut_when; do "$cut_sleep" 0.05; done
-  # no-wait: the INT runs that shell's own trap, which ends it, and the case reads what it said.
-  kill -INT "$$"
-  cut_then
-) &
-cut_main
-trap - EXIT INT TERM
-echo "the cleanup returned"
-EOF
+    printf 'cut_dir=%q cut_sleep=%q\n' "$cut_dir" "$REAL_SLEEP"
+    printf 'source %q\n' "$here/../test-lib.sh"
+    cat
+    printf 'trap step_cleanup EXIT\n'
+    printf 'trap %q INT\n' 'step_interrupt INT'
+    printf 'trap %q TERM\n' 'step_interrupt TERM'
+    printf '%s\n' "$1"
+    printf 'trap - EXIT INT TERM\n'
+    printf 'echo "the cleanup returned"\n'
   } >"$cut_dir/run.sh"
   run_fn REMOTE_GONE_SECONDS=240 STEP_NAME=cut-short source "$cut_dir/run.sh"
 }
-# cut_end: the stand-in of a _PID row ended. Its parent, the shell the row ran, has exited, so no
-# wait here reaps it; it is waited until it has left the table or is a zombie, which has ended.
+# cut_remote FLAG BODY: BODY with FLAG set, or none when FLAG is empty, and the INT sent once the
+# KILL of the stand-in has landed (process_ended: its parent, stopped, has not reaped it), followed
+# at once by that parent continued.
+cut_remote() {
+  cut_script "$2" < <(
+    [ -z "$1" ] || printf '%s=1\n' "$1"
+    printf 'cut_victim=%q cut_parent=%q\n' "$VICTIM" "$VICTIM_PARENT"
+    cat <<'EOF'
+(
+  until process_ended "$cut_victim"; do "$cut_sleep" 0.05; done
+  # no-wait: the INT runs that shell's own trap, which ends it, and the case reads what it said.
+  kill -INT "$$"
+  kill -CONT "$cut_parent"
+) &
+EOF
+  )
+}
+# cut_mark FLAG MARK: step_cleanup with FLAG set, and the INT sent by MARK, the function that names
+# the kill's pid file, once, before it names it.
+cut_mark() {
+  cut_script step_cleanup < <(
+    printf '%s=1 cut_mark=%q\n' "$1" "$2"
+    cat <<'EOF'
+eval "cut_orig_$(declare -f "$cut_mark")"
+# no-wait: the INT runs this shell's own trap, which ends it, and the case reads what it said.
+eval "$cut_mark() { [ -e \"\$cut_dir/sent\" ] || { : >\"\$cut_dir/sent\"; kill -INT \"\$\$\"; }; cut_orig_$cut_mark; }"
+EOF
+  )
+}
+# cut_local FLAG: step_cleanup with FLAG holding the pid of a stand-in of that shell's own, which
+# writes down each TERM and runs on, and the INT sent once the stop's TERM has reached it.
+cut_local() {
+  cut_script step_cleanup < <(
+    cat <<'EOF'
+(
+  trap 'echo TERM >>"$cut_dir/term"' TERM
+  record_pid "$FAKE_STARTED" "$BASHPID"
+  echo "$BASHPID" >"$cut_dir/pid"
+  while :; do "$cut_sleep" 0.1; done
+) &
+EOF
+    printf '%s=$!\n' "$1"
+    cat <<'EOF'
+until [ -s "$cut_dir/pid" ]; do "$cut_sleep" 0.05; done
+(
+  until [ -s "$cut_dir/term" ]; do "$cut_sleep" 0.05; done
+  # no-wait: the INT runs that shell's own trap, which ends it, and the case reads what it said.
+  kill -INT "$$"
+) &
+EOF
+  )
+}
+# cut_end: the stand-in of a cut_local row ended. Its parent, the shell the row ran, has exited, so
+# no wait here reaps it (end_process).
 cut_end() {
-  local pid t0
+  local pid
   pid=$(cat "$cut_dir/pid" 2>/dev/null) || return 0
-  kill -KILL "$pid" 2>/dev/null || true
-  t0=$(clock_us)
-  while [ -e "/proc/$pid" ] && [ "$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" != Z ]; do
-    (($(clock_us) - t0 <= 10000000)) || fail "the stand-in (pid $pid) still runs 10 s after its SIGKILL"
-    "$REAL_SLEEP" 0.1
-  done
+  end_process "$pid" || fail "the stand-in (pid $pid) still runs 10 s after its SIGKILL"
   rm -f -- "$cut_dir/pid"
 }
 # cut_fail MESSAGE: fail, with what the row started ended first.
@@ -3757,55 +3843,53 @@ cut_fail() {
   cut_end
   if [ -n "$pid_file" ]; then victim_fail "$@"; else fail "$@"; fi
 }
-for row in tunnel load earlier-tunnel tunnel-mark load-mark collector load-ssh; do
+# cut_check ROW PART: what every row asks of the step whose stop of PART its INT cut short.
+cut_check() {
+  ((RC == 130)) || cut_fail "the step whose stop of $2 an INT cut short ($1) ended with $RC, not the 130 of a shell killed by SIGINT: $(cat "$tmp/out")"
+  grep -qF "the stop of $2 was cut short by SIGINT, so nothing shows it gone" "$tmp/out" ||
+    cut_fail "the step does not say that the INT cut its stop of $2 short ($1): $(cat "$tmp/out")"
+  grep -qF "step cut-short is stopped by SIGINT, but what it started is not all shown gone: $2 (each named above)" "$tmp/out" ||
+    cut_fail "the step does not name $2, whose stop the INT cut short ($1), as not shown gone: $(cat "$tmp/out")"
+  ! grep -qF "are ended with it" "$tmp/out" ||
+    cut_fail "the step says $2 is ended with it, though the INT cut its stop short ($1): $(cat "$tmp/out")"
+}
+for row in tunnel load earlier-tunnel; do
+  reset_fake
+  pid_file=${kill_cases[0]#* } part="the profiling tunnel" flag=TUNNEL_OPEN body=step_cleanup
+  case $row in
+    load) pid_file=${kill_cases[1]#* } part="the step's loadgen run" flag=LOAD_REMOTE ;;
+    earlier-tunnel) flag="" body="tunnel_start cut-short" ;;
+  esac
+  victim "$pid_file"
+  victim_hold
+  cut_remote "$flag" "$body"
+  cut_check "$row" "$part"
+  kill -CONT "$VICTIM_PARENT" 2>/dev/null || true
+  wait "$VICTIM_PARENT" || true
+  rm -f -- "$pid_file"
+done
+for row in tunnel-mark load-mark; do
   reset_fake
   pid_file=${kill_cases[0]#* } part="the profiling tunnel" flag=TUNNEL_OPEN mark=pprof_tunnel_pid_file
-  case $row in
-    load | load-mark) pid_file=${kill_cases[1]#* } part="the step's loadgen run" flag=LOAD_REMOTE mark=load_pid_file ;;
-    collector) pid_file="" part="Postgres's collector" flag=PG_WATCH_PID ;;
-    load-ssh) pid_file="" part="the ssh that carries the step's load" flag=LOAD_SSH_PID ;;
-  esac
-  case $row in
-    tunnel | load | earlier-tunnel)
-      run=step_cleanup
-      [ "$row" != earlier-tunnel ] || flag=- run="tunnel_start cut-short"
-      victim "$pid_file"
-      kill -STOP "$VICTIM_PARENT"
-      cut_run "$flag" "[ \"\$(awk '{print \$3}' /proc/$VICTIM/stat 2>/dev/null)\" = Z ]" "kill -CONT $VICTIM_PARENT" "$run"
-      ;;
-    tunnel-mark | load-mark)
-      victim "$pid_file"
-      cut_run "$flag" "exit 0" : step_cleanup "$mark"
-      kill -0 "$VICTIM" 2>/dev/null ||
-        cut_fail "the row's INT did not land before the kill of $part, whose stand-in (pid $VICTIM) has gone: $(cat "$tmp/out")"
-      ;;
-    *)
-      # shellcheck disable=SC2016 # expanded by cut_when in the shell the row runs
-      cut_run "$flag" '[ -s "$cut_dir/term" ]' : step_cleanup
-      part="$part (pid $(cat "$cut_dir/pid" 2>/dev/null))"
-      ;;
-  esac
-  ((RC == 130)) || cut_fail "the step whose stop of $part an INT cut short ($row) ended with $RC, not the 130 of a shell killed by SIGINT: $(cat "$tmp/out")"
-  grep -qF "the stop of $part was cut short by SIGINT, so nothing shows it gone" "$tmp/out" ||
-    cut_fail "the step does not say that the INT cut its stop of $part short ($row): $(cat "$tmp/out")"
-  grep -qF "step cut-short is stopped by SIGINT, but what it started is not all shown gone: $part (each named above)" "$tmp/out" ||
-    cut_fail "the step does not name $part, whose stop the INT cut short ($row), as not shown gone: $(cat "$tmp/out")"
-  ! grep -qF "are ended with it" "$tmp/out" ||
-    cut_fail "the step says $part is ended with it, though the INT cut its stop short ($row): $(cat "$tmp/out")"
-  case $row in
-    tunnel | load | earlier-tunnel)
-      kill -CONT "$VICTIM_PARENT" 2>/dev/null || true
-      wait "$VICTIM_PARENT" || true
-      rm -f -- "$pid_file"
-      ;;
-    tunnel-mark | load-mark)
-      victim_end
-      rm -f -- "$pid_file"
-      ;;
-    *) cut_end ;;
-  esac
+  [ "$row" != load-mark ] || pid_file=${kill_cases[1]#* } part="the step's loadgen run" flag=LOAD_REMOTE mark=load_pid_file
+  victim "$pid_file"
+  cut_mark "$flag" "$mark"
+  kill -0 "$VICTIM" 2>/dev/null ||
+    cut_fail "the row's INT did not land before the kill of $part, whose stand-in (pid $VICTIM) has gone: $(cat "$tmp/out")"
+  cut_check "$row" "$part"
+  victim_end
+  rm -f -- "$pid_file"
 done
-pass "a step stopped while its tunnel's kill runs out, or by a signal that lands inside a stop -- the tunnel's, the load's, the collector's or the load ssh's in its own cleanup, or tunnel_start's kill of an earlier tunnel -- names that part as not shown gone, after the line that says why, and never says it ended it, with either mark of a stop on the load machine alone, and whenever the sender of the INT comes"
+pid_file=""
+for row in collector load-ssh; do
+  reset_fake
+  part="Postgres's collector" flag=PG_WATCH_PID
+  [ "$row" != load-ssh ] || part="the ssh that carries the step's load" flag=LOAD_SSH_PID
+  cut_local "$flag"
+  cut_check "$row" "$part (pid $(cat "$cut_dir/pid" 2>/dev/null))"
+  cut_end
+done
+pass "a step stopped while its tunnel's kill runs out, or by a signal that lands inside a stop -- the tunnel's, the load's, the collector's or the load ssh's in its own cleanup, or tunnel_start's kill of an earlier tunnel -- names that part as not shown gone, after the line that says why, and never says it ended it, with either mark of a stop on the load machine alone, and with the sender of the INT held up to the 240 s each kill on the load machine is given"
 
 # ---- (hh) a kill whose run directory on this pod takes no new file still ends its process --------
 
@@ -3849,26 +3933,31 @@ pass "a kill whose run directory on this pod takes no new file still ends its pr
 
 # ---- (ii) a signal between two commands of a start or of a kill names its part once -------------
 
-# A signal runs its trap between two commands, and two such gaps are too short for a case to reach
-# by timing: the one between the & that starts a part of a step -- its load, its sampler, Postgres's
-# collector -- and the command that records its pid, and the one in a kill whose wait ran out,
-# between its naming the part as not shown gone and its clearing of the mark. Here a DEBUG trap,
-# which functrace carries into the driver's functions, sends the INT just before the command that
-# ends the gap, so the INT lands in it every time. A step whose start the INT cut short names that
-# part as not shown gone and never says it ended it: the part runs on, and the cleanup has no pid to
-# stop it by. Each part's stand-in writes its pid down and sleeps, so the case ends it. A step
-# whose kill ran out names that kill's part once.
+# A signal runs its trap between two commands, and three kinds of such gaps are too short for a
+# case to reach by timing: the one between the & that starts a part of a step -- its load, its
+# sampler, Postgres's collector -- and the command that records its pid; the one just after a stop
+# clears its part's flag; and the one in a kill whose wait ran out, between its naming the part as
+# not shown gone and its clearing of the mark. Here a DEBUG trap, which functrace carries into the
+# driver's functions, sends the INT just before the command that ends the gap, so the INT lands in
+# it every time. A start's gap is reached at both its ends: just before the command that records
+# the pid, and at the first command after the & (the first at which $! names a new process), so a
+# mark set after the & rather than before it is caught too. A step whose start the INT cut short
+# names that part as not shown gone and never says it ended it: the part runs on, and the cleanup
+# has no pid to stop it by. Each part's stand-in writes its pid down and sleeps, so the case ends
+# it. A stop names its part in STOPPING in the very command that clears its flag, so an INT just
+# after that command finds the stop named: one row for each of the four stops that clear a flag. A
+# step whose kill ran out names that kill's part once.
 ii_dir=$tmp/ii
 # ii_run WHEN BODY: BODY under run_step's three traps, as run_fn runs a function, with a DEBUG trap
 # that sends the shell one INT just before the first command for which WHEN is true; WHEN reads
-# the command in ii_cmd and the one before it in ii_prev.
+# the command in ii_cmd, the one before it in ii_prev, and the $! that BODY started with in ii_bang.
 ii_run() {
   {
     printf 'ii_dir=%q\n' "$ii_dir"
     printf 'ii_when() { %s; }\n' "$1"
     printf 'ii_body() { %s; }\n' "$2"
     cat <<'EOF'
-ii_prev="" ii_sent=""
+ii_prev="" ii_sent="" ii_bang=${!:-}
 set -T
 # no-wait: the INT runs this shell's own trap, which ends it, and the case reads what it said.
 trap 'ii_cmd=$BASH_COMMAND; if [ -z "$ii_sent" ] && ii_when; then ii_sent=1; kill -INT "$$"; fi; ii_prev=$ii_cmd' DEBUG
@@ -3883,61 +3972,107 @@ EOF
   run_fn REMOTE_GONE_SECONDS=1 STEP_NAME=gap CGROUP_JSONL="$ii_dir/cgroup.jsonl" PG_STEP_FILE="$ii_dir/pg-url" \
     source "$ii_dir/run.sh"
 }
-# ii_end: the stand-in of a start row ended. The shell that started it has exited, so no wait here
-# reaps it; it is waited until it has left the table or is a zombie, which has ended.
-ii_end() {
-  local t0
-  kill -KILL "$ii_pid" 2>/dev/null || true
-  t0=$(clock_us)
-  while [ -e "/proc/$ii_pid" ] && [ "$(awk '{print $3}' "/proc/$ii_pid/stat" 2>/dev/null)" != Z ]; do
-    (($(clock_us) - t0 <= 10000000)) || fail "the stand-in (pid $ii_pid) still runs 10 s after its SIGKILL"
-    "$REAL_SLEEP" 0.1
-  done
-}
-# ii_fail MESSAGE: fail, with the row's stand-in ended first.
-ii_fail() {
-  ii_end
-  fail "$@"
-}
-for row in load sampler collector; do
-  reset_fake
+# ii_stand_in: a stand-in that writes its pid in ii_dir/started and sleeps, in a fresh ii_dir.
+ii_stand_in() {
   rm -rf -- "$ii_dir"
   mkdir -p -- "$ii_dir" "$fn_run_dir/logs" "$(dirname -- "${kill_cases[1]#* }")"
   # shellcheck disable=SC2016 # expanded by the stand-in
-  printf '#!/usr/bin/env bash\necho "$$" >%q\nexec %q 300\n' "$ii_dir/started" "$REAL_SLEEP" >"$ii_dir/stand-in"
+  printf '#!/usr/bin/env bash\nsource "$FAKE_RECORD"\necho "$$" >%q\nexec %q 300\n' "$ii_dir/started" "$REAL_SLEEP" >"$ii_dir/stand-in"
   chmod +x "$ii_dir/stand-in"
+}
+# ii_started PART: ii_pid, the pid the stand-in of PART wrote, once it has, and still running.
+ii_started() {
+  local t0
+  t0=$(clock_us)
+  until [ -s "$ii_dir/started" ]; do
+    (($(clock_us) - t0 <= 10000000)) || fail "the start of $1 wrote no pid of its stand-in within 10 s: $(cat "$tmp/out")"
+    "$REAL_SLEEP" 0.1
+  done
+  ii_pid=$(cat "$ii_dir/started")
+  kill -0 "$ii_pid" 2>/dev/null ||
+    ii_fail "the stand-in of $1 (pid $ii_pid) was gone before this case ended it, so nothing here shows the step leaving it running: $(cat "$tmp/out")"
+}
+# ii_end: the stand-in of a row ended. The shell that started it has exited, so no wait here reaps
+# it (end_process).
+ii_end() {
+  end_process "$ii_pid" || fail "the stand-in (pid $ii_pid) still runs 10 s after its SIGKILL"
+}
+# ii_fail MESSAGE: fail, with the row's stand-in ended first.
+ii_fail() {
+  if [ -n "${pid_file:-}" ]; then victim_fail "$@"; fi
+  [ -z "${ii_pid:-}" ] || ii_end
+  fail "$@"
+}
+pid_file=""
+for row in load sampler collector; do
   # shellcheck disable=SC2016 # expanded by the shell ii_run starts
   case $row in
     load) part="the step's load" pid_var=LOAD_SSH_PID body='load_start "$ii_dir" 300 "$ii_dir/stand-in"' ;;
     sampler) part="the sampler" pid_var=SAMPLER_PID body=sampler_start ;;
     collector) part="Postgres's collector" pid_var=PG_WATCH_PID body='pg_watch_start gap "$ii_dir"' ;;
   esac
-  # The sampler reads one machine, and both binaries are the stand-in.
-  ii_run "[[ \$ii_cmd == '$pid_var=\$!'* ]]" \
-    "sampler_targets() { SAMPLER_TARGETS=(app $app_target); }; loadgen_bin() { printf '%s\n' \"\$ii_dir/stand-in\"; }; $body"
-  t0=$(clock_us)
-  until [ -s "$ii_dir/started" ]; do
-    (($(clock_us) - t0 <= 10000000)) || fail "the start of $part wrote no pid of its stand-in within 10 s: $(cat "$tmp/out")"
-    "$REAL_SLEEP" 0.1
+  # shellcheck disable=SC2016 # expanded by the DEBUG trap of the shell ii_run starts
+  for point in "[[ \$ii_cmd == '$pid_var=\$!'* ]]" '[ "${!:-}" != "$ii_bang" ]'; do
+    reset_fake
+    ii_stand_in
+    ii_pid=""
+    # The sampler reads one machine, and both binaries are the stand-in.
+    ii_run "$point" \
+      "sampler_targets() { SAMPLER_TARGETS=(app $app_target); }; loadgen_bin() { printf '%s\n' \"\$ii_dir/stand-in\"; }; $body"
+    at="at $point"
+    ii_started "$part"
+    ((RC == 130)) || ii_fail "the step whose start of $part an INT cut short ($at) ended with $RC, not the 130 of a shell killed by SIGINT: $(cat "$tmp/out")"
+    grep -qF "the start of $part was cut short by SIGINT, so nothing shows it gone" "$tmp/out" ||
+      ii_fail "the step does not say that the INT cut its start of $part short ($at): $(cat "$tmp/out")"
+    grep -qF "step gap is stopped by SIGINT, but what it started is not all shown gone: $part (each named above)" "$tmp/out" ||
+      ii_fail "the step does not name $part, whose start the INT cut short ($at), as not shown gone: $(cat "$tmp/out")"
+    ! grep -qF "are ended with it" "$tmp/out" ||
+      ii_fail "the step says $part is ended with it, though its start was cut short ($at) and its stand-in (pid $ii_pid) runs on: $(cat "$tmp/out")"
+    ii_end
   done
-  ii_pid=$(cat "$ii_dir/started")
-  kill -0 "$ii_pid" 2>/dev/null ||
-    ii_fail "the stand-in of $part (pid $ii_pid) was gone before this case ended it, so nothing here shows the step leaving it running: $(cat "$tmp/out")"
-  ((RC == 130)) || ii_fail "the step whose start of $part an INT cut short ended with $RC, not the 130 of a shell killed by SIGINT: $(cat "$tmp/out")"
-  grep -qF "the start of $part was cut short by SIGINT, so nothing shows it gone" "$tmp/out" ||
-    ii_fail "the step does not say that the INT cut its start of $part short: $(cat "$tmp/out")"
-  grep -qF "step gap is stopped by SIGINT, but what it started is not all shown gone: $part (each named above)" "$tmp/out" ||
-    ii_fail "the step does not name $part, whose start the INT cut short, as not shown gone: $(cat "$tmp/out")"
-  ! grep -qF "are ended with it" "$tmp/out" ||
-    ii_fail "the step says $part is ended with it, though its start was cut short and its stand-in (pid $ii_pid) runs on: $(cat "$tmp/out")"
-  ii_end
 done
+# The gap after each stop clears its flag. The tunnel's and the load's stand-ins on the load machine
+# are the victims the kills would end; the ssh that carries the load and the collector are the
+# stand-in, started by the row as the shell's own.
+for row in tunnel load load-ssh collector; do
+  reset_fake
+  ii_stand_in
+  pid_file="" ii_pid=""
+  # shellcheck disable=SC2016 # expanded by the shell ii_run starts
+  case $row in
+    tunnel) flag=TUNNEL_OPEN part="the profiling tunnel" pid_file=${kill_cases[0]#* } body='TUNNEL_OPEN=1; step_cleanup' ;;
+    load) flag=LOAD_REMOTE part="the step's loadgen run" pid_file=${kill_cases[1]#* } body='LOAD_REMOTE=1; step_cleanup' ;;
+    load-ssh) flag=LOAD_SSH_PID part="the ssh that carries the step's load" body='"$ii_dir/stand-in" & LOAD_SSH_PID=$!; step_cleanup' ;;
+    collector) flag=PG_WATCH_PID part="Postgres's collector" body='"$ii_dir/stand-in" & PG_WATCH_PID=$!; step_cleanup' ;;
+  esac
+  [ -z "$pid_file" ] || victim "$pid_file"
+  ii_run "[[ \$ii_prev == '$flag=\"\"'* ]]" "$body"
+  if [ -z "$pid_file" ]; then
+    ii_started "$part"
+    part="$part (pid $ii_pid)"
+  fi
+  ((RC == 130)) || ii_fail "the step stopped just after the stop of $part cleared its flag ended with $RC, not 130: $(cat "$tmp/out")"
+  grep -qF "the stop of $part was cut short by SIGINT, so nothing shows it gone" "$tmp/out" ||
+    ii_fail "the step does not say that the INT cut its stop of $part short, just after that stop cleared its flag: $(cat "$tmp/out")"
+  grep -qF "step gap is stopped by SIGINT, but what it started is not all shown gone: $part (each named above)" "$tmp/out" ||
+    ii_fail "the step does not name $part as not shown gone, when the INT came just after its stop cleared its flag: $(cat "$tmp/out")"
+  ! grep -qF "are ended with it" "$tmp/out" ||
+    ii_fail "the step says $part is ended with it, though the INT came just after its stop cleared its flag and its stand-in runs on: $(cat "$tmp/out")"
+  if [ -n "$pid_file" ]; then
+    kill -0 "$VICTIM" 2>/dev/null || ii_fail "the stand-in of $part (pid $VICTIM) has gone, so nothing here shows the INT landing before its kill: $(cat "$tmp/out")"
+    victim_end
+    rm -f -- "$pid_file"
+  else
+    ii_end
+  fi
+done
+pid_file="" ii_pid=""
 # The kill's gap: the tunnel's stand-in under its stopped parent, so the kill runs out its second
 # and names the tunnel as not shown gone, and the INT just after that, before anything else.
 reset_fake
 mkdir -p -- "$ii_dir"
 victim "$remote/work/pprof-tunnel.pid"
-kill -STOP "$VICTIM_PARENT"
+victim_hold
 ii_run "[[ \$ii_prev == NOT_GONE=* ]]" 'TUNNEL_OPEN=1; step_cleanup'
 ((RC == 130)) || victim_fail "the step stopped just after its kill of the tunnel ran out ended with $RC, not 130: $(cat "$tmp/out")"
 grep -qF "step gap is stopped by SIGINT, but what it started is not all shown gone: the profiling tunnel (each named above)" "$tmp/out" ||
@@ -3946,6 +4081,100 @@ grep -qF "step gap is stopped by SIGINT, but what it started is not all shown go
   victim_fail "the step stopped just after its kill of the tunnel ran out says that kill was cut short, though it had ended and named the tunnel: $(cat "$tmp/out")"
 kill -CONT "$VICTIM_PARENT"
 wait "$VICTIM_PARENT" || true
-pass "a step stopped between the & that starts its load, its sampler or Postgres's collector and the command that records it names that part as not shown gone and never says it ended it, and a step stopped just after a kill ran out names that kill's part once"
+pass "a step stopped between the & that starts its load, its sampler or Postgres's collector and the command that records it, at either end of that gap, names that part as not shown gone and never says it ended it; so does a step stopped just after the stop of its tunnel, its load, its load's ssh or its collector cleared that part's flag; and a step stopped just after a kill ran out names that kill's part once"
+
+# ---- (jj) a stop after a start it did not see return waits for that start's record ------------
+
+# A start on the load machine records its process's pid there, in the command its ssh carries: the
+# tunnel's sh writes the pid of the tunnel it backgrounds, and the load's sh its own before it
+# execs the loadgen. A start whose ssh this pod did not see return 0 -- cut short by a signal, an
+# ssh that failed while the command it carried ran on, or the load's ssh that the step's stop
+# itself ends -- may record that pid only after the stop's kill has read the file. That kill found
+# no pid, said the part was gone, and the start went on and left it running. So such a stop's kill
+# waits for the record, up to REMOTE_GONE_SECONDS, and ends what it names; a record that does not
+# come within that bound is a start that nothing shows gone, and the kill says so. Here an ssh in
+# front of the fake one carries the start's command late: it returns 255 at once, as an ssh cut
+# short does, and runs that command LATE_DELAY s later in a session of its own, as the load machine
+# runs it on once that ssh has gone, where no signal of this pod reaches it; it writes `carried`
+# once it has handed the command on, and the load's row stops its load after that. The first row of
+# each part gives the kill 10 s and the start 2 s; the second gives the kill 1 s and the start 4 s.
+jj_dir=$tmp/jj
+mkdir -p "$jj_dir/bin"
+cat >"$jj_dir/bin/ssh" <<EOF
+#!/usr/bin/env bash
+# The TERM a stop sends the timeout above this ssh reaches its whole process group, which a command
+# on the load machine is no part of, so this ssh ignores it, and the command it carries takes it
+# again on the load machine.
+trap '' TERM
+case "\$*" in
+  *"\$LATE_MATCH"*)
+    if [ ! -e "$jj_dir/taken" ]; then
+      : >"$jj_dir/taken"
+      setsid -f bash -c 'source "\$FAKE_RECORD"; "\$1" "\$2"; : >"\$3"; shift 3; exec env --default-signal=TERM "\$@"' _ "$REAL_SLEEP" "\$LATE_DELAY" "$jj_dir/ran" "$bin/ssh" "\$@" </dev/null >/dev/null 2>&1
+      : >"$jj_dir/carried"
+      exit 255
+    fi
+    ;;
+esac
+exec env --default-signal=TERM "$bin/ssh" "\$@"
+EOF
+# shellcheck disable=SC2016 # expanded by the stand-in
+printf '#!/usr/bin/env bash\nsource "$FAKE_RECORD"\necho "$$" >%q\nexec %q 300\n' "$jj_dir/started" "$REAL_SLEEP" >"$jj_dir/stand-in"
+chmod +x "$jj_dir/bin/ssh" "$jj_dir/stand-in"
+# jj_after: wait until the late command has run and had 3 s to record its pid; jj_pid then holds
+# the pid the part's pid file names, empty when there is none.
+jj_after() {
+  local t0
+  t0=$(clock_us)
+  until [ -e "$jj_dir/ran" ]; do
+    (($(clock_us) - t0 <= 20000000)) || fail "the late start's command did not run within 20 s: $(cat "$tmp/out")"
+    "$REAL_SLEEP" 0.1
+  done
+  "$REAL_SLEEP" 3
+  jj_pid=$(cat "$jj_file" 2>/dev/null || true)
+}
+# jj_end: what the late start left, ended: the pid its file names, and the tunnel's or the
+# stand-in's own record of its pid.
+jj_end() {
+  local pid
+  for pid in "$jj_pid" "$(cut -d' ' -f1 "$fake/tunnel-up" 2>/dev/null)" "$(cat "$jj_dir/started" 2>/dev/null)"; do
+    [ -z "$pid" ] || end_process "$pid" || fail "what the late start left (pid $pid) still runs 10 s after its SIGKILL"
+  done
+  rm -f -- "$jj_file" "$jj_dir/taken" "$jj_dir/carried" "$jj_dir/ran" "$jj_dir/started"
+}
+for row in "tunnel 10 2" "tunnel 1 4" "load 10 2" "load 1 4"; do
+  read -r part gone delay <<<"$row"
+  reset_fake
+  mkdir -p "$(dirname -- "${kill_cases[1]#* }")" "$fn_run_dir/logs"
+  jj_pid=""
+  if [ "$part" = tunnel ]; then
+    what="the profiling tunnel" jj_file=${kill_cases[0]#* } match=nohup
+    body='tunnel_start late || echo "the start returned 1"; tunnel_stop'
+  else
+    # shellcheck disable=SC2016 # the text the load's start carries, matched as it is
+    what="the step's loadgen run" jj_file=${kill_cases[1]#* } match='echo $$ >'
+    body="load_start $(printf %q "$jj_dir") 300 $(printf %q "$jj_dir/stand-in")"
+    body+="; until [ -e $(printf %q "$jj_dir/carried") ]; do $(printf %q "$REAL_SLEEP") 0.05; done; load_stop"
+  fi
+  # shellcheck disable=SC2016 # expanded by the shell run_fn starts
+  PATH=$jj_dir/bin:$PATH LATE_MATCH=$match LATE_DELAY=$delay \
+    run_fn REMOTE_GONE_SECONDS="$gone" NOT_GONE="" eval "$body"'; echo "the stop returned, NOT_GONE=$NOT_GONE"'
+  jj_after
+  grep -q '^the stop returned' "$tmp/out" || { jj_end; fail "the stop after the late start of $what did not return ($row): $(cat "$tmp/out")"; }
+  if ((gone > delay)); then
+    [ -z "$jj_pid" ] || ! kill -0 "$jj_pid" 2>/dev/null ||
+      { jj_end; fail "the stop after a start of $what that it did not see return left the process that start recorded late (pid $jj_pid) running ($row): $(cat "$tmp/out")"; }
+    [ -z "$jj_pid" ] || { jj_end; fail "the stop after a start of $what that it did not see return left $jj_file, which the start wrote late ($row): $(cat "$tmp/out")"; }
+    grep -qx 'the stop returned, NOT_GONE=' "$tmp/out" ||
+      { jj_end; fail "the stop that ended $what, which its start recorded late, did not say it gone ($row): $(cat "$tmp/out")"; }
+  else
+    grep -qF "the start of $what on the generator VM recorded no pid in $jj_file there within 1 s of its kill, so nothing shows it gone" "$tmp/out" ||
+      { jj_end; fail "the stop whose kill saw no record of a start of $what within its bound did not say so ($row): $(cat "$tmp/out")"; }
+    grep -qx "the stop returned, NOT_GONE=$what" "$tmp/out" ||
+      { jj_end; fail "the stop whose kill saw no record of a start of $what within its bound did not name it as not shown gone ($row): $(cat "$tmp/out")"; }
+  fi
+  jj_end
+done
+pass "a stop after a start on the load machine that it did not see return -- the tunnel's whose ssh failed, the load's whose ssh the stop ended -- waits for that start to record its pid, up to its bound, and ends what it records, and names the part as not shown gone when no record comes within that bound"
 
 printf 'PASS: packages/envoy/loadtest/vm/vm.test.sh\n'

@@ -164,9 +164,14 @@
 # that lands inside the watcher's read of the volume leaves it without acting at all; (ff) a
 # daemon that outlives its SIGTERM makes stop_daemon fail, naming it and keeping its pidfile, and
 # down go on with its delete and then fail, naming it, while a daemon that ends on its SIGTERM is
-# stopped and its pidfile removed; (gg) a step shell that a signal ends inside its stop of the
-# disk watcher names that watcher, in its EXIT trap, as not shown gone; and (hh) the start of a
-# pid that has left the table reads as nothing, and a shell under errexit goes on past that read.
+# stopped and its pidfile removed once every member of its process group has gone, and a member
+# still there 10 s after the group's SIGTERM is named; (gg) a step shell that a signal ends inside
+# its stop of the disk watcher names that watcher, in its EXIT trap, as not shown gone; and (hh)
+# the start of a pid that has left the table reads as nothing, and a shell under errexit goes on
+# past that read; a process whose main thread is a zombie has ended only once no other thread of
+# it is left, and a read of a process that is there and could not be read is no answer, to
+# proc_ended, step_gone and run_command_alive alike; and the stop of the disk watcher kills and
+# waits for every process of its act below the watcher, a kubectl under timeout included.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -198,11 +203,10 @@ cleanup() {
   done
   # A case that failed before its assertions could see the step end leaves the step shell (w)
   # killed, its disk watcher and its wait on the runner job behind; a cluster.sh that passes (w)
-  # ends all three itself.
-  while read -r pid _; do
-    # no-wait: the suite's own exit; nothing reads these steps after it.
-    kill -TERM -- "$pid" 2>/dev/null || true
-  done < <(own_steps)
+  # ends all three itself. Each step a case starts with &, and each of those two subshells, is
+  # recorded at its start (record_pid), and ended here by its pid with the processes below it
+  # (end_recorded), so no step of another run of this suite is reached, whatever its command line.
+  end_recorded "${started:-$tmp/started}" || true
   rm -rf -- "$tmp"
 }
 trap cleanup EXIT
@@ -861,6 +865,13 @@ fi
 exec $real_sleep "\$@"
 EOF
 chmod +x "$bin"/*
+# What the suites share about a stand-in a case has to see end (process_ended, end_process),
+# sourced before the fake sleep goes on PATH.
+# shellcheck source=packages/envoy/loadtest/test-lib.sh
+source "$here/../test-lib.sh"
+# Its path for the rows that source it in a shell of their own, and the record of what the suite
+# starts that may outlive a case (record_pid, end_recorded in cleanup).
+readonly test_lib=$here/../test-lib.sh started=$tmp/started
 
 export FAKE_DIR=$fake FAKE_NS=$ns
 export LOADTEST_CLUSTER_ROOT=$tmp/root
@@ -2745,6 +2756,7 @@ df_seq "$pg_size $pg_used_low $pg_free_low"
 FAKE_PG_DF_SEQ=$fake/df-seq FAKE_RC_UNTIL_STOP=1 FAKE_FAST_SLEEP=30 \
   bash "$cluster" step --namespace "$ns" pgkill 1 --duration 1m >"$tmp/out" 2>&1 &
 kill_step=$!
+record_pid "$started" "$kill_step"
 # The waits in this case are the step's own doing, never a stretch of wall clock: this one ends
 # at the watcher's first nap, which the fake sleep records, and at once if the step ends first.
 watching=no
@@ -2760,7 +2772,13 @@ done
 # The two subshells the SIGKILL leaves behind: the disk watcher, and the wait on the runner job
 # in its command substitution. Each ends at its own next poll, and the assertions below wait for
 # exactly these pids, so no clock decides how long a loaded box may take to reach that poll.
-mapfile -t kill_kids < <(pgrep -P "$kill_step")
+kill_kids=() kill_found=()
+for kill_file in "/proc/$kill_step"/task/*/children; do
+  kill_found=()
+  { read -r -a kill_found <"$kill_file"; } 2>/dev/null || true
+  kill_kids+=("${kill_found[@]}")
+done
+for kid in "${kill_kids[@]}"; do record_pid "$started" "$kid"; done
 ((${#kill_kids[@]} >= 2)) ||
   fail "the step shell has ${#kill_kids[@]} children, not its disk watcher and its wait on the runner job: $(cat "$tmp/out")"
 kill -KILL "$kill_step"
@@ -3730,6 +3748,7 @@ step_at=$EPOCHSECONDS
 FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_FAST_SLEEP=60 FAKE_SLEEP_GATE=$fake/root-unreach-step.gate \
   bash "$tmp/step-bounded.sh" step --namespace "$ns" unreach 1 --duration 1s >"$unreach_step" 2>&1 &
 unreach_pid=$!
+record_pid "$started" "$unreach_pid"
 # The pod goes away once the load runs in it, which is when a step has nothing but this wait left.
 until grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null || ! kill -0 "$unreach_pid" 2>/dev/null; do sleep 0.05; done
 grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null ||
@@ -3839,8 +3858,48 @@ stuck_out=$fake/stuck.out
   ((stop_rc == 0)) || stand_in_fail "stop_daemon returned $stop_rc for a heartbeat daemon that ended on its SIGTERM: $(cat "$stuck_out")"
   ! kill -0 "$STAND_IN" 2>/dev/null || stand_in_fail "stop_daemon returned with the heartbeat daemon (pid $STAND_IN) still there"
   [ ! -e "$RUN_DIR/heartbeat.pid" ] || fail "stop_daemon left the pidfile of the heartbeat daemon it stopped"
+  # A daemon's process group can outlive the daemon: a member of it that takes longer to leave on
+  # the same TERM, as a role loop of the sampler can with its kubectl exec. The stop waits until
+  # each member has gone, and returns 1, naming the members still there, 10 s after the TERM. The
+  # stand-in daemon ends on its TERM at once, and its member writes its pid and, on the TERM, leaves
+  # 2 s later, or never.
+  member_stand_in() {
+    rm -f -- "$RUN_DIR/heartbeat.pid" "$fake/member.pid"
+    # shellcheck disable=SC2016 # expanded by the stand-in's own bash
+    TRAP=$1 PIDFILE=$RUN_DIR/heartbeat.pid MEMBER=$fake/member.pid REAL=$real_sleep setsid bash -c \
+      '( trap "$TRAP" TERM; echo "$BASHPID" >"$MEMBER"; while :; do "$REAL" 0.1; done ) & echo "$$" >"$PIDFILE"; wait' \
+      _heartbeat --namespace "$NS" --run "$RUN" </dev/null >/dev/null 2>&1 &
+    local t0=$SECONDS
+    until [ -s "$RUN_DIR/heartbeat.pid" ] && [ -s "$fake/member.pid" ]; do
+      ((SECONDS - t0 <= 10)) || fail "the stand-in heartbeat and its member wrote no pids within 10 s"
+      sleep 0.05
+    done
+    STAND_IN=$(<"$RUN_DIR/heartbeat.pid") MEMBER_PID=$(<"$fake/member.pid")
+  }
+  # shellcheck disable=SC2016 # expanded by the member's trap
+  member_stand_in '"$REAL" 2; exit 0'
+  stop_rc=0
+  stop_daemon heartbeat 2>"$stuck_out" || stop_rc=$?
+  member_left=no
+  ! kill -0 "$MEMBER_PID" 2>/dev/null || member_left=yes
+  [ "$member_left" = no ] ||
+    stand_in_fail "stop_daemon returned with a member of the heartbeat daemon's process group (pid $MEMBER_PID) still there, which leaves 2 s after its SIGTERM: $(cat "$stuck_out")"
+  ((stop_rc == 0)) ||
+    stand_in_fail "stop_daemon returned $stop_rc for a heartbeat daemon whose process group all left on its SIGTERM: $(cat "$stuck_out")"
+  [ ! -e "$RUN_DIR/heartbeat.pid" ] || fail "stop_daemon left the pidfile of a heartbeat daemon whose process group it stopped"
+  wait "$STAND_IN" 2>/dev/null || true
+  member_stand_in ''
+  stop_rc=0
+  stop_daemon heartbeat 2>"$stuck_out" || stop_rc=$?
+  ((stop_rc == 1)) ||
+    stand_in_fail "stop_daemon returned $stop_rc, not 1, although a member of the heartbeat daemon's process group (pid $MEMBER_PID) ignored its SIGTERM and still runs: $(cat "$stuck_out")"
+  grep -qF "the heartbeat daemon (pid $STAND_IN) has left, but its process group still holds pid $MEMBER_PID in the process table 10 s after the group's SIGTERM" "$stuck_out" ||
+    stand_in_fail "stop_daemon did not name the member of the heartbeat daemon's process group (pid $MEMBER_PID) still there: $(cat "$stuck_out")"
+  kill -KILL -- "-$STAND_IN" 2>/dev/null || true
+  end_process "$MEMBER_PID" || fail "the member of the stand-in's process group (pid $MEMBER_PID) still runs 10 s after its SIGKILL"
+  wait "$STAND_IN" 2>/dev/null || true
 )
-pass "a daemon that outlives its SIGTERM makes stop_daemon fail, naming it and keeping its pidfile, and down go on with its delete and then fail, naming it; a daemon that ends on its SIGTERM is stopped and its pidfile removed"
+pass "a daemon that outlives its SIGTERM makes stop_daemon fail, naming it and keeping its pidfile, and down go on with its delete and then fail, naming it; a daemon that ends on its SIGTERM is stopped and its pidfile removed once every member of its process group has gone, and a member still there 10 s after the group's SIGTERM is named"
 
 # (gg) A stop of the disk watcher that a signal cuts short. pg_disk_watch_stop clears the watcher's
 # pid before it sends its TERM, so a step shell that a signal ends inside that stop runs its EXIT
@@ -3875,14 +3934,9 @@ cutw_rc=0
   echo "the stop returned"
 ) >"$cutw_dir/out" 2>&1 || cutw_rc=$?
 cutw_pid=$(cat "$cutw_dir/pid" 2>/dev/null || echo none)
-# The stand-in outlives the step shell, its parent, so no wait here reaps it: it is waited until it
-# has left the table or is a zombie, which has ended.
-[ "$cutw_pid" = none ] || kill -KILL "$cutw_pid" 2>/dev/null || true
-cutw_at=$SECONDS
-while [ -e "/proc/$cutw_pid" ] && [ "$(awk '{print $3}' "/proc/$cutw_pid/stat" 2>/dev/null)" != Z ]; do
-  ((SECONDS - cutw_at <= 10)) || fail "the stand-in disk watcher (pid $cutw_pid) still runs 10 s after its SIGKILL"
-  "$real_sleep" 0.1
-done
+# The stand-in outlives the step shell, its parent, so no wait here reaps it (end_process).
+[ "$cutw_pid" = none ] || end_process "$cutw_pid" ||
+  fail "the stand-in disk watcher (pid $cutw_pid) still runs 10 s after its SIGKILL"
 ((cutw_rc == 143)) ||
   fail "the step shell that a TERM ended inside its stop of the disk watcher ended with $cutw_rc, not 143: $(cat "$cutw_dir/out")"
 grep -qF "the stop of step cutwatch's disk watcher (pid $cutw_pid) was cut short, so nothing shows it gone" "$cutw_dir/out" ||
@@ -3929,6 +3983,111 @@ grep -qx 'a read of an entry with no stat failed' "$gone_out" ||
   fail "proc_start of an entry that is there and whose stat it could not read did not fail: $(cat "$gone_out")"
 pass "proc_start of a pid that has left the table prints nothing and lets a shell under errexit go on, and that pid reads as ended, while a read that fails of an entry that is there fails"
 
+# proc_ended reads a process as ended only once every thread of it has gone. SIGKILL ends each
+# thread when the kernel next runs it, often the main one first, and /proc/PID/stat names the main
+# thread alone: it reads Z while another thread still runs and still holds the process's port. The
+# stand-in holds that moment still: a process whose main thread has left by the exit system call
+# of that thread alone, while a second thread holds a listening port. proc_ended reads it as not
+# ended (1) while that port takes a connection, and as ended (0) once the SIGKILL has ended the
+# rest, when its port takes none; a zombie of one thread reads as ended at once. A read of an entry
+# that is there and cannot be read is no answer (2), and an entry that has gone is an end (0).
+command -v python3 >/dev/null || fail "case (hh) needs python3 on PATH for its stand-in of many threads"
+cat >"$fake/threads.py" <<'EOF'
+# threads.py PORT_FILE THREADS [main-exits]: THREADS threads besides the main one, each asleep, and
+# a listening port, written to PORT_FILE; with main-exits the main thread then leaves by the exit
+# system call of that thread alone, and the others hold the process and its port.
+import ctypes, os, platform, socket, sys, threading
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+for _ in range(int(sys.argv[2])):
+    threading.Thread(target=threading.Event().wait, daemon=True).start()
+with open(sys.argv[1] + ".tmp", "w") as f:
+    f.write("%d\n" % s.getsockname()[1])
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+if len(sys.argv) > 3:
+    ctypes.CDLL(None).syscall({"x86_64": 60, "aarch64": 93}[platform.machine()], 0)
+threading.Event().wait()
+EOF
+ended_out=$fake/ended.out
+ended_rc=0
+# shellcheck disable=SC2016 # expanded by the bash that sourced cluster.sh
+bash -c '
+  source "$1"
+  source "$5"
+  takes() { : 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$1"; }
+  state() { local s; read -r s 2>/dev/null <"/proc/$1/stat" || return 1; s=${s##*) }; printf "%s\n" "${s%% *}"; }
+  python3 "$3" "$4/main-exits.port" 1 main-exits &
+  mt=$!
+  at=$SECONDS
+  until [ -s "$4/main-exits.port" ] && [ "$(state "$mt")" = Z ]; do
+    ((SECONDS - at <= 10)) || { echo "the stand-in of two threads did not reach its zombie main thread in 10 s"; end_process "$mt" || true; exit 1; }
+    "$2" 0.05
+  done
+  mt_start=$(proc_start "$mt") port=$(<"$4/main-exits.port")
+  rc=0
+  proc_ended "$mt" "$mt_start" || rc=$?
+  took=no
+  ! takes "$port" || took=yes
+  echo "main thread gone, a thread holding the port: $rc, the port takes a connection: $took"
+  kill -KILL "$mt"
+  rc=1 at=$SECONDS
+  while ((rc == 1 && SECONDS - at <= 10)); do
+    rc=0
+    proc_ended "$mt" "$mt_start" || rc=$?
+    ((rc == 0)) || "$2" 0.05
+  done
+  took=no
+  ! takes "$port" || took=yes
+  echo "every thread killed: $rc, the port takes a connection: $took"
+  wait "$mt" 2>/dev/null || true
+  # The one-thread zombie is held under a parent of its own, stopped, which reaps it only once it
+  # is continued; this shell would reap a child of its own at once. The parent is seen stopped
+  # before the SIGKILL (stop_process): a parent not yet run since its SIGSTOP reaps the child from
+  # its wait first, as it did three times in one batch at a load of 640 to 800.
+  rm -f -- "$4/one.pid"
+  bash -c "\"\$1\" 30 & echo \"\$!\" >\"\$2\"; wait" _ "$2" "$4/one.pid" 2>/dev/null &
+  parent=$!
+  at=$SECONDS
+  until [ -s "$4/one.pid" ]; do
+    ((SECONDS - at <= 10)) || { echo "the one-thread stand-in wrote no pid in 10 s"; exit 1; }
+    "$2" 0.05
+  done
+  one=$(<"$4/one.pid")
+  one_start=$(proc_start "$one")
+  stop_process "$parent" || { echo "the parent of the one-thread stand-in (pid $parent) did not stop within 10 s of its SIGSTOP"; kill -CONT "$parent"; exit 1; }
+  kill -KILL "$one" # no-wait: its stopped parent holds it as a zombie, which the loop below waits for, and the wait on that parent reaps it
+  at=$SECONDS
+  until [ "$(state "$one")" = Z ]; do
+    ((SECONDS - at <= 10)) || { echo "the one-thread stand-in was no zombie 10 s after its SIGKILL"; kill -CONT "$parent"; exit 1; }
+    "$2" 0.05
+  done
+  rc=0
+  proc_ended "$one" "$one_start" || rc=$?
+  echo "a zombie of one thread: $rc"
+  kill -CONT "$parent"
+  wait "$parent" 2>/dev/null || true
+  rc=0
+  proc_ended "$one" "$one_start" || rc=$?
+  echo "an entry that has gone: $rc"
+  rc=0
+  proc_ended "$$/task" "$mt_start" || rc=$?
+  echo "an entry that is there with no stat: $rc"
+' _ "$cluster" "$real_sleep" "$fake/threads.py" "$fake" "$test_lib" >"$ended_out" 2>&1 || ended_rc=$?
+((ended_rc == 0)) || fail "the reads of proc_ended ended with $ended_rc: $(cat "$ended_out")"
+grep -qx 'main thread gone, a thread holding the port: 1, the port takes a connection: yes' "$ended_out" ||
+  fail "proc_ended does not read a process whose main thread is a zombie, and whose other thread still holds its port, as not ended (1): $(cat "$ended_out")"
+grep -qx 'every thread killed: 0, the port takes a connection: no' "$ended_out" ||
+  fail "proc_ended does not read that process as ended (0) once every thread of it is gone, or read it so while its port still took a connection: $(cat "$ended_out")"
+grep -qx 'a zombie of one thread: 0' "$ended_out" ||
+  fail "proc_ended does not read a zombie of one thread as ended (0): $(cat "$ended_out")"
+grep -qx 'an entry that has gone: 0' "$ended_out" ||
+  fail "proc_ended does not read an entry that has gone as ended (0): $(cat "$ended_out")"
+grep -qx 'an entry that is there with no stat: 2' "$ended_out" ||
+  fail "proc_ended does not answer 2, no answer, for an entry that is there and that it could not read: $(cat "$ended_out")"
+pass "proc_ended reads a process whose main thread is a zombie as ended only once no other thread of it is left and its port takes no connection, a zombie of one thread and an entry that has gone as ended, and an entry it could not read as no answer"
+
 # The stop's KILL goes to the watcher and to each child whose start it read, and to no other: a
 # child that has left the table by the read of its start is no process, and its pid may name
 # another by the KILL, and one whose start cannot be read for another reason is named and left
@@ -3974,15 +4133,9 @@ bash -c '
   for i in 1 2; do proc_ended "${found[i]}" "${starts[i]}" || echo "child $i runs on"; done
 ' _ "$cluster" "$real_sleep" >"$kids_out" 2>&1 || kids_rc=$?
 read -r _ kid_read kid_gone kid_unread < <(grep '^kids ' "$kids_out" || true)
-# Each sleep is ended here and waited until it has left the table or is a zombie, which has
-# ended; the watcher, killed, is no parent to reap them.
+# Each sleep is ended here (end_process); the watcher, killed, is no parent to reap them.
 for kid in ${kid_read:-} ${kid_gone:-} ${kid_unread:-}; do
-  kill -KILL "$kid" 2>/dev/null || true
-  kids_at=$SECONDS
-  while [ -e "/proc/$kid" ] && [ "$(awk '{print $3}' "/proc/$kid/stat" 2>/dev/null)" != Z ]; do
-    ((SECONDS - kids_at <= 10)) || fail "a child of the stand-in watcher (pid $kid) still runs 10 s after its SIGKILL"
-    "$real_sleep" 0.1
-  done
+  end_process "$kid" || fail "a child of the stand-in watcher (pid $kid) still runs 10 s after its SIGKILL"
 done
 ((kids_rc == 0)) ||
   fail "the stop of a watcher with a child whose start reads as gone and one whose start cannot be read ended with $kids_rc: $(cat "$kids_out")"
@@ -3995,6 +4148,122 @@ grep -qx 'child 1 runs on' "$kids_out" ||
   fail "the stop's SIGKILL reached the child whose start read as gone (pid $kid_gone): $(cat "$kids_out")"
 grep -qx 'child 2 runs on' "$kids_out" ||
   fail "the stop's SIGKILL reached the child whose start it could not read (pid $kid_unread): $(cat "$kids_out")"
-grep -qF "step kids: the start of a child of the disk watcher's act (pid $kid_unread) could not be read, so it is not killed, and nothing shows it ended" "$kids_out" ||
+grep -qF "step kids: the start of a process of the disk watcher's act (pid $kid_unread) could not be read, so it is not killed, and nothing shows it ended" "$kids_out" ||
   fail "the stop does not name the child whose start it could not read (pid $kid_unread): $(cat "$kids_out")"
 pass "the stop of the disk watcher sends its SIGKILL to the watcher and to each child whose start it read, and names a child whose start it could not read"
+
+# The stop's KILL reaches every process of the act below the watcher, not its children alone. The
+# act runs kubectl under timeout (kube_for): runner_stop in the watcher's own shell, so the
+# watcher's child is timeout and kubectl a grandchild, and pg_disk's read inside a command
+# substitution, one subshell further down. A SIGKILL of timeout passes nothing on, so a stop that
+# killed the watcher's children alone left that kubectl running, its bound gone, and said only that
+# it had killed the watcher. Here the watcher is a stand-in that ignores TERM, and its act is
+# cluster.sh's own kube_for over a kubectl that writes its pid and sleeps, one row each place of
+# the call; in the third row that kubectl is a process of 16 threads that holds a listening port,
+# as kubectl is a Go program of many threads. The moment the stop returns, read with builtins
+# alone, the kubectl has ended (process_ended) and its port takes no connection, or the stop named
+# it as not ended; and the stop's line names it among the processes it killed.
+act_dir=$fake/act
+mkdir -p "$act_dir/bin"
+cat >"$act_dir/bin/kubectl" <<EOF
+#!/usr/bin/env bash
+echo "\$\$" >"$act_dir/kubectl.\$ACT_ROW.tmp"
+mv -- "$act_dir/kubectl.\$ACT_ROW.tmp" "$act_dir/kubectl.\$ACT_ROW"
+[ "\$ACT_ROW" != threads ] || exec python3 "$fake/threads.py" "$act_dir/port.\$ACT_ROW" 16
+exec $real_sleep 300
+EOF
+chmod +x "$act_dir/bin/kubectl"
+for act_row in runner-stop volume-read threads; do
+  act_out=$act_dir/$act_row.out act_rc=0 act_k=""
+  # shellcheck disable=SC2016 # expanded by the bash that sourced cluster.sh
+  bash -c '
+    source "$1"
+    source "$4"
+    PATH=$3/bin:$PATH NS=act ACT_ROW=$5
+    export ACT_ROW
+    case $ACT_ROW in
+    volume-read) ( trap "" TERM; out=$(kube_for 300 exec postgres-0 -c postgres -- df) ) >/dev/null 2>&1 & ;;
+    *) ( trap "" TERM; kube_for 300 exec runner -c runner -- sh -c : ) >/dev/null 2>&1 & ;;
+    esac
+    PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=act PG_DISK_STOP_SECONDS=1
+    at=$SECONDS
+    until [ -s "$3/kubectl.$ACT_ROW" ] && { [ "$ACT_ROW" != threads ] || [ -s "$3/port.$ACT_ROW" ]; }; do
+      ((SECONDS - at <= 10)) || { echo "the act started no kubectl within 10 s"; end_process "$PG_DISK_WATCHER" || true; exit 1; }
+      "$2" 0.05
+    done
+    k=$(<"$3/kubectl.$ACT_ROW") port=""
+    [ "$ACT_ROW" != threads ] || port=$(<"$3/port.$ACT_ROW")
+    printf "kubectl %s\n" "$k"
+    pg_disk_watch_stop
+    ended=no took=no
+    ! process_ended "$k" || ended=yes
+    [ -z "$port" ] || ! : 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$port" || took=yes
+    echo "the moment the stop returned: the kubectl had ended: $ended, its port took a connection: $took"
+  ' _ "$cluster" "$real_sleep" "$act_dir" "$test_lib" "$act_row" >"$act_out" 2>&1 || act_rc=$?
+  read -r _ act_k < <(grep '^kubectl ' "$act_out" || true) || true
+  [ -z "$act_k" ] || end_process "$act_k" || fail "the act's kubectl (pid $act_k) still runs 10 s after its SIGKILL"
+  ((act_rc == 0)) || fail "the stop of a watcher stuck in its act's kubectl ($act_row) ended with $act_rc: $(cat "$act_out")"
+  [ -n "$act_k" ] || fail "the act of the stand-in watcher started no kubectl ($act_row): $(cat "$act_out")"
+  grep -qx 'the moment the stop returned: the kubectl had ended: yes, its port took a connection: no' "$act_out" ||
+    grep -qF "step act: a process of the disk watcher's act (pid $act_k) has not ended 1 s after its SIGKILL" "$act_out" ||
+    fail "the stop of a watcher stuck in its act's kubectl ($act_row) returned with that kubectl (pid $act_k) not ended, or its port still taking a connection, and named nothing of it: $(cat "$act_out")"
+  grep -qE "step act: the disk watcher did not end within 1 s of its SIGTERM, so it was killed, with the [0-9]+ processes of its act below it \(pids ([0-9]+ )*$act_k( [0-9]+)*\)" "$act_out" ||
+    fail "the stop's line does not name the act's kubectl (pid $act_k, $act_row) among the processes it killed: $(cat "$act_out")"
+done
+pass "the stop of the disk watcher kills and waits for every process of its act below the watcher -- the kubectl under timeout in the watcher's own shell and in a command substitution, and a kubectl of 16 threads until each thread of it has gone and its port is free -- and names each"
+
+# A read that fails is no answer. step_gone of a step shell whose start it could not read -- here
+# proc_start fails for that shell's pid, as it does for a shell with no file descriptor to spare --
+# answers 2, which its callers name and poll on, rather than calling the step gone; run_command_alive
+# keeps the file of a command whose start it could not read, or whose file it could not read, and
+# counts the run alive. The same shell read as it is answers 1 and keeps the run alive, and a run
+# directory that has gone is a gone step (0).
+sg_out=$fake/step-gone.out
+sg_rc=0
+# shellcheck disable=SC2016 # expanded by the bash that sourced cluster.sh
+bash -c '
+  source "$1"
+  set_run lt-20261119t000000-5afe
+  mkdir -p "$RUN_DIR/commands"
+  self=$$ self_start=$(proc_start "$$")
+  file=$RUN_DIR/commands/$self
+  printf "%s\n" "$self_start" >"$file"
+  rc=0
+  step_gone "$self" "$self_start" || rc=$?
+  echo "read: step_gone $rc"
+  ! run_command_alive || echo "read: the run is alive"
+  eval "orig_$(declare -f proc_start)"
+  proc_start() {
+    [ "$1" != "$self" ] || return 1
+    orig_proc_start "$1"
+  }
+  rc=0
+  step_gone "$self" "$self_start" || rc=$?
+  echo "start unread: step_gone $rc"
+  ! run_command_alive || echo "start unread: the run is alive"
+  [ ! -f "$file" ] || echo "start unread: the file is kept"
+  eval "$(declare -f orig_proc_start | sed 1s/orig_proc_start/proc_start/)"
+  chmod 000 "$file"
+  if { : <"$file"; } 2>/dev/null; then
+    echo "file unread: not made, this user reads a file of mode 000"
+  else
+    ! run_command_alive || echo "file unread: the run is alive"
+    [ ! -f "$file" ] || echo "file unread: the file is kept"
+  fi
+  rm -rf -- "$RUN_DIR"
+  rc=0
+  step_gone "$self" "$self_start" || rc=$?
+  echo "no run directory: step_gone $rc"
+' _ "$cluster" >"$sg_out" 2>&1 || sg_rc=$?
+((sg_rc == 0)) || fail "the reads of step_gone and run_command_alive ended with $sg_rc: $(cat "$sg_out")"
+for sg_line in 'read: step_gone 1' 'read: the run is alive' 'start unread: step_gone 2' 'start unread: the run is alive' \
+  'start unread: the file is kept' 'no run directory: step_gone 0'; do
+  grep -qx "$sg_line" "$sg_out" || fail "step_gone or run_command_alive did not answer '$sg_line': $(cat "$sg_out")"
+done
+grep -qF "the start of a command of run lt-20261119t000000-5afe (pid " "$sg_out" ||
+  fail "run_command_alive does not name the command whose start it could not read: $(cat "$sg_out")"
+if ! grep -qx 'file unread: not made, this user reads a file of mode 000' "$sg_out"; then
+  { grep -qx 'file unread: the run is alive' "$sg_out" && grep -qx 'file unread: the file is kept' "$sg_out"; } ||
+    fail "run_command_alive did not keep the file it could not read, or did not count the run alive: $(cat "$sg_out")"
+fi
+pass "step_gone answers a read of the step shell's start it could not make as no answer (2), not a gone step, and run_command_alive keeps a command whose start or file it could not read, counting the run alive"

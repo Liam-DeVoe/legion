@@ -31,6 +31,9 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly helper="${here}/common.sh"
+# What the suites share about a process a case has to see end (process_ended, wait_gone).
+# shellcheck source=packages/envoy/loadtest/test-lib.sh
+source "${here}/test-lib.sh"
 temporary_dir="$(mktemp -d)"
 readonly temporary_dir
 readonly locker="${temporary_dir}/locker.sh"
@@ -116,28 +119,11 @@ chmod +x "${slow_bin}/date"
 real_date="$(command -v date)"
 readonly real_date
 
-# alive PID: PID runs and is not a zombie.
-alive() {
-  local stat
-  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
-  [[ ${stat##*) } != Z* ]]
-}
-
 # wait_for FILE: wait up to 10 s for FILE to exist.
 wait_for() {
   local i
   for ((i = 0; i < 100; i++)); do
     [[ -s "$1" ]] && return 0
-    sleep 0.1
-  done
-  return 1
-}
-
-# wait_gone PID: wait up to 10 s for PID to end.
-wait_gone() {
-  local i
-  for ((i = 0; i < 100; i++)); do
-    alive "$1" || return 0
     sleep 0.1
   done
   return 1
@@ -178,7 +164,7 @@ case_orphaned_child() {
   pids+=("$child")
   kill -TERM "$holder"
   wait "$holder" 2>/dev/null || true
-  alive "$child" || { fail "(a) the child ended with its holder"; return; }
+  ! process_ended "$child" || { fail "(a) the child ended with its holder"; return; }
 
   try_lock "$root"
   if ((rc == 0)); then
