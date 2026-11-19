@@ -291,10 +291,6 @@ const HAND_NAMED_TEXTS: readonly HandNamedText[] = [
     what: "A check's negative control, and a check result's: what its writer says would fail. The server sends no tree of it.",
   },
   {
-    field: "observed",
-    what: "What a check result's writer saw. The server sends no tree of it.",
-  },
-  {
     field: "quote",
     what: "An anchor's quote: the document's own text where a comment or an ask was left. The server sends no tree of it.",
   },
