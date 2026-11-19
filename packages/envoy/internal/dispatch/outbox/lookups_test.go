@@ -14,7 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // One query reads the sessions the primary documents of a whole batch's issues credit, keyed by
@@ -114,7 +114,7 @@ func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
 // returns its address.
 func refusingServer(t *testing.T, code string) string {
 	t.Helper()
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

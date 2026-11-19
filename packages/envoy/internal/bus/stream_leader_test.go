@@ -156,15 +156,16 @@ func TestAStartAtOneCopyThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *tes
 
 // updateWaitJetStream records when the first update of stream was sent through it, when the start
 // stopped waiting on that update (the update's answer, or the next read of the stream the start
-// began, which follows an update whose answer did not come) and when the update was sent the
-// second time (resent). It reaches the cluster for everything, but for the first read of stream
-// when answered is set: that read is answered with it, a read the test made itself.
+// began, which follows an update whose answer did not come), when the first update's own call
+// returned an answer (firstAnswered), and when the update was sent the second time (resent). It
+// reaches the cluster for everything, but for the first read of stream when answered is set: that
+// read is answered with it, a read the test made itself.
 type updateWaitJetStream struct {
 	nats.JetStreamContext
-	stream                string
-	answered              *nats.StreamInfo
-	sent, settled, resent atomic.Int64
-	sends, reads          atomic.Int32
+	stream                               string
+	answered                             *nats.StreamInfo
+	sent, settled, firstAnswered, resent atomic.Int64
+	sends, reads                         atomic.Int32
 }
 
 func (js *updateWaitJetStream) settle() {
@@ -184,16 +185,22 @@ func (js *updateWaitJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*n
 }
 
 func (js *updateWaitJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	if cfg.Name == js.stream {
-		switch js.sends.Add(1) {
-		case 1:
-			js.sent.Store(time.Now().UnixNano())
-		case 2:
-			js.resent.Store(time.Now().UnixNano())
-		}
-		defer js.settle()
+	if cfg.Name != js.stream {
+		return js.JetStreamContext.UpdateStream(cfg, opts...)
 	}
-	return js.JetStreamContext.UpdateStream(cfg, opts...)
+	send := js.sends.Add(1)
+	switch send {
+	case 1:
+		js.sent.Store(time.Now().UnixNano())
+	case 2:
+		js.resent.Store(time.Now().UnixNano())
+	}
+	defer js.settle()
+	info, err := js.JetStreamContext.UpdateStream(cfg, opts...)
+	if send == 1 && err == nil {
+		js.firstAnswered.Store(time.Now().UnixNano())
+	}
+	return info, err
 }
 
 // updateAnswerBound is how long a start may wait on one update of a stream before it reads the
@@ -202,9 +209,34 @@ func (js *updateWaitJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats
 // its read limit (firstReadLimit) takes a fraction of a second, so the bound sits far from both.
 const updateAnswerBound = RequestTimeout / 2
 
-// electionHold is how long the row below holds the election of the bucket's stream: past
-// updateAnswerBound, so a start that waits for the update's answer waits past the bound every run.
-const electionHold = updateAnswerBound + time.Second
+// updateHoldBound is how long the row below keeps the stream's group without a leader while it
+// waits for the start to stop waiting on its update: past RequestTimeout, so a start that waits
+// for the update's answer stops waiting inside it, and the row ends in a failure that names that
+// wait rather than at the test binary's deadline when a start never stops waiting.
+const updateHoldBound = 2 * RequestTimeout
+
+// answeredLeader reads stream through js until a read is answered, each read cut at firstReadLimit
+// as a start's reads are, and returns the leader that answer names ("" for none). A read that draws
+// no answer says nothing of the leader: a read can be lost on a loaded machine, which is why a start
+// has a read limit at all, and a copy that still follows a stopped leader answers no read of the
+// stream until it finds that leader gone. It fails the test when no read is answered in a minute.
+func answeredLeader(t *testing.T, js nats.JetStreamContext, stream string) string {
+	t.Helper()
+	var lost error
+	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); {
+		read, err := js.StreamInfo(stream, nats.MaxWait(firstReadLimit))
+		switch {
+		case err != nil:
+			lost = err
+		case read.Cluster == nil:
+			t.Fatalf("the read of %s names no cluster: %+v", stream, read)
+		default:
+			return read.Cluster.Leader
+		}
+	}
+	t.Fatalf("no read of %s was answered within a minute; the last drew %v", stream, lost)
+	return ""
+}
 
 // A start that sets a bucket's maximum age, as the session registry's start does, while the
 // bucket's stream elects its leader, reads the stream back within its read limit rather than
@@ -216,12 +248,16 @@ const electionHold = updateAnswerBound + time.Second
 // The row holds the election itself. The bucket's stream has three copies on a cluster of five, so
 // the metadata group keeps its quorum when two members stop. Once the start has read the stream
 // (the test's own read, handed to it as its first answer), the row stops the stream's leader and
-// one other copy, so the update goes to a group that cannot elect a leader, and starts them again
-// electionHold later, when the group elects one. A server that shuts down hands the leadership of
-// its streams to a copy that is still up, and the copy left running can then lead the group alone
-// for a while and answer the update at once; the row reads that copy after the stops, and when it
-// names a leader it starts both again and chooses anew. A start that waits for the update's answer
-// waits past updateAnswerBound in every run.
+// one other copy, so the update goes to a group that cannot elect a leader. A server that shuts
+// down hands the leadership of its streams to a copy that is still up, and the copy left running
+// can then lead the group alone for a while and answer the update at once; so the row reads that
+// copy until a read is answered (answeredLeader), goes on only on an answer that names no leader,
+// and when the answer names one it starts both again and chooses anew. It keeps the two stopped
+// until the start has sent its update and stopped waiting on it, and only then starts them again,
+// so the group elects a leader and the start's read-back and its update sent again are answered.
+// A start that waits for the update's answer waits RequestTimeout with the group leaderless, past
+// updateAnswerBound, in every run; and an update answered while the two were stopped fails the
+// row, which then held nothing.
 func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsReadBackWithinTheReadLimit(t *testing.T) {
 	cluster := testnats.StartCluster(t, 5)
 	_, setupJS := memberJetStream(t, cluster, 0)
@@ -272,8 +308,9 @@ func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsReadBackWithinTheReadLimit(t
 			cluster.Servers[member].Stop(t)
 		}
 		_, keptJS := memberJetStream(t, cluster, kept)
-		read, err := keptJS.StreamInfo(stream, nats.MaxWait(firstReadLimit))
-		if err != nil || read.Cluster == nil || read.Cluster.Leader == "" {
+		leader := answeredLeader(t, keptJS, stream)
+		t.Logf("attempt %d: stopped members %v; the copy left running, member %d, names leader %q", attempt, stopped, kept, leader)
+		if leader == "" {
 			break
 		}
 		// The leadership went to the copy left running: it answers the update alone.
@@ -297,16 +334,23 @@ func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsReadBackWithinTheReadLimit(t
 		}
 		done <- err
 	}()
-	time.Sleep(electionHold)
+	if !testwait.Holds(updateHoldBound, testwait.Poll, func() bool { return timed.settled.Load() != 0 || len(done) != 0 }) {
+		t.Errorf("the start did not stop waiting on its update within %s of a group with no leader", updateHoldBound)
+	}
+	restarted := time.Now().UnixNano()
 	for _, member := range stopped {
 		cluster.Servers[member].Start(t)
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("set the age of the bucket whose stream elects its leader = %v; want 1h0m0s and no error", err)
 	}
-	sent, settled := timed.sent.Load(), timed.settled.Load()
+	sent, settled, answered := timed.sent.Load(), timed.settled.Load(), timed.firstAnswered.Load()
 	if sent == 0 || settled == 0 {
 		t.Fatalf("the start sent its update at %d and stopped waiting on it at %d, want both: this row holds nothing", sent, settled)
+	}
+	if answered != 0 && answered < restarted {
+		t.Fatalf("the first update was answered %s after it was sent, while two of the stream's three copies were stopped: a leader answered it, so this row holds nothing",
+			time.Duration(answered-sent).Round(time.Millisecond))
 	}
 	if waited := time.Duration(settled - sent); waited >= updateAnswerBound {
 		t.Fatalf("the start waited %s on its update, want under %s: an update no member answers is read back after the read limit, %s, and not waited out for the JetStream wait, %s",

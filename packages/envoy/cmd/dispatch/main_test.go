@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1282,7 +1283,7 @@ func slowPostgres(t *testing.T, upstream string, dialDelay time.Duration) string
 // and hands each connection to proxyPostgresConnection on their terms.
 func proxyPostgres(t *testing.T, upstream string, blackholed *atomic.Bool, dialDelay time.Duration) string {
 	t.Helper()
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the Postgres proxy: %v", err)
 	}

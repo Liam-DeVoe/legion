@@ -289,12 +289,13 @@ func (r *readLimit) answered(took time.Duration) {
 // (lost) or one it answered (answered), an error of the server's included. answered is false when
 // the limit or ctx passed first, and wait is the limit the read had, so a caller's error names it.
 // It is Bounded that ends the caller's wait at the limit: the abandoned request runs on in the
-// background to its own JetStream wait, ten seconds, and the server applies a request it received
-// whether or not anyone still waits for the answer. Its callers are the sends a start makes of one
-// request, sent again while unanswered (readAgain), the reads of a wait on a stream (awaitStream),
-// and each send of a write made from a read, which is read back before it is sent again: a
-// stream's update (updateStream), a consumer's filter moved off the role lanes (moveLegacyFilter)
-// and a role lane's purge (purgeRoleLane).
+// background until nats.go's own JetStream wait, ten seconds, ends, or, for a request a reconnect
+// run sends under its own context (requestsUnder), until that run ends, and the server applies a
+// request it received whether or not anyone still waits for the answer. Its callers are the sends
+// a start makes of one request, sent again while unanswered (readAgain), the reads of a wait on a
+// stream (awaitStream), and each send of a write made from a read, which is read back before it is
+// sent again: a stream's update (updateStream), a consumer's filter moved off the role lanes
+// (moveLegacyFilter) and a role lane's purge (purgeRoleLane).
 func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, error)) (value T, wait time.Duration, answered bool, err error) {
 	wait = limit.limit
 	readCtx, cancel := context.WithTimeout(ctx, wait)
@@ -386,10 +387,22 @@ func readAgain[T any](ctx context.Context, request string, limit *readLimit, rea
 	var last T
 	var lastErr error
 	for sends := 1; ; sends++ {
-		if ctx.Err() != nil {
-			return last, unansweredUntil(sends-1, lastErr, context.Cause(ctx))
+		if sends > 1 {
+			if ended := pause(ctx, bucketAppliedInterval); ended != nil {
+				return last, unansweredUntil(sends-1, lastErr, ended)
+			}
+			// Logged here, after the pause and just before the send it names, so that each line is
+			// followed by a further send: a wait that ends in the pause, or ends the send it would
+			// have announced, logs none.
+			slog.Warn("envoy nats stream request unanswered; sending it again",
+				slog.String("request", request), slog.Int("sent", sends-1), slog.String("error", lastErr.Error()))
 		}
 		value, wait, answered, err := limitedRead(ctx, limit, read)
+		if !answered && ctx.Err() != nil {
+			// ctx ended this send, not its read limit: it is no send that drew no answer within a
+			// limit, so the error counts the sends before it and names what ended the wait.
+			return last, unansweredUntil(sends-1, lastErr, context.Cause(ctx))
+		}
 		if !answered {
 			err = fmt.Errorf("no answer within %s: %w", wait, context.DeadlineExceeded)
 		}
@@ -397,10 +410,5 @@ func readAgain[T any](ctx context.Context, request string, limit *readLimit, rea
 			return value, err
 		}
 		last, lastErr = value, err
-		slog.Warn("envoy nats stream request unanswered; sending it again",
-			slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
-		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
-			return last, unansweredUntil(sends, lastErr, ended)
-		}
 	}
 }

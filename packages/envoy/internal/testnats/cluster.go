@@ -10,6 +10,8 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -51,7 +53,7 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	routes := make([]string, n)
 	listeners := make([]net.Listener, n)
 	for i := range n {
-		listener, err := Listen()
+		listener, err := testport.Listen()
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
@@ -93,7 +95,7 @@ cluster {
   no_advertise: true
   routes: [ %s ]
 }
-`, memberName(i), net.JoinHostPort(Loopback, "-1"), routes[i], strings.Join(urls, ", "))
+`, memberName(i), net.JoinHostPort(testport.Loopback, "-1"), routes[i], strings.Join(urls, ", "))
 }
 
 // memberName is member i's server_name.

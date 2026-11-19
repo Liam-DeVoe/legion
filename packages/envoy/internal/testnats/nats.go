@@ -9,9 +9,9 @@
 // URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
 // moving in either direction without dropping a connection (Server.Freeze), a reload with no
 // client message in flight (Server.Reload), and a port no other test binary can take while the
-// test runs. Every listener is on this binary's own loopback address (Loopback), and a callout
-// server's relay on one of that server's own (calloutHost), so a client another test binary left
-// reconnecting reaches none of them once their ports are let go.
+// test runs. Every listener is on this binary's own loopback address (testport.Loopback), and a
+// callout server's relay on one of that server's own (calloutHost), so a client another test
+// binary left reconnecting reaches none of them once their ports are let go.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -38,6 +38,8 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Image is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), whose
@@ -538,18 +540,18 @@ func (s *Server) running() bool { return s.natsServer() != nil }
 // nats-server warns on an empty configuration file ("config has no values or is empty"), and the
 // host it names here is the one this rig imposes on every server anyway. The file is never empty,
 // so a server started without a configuration can still be reloaded with one.
-var hostOnlyConfig = fmt.Sprintf("host: %s\n", Loopback)
+var hostOnlyConfig = fmt.Sprintf("host: %s\n", testport.Loopback)
 
 // start runs a nats-server in this process whose whole configuration is config, with serverArgs as
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
 // holding the port of the URL it returns, and returns it once it accepts connections. When the
 // test ends the server is shut down, the relay closed and the server's directory removed; until
 // then AwaitConsumerStored finds the server by the relay address its URL names. The relay listens
-// on this binary's own loopback address (Loopback); startOn is start with the relay on another
-// loopback address.
+// on this binary's own loopback address (testport.Loopback); startOn is start with the relay on
+// another loopback address.
 func start(t testing.TB, config string, serverArgs []string) *Server {
 	t.Helper()
-	return startOn(t, Loopback, config, serverArgs)
+	return startOn(t, testport.Loopback, config, serverArgs)
 }
 
 // startOn is start with the relay listening on host. It is the one place a server of this
@@ -662,9 +664,9 @@ func serverOptions(path string, serverArgs []string, store string) (*natsserver.
 	if err != nil {
 		return nil, err
 	}
-	opts.Host = Loopback
+	opts.Host = testport.Loopback
 	opts.Port = -1
-	opts.HTTPHost = Loopback
+	opts.HTTPHost = testport.Loopback
 	opts.HTTPPort = -1
 	opts.StoreDir = store
 	opts.NoSigs = true

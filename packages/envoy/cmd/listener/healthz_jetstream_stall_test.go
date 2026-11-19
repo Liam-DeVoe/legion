@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // healthzWithin is how long /healthz may take to answer a JetStream that stopped answering: its
@@ -48,7 +49,7 @@ func startSubjectStallRelay(t *testing.T, uri string) *subjectStallRelay {
 	if err != nil {
 		t.Fatalf("parse NATS URL %q: %v", uri, err)
 	}
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for relay: %v", err)
 	}

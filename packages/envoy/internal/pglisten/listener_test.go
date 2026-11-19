@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -208,7 +208,7 @@ type blindingProxy struct {
 
 func newBlindingProxy(t *testing.T, target string) *blindingProxy {
 	t.Helper()
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the proxy: %v", err)
 	}

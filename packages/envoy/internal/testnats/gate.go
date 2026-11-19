@@ -126,7 +126,7 @@ func StartGate(t testing.TB, srv *Server) *Gate {
 			last = err
 			continue
 		}
-		g := &Gate{t: t, address: net.JoinHostPort(Loopback, strconv.Itoa(port)), server: strings.TrimPrefix(srv.URL(), "nats://"), claim: claim, reservation: reservation}
+		g := &Gate{t: t, address: net.JoinHostPort(testport.Loopback, strconv.Itoa(port)), server: strings.TrimPrefix(srv.URL(), "nats://"), claim: claim, reservation: reservation}
 		listener, err := net.Listen("tcp", g.address)
 		if err != nil {
 			g.release()
@@ -148,18 +148,20 @@ func StartGate(t testing.TB, srv *Server) *Gate {
 func gateClaim(port int) string { return "@legion-testnats-gate-" + strconv.Itoa(port) }
 
 // holdGatePort takes port for a gate: its claim, then its reservation on this binary's loopback
-// address (Loopback), as the comment above ephemeralRangePath describes. It fails when another
-// gate holds the claim, or when a socket already on the address refuses the reservation: one that
-// listens, or one without SO_REUSEADDR.
+// address (testport.Loopback), as the comment above ephemeralRangePath describes. It fails when
+// another gate holds the claim, or when a socket already on the address refuses the reservation:
+// one that listens, or one without SO_REUSEADDR.
 func holdGatePort(port int) (net.Listener, int, error) {
 	claim, err := net.Listen("unix", gateClaim(port))
 	if err != nil {
 		return nil, -1, fmt.Errorf("claim port %d: %w", port, err)
 	}
-	reservation, _, err := testport.Reserve(&syscall.SockaddrInet4{Port: port, Addr: loopback4()})
+	var loopback [4]byte
+	copy(loopback[:], net.ParseIP(testport.Loopback).To4())
+	reservation, _, err := testport.Reserve(&syscall.SockaddrInet4{Port: port, Addr: loopback})
 	if err != nil {
 		_ = claim.Close()
-		return nil, -1, fmt.Errorf("reserve %s: %w", net.JoinHostPort(Loopback, strconv.Itoa(port)), err)
+		return nil, -1, fmt.Errorf("reserve %s: %w", net.JoinHostPort(testport.Loopback, strconv.Itoa(port)), err)
 	}
 	return claim, reservation, nil
 }

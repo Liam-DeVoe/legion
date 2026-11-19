@@ -893,6 +893,10 @@ RULES = {
         for path in files_but_tests(f"{ENVOY}/{root}", tree=True, skip=("testdata",))],
     f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
         (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
+    f"{ENVOY}/internal/textcheck/loopback_listeners_test.go": reads(
+        (f"{ENVOY}/**/*.go", "internal/textcheck/loopback_listeners_test.go:545 fixedAddressListeners walks packages/envoy (../.., infra "
+                             "included) at :113, testdata, node_modules, vendor and hidden folders passed over, and parses every .go file "
+                             "it finds, test files included (:126, :221)")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
         (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
     # The listener's Go clients held to its wire package: wirecheck.Check type-checks them over

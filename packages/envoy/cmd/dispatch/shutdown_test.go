@@ -49,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
@@ -1128,7 +1129,7 @@ func startDatabaseRelay(t *testing.T, databaseURL string) *databaseRelay {
 	if err != nil {
 		t.Fatalf("parse the database URL: %v", err)
 	}
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the database relay: %v", err)
 	}

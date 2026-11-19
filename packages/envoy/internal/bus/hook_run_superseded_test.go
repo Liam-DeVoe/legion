@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -204,7 +205,7 @@ type proxiedConn struct {
 
 func newHalfOpenProxy(t *testing.T, upstream string) *halfOpenProxy {
 	t.Helper()
-	ln, err := testnats.Listen()
+	ln, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}

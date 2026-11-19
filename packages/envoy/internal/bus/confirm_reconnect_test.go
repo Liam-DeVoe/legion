@@ -15,7 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // denyThenDrop serves a NATS client: it answers the handshake, then answers the first publish's
@@ -25,7 +25,7 @@ import (
 // with it true it serves the client's next connection, so the reconnect completes.
 func denyThenDrop(t *testing.T, subject string, reconnectable bool) string {
 	t.Helper()
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestSameErrorTreatsAValueThatCannotBeComparedAsChanged(t *testing.T) {
 // lines.
 func answeringServer(t *testing.T, deny string, stored bool) *nats.Conn {
 	t.Helper()
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

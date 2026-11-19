@@ -25,7 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // The identities the coverage tests configure: one place's, and another's a row may carry from
@@ -1309,7 +1309,7 @@ type pausingProxy struct {
 
 func startPausingProxy(t *testing.T, server string, pauseOver int) *pausingProxy {
 	t.Helper()
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the proxy: %v", err)
 	}

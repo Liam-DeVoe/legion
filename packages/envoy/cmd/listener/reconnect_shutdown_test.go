@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // listenerRelay lets this test hold one NATS request from the listener, then drop the live link so
@@ -57,7 +58,7 @@ func startListenerRelay(t *testing.T, uri string) *listenerRelay {
 	if err != nil {
 		t.Fatalf("parse NATS URL %q: %v", uri, err)
 	}
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for relay: %v", err)
 	}

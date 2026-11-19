@@ -13,7 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // A KV watcher's ordered consumer reports nats.ErrConsumerNotActive only while its connection is
@@ -56,7 +56,7 @@ func TestAConsumerNotActiveReportIsAWarning(t *testing.T) {
 // ERROR: the same EOF reported for a connected connection, and a slow consumer.
 func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 	logs := captureLogs(t)
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

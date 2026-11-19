@@ -1320,8 +1320,11 @@ type streamUpdate struct {
 // new configuration and the server replaces the deployed one with it (StreamConfigRequest,
 // updateWithAdvisory, v2.15.1), with no compare of a revision, so an update made from a read and
 // applied late writes over a later change, whether it is the only send or one the limit cut, and
-// waiting for the answer narrows that window without closing it. The keepers put back only the
-// settings they own, each at its next pass that succeeds, a keeper period later
+// waiting for the answer narrows that window without closing it. This is the corrected rule on a
+// stream update that its spec's version 5 states, which a person approved on 19 November 2026:
+// nats-server has no conditional stream update, so an update can write over a change another
+// writer made after its read. The keepers put back only the settings they own, each at its next
+// pass that succeeds, a keeper period later
 // (defaultKeepInterval): the stream's copies, byte limit, consumer cap, id, age, duplicate window,
 // discard and added subjects (keepStream), and the copies of each bucket a program keeps
 // (raiseReplicas, WithKeptBuckets), as they put back a change any concurrent write took away

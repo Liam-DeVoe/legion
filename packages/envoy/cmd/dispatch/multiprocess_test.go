@@ -72,6 +72,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // start starts both processes on the pair's database and NATS, each on a port held for it from the
@@ -2046,7 +2047,7 @@ func startNATSTap(t *testing.T, target string) *natsTap {
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the tap relays to: %v", target, err)
 	}
-	listener, err := testnats.Listen()
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the NATS tap: %v", err)
 	}
