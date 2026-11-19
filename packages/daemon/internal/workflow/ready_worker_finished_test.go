@@ -377,7 +377,7 @@ func TestReadyWorkerTaskStillWritesAPhaseStartAndAWakeTaskOnce(t *testing.T) {
 		token := seedTester(t, pool, finishedTester())
 		engine := testEngine(config.DesignGateRootIssues, nil)
 		const task = "Test the head the implementer pushed."
-		withCommitScope(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.start(ctx, tx, resumeRuleIssue, claim.RoleTester, task, false)
 		})
 		wantOnlyTask(t, pool, entryIssue, task, supervise.OriginPhaseStart, "the phase start")
@@ -410,16 +410,6 @@ func TestReadyWorkerTaskStillWritesAPhaseStartAndAWakeTaskOnce(t *testing.T) {
 		relaunchClaim(t, rig.pool, implementer, 2)
 		rig.apply("ready", intake.ClaimReady{Issue: "LEGION-208", Role: claim.RoleImplementer, Launch: 2})
 		wantNothingQueued(t, rig.pool, "LEGION-208", "the ready of a woken worker holding its wake's task")
-	})
-}
-
-// withCommitScope runs fn in one transaction on pool under a commit scope, as a fact's handler
-// runs (intake.WithCommitHooks), so a constructor the test calls directly may log on commit.
-func withCommitScope(t *testing.T, pool *pgxpool.Pool, fn func(ctx context.Context, tx pgx.Tx) error) {
-	t.Helper()
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		ctx, _ := intake.WithCommitHooks(t.Context())
-		return fn(ctx, tx)
 	})
 }
 

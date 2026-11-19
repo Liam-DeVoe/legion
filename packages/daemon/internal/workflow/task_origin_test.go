@@ -100,14 +100,14 @@ func TestEveryWorkflowTaskNamesTheOriginItsValueLogCarries(t *testing.T) {
 	}
 }
 
-// inLevelTester is a case that calls one of the engine's constructors directly, in a fact's
-// transaction, on LEGION-208 with its tester level with the entry its phases row names.
+// inLevelTester is a case that calls one of the engine's constructors directly, as a fact applies
+// it (applyInTx), on LEGION-208 with its tester level with the entry its phases row names.
 func inLevelTester(build func(ctx context.Context, tx pgx.Tx, e *Engine) error) func(t *testing.T) (*pgxpool.Pool, string) {
 	return func(t *testing.T) (*pgxpool.Pool, string) {
 		pool := migratedPool(t)
 		seedTester(t, pool, finishedTester())
 		engine := testEngine(config.DesignGateRootIssues, nil)
-		withCommitScope(t, pool, func(ctx context.Context, tx pgx.Tx) error { return build(ctx, tx, engine) })
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return build(ctx, tx, engine) })
 		return pool, entryIssue
 	}
 }
