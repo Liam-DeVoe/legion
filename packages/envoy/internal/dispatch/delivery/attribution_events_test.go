@@ -435,8 +435,9 @@ func TestAPassRecordsEveryChangeAndAppendsAtMostFiveHundredEvents(t *testing.T) 
 // the rule's answer, one whose stored source alone differs, one with no facts, and one with a
 // timeline row alone each keep their issue. Control in the same test: a pull request whose answer
 // moves gets its two events, so the count of events can fail. A second pass upserts no move. It
-// fails where AppendAttributionEvents appends an event for a move whose two keys are the same, or
-// where a sync moves a pull request whose answer is its stored issue.
+// fails where a sync moves a pull request whose answer is its stored issue. No move whose two keys
+// are the same reaches the queue here, so the append never reads one:
+// TestAMoveAndBackBeforeItsEventAppendsNothing tests the append of such a move.
 func TestAPassAppendsNothingForAnAnswerThatStays(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	broker := events.NewBroker()
@@ -579,7 +580,8 @@ func TestASyncWritesNothingForAnAnswerThatIsNotKnown(t *testing.T) {
 // from HEAD-90, and the sync queues that move. The link goes, and the next sync moves #290 back.
 // The queued row keeps its first from_key, HEAD-90, and its to_key returns to HEAD-90. So the
 // append appends no event, and the queue is empty after it. It fails where the upsert of a move
-// writes from_key again, or where the sync or the write of the link appends an event.
+// writes from_key again, where AppendAttributionEvents appends an event for a move whose two keys
+// are the same, or where the sync or the write of the link appends an event.
 func TestAMoveAndBackBeforeItsEventAppendsNothing(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	broker := events.NewBroker()
