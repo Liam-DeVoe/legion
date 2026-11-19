@@ -125,18 +125,31 @@ func TestV2DeclaredAuthority(t *testing.T) {
 		}, ""), model.ScopePerson, "the member default_assignee")
 	})
 
-	t.Run("an approval without approve", func(t *testing.T) {
+	t.Run("an approval without approve, and a dismissal with person alone", func(t *testing.T) {
 		route := tour.requireMounted(t, http.MethodPut, "/credential-requests/{id}/state")
 		record := uuid.NewString()
-		// Both states of this route need approve, so the route's own scopes (its row's
-		// OAuthScopes) refuse the request before its state's rule is read, and the text names the
-		// route.
-		assertScopeRefused(t, "a person's token without approve approving", tour.send(t, route, tourRequest{
+		// A decision needs approve and a dismissal the person scope alone, so the route's own
+		// scopes (its row's OAuthScopes) are person and the state's rule refuses the approval,
+		// naming that rule.
+		assertGateRefused(t, "a person's token without approve approving", tour.send(t, route, tourRequest{
 			Path: map[string]string{"id": record}, Body: map[string]any{"state": "approved", "code": "ABCD-1234"},
 			As: tourBearer(tour.personToken),
-		}, ""), model.ScopeApprove)
+		}, ""), model.ScopeApprove, "state approved")
 		if relayed := tour.secrets.callsTo(http.MethodPost, "/v1/credential-requests/"+record+"/approve"); relayed != 0 {
 			t.Errorf("the refused approval reached the broker %d times, want never", relayed)
+		}
+		tour.secrets.answer(http.MethodPost, "/v1/credential-requests/"+record+"/dismiss", http.StatusOK, map[string]any{
+			"record_id": record, "dismissed_by": "alice", "dismissed_at": "2026-11-19T00:00:00Z",
+		})
+		dismissed := tour.send(t, route, tourRequest{
+			Path: map[string]string{"id": record}, Body: map[string]any{"state": "dismissed"},
+			As: tourBearer(tour.personToken),
+		}, "")
+		if dismissed.Code != http.StatusOK {
+			t.Errorf("a person's token without approve dismissing: %d %s, want 200", dismissed.Code, dismissed.Body.String())
+		}
+		if relayed := tour.secrets.callsTo(http.MethodPost, "/v1/credential-requests/"+record+"/dismiss"); relayed != 1 {
+			t.Errorf("the dismissal reached the broker %d times, want once", relayed)
 		}
 	})
 

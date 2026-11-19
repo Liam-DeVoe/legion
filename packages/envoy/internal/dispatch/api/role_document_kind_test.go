@@ -296,7 +296,7 @@ func seedRoleDocumentAsFile(t *testing.T, database *store.Store, issueKey, name,
 }
 
 // approveTheFileByPlanReview records a plan review approving version 1 of artifactID through
-// docs.WriteReview, as the plan review route did of BET-1328's plan while it was a file.
+// docs.QueueReview, as the plan review route did of BET-1328's plan while it was a file.
 func approveTheFileByPlanReview(t *testing.T, database *store.Store, deps Deps, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -309,8 +309,10 @@ func approveTheFileByPlanReview(t *testing.T, database *store.Store, deps Deps, 
 	if err != nil {
 		t.Fatalf("read the plan: %v", err)
 	}
-	if _, _, err := docs.WriteReview(ctx, tx, deps.Events, artifact, 1, "approved", docs.ReviewKindPlanReview,
-		model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil, nil); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return docs.QueueReview(b, deps.Events, artifact, 1, "approved", docs.ReviewKindPlanReview,
+			model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil, nil, func(model.ArtifactReview, model.Event) {})
+	}); err != nil {
 		t.Fatalf("record the plan review of the file: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

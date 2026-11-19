@@ -94,25 +94,37 @@ func (s *server) v2CredentialRows() []routeRow {
 		},
 		{
 			Method: http.MethodPut, Pattern: "/credential-requests/{id}/state", Auth: authAny, Versions: onlyV2,
-			Description: "Decide a machine login as the caller {state, code?}: state approved or denied, and code the " +
-				"login's confirmation code as the person typed it, which the secrets broker checks on both. The broker " +
+			Description: "Decide a machine login as the caller {state, code?}, or dismiss an expired credential " +
+				"request {state}. state approved or denied decides a machine login, and code is the login's " +
+				"confirmation code as the person typed it, which the secrets broker checks on both. The broker " +
 				"decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE " +
 				"naming its page on the broker, and refuses a code that is missing or not the login's own. A request " +
 				"the broker already holds in that state, decided by the caller (or by anyone, for a login whose approver " +
 				"is anyone), is answered as it stands and nothing is relayed. Answers 200 the request as the broker " +
-				"records it once decided, the record POST /api/v2/machine-login-lookups answers. Both states need the " +
-				"person and approve scopes; a credential scoped to one project is refused. 404 " +
+				"records it once decided, the record POST /api/v2/machine-login-lookups answers. state dismissed takes " +
+				"an expired request, a secret request or a machine login whose deadline passed before anybody decided " +
+				"it, off every list for good, the caller's and, for a shared request, everybody's, and answers 200 the " +
+				"dismissal {record_id, dismissed_by, dismissed_at}: only a person whose list holds it may dismiss it " +
+				"(403 NOT_APPROVER), a request that can still be decided is 409 RECORD_PENDING, and one that was " +
+				"decided, or cancelled before its deadline, is 409 RECORD_TERMINAL; a request already dismissed is " +
+				"answered the dismissal the broker holds, and nothing is written. Deciding needs the person and " +
+				"approve scopes, dismissing the person scope; a credential scoped to one project is refused. 404 " +
 				"CREDENTIAL_REQUEST_NOT_FOUND for an id the broker holds no request of, and " + brokerRelayText + ".",
 			Handler:  s.putCredentialRequestStateV2,
 			Resource: "state", Kind: kindState,
 			Body: requestBody{Kind: bodyStateUnion, Arms: map[string]any{
 				"approved": credentialRequestStateV2Input{}, "denied": credentialRequestStateV2Input{},
+				"dismissed": credentialRequestDismissV2Input{},
 			}},
-			Shape:       routeShape{Status: http.StatusOK, Response: wire.RecordResponse{}},
-			OAuthScopes: settles,
+			Shape: routeShape{
+				Status: http.StatusOK, Response: wire.RecordResponse{},
+				Also: []routeAnswer{{Status: http.StatusOK, Body: wire.DismissResponse{}}},
+			},
+			OAuthScopes: person,
 			Authorities: []authorityRule{
 				{Where: authorityWhere{In: partBody, Name: "state"}, Value: "approved", Scopes: settles},
 				{Where: authorityWhere{In: partBody, Name: "state"}, Value: "denied", Scopes: settles},
+				{Where: authorityWhere{In: partBody, Name: "state"}, Value: "dismissed", Scopes: person},
 			},
 			Scope:    scopeDeployment,
 			IDs:      &idRoute{Reason: "a credential request id"},
@@ -201,12 +213,19 @@ type brokerListV2Query struct {
 	pageQuery
 }
 
-// credentialRequestStateV2Input is PUT /api/v2/credential-requests/{id}/state's body, either arm:
-// the state the caller decides the request into and the machine login's typed code, the one member
-// of the browser's body Dispatch relays, as decisionFor relays it under /api/v1.
+// credentialRequestStateV2Input is PUT /api/v2/credential-requests/{id}/state's body of a decision,
+// either arm: the state the caller decides the request into and the machine login's typed code,
+// the one member of the browser's body Dispatch relays, as decisionFor relays it under /api/v1.
 type credentialRequestStateV2Input struct {
 	State string  `json:"state" enum:"approved,denied"`
 	Code  *string `json:"code"`
+}
+
+// credentialRequestDismissV2Input is the same route's body of a dismissal: the state alone, as
+// POST /api/v1/credential-requests/{id}/dismiss reads nothing of its body. The approver is the
+// caller.
+type credentialRequestDismissV2Input struct {
+	State string `json:"state" enum:"dismissed"`
 }
 
 // signInRevokedV2 is DELETE /api/v2/me/signins/{id}'s answer: how many access tokens ended with the
@@ -297,7 +316,8 @@ func (s *server) listCredentialRequestsV2(w http.ResponseWriter, r *http.Request
 
 // putCredentialRequestStateV2 answers PUT /api/v2/credential-requests/{id}/state: the approve or the
 // deny POST /api/v1/credential-requests/{id}/approve and .../deny relay (Client.Approve,
-// Client.Deny), the caller the approver, answered with the request as the broker then records it.
+// Client.Deny), the caller the approver, answered with the request as the broker then records it;
+// and the dismissal POST /api/v1/credential-requests/{id}/dismiss relays (dismissCredentialRequestV2).
 //
 // The no-op rule of dispatch://INFRA-4071/spec R8 is the broker's request already in that state by
 // that approver: a machine login records the one login that may decide it (or anyone), and its
@@ -314,6 +334,10 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 	noteActingAgent(r, actor)
 	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
+		return
+	}
+	if _, dismissal := v2BodyArm(r).(credentialRequestDismissV2Input); dismissal {
+		dismissCredentialRequestV2(w, r, client, model.CanonicalLogin(actor.ID))
 		return
 	}
 	input, id, login := v2Body[credentialRequestStateV2Input](r), r.PathValue("id"), model.CanonicalLogin(actor.ID)
@@ -355,6 +379,23 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 	default:
 		relayBrokerResponse(w, r, raw, nil)
 	}
+}
+
+// dismissCredentialRequestV2 answers the dismissed arm of PUT
+// /api/v2/credential-requests/{id}/state: the dismissal POST /api/v1/credential-requests/{id}/dismiss
+// relays (Client.Dismiss), login the approver, answered with the dismissal as the broker records
+// it. The no-op rule of dispatch://INFRA-4071/spec R8 is the broker's own: it records a request's
+// dismissal once and answers every later one with that dismissal's values, writing nothing, so a
+// request already dismissed is answered 200 as it stands. The broker's 404 of an id it holds no
+// request of is the route's CREDENTIAL_REQUEST_NOT_FOUND, and every other refusal - 403
+// NOT_APPROVER, 409 RECORD_PENDING, 409 RECORD_TERMINAL - is relayed as /api/v1 relays it.
+func dismissCredentialRequestV2(w http.ResponseWriter, r *http.Request, client *agentsecrets.Client, login string) {
+	dismissed, err := client.Dismiss(r.Context(), r.PathValue("id"), login)
+	if err != nil {
+		relayBrokerRefusalV2(w, r, err, apicode.CredentialRequestNotFound, "credential request")
+		return
+	}
+	relayBrokerResponse(w, r, dismissed, nil)
 }
 
 // brokerLookupError is a machine-login lookup's call of the broker that failed, which

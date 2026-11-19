@@ -856,7 +856,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Decide a machine login as the caller {state, code?}: state approved or denied, and code the login's confirmation code as the person typed it, which the secrets broker checks on both. The broker decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the broker, and refuses a code that is missing or not the login's own. A request the broker already holds in that state, decided by the caller (or by anyone, for a login whose approver is anyone), is answered as it stands and nothing is relayed. Answers 200 the request as the broker records it once decided, the record POST /api/v2/machine-login-lookups answers. Both states need the person and approve scopes; a credential scoped to one project is refused. 404 CREDENTIAL_REQUEST_NOT_FOUND for an id the broker holds no request of, and 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code. */
+    /** @description Decide a machine login as the caller {state, code?}, or dismiss an expired credential request {state}. state approved or denied decides a machine login, and code is the login's confirmation code as the person typed it, which the secrets broker checks on both. The broker decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the broker, and refuses a code that is missing or not the login's own. A request the broker already holds in that state, decided by the caller (or by anyone, for a login whose approver is anyone), is answered as it stands and nothing is relayed. Answers 200 the request as the broker records it once decided, the record POST /api/v2/machine-login-lookups answers. state dismissed takes an expired request, a secret request or a machine login whose deadline passed before anybody decided it, off every list for good, the caller's and, for a shared request, everybody's, and answers 200 the dismissal {record_id, dismissed_by, dismissed_at}: only a person whose list holds it may dismiss it (403 NOT_APPROVER), a request that can still be decided is 409 RECORD_PENDING, and one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL; a request already dismissed is answered the dismissal the broker holds, and nothing is written. Deciding needs the person and approve scopes, dismissing the person scope; a credential scoped to one project is refused. 404 CREDENTIAL_REQUEST_NOT_FOUND for an id the broker holds no request of, and 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount token for it, and every other refusal the broker answers relayed with its own status and code. */
     put: operations["putApiV2CredentialRequestsByIdState"];
     post?: never;
     delete?: never;
@@ -1307,7 +1307,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Record one result of one check {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}, a bearer naming its session in actor. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, where a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other is 400 UNKNOWN_CHECK, and a check CI proves 409 CHECK_PROVED_BY_CI. role is at most 32 characters of a-z and -, verdict pass or fail, commit 40 lowercase hex (400 RESULT_INPUT otherwise), and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository of the check's issue does not hold is 400 RESULT_COMMIT_UNKNOWN. A closed issue takes a result only for an after_merge or default_branch check (409 ISSUE_CLOSED). Answers 201 {result, line}, line the pull-request body line the result implies, and appends result.recorded on the check's issue. 404 ISSUE_NOT_FOUND. */
+    /** @description Record one result of one check {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}, a bearer naming its session in actor. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, where a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other is 400 UNKNOWN_CHECK, and a check CI proves 409 CHECK_PROVED_BY_CI. role is at most 32 characters of a-z and -, verdict pass or fail, commit 40 lowercase hex (400 RESULT_INPUT otherwise), and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository of the check's issue does not hold is 400 RESULT_COMMIT_UNKNOWN. A closed issue takes a result only for an after_merge or default_branch check (409 ISSUE_CLOSED). A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, and nothing recorded: read the check and retry. Answers 201 {result, line}, line the pull-request body line the result implies, and appends result.recorded on the check's issue. 404 ISSUE_NOT_FOUND. */
     post: operations["postApiV2IssuesByKeyResults"];
     delete?: never;
     options?: never;
@@ -1324,7 +1324,7 @@ export interface paths {
     };
     /** @description The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKeyRoleHolderSet"];
-    /** @description Publish the session that holds each Legion role of this issue {holders}, a bearer naming its session in actor: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under a lock of the issue row, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 the set this write stored, {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role; a body naming the set already stored, in any order, answers that set and writes nothing. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Publish the session that holds each Legion role of this issue {holders}, a bearer naming its session in actor: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 the set this write stored, {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role; a body naming the set already stored, in any order, answers that set and writes nothing. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     put: operations["putApiV2IssuesByKeyRoleHolderSet"];
     post?: never;
     delete?: never;
@@ -3578,12 +3578,23 @@ export interface components {
     };
     CredentialPendingRow: {
       approve_url?: string;
+      /** Format: date-time */
+      expires_at?: string;
       identifiers: string[] | null;
       kind: string;
       record_id: string;
       /** Format: date-time */
       requested_at: string;
       session: components["schemas"]["CredentialSession"];
+      /** @enum {string} */
+      state?: "pending" | "expired";
+    };
+    CredentialRequestDismissV2Input: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      state: "dismissed";
     };
     CredentialRequestStateV2Input: {
       code?: null | string;
@@ -4001,6 +4012,12 @@ export interface components {
       concluded: number;
       rate: null | number;
       reached_production: number;
+    };
+    DismissResponse: {
+      /** Format: date-time */
+      dismissed_at: string;
+      dismissed_by: string;
+      record_id: string;
     };
     DispatchLimits: {
       ask_options: number;
@@ -8877,10 +8894,15 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["CredentialRequestStateV2Input"] & {
-          /** @enum {unknown} */
-          state: "approved" | "denied";
-        };
+        "application/json":
+          | (components["schemas"]["CredentialRequestStateV2Input"] & {
+              /** @enum {unknown} */
+              state: "approved" | "denied";
+            })
+          | (components["schemas"]["CredentialRequestDismissV2Input"] & {
+              /** @enum {unknown} */
+              state: "dismissed";
+            });
       };
     };
     responses: {
@@ -8890,7 +8912,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["RecordResponse"];
+          "application/json":
+            | components["schemas"]["RecordResponse"]
+            | components["schemas"]["DismissResponse"];
         };
       };
       /** @description Bad Request */
@@ -13943,6 +13967,8 @@ export type CreatedAgentToken = components["schemas"]["CreatedAgentToken"];
 export type CreatedProject = components["schemas"]["CreatedProject"];
 export type CredentialCapabilities = components["schemas"]["CredentialCapabilities"];
 export type CredentialPendingRow = components["schemas"]["CredentialPendingRow"];
+export type CredentialRequestDismissV2Input =
+  components["schemas"]["CredentialRequestDismissV2Input"];
 export type CredentialRequestStateV2Input = components["schemas"]["CredentialRequestStateV2Input"];
 export type CredentialSession = components["schemas"]["CredentialSession"];
 export type DashboardBuildV2 = components["schemas"]["DashboardBuildV2"];
@@ -13988,6 +14014,7 @@ export type DeliveryWaitingPR = components["schemas"]["DeliveryWaitingPR"];
 export type DeliveryWindowView = components["schemas"]["DeliveryWindowView"];
 export type DeployFrequency = components["schemas"]["DeployFrequency"];
 export type DeployRunSuccess = components["schemas"]["DeployRunSuccess"];
+export type DismissResponse = components["schemas"]["DismissResponse"];
 export type DispatchLimits = components["schemas"]["DispatchLimits"];
 export type DispatchUser = components["schemas"]["DispatchUser"];
 export type DocumentMarkV2Input = components["schemas"]["DocumentMarkV2Input"];

@@ -402,6 +402,11 @@ export interface ChannelSessionOptions {
    * or `source` for a bundle outside its plugin cache).
    */
   readonly pluginVersion: string
+  /**
+   * The package every registration names: `@sjawhar/claude-envoy` under Claude Code, and
+   * `@sjawhar/codex-envoy` under Codex, the package each host's sessions update.
+   */
+  readonly pluginName: string
 }
 
 // The shared tool contract builds schemas from each host's Zod API. Claude's
@@ -458,20 +463,23 @@ class UnsupportedEnvoyToolError extends Error {
  * Answer a targeted Dispatch delivery, on the sender's behalf: the reply this session has for it,
  * or the error that stopped it, so the sender sees the attempt fail instead of waiting on a reply
  * that never comes. `followUp` asks Dispatch to post an answer to an attempt its first reply
- * already settled, which every answer after the first needs (`postDeliveryReply`).
+ * already settled, which every answer after the first needs (`postDeliveryReply`). `userAgent`
+ * names the program that answers: this server by default, the Codex server for its own
+ * (`CODEX_ENVOY_USER_AGENT`).
  */
 export async function postDispatchReply(
   identity: SessionIdentity,
   configFile: SessionConfigFile,
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
+  userAgent: string = CLAUDE_ENVOY_USER_AGENT,
 ): Promise<void> {
   const config = sessionDispatchSettings(configFile, process.env, {
     cwd: identity.directory,
     session: () => identity.id,
   }).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
-  await postDeliveryReply(config, identity.id, delivery, result, CLAUDE_ENVOY_USER_AGENT)
+  await postDeliveryReply(config, identity.id, delivery, result, userAgent)
 }
 
 /**
@@ -1113,7 +1121,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           driving: false,
           selfSubscribed: true,
           clientInstanceID: options.clientInstanceID,
-          plugin: { name: packageName, version: options.pluginVersion },
+          plugin: { name: options.pluginName, version: options.pluginVersion },
           delivery: deliveryRequest,
         })
         // Held as a promise that settles either way, so a deregistration waits for the call to
@@ -2336,6 +2344,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         clientInstanceID,
         title,
         pluginVersion: installedPluginVersion(bundlePath) ?? "source",
+        pluginName: packageName,
         ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),

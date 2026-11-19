@@ -182,6 +182,7 @@ var (
 	BrokerTokenRateLimited             = both("BROKER_TOKEN_RATE_LIMITED", http.StatusTooManyRequests)
 	BrokerUnavailable                  = both("BROKER_UNAVAILABLE", http.StatusServiceUnavailable)
 	CheckAmbiguous                     = both("CHECK_AMBIGUOUS", http.StatusConflict)
+	CheckContended                     = both("CHECK_CONTENDED", http.StatusConflict)
 	CheckProvedByCI                    = both("CHECK_PROVED_BY_CI", http.StatusConflict)
 	ClaimContended                     = both("CLAIM_CONTENDED", http.StatusConflict)
 	CommentIDInput                     = both("COMMENT_ID_INPUT", http.StatusBadRequest)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's default assignee is the last step of the chain that decides who a question
@@ -151,17 +152,19 @@ func (s *server) allowedDefaultAssignee(w http.ResponseWriter, r *http.Request, 
 // appends settings.project_default_assignee.updated, answering the event for the caller to publish
 // once tx commits. An unknown project is pgx.ErrNoRows, before anything is written.
 func (s *server) writeProjectDefaultAssignee(ctx context.Context, tx pgx.Tx, actor model.Actor, key, assignee string) (model.Event, error) {
-	// The default this write moves from, read under the project row's own lock in the
-	// transaction that replaces it: two of these at once then name the pair each really moved,
-	// and the update below takes no lock this read has not already taken. The level is `for no
-	// key update`, which serialises this write against the other writers of the row and still
-	// lets a foreign key take its key share, as the room lock's rule requires of every lock on
-	// projects (TestNoForUpdateOnOwnerTables, docs/persistence.go's lockDocumentRoom). An
-	// unknown project is 404 NOT_FOUND on /api/v1 (pgx.ErrNoRows, writeHandlerError).
+	// The project's owner lock before its row's update, as every projects writer takes them
+	// (createIssue, lockEventOwner): taking the row first and the lock at the append below would
+	// wait, holding the row, on a create that holds the lock and waits for the row. The default
+	// this write moves from is read under that lock, in the statement after it
+	// (store.LockOwnerAndRead), in the transaction that replaces it: every writer of the default
+	// takes this lock first, so two of these at once name the pair each really moved, and no row
+	// lock is taken for it - the lock assigns no transaction id, and the update below is the
+	// first statement that writes. An unknown project is 404 NOT_FOUND on /api/v1 (pgx.ErrNoRows,
+	// writeHandlerError).
 	var previous string
-	if err := tx.QueryRow(ctx, `
-		select default_assignee from projects where key = $1 for no key update
-	`, key).Scan(&previous); err != nil {
+	if err := store.LockOwnerAndRead(ctx, tx, store.ProjectOwner(key), `
+		select default_assignee from projects where key = $1
+	`, []any{key}, &previous); err != nil {
 		return model.Event{}, err
 	}
 	if _, err := tx.Exec(ctx, `update projects set default_assignee = $2 where key = $1`, key, assignee); err != nil {

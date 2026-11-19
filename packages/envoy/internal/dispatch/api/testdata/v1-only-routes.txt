@@ -72,6 +72,7 @@ GET /api/v1/credential-requests
 POST /api/v1/credential-requests/machine-lookup
 POST /api/v1/credential-requests/{id}/approve
 POST /api/v1/credential-requests/{id}/deny
+POST /api/v1/credential-requests/{id}/dismiss # #4374, an expired credential request stays in the Inbox until dismissed
 GET /api/v1/credentials/capabilities
 GET /api/v1/dashboard/builds
 GET /api/v1/delivery/runs/{id}

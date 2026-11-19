@@ -234,6 +234,17 @@ func credentialTourSteps() []tourStep {
 			return tourRequest{Path: map[string]string{"id": record}, Body: map[string]any{"state": state, "code": "ABCD-1234"}, As: alice}
 		}
 	}
+	// dismiss tells the broker what to answer the dismissal of an expired request - the
+	// dismissal it records, which a second dismissal answers again as it stands - and answers the
+	// request that dismisses it.
+	dismiss := func(_ *testing.T, tour *routeTour) tourRequest {
+		record := "tour-record-" + uuid.NewString()
+		tour.secrets.answer(http.MethodPost, "/v1/credential-requests/"+record+"/dismiss", http.StatusOK, map[string]any{
+			"record_id": record, "dismissed_by": "alice", "dismissed_at": "2026-11-19T00:00:00Z",
+		})
+		brokerMissing("/v1/credential-requests/no-such-request/dismiss", "credential request")(tour)
+		return tourRequest{Path: map[string]string{"id": record}, Body: map[string]any{"state": "dismissed"}, As: alice}
+	}
 	requestMissing := []tourMissing{{Param: "id", Value: "no-such-request", Code: apicode.CredentialRequestNotFound}}
 	return []tourStep{
 		{
@@ -271,6 +282,10 @@ func credentialTourSteps() []tourStep {
 		{
 			Method: http.MethodPut, Pattern: "/credential-requests/{id}/state", Name: "approved already by its approver",
 			Status: http.StatusOK, Setup: decide("approved", "approved"),
+		},
+		{
+			Method: http.MethodPut, Pattern: "/credential-requests/{id}/state", Name: "dismissed", Status: http.StatusOK,
+			Setup: dismiss, Missing: requestMissing,
 		},
 		{
 			Method: http.MethodPost, Pattern: "/machine-login-lookups", Status: http.StatusOK,

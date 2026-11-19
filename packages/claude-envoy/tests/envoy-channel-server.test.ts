@@ -1,21 +1,28 @@
 import { expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
+import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
+import codexMarketplace from "../../../.agents/plugins/marketplace.json" with { type: "json" }
 import marketplace from "../../../.claude-plugin/marketplace.json" with { type: "json" }
 import plugin from "../.claude-plugin/plugin.json" with { type: "json" }
 import ompPlugin from "../.omp-plugin/plugin.json" with { type: "json" }
+import codexPlugin from "../codex/.codex-plugin/plugin.json" with { type: "json" }
+import codexHooks from "../codex/hooks/hooks.json" with { type: "json" }
+import codexPkg from "../codex/package.json" with { type: "json" }
 import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod-protocol"
 import pkg from "../package.json" with { type: "json" }
+import { CODEX_ENVOY_USER_AGENT, codexDispatchClient } from "../src/codex/codex-server"
 import {
   type ChannelNotifier,
   type ChannelSession,
   createChannelDelivery,
   MCP_SERVER_INFO,
+  postDispatchReply,
   sessionCapabilities,
   startChannelSession,
 } from "../src/envoy-channel-server"
@@ -473,7 +480,56 @@ test("the committed manifests declare no version the release would have to bump;
   expect(marketplaceEntries).toHaveLength(1)
   expect(marketplaceEntries[0]).not.toHaveProperty("version")
   expect(ompPlugin.version).toBe(pkg.version)
+  // The Codex CLI names its plugin cache directory by this version and reinstalls when it changes
+  // (measured on 0.154.0), so release.yaml writes the release's version into it as well, and into
+  // the Codex package's own package.json, which publishes it at the same version as this one.
+  expect(codexPlugin.version).toBe(pkg.version)
+  expect(codexPkg.version).toBe(pkg.version)
   expect(MCP_SERVER_INFO).toEqual({ name: "envoy", version: pkg.version })
+})
+
+test("the Codex manifest starts the server in the plugin's own directory, as the Codex host", () => {
+  // Codex runs a plugin's MCP server with `cwd: "./"` in the plugin's directory and expands no
+  // `${PLUGIN_ROOT}` in its arguments; it passes the server only the variables `env_vars` names;
+  // and it asks before every call of a plugin's tool unless the tool is pre-approved (all measured
+  // on 0.154.0).
+  const envoy = codexPlugin.mcpServers.envoy
+  expect(envoy.cwd).toBe("./")
+  expect(envoy.args).toEqual(["./dist/envoy-channel.js", "--host", "codex"])
+  // Every variable that names where Envoy, NATS, Dispatch or the secrets broker is, or the
+  // credential for it: a Legion session pod sets several of these (its NATS nkey seed and its
+  // Dispatch token as files), and one Codex does not pass leaves the server without it.
+  for (const name of [
+    "AGENTBOX_HOST",
+    "AGENT_SECRETS_MACHINE_AUDIENCE",
+    "AGENT_SECRETS_MACHINE_IDENTITY",
+    "AGENT_SECRETS_MACHINE_TOKEN_FILE",
+    "AGENT_SECRETS_URL",
+    "DISPATCH_PUBLIC_URL",
+    "DISPATCH_STATE_DIR",
+    "DISPATCH_TOKEN",
+    "DISPATCH_TOKEN_BROKER",
+    "DISPATCH_TOKEN_FILE",
+    "DISPATCH_URL",
+    "ENVOY_CONFIG_FILE",
+    "ENVOY_MACHINE_ID",
+    "ENVOY_NATS_URL",
+    "ENVOY_TOKEN",
+    "ENVOY_TOKEN_FILE",
+    "ENVOY_URL",
+    "NATS_NKEY_SEED",
+    "NATS_NKEY_SEED_FILE",
+    "XDG_CONFIG_HOME",
+  ]) {
+    expect(envoy.env_vars).toContain(name)
+  }
+  expect(envoy.tools).toEqual({ dispatch: { approval_mode: "approve" } })
+  // Codex's validator refuses a manifest `hooks` field; with none, Codex reads hooks/hooks.json.
+  expect(codexPlugin).not.toHaveProperty("hooks")
+  const commands = Object.values(codexHooks.hooks).flatMap((groups) =>
+    groups.flatMap((group) => group.hooks.map((hook) => hook.command)),
+  )
+  for (const command of commands) expect(command).toMatch(/^bun "\$\{PLUGIN_ROOT\}\/dist\//)
 })
 
 test("the marketplace entry installs the plugin from npm, by name, above the placeholder", () => {
@@ -494,6 +550,21 @@ test("the marketplace entry installs the plugin from npm, by name, above the pla
   expect(source?.source).toBe("npm")
   expect(source?.package).toBe(pkg.name)
   const range = source?.version ?? ""
+  expect(Bun.semver.satisfies("0.0.0", range)).toBe(false)
+  expect(Bun.semver.satisfies("1.0.0", range)).toBe(true)
+  expect(Bun.semver.satisfies("99.0.0", range)).toBe(true)
+})
+
+test("the Codex marketplace entry installs the Codex package from npm, above the placeholder", () => {
+  // Codex reads .agents/plugins/marketplace.json in place of .claude-plugin/marketplace.json when
+  // a repository has both (measured on 0.154.0). The range is the Claude Code entry's, for the
+  // reasons the test above gives: the Codex package's first publish is a placeholder too.
+  expect(codexMarketplace.plugins).toHaveLength(1)
+  const entry = codexMarketplace.plugins[0]
+  expect(entry?.name).toBe(codexPlugin.name)
+  expect(entry?.source.source).toBe("npm")
+  expect(entry?.source.package).toBe(codexPkg.name)
+  const range = entry?.source.version ?? ""
   expect(Bun.semver.satisfies("0.0.0", range)).toBe(false)
   expect(Bun.semver.satisfies("1.0.0", range)).toBe(true)
   expect(Bun.semver.satisfies("99.0.0", range)).toBe(true)
@@ -629,6 +700,60 @@ test("names itself to Dispatch as claude-envoy and its release", async () => {
       {
         path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
         userAgent: `claude-envoy/${pkg.version}`,
+      },
+    ])
+  } finally {
+    server?.stop(true)
+  }
+})
+
+test("the Codex server names itself to Dispatch as codex-envoy and its release", async () => {
+  let server: Server<undefined> | undefined
+  try {
+    const sent: Array<{ readonly path: string; readonly userAgent: string | null }> = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        sent.push({
+          path: new URL(request.url).pathname,
+          userAgent: request.headers.get("user-agent"),
+        })
+        return Response.json({ kind: "user", login: "alice", scopes: [] })
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = "reply-token"
+    const configFile = sessionConfigFile("codex", process.env)
+    const active = activeDispatchSettings(
+      sessionDispatchSettings(configFile, process.env, { cwd: process.cwd() }).dispatch,
+    )
+    if (active === null) throw new Error("Dispatch is off for the test's settings")
+
+    // The client the Codex user-turn router reads with, and the reply it posts to a delivery.
+    await codexDispatchClient(active, 5_000).whoami()
+    await postDispatchReply(
+      new SessionIdentity("ses_codex", process.cwd()),
+      configFile,
+      {
+        resource: "message",
+        id: "44444444-4444-4444-8444-444444444444",
+        attempt: 1,
+        mode: "btw",
+        replyPath: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+        replyFields: {},
+        issueKey: null,
+        body: "A message Codex was not handed.",
+      },
+      { error: "not handed to Codex" },
+      CODEX_ENVOY_USER_AGENT,
+    )
+
+    expect(CODEX_ENVOY_USER_AGENT).toBe(`codex-envoy/${codexPkg.version}`)
+    expect(sent).toEqual([
+      { path: "/api/v1/whoami", userAgent: `codex-envoy/${codexPkg.version}` },
+      {
+        path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+        userAgent: `codex-envoy/${codexPkg.version}`,
       },
     ])
   } finally {

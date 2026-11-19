@@ -83,9 +83,10 @@ func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.A
 		return model.Ask{}, false
 	}
 	defer tx.Rollback(r.Context())
-	// The locks, in the order the ask writes take them: the owner row, then the ask row. A
-	// closed issue is 409 ISSUE_CLOSED here; a project document is always open, so a document
-	// ask passes.
+	// The owner's lock, which every writer of an ask takes before it reads the ask's state, so
+	// the ask read under it holds still until this transaction ends and needs no row lock of its
+	// own (readAskForTransition). A closed issue is 409 ISSUE_CLOSED here; a project document is
+	// always open, so a document ask passes.
 	unlockedAsk, err := s.loadAsk(r.Context(), tx, askID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -95,7 +96,7 @@ func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.A
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}
-	ask, err := s.lockAskForTransition(r.Context(), tx, askID)
+	ask, err := s.readAskForTransition(r.Context(), tx, askID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
@@ -104,8 +105,8 @@ func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.A
 		writeError(w, r, apicode.AskNotOpen, "only open asks may be handed to another person")
 		return model.Ask{}, false
 	}
-	// Whom the ask waited on before this write, read under the two locks through the expression
-	// every reader of that person shares - so its joins are that expression's own
+	// Whom the ask waited on before this write, read under the owner's lock through the
+	// expression every reader of that person shares - so its joins are that expression's own
 	// (askedOfPersonJoins): the ask's issue, its own document and their project - and the
 	// assignee of its issue beside it (null for a document ask, which has none, and for an issue
 	// nobody holds). The person is scanned into a string: every project names a default
@@ -148,10 +149,10 @@ func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.A
 	ask.AskedOfAt = &handedOnAt
 
 	payload := model.NewAskEventPayload(ask, model.ReferenceChanges{})
-	// The two people the hand-on moved, as an assignee move names them (issueWriteThreadLogins):
+	// The two people the hand-on moved, as an assignee move names them (api/issue_patch.go):
 	// the Inbox lists an open ask under the person it waits on, so this write takes it out of
 	// one person's list and puts it into the other's, and no other reader's rows move. That is
-	// why the event does not carry the ask's thread logins (events.AskEventPayload): somebody
+	// why the event does not carry the ask's thread logins (events.ThreadLoginsOf): somebody
 	// who replied in the thread has the same rows after this write as before it.
 	payload.ThreadLogins = movedLogins(nil, waitedOn, askedOf)
 	event, err := s.appendEvent(r.Context(), tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(

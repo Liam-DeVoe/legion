@@ -52,6 +52,7 @@ import type {
   IssueMarkV2Input,
   Marks,
   MarkV2,
+  RecordResponse,
   TargetCandidate,
 } from "./types";
 
@@ -1947,7 +1948,9 @@ export class DispatchApiClient {
    *  credential-requests section lists them, each secret request with the secrets broker's page
    *  where it is decided. `null` is a Dispatch with no secrets broker, which refuses the read
    *  `404 FEATURE_OFF` as it refuses every credential route: no broker is an ordinary answer for
-   *  the list every page reads, not a failure. */
+   *  the list every page reads, not a failure. The pending requests come first, then the expired
+   *  ones nobody has dismissed (`state: "expired"`), which nobody can decide any more; a row with
+   *  no `state`, from an older broker, is pending. */
   async getCredentialPending(): Promise<CredentialPendingRow[] | null> {
     try {
       return (await this.readWholeList("/api/v2/credential-requests", {})).items;
@@ -1961,14 +1964,15 @@ export class DispatchApiClient {
    *  (`PUT /api/v2/credential-requests/{id}/state` to `approved`): Dispatch names the viewer's
    *  own login as the approver, and the broker decides whether that login may. A secret request
    *  is decided only on the secrets broker's own page, so the broker refuses it here with 403
-   *  `DECIDE_ON_BROKER_PAGE`. */
+   *  `DECIDE_ON_BROKER_PAGE`. The route's other answer, a dismissal's, is
+   *  `dismissCredentialRequest`'s: a decision answers the request as the broker records it. */
   approveCredentialRecord(recordId: string, code: string | undefined, bounds: WriteBounds) {
     return this.put(
       "/api/v2/credential-requests/{id}/state",
       { id: recordId },
       { state: "approved", ...(code === undefined ? {} : { code }) },
       bounds
-    );
+    ) as Promise<RecordResponse>;
   }
 
   /** Deny a machine login as the signed-in viewer with the code the viewer typed. */
@@ -1978,7 +1982,7 @@ export class DispatchApiClient {
       { id: recordId },
       { state: "denied", ...(code === undefined ? {} : { code }) },
       bounds
-    );
+    ) as Promise<RecordResponse>;
   }
 
   /** A machine (`launcher_credential`) record is only ever selected through this route: the code
@@ -1999,6 +2003,23 @@ export class DispatchApiClient {
    *  those secrets and makes it ask before it gets them again. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
     await this.remove("/api/v2/credential-grants/{id}", { id: grantId }, bounds);
+  }
+
+  /** Dismiss an expired credential request as the signed-in viewer (`PUT
+   *  /api/v2/credential-requests/{id}/state` to `dismissed`): one whose deadline passed before
+   *  anybody decided it, which the list keeps until somebody dismisses it. Dispatch names the
+   *  viewer as the person dismissing, and the request then leaves every list for good, a shared
+   *  one's included. The broker refuses one the viewer's list does not hold (403 `NOT_APPROVER`),
+   *  one that can still be decided (409 `RECORD_PENDING`) and one that was decided, or cancelled
+   *  before its deadline (409 `RECORD_TERMINAL`); a request the viewer already dismissed answers
+   *  as it stands. */
+  async dismissCredentialRequest(recordId: string, bounds: WriteBounds): Promise<void> {
+    await this.put(
+      "/api/v2/credential-requests/{id}/state",
+      { id: recordId },
+      { state: "dismissed" },
+      bounds
+    );
   }
 
   /** `GET /api/v2/machine-logins`, every page: the machine logins the viewer may revoke, their

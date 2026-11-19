@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
@@ -176,6 +176,19 @@ func (readBack askReadBack) read(ctx context.Context, q queryer, id string) erro
 	return readBack(ctx, q, id)
 }
 
+// commit commits the transaction ledger joined, running readBack where there is one between its
+// write phase and its commit (docs.Ledger.CommitReading): the writes such a route answers are
+// queued on the ledger, so the rows readBack reads are there only once the write phase has run
+// them, and a read that fails still rolls them back.
+func (readBack askReadBack) commit(ctx context.Context, ledger *docs.Ledger, id string) error {
+	if readBack == nil {
+		return ledger.Commit(ctx)
+	}
+	return ledger.CommitReading(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return readBack(ctx, tx, id)
+	})
+}
+
 // openAsk opens the question ask input asks on owner, once the route has read its body: the ask's
 // row, its author's follow, its references and parts and its ask.opened event, and after the
 // write commits the related-item check, whose result rides the write's advice. POST
@@ -233,10 +246,40 @@ func (s *server) openAsk(
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, nil, nil, false
 	}
-	var rowID string
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text`).Scan(&rowID); err != nil {
+	// The row's created_at is the transaction's now(), its column default, read with its id and
+	// written explicitly, so the ask this route answers and its event carry the time the row will
+	// hold.
+	var ask model.Ask
+	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&ask.ID, &ask.CreatedAt); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, nil, nil, false
+	}
+	rowID := ask.ID
+	// The person this question reaches, read here in the read phase, under the owner's lock
+	// requireOpenOwnerStatus took, through the rule every read of that person shares, so a
+	// /api/v1 caller is told whose Inbox it just landed in rather than having to read the ask
+	// again; a /api/v2 route reads its whole answer on this transaction (readBack) and needs none
+	// of it. A new ask is handed to nobody, so the rule is read over its owner alone
+	// (askWaitingOnPerson): the row itself is only queued below.
+	var waitingOnPerson string
+	if readBack == nil {
+		waitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, owner, nil)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, nil, nil, false
+		}
+	}
+	// Everything up to Commit is the read phase (Docs.Join): the document operations and this
+	// route queue their writes on the ledger, in the order made, and Commit sends them as one
+	// batch. Write advice is read here, before the first write is queued, so its queries hold no
+	// transaction id, and counts the ask.opened this ask appends (writeAdvice). This write opens
+	// a question, so it hears about the asks of this issue a person declined to answer, and the
+	// same question is not put to them again.
+	var advice *writeAdvice
+	if owner.IssueKey != nil && status != nil {
+		advice = s.writeAdvice(
+			r.Context(), tx, routeName(r.Context()), *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
+		)
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)
 	if err != nil {
@@ -262,20 +305,20 @@ func (s *server) openAsk(
 			return model.Ask{}, nil, nil, false
 		}
 	}
-	var ask model.Ask
-	if err := tx.QueryRow(r.Context(), `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		returning created_at
-	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind).Scan(&ask.CreatedAt); err != nil {
+	if err := queueExec(ledger, `
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind, ask.CreatedAt); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, nil, nil, false
 	}
-	if err := asks.FollowAuthor(r.Context(), tx, rowID, actor); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		asks.QueueFollowAuthor(b, rowID, actor)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, nil, nil, false
 	}
-	ask.ID = rowID
 	ask.IssueKey = owner.IssueKey
 	ask.ArtifactID = owner.ArtifactID
 	ask.Author = actor
@@ -293,76 +336,47 @@ func (s *server) openAsk(
 			return model.Ask{}, nil, nil, false
 		}
 	}
-	// The question and the parts of this write through one reader: its parts hold its question,
-	// so the database answers once per kind for both.
-	reader := refs.NewReader(r.Context(), tx, "ask", ask.ID, s.deps.ServerURL)
-	askChanges, err := refs.ReplaceCounted(r.Context(), tx, reader, ask.Question)
+	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
+	// bare keys, `#id`s and short ids they write are stored as the ask's edges, and the index's
+	// statements follow the row's insert, queued above, which the rows of a part reference. The
+	// event below names what the question and the parts moved between them.
+	askChanges, err := s.queueNewAskReferences(r.Context(), tx, ledger, ask)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, nil, nil, false
 	}
-	// The ask's parts, beside the ask's own references: the row is in, so its state row comes
-	// after it, and the event below names what both moved.
-	askChanges, err = refs.IndexAskPartsCounted(r.Context(), tx, reader, ask, ask.CreatedAt, askChanges)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return model.Ask{}, nil, nil, false
-	}
-	appended := []model.Event{}
+	appended := []*model.Event{}
 	if snapshot != nil {
-		snapshotEvent, err := s.commitArtifactVersionEvent(r.Context(), tx, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
+		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return model.Ask{}, nil, nil, false
 		}
 		appended = append(appended, snapshotEvent)
 	}
-	openedPayload, err := events.AskEventPayload(r.Context(), tx, ask, askChanges)
+	// The ask's thread_logins are read by its event's insert, after the ask's own insert and the
+	// user_threads trigger it fires.
+	event, err := s.queueLoggedEvent(ledger, owner.event(
+		"ask.opened", actor, model.NewAskEventPayload(ask, askChanges),
+	), events.ThreadLoginsOf(ask.ID), "ask", ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, nil, nil, false
 	}
-	// The person this question reaches, read under this write's own transaction through the rule
-	// every read of that person shares, so a /api/v1 caller is told whose Inbox it just landed in
-	// rather than having to read the ask again; a /api/v2 route reads its whole answer on this
-	// transaction (readBack) and needs none of it. It is set after the payload above is built:
+	// The person read in the read phase above for a /api/v1 caller is set only now, after the
+	// payload is built:
 	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
-	if readBack == nil {
-		ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID)
-		if err != nil {
-			s.writeHandlerError(w, r, err)
-			return model.Ask{}, nil, nil, false
-		}
-	}
-	event, err := s.appendEvent(r.Context(), tx, owner.event("ask.opened", actor, openedPayload))
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return model.Ask{}, nil, nil, false
-	}
-	if err := refs.Stamp(r.Context(), tx, "ask", ask.ID, event.ID); err != nil {
+	ask.WaitingOnPerson = waitingOnPerson
+	appended = append(appended, event)
+	// A /api/v2 route reads its answer between the write phase, which writes the rows it reads,
+	// and the commit (askReadBack).
+	if err := readBack.commit(r.Context(), ledger, ask.ID); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, nil, nil, false
 	}
 	ask.OpenedEventID = &event.ID
-	appended = append(appended, event)
-	// This write opens a question, so it hears about the asks of this issue a person declined to
-	// answer, and the same question is not put to them again.
-	var advice *writeAdvice
-	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
-			r.Context(), tx, routeName(r.Context()), *owner.IssueKey, actor, rowID, *status, true,
-		)
-	}
-	if err := readBack.read(r.Context(), tx, ask.ID); err != nil {
-		s.writeHandlerError(w, r, err)
-		return model.Ask{}, nil, nil, false
-	}
-	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, r, err)
-		return model.Ask{}, nil, nil, false
-	}
-	s.publish(r.Context(), appended...)
+	s.publish(r.Context(), appendedEvents(appended...)...)
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(nil, ask.Question, ask.Options)...)
 	// The related-item check. An ask on an issue searches that issue's project and, normally, rides its check's
 	// result on the issue's own advice; one on an unlinked project document searches the
@@ -488,13 +502,12 @@ func (s *server) rewordAsk(w http.ResponseWriter, r *http.Request, input editAsk
 	// A block ask's text lives in its `:::ask` block and the row projects it, so writing both
 	// needs the document: the edit joins the ledger here, before it takes any lock.
 	//
-	// Locks, in the order this handler takes them: the owner row (requireOpenOwner), the ask
-	// row, then - inside the live write - the room's writer slot and the document's advisory
-	// lock. Settlement takes the owner row, the advisory lock, then the ask rows, so the two
-	// order the ask row and the advisory lock oppositely. They cannot deadlock because a block
-	// ask's owner row IS its block document's owner row: createAskBlock copies the document's
-	// owner onto the ask, so the owner row serialises both transactions before either takes a
-	// second lock. closeAsk relies on the same invariant.
+	// Locks, in the order this handler takes them: the owner's lock (requireOpenOwner), under
+	// which it reads the ask row, then - inside the live write - the room's writer slot and the
+	// document's advisory lock. Settlement takes the owner's lock, the advisory lock, then the ask
+	// rows. They cannot deadlock because a block ask's owner IS its block document's owner:
+	// createAskBlock copies the document's owner onto the ask, so the owner's lock serialises both
+	// transactions before either takes a second lock. closeAsk relies on the same invariant.
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	unlockedAsk, err := s.loadAsk(r.Context(), tx, r.PathValue("id"))
@@ -506,7 +519,7 @@ func (s *server) rewordAsk(w http.ResponseWriter, r *http.Request, input editAsk
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}
-	ask, err := s.lockAskForTransition(documentCtx, tx, unlockedAsk.ID)
+	ask, err := s.readAskForTransition(documentCtx, tx, unlockedAsk.ID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
@@ -595,53 +608,49 @@ func (s *server) rewordAsk(w http.ResponseWriter, r *http.Request, input editAsk
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}
-	var editedAt time.Time
-	if err := tx.QueryRow(documentCtx, `
+	// edited_at is the transaction's now(), which the queued update writes, read here so the ask
+	// this route answers and its event carry it before that update runs.
+	editedAt, err := ledger.Now(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
+	}
+	if err := queueExec(ledger, `
 		update asks
-		set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = now()
+		set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = $6
 		where id = $1
-		returning edited_at
-	`, ask.ID, ask.Question, options, ask.Multiple, ask.Urgency).Scan(&editedAt); err != nil {
+	`, ask.ID, ask.Question, options, ask.Multiple, ask.Urgency, editedAt); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
-	reader := refs.NewReader(documentCtx, tx, "ask", ask.ID, s.deps.ServerURL)
-	askChanges, err := refs.ReplaceCountedEdit(documentCtx, tx, reader, previous.Question, ask.Question)
+	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, "ask", ask.ID, previous.Question, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}
-	// The edit writes the question and the options, so it is a revision of the ask's parts:
-	// index them, through the same reader, at the edited_at the row took, and name what they
-	// moved beside the rest.
-	askChanges, err = refs.IndexAskPartsCounted(documentCtx, tx, reader, ask, editedAt, askChanges)
+	// The edit writes the question and the options, so it is a revision of the ask's parts: plan
+	// them at the edited_at the queued update writes, which the row above carries already, queue
+	// the index after that update, and name what they moved beside the rest.
+	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}
-	event, err := s.appendEvent(documentCtx, tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
+	event, err := s.queueStampedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.edited",
 		actor,
 		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
-	))
+	), "ask", ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}
-	if err := refs.Stamp(documentCtx, tx, "ask", ask.ID, event.ID); err != nil {
+	if err := readBack.commit(r.Context(), ledger, ask.ID); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}
-	if err := readBack.read(r.Context(), tx, ask.ID); err != nil {
-		s.writeHandlerError(w, r, err)
-		return model.Ask{}, false
-	}
-	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, r, err)
-		return model.Ask{}, false
-	}
-	s.publish(r.Context(), event)
+	s.publish(r.Context(), *event)
 	// The question and options this edit replaced are stored beside the new ones: the row holds
 	// only what the ask says now, and every read of the ask's history (askEditReads) is shown the
 	// previous wording, which no other write would ever store.
@@ -1107,7 +1116,7 @@ func (s *server) loadAskAnswers(ctx context.Context, q queryer, askID string) ([
 	return answers[askID], nil
 }
 
-// loadAsk reads one ask for a response: unlike lockAskForTransition, which feeds the
+// loadAsk reads one ask for a response: unlike readAskForTransition, which feeds the
 // ask.* event payloads, it carries WaitingOn for an open ask.
 func (s *server) loadAsk(ctx context.Context, q queryer, id string) (model.Ask, error) {
 	ask, _, err := scanAskRead(q.QueryRow(ctx, `
@@ -1227,17 +1236,18 @@ func askReadPointers(asks []model.Ask) []*model.Ask {
 	return pointers
 }
 
-// lockAskForTransition reads one ask and locks its row for the transition about to be applied.
-// `for no key update` because nothing deletes an ask or changes its id: this still serialises
-// two transitions of the same ask against each other, while leaving the `for key share` a
-// reply's comments.ask_id insert takes unblocked. A reply is ordered against a transition by
-// the owner row, which comment_create.go and ask_transitions.go both take before either reads
-// this ask's state.
-func (s *server) lockAskForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
+// readAskForTransition reads one ask for the transition about to be applied, after the caller took
+// its owner's lock (requireOpenOwner). It takes no row lock: every writer of an ask while requests
+// are served - a transition, an edit, an approval request, move or carry, a settlement, an anchor
+// refresh - holds its owner's lock first, so two transitions of the same ask, and a reply against
+// a transition, run one after the other, and the ask read here holds still until this transaction
+// ends. (The boot's restoration of decided wordings, docs.RestoreDecidedWordings, runs before the
+// server serves anything.)
+func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
 	ask, err := scanAskRow(tx.QueryRow(ctx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`
-		where a.id = $1 for no key update of a
+		where a.id = $1
 	`, id))
 	if err != nil {
 		return model.Ask{}, err

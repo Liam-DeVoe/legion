@@ -88,7 +88,7 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	}
 	for _, read := range []string{
 		"askReadColumns", "listInbox's query", "listOpenAsks's query", "myRepliesOwner",
-		"putAskAskedOf's query", "askWaitingOnPerson's query",
+		"handAskOn's query", "askWaitingOnPerson's query",
 	} {
 		node, declared := declarations[read]
 		if !declared {

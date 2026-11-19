@@ -46,7 +46,7 @@ func (s *server) v2RoleHolderRows() []routeRow {
 				"its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 "+
 				"ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose "+
 				"credential proves no session can name that one. The body is the issue's whole set and replaces the "+
-				"stored set under a lock of the issue row, so a session that it does not name holds no role of the "+
+				"stored set under the issue's owner lock, so a session that it does not name holds no role of the "+
 				"issue, two writes at once store the set of the one that finishes last, and a pair that did not change "+
 				"keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. "+
 				"Answers 200 the set this write stored, %s; a body naming the set already stored, in any order, answers "+

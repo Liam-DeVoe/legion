@@ -349,8 +349,10 @@ func (s *server) v2IssueRows() []routeRow {
 				"hex (400 RESULT_INPUT otherwise), and the counts default to 0; a pass counting any failed, skipped or " +
 				"excluded case is 400 RESULT_CONTRADICTS. A commit the repository of the check's issue does not hold is " +
 				"400 RESULT_COMMIT_UNKNOWN. A closed issue takes a result only for an after_merge or default_branch check " +
-				"(409 ISSUE_CLOSED). Answers 201 {result, line}, line the pull-request body line the result implies, and " +
-				"appends result.recorded on the check's issue. 404 ISSUE_NOT_FOUND.",
+				"(409 ISSUE_CLOSED). A check reworded by a document version at each of the two attempts this write makes " +
+				"is 409 CHECK_CONTENDED with Retry-After: 1, and nothing recorded: read the check and retry. Answers 201 " +
+				"{result, line}, line the pull-request body line the result implies, and appends result.recorded on the " +
+				"check's issue. 404 ISSUE_NOT_FOUND.",
 			Handler:  s.recordIssueResultV2,
 			Resource: "results", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyJSON, Type: checkResultInput{}},
