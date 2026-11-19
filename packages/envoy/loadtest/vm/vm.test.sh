@@ -3410,26 +3410,44 @@ pass "a step stopped by SIGTERM or SIGINT takes its remote work with it: no load
 # still names a live process, and its wait has lasted at least the bound it was given.
 
 reset_fake
-# The kill's own bound, set far above every wait of this case's own -- the 60 s it gives the KILL
-# to land and the 2 s it then holds the parent stopped. At the default of 10 s, an observer held
-# up for 11 s saw a kill that did right run out its bound and return 1 while the parent was still
-# stopped, and failed it. A kill also ends at the bound of its ssh, SSH_SECONDS, which on_vm gives
-# every ssh, whatever its own bound: so the bound this case can see a kill run out is the smaller
-# of the two, as the driver holds them -- five minutes at the driver's defaults -- and only an
-# observer held up that long sees it.
-kill_gone=600
+# The kill's own bound after its KILL, set far above every wait of this case's own -- the 60 s it
+# gives the KILL to land and the 2 s it then holds the parent stopped. At the default of 10 s, an
+# observer held up for 11 s saw a kill that did right run out its bound and return 1 while the
+# parent was still stopped, and failed it. The bound must also end before the kill's ssh does:
+# on_vm gives every ssh SSH_SECONDS, and the kill spends up to REMOTE_TERM_SECONDS after its TERM
+# before it sends the KILL, so a bound of SSH_SECONDS less that grace, or more, is never reached:
+# the ssh's time-out ends the kill first, and this case could not see the kill's own bound run out.
+# So the bound is 240 s, under the 290 s that the driver's defaults leave, and the case fails at
+# once when the driver's bounds leave less. Only an observer held up four minutes sees the kill run
+# out. A stall that holds the kill's script on past the ssh's bound ends the kill at that bound
+# instead, which the kill says, and that is right too.
+kill_gone=240
 # shellcheck disable=SC2016 # expanded by the shell run_fn starts, which sourced vm.sh
-run_fn eval 'printf "SSH_SECONDS=%s\n" "$SSH_SECONDS"'
+run_fn eval 'printf "SSH_SECONDS=%s\nREMOTE_TERM_SECONDS=%s\n" "$SSH_SECONDS" "$REMOTE_TERM_SECONDS"'
 ssh_bound=$(sed -n 's/^SSH_SECONDS=//p' "$tmp/out")
-[[ $ssh_bound =~ ^[0-9]+$ ]] || fail "the driver's SSH_SECONDS reads '$ssh_bound', not a whole number of seconds"
-kill_bound=$((kill_gone < ssh_bound ? kill_gone : ssh_bound))
-# kill_ran_out: the kill returned 1 no sooner than kill_bound after it started, saying which bound
-# ran out -- its own wait's, naming the stand-in, or its ssh's, whose timeout exits 124. Either is
-# right once the parent has been held past that bound.
+term_grace=$(sed -n 's/^REMOTE_TERM_SECONDS=//p' "$tmp/out")
+[[ $ssh_bound =~ ^[0-9]+$ && $term_grace =~ ^[0-9]+$ ]] ||
+  fail "the driver's SSH_SECONDS and REMOTE_TERM_SECONDS read '$ssh_bound' and '$term_grace', not whole numbers of seconds"
+((kill_gone + term_grace < ssh_bound)) ||
+  fail "case (dd)'s bound of $kill_gone s after the KILL, which follows a TERM grace of $term_grace s, is not below the $ssh_bound s the driver gives the kill's ssh: that ssh's time-out would end every kill first, so this case could never see a kill's own bound run out"
+# kill_ran_out: the kill returned 1 saying which bound ran out, and no sooner than that bound after
+# it started -- its own wait's, naming the stand-in kill_gone s after its KILL, or its ssh's, whose
+# time-out exits 124 ssh_bound s after the ssh started. Either is right once the parent has been
+# held past that bound. It sets ran_out to the bound that ran out, and to nothing otherwise.
 kill_ran_out() {
-  [ "$kill_rc" = 1 ] && ((kill_end - kill_start >= kill_bound * 1000000)) &&
-    { grep -qF "(pid $VICTIM) is still in the generator VM's process table $kill_gone s after its SIGKILL" "$tmp/out" ||
-      grep -qF "($pid_file on the generator VM) failed: its ssh exited 124 and said" "$tmp/out"; }
+  local bound
+  ran_out=""
+  [ "$kill_rc" = 1 ] || return 1
+  if grep -qF "(pid $VICTIM) is still in the generator VM's process table $kill_gone s after its SIGKILL" "$tmp/out"; then
+    ((kill_end - kill_start >= kill_gone * 1000000)) || return 1
+    bound="wait ran out its $kill_gone s"
+  elif grep -qF "($pid_file on the generator VM) failed: its ssh exited 124 and said" "$tmp/out"; then
+    ((kill_end - kill_start >= ssh_bound * 1000000)) || return 1
+    bound="ssh ran out its $ssh_bound s"
+  else
+    return 1
+  fi
+  ran_out=$bound
 }
 for kill_case in "${kill_cases[@]}"; do
   read -r fn pid_file <<<"$kill_case"
@@ -3463,8 +3481,7 @@ for kill_case in "${kill_cases[@]}"; do
   if [ -e "$tmp/kill-rc" ]; then
     read -r kill_rc kill_end <"$tmp/kill-rc"
     if kill_ran_out && [ "$(cat "$pid_file" 2>/dev/null)" = "$VICTIM" ]; then
-      ran_out=yes
-      printf "NOTE: %s's wait ran out its %s s before this case continued the stand-in's parent, and it said so, which is right; its return once the parent reaps is not read this time\n" "$fn" "$kill_bound"
+      printf "NOTE: %s's %s before this case continued the stand-in's parent, and it said so, which is right; its return once the parent reaps is not read this time\n" "$fn" "$ran_out"
     else
       victim_fail "$fn returned $kill_rc while the process it ended (pid $VICTIM) was still in the load machine's process table, its parent not yet having reaped it: $(cat "$tmp/out")"
     fi
@@ -3478,11 +3495,12 @@ for kill_case in "${kill_cases[@]}"; do
   fi
   kill_rc=nothing
   [ ! -e "$tmp/kill-rc" ] || read -r kill_rc kill_end <"$tmp/kill-rc"
-  # An ssh that ran out its bound returns here only once the parent has reaped the stand-in: the
-  # fake ssh's command on the load machine holds the kill's output open until it ends, where a
-  # real ssh's end closes it. It said that nothing shows the stand-in gone, which is right.
+  # A bound that ran out can show only here when the ssh's did: the fake ssh's command on the load
+  # machine holds the kill's output open until it ends, where a real ssh's end closes it, so the
+  # kill returns once the parent has reaped the stand-in. It said that nothing shows the stand-in
+  # gone, which is right.
   if kill_ran_out; then
-    printf "NOTE: %s's ssh ran out its %s s before this case continued the stand-in's parent, and the kill said so, which is right\n" "$fn" "$kill_bound"
+    printf "NOTE: %s's %s before this case continued the stand-in's parent, and the kill said so, which is right\n" "$fn" "$ran_out"
     rm -f -- "$pid_file"
     continue
   fi
