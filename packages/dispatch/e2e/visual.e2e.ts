@@ -92,12 +92,18 @@
  *    re-taken under `initial`, so a green visual job shows only that they match themselves.
  *
  *    What it does not reach is the rasterisation the page's own load left, which the first
- *    scheme of a session is shot in: under `initial` the scheme shot SECOND, after
+ *    scheme of a session was shot in: under `initial` the scheme shot SECOND, after
  *    `emulateMedia` has really changed and repainted the page, was one image in all eight runs,
- *    while the first was one of two, 11 pixels apart on this host - under the `maxDiffPixels`
- *    this row carries, and whichever of the two the page's load left it in. Shooting the first
- *    scheme after a real change of its own would settle that too, at the price of re-taking
- *    every baseline, which is not this row's to spend.
+ *    while the first was one of two, 11 pixels apart on this host. Two runs of one tree in CI
+ *    then took that past the `maxDiffPixels` this row carries: at cybermonklabs/legion#2697's
+ *    `1d113fd0` (run 44483191725, attempts 1 and 2) all nine dark shots were byte-identical,
+ *    while `issue-artifacts-light` differed by 39 pixels and `issue-children-light` by 30, each
+ *    pixel one 8-bit step in one channel, all in the column x 860-871 where the header's and the
+ *    tab strip's `scrollFadeTrailing` mask ends - and the committed baseline matched one run of
+ *    each and not the other. So the first scheme is now shot after a real change of its own as
+ *    well: before the loop the page is put in the scheme shot last and settled, so the first
+ *    scheme's `emulateMedia` repaints the page as the second's does, and every baseline was
+ *    re-taken for it.
  *  - The landing highlight, which is the one state here that ends on a clock. An address that
  *    names an artifact rings that artifact's header for two seconds, to say which thing on the
  *    page the reader navigated to (`web/src/features/artifacts/ArtifactHeader.tsx`), and this
@@ -221,6 +227,10 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
     // is the gap between the two: a literal would drift against a corpus written now.
     await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
     await page.goto(route.path(seed));
+    // The first scheme is shot after a real change and repaint, as the second is: from the
+    // page's own load it is one of two rasterisations (the head of this file has the counts).
+    await page.emulateMedia({ colorScheme: SCHEMES[SCHEMES.length - 1] });
+    await waitForRouteSettled(page, route);
     for (const colorScheme of SCHEMES) {
       await page.emulateMedia({ colorScheme });
       // Before the shot, so no baseline is taken of a loading skeleton, a 404 or a page
