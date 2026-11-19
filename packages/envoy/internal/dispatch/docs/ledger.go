@@ -375,11 +375,13 @@ func (l *Ledger) NextVersion(ctx context.Context, artifactID string) (int, time.
 }
 
 // pendingVersion is a version this transaction has queued and not yet written, as latestVersion
-// reads a stored one.
+// reads a stored one: rendererVersion is the renderer version its row stores (its RenderStamp's),
+// nil where the write stored no stamp.
 type pendingVersion struct {
 	version          model.Version
 	markdown         string
 	docUpdateVersion int64
+	rendererVersion  *int
 }
 
 // PendingVersionMarkdown is the markdown of version number of artifactID when it is the version

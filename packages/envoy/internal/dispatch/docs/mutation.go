@@ -2337,15 +2337,14 @@ func (v latestVersionRow) holds(rendering string) bool {
 
 // latestVersion is artifactID's latest version as tx sees it: the last one this transaction has
 // queued and not yet written, when it has one (writeVersionTx), else the stored one. A queued
-// version's markdown is this build's, so it reads as a version this renderer version wrote
-// (pmdoc.RendererVersion).
+// version carries the renderer version its row stores, nil where its write stored no render stamp
+// (queueVersionInsert), so it reads as that row will once written.
 func latestVersion(ctx context.Context, tx pgx.Tx, artifactID string) (latestVersionRow, error) {
 	var version latestVersionRow
 	if ledger := queueFor(ctx, tx); ledger != nil {
 		if pending, queued := ledger.latest[artifactID]; queued {
-			renderer := pmdoc.RendererVersion
 			version.Version, version.markdown, version.docUpdateVersion = pending.version, pending.markdown, pending.docUpdateVersion
-			version.rendererVersion = &renderer
+			version.rendererVersion = pending.rendererVersion
 			return version, nil
 		}
 	}
@@ -2537,7 +2536,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 		return model.Version{}, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor})
+		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor, rendererVersion: stamp.Renderer})
 	}
 	return version, nil
 }
