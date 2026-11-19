@@ -26,13 +26,16 @@ import { pgConnectionsVariable, pgImageVariable, stackPostgres } from "../harnes
 import { removalBounds } from "../harness-postgres-container-removal";
 import {
   docker,
-  during,
+  ownStart,
+  ownStop,
   psql,
   removeAll,
   removeImage,
   removeWithin,
+  startOwn,
+  stopOwn,
 } from "./harness-postgres-leftover-fixtures";
-import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
+import { makeMs, rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
 const skipped = skipsWithoutPostgres("e2e/__tests__/harness-postgres-image-ready.test.ts", [
@@ -47,19 +50,19 @@ const initSleep = 5;
 const watchMs = 8_000;
 
 /** What the row waits for (`Waits`): a `docker create` and a `docker commit` of the row's own
- *  (`makes`), with the `docker cp` between them; one start of the provider, whose waits give up
- *  at 120 s; and 8 s of reads. Besides the create and the commit it read 12.3 to 22.8 s on a
- *  shared Linux machine under a load of about 270 to 300, on 2026-11-17; 240 s leaves the 120 s
- *  wait and a slow Docker daemon room. Its `finally` then stops the stack, a `docker rm` of its
- *  container, removes the builder of its image, and removes the image, a `docker image rm`, each
- *  of which a start's own removal gives up at `removalBounds.boundMs` (`ends`): a fixture call
- *  that runs out the row's deadline leaves them their own time. */
+ *  (`makes`), with the `docker cp` between them, a call of the daemon that writes a container, at
+ *  the fixtures' time for such a call (`makeMs`); one start of the provider in the row's own
+ *  process, at the provider's own bounds (`ownStart`); and 8 s of reads. Its `finally` then stops
+ *  the stack (`ownStop`), removes the builder of its image, and removes the image, each within
+ *  the start's own bound for a removal (`removalBounds.boundMs`): a fixture call that runs out
+ *  the row's deadline leaves them their own time. */
 const slowInit: Waits = {
   children: 0,
   reads: 0,
   makes: 2,
-  bounds: [240_000],
-  ends: [removalBounds.boundMs, removalBounds.boundMs, removalBounds.boundMs],
+  bounds: [makeMs, watchMs],
+  parts: [ownStart(pgImageVariable)],
+  ends: [ownStop(pgImageVariable), removalBounds.boundMs, removalBounds.boundMs],
 };
 
 test.skipIf(skipped)(
@@ -93,8 +96,12 @@ test.skipIf(skipped)(
         },
       });
       if (provider === undefined) throw new Error(`${pgImageVariable} named no provider`);
-      const database = await during("the image provider's start of the row's stack", () =>
-        provider.start(0)
+      const database = await startOwn(
+        row,
+        provider,
+        pgImageVariable,
+        0,
+        "the image provider's start of the row's stack"
       );
       try {
         // Each read names the server that answered by its start time, so a start that returned
@@ -110,7 +117,7 @@ test.skipIf(skipped)(
         }
         expect({ refused, servers: servers.size }).toEqual({ refused: [], servers: 1 });
       } finally {
-        await database.stop();
+        await stopOwn(row, database, pgImageVariable);
       }
     } finally {
       // The builder goes at the row's end, after its reads, within a removal's own bound, which
@@ -126,7 +133,7 @@ test.skipIf(skipped)(
       );
     }
   },
-  // What the row waits for, summed by the fixtures' program (`rowMs`): its create and its commit,
-  // the provider's start, the reads, the stop and the removals of the builder and the image.
+  // What the row waits for, summed by the fixtures' program (`rowMs`): its create, its copy and its
+  // commit, the provider's start, the reads, the stop and the removals of the builder and the image.
   rowMs(slowInit)
 );

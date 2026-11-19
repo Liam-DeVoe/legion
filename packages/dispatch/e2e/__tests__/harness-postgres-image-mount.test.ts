@@ -25,25 +25,39 @@ import { join } from "node:path";
 
 import { pgImageVariable, stackPostgres } from "../harness-postgres";
 import { sqlAt } from "../psql";
+import { ownStart, ownStop, startOwn, stopOwn } from "./harness-postgres-leftover-fixtures";
+import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
 const skipped = skipsWithoutPostgres("e2e/__tests__/harness-postgres-image-mount.test.ts", [
   pgImageVariable,
 ]);
 
-const rows = [
+const places = [
   { component: "c:olon", socketInRunDirectory: true },
   { component: 'q"uote', socketInRunDirectory: true },
   { component: "c,omma", socketInRunDirectory: false },
 ] as const;
 
-for (const [index, row] of rows.entries()) {
+/** What each row waits for (`Waits`): one start of the image provider's Postgres in the row's own
+ *  process, at the provider's own bounds (`ownStart`), and, in its `finally`, its stop
+ *  (`ownStop`). Its psql answers a started server within the room above them. */
+const oneStart: Waits = {
+  children: 0,
+  reads: 0,
+  bounds: [],
+  parts: [ownStart(pgImageVariable)],
+  ends: [ownStop(pgImageVariable)],
+};
+
+for (const [index, place] of places.entries()) {
   test.skipIf(skipped)(
-    `the image provider's Postgres serves from a run directory that holds ${row.component}`,
+    `the image provider's Postgres serves from a run directory that holds ${place.component}`,
     async () => {
+      const row = rowOf(oneStart);
       requirePostgres([pgImageVariable]);
       const root = mkdtempSync(join("/tmp", "pg-mount-"));
-      const dir = join(root, row.component);
+      const dir = join(root, place.component);
       mkdirSync(dir);
       try {
         const provider = stackPostgres({
@@ -55,23 +69,28 @@ for (const [index, row] of rows.entries()) {
           },
         });
         if (provider === undefined) throw new Error("DISPATCH_E2E_PG_IMAGE named no provider");
-        const database = await provider.start(0);
+        const database = await startOwn(
+          row,
+          provider,
+          pgImageVariable,
+          0,
+          `the start in ${place.component}`
+        );
         try {
-          expect(database.address.startsWith(`${dir}/`)).toBe(row.socketInRunDirectory);
+          expect(database.address.startsWith(`${dir}/`)).toBe(place.socketInRunDirectory);
           expect(database.address).not.toContain(",");
           expect(await sqlAt(database.url, ["select 1"])).toBe("1");
         } finally {
-          await database.stop();
+          await stopOwn(row, database, pgImageVariable);
         }
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
     },
-    // The row drives one container start of the image provider's Postgres, its readiness wait, one
-    // psql and the stop. That wait gives up at 120 s (`readyMs`, e2e/harness-postgres.ts), and a
-    // first row on a runner pulls the image too, which the `visual` job's runs have not timed
-    // apart; 300 s holds both with room to spare. The three rows read 2.7, 3.4 and 3.4 s with the
-    // image present, on a shared Linux machine under a load of about 200, on 2026-11-17.
-    300_000
+    // What the row waits for, summed by the fixtures' program (`rowMs`): the provider's start and
+    // stop, each at the provider's own bounds. A first row on a runner pulls the image too, which
+    // the `visual` job's runs have not timed apart. The three rows read 2.7, 3.4 and 3.4 s with
+    // the image present, on a shared Linux machine under a load of about 200, on 2026-11-17.
+    rowMs(oneStart)
   );
 }

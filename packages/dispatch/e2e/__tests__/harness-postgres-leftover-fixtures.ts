@@ -7,7 +7,14 @@
  *  A child is a process that `launch` starts, records by its pid and its start time, and collects
  *  the output of. A SIGKILL goes only to such a child, while `/proc` still names that process.
  *  Each name a row gives is of this run (`runTag`), and each container a row made is removed by
- *  the id Docker made it under. */
+ *  the id Docker made it under.
+ *
+ *  A CHILD'S LIMIT IS THE SUM OF WHAT IT WAITS FOR. Each child a row waits for here, a start of the
+ *  pool, a stack's start or its stop, a shell's start, is a part of the row's waits (`Part` of
+ *  `harness-postgres-removal-fixtures.ts`), whose bound the program sums from the bounds of the
+ *  waits inside the child, the start's own included, and the fixture that waits for it charges
+ *  the row first (`Row.part`). So no child is killed inside its own bounds, and a row whose limit
+ *  does not count a part fails there, naming it. */
 
 import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -25,14 +32,23 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Subprocess } from "bun";
+import { harnessListeners } from "../harness-listeners";
 import {
   pgBinVariable,
   pgConnectionsVariable,
   pgImageVariable,
+  readyMs,
+  type StackDatabase,
+  type StackPostgres,
   socketDirectory,
   socketFile,
 } from "../harness-postgres";
-import { machine, removeContainer } from "../harness-postgres-container-removal";
+import {
+  dockerMs,
+  machine,
+  removalBounds,
+  removeContainer,
+} from "../harness-postgres-container-removal";
 import {
   identityOf,
   markLabel,
@@ -42,7 +58,15 @@ import {
   stackOwner,
   startOf,
 } from "../harness-postgres-marks";
-import type { Row } from "./harness-postgres-removal-fixtures";
+import { claimWaitMs } from "../harness-postgres-removal";
+import {
+  claimEventMs,
+  inTurn,
+  type Part,
+  partOf,
+  type Row,
+  type Waits,
+} from "./harness-postgres-removal-fixtures";
 import type { ProviderVariable } from "./postgres-provider";
 
 const execFileAsync = promisify(execFile);
@@ -101,15 +125,155 @@ for await (const _ of Bun.stdin.stream()) {}
 await stopStacks(false);
 `;
 
-/** How long a one-shot child of this file, such as a start of the pool, may take before the row
- *  kills it and fails: a stuck child's bound, at least three times the largest reading. A start
- *  of the pool read 0.04 to 0.09 s under a load of about 300, and more than 180 s under a load of
- *  1,217, on one shared Linux machine on 2026-11-17. */
-export const childMs = 600_000;
-/** How long a stack may take to print where its Postgres serves: the provider's own readiness
- *  wait gives up at 120 s, and an initdb or a container's start under load comes before it; at
- *  least three times the largest reading, as `childMs` is. */
-export const stackMs = 600_000;
+/** How long `pg_ctl -w` waits for a server to start or to stop before it gives up: `PGCTLTIMEOUT`,
+ *  60 s by default, which the binaries provider leaves unset (e2e/harness-postgres.ts). */
+export const pgCtlMs = 60_000;
+
+/** What a `bun` child waits for before its own work: its start, which may take `claimEventMs`
+ *  under load (`Waits.children`). */
+const bunStart: Waits = { children: 1, reads: 0, bounds: [] };
+
+/** What a start of one stack's Postgres waits for, one wait after another (`start` of
+ *  `stackPostgres` of e2e/harness-postgres.ts), for the provider `variable` names. The image
+ *  provider's: its `docker create` and its `docker start`, each a call of the daemon that makes or
+ *  starts a container, which the provider bounds by nothing, at the fixtures' time for such a call
+ *  (`makeMs`), and then the image's initialisation and its server's first answer, which it gives
+ *  `readyMs` together. The binaries provider's: the template's `pg_ctl -w start` and `stop` and
+ *  the stack's `pg_ctl -w start`, each at `pgCtlMs`, and the template's and the stack's first
+ *  answer, each at `readyMs`. Its `initdb`, its `cp -a` of the template, the `psql`s of both and
+ *  the image provider's reads of the container's log it bounds by nothing either, and no reading
+ *  of them under load is held: they take the room above the part (`partOf`). */
+function providerStart(variable: ProviderVariable): Waits {
+  return variable === pgImageVariable
+    ? { children: 0, reads: 0, makes: 2, bounds: [readyMs] }
+    : { children: 0, reads: 0, bounds: [3 * pgCtlMs, 2 * readyMs] };
+}
+
+/** What a stop of one stack's Postgres waits for (its `stop`, e2e/harness-postgres.ts), for the
+ *  provider `variable` names: the image provider's `docker rm` of its container, which it bounds
+ *  by nothing, at the start's own bound for the removal of one container
+ *  (`removalBounds.boundMs`), and the binaries provider's `pg_ctl -m immediate -w stop`, at
+ *  `pgCtlMs`. */
+function providerStop(variable: ProviderVariable): Waits {
+  const ms = variable === pgImageVariable ? removalBounds.boundMs : pgCtlMs;
+  return { children: 0, reads: 0, bounds: [ms] };
+}
+
+/** What a start's removal of what dead stacks left finds of a row's plants, which its waits are
+ *  made of (`removalOf`): each container of a dead stack that it removes (`containers`), each mark
+ *  of a dead stack in a run directory whose directories it claims (`marks`), and each part of
+ *  those that another start claims at the same time, whose claim it waits for (`claims`). */
+export interface Found {
+  readonly containers?: number;
+  readonly marks?: number;
+  readonly claims?: number;
+}
+
+/** What a start's removal of what dead stacks left (`removeLeftoverPostgres` of
+ *  e2e/harness-postgres-removal.ts) waits for, one wait after another, where it finds `found`:
+ *  its `docker ps` of the marked containers, which it gives up at `dockerMs`; for each container,
+ *  the removal, within `removalBounds.boundMs`, and the holder read before it removes the
+ *  container's socket directory; for each mark, the holder read before its claim of each of the
+ *  mark's two directories, and the stop of its postmaster, with the reads after it; and, for each
+ *  part another start claims, its wait for that claim (`claimWaitMs`). What it finds of other runs
+ *  on a Docker daemon or among the processes of a user that runs share is a wait no row counts:
+ *  a CI job's daemon and runner are its own, and this lane's runs of the rows give each row a PID
+ *  namespace and an owner label of its own. */
+function removalOf({ containers = 0, marks = 0, claims = 0 }: Found): Waits {
+  return {
+    children: 0,
+    reads: containers + 2 * marks,
+    stops: marks,
+    bounds: [dockerMs, containers * removalBounds.boundMs, claims * claimWaitMs],
+  };
+}
+
+/** What the harness of a deployed run waits for as it starts (`startHarness` of
+ *  e2e/harness-start.ts, with `PLAYWRIGHT_BASE_URL` set, as `poolScript` sets it): each listener
+ *  a deployed run starts, one after another, each at its own bound (`bootMs` of
+ *  e2e/harness-listeners.ts). */
+const deployedHarness: Waits = {
+  children: 0,
+  reads: 0,
+  bounds: harnessListeners.filter((listener) => listener.deployed).map(({ bootMs }) => bootMs),
+};
+
+/** A start of one stack in a child (`startStack`, `startNamespacedStack`): its `bun` start, and
+ *  the provider's start of the stack (`providerStart`). */
+export function stackStart(variable: ProviderVariable): Part {
+  return partOf("a stack's start", inTurn(bunStart, providerStart(variable)));
+}
+
+/** A stop of one stack in a child (`stopStack`): the provider's stop (`providerStop`). */
+export function stackStop(variable: ProviderVariable): Part {
+  return partOf("a stack's stop", providerStop(variable));
+}
+
+/** A start of one stack in the row's own process (`startOwn`): the provider's start
+ *  (`providerStart`). */
+export function ownStart(variable: ProviderVariable): Part {
+  return partOf("a stack's start in the row's own process", providerStart(variable));
+}
+
+/** A stop of one stack in the row's own process (`stopOwn`): the provider's stop
+ *  (`providerStop`). */
+export function ownStop(variable: ProviderVariable): Part {
+  return partOf("a stack's stop in the row's own process", providerStop(variable));
+}
+
+/** A start of the pool that refuses, as `startScript` runs it (`startPool`): its `bun` start, and
+ *  its removal of what dead stacks left, where it finds `found` (`removalOf`). */
+export function poolStart(found: Found): Part {
+  return partOf("a start of the pool", inTurn(bunStart, removalOf(found)));
+}
+
+/** A start of the pool that serves, as `poolScript` runs it (`startServingPool`): its `bun`
+ *  start, its removal of what dead stacks left, where it finds `found` (`removalOf`), the
+ *  provider's start of its one stack (`providerStart`), and its harness (`deployedHarness`). */
+export function servingStart(variable: ProviderVariable, found: Found): Part {
+  return partOf(
+    "a start of the pool that serves",
+    inTurn(bunStart, removalOf(found), providerStart(variable), deployedHarness)
+  );
+}
+
+/** A stop of a start of the pool that serves (`stopPool`): its `stopStacks`, which stops the
+ *  harness, signalling each process and killing what still runs 10 s later (`Supervisor.stop` of
+ *  e2e/local-instance-support.ts), each end an event of another process (`claimEventMs`), and
+ *  then the provider's stop of the stack (`providerStop`). */
+export function poolStop(variable: ProviderVariable): Part {
+  return partOf(
+    "a stop of the pool",
+    inTurn({ children: 0, reads: 0, bounds: [claimEventMs] }, providerStop(variable))
+  );
+}
+
+/** A shell stack's start (`startShellStack`): its `postgres_mark`, a `bun` start, and its
+ *  `docker run`, a call that makes a container (`makeMs`). */
+export const shellStackStart = partOf("a shell stack's start", { ...bunStart, makes: 1 });
+
+/** A shell's start of a stack as `scripts/e2e/lib/leftovers.sh` runs it (`shellSweep`): its
+ *  `bun` start, and its removal of what dead stacks left, where it finds `found` (`removalOf`). */
+export function shellSweepOf(found: Found): Part {
+  return partOf("a shell's removal of what dead stacks left", inTurn(bunStart, removalOf(found)));
+}
+
+/** The end of a child that the row sent SIGKILL (`endOfKilled`): the kernel's, an event of
+ *  another process (`claimEventMs`). */
+export const killedEnd = partOf("the end of a child the row killed", {
+  children: 0,
+  reads: 0,
+  bounds: [claimEventMs],
+});
+
+/** The wait of the image provider's row for a container it made itself to serve
+ *  (`startUnjudged`): the image's initialisation and its server's first answer, as the provider
+ *  gives its own container `readyMs` for them. */
+export const ownContainerServes = partOf("a container of the row's own that serves", {
+  children: 0,
+  reads: 0,
+  bounds: [readyMs],
+});
 
 /** The start of the process `pid`, as `startOf` reads it from `/proc`, or "" where the process is
  *  gone. */
@@ -203,22 +367,31 @@ export async function during<T>(what: string, wait: () => Promise<T>): Promise<T
   }
 }
 
-/** Waits for `child` to exit, and kills it and throws where it has not within `ms`. */
-export function exited(child: Child, ms: number, what: string): Promise<number> {
+/** Waits for `child` to exit, and kills it and throws, naming `what`, where it has not within the
+ *  bound of `part`, the part of its row's waits it is, which the caller charged its row for. */
+function exited(child: Child, part: Part, what: string): Promise<number> {
   return during(what, async () => {
-    const code = await Promise.race([child.process.exited, sleep(ms).then(() => undefined)]);
+    const code = await Promise.race([child.process.exited, sleep(part.ms).then(() => undefined)]);
     if (code !== undefined) return code;
     kill(child);
-    throw new Error(`${what} did not end within ${ms / 1000} s: ${child.output.stderr}`);
+    throw new Error(`${what} did not end within ${part.ms / 1000} s: ${child.output.stderr}`);
   });
+}
+
+/** Waits for the end of `child`, which the row `row` sent SIGKILL, as a part of the row's waits
+ *  (`killedEnd`), and answers its exit status; throws, naming `what`, where it has not ended. */
+export function endOfKilled(row: Row, child: Child, what: string): Promise<number> {
+  row.part(killedEnd);
+  return exited(child, killedEnd, what);
 }
 
 /** Waits for the first line `child` prints on its stdout, and answers it. Throws, naming `what`
  *  and what the child wrote on stderr, where the child exits before it printed one, and kills the
- *  child and throws where it has printed none within `ms`. */
-function firstLine(child: Child, ms: number, what: string): Promise<string> {
+ *  child and throws where it has printed none within the bound of `part`, the part of its row's
+ *  waits it is, which the caller charged its row for. */
+function firstLine(child: Child, part: Part, what: string): Promise<string> {
   return during(what, async () => {
-    const deadline = Date.now() + ms;
+    const deadline = Date.now() + part.ms;
     while (!child.output.stdout.includes("\n")) {
       const code = await Promise.race([child.process.exited, sleep(200).then(() => undefined)]);
       if (code !== undefined && !child.output.stdout.includes("\n")) {
@@ -227,7 +400,7 @@ function firstLine(child: Child, ms: number, what: string): Promise<string> {
       }
       if (Date.now() > deadline) {
         kill(child);
-        throw new Error(`${what} did not serve within ${ms / 1000} s: ${child.output.stderr}`);
+        throw new Error(`${what} did not serve within ${part.ms / 1000} s: ${child.output.stderr}`);
       }
     }
     return child.output.stdout.split("\n")[0] ?? "";
@@ -255,33 +428,49 @@ export interface Stack {
   readonly pidNamespace: string;
 }
 
+/** Starts a stack in a child with `env`, the provider `variable` names and the run name `run`,
+ *  for the row `row`, whose limit counts it (`stackStart`), and answers once it serves. */
 export async function startStack(
+  row: Row,
   env: Record<string, string | undefined>,
-  run: string
+  run: string,
+  variable: ProviderVariable
 ): Promise<Stack> {
+  const part = stackStart(variable);
+  row.part(part);
   const child = spawn(stackScript, { ...env, LEFTOVER_RUN: run });
-  const printed = JSON.parse(await firstLine(child, stackMs, `stack ${run}`)) as Omit<
-    Stack,
-    "child"
-  >;
+  const printed = JSON.parse(await firstLine(child, part, `stack ${run}`)) as Omit<Stack, "child">;
   return { child, ...printed };
 }
 
-/** Stops `stack` the way its own child does, by closing its stdin, and where that did not end it
- *  in time, kills it. */
-export async function stopStack(stack: Stack | undefined): Promise<void> {
+/** Stops `stack`, of the provider `variable` names, the way its own child does, by closing its
+ *  stdin, and where that did not end it within its bound (`stackStop`), kills it. The stop begins
+ *  before the row `row` is charged for it, so a limit that does not count it leaves no stack
+ *  running when its charge fails the row. */
+export async function stopStack(
+  row: Row,
+  stack: Stack | undefined,
+  variable: ProviderVariable
+): Promise<void> {
   if (stack === undefined) return;
+  const part = stackStop(variable);
   stack.child.process.stdin.end();
-  await exited(stack.child, childMs, `the stack in ${stack.dir}`).catch(() => {});
+  row.part(part);
+  await exited(stack.child, part, `the stack in ${stack.dir}`).catch(() => {});
 }
 
-/** Runs the pool's start in a child with `env`, and answers its pid and what it printed. */
+/** Runs the pool's start in a child with `env`, for the row `row`, whose limit counts it as a
+ *  start that finds `found` (`poolStart`), and answers its pid and what it printed. */
 export async function startPool(
-  env: Record<string, string | undefined>
+  row: Row,
+  env: Record<string, string | undefined>,
+  found: Found
 ): Promise<{ readonly pid: number; readonly stdout: string; readonly stderr: string }> {
+  const part = poolStart(found);
+  row.part(part);
   const child = spawn(startScript, env);
   child.process.stdin.end();
-  const code = await exited(child, childMs, "a start of the pool");
+  const code = await exited(child, part, "a start of the pool");
   // The pipes end as it exits; their last chunks may still be on the way to `output`.
   await Promise.race([child.drained, sleep(10_000)]);
   if (code !== 0) throw new Error(`a start of the pool exited ${code}: ${child.output.stderr}`);
@@ -294,9 +483,14 @@ export interface PoolStart {
   readonly url: string;
 }
 
-/** Starts the pool in a child with `env` and its provider, and answers once its stack serves. */
+/** Starts the pool in a child with `env` and the provider `variable` names, for the row `row`,
+ *  whose limit counts it as a start that finds `found` (`servingStart`), and answers once its
+ *  stack serves. */
 export async function startServingPool(
-  env: Record<string, string | undefined>
+  row: Row,
+  env: Record<string, string | undefined>,
+  variable: ProviderVariable,
+  found: Found
 ): Promise<PoolStart> {
   const own: Record<string, string | undefined> = {
     ...env,
@@ -304,19 +498,73 @@ export async function startServingPool(
   };
   // A run of one stack against a database the caller named starts no Postgres.
   delete own.DATABASE_URL;
+  const part = servingStart(variable, found);
+  row.part(part);
   const child = spawn(poolScript, own);
-  const line = await firstLine(child, childMs, "a start of the pool");
+  const line = await firstLine(child, part, "a start of the pool");
   const { url } = JSON.parse(line) as { url?: string };
   if (url === undefined) throw new Error(`a start of the pool named no database: ${line}`);
   return { child, url };
 }
 
-/** Stops a start of the pool by closing its stdin, which runs its `stopStacks`, and kills it
- *  where that did not end it in time. */
-export async function stopPool(start: PoolStart | undefined): Promise<void> {
+/** Stops a start of the pool, of the provider `variable` names, by closing its stdin, which runs
+ *  its `stopStacks`, and kills it where that did not end it within its bound (`poolStop`). The
+ *  stop begins before the row `row` is charged for it, as a stack's does (`stopStack`). */
+export async function stopPool(
+  row: Row,
+  start: PoolStart | undefined,
+  variable: ProviderVariable
+): Promise<void> {
   if (start === undefined) return;
+  const part = poolStop(variable);
   start.child.process.stdin.end();
-  await exited(start.child, childMs, "a start of the pool").catch(() => {});
+  row.part(part);
+  await exited(start.child, part, "a stop of the pool").catch(() => {});
+}
+
+/** Runs a shell's start of a stack as `scripts/e2e/lib/leftovers.sh`'s callers run it, its
+ *  `remove_leftover_postgres`, in a child with `env`, for the row `row`, whose limit counts it as a
+ *  removal that finds `found` (`shellSweepOf`), and answers its exit status and its stderr. */
+export async function shellSweep(
+  row: Row,
+  env: Record<string, string | undefined>,
+  found: Found
+): Promise<{ readonly status: number; readonly stderr: string }> {
+  const part = shellSweepOf(found);
+  row.part(part);
+  const child = launch(["bash", "-c", `. "${leftoversLib}"; remove_leftover_postgres`], env);
+  child.process.stdin.end();
+  const status = await exited(child, part, "a shell's start");
+  await Promise.race([child.drained, sleep(10_000)]);
+  return { status, stderr: child.output.stderr };
+}
+
+/** Starts stack `index` of `provider`, of the provider `variable` names, in this process, for the
+ *  row `row`, whose limit counts it (`ownStart`), as a wait of the row's named `what` (`during`). */
+export async function startOwn(
+  row: Row,
+  provider: StackPostgres,
+  variable: ProviderVariable,
+  index: number,
+  what: string
+): Promise<StackDatabase> {
+  row.part(ownStart(variable));
+  return during(what, () => provider.start(index));
+}
+
+/** Stops `database`, which a start in this process of the provider `variable` names served
+ *  (`startOwn`), for the row `row`, whose limit counts it (`ownStop`). The stop begins before the
+ *  row is charged for it, as a stack's does in a child (`stopStack`). */
+export async function stopOwn(
+  row: Row,
+  database: StackDatabase,
+  variable: ProviderVariable
+): Promise<void> {
+  const stopping = during("the stop of the row's own stack", () => database.stop());
+  // Handled here as well, so a stop that fails after a refused charge is no unhandled rejection.
+  stopping.catch(() => {});
+  row.part(ownStop(variable));
+  await stopping;
 }
 
 /** Why this machine refuses a stack a PID namespace of its own, or undefined where it gives one:
@@ -338,13 +586,17 @@ export function pidNamespaceRefusal(file: string): string | undefined {
   return why;
 }
 
-/** Starts a stack as `startStack` does, with `env` and the run name `run`, in a PID namespace of
- *  its own (`unshare --pid`), which it enters through `sudo -n` and leaves for this user again
- *  (`setpriv`). The child is `sudo`'s. */
+/** Starts a stack as `startStack` does, for the row `row`, with `env` and the run name `run`, in a
+ *  PID namespace of its own (`unshare --pid`), which it enters through `sudo -n` and leaves for
+ *  this user again (`setpriv`). The child is `sudo`'s. Its provider is the binaries provider: the
+ *  rows of such a stack are its. */
 export async function startNamespacedStack(
+  row: Row,
   env: Record<string, string | undefined>,
   run: string
 ): Promise<Stack> {
+  const part = stackStart(pgBinVariable);
+  row.part(part);
   // `sudo` resets the environment, so the stack's goes through `env -i`.
   const pairs = Object.entries(env)
     .filter((pair): pair is [string, string] => pair[1] !== undefined)
@@ -374,7 +626,7 @@ export async function startNamespacedStack(
   );
   return {
     child,
-    ...(JSON.parse(await firstLine(child, stackMs, `stack ${run}`)) as Omit<Stack, "child">),
+    ...(JSON.parse(await firstLine(child, part, `stack ${run}`)) as Omit<Stack, "child">),
   };
 }
 
@@ -640,45 +892,41 @@ export async function containersOf(row: Row, run: string, by = row.deadline): Pr
   });
 }
 
-/** Runs a `docker` removal, of a container or an image, for as long as Docker takes over it, and
- *  answers its exit status and what it wrote on standard error. A daemon that many sessions share
- *  can take minutes over one removal while it answers every other call at once (`dockerMs` of
- *  e2e/harness-postgres-container-removal.ts), so a removal has no bound of its own: the bound of the row
- *  that runs it is what ends one that hangs. */
-function dockerRemoval(args: readonly string[]): Promise<{ status: number; said: string }> {
-  return during(`docker ${args.join(" ")}`, async () => {
-    const run = Bun.spawn(["docker", ...args], { stdout: "ignore", stderr: "pipe" });
-    const [status, stderr] = await Promise.all([run.exited, new Response(run.stderr).text()]);
-    return { status, said: stderr.trim() || `exit ${status}` };
-  });
-}
-
-/** Removes each container of `ids`, by its id, and once it has tried them all throws naming each
- *  removal that failed, with what Docker said: one failed removal keeps no other container. A
- *  container that is gone already is no failure (`docker rm --force`), nor is one that another
- *  start of the machine is removing: while that removal is in progress Docker refuses this one,
- *  and the row asks again until Docker removes it or finds it gone, as a start does. */
+/** Removes each container of `ids`, by its id, all at once, each as a start removes one
+ *  (`removeContainer`): however long Docker takes over it while it answers each ask, within the
+ *  start's own bound, which the row's limit counts once among the waits of its `finally`
+ *  (`Waits.ends`). Once each has ended, throws naming each removal that Docker gave up or
+ *  refused, with why: one failed removal keeps no other container. A container that is gone
+ *  already is no failure, nor is one that another start of the machine removed first. A daemon
+ *  that many sessions shared took 17 and 21 minutes over one removal on 2026-11-19, which a
+ *  removal with no bound of its own carried past the row's limit. */
 export async function removeIds(ids: readonly string[]): Promise<void> {
-  const failed: string[] = [];
-  for (const id of ids) {
-    for (;;) {
-      const { status, said } = await dockerRemoval(["rm", "--force", "--volumes", id]);
-      if (status === 0) break;
-      if (!/removal of container \S+ is already in progress/.test(said)) {
-        failed.push(`${id}: ${said}`);
-        break;
-      }
-      await sleep(200);
-    }
+  const removals = await Promise.all(
+    ids.map((id) => {
+      const what = `container ${id.slice(0, 12)}`;
+      return during(`the removal of ${what}`, () => removeContainer(id, what));
+    })
+  );
+  const failed = removals.flatMap((removal, index) =>
+    removal.kind === "failed" ? [`${ids[index]}: ${removal.reason}`] : []
+  );
+  if (failed.length > 0) {
+    throw new Error(`${named}: what the row made is not removed: ${failed.join("; ")}`);
   }
-  if (failed.length > 0)
-    throw new Error(`docker rm --force --volumes failed: ${failed.join("; ")}`);
 }
 
-/** Removes the image `name`, which a row made, however long Docker takes over it. */
+/** Removes the image `name`, which a row made, within the start's own bound for the removal of a
+ *  container, which the row's limit counts among the waits of its `finally` (`Waits.ends`): Docker
+ *  gives a removal no bound of its own. */
 export async function removeImage(name: string): Promise<void> {
-  const { status, said } = await dockerRemoval(["image", "rm", "--force", name]);
-  if (status !== 0) throw new Error(`docker image rm --force ${name}: ${said}`);
+  const args = ["image", "rm", "--force", name];
+  await during(`docker ${args.join(" ")}`, () =>
+    machine.docker(args, { signal: new AbortController().signal, timeout: removalBounds.boundMs })
+  ).catch((error: unknown) => {
+    throw new Error(
+      `docker ${args.join(" ")}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  });
 }
 
 /** Removes the container `id`, which a row made and its line names `what`, as a start removes one
@@ -733,6 +981,14 @@ export async function removeLeft(
   }
 }
 
+/** What `removeLeft` waits for, in ms, for a stack of the provider `variable` names, which a row's
+ *  limit counts among the waits of its `finally` (`Waits.ends`): the removal of the stack's
+ *  containers at once, each within the start's own bound (`removeIds`), or the stops of its two
+ *  postmasters, each within `pgCtlMs` (`stopCluster`). */
+export function leftRemovalMs(variable: ProviderVariable): number {
+  return variable === pgImageVariable ? removalBounds.boundMs : 2 * pgCtlMs;
+}
+
 /** Runs each removal of a row's `finally`, every one even where another fails, and throws naming
  *  each that failed, with what it said. */
 export async function removeAll(...removals: (() => unknown)[]): Promise<void> {
@@ -777,7 +1033,8 @@ export interface Unjudged {
  *  another boot's owner; the start names its mark file. The image provider's is a container of the
  *  row's own, made as the provider makes one, whose label is such a mark from its create on, in a
  *  socket directory of the run directory `run`; the start names it by its id. Its calls of Docker
- *  and Postgres take the time the row has left (`docker`). */
+ *  and Postgres take the time the row has left (`docker`), and its wait for the container to serve
+ *  is a part of the row's waits (`ownContainerServes`). */
 export async function startUnjudged(
   row: Row,
   env: Record<string, string | undefined>,
@@ -786,7 +1043,7 @@ export async function startUnjudged(
   beside: string
 ): Promise<Unjudged> {
   if (provider.variable === pgBinVariable) {
-    const stack = await startStack(env, run);
+    const stack = await startStack(row, env, run, pgBinVariable);
     const markFile = join(stack.dir, marksDirectory, "worker-0.json");
     const mark = JSON.parse(readFileSync(markFile, "utf8")) as Record<string, unknown>;
     writeFileSync(markFile, JSON.stringify({ ...mark, owner: owners().otherBoot }));
@@ -794,11 +1051,12 @@ export async function startUnjudged(
       url: stack.url,
       named: markFile,
       stop: async () => {
-        await stopStack(stack);
+        await stopStack(row, stack, pgBinVariable);
         await removeLeft(row, stack, provider);
       },
     };
   }
+  row.part(ownContainerServes);
   // In the run directory, or in /tmp where a long TMPDIR leaves no room there for the socket's
   // path, as the provider puts each of its own.
   const own = socketDirectory(beside, "pg-9", join("s", socketFile));
@@ -854,11 +1112,13 @@ export async function startUnjudged(
       () => rmSync(own, { recursive: true, force: true })
     );
   };
-  const deadline = Date.now() + stackMs;
+  const deadline = Date.now() + ownContainerServes.ms;
   try {
     while (!((await initialised()) && (await answers(row, url)))) {
       if (Date.now() > deadline) {
-        throw new Error(`the container ${name} did not serve within ${stackMs / 1000} s`);
+        throw new Error(
+          `the container ${name} did not serve within ${ownContainerServes.ms / 1000} s`
+        );
       }
       await sleep(500);
     }
@@ -1035,18 +1295,23 @@ export interface ShellStack {
   readonly id: string;
 }
 
-/** Starts a shell stack with `env` whose container is `name`, and answers once its `docker run`
- *  printed the container's id. */
+/** Starts a shell stack with `env` whose container is `name`, for the row `row`, whose limit
+ *  counts it (`shellStackStart`), and answers once its `docker run` printed the container's id. */
 export async function startShellStack(
+  row: Row,
   env: Record<string, string | undefined>,
   image: string,
   name: string
 ): Promise<ShellStack> {
+  row.part(shellStackStart);
   const child = launch(["bash", "-c", shellStackScript], {
     ...env,
     LEFTOVERS_LIB: leftoversLib,
     SHELL_PG: name,
     SHELL_IMAGE: image,
   });
-  return { child, id: (await firstLine(child, stackMs, `the shell stack ${name}`)).trim() };
+  return {
+    child,
+    id: (await firstLine(child, shellStackStart, `the shell stack ${name}`)).trim(),
+  };
 }

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as marks from "../harness-postgres-marks";
+import { partOf, rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
 
 /** A stubbed `lstat` over `entries`, path to what it says; any other path is gone. */
 function stubbedLstat(
@@ -89,22 +90,35 @@ test("v-no-leftover-postgres: whyUntrusted: a directory above the path that anot
 
 const markCommand = fileURLToPath(new URL("../postgres-mark.ts", import.meta.url));
 
+/** One run of `postgres-mark.ts label`, a `bun` child that the row ends at the bound of what it
+ *  waits for: its start under load, and no wait after it. */
+const labelRun = partOf("a run of postgres-mark.ts label", { children: 1, reads: 0, bounds: [] });
+/** What the next row waits for (`Waits`): three runs of the command, one after another. */
+const threeLabels: Waits = {
+  children: 0,
+  reads: 0,
+  bounds: [],
+  parts: [labelRun, labelRun, labelRun],
+};
+
 // A shell driver spells its run directory `${TMPDIR:-/tmp}/…`, so a TMPDIR that ends in `/` gives
 // it a doubled `/`: the command marks the directory that spelling names, under its one spelling,
 // as it marks the same directory spelt plain.
 test.skipIf(process.platform !== "linux")(
   "v-no-leftover-postgres: postgres-mark.ts label marks a run directory spelt with a doubled or a trailing / under its one spelling, which a start's sweep reads as a mark",
   () => {
+    const row = rowOf(threeLabels);
     const tmp = mkdtempSync(join(tmpdir(), "mark-label-"));
     try {
       const work = join(tmp, "work");
       mkdirSync(work);
       const real = marks.identityOf(work);
       for (const spelt of [`${tmp}//work`, `${work}/`, work]) {
+        row.part(labelRun);
         const label = spawnSync(
           process.execPath,
           [markCommand, "label", String(process.pid), spelt, "dispatch-e2e-pg-label-0"],
-          { encoding: "utf8", timeout: 120_000 }
+          { encoding: "utf8", timeout: labelRun.ms }
         );
         expect({ spelt, status: label.status, stderr: label.stderr }).toEqual({
           spelt,
@@ -122,7 +136,7 @@ test.skipIf(process.platform !== "linux")(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // Three runs of the command, each a `bun` child that `spawnSync` bounds at 120 s, one after
-  // another: the row's own limit is their sum.
-  360_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): three runs of the command,
+  // one after another, each at its own bound.
+  rowMs(threeLabels)
 );

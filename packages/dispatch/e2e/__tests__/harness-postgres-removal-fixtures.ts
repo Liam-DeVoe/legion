@@ -3,10 +3,11 @@
  *  plants, the start's sweep, a start's claim and a start's removal of one container, each run in
  *  a child of the row, the stand-in `docker` of that removal, with its own clock, the end of such a
  *  child, and the stack's harness and the stand-in `pg_ctl` a row kills hard. It holds the program
- *  of each row's own limit too (`Waits`, `rowMs`, `Row`): a row states what it waits for, its
- *  limit is the sum of those waits, and each fixture that starts a child or a holder read charges
- *  the row, which fails where it started more than its limit counts. The rows and what they
- *  require stay in those files. */
+ *  of each row's own limit too (`Waits`, `Part`, `rowMs`, `Row`): a row states what it waits for,
+ *  its limit is the sum of those waits, a wait that waits for several things itself is a part
+ *  whose bound is the sum of its own, and each fixture that starts a child or a holder read, or
+ *  waits for a part, charges the row, which fails where it started more than its limit counts.
+ *  The rows and what they require stay in those files. */
 
 import { expect } from "bun:test";
 import {
@@ -390,10 +391,11 @@ export function clockOf(clock: string): { pid: number; forked: number; ticks: nu
  *  2026-11-17, is the longest of them. */
 export const claimEventMs = 240_000;
 /** How long a row gives one call of its own fixtures that makes a container or an image with
- *  Docker (`docker` of `harness-postgres-leftover-fixtures.ts`): three times the 133 s that one
- *  `docker create` of a row took on a daemon a shared Linux machine shared, on 2026-11-19, while
- *  that daemon answered every other call, as the fixtures' other bounds are three times their
- *  largest reading. */
+ *  Docker (`docker` of `harness-postgres-leftover-fixtures.ts`), and one call of the image
+ *  provider's that makes or starts a container, which the provider bounds by nothing
+ *  (`providerStart` of that file): three times the 133 s that one `docker create` of a row took on
+ *  a daemon a shared Linux machine shared, on 2026-11-19, while that daemon answered every other
+ *  call, as the fixtures' other bounds are three times their largest reading. */
 export const makeMs = 400_000;
 
 /** The holder reads a start makes after it stopped a postmaster (`removePostmaster` of
@@ -408,20 +410,69 @@ const readsAfterStop = 2;
  *  (`e2e/harness-postgres-processes.ts`); each stop of a postmaster those sweeps make (`stops`),
  *  each of which may take `stopMs` and is followed by `readsAfterStop` holder reads; each call of
  *  its fixtures that makes a container or an image (`makes`), each of which may take `makeMs`;
- *  every other bound the row waits out (`bounds`, in ms): the bound of a removal, of an `until`, of
- *  a stack's start; and the bound of each wait of its `finally` before it removes what it made,
- *  such as the stop of a stack it started (`ends`, in ms). Those come after the row's deadline
- *  (`Row.deadline`), which ends every fixture call of the row's own waits: a call that runs to the
- *  deadline then leaves the `finally` the time its stops take, and the removals after them the
- *  room above it (`Row.cleanup`), where a deadline that counted the stops left a removal none, and
- *  the container of a stack the row killed stayed. */
+ *  each wait that waits for several things itself (`parts`, `Part`), such as a start of the pool
+ *  in a child, at the bound the program sums for it, the longest of those it waits for at once
+ *  (`AtOnce`); every other bound the row waits out (`bounds`, in ms): the bound of a removal, of
+ *  an `until`, of the row's own writes; and the bound of each wait of its `finally` before it
+ *  removes what it made, such as the stop of a stack it started (`ends`, in ms, or a `Part`).
+ *  Those come after the row's deadline (`Row.deadline`), which ends every fixture call of the
+ *  row's own waits: a call that runs to the deadline then leaves the `finally` the time its stops
+ *  take, and the removals after them the room above it (`Row.cleanup`), where a deadline that
+ *  counted the stops left a removal none, and the container of a stack the row killed stayed. */
 export interface Waits {
   readonly children: number;
   readonly reads: number;
   readonly stops?: number;
   readonly makes?: number;
   readonly bounds: readonly number[];
-  readonly ends?: readonly number[];
+  readonly parts?: readonly (Part | AtOnce)[];
+  readonly ends?: readonly (number | Part)[];
+}
+
+/** What only `partOf` puts in a `Part`, so that no row and no fixture writes a part, or its bound,
+ *  by hand: a part written as an object of its own is a compiler error. */
+const summed: unique symbol = Symbol("partOf");
+
+/** One wait of a row that waits for several things itself, and whose bound the program sums from
+ *  them: a start of the pool, a stack's start or its stop, a shell's start, the end of a child the
+ *  row killed, each a child that `harness-postgres-leftover-fixtures.ts` ends at that bound, or a
+ *  start of the provider that a row runs in its own process. `what` is its kind, which the row's
+ *  charge reads (`Row.part`), and `ms` its bound (`partOf`): what it waits for, one wait after
+ *  another (`Waits`), the waits of its own end, and `rowRoomMs` above them, the same program as a
+ *  row's own limit (`rowMs`). So a part's bound is above the bound of every wait inside it, and
+ *  moves with each of them. A start of the pool that a row gave a fixed 600 s, while the start's
+ *  removal of one container may wait 600 s itself, was killed inside its own bounds on a shared
+ *  Linux machine on 2026-11-19. */
+export interface Part {
+  readonly what: string;
+  readonly ms: number;
+  readonly [summed]: true;
+}
+
+/** The `Part` of the kind `what` that waits for `waits`. */
+export function partOf(what: string, waits: Waits): Part {
+  return { what, ms: rowMs(waits), [summed]: true };
+}
+
+/** Parts a row starts at once and waits for together, of which the longest counts (`Waits`). */
+export interface AtOnce {
+  readonly atOnce: readonly Part[];
+}
+
+/** The waits of `all`, one after another, as one `Waits`: their counts added, and their bounds,
+ *  parts and ends one list each, in turn. */
+export function inTurn(...all: readonly Waits[]): Waits {
+  const count = (of: (waits: Waits) => number | undefined) =>
+    all.reduce((sum, waits) => sum + (of(waits) ?? 0), 0);
+  return {
+    children: count((waits) => waits.children),
+    reads: count((waits) => waits.reads),
+    stops: count((waits) => waits.stops),
+    makes: count((waits) => waits.makes),
+    bounds: all.flatMap((waits) => waits.bounds),
+    parts: all.flatMap((waits) => waits.parts ?? []),
+    ends: all.flatMap((waits) => waits.ends ?? []),
+  };
 }
 
 /** The holder reads a row's sweeps may make in all (`Waits`): those before a claim, and those after
@@ -433,13 +484,19 @@ function readsOf({ reads, stops = 0 }: Waits): number {
 /** Everything a row waits for, one wait after another (`Waits`), in ms: the limit of a child the
  *  row ends itself, and of an `until` of an event that comes after those waits. */
 export function waitsMs(waits: Waits): number {
-  const { children, stops = 0, makes = 0, bounds } = waits;
+  const { children, stops = 0, makes = 0, bounds, parts = [] } = waits;
   return (
     children * claimEventMs +
     readsOf(waits) * (statStartMs + statMs) +
     stops * stopMs +
     makes * makeMs +
-    bounds.reduce((sum, ms) => sum + ms, 0)
+    bounds.reduce((sum, ms) => sum + ms, 0) +
+    // Of parts the row waits for at once, the longest.
+    parts.reduce(
+      (sum, part) =>
+        sum + ("atOnce" in part ? Math.max(0, ...part.atOnce.map((each) => each.ms)) : part.ms),
+      0
+    )
   );
 }
 
@@ -453,16 +510,24 @@ export const rowRoomMs = 60_000;
 
 /** A row's own limit: everything it waits for (`waitsMs`), the waits of its `finally`
  *  (`Waits.ends`), and `rowRoomMs` above them. Every row of the files these fixtures serve that
- *  starts a child states its limit so, and no other way. */
+ *  counts its waits (`rowOf`) states its limit so, and no other way, which a row of
+ *  `harness-postgres-removal.test.ts` reads from their source (`limitsNotSummed`). */
 export function rowMs(waits: Waits): number {
-  return waitsMs(waits) + (waits.ends ?? []).reduce((sum, ms) => sum + ms, 0) + rowRoomMs;
+  const ends = (waits.ends ?? []).reduce<number>(
+    (sum, end) => sum + (typeof end === "number" ? end : end.ms),
+    0
+  );
+  return waitsMs(waits) + ends + rowRoomMs;
 }
 
 /** What a row started so far, held to what its limit counts (`Waits`): each fixture that starts a
  *  `bun` child charges the row for it (`child`), each sweep charges the holder reads it made, as
- *  the reader it ran counted them (`reads`), and each fixture call that makes a container or an
- *  image charges it for that call (`made`). A row that starts more than its limit counts fails
- *  there, naming what the limit left out, whatever the load: its limit is below what it waits for.
+ *  the reader it ran counted them (`reads`), each fixture call that makes a container or an image
+ *  charges it for that call (`made`), and each fixture that waits for a part charges it for that
+ *  part before the wait (`part`). A row that starts more than its limit counts fails there, naming
+ *  what the limit left out, whatever the load: its limit is below what it waits for. A part counts
+ *  where the row's waits hold one of its kind whose bound reaches the part's, before the deadline
+ *  (`Waits.parts`) or in the `finally` (`Waits.ends`), and each counted part serves one wait.
  *  `ms` is `waitsMs` of the row's waits, the limit of a child it ends itself, and `deadline` is
  *  when those waits end, from the row's start, on the machine's clock (`machine` of
  *  `e2e/harness-postgres-container-removal.ts`): a fixture call of Docker or Postgres waits until
@@ -477,6 +542,7 @@ export interface Row {
   child(what: string): void;
   reads(made: number, what: string): void;
   made(what: string): void;
+  part(part: Part): void;
 }
 
 /** The `Row` of a row whose limit is `rowMs(waits)`, which starts now. */
@@ -484,12 +550,19 @@ export function rowOf(waits: Waits): Row {
   let children = 0;
   let reads = 0;
   let makes = 0;
+  // Each part the limit counts, before the deadline or in the `finally`, until a wait uses it.
+  const counted = [
+    ...(waits.parts ?? []).flatMap((part) => ("atOnce" in part ? part.atOnce : [part])),
+    ...(waits.ends ?? []).filter((end): end is Part => typeof end !== "number"),
+  ];
+  const start = machine.now();
   const ms = waitsMs(waits);
-  const deadline = machine.now() + ms;
+  const deadline = start + ms;
   return {
     ms,
     deadline,
-    cleanup: deadline + (waits.ends ?? []).reduce((sum, ms) => sum + ms, 0) + rowRoomMs / 2,
+    // The deadline, the waits of the `finally` and half the room: the row's limit less half the room.
+    cleanup: start + rowMs(waits) - rowRoomMs / 2,
     child: (what) => {
       children += 1;
       if (children > waits.children) {
@@ -513,6 +586,21 @@ export function rowOf(waits: Waits): Row {
           `the row's limit counts ${waits.makes ?? 0} calls that make a container or an image, and it made ${makes}, the last ${what}: its limit is below what it waits for`
         );
       }
+    },
+    part: (part) => {
+      // The least counted bound that holds the part, so that a longer one stays for a longer wait.
+      const fits = counted
+        .filter((each) => each.what === part.what && each.ms >= part.ms)
+        .sort((a, b) => a.ms - b.ms)[0];
+      if (fits === undefined) {
+        const left = counted
+          .filter((each) => each.what === part.what)
+          .map((each) => each.ms / 1000);
+        throw new Error(
+          `the row's limit counts ${left.length === 0 ? "nothing" : `${left.join(" s, ")} s`} for ${part.what} it has not waited for yet, and it waits for ${part.what} for up to ${part.ms / 1000} s: its limit is below what it waits for`
+        );
+      }
+      counted.splice(counted.indexOf(fits), 1);
     },
   };
 }

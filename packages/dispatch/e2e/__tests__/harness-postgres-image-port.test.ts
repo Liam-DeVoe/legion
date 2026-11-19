@@ -32,13 +32,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { pgImageVariable, stackPostgres } from "../harness-postgres";
+import { ownStart, ownStop, startOwn, stopOwn } from "./harness-postgres-leftover-fixtures";
+import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
+
+/** What the row waits for (`Waits`): one start of the image provider's Postgres in the row's own
+ *  process, at the provider's own bounds (`ownStart`), and, in its `finally`, its stop
+ *  (`ownStop`). Its psql and its `docker port` read a started server and its container within the
+ *  room above them. */
+const oneStart: Waits = {
+  children: 0,
+  reads: 0,
+  bounds: [],
+  parts: [ownStart(pgImageVariable)],
+  ends: [ownStop(pgImageVariable)],
+};
 
 test.skipIf(
   skipsWithoutPostgres("e2e/__tests__/harness-postgres-image-port.test.ts", [pgImageVariable])
 )(
   "the image provider's Postgres serves though other programs hold ports, and its container publishes none",
   async () => {
+    const row = rowOf(oneStart);
     requirePostgres([pgImageVariable]);
     // Other programs on the machine: each listens on a port the kernel chose, for the whole row.
     const held = Array.from({ length: 64 }, () =>
@@ -57,7 +72,7 @@ test.skipIf(
         },
       });
       if (provider === undefined) throw new Error("DISPATCH_E2E_PG_IMAGE named no provider");
-      const database = await provider.start(0);
+      const database = await startOwn(row, provider, pgImageVariable, 0, "the row's stack's start");
       try {
         const answer = execFileSync("psql", [database.url, "-XAtc", "select 1"], {
           encoding: "utf8",
@@ -72,17 +87,16 @@ test.skipIf(
         });
         expect(published.trim()).toBe("");
       } finally {
-        await database.stop();
+        await stopOwn(row, database, pgImageVariable);
       }
     } finally {
       for (const listener of held) listener.stop(true);
       rmSync(dir, { recursive: true, force: true });
     }
   },
-  // The row drives the provider's container start, the provider's readiness wait, one psql, one
-  // `docker port` and the stop. That wait gives up at 120 s (`readyMs`, e2e/harness-postgres.ts),
-  // and the start on a runner pulls the image too, which the `visual` job's runs have not timed
-  // apart; 300 s holds both with room to spare. The row read 6.6 to 14.8 s with the image present,
+  // What the row waits for, summed by the fixtures' program (`rowMs`): the provider's start and
+  // stop, each at the provider's own bounds. The start on a runner pulls the image too, which the
+  // `visual` job's runs have not timed apart. The row read 6.6 to 14.8 s with the image present,
   // two runs at once on a shared Linux machine under a load of about 430, on 2026-11-18.
-  300_000
+  rowMs(oneStart)
 );
