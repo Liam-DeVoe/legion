@@ -41,6 +41,11 @@ import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import {
+  DocumentAdmissionProvider,
+  type ReportAdmission,
+  useReportAdmission,
+} from "./document-admission";
 import { DocumentStage, DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
@@ -191,6 +196,13 @@ function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode
   return null;
 }
 
+/** How the page's row editor reports what a document's room admitted the page to
+ *  (`document-admission.tsx`), handed out for a test to answer as the room. */
+function AdmissionProbe({ held }: { held: { report?: ReportAdmission } }): ReactNode {
+  held.report = useReportAdmission();
+  return null;
+}
+
 /** What stands in for the editor of the document a row is editing in: a plain element, or what
  *  takes how to hand the row its editor (`onEditing`) and draws one - the document's own
  *  (`LiveEditor`), or one that hands the row nothing. */
@@ -268,7 +280,8 @@ function EditedDocument({
  *  holds nothing, none where it is not given; `isClosed` is whether the issue is closed;
  *  `readsHeld` is whether the reads the tree is built from hold their answers, until `holdReads`
  *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
- *  does. */
+ *  does; `admit` answers for a document's room, as the page's row editor reports what that room
+ *  admitted the page to (`document-admission.tsx`). */
 function renderTree(
   root: TreeNode,
   {
@@ -298,6 +311,7 @@ function renderTree(
   const editedDocument: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
   const focused: { node?: FocusedNode } = {};
+  const admission: { report?: ReportAdmission } = {};
   const draw = () => (
     <MemoryRouter>
       <AddressProbe seen={seen} />
@@ -305,30 +319,33 @@ function renderTree(
         <KeymapProvider>
           <MarginProvider>
             <FocusedNodeProvider>
-              <DocumentStages>
-                <IssueScope />
-                <FocusedNodeProbe seen={focused} />
-                <IssueTree
-                  artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
-                  context={new Set()}
-                  emptyLine={emptyLine}
-                  filtering={false}
-                  focusReveal={reveal !== undefined}
-                  holdsEscape={false}
-                  isClosed={isClosed}
-                  onEditing={(artifactId, onEditor) => {
-                    edited.push(artifactId);
-                    editedDocument.set?.(artifactId, onEditor);
-                  }}
-                  readsHeld={reads.held}
-                  reveal={reveal}
-                  root={root}
-                  rootRow
-                />
-                {editor === undefined ? null : (
-                  <EditedDocument editor={editor} held={editedDocument} />
-                )}
-              </DocumentStages>
+              <DocumentAdmissionProvider>
+                <DocumentStages>
+                  <IssueScope />
+                  <FocusedNodeProbe seen={focused} />
+                  <AdmissionProbe held={admission} />
+                  <IssueTree
+                    artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
+                    context={new Set()}
+                    emptyLine={emptyLine}
+                    filtering={false}
+                    focusReveal={reveal !== undefined}
+                    holdsEscape={false}
+                    isClosed={isClosed}
+                    onEditing={(artifactId, onEditor) => {
+                      edited.push(artifactId);
+                      editedDocument.set?.(artifactId, onEditor);
+                    }}
+                    readsHeld={reads.held}
+                    reveal={reveal}
+                    root={root}
+                    rootRow
+                  />
+                  {editor === undefined ? null : (
+                    <EditedDocument editor={editor} held={editedDocument} />
+                  )}
+                </DocumentStages>
+              </DocumentAdmissionProvider>
             </FocusedNodeProvider>
           </MarginProvider>
         </KeymapProvider>
@@ -338,6 +355,8 @@ function renderTree(
   const view = render(draw());
   return {
     address: () => seen.path,
+    admit: (artifactId: string, readOnly: boolean) =>
+      act(async () => admission.report?.(artifactId, readOnly)),
     edited,
     focusedNode: () => focused.node,
     holdReads: () => {
@@ -1356,6 +1375,57 @@ test("a statement's and a check's rows carry data-editable, a comment's, a resul
     "verification#b-c1",
   ]);
   expect(await marked(true), "a row of the closed issue is marked as taking typing").toEqual([]);
+});
+
+// A document's room can admit the page read-only, as the server does a page whose schema it
+// cannot trust with writes, and then no block of that document takes typing: the page's row
+// editor reports what the room admitted (`document-admission.tsx`), and every row of that
+// document drops `data-editable`, not only the row being edited in, while another document's rows
+// keep it. Before any room of a document has answered, Enter's rule alone marks its rows, and a
+// later admission to write puts the mark back.
+test("the rows of a document its room admitted read-only carry no data-editable, another document's still do, and an admission to write puts it back", async () => {
+  setViewport(1440);
+  const artifacts: Artifact[] = [
+    specDocument,
+    {
+      ...decisionsDocument,
+      id: "artifact-verification",
+      name: "Verification",
+      slug: "verification",
+    },
+  ];
+  const root = node({
+    children: [
+      node({ id: "spec#b-r1", statement: true, text: "A statement.", type: "requirement" }),
+      node({ id: "spec#b-r2", statement: true, text: "Another statement.", type: "requirement" }),
+      node({ id: "verification#b-c1", state: "no-result", text: "A check.", type: "check" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const every = ["spec#b-r1", "spec#b-r2", "verification#b-c1"];
+  const view = renderTree(root, { artifacts });
+  const marked = () =>
+    [...view.container.querySelectorAll<HTMLElement>("[data-node-row][data-editable]")].map(
+      (row) => row.dataset.nodeId
+    );
+  try {
+    expect(marked(), "before any room has answered, a block's row is not marked").toEqual(every);
+
+    await view.admit(specDocument.id, true);
+    expect(
+      marked(),
+      "a row of the document its room admitted read-only is marked as taking typing, or another document's row is not"
+    ).toEqual(["verification#b-c1"]);
+
+    await view.admit(specDocument.id, false);
+    expect(
+      marked(),
+      "a row of the document its room admitted to write again is not marked as taking typing"
+    ).toEqual(every);
+  } finally {
+    view.unmount();
+  }
 });
 
 test("Escape leaves the caret for the placement it was taken from, not the node's first row", async () => {
