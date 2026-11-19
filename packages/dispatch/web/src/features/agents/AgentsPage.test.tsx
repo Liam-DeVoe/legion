@@ -1925,7 +1925,7 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
       within(planner).queryByRole("button", { name: "Clear conversation" })
     ).not.toBeInTheDocument();
     const cleared = within(planner).getByText(/^Cleared/);
-    expect(cleared.querySelector("time")?.getAttribute("datetime")).toBe("2026-09-14T02:00:00Z");
+    expect(cleared.querySelector("time")).toHaveAttribute("datetime", "2026-09-14T02:00:00Z");
     const showAnyway = within(planner).getByRole("button", { name: "Show anyway" });
 
     // Looking back does not touch the cutoff; the whole history is there, folded as usual.
@@ -2800,7 +2800,7 @@ test("a selected agent that went away does not change what Restore draft re-send
     // The deselect button keeps the name; the agent's live link and its state sit beside it, the
     // link outside the button.
     const chipAgent = chip.closest("[data-agent-name]");
-    expect(chipAgent?.getAttribute("data-agent-state")).toBe("not-running");
+    expect(chipAgent).toHaveAttribute("data-agent-state", "not-running");
     const chipLive = within(chipAgent as HTMLElement).getByRole("link", {
       name: "Open live conversation with session:reviewer…",
     });
@@ -3892,7 +3892,7 @@ test("a refilling registry keeps every row, says it is refilling, and ends no se
     expect((await screen.findByTestId("agent-list-refilling")).textContent).toBe(
       AGENT_LIST_REFILLING
     );
-    expect(screen.getByTestId("agent-list-refilling").getAttribute("role")).toBe("status");
+    expect(screen.getByTestId("agent-list-refilling")).toHaveAttribute("role", "status");
     expect(screen.queryByRole("alert")).toBeNull();
     expect(card(region, "Planner")).toBe(planner);
     expect(screen.queryByRole("region", { name: "Replied, no longer connected" })).toBeNull();
@@ -4792,12 +4792,12 @@ test("j from the bottom of the drawn range reaches the next session and focuses 
     expect(region.querySelector(`[data-agent-row="${next}"]`)).toBeNull();
 
     act(() => bottom?.focus());
-    expect(document.activeElement).toBe(bottom ?? null);
+    expect(bottom).toHaveFocus();
     await user.keyboard("j");
 
     const landed = region.querySelector(`[data-agent-row="${next}"]`);
     expect(landed).not.toBeNull();
-    expect(document.activeElement).toBe(landed);
+    expect(landed).toHaveFocus();
   } finally {
     layout.restore();
     page.view.unmount();

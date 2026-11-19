@@ -389,7 +389,8 @@ test("IssuePage shows a session creator's live title and personal-token owner", 
       "href",
       "/agents/creator-session/live"
     );
-    expect(creator.querySelector("[data-agent-name]")?.getAttribute("data-agent-state")).toBe(
+    expect(creator.querySelector("[data-agent-name]")).toHaveAttribute(
+      "data-agent-state",
       "running"
     );
   } finally {
@@ -584,7 +585,7 @@ test("IssuePage shows subscribed agents with their title and their running state
     expect(within(subscribed).getAllByRole("listitem")).toHaveLength(2);
     const planner = within(subscribed).getByRole("link", { name: "Planner (live)" });
     expect(planner).toHaveAttribute("href", "/agents/0123456789abcdef/live");
-    expect(planner.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
+    expect(planner.closest("[title]")).toHaveAttribute("title", "0123456789abcdef");
     expect(within(subscribed).getByRole("link", { name: "Historical (offline)" })).toBeDefined();
     const states = () =>
       [...subscribed.querySelectorAll("[data-agent-name]")].map((agent) => [
@@ -639,7 +640,7 @@ test("IssuePage shortens a subscriber id when its title is blank", async () => {
   try {
     const subscribed = await openSubscribedAgents(1);
     const label = within(subscribed).getByText("session:01234567…");
-    expect(label.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
+    expect(label.closest("[title]")).toHaveAttribute("title", "0123456789abcdef");
   } finally {
     view.unmount();
     restore();
@@ -1812,7 +1813,7 @@ test("IssuePage hides the Artifacts panel after switching to Spec", async () => 
     await screen.findByRole("tab", { name: "Spec", selected: true });
     const artifactsPanel = view.container.querySelector<HTMLDivElement>("#issue-artifacts-panel");
     expect(artifactsPanel?.hidden).toBe(true);
-    expect(artifactsPanel?.getAttribute("aria-hidden")).toBe("true");
+    expect(artifactsPanel).toHaveAttribute("aria-hidden", "true");
   } finally {
     view.unmount();
     restore();
@@ -2059,7 +2060,7 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     const pin = screen.getByRole("button", { name: "Pin issue" });
     expect(pin).not.toBeNull();
     expect(pin).toHaveAttribute("aria-pressed", "false");
-    expect(pin.querySelector("path")?.getAttribute("fill")).toBe("none");
+    expect(pin.querySelector("path")).toHaveAttribute("fill", "none");
 
     const stateActions = screen.getByTestId("issue-state-actions");
     expect(within(stateActions).getByRole("combobox", { name: "Status" })).not.toBeNull();
@@ -2181,7 +2182,7 @@ test("IssuePage fills and marks the issue pin when it is pinned", async () => {
     await screen.findByRole("heading", { level: 1, name: issue.title });
     const pin = screen.getByRole("button", { name: "Unpin issue" });
     expect(pin).toHaveAttribute("aria-pressed", "true");
-    expect(pin.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
+    expect(pin.querySelector("path")).toHaveAttribute("fill", "currentColor");
   } finally {
     view.unmount();
     restore();

@@ -527,7 +527,7 @@ test("componentsControlName names the components picker as it is drawn", async (
     await save(mains);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(mains.textContent).toBe("Saving…"));
-    expect(mains.getAttribute("aria-label")).toBe("Edit components of CORE-1");
+    expect(mains).toHaveAttribute("aria-label", "Edit components of CORE-1");
   } finally {
     for (const answer of answers) answer.resolve({} as Issue);
     await act(settle);

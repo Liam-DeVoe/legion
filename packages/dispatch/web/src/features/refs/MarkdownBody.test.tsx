@@ -94,16 +94,17 @@ describe("Dispatch pictures", () => {
         expect.arrayContaining(["max-w-full", "w-auto", "h-auto", "object-contain"])
       );
       expect(classes.some((name) => name.startsWith("max-h-"))).toBe(false);
-      expect(shot.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png?v=1");
+      expect(shot.closest("a")).toHaveAttribute("href", "/issues/CORE-1/artifacts/shot-png?v=1");
       // A picture with no caption is named by its slug.
       const plan = within(view.container).getByRole("img", { name: "plan-png" });
       expect(plan).toHaveAttribute("src", "/api/v1/projects/CORE/artifacts/plan-png/versions/3");
-      expect(plan.closest("a")?.getAttribute("href")).toBe(
+      expect(plan.closest("a")).toHaveAttribute(
+        "href",
         "/projects/CORE/documents/plan-png?version=3"
       );
       const face = within(view.container).getByRole("img", { name: "face.png" });
       expect(face).toHaveAttribute("src", "/api/v1/agents/ses-1/artifacts/face-png/versions/2");
-      expect(face.closest("a")?.getAttribute("href")).toBe("/agents/ses-1/artifacts/face-png?v=2");
+      expect(face.closest("a")).toHaveAttribute("href", "/agents/ses-1/artifacts/face-png?v=2");
     } finally {
       view.unmount();
     }
@@ -145,7 +146,8 @@ describe("Dispatch pictures", () => {
     try {
       const link = await within(view.container).findByRole("link", { name: "shot.png" });
       const thumbnail = link.querySelector("img");
-      expect(thumbnail?.getAttribute("src")).toBe(
+      expect(thumbnail).toHaveAttribute(
+        "src",
         "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
       );
       expect(thumbnail?.className.split(" ")).toEqual(
@@ -170,7 +172,7 @@ describe("Dispatch pictures", () => {
       expect(shot).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/2");
       expect(shot.className.split(" ")).toContain("max-w-full");
       expect(shot.className.split(" ")).not.toContain("h-10");
-      expect(shot.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png");
+      expect(shot.closest("a")).toHaveAttribute("href", "/issues/CORE-1/artifacts/shot-png");
     } finally {
       getIssueSummary.mockRestore();
       view.unmount();
@@ -250,7 +252,8 @@ describe("Dispatch pictures", () => {
         '[data-testid="picture-lightbox"]'
       );
       expect(lightbox?.open).toBe(true);
-      expect(lightbox?.querySelector("img")?.getAttribute("src")).toBe(
+      expect(lightbox?.querySelector("img")).toHaveAttribute(
+        "src",
         "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
       );
       lightbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -280,7 +283,8 @@ describe("Dispatch pictures", () => {
       const link = await within(view.container).findByRole("link", { name: "shot.png" });
       const thumbnail = await waitFor(() => {
         const image = link.querySelector("img");
-        expect(image?.getAttribute("src")).toBe(
+        expect(image).toHaveAttribute(
+          "src",
           "/api/v1/issues/CORE-1/artifacts/shot-png/versions/99"
         );
         return image as HTMLImageElement;
@@ -360,7 +364,7 @@ describe("Dispatch pictures", () => {
       await act(() => worker.answer(0));
       const shot = await within(view.container).findByRole("img", { name: "shot" });
       expect(shot).toHaveAttribute("src", `/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
-      expect(shot.closest("a")?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}?v=1`);
+      expect(shot.closest("a")).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}?v=1`);
       const link = await within(view.container).findByRole("link", { name: "design.md" });
       expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
       expect(link).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/artifact/${slug}`);
@@ -455,8 +459,8 @@ describe("Dispatch pictures", () => {
       await act(() => worker.answer(0));
       const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
       expect(designs).toHaveLength(1);
-      expect(designs[0]?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}`);
-      expect(designs[0]?.getAttribute("data-dispatch-ref")).toBe(long);
+      expect(designs[0]).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
+      expect(designs[0]).toHaveAttribute("data-dispatch-ref", long);
       const plans = await within(view.container).findAllByRole("link", { name: "plan.md" });
       expect(plans).toHaveLength(2);
       for (const link of plans) {
@@ -1476,10 +1480,11 @@ describe("A long body parsed in the worker", () => {
       await act(() => worker.answer(0));
       await waitFor(() => expect(topItems(view.container)).toHaveLength(longItems));
       const shot = view.container.querySelector("[data-dispatch-picture]");
-      expect(shot?.getAttribute("data-dispatch-picture")).toBe(
+      expect(shot).toHaveAttribute(
+        "data-dispatch-picture",
         "dispatch://CORE-1/artifact/shot-png@v1"
       );
-      expect(shot?.getAttribute("data-picture-caption")).toBe("shot.png");
+      expect(shot).toHaveAttribute("data-picture-caption", "shot.png");
       await waitFor(() => expect(pendingMark(view.container)).toBeNull());
       expect(fallbackMark(view.container)).toBeNull();
     } finally {

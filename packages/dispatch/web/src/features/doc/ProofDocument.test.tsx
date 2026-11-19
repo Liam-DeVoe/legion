@@ -67,9 +67,9 @@ test("ProofDocument creates the editor on the synced document as the signed-in u
       ydoc: connections[0]?.doc,
     });
     expect(editors[0]?.root.textContent).toContain("The live document");
-    expect(editors[0]?.root.getAttribute("aria-label")).toBe("Document editor");
-    expect(editors[0]?.root.getAttribute("aria-multiline")).toBe("true");
-    expect(editors[0]?.root.getAttribute("role")).toBe("textbox");
+    expect(editors[0]?.root).toHaveAttribute("aria-label", "Document editor");
+    expect(editors[0]?.root).toHaveAttribute("aria-multiline", "true");
+    expect(editors[0]?.root).toHaveAttribute("role", "textbox");
   } finally {
     view.unmount();
   }

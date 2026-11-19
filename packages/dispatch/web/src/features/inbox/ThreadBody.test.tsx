@@ -190,7 +190,7 @@ test("a reply the session took as a user turn says so and links the live view", 
   const note = await screen.findByTestId("agent-reply-accepted");
   expect(note.textContent).toBe("Taken as a turn of the live conversation.");
   const live = screen.getByRole("link", { name: "Live view" });
-  expect(live.getAttribute("href")).toBe("/agents/planner/live");
+  expect(live).toHaveAttribute("href", "/agents/planner/live");
 });
 
 test("a session the live list no longer holds says so and offers no composer", async () => {

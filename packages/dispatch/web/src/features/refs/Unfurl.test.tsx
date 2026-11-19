@@ -173,7 +173,8 @@ test("Unfurl unfurls a dispatch project document reference with its name and doc
     expect(getProjectArtifact).not.toHaveBeenCalled();
     expect(getIssue).not.toHaveBeenCalled();
     expect(getIssueSummary).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: /Design notes/ }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: /Design notes/ })).toHaveAttribute(
+      "href",
       "/projects/CORE/documents/design-notes?version=3"
     );
     view.unmount();
@@ -350,7 +351,7 @@ test("Unfurl cards an issue key written bare, once its issue exists", async () =
 
   try {
     const card = await within(view.container).findByRole("link", { name: /Design decision/ });
-    expect(card.getAttribute("href")).toBe("/issues/CORE-1");
+    expect(card).toHaveAttribute("href", "/issues/CORE-1");
     expect(getIssueSummary).toHaveBeenCalledWith("CORE-1");
   } finally {
     getIssueSummary.mockRestore();
@@ -373,10 +374,8 @@ test("Unfurl cards a reference that ends in the punctuation the grammar trims", 
 
   try {
     expect(
-      (
-        await within(address.container).findByRole("link", { name: /Design decision/ })
-      ).getAttribute("href")
-    ).toBe("/issues/CORE-1");
+      await within(address.container).findByRole("link", { name: /Design decision/ })
+    ).toHaveAttribute("href", "/issues/CORE-1");
     await within(key.container).findByRole("link", { name: /Design decision/ });
     await within(question.container).findByRole("link", {
       name: "Which region do we deploy to?",
@@ -399,7 +398,7 @@ test("Unfurl cards a dashboard address of this dashboard", async () => {
 
   try {
     const card = await within(view.container).findByRole("link", { name: /Design decision/ });
-    expect(card.getAttribute("href")).toBe("/issues/CORE-1");
+    expect(card).toHaveAttribute("href", "/issues/CORE-1");
   } finally {
     getIssueSummary.mockRestore();
     view.unmount();
@@ -418,7 +417,7 @@ test("Unfurl cards a #id against the document the body's text belongs to", async
     const card = await within(view.container).findByRole("link", {
       name: "Which region do we deploy to?",
     });
-    expect(card.getAttribute("href")).toBe("/issues/CORE-1/asks/ask-1");
+    expect(card).toHaveAttribute("href", "/issues/CORE-1/asks/ask-1");
     expect(getReferenceQuestions).toHaveBeenCalledWith("message", "message-1");
   } finally {
     getAsk.mockRestore();
@@ -566,7 +565,8 @@ test("Unfurl links a GitHub pull request's card to the URL the body wrote", asyn
     await waitFor(() => {
       expect(githubRest).toHaveBeenCalledWith("/repos/owner/repository/issues/2");
     });
-    expect(within(view.container).getByRole("link").getAttribute("href")).toBe(
+    expect(within(view.container).getByRole("link")).toHaveAttribute(
+      "href",
       "https://github.com/owner/repository/pull/2"
     );
   } finally {

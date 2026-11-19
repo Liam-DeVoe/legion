@@ -4,8 +4,13 @@
 # a reader found of satisfying the check without writing a reason all fail — an arithmetic `*` line
 # above the call, a `//` inside a string before the call on its own line, that same URL on the line
 # above, and the direct `fireEvent(node, event)` form the dotted pattern never saw; a call named
-# inside a comment is prose and is not counted; and the real repository passes over a count of calls
-# it actually found, so a run that scanned nothing fails rather than reporting a clean scan.
+# inside a comment is prose and is not counted. The jest-dom rule: a hand-written focus read, its
+# `.not` form and a hand-written attribute read with no comment above each fail, the attribute read
+# also when Biome has wrapped it onto lines of its own, where it is named at its `expect(`; a kept
+# site with its reason above passes; jest-dom's own matchers, a read nested inside `expect`'s
+# argument and a read named in a comment are not counted; and one run reports both rules. The real
+# repository passes over a count of calls and of files it actually found, so a run that scanned
+# nothing fails rather than reporting a clean scan.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -162,9 +167,106 @@ EOF
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+echo "case: a hand-written focus read with no comment above it is refused, with an annotation"
+root=$(fixture focus)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(document.activeElement).toBe(row);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and line" "$(contains "$out" 'rows.test.tsx:2')"
+check "annotates the line" "$(contains "$out" '::error file=packages/dispatch/web/src/rows.test.tsx,line=2::')"
+check "counts it against the total" "$(contains "$out" '1 of 1 hand-written focus and attribute assertions')"
+check "names the matcher to use" "$(contains "$out" 'expect(el).toHaveFocus()')"
+
+echo "case: its .not form is refused too"
+root=$(fixture focus_not)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(document.activeElement).not.toBe(row);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the read" "$(contains "$out" 'rows.test.tsx:2')"
+
+echo "case: a hand-written attribute read with no comment above it is refused"
+root=$(fixture attribute)
+rows "$root" <<'EOF'
+test("a row", () => {
+  const row = screen.getByRole("row");
+  expect(row.getAttribute("aria-current")).toBe("true");
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the read" "$(contains "$out" 'rows.test.tsx:3')"
+check "names the matcher to use" "$(contains "$out" 'expect(el).toHaveAttribute(name, value)')"
+
+# Biome's formatter wraps a long assertion so: a line-by-line pattern would see neither the
+# `expect(` line nor the read below it as the shape.
+echo "case: an attribute read Biome wrapped onto lines of its own is refused at its expect"
+root=$(fixture wrapped)
+rows "$root" <<'EOF'
+test("a row", async () => {
+  expect(
+    (await within(row).findByText("Implementer")).closest("[title]")?.getAttribute("title")
+  ).toBe(claimant);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the expect's line" "$(contains "$out" 'rows.test.tsx:2')"
+check "counts it once" "$(contains "$out" '1 of 1 hand-written focus and attribute assertions')"
+
+echo "case: a kept site with its reason on the line above passes"
+root=$(fixture kept)
+rows "$root" <<'EOF'
+test("a row", () => {
+  // `described` is a `string | null`, and `toHaveAttribute` given null passes for no element.
+  expect(box.getAttribute("aria-describedby")).toBe(described);
+});
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "reports the clean scan" "$(contains "$out" 'every one of the 1 hand-written focus and attribute assertions')"
+
+echo "case: jest-dom's matchers, a read nested in the argument and a read in a comment are not counted"
+root=$(fixture matchers)
+rows "$root" <<'EOF'
+test("a row", () => {
+  // Not `expect(document.activeElement).toBe(row)` by hand: the matcher prints the row it read.
+  expect(row).toHaveFocus();
+  expect(row).toHaveAttribute("aria-current", "true");
+  expect(row).not.toHaveAttribute("aria-busy");
+  expect(rows.map((item) => item.getAttribute("data-turn"))).toEqual(["a", "b"]);
+  expect(rows.map((item) => item.getAttribute("data-turn")).join()).toBe("a,b");
+});
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts no read at all" "$(contains "$out" 'every one of the 0 hand-written focus and attribute assertions')"
+
+echo "case: one run reports a bare call and a bare read, and fails"
+root=$(fixture both)
+rows "$root" <<'EOF'
+test("a row", () => {
+  fireEvent.click(button);
+  expect(document.activeElement).toBe(button);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the call" "$(contains "$out" '1 of 1 fireEvent calls')"
+check "names the read" "$(contains "$out" '1 of 1 hand-written focus and attribute assertions')"
+check "annotates the call's line" "$(contains "$out" 'rows.test.tsx,line=2::')"
+check "annotates the read's line" "$(contains "$out" 'rows.test.tsx,line=3::')"
+
 # The count matters as much as the exit status here: a script that resolved the wrong root would
 # scan nothing, find nothing bare, and print the same cheerful line.
-echo "case: the real repository passes, over calls it actually found"
+echo "case: the real repository passes, over calls and files it actually found"
 set +e
 out=$("$check_script" 2>&1)
 status=$?
@@ -172,5 +274,6 @@ set -e
 check "exits 0" "$(is "$status" 0)"
 check "reports the clean scan" "$(contains "$out" 'carries a reason$')"
 check "scanned a non-zero count of calls" "$(contains "$out" 'every one of the [1-9][0-9]* fireEvent calls')"
+check "scanned a non-zero count of files" "$(contains "$out" 'in the [1-9][0-9]* files under')"
 
 summary "check-fireevent-reasons.sh"

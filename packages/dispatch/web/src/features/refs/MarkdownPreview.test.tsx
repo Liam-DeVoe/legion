@@ -192,9 +192,7 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
   try {
     await waitFor(() => expect(preview().querySelector("img")).not.toBeNull());
     const thumbnail = preview().querySelector("img");
-    expect(thumbnail?.getAttribute("src")).toBe(
-      "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
-    );
+    expect(thumbnail).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1");
     expect(thumbnail?.className.split(" ")).toEqual(
       expect.arrayContaining(["h-10", "w-10", "object-cover"])
     );
@@ -206,7 +204,8 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
     // A host whose own control is a toggle keeps the picture's link to its page.
     rerender({ lines: 2, links: "live", markdown });
     await waitFor(() => expect(preview().querySelector("a img")).not.toBeNull());
-    expect(preview().querySelector("a")?.getAttribute("href")).toBe(
+    expect(preview().querySelector("a")).toHaveAttribute(
+      "href",
       "/issues/CORE-1/artifacts/shot-png?v=1"
     );
   } finally {

@@ -158,9 +158,10 @@ test("a claimed issue names its holder and releases the claim from the header", 
       "/agents/session-one/live"
     );
     await waitFor(() =>
-      expect(
-        chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
-      ).toBe("running")
+      expect(chip.querySelector('[data-agent-name="session-one"]')).toHaveAttribute(
+        "data-agent-state",
+        "running"
+      )
     );
     expect(screen.queryByText("not running")).not.toBeInTheDocument();
     await view.user.click(screen.getByRole("button", { name: "Release the claim on CORE-1" }));
@@ -185,9 +186,10 @@ test("a holder the registry no longer lists reads as not running", async () => {
     expect(await screen.findByText("not running")).toBeDefined();
     expect(screen.getByTitle(/no longer running, so anyone may claim it/)).toBeDefined();
     const chip = screen.getByTestId("issue-claim");
-    expect(
-      chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
-    ).toBe("not-running");
+    expect(chip.querySelector('[data-agent-name="session-one"]')).toHaveAttribute(
+      "data-agent-state",
+      "not-running"
+    );
     expect(within(chip).getByRole("img", { name: "Not running" })).toBeDefined();
   } finally {
     view.unmount();
@@ -283,11 +285,8 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
     // The state and the moment it started, which is what tells a reader whether to wait.
     expect(stalled).toHaveTextContent("unresponsive since");
     expect(
-      within(stalled)
-        .getByTestId("issue-claim-unresponsive-since")
-        .querySelector("time")
-        ?.getAttribute("datetime")
-    ).toBe(new Date(lastSeen).toISOString());
+      within(stalled).getByTestId("issue-claim-unresponsive-since").querySelector("time")
+    ).toHaveAttribute("datetime", new Date(lastSeen).toISOString());
     const chip = screen.getByTestId("issue-claim");
     expect(chip.getAttribute("title")).toContain("missed its heartbeats without ending");
     expect(chip.getAttribute("title")).toContain(
@@ -300,14 +299,12 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
       `keeps this issue until ${new Date(takeableAt).toLocaleString()}, when another agent may take it`
     );
     expect(
-      within(stalled)
-        .getByTestId("issue-claim-takeable")
-        .querySelector("time")
-        ?.getAttribute("datetime")
-    ).toBe(new Date(takeableAt).toISOString());
-    expect(
-      chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
-    ).toBe("unresponsive");
+      within(stalled).getByTestId("issue-claim-takeable").querySelector("time")
+    ).toHaveAttribute("datetime", new Date(takeableAt).toISOString());
+    expect(chip.querySelector('[data-agent-name="session-one"]')).toHaveAttribute(
+      "data-agent-state",
+      "unresponsive"
+    );
     expect(within(chip).getByRole("img", { name: "Unresponsive" })).toBeDefined();
   } finally {
     view.unmount();
@@ -335,9 +332,10 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
     const chip = screen.getByTestId("issue-claim");
     expect(chip.getAttribute("title")).toContain("another agent may take it now");
     expect(chip.getAttribute("title")).toContain("It has not ended, and may yet answer.");
-    expect(
-      chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
-    ).toBe("unresponsive");
+    expect(chip.querySelector('[data-agent-name="session-one"]')).toHaveAttribute(
+      "data-agent-state",
+      "unresponsive"
+    );
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -364,17 +362,11 @@ test("the issue read's own holder_state outranks an agent list that does not nam
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
     // Both moments on the chip are the read's own, not the registry's.
     expect(
-      within(stalled)
-        .getByTestId("issue-claim-unresponsive-since")
-        .querySelector("time")
-        ?.getAttribute("datetime")
-    ).toBe(lastSeen);
+      within(stalled).getByTestId("issue-claim-unresponsive-since").querySelector("time")
+    ).toHaveAttribute("datetime", lastSeen);
     expect(
-      within(stalled)
-        .getByTestId("issue-claim-takeable")
-        .querySelector("time")
-        ?.getAttribute("datetime")
-    ).toBe(takeableAt);
+      within(stalled).getByTestId("issue-claim-takeable").querySelector("time")
+    ).toHaveAttribute("datetime", takeableAt);
     expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(
       `keeps this issue until ${new Date(takeableAt).toLocaleString()}`
     );

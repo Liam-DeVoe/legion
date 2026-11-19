@@ -2730,7 +2730,7 @@ test("inside NoTooltips the repository's clear control is described by what its 
         ).toBe(clear);
         expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
       } else {
-        expect(clear.getAttribute("title")).toBe(clearExplains);
+        expect(clear).toHaveAttribute("title", clearExplains);
         expect(description).toBeNull();
       }
 
@@ -2746,7 +2746,7 @@ test("inside NoTooltips the repository's clear control is described by what its 
         ).toEqual([]);
         expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
       } else {
-        expect(refusal.getAttribute("class")).toBe(theme.dangerText);
+        expect(refusal).toHaveAttribute("class", theme.dangerText);
         expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(false);
       }
     } finally {
