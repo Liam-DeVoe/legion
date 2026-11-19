@@ -15,6 +15,7 @@ import {
   recordCommits,
 } from "../../__tests__/commits";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { jump, onFakeClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
@@ -4567,11 +4568,14 @@ test("a question's document lost and read again leaves the column where the read
     const editor = fake.editors[0];
     if (editor === undefined) throw new Error("the column mounted no editor");
     const scroller = screen.getByTestId("inbox-pane-scroller");
-    drawAskBlock(editor, "block-a", ask.question);
-    await waitFor(() => expect(scroller.scrollTop).toBe(0));
-    // The drawing has been quiet for longer than the hold waits, so the first placement is over.
-    await act(async () => {
-      await Bun.sleep(QUIET_MS * 3);
+    // The hold's clocks start at the first drawing pass, so the fake clock is on from that pass
+    // to the end of its quiet.
+    await onFakeClock(async () => {
+      drawAskBlock(editor, "block-a", ask.question);
+      await waitFor(() => expect(scroller.scrollTop).toBe(0));
+      // The drawing has been quiet for longer than the hold waits, so the first placement is
+      // over.
+      await jump(QUIET_MS);
     });
     scroller.scrollTop = 240;
 
@@ -4629,11 +4633,11 @@ test("opening another question arms a placement of its own", async () => {
     const editor = fake.editors[0];
     if (editor === undefined) throw new Error("the column mounted no editor");
     const scroller = screen.getByTestId("inbox-pane-scroller");
-    drawAskBlock(editor, "block-a", first.question);
-    drawAskBlock(editor, "block-b", second.question);
-    await waitFor(() => expect(scroller.scrollTop).toBe(0));
-    await act(async () => {
-      await Bun.sleep(QUIET_MS * 3);
+    await onFakeClock(async () => {
+      drawAskBlock(editor, "block-a", first.question);
+      drawAskBlock(editor, "block-b", second.question);
+      await waitFor(() => expect(scroller.scrollTop).toBe(0));
+      await jump(QUIET_MS);
     });
     scroller.scrollTop = 240;
 

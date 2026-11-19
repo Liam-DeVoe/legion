@@ -40,7 +40,7 @@ import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
-import { writesOf } from "../writes/write-store";
+import { isLive, writesOf } from "../writes/write-store";
 import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
@@ -104,12 +104,18 @@ function renderBothCallers() {
   return { client, hook, patchIssue, statusWrites, submitTitle, titleSave };
 }
 
+/** Waits until no write of `client`'s store may still reach Dispatch: every send started so far,
+ *  a second send of a write among them, has been answered. */
+async function writesSettled(client: QueryClient): Promise<void> {
+  await waitFor(() => expect(writesOf(client).rows().filter(isLive)).toEqual([]));
+}
+
 // The source page held a status picked behind another write in one component's state, so Details
 // went on showing the old status while the header showed the new one. The pick is a write of its
 // own from the moment it is made, so every caller reads it as pending; it waits in the issue's
 // line behind the title write, and goes once, after it.
 test("a status picked behind a title write is the status both callers read, and it is sent once", async () => {
-  const { hook, patchIssue, statusWrites, submitTitle, titleSave } = renderBothCallers();
+  const { client, hook, patchIssue, statusWrites, submitTitle, titleSave } = renderBothCallers();
 
   try {
     await submitTitle();
@@ -130,8 +136,8 @@ test("a status picked behind a title write is the status both callers read, and 
       titleSave.resolve(narrowIssue({ ...issue, title: "New title" }));
     });
     await waitFor(() => expect(statusWrites()).toBe(1));
-    // A second send would follow the first as soon as its promises ran: let them all run.
-    for (let turn = 0; turn < 3; turn += 1) await act(settle);
+    // A second send would follow the first: wait until no write is left to go.
+    await writesSettled(client);
     expect(statusWrites()).toBe(1);
   } finally {
     hook.unmount();
@@ -144,7 +150,7 @@ test("a status picked behind a title write is the status both callers read, and 
 // one `titleRefusal` reads, and its landing drains no draft, so the refused title is not sent
 // again. The refusal no longer holds the line, so the pick goes then.
 test("a status picked behind a refused title write leaves the refusal shown and goes once the line is free", async () => {
-  const { hook, patchIssue, statusWrites, submitTitle, titleSave } = renderBothCallers();
+  const { client, hook, patchIssue, statusWrites, submitTitle, titleSave } = renderBothCallers();
 
   try {
     await submitTitle();
@@ -157,7 +163,7 @@ test("a status picked behind a refused title write leaves the refusal shown and 
     });
     await waitFor(() => expect(statusWrites()).toBe(1));
     await waitFor(() => expect(hook.result.current.first.statusSaving).toBe(false));
-    for (let turn = 0; turn < 3; turn += 1) await act(settle);
+    await writesSettled(client);
     expect(hook.result.current.first.titleRefusal).toBe("Title too long");
     expect(patchIssue.mock.calls.filter(([, input]) => input.title !== undefined)).toHaveLength(1);
     expect(statusWrites()).toBe(1);
@@ -188,7 +194,7 @@ test("a status pick is kept in the write store when the page that made it goes",
       titleSave.resolve(narrowIssue({ ...issue, title: "New title" }));
     });
     await waitFor(() => expect(statusWrites()).toBe(1));
-    for (let turn = 0; turn < 3; turn += 1) await act(settle);
+    await writesSettled(client);
     expect(statusWrites()).toBe(1);
     expect(writesOf(client).rows()).toEqual([]);
   } finally {

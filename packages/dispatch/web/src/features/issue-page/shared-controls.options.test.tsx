@@ -97,6 +97,7 @@ import {
   draw,
   FOCUS_VARIANTS,
   GONE_SESSION,
+  heldRead,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
@@ -3579,7 +3580,10 @@ test("inside NoTooltips the repository row with no repository reads None and ope
         expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/api" }, keyedAttempt)
       );
       expect(document.activeElement).toBe(box());
-      written.resolve({} as Issue);
+      // The write lands a few microtasks after its answer is given, and the row's render with it.
+      await act(async () => {
+        written.resolve({} as Issue);
+      });
       await settleReads();
       expect(scope.queryByRole("combobox")).toBeNull();
       expect(document.activeElement).toBe(none());
@@ -3725,7 +3729,9 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       );
       expect(document.activeElement).toBe(box());
       stored.repo = "acme/api";
-      written.resolve({} as Issue);
+      await act(async () => {
+        written.resolve({} as Issue);
+      });
       await settleReads();
       expect(scope.queryByRole("combobox")).toBeNull();
       const landed = scope.getByRole("button", { name: "acme/api, Repository of CORE-1" });
@@ -4423,7 +4429,7 @@ async function landHeld<Answer>(
 ): Promise<(answer: Answer) => void> {
   const made = read.mock.calls.length;
   const reread = Promise.withResolvers<Answer>();
-  read.mockImplementation(() => reread.promise);
+  read.mockImplementation(() => heldRead(reread.promise));
   land();
   await waitFor(() => expect(read).toHaveBeenCalledTimes(made + 1));
   await settleReads();

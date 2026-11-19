@@ -75,6 +75,7 @@ import {
   draw,
   FOCUS_VARIANTS,
   GONE_SESSION,
+  heldRead,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
@@ -1139,7 +1140,7 @@ const githubUnread: Mount = {
   node: () => {
     stubs.githubRest.mockImplementation((path) => {
       if (path === "repos/owner/repository/issues/8") {
-        return new Promise<Response>(() => undefined);
+        return heldRead(new Promise<Response>(() => undefined));
       }
       if (path === "repos/acme/private/pulls/9") {
         return Promise.reject(
