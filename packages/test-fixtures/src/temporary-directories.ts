@@ -1,7 +1,15 @@
 import { afterAll, afterEach, beforeAll } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { type Dirent, mkdirSync, mkdtempSync, realpathSync, type Stats } from "node:fs";
-import { chmod, lstat, readdir, rm } from "node:fs/promises";
+import {
+  type Dirent,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  type Stats,
+} from "node:fs";
+import { chmod, lstat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -199,13 +207,15 @@ export async function removeDirectories(
 
 /**
  * Removes one tree, making every directory in it writable, searchable and readable first.
- * `rm` alone fails on a tree a test made read-only on purpose, and a test can make one without
- * meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that runs `go`
- * under its temporary directory leaves a tree nothing can unlink.
+ * `rmSync` is deliberate: Bun's asynchronous `rm` resolved at a heavy XFS stall before the
+ * fixture root was gone, then the test process ended with its omp root still on disk. This hook
+ * has no Bun deadline, so the synchronous removal waits on the disk; the stat is the postcondition
+ * that its promise resolves only when the root is gone.
  */
 async function removeTree(directory: string): Promise<void> {
   await makeWritable(directory);
-  await rm(directory, { recursive: true, force: true });
+  rmSync(directory, { recursive: true, force: true });
+  if (existsSync(directory)) throw new Error(`the removal did not remove ${directory}`);
 }
 
 /** `chmod -R u+rwx` on a tree's directories, following no symlink. A path already gone is
