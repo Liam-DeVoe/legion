@@ -1734,3 +1734,40 @@ describe("dispatchToolSpecs", () => {
     expect(dispatchToolSpecs.every((spec) => !("subscribes" in spec))).toBe(true);
   });
 });
+
+/** n in words, as the prose writes a count below a hundred: `seven`, `thirty-seven`. */
+function countInWords(n: number): string {
+  const units = [
+    ..."zero one two three four five six seven eight nine ten eleven twelve".split(" "),
+    ..."thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(" "),
+  ];
+  const tens = "twenty thirty forty fifty sixty seventy eighty ninety".split(" ");
+  if (n < 20) return units[n] ?? "";
+  const ten = tens[Math.floor(n / 10) - 2] ?? "";
+  return n % 10 === 0 ? ten : `${ten}-${units[n % 10]}`;
+}
+
+// The count of the tool specs is written in words in the docs, the route table's description of the
+// going catalogue and its generated copies; each sentence was written by hand, and a spec added on
+// either side of a merge left three of them at the old count. Each sentence must name the specs'
+// count, and stand once in its file.
+describe("each sentence that counts the Dispatch tool specs", () => {
+  const repoRoot = resolve(import.meta.dir, "../../..");
+  test.each([
+    ["packages/contracts/AGENTS.md", /the source of the ([a-z-]+) Dispatch specs/g],
+    ["packages/envoy-client/README.md", /single source for the ([a-z-]+)\s+Dispatch specs/g],
+    [
+      "packages/envoy/internal/dispatch/api/going_catalogue.go",
+      /Twenty-one of the ([a-z-]+) tools/g,
+    ],
+    ["packages/envoy/internal/dispatch/api/routes_table.go", /of the ([a-z-]+) tool specs/g],
+    ["packages/envoy/cmd/dispatch/README.md", /of the ([a-z-]+) tool specs/g],
+    ["packages/contracts/schemas/dispatch-openapi.json", /of the ([a-z-]+) tool specs/g],
+    ["packages/contracts/src/dispatch-api.generated.ts", /of the ([a-z-]+) tool specs/g],
+  ] as const)("%s names the count of the specs", (file, sentence) => {
+    const counts = [...readFileSync(resolve(repoRoot, file), "utf8").matchAll(sentence)].map(
+      (match) => match[1]
+    );
+    expect(counts).toEqual([countInWords(dispatchToolSpecs.length)]);
+  });
+});
