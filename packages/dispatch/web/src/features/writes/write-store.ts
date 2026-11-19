@@ -158,6 +158,13 @@ export interface WriteKind<D, K = D> {
   /** The reader's own text the write carried, which the shell's line offers to copy while its
    *  refusal is a conflict; left out, or `undefined`, it carried none. */
   readonly draft?: (write: Write<D>) => string | undefined;
+  /** Whether `refused`, a write of this kind that went out and a conflict refused, carries what
+   *  `unsent` does: a write of this kind claimed with none of it sent (`Writes.claimUnsent`). The
+   *  store then lets `unsent` go and `refused` stands for it alone, so the shell's line never names
+   *  the reader's text twice: claimed or not as such a refusal lands or a reload takes the writes
+   *  up, and else once `unsent` is handed back to the line (`Writes.unclaim`). Left out, no write
+   *  takes another's place. */
+  readonly supersedes?: (refused: Write<D>, unsent: Write<D>) => boolean;
   /** What a kind lets go of once whoever is signed in changes, or the person signs out: what it
    *  remembered of their answers, which the next person's writes must not build on. The writes
    *  that change drops are undone first (`undone`), from what the kind still remembers. */
@@ -254,17 +261,14 @@ interface WriteSpecBase<D, K> {
   readonly endsWithSession?: boolean;
 }
 
-/** The reader's own text a surface holds as a write a conflict refused, though no write of it went
- *  out (`Writes.hold`): its kind and record, what the shell's line names it, the conflict that
- *  stands for it (`isConflict`), the request a write of it would make, which a reload makes it
- *  again from as it makes any refused write, and the target it is ordered on. */
-export interface HoldSpec<D, K> {
-  readonly kind: WriteKind<D, K>;
-  readonly detail: D;
-  readonly label: string;
+/** The reader's own text a surface claims as a write a conflict refused, though no write of it
+ *  went out (`Writes.claimUnsent`): its kind and record, what the shell's line names it, the
+ *  target it is ordered on, the conflict that stands for it (`isConflict`), and the request a
+ *  write of it would make, which a reload makes it again from as it makes any refused write. */
+export interface UnsentClaimSpec<D, K>
+  extends Pick<WriteSpecBase<D, K>, "detail" | "kind" | "label" | "target"> {
   readonly refusal: ApiError;
   readonly request: WriteRequest;
-  readonly target?: string;
 }
 
 /** What became of a write: it landed (with Dispatch's answer, `null` for none), was refused, or
@@ -357,12 +361,13 @@ let watcher: ((store: Writes) => void) | undefined;
  * shown (`quiet`), when it goes at once. One a surface takes to settle with the reader
  * (`WriteKind.claims`) stays too, kept as any refusal is, and is that surface's until the reader
  * settles it there (`settle`) or the surface goes (`unclaim`); so does a text of the reader's a
- * surface holds though no write of it was sent (`hold`). A conflict (`isConflict`) refuses the
- * same body every time, so no Retry makes it again. A write belongs to the person who pressed
- * it: a session that lapses (whoami answers 401, or the write itself is answered 401) stops every
- * write's trying and starts none, but keeps them all, in memory and in storage, until someone
- * signs in - the same person's sign-in takes them up again, and anyone else's drops every write of
- * another login (`signedIn`). Dispatch refuses one that reaches it under another session first
+ * surface claims though no write of it was sent (`claimUnsent`), until a refused write that went
+ * out carries it too (`WriteKind.supersedes`). A conflict (`isConflict`) refuses the same body
+ * every time, so no Retry makes it again. A write belongs to the person who pressed it: a session
+ * that lapses (whoami answers 401, or the write itself is answered 401) stops every write's trying
+ * and starts none, but keeps them all, in memory and in storage, until someone signs in - the same
+ * person's sign-in takes them up again, and anyone else's drops every write of another login
+ * (`signedIn`). Dispatch refuses one that reaches it under another session first
  * (`Dispatch-Login`, `409 LOGIN_CHANGED`).
  */
 export class Writes {
@@ -649,18 +654,21 @@ export class Writes {
     return true;
   }
 
-  /** Holds the reader's own text for a surface that kept it on its own, as another person's text
+  /** Claims the reader's own text for a surface that kept it on its own, as another person's text
    *  arrived over it, where no write of it was refused: made as a write the conflict `spec.refusal`
    *  refused already, which the surface has claimed (`claim`). It is never sent, and no Retry
    *  sends it, since its refusal is a conflict (`isConflict`). From there it is any claimed
    *  write: kept for a reload, which takes it up refused, the surface's until the reader settles
-   *  it there (`settle`) or the surface goes (`unclaim`), and the shell's line's in between. No
-   *  outcome is told, since nothing was pressed. Answers its id. A refusal that is no conflict is
-   *  a page bug, refused at once: a Retry of it would send a write the reader never pressed. */
-  hold<D, K>(spec: HoldSpec<D, K>): number {
+   *  it there (`settle`) or the surface goes (`unclaim`), and the shell's line's in between, until
+   *  a refused write that went out carries it too (`WriteKind.supersedes`). No outcome is told,
+   *  since nothing was pressed. Answers its id. A refusal that is no conflict is a page bug,
+   *  refused at once: a Retry of it would send a write the reader never pressed. */
+  claimUnsent<D, K>(spec: UnsentClaimSpec<D, K>): number {
     const { refusal, request } = spec;
     if (!isConflict(refusal)) {
-      throw new TypeError(`${spec.label}: a held write stands for a conflict (HoldSpec.refusal)`);
+      throw new TypeError(
+        `${spec.label}: an unsent claim stands for a conflict (UnsentClaimSpec.refusal)`
+      );
     }
     const login = signedInLogin(this.#client);
     const entry: Entry = {
@@ -703,11 +711,14 @@ export class Writes {
 
   /** Hands the claimed write `id` back to the shell's line, its draft to copy and Discard beside
    *  it: the surface that took it is gone, and the reader's text beside what the write was of
-   *  with it. A surface drawn later that shows what it was of takes it again (`claim`). */
+   *  with it. A surface drawn later that shows what it was of takes it again (`claim`). An unsent
+   *  claim on the line that a refused write which went out carries too goes, whichever of the two
+   *  came back first (`#supersedeUnsent`). */
   unclaim(id: number): void {
     const entry = this.#entries.get(id);
     if (entry?.write.status !== "refused" || !entry.write.claimed) return;
     this.#show(entry, { ...entry.write, claimed: false });
+    this.#supersedeUnsent("unclaimed");
   }
 
   /** Lets the claimed write `id` go: the reader settled its conflict on the surface that took it,
@@ -892,8 +903,9 @@ export class Writes {
    * ends stopped. One pressed longer ago is not made again on its own: it shows refused
    * (`SendInterruptedError`), for a Retry under its key or Discard. A refusal shows again; a
    * conflict a surface takes to settle with the reader (`WriteKind.claims`) comes back as that
-   * surface's, claimed. A quiet write is let go rather than shown. The app calls this once signed
-   * in.
+   * surface's, claimed, and an unsent claim a refused write carries too goes
+   * (`#supersedeUnsent`). A quiet write is let go rather than shown. The app calls this once
+   * signed in.
    */
   resume(login: string): void {
     if (this.#resumed) return;
@@ -920,6 +932,7 @@ export class Writes {
         this.#resume(kept, kind, detail, now, undefined);
       }
     }
+    this.#supersedeUnsent("all");
     void this.#files.keepOnly(login);
   }
 
@@ -1205,7 +1218,8 @@ export class Writes {
 
   /** The write `entry` was refused: it stays for Retry or Discard - unless its surface shows the
    *  refusal itself or it is never shown, when it goes, and claimed where a surface takes it to
-   *  settle with the reader (`#claimed`) - and the next write of its target goes. One Dispatch
+   *  settle with the reader (`#claimed`) - and the next write of its target goes. A conflict that
+   *  stays takes the place of each unsent claim it carries too (`#supersedeUnsent`). One Dispatch
    *  refused because someone else is signed in goes with every write of its login, and the page
    *  reads who is signed in again. A refused sign-out leaves its person signed in, so every write
    *  of theirs it held goes on. */
@@ -1227,6 +1241,7 @@ export class Writes {
     const write: Write = stays ? { ...refused, claimed: this.#claimed(refused, refusal) } : refused;
     if (stays) this.#update(entry, write);
     else this.#remove(entry);
+    if (stays && isConflict(refusal)) this.#supersedeUnsent("all");
     kinds.get(write.kind)?.undone?.(this.#client, write);
     this.#emit({ kind: "refused", refusal, write });
     this.#advance(write.target);
@@ -1244,6 +1259,28 @@ export class Writes {
   #claimed(write: Write, refusal: Error): boolean {
     if (!isConflict(refusal)) return false;
     return kinds.get(write.kind)?.claims?.(this.#client, write, refusal) === true;
+  }
+
+  /** Lets go of each write claimed with none of it sent (`claimUnsent`) that a refused write which
+   *  went out carries too (`WriteKind.supersedes`): the refused write stands for the reader's text
+   *  alone, so the shell's line never names it twice. `all` lets such a claim go whether a surface
+   *  holds it still or not, as a conflict that stays lands and once a reload has taken every write
+   *  up, in whatever order. `unclaimed` lets go only one on the shell's line, as a surface hands a
+   *  write back (`unclaim`): a surface that still draws its claim keeps it until it goes too. */
+  #supersedeUnsent(which: "all" | "unclaimed"): void {
+    const conflicts = [...this.#entries.values()].filter(
+      ({ write }) => write.status === "refused" && isConflict(write.refusal)
+    );
+    for (const entry of conflicts) {
+      const unsent = entry.write;
+      const supersedes = kinds.get(unsent.kind)?.supersedes;
+      if (unsent.status !== "refused" || unsent.sent || supersedes === undefined) continue;
+      if (which === "unclaimed" && unsent.claimed) continue;
+      const carried = conflicts.some(
+        ({ write }) => write.sent && write.kind === unsent.kind && supersedes(write, unsent)
+      );
+      if (carried) this.#remove(entry);
+    }
   }
 
   /** Drops every one of `entries` wherever it stands (`#take`), and only then starts the writes

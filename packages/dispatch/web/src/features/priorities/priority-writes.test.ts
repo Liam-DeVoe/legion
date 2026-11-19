@@ -480,3 +480,83 @@ test("a held text a refused write carries too goes, and the refused write keeps 
   await read(1);
   await waitFor(() => expect(kept("Bob")).toEqual(["Mine"]));
 });
+
+// The same, where no page takes the refusal: the reader left for a page that does not show the
+// priority, which handed the held text to the shell's line before the write was refused. The
+// refused write keeps the text, and the held one goes all the same, so the line names it once,
+// and a page drawn later that shows the priority takes the refused write and offers its text.
+test("a held text a refused write carries goes though no page takes the refusal, so the line names it once", async () => {
+  const { answer, client, drawAnother, keep, read, rename, sentAt, undraw } = pageWrites(SHOWS_P1);
+  await read(0);
+  rename("Mine", "Old");
+  await sentAt(0);
+  keep(["Mine"]);
+  undraw();
+  const writes = writesOf(client);
+  expect(writes.rows()).toMatchObject([
+    { sent: true, status: "sending" },
+    { claimed: false, detail: { text: "Mine" }, sent: false, status: "refused" },
+  ]);
+  await answer(0, true);
+  expect(writes.rows()).toMatchObject([
+    { claimed: false, detail: { text: "Mine" }, sent: true, status: "refused" },
+  ]);
+  const later = drawAnother(SHOWS_P1);
+  await read(1);
+  await waitFor(() => expect(later.result.current.kept("p1", "title", "Bob")).toEqual(["Mine"]));
+});
+
+// The same, where one page holds the text its field kept and another page, drawn first, takes the
+// refusal: the held text goes from the page that held it, and the refused write keeps it.
+test("a held text a refused write carries goes though another page holds it", async () => {
+  const { answer, client, drawAnother, kept, read, rename, sentAt } = pageWrites(SHOWS_P1);
+  const other = drawAnother(SHOWS_P1);
+  const otherKept = () => other.result.current.kept("p1", "title", "Bob");
+  await read(0);
+  rename("Mine", "Old");
+  await sentAt(0);
+  act(() => other.result.current.keep("p1", "title", ["Mine"]));
+  expect(otherKept()).toEqual(["Mine"]);
+  const writes = writesOf(client);
+  await answer(0, true);
+  await waitFor(() =>
+    expect(writes.rows()).toMatchObject([
+      { claimed: true, detail: { text: "Mine" }, sent: true, status: "refused" },
+    ])
+  );
+  expect(otherKept()).toEqual([]);
+  await read(1);
+  await waitFor(() => expect(kept("Bob")).toEqual(["Mine"]));
+  expect(otherKept()).toEqual([]);
+});
+
+// The other order: the refusal lands first and the page drawn first takes it, so a second page,
+// which cannot take it, keeps the same text on its own as another person's arrives there. Each
+// page offers the text while it is drawn; once both have gone, whichever goes first, the shell's
+// line names the text once, by the refused write.
+test.each([
+  ["the page that took the refusal", true],
+  ["the page that kept the text", false],
+] as const)("a text a second page keeps after another took its refusal is on the line once both go, %s going first", async (_first, refusedFirst) => {
+  const { answer, client, drawAnother, kept, read, rename, sentAt, undraw } = pageWrites(SHOWS_P1);
+  const other = drawAnother(SHOWS_P1);
+  await read(0);
+  rename("Mine", "Old");
+  await sentAt(0);
+  await answer(0, true);
+  await read(1);
+  await waitFor(() => expect(kept("Bob")).toEqual(["Mine"]));
+  act(() => other.result.current.keep("p1", "title", ["Mine"]));
+  expect(other.result.current.kept("p1", "title", "Bob")).toEqual(["Mine"]);
+  const writes = writesOf(client);
+  expect(writes.rows()).toMatchObject([
+    { claimed: true, detail: { text: "Mine" }, sent: true, status: "refused" },
+    { claimed: true, detail: { text: "Mine" }, sent: false, status: "refused" },
+  ]);
+  if (refusedFirst) undraw();
+  other.unmount();
+  if (!refusedFirst) undraw();
+  expect(writes.rows()).toMatchObject([
+    { claimed: false, detail: { text: "Mine" }, sent: true, status: "refused" },
+  ]);
+});

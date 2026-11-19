@@ -1,10 +1,11 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the click below leaves the page with the focus still in the title's field, which user-event has no form for: its click moves the focus first, and the field's blur would write before the page goes.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
-import { onFakeClock } from "../../__tests__/fake-clock";
+import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptWrites } from "../../__tests__/kept-sends-harness";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
 import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
@@ -497,11 +498,15 @@ async function refusedTitle(
   priorities: { mockResolvedValue: (body: Priorities) => unknown },
   patch: { mockRejectedValueOnce: (refusal: Error) => unknown }
 ) {
-  const user = userEvent.setup();
+  // The clock is held, so the typing does not rest and write part of it before the reader leaves
+  // the field, however long the typing takes here.
+  const user = userEvent.setup({ delay: null });
   const title = await screen.findByRole("textbox", { name: "Title" });
   priorities.mockResolvedValue(writtenOver("rocq-lean", { title: "Theirs" }));
   patch.mockRejectedValueOnce(PRIORITY_TITLE_CHANGED);
-  await user.type(title, ", mine");
+  await onFakeClock(async () => {
+    await user.type(title, ", mine");
+  });
   await user.tab();
   const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
   expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
@@ -509,50 +514,104 @@ async function refusedTitle(
   return { notice, user };
 }
 
-// The reader's text a refusal brought back is the store's, not the page's: leaving the page
-// hands the write back to the shell's line, which offers the text to copy with no Retry, and
-// the page drawn again takes it from there and offers it beside the title once more. Using it
-// then writes it over the other person's title, as a press of its own, and the refused write
-// goes, from the store and from what the tab keeps.
-test("a title another person's change refused outlives leaving the page, and is offered again on the way back", async () => {
-  const { client, patch, priorities } = page();
-  const { user } = await refusedTitle(priorities, patch);
+/** The reader writes `, mine` at the end of the title, and another person's `Theirs` reaches the
+ *  page before the typing rests: the field keeps the reader's text beside the title on its own,
+ *  with no write of it sent and none refused. Answers the notice the page then draws. */
+async function keptTitle(writtenElsewhere: (overrides: Partial<PriorityRow>) => void) {
+  // The clock is held, so the typing has not rested when the other person's title arrives,
+  // however long the typing takes here.
+  const user = userEvent.setup({ delay: null });
+  const title = await screen.findByRole("textbox", { name: "Title" });
+  await onFakeClock(async () => {
+    await user.type(title, ", mine");
+    writtenElsewhere({ title: "Theirs" });
+  });
+  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
+  expect(title).toHaveValue("Theirs");
+  return { notice, user };
+}
+
+/** The page drawn, with the reader's title beside another person's as a write of the store: a
+ *  write of it another person's change refused (`refusedTitle`) where a write of it went out
+ *  (`sent`), and else a text the field kept on its own as another person's arrived
+ *  (`keptTitle`). Answers the page and the notice it draws. */
+async function titleBesideTheirs(sent: boolean) {
+  const drawn = page();
+  const { notice, user } = sent
+    ? await refusedTitle(drawn.priorities, drawn.patch)
+    : await keptTitle(drawn.writtenElsewhere);
+  return { ...drawn, notice, user };
+}
+
+/** The two ways of `titleBesideTheirs`, each with the title the write names as the one it goes
+ *  over, which the shell's line names it by. */
+const titleFlows = [
+  ["another person's change refused", { over: ROWS[1]?.title, sent: true }],
+  ["the field kept as another person's arrived", { over: "Theirs", sent: false }],
+] as const;
+
+// The reader's text is the store's, not the page's, whether a refusal brought it back or the
+// field kept it on its own with no write of it sent: leaving the page hands it to the shell's
+// line, which offers it to copy in a conflict's words with no Retry, and the page drawn again
+// takes it from there and offers it beside the title once more. Using it then writes it over the
+// other person's title, as a press of its own, and nothing of it stays, in the store or in what
+// the tab keeps.
+test.each(
+  titleFlows
+)("a title %s outlives leaving the page, is offered again on the way back, and using it lets it go", async (_flow, {
+  over,
+  sent,
+}) => {
+  const { client, patch, user } = await titleBesideTheirs(sent);
+  const mine = `${ROWS[1]?.title}, mine`;
+  const sentBefore = sent ? 1 : 0;
+  expect(patch).toHaveBeenCalledTimes(sentBefore);
   expect(screen.queryByTestId("pending-writes")).toBeNull();
+  // The store holds it, as a write the page holds that another person's text refused: the
+  // reader's text, over the title the write names.
+  expect(writesOf(client).rows()).toMatchObject([
+    {
+      claimed: true,
+      detail: { attribute: "title", expected: over, text: mine },
+      sent,
+      status: "refused",
+    },
+  ]);
 
   await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
   const line = await screen.findByTestId("pending-writes");
   expect(
     within(line).getByText(
-      "Not saved because another person changed it: Rename the priority “Rocq and Lean speed work restarted” to “Rocq and Lean speed work restarted, mine”"
+      `Not saved because another person changed it: Rename the priority “${over}” to “${mine}”`
     )
   ).toBeDefined();
-  expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(
-    `${ROWS[1]?.title}, mine`
-  );
+  expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(mine);
   expect(within(line).queryByRole("button", { name: "Retry" })).toBeNull();
 
   await user.click(screen.getByRole("link", { name: "Back to the priority" }));
   const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
-  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
+  expect(within(notice).getByText(mine)).toBeDefined();
   expect(screen.queryByTestId("pending-writes")).toBeNull();
-  expect(patch).toHaveBeenCalledTimes(1);
+  expect(patch).toHaveBeenCalledTimes(sentBefore);
 
   await user.click(within(notice).getByRole("button", { name: "Use my text" }));
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
-  expect(patch.mock.calls[1]?.slice(0, 2)).toEqual([
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(sentBefore + 1));
+  expect(patch.mock.calls[sentBefore]?.slice(0, 2)).toEqual([
     "rocq-lean",
-    { expected: { title: "Theirs" }, title: `${ROWS[1]?.title}, mine` },
+    { expected: { title: "Theirs" }, title: mine },
   ]);
   await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
   expect(keptWrites()).toEqual([]);
 });
 
-// A reload takes the refused write up again from what the tab kept, and the page drawn on it
-// offers the reader's text as the page before did. Keeping the other person's title lets the
-// write go, and nothing of it is kept or sent.
-test("a title another person's change refused outlives a reload, and keeping theirs lets it go", async () => {
-  const { patch, priorities, reload } = page();
-  await refusedTitle(priorities, patch);
+// A reload takes the write up again from what the tab kept, as it takes up any refused write,
+// and the page drawn on it offers the reader's text as the page before did. Keeping the other
+// person's title lets the write go, and nothing of it is kept or sent.
+test.each(titleFlows)("a title %s outlives a reload, and keeping theirs lets it go", async (_flow, {
+  sent,
+}) => {
+  const { patch, reload } = await titleBesideTheirs(sent);
   expect(keptWrites()).toHaveLength(1);
   const client = reload();
   const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
@@ -565,7 +624,7 @@ test("a title another person's change refused outlives a reload, and keeping the
   expect(writesOf(client).rows()).toEqual([]);
   expect(keptWrites()).toEqual([]);
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Theirs");
-  expect(patch).toHaveBeenCalledTimes(1);
+  expect(patch).toHaveBeenCalledTimes(sent ? 1 : 0);
 });
 
 // A write the page holds whose text the page then reads is one Dispatch holds: the reader wrote
@@ -603,86 +662,45 @@ test("going to another priority's page hands the title another person's change r
   expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
 });
 
-/** The reader writes `, mine` at the end of the title, and another person's `Theirs` reaches the
- *  page before the typing rests: the field keeps the reader's text beside the title on its own,
- *  with no write of it sent and none refused. Answers the notice the page then draws. */
-async function keptTitle(writtenElsewhere: (overrides: Partial<PriorityRow>) => void) {
-  const user = userEvent.setup();
+// The title's field writes what the reader typed as it leaves with the page, which happens after
+// the page has handed its writes back to the shell's line where the reader leaves with the focus
+// still in the field. Typed while a refused write's text waits for the read its refusal started,
+// that text is held rather than sent, and it is the line's at once, beside the refused write's:
+// no page is left to claim it.
+test("a title typed while a refused one waits for its read is on the shell's line once the page goes", async () => {
+  // The clock is held, so no typing rests long enough to write before the field leaves.
+  const user = userEvent.setup({ delay: null });
+  const { client, patch, priorities } = page();
   const title = await screen.findByRole("textbox", { name: "Title" });
-  await user.type(title, ", mine");
-  writtenElsewhere({ title: "Theirs" });
-  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
-  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
-  expect(title).toHaveValue("Theirs");
-  return { notice, user };
-}
-
-// A text the field kept on its own as another person's arrived is the store's, as a refused
-// write's text is, though no write of it was sent: leaving the page hands it to the shell's line,
-// which offers it to copy in a conflict's words with no Retry, and the page drawn again offers it
-// beside the title once more. Using it writes it over the other person's title as a press of its
-// own, and nothing of it stays, in the store or in what the tab keeps.
-test("a title the field kept as another person's arrived outlives leaving the page, and using it lets it go", async () => {
-  const { client, patch, writtenElsewhere } = page();
-  const { user } = await keptTitle(writtenElsewhere);
-  expect(patch).not.toHaveBeenCalled();
-  expect(screen.queryByTestId("pending-writes")).toBeNull();
-  // The store holds it, as a write the page holds that another person's text refused, though
-  // none of it was sent: the reader's text, over the title the field took in.
-  expect(writesOf(client).rows()).toMatchObject([
+  // The read the refusal starts never answers, so the refused write's text waits for it.
+  priorities.mockImplementation(() => Promise.withResolvers<Priorities>().promise);
+  patch.mockRejectedValueOnce(PRIORITY_TITLE_CHANGED);
+  const writes = writesOf(client);
+  await onFakeClock(async () => {
+    await user.type(title, ", mine");
+    await user.tab();
+    await act(async () => {
+      await settle();
+    });
+    expect(writes.rows()).toMatchObject([{ claimed: true, status: "refused" }]);
+    await user.type(title, ", more");
+    // A click alone, which leaves the focus in the field as it goes with the page.
+    fireEvent.click(screen.getByRole("link", { name: "‹ Priorities" }));
+  });
+  expect(writes.rows()).toMatchObject([
+    { claimed: false, detail: { text: `${ROWS[1]?.title}, mine` }, sent: true, status: "refused" },
     {
-      claimed: true,
-      detail: { attribute: "title", expected: "Theirs", text: `${ROWS[1]?.title}, mine` },
+      claimed: false,
+      detail: { text: `${ROWS[1]?.title}, mine, more` },
       sent: false,
       status: "refused",
     },
   ]);
-
-  await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
   const line = await screen.findByTestId("pending-writes");
   expect(
-    within(line).getByText(
-      "Not saved because another person changed it: Rename the priority “Theirs” to “Rocq and Lean speed work restarted, mine”"
-    )
-  ).toBeDefined();
-  expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(
-    `${ROWS[1]?.title}, mine`
-  );
-  expect(within(line).queryByRole("button", { name: "Retry" })).toBeNull();
-
-  await user.click(screen.getByRole("link", { name: "Back to the priority" }));
-  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
-  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
-  expect(screen.queryByTestId("pending-writes")).toBeNull();
-  expect(patch).not.toHaveBeenCalled();
-
-  await user.click(within(notice).getByRole("button", { name: "Use my text" }));
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
-    "rocq-lean",
-    { expected: { title: "Theirs" }, title: `${ROWS[1]?.title}, mine` },
-  ]);
-  await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
-  expect(keptWrites()).toEqual([]);
-});
-
-// A reload takes that text up from what the tab kept, as it takes up a refused write, and the
-// page drawn on it offers the text beside the title as the page before did. Keeping the other
-// person's title lets it go, and nothing of it is kept or sent.
-test("a title the field kept as another person's arrived outlives a reload, and keeping theirs lets it go", async () => {
-  const { patch, reload, writtenElsewhere } = page();
-  await keptTitle(writtenElsewhere);
-  expect(keptWrites()).toHaveLength(1);
-  const client = reload();
-  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
-  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
-  expect(writesOf(client).rows()).toMatchObject([{ claimed: true, status: "refused" }]);
-  expect(screen.queryByTestId("pending-writes")).toBeNull();
-
-  await userEvent.setup().click(within(notice).getByRole("button", { name: "Keep their text" }));
-  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
-  expect(writesOf(client).rows()).toEqual([]);
-  expect(keptWrites()).toEqual([]);
-  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Theirs");
-  expect(patch).not.toHaveBeenCalled();
+    within(line)
+      .getAllByRole("note", { name: "Your text:" })
+      .map((note) => note.textContent)
+  ).toEqual([`${ROWS[1]?.title}, mine`, `${ROWS[1]?.title}, mine, more`]);
+  expect(patch).toHaveBeenCalledTimes(1);
 });

@@ -23,7 +23,7 @@ export interface Arrival extends FieldStand {
 }
 
 /** `kept` without `text`, and `kept` itself where it holds no such text. */
-export function without(kept: readonly string[], text: string): readonly string[] {
+function without(kept: readonly string[], text: string): readonly string[] {
   return kept.includes(text) ? kept.filter((one) => one !== text) : kept;
 }
 

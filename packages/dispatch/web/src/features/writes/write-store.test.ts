@@ -1955,13 +1955,15 @@ test("an entry kept with no carried loads, and reads as what it sent", async () 
 const surface = { claims: false, undone: 0 };
 
 /** A write whose surface may take a conflict that refused it (`WriteKind.claims`): a priority's
- *  title, as far as the store is concerned, its record the reader's text. */
+ *  title, as far as the store is concerned, its record the reader's text. A refused one that went
+ *  out takes the place of an unsent claim of the same text (`WriteKind.supersedes`). */
 const claimedWrite = defineWriteKind<{ readonly text: string }>({
   claims: () => surface.claims,
   draft: (write) => write.detail.text,
   kept: (value): value is { readonly text: string } =>
     typeof value === "object" && value !== null && typeof Reflect.get(value, "text") === "string",
   name: "test-claimed",
+  supersedes: (refused, unsent) => refused.detail.text === unsent.detail.text,
   undone: () => {
     surface.undone += 1;
   },
@@ -2139,12 +2141,12 @@ test("a resumed conflict a surface claims comes back claimed, and one claimed la
   });
 });
 
-// A text of the reader's a surface kept on its own, with no write of it refused, is held as a
-// conflict that surface has claimed: kept for a reload as any refusal is, never sent, no Retry of
-// it sends anything, and no outcome is told, since nothing was pressed. From there it is any
+// A text of the reader's a surface kept on its own, with no write of it refused, is claimed as a
+// conflict that surface holds: kept for a reload as any refusal is, never sent, no Retry of it
+// sends anything, and no outcome is told, since nothing was pressed. From there it is any
 // claimed conflict: handed back to the line, taken up refused by a reload, taken again, and let
-// go once the reader settles it. A refusal that is no conflict is no hold at all.
-test("a text a surface holds is a claimed conflict nothing sends, kept for a reload until the reader settles it", async () => {
+// go once the reader settles it. A refusal that is no conflict is no such claim at all.
+test("a text a surface claims unsent is a claimed conflict nothing sends, kept for a reload until the reader settles it", async () => {
   await onFakeClock(async () => {
     const { tab, writes } = storeOf();
     const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
@@ -2158,10 +2160,10 @@ test("a text a surface holds is a claimed conflict nothing sends, kept for a rel
       request: patch,
     };
     try {
-      expect(() => writes.hold({ ...spec, refusal: verdict })).toThrow(TypeError);
+      expect(() => writes.claimUnsent({ ...spec, refusal: verdict })).toThrow(TypeError);
       expect(writes.rows()).toEqual([]);
 
-      const id = writes.hold(spec);
+      const id = writes.claimUnsent(spec);
       expect(row(writes)).toMatchObject({
         claimed: true,
         id,
@@ -2202,6 +2204,84 @@ test("a text a surface holds is a claimed conflict nothing sends, kept for a rel
       stop();
       send.mockRestore();
       tab.close();
+    }
+  });
+});
+
+// A write that went out and that a conflict refused, carrying the text of an unsent claim, takes
+// its place whether a surface holds that claim or the line does: the claim goes, from the store
+// and from what the tab keeps, so the line names the text once. A claim of another text stays.
+// One a surface claims after the refusal stays that surface's while it holds it, and goes once it
+// is handed back to the line. A reload that takes up both of one text keeps the refused write
+// alone, in whichever order the two come back.
+test("a refused write that went out takes the place of the unsent claim of the same text", async () => {
+  await onFakeClock(async () => {
+    const { tab, writes } = storeOf();
+    const claimUnsent = (text: string) =>
+      writes.claimUnsent({
+        detail: { text },
+        kind: claimedWrite,
+        label: "Rename the priority",
+        refusal: changed,
+        request: patch,
+      });
+    try {
+      claimUnsent("Mine");
+      writes.unclaim(claimUnsent("Mine"));
+      claimUnsent("Other");
+      const claimKeys = writes.rows().map((one) => one.key);
+      const pressed: string[] = [];
+      void claimedPress(writes, () => Promise.reject(changed), pressed);
+      await settle();
+      expect(writes.rows()).toMatchObject([
+        { detail: { text: "Other" }, sent: false, status: "refused" },
+        { detail: { text: "Mine" }, sent: true, status: "refused" },
+      ]);
+      expect(claimKeys.map((key) => tab.kept(key) !== undefined)).toEqual([false, false, true]);
+      expect(tab.kept(pressed[0] ?? "")).toMatchObject({ sent: true, state: keptConflict });
+
+      const later = claimUnsent("Mine");
+      expect(writes.rows().map((one) => one.id)).toContain(later);
+      writes.unclaim(later);
+      expect(writes.rows()).toMatchObject([
+        { detail: { text: "Other" }, sent: false, status: "refused" },
+        { detail: { text: "Mine" }, sent: true, status: "refused" },
+      ]);
+    } finally {
+      tab.close();
+    }
+
+    for (const sentFirst of [true, false]) {
+      const reload = keptTab();
+      try {
+        for (const [index, sent] of [sentFirst, !sentFirst].entries()) {
+          reload.storage.setItem(
+            `dispatch.write:key-${index}`,
+            JSON.stringify({
+              ...keptClaimed,
+              key: `key-${index}`,
+              label: "Rename the priority",
+              login: "alice",
+              presentation: "indicator",
+              pressedAt: Date.now() + index,
+              request: patch,
+              sent,
+              state: keptConflict,
+              target: null,
+              version: 1,
+            })
+          );
+        }
+        const after = new Writes(signedIn(), reload.page(), memoryFiles());
+        after.resume("alice");
+        await settle();
+        expect(after.rows()).toMatchObject([
+          { detail: { text: "Mine" }, sent: true, status: "refused" },
+        ]);
+        expect(reload.kept(sentFirst ? "key-1" : "key-0")).toBeUndefined();
+      } finally {
+        reload.close();
+      }
     }
   });
 });

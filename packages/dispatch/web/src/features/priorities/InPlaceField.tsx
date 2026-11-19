@@ -265,7 +265,9 @@ export function InPlaceField({
           timer.current = window.setTimeout(save, SAVE_AFTER_MS);
         }}
         onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
+          // The Enter that ends an input method's composition takes the word composed, and is no
+          // Enter of the reader's: it neither writes nor leaves the field.
+          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
           event.preventDefault();
           save();
           event.currentTarget.blur();

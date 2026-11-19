@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { act, render, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the Enter that ends an input method's composition below, which user-event cannot mark as one
+import { act, fireEvent, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { jump, onFakeClock } from "../../__tests__/fake-clock";
@@ -208,6 +209,26 @@ test("the page going while the typing waits writes it, once", async () => {
   expect(writes).toEqual(["Old name now"]);
   view.unmount();
   expect(writes).toEqual(["Old name now"]);
+});
+
+// The Enter that ends an input method's composition - of Japanese, Chinese or Korean - takes the
+// word being composed, and is no Enter of the reader's: it neither writes the text nor leaves the
+// field. A plain Enter does both.
+test("the Enter that ends a composition neither writes nor leaves the field, and a plain one does both", async () => {
+  const user = userEvent.setup({ delay: null });
+  const { field, view, writes } = heldField();
+  await onFakeClock(async () => {
+    await user.type(field, ", mine");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(field, { isComposing: true, key: "Enter" });
+    expect(writes).toEqual([]);
+    expect(document.activeElement).toBe(field);
+    await user.keyboard("{Enter}");
+    expect(writes).toEqual(["Old name, mine"]);
+    expect(document.activeElement).not.toBe(field);
+  });
+  view.unmount();
+  expect(writes).toEqual(["Old name, mine"]);
 });
 
 test("the answer to an earlier write the reader typed back to leaves the later write out, and writes the reader's text again", async () => {
