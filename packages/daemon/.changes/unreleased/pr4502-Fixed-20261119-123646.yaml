@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A clean stop of a role''s Envoy session no longer removes the registration of the relaunch that replaced the ended process when the Envoy listener''s clock runs behind the daemon''s. The daemon starts no process of a claim while the clean stop of its session is in flight, so the stop reads the ended process''s own registration before the relaunch registers, whether that relaunch is the one a death starts or a wake''s resume of a released or suspended claim. A listener that does not answer holds the relaunch for the stop''s 5-second budget at most, and the daemon logs `supervise: the launch waits for the clean stop of the session the claim records` while it waits.'
+time: 2026-11-19T12:36:46.473292199Z
+custom:
+    Issue: pr4502
