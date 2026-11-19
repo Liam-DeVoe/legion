@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1865,6 +1866,31 @@ func TestATakeAndASeenReportAreSentAgainOnEachListedFailure(t *testing.T) {
 				t.Errorf("Claude Code read %q, want the task's text once", texts)
 			}
 		})
+	}
+}
+
+// One read that timed out reaches the bridge in either of two shapes, as net/http's transport
+// decides by a race between its read and write loops: the read's own error under the client's
+// *url.Error, or that error wrapped first as "readLoopPeekFailLocked: %w". The tester's probe in
+// round 4 of dispatch://INFRA-2811, 400 attempts of the bridge's own attempt through
+// timedOutConn, met the second shape 1 to 2 times in 400, and TestATakeAndASeenReportAreSentAgainOnEachListedFailure's
+// "a read that timed out" fails whenever it meets it. Both are a read that timed out, which the
+// bridge sends again until the daemon answers; a take sent once and lost so is charged at the
+// first bound once its seen report reached the daemon.
+func TestAReadThatTimedOutIsSentAgainInEitherShapeTheTransportGivesIt(t *testing.T) {
+	read := &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ETIMEDOUT)}
+	d := &daemonLink{calls: daemonCalls{answerTimeout: time.Second}}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "the read's own error", err: &url.Error{Op: "Post", URL: "http://daemon/legion/v1/claims/take", Err: read}},
+		{name: "the read's error wrapped by the transport's read loop", err: &url.Error{Op: "Post", URL: "http://daemon/legion/v1/claims/take",
+			Err: fmt.Errorf("readLoopPeekFailLocked: %w", read)}},
+	} {
+		if why := d.unanswered(0, nil, tc.err); why != "the connection timed out" {
+			t.Errorf("%s (%v): unanswered = %q, want \"the connection timed out\": a read that timed out is sent again until the daemon answers", tc.name, tc.err, why)
+		}
 	}
 }
 
