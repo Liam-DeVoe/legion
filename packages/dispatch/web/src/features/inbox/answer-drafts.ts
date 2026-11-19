@@ -1,4 +1,4 @@
-import { createDraftStore } from "./draft-store";
+import { createDraftStore, EMPTY_DRAFT } from "./draft-store";
 
 /**
  * Unsent ask-answer drafts, by ask id, for the reason the reply drafts beside them live in one
@@ -16,7 +16,7 @@ import { createDraftStore } from "./draft-store";
  * and opens again holds both. An answer cannot carry a mention, so the card refuses to send one
  * rather than dropping it (`AskAnswerArea.tsx`).
  */
-const store = createDraftStore();
+const store = createDraftStore(EMPTY_DRAFT);
 
 /** What the reader has typed into the ask's answer box and not sent, read without subscribing to
  *  it: the Inbox asks at the commit that drops the row, not at every keystroke in the column. */

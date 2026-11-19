@@ -93,8 +93,9 @@ export function AskThreadDisclosure({
         unread={unread}
       />
     );
-  // An open ask takes no reply composer: a reply the reader typed before it opened again stands
-  // in the composer's place, read-only (`useUnsentReply`).
+  // An open ask takes no reply composer: a reply the reader typed while it was settled, before it
+  // opened again, stands in the composer's place, read-only (`useUnsentReply`). One typed while it
+  // was open, in the host that replies while it is open, is that host's and draws nothing here.
   const composer = !takesReply(ask) ? (
     unsentReply === "" ? null : (
       <UnsentReply className="mt-3" text={unsentReply} />

@@ -110,10 +110,16 @@ export function takesReply(ask: Pick<Ask, "state">): boolean {
  * where the composer stood (`UnsentReply`), as the card draws an answer whose question closed
  * under it (`unsentAnswer` in `useAskAnswerForm.ts`). The draft stays the ask's, so the composer
  * picks it up again if the ask is settled once more.
+ *
+ * Only a draft the reader last wrote while the ask was settled is one (`writtenSettled`). A draft
+ * written while the ask was open was written in a host that replies while the ask is open
+ * (`repliesWhileOpen`): it is a reply in progress, which that host's box holds and sends, not a
+ * send that failed, so this is `""` for it, and any composer picks it up once the ask settles.
  */
 export function useUnsentReply(ask: Pick<Ask, "id" | "state">): string {
-  const [draft] = useReplyDraft(ask.id);
-  return takesReply(ask) || draft.text.trim() === "" ? "" : draft.text;
+  const settled = takesReply(ask);
+  const [draft] = useReplyDraft(ask.id, settled);
+  return settled || !draft.writtenSettled || draft.text.trim() === "" ? "" : draft.text;
 }
 
 /** What the unsent reply's box says, on today's pages and inside `NoTooltips` alike. */
@@ -177,14 +183,18 @@ export function UnsentReply({ className, text }: { className?: string; text: str
 }
 
 /**
- * The reply box under an ask that is no longer open (`takesReply`), which is the same answer
+ * The reply box under an ask that is no longer open (`takesReply`), and under an open one whose
+ * host replies while it is open (`AskThread`'s `repliesWhileOpen`), which is the same answer
  * area as the open card's (`AskAnswerArea.tsx`): the Conversation tab's field and `@` picker,
  * with Reply as the one button it sends by. It posts to the ask's issue, or to its document for
  * a project-document ask, then invalidates the shared thread so the reply shows first. A picked
  * session rides with the comment as a `session:` mention and gets it. Its draft is the ask's
- * (`reply-drafts.ts`), and its send is the ask's too: while any composer's reply to this ask is
- * out, every composer for it, including one mounted since, shows the draft disabled. A file
- * pasted or dropped into the field uploads to `uploadOwner` and its text joins the draft.
+ * (`reply-drafts.ts`), and each write to it records whether the ask was settled when the reader
+ * wrote it, so a thread that draws no composer for the ask reads as unsent only a reply typed
+ * under a settled ask (`useUnsentReply`). Its send is the ask's too: while any composer's reply
+ * to this ask is out, every composer for it, including one mounted since, shows the draft
+ * disabled. A file pasted or dropped into the field uploads to `uploadOwner` and its text joins
+ * the draft.
  */
 export function AskReplyComposer({
   ask,
@@ -198,7 +208,7 @@ export function AskReplyComposer({
   uploadOwner?: ArtifactOwner;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useReplyDraft(ask.id);
+  const [draft, setDraft] = useReplyDraft(ask.id, takesReply(ask));
   // The uploads behind the reply, held by the composer rather than by the box it writes in, as
   // the ask card holds its answer's (`AskCard.tsx`): the send is this composer's, so what holds
   // the send is too.
@@ -308,7 +318,9 @@ export interface AskThreadProps {
   unread?: ReadonlySet<string>;
   /** Whether the reply composer stands under an open ask too, where the host answers the ask with
    *  controls of its own and draws no answer area to ask back in: a reply is then the one way
-   *  into the thread (`AskCard`'s `exchangeOnly`, the Inbox reading pane's approval request). */
+   *  into the thread (`AskCard`'s `exchangeOnly`, the Inbox reading pane's approval request). A
+   *  reply typed here while the ask is open is one the reader is still writing, which no other
+   *  thread for the ask reads as unsent (`useUnsentReply`). */
   repliesWhileOpen?: boolean;
 }
 
@@ -319,9 +331,11 @@ export interface AskThreadProps {
  * drawn by `threads/EarlierReplies.tsx`, the fold control the Inbox's thread body shares).
  * An answered or resolved ask keeps a plain reply composer, next to the newest message
  * (`composerFirst`), and `takesReply` says which asks do; an open ask reserves its single
- * composer for answering or asking back, and draws a reply the reader had not sent before it
- * opened again read-only in the composer's place (`useUnsentReply`) - unless its host answers it
- * elsewhere and draws no such composer (`repliesWhileOpen`), which keeps the reply composer here.
+ * composer for answering or asking back, and draws a reply the reader typed while it was settled
+ * and had not sent before it opened again read-only in the composer's place (`useUnsentReply`) -
+ * unless its host answers it elsewhere and draws no such composer (`repliesWhileOpen`), which
+ * keeps the reply composer here. A reply typed in that host while the ask is open is drawn by no
+ * other thread for the ask until the ask settles, when its composer picks it up.
  */
 export function AskThread({
   ask,
