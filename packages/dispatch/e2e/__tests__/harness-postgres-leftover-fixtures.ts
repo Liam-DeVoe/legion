@@ -94,7 +94,7 @@ const dir = mkdtempSync(join(tmpdir(), ${JSON.stringify(runDirectoryPrefix)}));
 const database = await stackPostgres({ dir, run: process.env.LEFTOVER_RUN }).start(0);
 console.log(JSON.stringify({ dir, url: database.url, address: database.address, pidNamespace: readlinkSync("/proc/self/ns/pid") }));
 for await (const _ of Bun.stdin.stream()) {}
-await database.stop();
+await database.stop(false);
 rmSync(dir, { recursive: true, force: true });
 `;
 
@@ -579,7 +579,8 @@ export async function startOwn(
     Promise.race([
       starting,
       sleep(ms).then(() => {
-        void starting.then((database) => database.stop()).catch(() => {});
+        // A start that ran past its bound failed, so its container's log is printed as it goes.
+        void starting.then((database) => database.stop(true)).catch(() => {});
         throw new Error(`${what} did not end ${named}`);
       }),
     ])
@@ -597,7 +598,7 @@ export async function stopOwn(
   variable: ProviderVariable
 ): Promise<void> {
   const what = "the stop of the row's own stack";
-  const stopping = during(what, () => database.stop());
+  const stopping = during(what, () => database.stop(false));
   // Handled here as well, so a stop that fails after a refused charge is no unhandled rejection.
   stopping.catch(() => {});
   const { by } = charge(row, ownStop(variable));
