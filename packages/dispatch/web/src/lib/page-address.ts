@@ -307,14 +307,35 @@ export function writeAddressFields<S extends AddressSpec>(
 }
 
 /** The address of `pathname` narrowed by `values` and by nothing else, written through `spec`:
- *  a link to a page is the address that page's own setter writes for the same narrowing, cut
- *  and encoded by the same parameters. */
+ *  a link to a page is the address that page's own setter writes for the same narrowing,
+ *  encoded by the same parameters. `null` where that address does not read back through `spec`
+ *  as exactly `values`, field by field: a parameter that cuts what it writes at
+ *  `SEARCH_QUERY_MAX` (`commaListParam`, `cappedTextParam`), or a comma inside one value of a
+ *  `commaListParam`, would point the link at another narrowing than the one it names, so the
+ *  caller draws no link rather than one that opens a different page in silence. */
 export function fieldsAddress<S extends AddressSpec>(
   pathname: string,
   spec: S,
   values: Partial<AddressValues<S>>
-): string {
-  return addressPath(pathname, writeAddressFields(copyAddress(), spec, values));
+): string | null {
+  const params = writeAddressFields(copyAddress(), spec, values);
+  const given = values as Record<string, unknown>;
+  for (const [name, param] of Object.entries(spec)) {
+    if (name in given && !sameAddressValue(param.read(params, name), given[name])) return null;
+  }
+  return addressPath(pathname, params);
+}
+
+/** Whether a value a parameter read back is the one it was given: the same primitive, or lists
+ *  of the same length whose items are the same, in the same order. */
+function sameAddressValue(read: unknown, given: unknown): boolean {
+  if (Array.isArray(read) && Array.isArray(given)) {
+    return (
+      read.length === given.length &&
+      read.every((one, index) => sameAddressValue(one, given[index]))
+    );
+  }
+  return read === given;
 }
 
 /**
