@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -48,14 +49,18 @@ const (
 	serverLog  = "/tmp/weed.log"
 )
 
-// scriptDeadline bounds one run of a step of one-collection.sh. The script bounds its own waits,
-// each failing it by name when it runs out: 60 tries a second apart for the volume server, 10 for
-// the grow, 60 s for each weed shell. prepare ended within seconds of the S3 port answering in
-// this script's runs on a dev box, and 11 to 12 s after it with the volume server held back 10 s.
-// So a step still running at 5 minutes is one the script did not end, a stuck docker exec among
-// them, and it fails the test by name 15 minutes before go test's -timeout in the envoy-go job
-// (.github/workflows/ci-job-envoy-go.yaml) ends the whole package with no name.
-const scriptDeadline = 5 * time.Minute
+// scriptDeadline bounds one run of a step of one-collection.sh. The script bounds each wait of its
+// own and fails by name when one runs out, and the head of that file says how. A prepare whose
+// waits each ran to the end of their bounds would take at most 333 s: 71 s for the volume server
+// (its 60 s, a second's pause and one request's 10 s), 21 s for the grow, three shells of 60 s and
+// 61 s for the rule in force; a check, 70 s. On a store that stops answering, the first wait that
+// meets it fails by name within its own bound, 71 s at most. prepare ended within seconds of the S3
+// port answering in this script's runs on a dev box, and 11 to 12 s after it with the volume
+// server held back 10 s. So a step still running at 6 minutes is one the script did not end, a
+// stuck docker exec among them, and it fails the test by name 14 minutes before go test's
+// -timeout in the envoy-go job (.github/workflows/ci-job-envoy-go.yaml) ends the whole package
+// with no name.
+const scriptDeadline = 6 * time.Minute
 
 // requestDeadline bounds one request to the server. Its answers come within a second, and a
 // write that waits on storage being made gets its 500 when the filer gives up after 10 s, so a
@@ -140,7 +145,17 @@ func startServer(ctx context.Context, t testing.TB, script string) (testcontaine
 // its exit code and its output; a step that has not ended within scriptDeadline fails t.
 func runScript(ctx context.Context, t testing.TB, c testcontainers.Container, step string) (int, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(ctx, scriptDeadline)
+	code, output, err := runScriptWithin(ctx, c, scriptPath, step, scriptDeadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, output
+}
+
+// runScriptWithin is runScript with the script's path in c and the deadline given, which answers
+// an error naming the step when it could not run or had not ended by then.
+func runScriptWithin(ctx context.Context, c testcontainers.Container, path, step string, deadline time.Duration) (int, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	type result struct {
 		code   int
@@ -153,7 +168,7 @@ func runScript(ctx context.Context, t testing.TB, c testcontainers.Container, st
 	// when the container is removed with t.
 	done := make(chan result, 1)
 	go func() {
-		code, reader, err := c.Exec(ctx, []string{scriptPath, step, collection, serverLog}, tcexec.Multiplexed())
+		code, reader, err := c.Exec(ctx, []string{path, step, collection, serverLog}, tcexec.Multiplexed())
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -163,33 +178,46 @@ func runScript(ctx context.Context, t testing.TB, c testcontainers.Container, st
 	}()
 	select {
 	case r := <-done:
-		if r.err != nil {
-			t.Fatalf("run one-collection.sh %s in the S3-compatible server's container: %v", step, r.err)
+		switch {
+		case r.err == nil:
+			return r.code, string(r.output), nil
+		case ctx.Err() == nil:
+			return 0, "", fmt.Errorf("run one-collection.sh %s in the S3-compatible server's container: %w", step, r.err)
 		}
-		return r.code, string(r.output)
 	case <-ctx.Done():
-		t.Fatalf("one-collection.sh %s did not end within %s", step, scriptDeadline)
-		return 0, ""
 	}
+	// The deadline passed, with the run still going or with its read ended by ctx.
+	return 0, "", fmt.Errorf("one-collection.sh %s did not end within %s", step, deadline)
 }
 
-// call sends one anonymous request with body and answers the status and the body of the answer.
+// call sends one anonymous request with body and answers the status and the body of the answer;
+// a request with no answer within requestDeadline fails t.
 func call(ctx context.Context, t testing.TB, method, url, body string) (int, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(ctx, requestDeadline)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, method, url, bytes.NewBufferString(body))
+	status, answer, err := request(ctx, method, url, body, requestDeadline)
 	if err != nil {
-		t.Fatalf("build %s %s: %v", method, url, err)
+		t.Fatal(err)
 	}
-	response, err := http.DefaultClient.Do(request)
+	return status, answer
+}
+
+// request is call with its deadline given, which answers an error naming the request when it
+// could not be sent or had no whole answer by then.
+func request(ctx context.Context, method, url, body string, deadline time.Duration) (int, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	sent, err := http.NewRequestWithContext(ctx, method, url, bytes.NewBufferString(body))
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, url, err)
+		return 0, "", fmt.Errorf("build %s %s: %w", method, url, err)
+	}
+	response, err := http.DefaultClient.Do(sent)
+	if err != nil {
+		return 0, "", fmt.Errorf("%s %s: %w", method, url, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	answer, err := io.ReadAll(response.Body)
 	if err != nil {
-		t.Fatalf("read the answer to %s %s: %v", method, url, err)
+		return 0, "", fmt.Errorf("read the answer to %s %s: %w", method, url, err)
 	}
-	return response.StatusCode, string(answer)
+	return response.StatusCode, string(answer), nil
 }

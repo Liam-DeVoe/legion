@@ -341,7 +341,10 @@ jobs:
     # browser step, is a read of the store's log, one request to its master and one `weed shell`
     # command: under a second in each of CI's four shard legs when it was the log and the shell
     # alone, and no row above. The second they can add is inside the 16 s between the 1,304 s
-    # above and the 22 minutes below.
+    # above and the 22 minutes below. A store that stops answering holds neither step: each of
+    # their requests and waits has a bound that fails it by name (their comments say which), and on
+    # a store that takes every connection and never answers the wait step fails 10 s into its first
+    # request.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
     # again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -511,24 +514,60 @@ jobs:
         # (tests3.Start) runs too. Its `prepare` runs once the S3 port answers and before the
         # first write, and its `check` after the readiness object below; the step after the
         # browser step runs `check` again over the whole run.
+        #
+        # EVERY REQUEST TO THE STORE HAS A BOUND, AND EVERY WAIT ENDS BY ITS SECONDS. Each request
+        # goes through s3 below, under curl's --max-time, and one the store took and did not answer
+        # within it fails the step at once, by name, rather than holding it to the job's 22 minutes:
+        # a store that is still starting refuses the connection at once instead, which the waits
+        # below try again a second later. The store's answers come well inside 10 s. By the
+        # server's log of each of CI run 44425048628's four shard legs, the S3 port's first answer
+        # and prepare's first request to the master both came within 0.29 s of the gateway's start,
+        # and the bucket, the readiness object's write, read and delete and check's request all
+        # came within 0.07 s. In three starts with the store held to a tenth of a CPU on a dev box,
+        # the slowest answered request took 0.29 s. So 10 s is a store that stopped answering, and
+        # one that takes every connection and never answers fails the step 10 s into its first
+        # request, inside the 24 s the budget above gives this step. The object's write has 15 s,
+        # past the 10 s after which the filer answers 500 to a write that waits on storage being
+        # made, so that write is tried again and `check` names its growth. The waits count seconds,
+        # not tries, since a try can take its whole bound: the readiness wait's 60 tries of a 5 s
+        # bound held a store that never answered for 361 s. With prepare's own bounds (its head
+        # says how), the step ends by its own name within 10 minutes on any store, before the job's
+        # 22.
         run: |
-          for attempt in $(seq 1 60); do
-            curl -sf -o /dev/null http://127.0.0.1:18333/ && break
-            [ "$attempt" -lt 60 ] || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          # s3 <seconds> <what> <curl argument>...: one request to the store, bounded by seconds.
+          s3() {
+            seconds=$1 what=$2
+            shift 2
+            curl -sf --max-time "$seconds" "$@" && return 0
+            status=$?
+            if [ "$status" = 28 ]; then
+              echo "::error::the file store took the connection for $what and did not answer within $seconds s"
+              cat "$RUNNER_TEMP/weed.log"
+              exit 1
+            fi
+            return "$status"
+          }
+          deadline=$(( $(date +%s) + 60 ))
+          until s3 10 "the S3 port's first request" -o /dev/null http://127.0.0.1:18333/; do
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store's S3 port did not answer within a minute"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
             sleep 1
           done
           packages/envoy/internal/tests3/one-collection.sh prepare dispatch-e2e-objects "$RUNNER_TEMP/weed.log"
           store=http://127.0.0.1:18333/dispatch-e2e-files
-          curl -sf -X PUT -o /dev/null "$store" || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          s3 10 "the bucket" -X PUT -o /dev/null "$store" || { echo "::error::the file store made no bucket"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
           # The write is retried: the bucket exists as soon as the filer answers, while the
           # volume server the object lands in can still be coming up behind it.
-          for attempt in $(seq 1 60); do
-            printf 'ready' | curl -sf -X PUT --data-binary @- -o /dev/null "$store/readiness" && break
-            [ "$attempt" -lt 60 ] || { echo "::error::the file store took no object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          deadline=$(( $(date +%s) + 60 ))
+          until s3 15 "the readiness object" -X PUT --data-binary ready -o /dev/null "$store/readiness"; do
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store took no object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
             sleep 1
           done
-          [ "$(curl -sf "$store/readiness")" = ready ] || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
-          curl -sf -X DELETE -o /dev/null "$store/readiness"
+          # Read into a file, not a command substitution, whose subshell would keep s3's exit from
+          # ending the step.
+          s3 10 "the readiness object's read" -o "$RUNNER_TEMP/readiness" "$store/readiness" && [ "$(cat "$RUNNER_TEMP/readiness")" = ready ] ||
+            { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          s3 10 "the readiness object's delete" -X DELETE -o /dev/null "$store/readiness" ||
+            { echo "::error::the file store did not delete the readiness object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
           packages/envoy/internal/tests3/one-collection.sh check dispatch-e2e-objects "$RUNNER_TEMP/weed.log"
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.

@@ -31,6 +31,13 @@
 # that no write waits on survives it, since the next heartbeat lists the volume again. So no
 # write may grow a collection.
 #
+# EVERY WAIT HAS A BOUND, AND EVERY BOUND AND CHECK FAILS BY NAME. The script asks the store
+# things in two helpers only, shell and master, each under a bound of its own, and it waits in
+# one only, within, which ends by its seconds; every check and every wait fails by a message of
+# its own. TestEveryWaitAndCheckOfTheScriptHasACase (waits_test.go) reads this file and fails
+# when a request runs outside those helpers, a wait outside within, or a message is the want of
+# no case of TestOneCollectionFailsWhenTheRuleDoesNotHold, which runs each case with its cut.
+#
 # The log lines this reads are SeaweedFS 3.97's, which .github/ci-images.yaml pins by digest for
 # both images; whoever moves that row reads them again.
 set -eu
@@ -43,14 +50,6 @@ usage() {
 step=$1
 collection=$2
 log=$3
-# Every `weed shell` runs under timeout(1), which both images carry (busybox's in the SeaweedFS
-# image). Each one runs after registered below has seen a volume server, and is quick there:
-# in each of CI's four shard legs, the check step, then a read of the log and one shell, took under
-# a second. A shell still running at 60 s is talking to a store that stopped answering, and 60 s
-# fails it by name a minute in, rather than at the shard job's 22 minutes or go test's 20. It is
-# ended by KILL: weed shell catches TERM and exits 0, and busybox's timeout answers its program's
-# own exit, so a shell ended by TERM read as one that succeeded in the SeaweedFS image.
-shell="timeout -s KILL 60 weed shell -master=127.0.0.1:9333 -filer=127.0.0.1:8888"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -67,35 +66,72 @@ fail() {
   exit 1
 }
 
+# shell <file> <command>...: one `weed shell` running the commands, its output into file. It runs
+# under timeout(1), which both images carry (busybox's in the SeaweedFS image), and each one runs
+# after registered below has seen a volume server, where it is quick: in each of CI run
+# 44425048628's four shard legs every shell took under 0.2 s by the master's log, and with the
+# store held to a tenth of a CPU on a dev box the slowest took 1.8 s. A shell still running at 60 s
+# is talking to a store that stopped answering, and 60 s fails it by name a minute in, rather than
+# at the shard job's 22 minutes or go test's 20. It is ended by KILL: weed shell catches TERM and
+# exits 0, and busybox's timeout answers its program's own exit, so a shell ended by TERM read as
+# one that succeeded in the SeaweedFS image.
+shell() {
+  out=$1
+  shift
+  printf '%s\n' "$@" | timeout -s KILL 60 weed shell -master=127.0.0.1:9333 -filer=127.0.0.1:8888 > "$out" 2>&1 ||
+    fail "weed shell could not run" "$out"
+}
+
 # master <path> <file>: one request to the master's HTTP port, its answer and any error into file.
-# The master answers each of these within seconds: in the 33 server logs of the first runs of this
-# script on a dev box, the grow of step 2, the slowest, had answered, and the shell after it had
-# connected, within 2.1 s of the grow's request. So 10 s ends a request to a master that took the
-# connection and does not answer, by KILL as for a shell, and the loop that sent it tries again or
-# fails by name.
+# The master answers each of these within a second or so. The grow of step 2 is the slowest: it
+# answered within 0.012 s in CI's four shard legs, within 1.011 s in 75 server logs of this
+# script's runs on a dev box at loads up to 665, and within 0.4 s with the store held to a tenth of
+# a CPU. So 10 s ends a request to a master that took the connection and does not answer, by KILL
+# as for a shell, and the file says so; the wait that sent it tries again until its own seconds
+# run out.
 master() {
-  timeout -s KILL 10 wget -q -O - "http://127.0.0.1:9333$1" > "$2" 2>&1
+  timeout -s KILL 10 wget -q -O - "http://127.0.0.1:9333$1" > "$2" 2>&1 || {
+    status=$?
+    echo "(no answer: exit $status; 137 is the 10 s bound ending it)" >> "$2"
+    return "$status"
+  }
+}
+
+# within <seconds> <message> <file> <command>...: command, run a second apart until it succeeds,
+# and a failure by message, with file read, once that many seconds have passed without a success.
+# It counts seconds, not tries, because a try can take as long as its own bound: 60 tries of a
+# request bounded at 10 s can take 11 minutes, and on a store that took each connection and never
+# answered they held prepare past 330 s with no line. A try under way when the seconds run out
+# ends within its own bound after them. `within 0` tries once.
+within() {
+  seconds=$1 message=$2 seen=$3
+  shift 3
+  deadline=$(( $(date +%s) + seconds ))
+  until "$@"; do
+    [ "$(date +%s)" -lt "$deadline" ] || fail "$message" "$seen"
+    sleep 1
+  done
 }
 
 # 1. A volume server registered with the master, which the master's /dir/status names by its
 # "Url". A `weed shell` that connects before one has registered waits for ever: the master sends a
 # new client one message for each volume server it knows (master_grpc_server.go's KeepConnected),
 # so with none it sends nothing, and the shell prints dots until it is killed. So every step that
-# runs a shell reads this first: registered <tries> reads it up to that many times, a second apart.
-# prepare waits up to 60 tries, as a step of its own, which no cut of another step removes. In
-# 1,172 starts of this store read on a dev box, none held back on purpose, the volume server
-# registered before the S3 port answered or at most 0.52 s after it, and a stand-in that started
-# it 10 s after the port saw it register 10 to 11 s after; so a minute without one is a volume
-# server that did not start. check reads it once, since prepare saw it: a master that does not
-# answer, or that lists no volume server, is a store that stopped during the run, and it fails by
-# name at once.
+# runs a shell reads this first: registered <seconds> reads it for up to that many seconds.
+# prepare waits 60 s, as a step of its own, which no cut of another step removes. In 1,172 starts
+# of this store read on a dev box, none held back on purpose, the volume server registered before
+# the S3 port answered or at most 0.52 s after it; held back 10 s after the port, it registered 10
+# to 11 s after; held back 30 s, prepare passed in 32 s, and in 36 s with the store held to a tenth
+# of a CPU. So a minute without one is a volume server that did not start, and a master that
+# answers nothing ends this wait by name 71 s in at most: its minute, a second's pause and one
+# request's 10 s, well inside runScript's deadline (seaweedfs.go). check reads it once, since
+# prepare saw it: a master that does not answer, or that lists no volume server, is a store that
+# stopped during the run, and it fails by name at once.
+listed() {
+  master /dir/status "$work/status.txt" && grep -q '"Url"' "$work/status.txt"
+}
 registered() {
-  attempt=1
-  until master /dir/status "$work/status.txt" && grep -q '"Url"' "$work/status.txt"; do
-    [ "$attempt" -lt "$1" ] || fail "the master lists no volume server, so the store cannot take a write" "$work/status.txt"
-    attempt=$((attempt + 1))
-    sleep 1
-  done
+  within "$1" "the master lists no volume server, so the store cannot take a write" "$work/status.txt" listed
 }
 
 # 2. The collection's seven volumes, made by `/vol/grow` before anything is written. It runs
@@ -106,30 +142,25 @@ registered() {
 # are, registers with room for no volume: it learns the volume size limit from the master's first
 # answer, works out its room from it, and only then reports it (store.go's MaybeAdjustVolumeMax),
 # and until then the master answers 406. It reports it at once, or failing that in its next
-# heartbeat, 5 s later (constants.VolumePulseSeconds): 10 tries, a second apart, cover two of
-# those. In the 33 server logs above, the first grow after step 1 succeeded every time.
+# heartbeat, 5 s later (constants.VolumePulseSeconds): 10 s of tries, a second apart, cover two of
+# those. In the 33 server logs of the first runs of this script, the first grow after step 1
+# succeeded every time.
 grow() {
-  attempt=1
-  until master "/vol/grow?collection=$collection&count=7" "$work/grow.txt"; do
-    [ "$attempt" -lt 10 ] || fail "the master grew no volumes for $collection" "$work/grow.txt"
-    attempt=$((attempt + 1))
-    sleep 1
-  done
+  within 10 "the master grew no volumes for $collection" "$work/grow.txt" master "/vol/grow?collection=$collection&count=7" "$work/grow.txt"
 }
 
 # 3. The rule: every path into the collection, so each bucket and the filer's own files share
 # it. Then a directory under /etc/seaweedfs, made after the rule, which step 5 waits for.
 configure() {
   marker="rule-in-force-$$"
-  printf 'fs.configure -locationPrefix=/ -collection=%s -apply\nfs.mkdir /etc/seaweedfs/%s\n' "$collection" "$marker" |
-    $shell > "$work/rule.txt" 2>&1 || fail "weed shell could not run" "$work/rule.txt"
+  shell "$work/rule.txt" "fs.configure -locationPrefix=/ -collection=$collection -apply" "fs.mkdir /etc/seaweedfs/$marker"
 }
 
 # 4. The rule, read back. `weed shell` exits 0 when a command inside it fails, and fs.configure
 # returns success on a flag it cannot parse, so neither says whether the rule was stored. The
 # filer's configuration as fs.configure prints it must hold the rule instead.
 read_back() {
-  echo fs.configure | $shell > "$work/configuration.txt" 2>&1 || fail "weed shell could not run" "$work/configuration.txt"
+  shell "$work/configuration.txt" fs.configure
   tr -d ' \t\n' < "$work/configuration.txt" | grep -qF "{\"locationPrefix\":\"/\",\"collection\":\"$collection\"," ||
     fail "the filer holds no rule putting every path into $collection" "$work/rule.txt" "$work/configuration.txt"
 }
@@ -140,18 +171,13 @@ read_back() {
 # 0.2 s after a readiness write that had started at once, so the write grew a collection of its
 # bucket's name. Once the marker's line is logged, the rule before it is in force.
 wait_in_force() {
-  attempt=1
-  until grep -q "procesing.*$marker" "$log"; do
-    [ "$attempt" -lt 60 ] || fail "the filer did not put the rule for $collection in force within a minute" "$work/rule.txt"
-    attempt=$((attempt + 1))
-    sleep 1
-  done
+  within 60 "the filer did not put the rule for $collection in force within a minute" "$work/rule.txt" grep -q "procesing.*$marker" "$log"
 }
 
 # collection.list into collections.txt: one line per collection, `collection:"<name>"` and then
 # its counts, after the shell's prompt.
 list() {
-  echo collection.list | $shell > "$work/collections.txt" 2>&1 || fail "weed shell could not run" "$work/collections.txt"
+  shell "$work/collections.txt" collection.list
 }
 
 # alone <pattern>: collections.txt lists one collection, and its line matches pattern.
@@ -180,7 +206,7 @@ check() {
   if grep 'volume grow &' "$log" > "$work/growths.txt"; then
     fail "a write grew the store's storage: the master grew a collection for a write that found no writable volume" "$work/growths.txt"
   fi
-  registered 1
+  registered 0
   list
   alone "collection:\"$collection\"" ||
     fail "the store holds a collection other than $collection, so a write grew one" "$work/collections.txt"
