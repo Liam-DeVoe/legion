@@ -255,7 +255,6 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The root has no `test` script, so a bare `bun test` there is no command this repository keeps green: it would run every package's files in one process.
   CI runs this in each of these, in the job of ci.yaml that owns the package:
   packages/broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy, pi-legion, pi-shared, proof-editor and test-fixtures.
-  packages/test-fixtures' recipe leaves out `src/go-command.test.ts`, the one file of it that runs the real go, and `bun run test:go` there runs that file: ci.yaml's `test` job runs it after its setup-go, since the `test-fixtures` job sets up no Go, and on GitHub Actions the file fails rather than skips without a `go` on PATH.
   packages/dispatch's recipe builds `@legion/contracts` before it runs a test, as its `e2e` recipe does:
   rows of `e2e/__tests__` list a Playwright configuration, and Playwright evaluates it under Node, which reads that package's build output rather than its sources.
 
@@ -813,7 +812,7 @@ Each item below names a task and where its code is, then notes on it.
   a pull request that adds one and leaves the blocks alone is refused by `ci-filters`, naming the file and each filter whose block lacks it (run 42532845737 is such a refusal, of three filters over one new migration test).
   A pull request is judged on the merge of its head and the base, so another pull request's new test file reddens this check on a head that never changed, and the cure is the same command after a forward merge, in the same commit that resolves it.
   `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split.
-  That page says each Go cache family is keyed on the Go version alone and never on go.sum; `go-envoy` and `go-envoy-infra` are the exceptions, keyed on the hash of their module files too, with `ci-caches.yaml`'s `superseded` job deleting the entry each fill replaces, for the reasons `ci-caches.yaml`'s `envoy` and `envoy-infra` jobs give;
+  That page says each Go cache family is keyed on the Go version alone and never on go.sum; `go-envoy-infra` is the exception, keyed on the hash of its module files too, with `ci-caches.yaml`'s `envoy-infra-superseded` job deleting the entry each fill replaces, for the reason `ci-caches.yaml`'s `envoy-infra` job gives;
   the page keeps its text, because no role writes under `docs/solutions/`.
 
 - Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
