@@ -555,7 +555,7 @@ func refusedWithAdvice(answer response) bool {
 
 // An ask's text is written into its block, so it grows a document as an edit does, and is held to
 // what one upload may hold on a real Dispatch process as an edit is. Its answer is held on the
-// ask's node alone (dispatch://INFRA-1150 R3) and written into its block only while a process of
+// ask's node alone and written into its block only while a process of
 // another build serves, whose pages read it there (docs' rollWindowAskAttributes), so the answer
 // route runs with one registered (registerOtherBuild), and the bound must hold there as it holds
 // for the release before: edits of the asks of one document, each giving an option a
@@ -565,7 +565,7 @@ func refusedWithAdvice(answer response) bool {
 // out of its block. Either way the document stays within the cap, still reads, and a one-word edit
 // on a server that has not loaded it holds at most the bound. The 900 KB description this test
 // grew a document with before is refused outright now, for the 32,000 characters an ask's
-// question and options may hold together (INFRA-370), so the growth is written here in texts that
+// question and options may hold together, so the growth is written here in texts that
 // bound holds.
 func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	memory := newMemoryHarness(t)
@@ -689,7 +689,7 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 	}
 }
 
-// An answer is held on its ask's node (dispatch://INFRA-1150 R3), and while a process of another
+// An answer is held on its ask's node, and while a process of another
 // build serves, whose pages read it from the block, settlement writes it back into a block that
 // returns to the document (docs' rollWindowAskAttributes), so this test registers one
 // (registerOtherBuild) and returning blocks cannot grow a document past what one upload may hold

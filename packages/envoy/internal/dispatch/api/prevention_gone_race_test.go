@@ -15,12 +15,12 @@ import (
 )
 
 // TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding holds open, in a transaction,
-// the index pass of a version of a check's document that no longer holds the check - the owner row
+// the index pass of a version of a check's document that no longer holds the check - the owner lock
 // of the document first, as a version write takes it, then refs.IndexBlocks, which marks the check
 // gone and retracts every prevented_by it reads at it - appends a prevented_by from a risk of
 // another issue to that check through the pointer route meanwhile, and then commits the pass. A
 // pass that marks a check gone takes its prevented_by tuples with it (spec requirement
-// r-constraint-risk), and an append takes the owner row of the check's document before it reads
+// r-constraint-risk), and an append takes the owner lock of the check's document before it reads
 // whether the check is gone, so the append is held until the pass commits and is then refused,
 // naming the check, and the risk holds no prevented_by to it. An append that read the check with
 // no lock would read it live before the pass committed, and the pass would read the risk's tuples
@@ -45,7 +45,7 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 	owner := events.OwnerRows{}
 	owner.Add(rig.otherIssue, "", "the document of "+rig.otherIssueCheck)
 	if err := events.LockOwnerRows(ctx, tx, owner); err != nil {
-		t.Fatalf("take the owner row of the check's document: %v", err)
+		t.Fatalf("take the owner lock of the check's document: %v", err)
 	}
 	const kept = "A paragraph the next version keeps."
 	_, won, stated, err := refs.IndexBlocks(ctx, tx, rig.otherIssueDocumentID, 2, time.Now().UTC(), kept+"\n",
@@ -89,7 +89,7 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 		return waiting
 	})
 	if appended != nil {
-		t.Errorf("the append to %s answered %d %s while the index pass marking it gone was still open, want it held at the owner row of the check's document",
+		t.Errorf("the append to %s answered %d %s while the index pass marking it gone was still open, want it held at the owner lock of the check's document",
 			rig.otherIssueCheck, appended.Code, appended.Body.String())
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// decisionCensusKinds are the kinds of dispatch://INFRA-1150 `census --store` prints a line for,
+// decisionCensusKinds are the decision tie kinds `census --store` prints a line for,
 // each of which the database this file's test seeds holds rows and nodes of.
 var decisionCensusKinds = []string{
 	refs.TupleShaped, refs.TupleFromAsk, graphstore.TupleDecidedBy, graphstore.TupleFollowedBy,
@@ -58,7 +58,7 @@ func storeCensusOf(t *testing.T, databaseURL, when string) (int, string) {
 	return code, out.String()
 }
 
-// The store census over a database the server wrote holds every kind of dispatch://INFRA-1150 to
+// The store census over a database the server wrote holds every decision tie kind to
 // its projection with zero differences, and reads a difference once one shaped tuple reaches the
 // wrong node. The server is this build, serving a database of its own and publishing to a NATS of
 // the test's own, and every row is written through its API, as a deployment's are: a spec of three
@@ -66,9 +66,10 @@ func storeCensusOf(t *testing.T, databaseURL, when string) (int, string) {
 // which another person answers and a session follows; a reading inside that answered ask; a copy
 // of that ask on another document; an agent's decision shaping the first two requirements,
 // settling the ask (from_ask) and holding a reading of its own; and a note citing the issue. The
-// issue is routed to a role and commented on, as dispatch://INFRA-1149's census run addresses one
-// (addressTheRole), so every kind of that child holds rows too - the note's mention the block_ref
-// kind's, which holds no decision's shaped - and the census has no empty kind to refuse. `census --store` then
+// issue is routed to a role and commented on, as the store's own census run addresses one
+// (addressTheRole), so every kind the store held before holds rows too - the note's mention the
+// block_ref kind's, which holds no decision's shaped - and the census has no empty kind to
+// refuse. `census --store` then
 // prints one line for each of the eight kinds, each with rows and nodes or tuples and no difference
 // in either direction, the store-only lines for copied_from and moved_to, and exits 0. One shaped
 // tuple of the decision is then moved by SQL from the second requirement to the third, which no
@@ -124,7 +125,7 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	upload(agentBearer(), "choices.md", "::::decision{#d1 shaped=\""+pointer("r1")+" "+pointer("r2")+"\" from_ask=\"dispatch://"+issue+"/ask/"+askID+"\"}\n"+
 		"REST for every service this quarter.\n\n:::reading{#g3}\nThe agent reads it so.\n:::\n::::\n",
 		map[string]any{"kind": "session", "id": decisionCensusSession})
-	// A note citing the issue, so INFRA-1149's block_ref kind holds a block's mention: a decision's
+	// A note citing the issue, so the block_ref kind holds a block's mention: a decision's
 	// shaped is held by the shaped kind alone, and no other block of the fixture cites anything.
 	upload(asUser(dispatchTestLogin), "notes.md", "The notes cite dispatch://"+issue+".\n", nil)
 	process.call(t, http.MethodPatch, "/api/v1/issues/"+issue, `{"route":"role:`+decisionCensusRole+`"}`, http.StatusOK)
@@ -155,7 +156,7 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	// The decision's tuple into r2 moves to r3: the rows still name r1 and r2 and the store now
 	// states r1 and r3, so both sides count three, and the census names the row of r2 that no
 	// tuple states and the tuple into r3 that no row projects, and nothing of r1, whose row and
-	// tuple agree (dispatch://INFRA-1150 c-census: every reference, triple by triple).
+	// tuple agree (c-census: every reference, triple by triple).
 	decision := issue + "/choices-md#d1"
 	tag, err := database.Pool.Exec(ctx, `
 		update graph_tuples set to_id = $3

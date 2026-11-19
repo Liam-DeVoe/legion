@@ -26,7 +26,7 @@ export const DESIGN_GATE_STEPS = ["criteria", "spec"] as const;
 
 /** The steps a Dispatch project row's `gated_steps` may hold as this build reads it: the
  * design-gate steps and `decisions`, which a Dispatch server of the release before still
- * answers (dispatch://INFRA-1150 R11). This build writes `decisions` nowhere.
+ * answers. This build writes `decisions` nowhere.
  */
 // kept for one release: contract-read-side
 export const GATED_STEPS = ["decisions", ...DESIGN_GATE_STEPS] as const;

@@ -584,7 +584,7 @@ func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 	return nodes, nil
 }
 
-// TargetNames is the words each of targets is named by where a reader is shown a reference to it
+// TargetNames is the words each of targets is named by where who is shown a reference to it
 // rather than its own text: an issue's title, a document's name, an ask's question, a comment's
 // or a message's body, a component's title and a block's text, each cut to the bound an edge's
 // excerpt is cut to (resolvedNode.name), which is what GET /api/v1/references already shows
@@ -592,11 +592,12 @@ func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 // them (TargetOf), so an artifact's id is its ref_key.
 //
 // One entry per target that resolves for who, as Nodes resolves it: a target with no entry is
-// one nothing addresses now — its node was deleted or is gone, its kind is one this build cannot
-// address (resolveNodes), or it is reserved for an author who is not who, which answers what an
-// address nobody holds answers — and that is what a caller draws as a reference whose target is
-// gone. Each kind is read in one statement whatever the number of targets, so a batch costs a
-// statement per kind, not per target.
+// one nothing addresses now — its node was deleted or is gone, or its kind is one this build
+// cannot address (resolveNodes) — or one who may not see, which each kind's loader leaves out as
+// it leaves out a node that does not exist (visibility.go), a target reserved for an author who
+// is not who among them, which answers as an address nobody holds does (Node). A caller draws
+// either as a reference whose target is gone. Each kind is read in one statement whatever the
+// number of targets, so a batch costs a statement per kind, not per target.
 func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
 	resolved, err := resolveTargets(ctx, q, who, true, targets)
 	if err != nil {
@@ -742,7 +743,7 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 }
 
 // RetiredDecisionsSlug is the slug of an issue's decisions document, which the decisions step
-// retires (dispatch://INFRA-1150 R11): the address `dispatch://KEY/artifact/<this slug>` of a
+// retires: the address `dispatch://KEY/artifact/<this slug>` of a
 // retired one resolves to the issue KEY, as every retired document's address does
 // (loadArtifactNodes). It is the one place the server spells that slug: api refuses a new
 // document that would take it.
@@ -754,7 +755,7 @@ const RetiredDecisionsSlug = "decisions-md"
 //
 // The address of a retired document of an issue (artifacts.retired_at, docs.RetireDocument),
 // `dispatch://KEY/artifact/<slug>` read by its ref_key, resolves to the issue KEY, whose node it
-// answers in the document's place (dispatch://INFRA-1150 R8, R11): the document plays no part in
+// answers in the document's place: the document plays no part in
 // its issue any more, and a citation of it stays valid and reaches what took its place, the issue
 // and its reads. The document read by its uuid is the document still, so its versions, its blocks
 // and its own edges stay readable.

@@ -37,7 +37,7 @@ type identityRow struct {
 }
 
 // TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn is the identity half of
-// dispatch://INFRA-1149's c-person-graph, the rows its shell driver cannot present: a session
+// the check c-person-graph, the rows its shell driver cannot present: a session
 // the server proved a person's, which needs the secrets broker's DPoP-bound token, and a role
 // that person's session held, which needs a claim store this pod's fake Envoy does not have.
 // Here the session is proved through the server's own broker-token path, with an ES256 key the

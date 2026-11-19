@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The kinds of node that record how a piece of work was reasoned about, as the graph addresses
@@ -179,12 +181,13 @@ type pointerRule struct {
 // pointerRules are the type rules of the four pointer tuples and of a risk's place, the one table
 // of them (spec requirement r-constraint-risk). Every write of this store holds each
 // relation it appends whose kind is here to its rule, in the write's own transaction, before it
-// appends anything (checkPointers, from Write and Caused), so no route keeps a type rule of its
-// own and a move through cybermonklabs/legion#4180's `/parent` meets the same one; the pointer
-// route reads the kinds it writes from here too (PointerKinds). A route keeps only what no type
-// rule says: api's pointerEnd answers a constraint of another issue as no far end of this one, a
-// 404, and a write that asserts a prevented_by takes the owner row of its check's document before
-// it reads a node (api's lockReasoningOwners). A kind that is not here is let through to any node.
+// appends anything (pointerCheck, from QueueWrite and QueueCaused), so no route keeps a type rule
+// of its own and a move through cybermonklabs/legion#4180's `/parent` meets the same one; the
+// pointer route reads the kinds it writes from here too (PointerKinds). A route keeps only what no
+// type rule says: api's pointerEnd answers a constraint of another issue as no far end of this
+// one, a 404, and a write that asserts a prevented_by takes the owner row of its check's document
+// before it reads a node (api's lockReasoningOwners). A kind that is not here is let through to
+// any node.
 //
 // The table rules the types, the place of a triggered_by's far end in the order lenses were
 // invoked, and the project and the document of a risk's prevented_by: a check of any issue of the
@@ -386,9 +389,9 @@ var (
 var ErrPointerNotHeld = errors.New("the node holds no such pointer to retarget")
 
 // errPointerInArms refuses a relation pointerRules rules handed to WriteArms, and a part_of at a
-// node of a kind that takes a node reserved for its author (checkPlacedVisibility): an arm spliced
-// into a caller's statement runs with no read of the nodes its rule names, so such a tuple is
-// appended only through Write or Caused, which check it in their transaction.
+// node of a kind that takes a node reserved for its author (pointerCheck): an arm spliced into a
+// caller's statement runs with no read of the nodes its rule names, so such a tuple is appended
+// only through QueueWrite or QueueCaused, which check it in their write phase.
 var errPointerInArms = errors.New("a pointer tuple, and a part_of at a kind that takes a node reserved for its author, " +
 	"is checked against its rule in the write's own transaction, by the store's Write or Caused, and never in the arms " +
 	"of a caller's statement")
@@ -448,8 +451,8 @@ func (e *VisibilityWiderThanParentError) Named(child, parent string) string {
 // placesUnderAuthorOnly is whether a relation of kind at the node toKind and toID name places a
 // node under one whose kind takes a node reserved for its author (AdmitAuthorOnly): a part_of,
 // which places a lens on the node it was invoked on and a finding or a risk under its lens, at a
-// lens, a finding, a risk, a constraint or an interaction. checkPlacedVisibility holds each such
-// tuple to the visibility of both its ends; a part_of at a node of any other kind - a block under
+// lens, a finding, a risk, a constraint or an interaction. A pointerCheck holds each such tuple
+// to the visibility of both its ends; a part_of at a node of any other kind - a block under
 // its document, a comment's block under its comment - is at a node no write reserves for its
 // author, and is read for nothing.
 func placesUnderAuthorOnly(kind, toKind, toID string) bool {
@@ -470,89 +473,10 @@ func storedKindOf(kind string) string {
 	return kind
 }
 
-// checkPlacedVisibility holds every part_of tuple of tuples the write asserts at a node of a kind
-// that takes a node reserved for its author (placesUnderAuthorOnly) to the visibility of its two
-// ends, before the write appends anything: a tuple out of a node that is not reserved for its
-// author, at a node that is, is a VisibilityWiderThanParentError naming both. A lens stands on the
-// node it was invoked on, a finding and a risk under their lens and a constraint under its issue
-// through that one tuple, so this one rule holds every route that places one, and a move to a new
-// parent, which asserts a new part_of. An end the write states is read as the write leaves its
-// row, since Write and Caused call this once the write's nodes are written; an end the store holds
-// no row of is visible to every reader, as every read answers one (refs.VisibleKind).
-//
-// An end the write's own insert made (made, by the position of nodes) holds the visibility the
-// write gave it, so it is decided here and never read: a child made reserved for its author passes
-// whatever its parent is, and a tuple both of whose ends the write made is decided off the two.
-// Every other end of such a tuple is read in one statement, and a write that asserts none - every
-// write of a block, a comment or any node no reasoning route writes - or whose every such tuple is
-// decided off what it made sends none. Where made is nil (Caused) every end is read. It takes no
-// lock: no writer of these kinds writes a node again at another visibility (a write of a node's
-// state keeps the row's own), so the visibility it reads is the one each end keeps.
-func checkPlacedVisibility(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tuples []Tuple) error {
-	var placed []int
-	for index := range tuples {
-		if tuple := &tuples[index]; tuple.Asserted && tuple.ToKind != KindValue && placesUnderAuthorOnly(tuple.Kind, tuple.ToKind, tuple.ToID) {
-			placed = append(placed, index)
-		}
-	}
-	if len(placed) == 0 {
-		return nil
-	}
-	// reserved holds whether each end the write's insert made is reserved for its author, and then
-	// each end read from the store that is.
-	reserved := map[pointerTarget]bool{}
-	for index := range made {
-		if made[index] {
-			reserved[pointerTarget{kind: storedKindOf(nodes[index].Kind), id: nodes[index].ID}] = nodes[index].Visibility == VisibilityAuthor
-		}
-	}
-	var kinds, ids []string
-	for _, index := range placed {
-		tuple := &tuples[index]
-		child := pointerTarget{kind: storedKindOf(tuple.FromKind), id: tuple.FromID}
-		if reserved[child] {
-			continue
-		}
-		for _, end := range [...]pointerTarget{child, {kind: storedKindOf(tuple.ToKind), id: tuple.ToID}} {
-			if _, decided := reserved[end]; !decided {
-				kinds, ids = append(kinds, end.kind), append(ids, end.id)
-			}
-		}
-	}
-	if len(kinds) > 0 {
-		rows, err := tx.Query(ctx, `
-			select distinct held.kind, held.id from graph_nodes held
-			join unnest($1::text[], $2::text[]) as named(kind, id) on named.kind = held.kind and named.id = held.id
-			where held.visibility = $3
-		`, kinds, ids, VisibilityAuthor)
-		if err != nil {
-			return fmt.Errorf("read the visibility of the nodes a part_of places and its parents: %w", err)
-		}
-		var end pointerTarget
-		if _, err := pgx.ForEachRow(rows, []any{&end.kind, &end.id}, func() error {
-			reserved[end] = true
-			return nil
-		}); err != nil {
-			return fmt.Errorf("read the visibility of the nodes a part_of places and its parents: %w", err)
-		}
-	}
-	for _, index := range placed {
-		tuple := &tuples[index]
-		if reserved[pointerTarget{kind: storedKindOf(tuple.ToKind), id: tuple.ToID}] &&
-			!reserved[pointerTarget{kind: storedKindOf(tuple.FromKind), id: tuple.FromID}] {
-			return &VisibilityWiderThanParentError{
-				ChildKind: AddressKind(tuple.FromKind, tuple.FromID), ChildID: tuple.FromID,
-				ParentKind: AddressKind(tuple.ToKind, tuple.ToID), ParentID: tuple.ToID,
-			}
-		}
-	}
-	return nil
-}
-
 // pointerTarget is one far end of a pointer, as a lens's has_kind tuples hold it.
 type pointerTarget struct{ kind, id string }
 
-// pointerEnds is what checkPointers reads of the nodes a write's ruled tuples name: the block type
+// pointerEnds is what a pointerCheck reads of the nodes a write's ruled tuples name: the block type
 // of each block an end of one is ruled by, the project of the document that holds it and whether
 // that document is retired, the project of each near end an ownProject rule compares with its far
 // end's, the kinds each lens holds now, and where each lens at either end of a triggered_by stands
@@ -588,17 +512,44 @@ func (a invocation) before(b invocation) bool {
 	return a.written >= 0 && (b.written < 0 || a.written < b.written)
 }
 
-// checkPointers holds every relation of tuples that pointerRules rules to its rule, in the write's
-// transaction, before the write appends a tuple, and answers the first breach: an
-// InvalidPointerError, or ErrLensKindAsserted or ErrLensKindKept. It then holds every part_of the
-// write asserts at a node of a kind that takes a node reserved for its author to the visibility of
-// both its ends (checkPlacedVisibility): a VisibilityWiderThanParentError. nodes are the nodes the
-// write writes (Write) or wrote (Caused), whose rows it holds already, and made which of them, by
-// position, the write's own insert made (writeNodes; nil where none, or unknown), which hold no
-// tuple of the store yet, so their kinds are read off this write alone. A write no rule holds a
-// tuple of - every write of this store but those of the reasoning kinds above - sends no
-// statement here and makes nothing. A refusal ends the caller's transaction, which rolls the
-// nodes it wrote back with it, as ErrProjectMoved does.
+// pointerCheck is the check of one write's ruled relations (pointerRules) and of the part_of
+// tuples it places at a node of a kind that takes a node reserved for its author
+// (placesUnderAuthorOnly), planned in Go off the write's own nodes and tuples before anything of
+// the write is queued (planPointerCheck): what the rules ask of the store, read in statements of
+// the write phase queued between the node write and the append (queue), and what the write
+// decides itself. The last of those statements' callbacks decides (decide), so the refusal is the
+// result Send answers for the write; a check that reads nothing is decided before anything is
+// queued, so its refusal sends nothing.
+type pointerCheck struct {
+	tuples        []Tuple
+	ruled, placed []int
+	ends          pointerEnds
+	// reserved holds, for the ends of the placed part_of tuples, whether each is reserved for its
+	// author: as the write writes it, where the write decides it, and then as the store holds it.
+	reserved map[pointerTarget]bool
+	// The reads the rules ask for: the blocks whose type an end is ruled by, the lenses at either
+	// end of a triggered_by, the near ends of an ownProject rule no node of the write states the
+	// project of, the lenses whose has_kind tuples the write states and whose row it does not
+	// write, which it locks, the lenses whose kinds a rule reads, and the ends of a placed part_of
+	// whose visibility the write does not decide.
+	blocks, invoked, locked, lenses []string
+	projectKinds, projectIDs        []string
+	visibilityKinds, visibilityIDs  []string
+}
+
+// planPointerCheck plans the check of every relation of tuples that pointerRules rules and every
+// part_of tuples asserts at a node of a kind that takes a node reserved for its author: an
+// InvalidPointerError, ErrLensKindAsserted or ErrLensKindKept for the first breach of a rule, and
+// a VisibilityWiderThanParentError for a part_of out of a node that is not reserved for its author
+// at one that is. nodes are the nodes the write writes (QueueWrite) or wrote (QueueCaused), whose
+// rows the write holds before the check reads, and written says the write's own node write runs
+// in the same append, so the visibility of each node it writes and does not restate is the one
+// the node carries, decided in Go; for a write held for its cause (QueueCaused) every end is
+// read. A write no rule holds a tuple of - every write of this store but those of the reasoning
+// kinds and their places - answers nil and plans nothing, and one whose every rule the write
+// decides itself is decided here, before anything is queued: it answers the refusal, or nil.
+// A refusal ends the caller's transaction, which rolls the nodes it wrote back with it, as
+// ErrProjectMoved does.
 //
 // An assertion is held to the kinds of both its ends, a risk's prevented_by to the project of its
 // risk and to a document that is not retired - the check stands in a document of that project,
@@ -613,185 +564,276 @@ func (a invocation) before(b invocation) bool {
 // of another - is taken, and a second assertion is refused. Two writes asserting a kind of one
 // lens must not both read it kindless, so a write that asserts or retracts a has_kind tuple out of
 // a lens it does not itself write first takes that lens's graph_nodes row `for no key update`,
-// after the rows the write took already and before it appends, as the lock order on
-// api/inbox_read.go's markInboxReadThreads says. A risk's part_of is read against the kinds its
-// lens holds once the whole write is read, so a write that makes a pre-mortem and its risks
-// together may state them in any order.
-func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tuples []Tuple) error {
-	var ruled []int
+// after the rows the write took already and before it reads the lens's kinds and appends, as the
+// lock order on api/inbox_read.go's markInboxReadThreads says. A risk's part_of is read against
+// the kinds its lens holds once the whole write is read, so a write that makes a pre-mortem and
+// its risks together may state them in any order.
+//
+// A placed part_of is decided off the visibility of its two ends as the write leaves their rows: a
+// child reserved for its author passes whatever its parent is, and every other end the write does
+// not decide is read in one statement. An end the store holds no row of is visible to every
+// reader, as every read answers one (refs.VisibleKind). The read takes no lock: no writer of these
+// kinds writes a node again at another visibility (a write of a node's state keeps the row's own),
+// so the visibility it reads is the one each end keeps.
+func planPointerCheck(nodes []Node, tuples []Tuple, written bool) (*pointerCheck, error) {
+	check := &pointerCheck{tuples: tuples}
 	for index := range tuples {
-		if tuple := &tuples[index]; tuple.ToKind != KindValue && pointerRuleOf(tuple.Kind, tuple.FromKind) != nil {
-			ruled = append(ruled, index)
+		tuple := &tuples[index]
+		if tuple.ToKind == KindValue {
+			continue
+		}
+		if pointerRuleOf(tuple.Kind, tuple.FromKind) != nil {
+			check.ruled = append(check.ruled, index)
+		}
+		if tuple.Asserted && placesUnderAuthorOnly(tuple.Kind, tuple.ToKind, tuple.ToID) {
+			check.placed = append(check.placed, index)
 		}
 	}
-	if len(ruled) > 0 {
-		ends, err := readPointerEnds(ctx, tx, nodes, made, tuples, ruled)
-		if err != nil {
-			return err
-		}
-		if err := ends.check(tuples, ruled); err != nil {
-			return err
-		}
+	if len(check.ruled) == 0 && len(check.placed) == 0 {
+		return nil, nil
 	}
-	return checkPlacedVisibility(ctx, tx, nodes, made, tuples)
+	check.planEnds(nodes)
+	check.planPlaces(nodes, written)
+	if len(check.blocks)+len(check.invoked)+len(check.projectIDs)+len(check.locked)+len(check.lenses)+len(check.visibilityIDs) == 0 {
+		return nil, check.decide()
+	}
+	return check, nil
 }
 
-// readPointerEnds reads what the ruled tuples' rules ask of their ends: one statement for the
-// type of every block an end is ruled by, the project of its document and whether that document is
-// retired, one for the project of each near end of an ownProject rule that no node of the write
-// states, one for where each lens at either end of a triggered_by stands in the order lenses were
-// invoked, the lock of every lens whose has_kind tuples the write states and does not write the
-// node of, and one for the has_kind tuples each named lens holds now, which a lens the write's
-// insert made holds none of and is not read for.
-func readPointerEnds(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tuples []Tuple, ruled []int) (pointerEnds, error) {
-	var blocks, lenses, locked, invoked []string
-	var placed []pointerTarget
-	for _, index := range ruled {
-		tuple := &tuples[index]
+// planEnds plans what the ruled tuples' rules ask of their ends: the type of every block an end is
+// ruled by, the project of its document and whether that document is retired, the project of each
+// near end of an ownProject rule - the one a node of the write states, which its row holds already
+// (a node's project never moves, ErrProjectMoved), and otherwise the one its graph_nodes row holds
+// - where each lens at either end of a triggered_by stands in the order lenses were invoked, the
+// lock of every lens whose has_kind tuples the write states and does not write the node of, and
+// the has_kind tuples each named lens holds now, which a lens the write makes holds none of.
+func (c *pointerCheck) planEnds(nodes []Node) {
+	if len(c.ruled) == 0 {
+		return
+	}
+	c.ends.lensKinds = map[string][]pointerTarget{}
+	var near []pointerTarget
+	for _, index := range c.ruled {
+		tuple := &c.tuples[index]
 		rule := pointerRuleOf(tuple.Kind, tuple.FromKind)
 		if tuple.Asserted && tuple.FromKind == blockKind && typesBlocks(rule.from) {
-			blocks = append(blocks, tuple.FromID)
+			c.blocks = append(c.blocks, tuple.FromID)
 		}
 		if tuple.Asserted && tuple.ToKind == blockKind && typesBlocks(rule.to) {
-			blocks = append(blocks, tuple.ToID)
+			c.blocks = append(c.blocks, tuple.ToID)
 		}
 		if tuple.Asserted && rule.ownProject {
-			placed = append(placed, pointerTarget{kind: tuple.FromKind, id: tuple.FromID})
+			near = append(near, pointerTarget{kind: tuple.FromKind, id: tuple.FromID})
 		}
 		switch {
 		case rule.single && tuple.FromKind == KindLens:
-			lenses = append(lenses, tuple.FromID)
+			c.lenses = append(c.lenses, tuple.FromID)
 			if !slices.ContainsFunc(nodes, func(node Node) bool { return node.Kind == KindLens && node.ID == tuple.FromID }) {
-				locked = append(locked, tuple.FromID)
+				c.locked = append(c.locked, tuple.FromID)
 			}
 		case rule.underKind != "" && tuple.Asserted && tuple.ToKind == KindLens:
-			lenses = append(lenses, tuple.ToID)
+			c.lenses = append(c.lenses, tuple.ToID)
 		case rule.earlier && tuple.Asserted && tuple.FromKind == KindLens && tuple.ToKind == KindLens:
-			invoked = append(invoked, tuple.FromID, tuple.ToID)
+			c.invoked = append(c.invoked, tuple.FromID, tuple.ToID)
 		}
 	}
-	var ends pointerEnds
-	if len(blocks) > 0 {
-		if err := ends.readBlocks(ctx, tx, blocks); err != nil {
-			return pointerEnds{}, err
-		}
+	if len(c.blocks) > 0 {
+		c.ends.blockTypes, c.ends.blockProjects, c.ends.blockRetired = map[string]string{}, map[string]string{}, map[string]bool{}
 	}
-	if len(invoked) > 0 {
-		order, err := readInvocations(ctx, tx, invoked, tuples)
-		if err != nil {
-			return pointerEnds{}, err
-		}
-		ends.invoked = order
-	}
-	if len(placed) > 0 {
-		projects, err := readNodeProjects(ctx, tx, nodes, placed)
-		if err != nil {
-			return pointerEnds{}, err
-		}
-		ends.nodeProjects = projects
-	}
-	if len(locked) > 0 {
-		slices.Sort(locked)
-		if _, err := tx.Exec(ctx, `
-			select 1 from graph_nodes held
-			where held.kind = $1 and held.id = any($2::text[])
-			order by held.id
-			for no key update of held
-		`, KindLens, slices.Compact(locked)); err != nil {
-			return pointerEnds{}, fmt.Errorf("lock the lenses whose kind the write states: %w", err)
-		}
-	}
-	if len(lenses) > 0 {
-		slices.Sort(lenses)
-		lenses = slices.Compact(lenses)
-		ends.lensKinds = make(map[string][]pointerTarget, len(lenses))
-		stored := lenses[:0:0]
-		for _, lens := range lenses {
-			at := slices.IndexFunc(nodes, func(node Node) bool { return node.Kind == KindLens && node.ID == lens })
-			if at >= 0 && made != nil && made[at] {
+	if len(near) > 0 {
+		c.ends.nodeProjects = make(map[pointerTarget]string, len(near))
+		for _, end := range near {
+			if _, stated := c.ends.nodeProjects[end]; stated {
 				continue
 			}
-			stored = append(stored, lens)
+			if at := slices.IndexFunc(nodes, func(node Node) bool {
+				return node.Kind == end.kind && node.ID == end.id && node.Project != ""
+			}); at >= 0 {
+				c.ends.nodeProjects[end] = nodes[at].Project
+				continue
+			}
+			c.projectKinds, c.projectIDs = append(c.projectKinds, end.kind), append(c.projectIDs, end.id)
 		}
-		if len(stored) > 0 {
-			if err := readLensKinds(ctx, tx, stored, ends.lensKinds); err != nil {
-				return pointerEnds{}, err
+	}
+	for _, list := range []*[]string{&c.invoked, &c.locked, &c.lenses} {
+		slices.Sort(*list)
+		*list = slices.Compact(*list)
+	}
+}
+
+// planPlaces plans what the placed part_of tuples ask of their ends: the visibility of each end
+// the write does not decide. Where written says so, an end the write writes and does not restate
+// holds the visibility the write gives it, so it is decided here and never read: a child written
+// reserved for its author passes whatever its parent is, and a tuple both of whose ends the write
+// writes so is decided off the two.
+func (c *pointerCheck) planPlaces(nodes []Node, written bool) {
+	if len(c.placed) == 0 {
+		return
+	}
+	c.reserved = map[pointerTarget]bool{}
+	if written {
+		for index := range nodes {
+			if node := &nodes[index]; !node.Restates {
+				c.reserved[pointerTarget{kind: storedKindOf(node.Kind), id: node.ID}] = node.Visibility == VisibilityAuthor
 			}
 		}
 	}
-	return ends, nil
+	for _, index := range c.placed {
+		tuple := &c.tuples[index]
+		child := pointerTarget{kind: storedKindOf(tuple.FromKind), id: tuple.FromID}
+		if c.reserved[child] {
+			continue
+		}
+		for _, end := range [...]pointerTarget{child, {kind: storedKindOf(tuple.ToKind), id: tuple.ToID}} {
+			if _, decided := c.reserved[end]; !decided {
+				c.visibilityKinds, c.visibilityIDs = append(c.visibilityKinds, end.kind), append(c.visibilityIDs, end.id)
+			}
+		}
+	}
 }
 
-// readLensKinds reads into kinds the has_kind tuples each of lenses holds now, in one statement,
-// each lens's in the order CurrentOut answers them (by far end).
-func readLensKinds(ctx context.Context, tx pgx.Tx, lenses []string, kinds map[string][]pointerTarget) error {
-	rows, err := tx.Query(ctx, `
-		select newest.from_id, newest.to_kind, newest.to_id from (
-			`+CurrentTupleRead(`t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_id, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = $3 and t.to_kind <> '`+KindValue+`'`)+`
-		) newest
-		where newest.asserted
-		order by newest.from_id, newest.to_kind, newest.to_id
-	`, KindLens, lenses, TupleHasKind)
-	if err != nil {
-		return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
+// pointerRead is one statement of a pointerCheck: what it reads, as a failure of it is named, and
+// the callback that reads its rows into the check.
+type pointerRead struct {
+	what, sql string
+	args      []any
+	fill      func(pgx.Rows) error
+}
+
+// queue queues on b the statements that read what the check asks of the store, in the order
+// readBlocks, the invocations, the projects, the lock, the lens kinds and the visibility read
+// them, after the node write and before the append that QueueWrite and QueueCaused queue around
+// it. Each statement's callback reads its rows into the check, and the last one's decides it, so
+// the refusal is that statement's result. A nil check - a write planPointerCheck decided, or one
+// no rule holds a tuple of - queues nothing.
+func (c *pointerCheck) queue(b *store.WriteBatch) {
+	if c == nil {
+		return
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var lens string
-		var target pointerTarget
-		if err := rows.Scan(&lens, &target.kind, &target.id); err != nil {
-			return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
+	var reads []pointerRead
+	if len(c.blocks) > 0 {
+		reads = append(reads, c.readBlocks())
+	}
+	if len(c.invoked) > 0 {
+		reads = append(reads, c.readInvocations())
+	}
+	if len(c.projectIDs) > 0 {
+		reads = append(reads, c.readNodeProjects())
+	}
+	if len(c.locked) > 0 {
+		reads = append(reads, pointerRead{
+			what: "lock the lenses whose kind the write states",
+			sql: `select 1 from graph_nodes held
+				where held.kind = $1 and held.id = any($2::text[])
+				order by held.id
+				for no key update of held`,
+			args: []any{KindLens, c.locked},
+			fill: func(pgx.Rows) error { return nil },
+		})
+	}
+	if len(c.lenses) > 0 {
+		reads = append(reads, c.readLensKinds())
+	}
+	if len(c.visibilityIDs) > 0 {
+		reads = append(reads, c.readVisibility())
+	}
+	for index, read := range reads {
+		last := index == len(reads)-1
+		b.Queue(read.what, read.sql, read.args...).Query(func(rows pgx.Rows) error {
+			if err := read.fill(rows); err != nil {
+				return fmt.Errorf("%s: %w", read.what, err)
+			}
+			if last {
+				return c.decide()
+			}
+			return nil
+		})
+	}
+}
+
+// decide holds each ruled tuple to its rule (pointerEnds.check), and then each placed part_of to
+// the visibility of its two ends, off what the write decided and the store answered.
+func (c *pointerCheck) decide() error {
+	if len(c.ruled) > 0 {
+		if err := c.ends.check(c.tuples, c.ruled); err != nil {
+			return err
 		}
-		kinds[lens] = append(kinds[lens], target)
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
+	for _, index := range c.placed {
+		tuple := &c.tuples[index]
+		if c.reserved[pointerTarget{kind: storedKindOf(tuple.ToKind), id: tuple.ToID}] &&
+			!c.reserved[pointerTarget{kind: storedKindOf(tuple.FromKind), id: tuple.FromID}] {
+			return &VisibilityWiderThanParentError{
+				ChildKind: AddressKind(tuple.FromKind, tuple.FromID), ChildID: tuple.FromID,
+				ParentKind: AddressKind(tuple.ToKind, tuple.ToID), ParentID: tuple.ToID,
+			}
+		}
 	}
 	return nil
 }
 
-// readInvocations reads where each of lenses stands in the order lenses were invoked
-// (invocation), in one statement: the seq of the first part_of tuple the store holds of it
-// (InvokedSeqSQL), and, for a lens the store places nowhere, the position of its first asserted
-// part_of among tuples, the write's own. The order is fixed once a lens is placed, so it takes no
-// lock: a lens another transaction places later stands later, and a lens no committed write placed
-// is no far end any route reads.
-func readInvocations(ctx context.Context, tx pgx.Tx, lenses []string, tuples []Tuple) (map[string]invocation, error) {
-	slices.Sort(lenses)
-	lenses = slices.Compact(lenses)
-	rows, err := tx.Query(ctx, `
-		select named.id, coalesce(`+InvokedSeqSQL(`named.id`)+`, 0)
-		from unnest($1::text[]) as named(id)
-	`, lenses)
-	if err != nil {
-		return nil, fmt.Errorf("read where the lenses a triggered_by names were invoked: %w", err)
+// readLensKinds reads the has_kind tuples each lens of the check holds now, in one statement,
+// each lens's in the order CurrentOut answers them (by far end).
+func (c *pointerCheck) readLensKinds() pointerRead {
+	return pointerRead{
+		what: "read the kinds of the lenses a pointer names",
+		sql: `select newest.from_id, newest.to_kind, newest.to_id from (
+			` + CurrentTupleRead(`t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_id, t.to_kind, t.to_id, t.asserted`,
+			`t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = $3 and t.to_kind <> '`+KindValue+`'`) + `
+			) newest
+			where newest.asserted
+			order by newest.from_id, newest.to_kind, newest.to_id`,
+		args: []any{KindLens, c.lenses, TupleHasKind},
+		fill: func(rows pgx.Rows) error {
+			for rows.Next() {
+				var lens string
+				var target pointerTarget
+				if err := rows.Scan(&lens, &target.kind, &target.id); err != nil {
+					return err
+				}
+				c.ends.lensKinds[lens] = append(c.ends.lensKinds[lens], target)
+			}
+			return nil
+		},
 	}
-	defer rows.Close()
-	order := make(map[string]invocation, len(lenses))
-	for rows.Next() {
-		var lens string
-		at := invocation{written: -1}
-		if err := rows.Scan(&lens, &at.seq); err != nil {
-			return nil, fmt.Errorf("read where the lenses a triggered_by names were invoked: %w", err)
-		}
-		if at.seq == 0 {
-			at.written = slices.IndexFunc(tuples, func(tuple Tuple) bool {
-				return tuple.Asserted && tuple.FromKind == KindLens && tuple.FromID == lens &&
-					tuple.Kind == TuplePartOf && tuple.ToKind != KindValue
-			})
-		}
-		order[lens] = at
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read where the lenses a triggered_by names were invoked: %w", err)
-	}
-	return order, nil
 }
 
-// readBlocks reads into e the type of each block of ids that a document holds now, the project of
-// that document and whether it is retired (artifacts.retired_at, docs.RetireDocument), read off its
-// document_blocks row by node_id, the block's address that every row carries, through that
+// readInvocations reads where each lens of either end of a triggered_by stands in the order lenses
+// were invoked (invocation), in one statement: the seq of the first part_of tuple the store holds
+// of it (InvokedSeqSQL), and, for a lens the store places nowhere, the position of its first
+// asserted part_of among the write's own tuples. The order is fixed once a lens is placed, so it
+// takes no lock: a lens another transaction places later stands later, and a lens no committed
+// write placed is no far end any route reads.
+func (c *pointerCheck) readInvocations() pointerRead {
+	return pointerRead{
+		what: "read where the lenses a triggered_by names were invoked",
+		sql: `select named.id, coalesce(` + InvokedSeqSQL(`named.id`) + `, 0)
+			from unnest($1::text[]) as named(id)`,
+		args: []any{c.invoked},
+		fill: func(rows pgx.Rows) error {
+			c.ends.invoked = make(map[string]invocation, len(c.invoked))
+			for rows.Next() {
+				var lens string
+				at := invocation{written: -1}
+				if err := rows.Scan(&lens, &at.seq); err != nil {
+					return err
+				}
+				if at.seq == 0 {
+					at.written = slices.IndexFunc(c.tuples, func(tuple Tuple) bool {
+						return tuple.Asserted && tuple.FromKind == KindLens && tuple.FromID == lens &&
+							tuple.Kind == TuplePartOf && tuple.ToKind != KindValue
+					})
+				}
+				c.ends.invoked[lens] = at
+			}
+			return nil
+		},
+	}
+}
+
+// readBlocks reads the type of each block of the check that a document holds now, the project of
+// that document and whether it is retired (artifacts.retired_at, docs.RetireDocument), read off
+// its document_blocks row by node_id, the block's address that every row carries, through that
 // column's hash index (document_blocks_node_id, migration 0121), and the primary key of the
 // artifacts row it names. It is not read by node_kind and node_address: a row written before the
 // store's backfill, one a pod of the previous release writes during a roll, and one past the
@@ -802,85 +844,82 @@ func readInvocations(ctx context.Context, tx pgx.Tx, lenses []string, tuples []T
 // its checks are read, and refused, for what they are. A write that asserts a prevented_by reads
 // them holding the owner row of each check's document (its race with a retirement or an index
 // pass: api's lockReasoningOwners).
-func (e *pointerEnds) readBlocks(ctx context.Context, tx pgx.Tx, ids []string) error {
-	rows, err := tx.Query(ctx, `
-		select d.node_id, d.type, a.project_key, a.retired_at is not null
-		from document_blocks d join artifacts a on a.id = d.artifact_id
-		where d.node_id = any($1::text[])
-	`, ids)
-	if err != nil {
-		return fmt.Errorf("read the types of the blocks a pointer names: %w", err)
+func (c *pointerCheck) readBlocks() pointerRead {
+	return pointerRead{
+		what: "read the types of the blocks a pointer names",
+		sql: `select d.node_id, d.type, a.project_key, a.retired_at is not null
+			from document_blocks d join artifacts a on a.id = d.artifact_id
+			where d.node_id = any($1::text[])`,
+		args: []any{c.blocks},
+		fill: func(rows pgx.Rows) error {
+			for rows.Next() {
+				var id, blockType string
+				var project *string
+				var retired bool
+				if err := rows.Scan(&id, &blockType, &project, &retired); err != nil {
+					return err
+				}
+				c.ends.blockTypes[id] = blockType
+				if project != nil {
+					c.ends.blockProjects[id] = *project
+				}
+				if retired {
+					c.ends.blockRetired[id] = true
+				}
+			}
+			return nil
+		},
 	}
-	defer rows.Close()
-	e.blockTypes, e.blockProjects, e.blockRetired = make(map[string]string, len(ids)), make(map[string]string, len(ids)), map[string]bool{}
-	for rows.Next() {
-		var id, blockType string
-		var project *string
-		var retired bool
-		if err := rows.Scan(&id, &blockType, &project, &retired); err != nil {
-			return fmt.Errorf("read the types of the blocks a pointer names: %w", err)
-		}
-		e.blockTypes[id] = blockType
-		if project != nil {
-			e.blockProjects[id] = *project
-		}
-		if retired {
-			e.blockRetired[id] = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the types of the blocks a pointer names: %w", err)
-	}
-	return nil
 }
 
-// readNodeProjects is the project of each of ends, the near ends of the tuples an ownProject rule
-// holds: the one a node of the write states, which its row holds already (a node's project never
-// moves, ErrProjectMoved), and otherwise the one its graph_nodes row holds, read in one
-// statement. A node whose row holds no project answers none.
-func readNodeProjects(ctx context.Context, tx pgx.Tx, nodes []Node, ends []pointerTarget) (map[pointerTarget]string, error) {
-	projects := make(map[pointerTarget]string, len(ends))
-	var kinds, ids []string
-	for _, end := range ends {
-		if _, stated := projects[end]; stated {
-			continue
-		}
-		if at := slices.IndexFunc(nodes, func(node Node) bool {
-			return node.Kind == end.kind && node.ID == end.id && node.Project != ""
-		}); at >= 0 {
-			projects[end] = nodes[at].Project
-			continue
-		}
-		kinds, ids = append(kinds, end.kind), append(ids, end.id)
+// readNodeProjects reads the project the graph_nodes row of each near end of an ownProject rule
+// that no node of the write states holds, in one statement. A node whose row holds no project
+// answers none.
+func (c *pointerCheck) readNodeProjects() pointerRead {
+	return pointerRead{
+		what: "read the projects of the nodes a pointer starts at",
+		sql: `select held.kind, held.id, held.project_key from graph_nodes held
+			join unnest($1::text[], $2::text[]) as named(kind, id) on named.kind = held.kind and named.id = held.id
+			where held.project_key is not null`,
+		args: []any{c.projectKinds, c.projectIDs},
+		fill: func(rows pgx.Rows) error {
+			for rows.Next() {
+				var end pointerTarget
+				var project string
+				if err := rows.Scan(&end.kind, &end.id, &project); err != nil {
+					return err
+				}
+				c.ends.nodeProjects[end] = project
+			}
+			return nil
+		},
 	}
-	if len(ids) == 0 {
-		return projects, nil
+}
+
+// readVisibility reads which ends of the placed part_of tuples the write does not decide the store
+// holds reserved for their author, in one statement, once the write's own nodes are written.
+func (c *pointerCheck) readVisibility() pointerRead {
+	return pointerRead{
+		what: "read the visibility of the nodes a part_of places and its parents",
+		sql: `select distinct held.kind, held.id from graph_nodes held
+			join unnest($1::text[], $2::text[]) as named(kind, id) on named.kind = held.kind and named.id = held.id
+			where held.visibility = $3`,
+		args: []any{c.visibilityKinds, c.visibilityIDs, VisibilityAuthor},
+		fill: func(rows pgx.Rows) error {
+			for rows.Next() {
+				var end pointerTarget
+				if err := rows.Scan(&end.kind, &end.id); err != nil {
+					return err
+				}
+				c.reserved[end] = true
+			}
+			return nil
+		},
 	}
-	rows, err := tx.Query(ctx, `
-		select held.kind, held.id, held.project_key from graph_nodes held
-		join unnest($1::text[], $2::text[]) as named(kind, id) on named.kind = held.kind and named.id = held.id
-		where held.project_key is not null
-	`, kinds, ids)
-	if err != nil {
-		return nil, fmt.Errorf("read the projects of the nodes a pointer starts at: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var end pointerTarget
-		var project string
-		if err := rows.Scan(&end.kind, &end.id, &project); err != nil {
-			return nil, fmt.Errorf("read the projects of the nodes a pointer starts at: %w", err)
-		}
-		projects[end] = project
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the projects of the nodes a pointer starts at: %w", err)
-	}
-	return projects, nil
 }
 
 // check holds each ruled tuple to its rule in the write's order, the places of risks last
-// (checkPointers).
+// (pointerCheck's decide).
 func (e pointerEnds) check(tuples []Tuple, ruled []int) error {
 	var emptied []string
 	for _, index := range ruled {
@@ -1053,31 +1092,45 @@ func lensKindWords(kinds []pointerTarget) string {
 // is refused with ErrLensKindKept whatever hangs under it. It touches no part_of tuple, and
 // refuses to move one: a node moves to another parent through cybermonklabs/legion#4180's `/parent`.
 //
-// It first takes the node's graph_nodes row `for no key update`, the one node row it takes, so two
-// retargets of one node's pointers queue there and the second reads what the first moved. A node
-// that does not hold pointer is ErrPointerNotHeld, and a move to the far end it holds already
-// writes nothing. That both far ends exist, are not gone and may be seen by the caller is the
-// route's to check before it calls this (pointerRules).
+// Its read phase is PlanRetarget's, and its write phase one Write of the two tuples that read
+// answers, so a writer that queues its writes on a write phase of its own runs PlanRetarget
+// where it takes its other locks and queues QueueWrite of its answer with its other writes.
 func Retarget(ctx context.Context, tx pgx.Tx, pointer Tuple, toKind, toID string) error {
+	moved, err := PlanRetarget(ctx, tx, pointer, toKind, toID)
+	if err != nil || len(moved) == 0 {
+		return err
+	}
+	return Write(ctx, tx, nil, moved)
+}
+
+// PlanRetarget is the read phase of Retarget, which writes nothing: it first takes the node's
+// graph_nodes row `for no key update`, the one node row a retarget takes, so two retargets of one
+// node's pointers queue there and the second reads what the first moved, and then reads the
+// pointers the node holds. A node that does not hold pointer is ErrPointerNotHeld, and a move to
+// the far end it holds already answers no tuple. Otherwise it answers the retraction of the old
+// far end and the assertion of the new one, in that order, for the write that moves it. That both
+// far ends exist, are not gone and may be seen by the caller is the route's to check before it
+// calls this (pointerRules).
+func PlanRetarget(ctx context.Context, tx pgx.Tx, pointer Tuple, toKind, toID string) ([]Tuple, error) {
 	if pointer.Kind == TuplePartOf {
-		return errors.New("a part_of tuple is the node's place, which its parent route moves: it is never retargeted")
+		return nil, errors.New("a part_of tuple is the node's place, which its parent route moves: it is never retargeted")
 	}
 	if _, err := tx.Exec(ctx, NodeRowLockSQL, pointer.FromKind, pointer.FromID); err != nil {
-		return fmt.Errorf("lock the node whose %s tuple moves: %w", pointer.Kind, err)
+		return nil, fmt.Errorf("lock the node whose %s tuple moves: %w", pointer.Kind, err)
 	}
 	held, err := CurrentOut(ctx, tx, pointer.FromKind, pointer.FromID, []string{pointer.Kind})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !slices.ContainsFunc(held, func(tuple Tuple) bool { return tuple.ToKind == pointer.ToKind && tuple.ToID == pointer.ToID }) {
-		return ErrPointerNotHeld
+		return nil, ErrPointerNotHeld
 	}
 	if pointer.ToKind == toKind && pointer.ToID == toID {
-		return nil
+		return nil, nil
 	}
 	retraction := pointer
 	retraction.Seq, retraction.LegacySourceSeq, retraction.Asserted = 0, nil, false
 	assertion := retraction
 	assertion.ToKind, assertion.ToID, assertion.Asserted = toKind, toID, true
-	return Write(ctx, tx, nil, []Tuple{retraction, assertion})
+	return []Tuple{retraction, assertion}, nil
 }

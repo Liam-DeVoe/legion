@@ -326,7 +326,7 @@ func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
 			if err != nil {
 				t.Fatalf("begin append %d: %v", attempt+1, err)
 			}
-			if err := writeReasoningPointer(graphstore.WithRun(ctx, uuid.NewString()), tx, reasoningPointer{issue: issue.Key, action: pointerAppend, pointer: pointer}); err != nil {
+			if err := writeReasoningPointer(store.WithRun(ctx, uuid.NewString()), tx, reasoningPointer{issue: issue.Key, action: pointerAppend, pointer: pointer}); err != nil {
 				_ = tx.Rollback(ctx)
 				t.Fatalf("append %d of the triggered_by: %v", attempt+1, err)
 			}

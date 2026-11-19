@@ -279,7 +279,7 @@ func blockRefCarries(fromKind, alias string) string {
 // TupleKinds is every relation kind this build writes as tuples and graph_edges answers from
 // them, sorted: a block's in_document and mentions, the pointer kinds the installed block schema
 // declares (pmdoc.LinkKinds), a comment's and an ask's anchored_to and owned_by, an ask's
-// followed_by, and a decision block's from_ask and decided_by (dispatch://INFRA-1150), which the
+// followed_by, and a decision block's from_ask and decided_by, which the
 // arm renders through the block_refs row of the pair as it renders a block's every other link, and
 // the kinds the view answers from the tuples alone, with no projection row behind them (its store
 // class, migration 20261117020856): changed_by_run, has_kind, triggered_by, constrained_by and

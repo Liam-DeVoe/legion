@@ -137,14 +137,17 @@ func insertPrefixBlockText(t *testing.T, tx pgx.Tx, artifactID, blockID string, 
 	}
 }
 
+// prefixReader is who the helpers below ask ResolvePrefix and ResolvePrefixes as, the same reader
+// for both: somebody who proves no author, who reads every item these fixtures write.
+var prefixReader = model.Actor{}
+
 // resolvedPrefix is the candidate prefix names, failing the test when it names none or several. It
-// reads as somebody who proves no author, who reads every item these fixtures write. Where
-// ResolvePrefixes is the same function (bothResolve), it asks ResolvePrefixes the same id alone
-// too, as the same reader, and fails the test unless that names the same candidate and marks no
-// id ambiguous.
+// reads as prefixReader. Where ResolvePrefixes is the same function (bothResolve), it asks
+// ResolvePrefixes the same id alone too, as the same reader, and fails the test unless that names
+// the same candidate and marks no id ambiguous.
 func resolvedPrefix(t *testing.T, tx pgx.Tx, kind string, scope Scope, prefix string, viewer Viewer) Candidate {
 	t.Helper()
-	candidate, err := ResolvePrefix(context.Background(), tx, model.Actor{}, kind, scope, prefix, viewer)
+	candidate, err := ResolvePrefix(context.Background(), tx, prefixReader, kind, scope, prefix, viewer)
 	if err != nil {
 		t.Fatalf("resolve the %s prefix %q in %#v: %v", kind, prefix, scope, err)
 	}
@@ -159,12 +162,13 @@ func resolvedPrefix(t *testing.T, tx pgx.Tx, kind string, scope Scope, prefix st
 	return candidate
 }
 
-// requireNoPrefixMatch fails the test unless prefix names nothing, the one no-match signal. Where
-// ResolvePrefixes is the same function (bothResolve), it fails the test unless ResolvePrefixes,
-// asked the same id alone, answers no entry for it in either of its answers.
+// requireNoPrefixMatch fails the test unless prefix names nothing to prefixReader, the one
+// no-match signal. Where ResolvePrefixes is the same function (bothResolve), it fails the test
+// unless ResolvePrefixes, asked the same id alone as the same reader, answers no entry for it in
+// either of its answers.
 func requireNoPrefixMatch(t *testing.T, q Queryer, kind string, scope Scope, prefix string, viewer Viewer) {
 	t.Helper()
-	candidate, err := ResolvePrefix(context.Background(), q, model.Actor{}, kind, scope, prefix, viewer)
+	candidate, err := ResolvePrefix(context.Background(), q, prefixReader, kind, scope, prefix, viewer)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("the %s prefix %q in %#v = %#v, %v; want pgx.ErrNoRows", kind, prefix, scope, candidate, err)
 	}
@@ -188,11 +192,12 @@ func requireShortIDAmbiguous(t *testing.T, q Queryer, kind string, scope Scope, 
 	}
 }
 
-// shortIDAnswers is the two answers of ResolvePrefixes asked id alone, failing the test on an
-// error.
+// shortIDAnswers is the two answers of ResolvePrefixes asked id alone as prefixReader, failing
+// the test on an error.
 func shortIDAnswers(t *testing.T, q Queryer, id ShortID) (map[ShortID]Candidate, map[ShortID]bool) {
 	t.Helper()
-	whole, ambiguous, err := ResolvePrefixes(context.Background(), q, model.Actor{}, []ShortID{id})
+	reader := prefixReader
+	whole, ambiguous, err := ResolvePrefixes(context.Background(), q, &reader, []ShortID{id})
 	if err != nil {
 		t.Fatalf("ResolvePrefixes of the %s prefix %q in %#v: %v", id.Kind, id.Prefix, id.Scope, err)
 	}

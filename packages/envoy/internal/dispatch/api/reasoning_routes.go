@@ -453,7 +453,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	// The lens a refusal of the lens's triggered_by names after the lens; a lens invoked with no
 	// trigger leaves it the zero end, whose empty address NamedAt reads as not named.
 	var triggerNamed namedEnd
-	// The trigger, which the write reads again under the issue's row (refuseGoneFarEnds).
+	// The trigger, which the write reads again under the issue's owner lock (refuseGoneFarEnds).
 	var farEnds []namedEnd
 	if input.TriggeredBy != nil {
 		trigger, triggerEnd, err := findEndUnderIssue(ctx, tx, reader, key, *input.TriggeredBy)
@@ -624,9 +624,9 @@ type riskWritten struct {
 // no visibility gives the risk its lens's, and `project` under a lens reserved for its author is
 // the store's 400 VISIBILITY_WIDER_THAN_PARENT, naming the risk and the lens. A lens the caller
 // may not see under the issue, and a check the caller may not see wherever it stands, are 404
-// NOT_FOUND. Each stores nothing. A risk that names a prevented_by takes the issue's row and the
-// owner row of the check's document before it reads either (its race with a retirement or an
-// index pass: lockReasoningOwners); any other takes the issue's row at the write
+// NOT_FOUND. Each stores nothing. A risk that names a prevented_by takes the issue's owner lock
+// and the owner lock of the check's document before it reads either (its race with a retirement
+// or an index pass: lockReasoningOwners); any other takes the issue's owner lock at the write
 // (writeReasoningNodes).
 func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 	var input riskInput
@@ -856,7 +856,8 @@ func (s *server) writeConstraint(w http.ResponseWriter, r *http.Request) {
 		}},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		// The issue's row is the first thing the write reads, so an issue nobody holds is this.
+		// The issue's row is the first thing the write reads, under the issue's owner lock
+		// (lockIssueOwner), so an issue nobody holds is this.
 		s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "issue not found"))
 		return
 	}
@@ -1046,10 +1047,10 @@ func pointerEnd(ctx context.Context, q refs.Queryer, who model.Actor, key, kind,
 // (refusalNamed); a second has_kind, and a retarget of a pre-mortem's away from pre-mortem, are its
 // 409 POINTER_ALREADY_ASSERTED, one body whatever hangs under the lens. A retarget touches no
 // part_of tuple, and this route writes none: a node moves to another parent through its parent
-// route. For an append or a retarget of a prevented_by it takes the issue's row and the owner row
-// of the document of the check at to before it reads a node (its race with a retirement or an
-// index pass: lockReasoningOwners); any other write takes the issue's row at the write
-// (writeReasoningPointer).
+// route. For an append or a retarget of a prevented_by it takes the issue's owner lock and the
+// owner lock of the document of the check at to before it reads a node (its race with a
+// retirement or an index pass: lockReasoningOwners); any other write takes the issue's owner lock
+// at the write (writeReasoningPointer).
 func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 	var input pointerInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -1118,7 +1119,7 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 	}}
 	// A triggered_by's lens and a constrained_by's constraint stand under the issue, or a
 	// constraint of the catalogue under none, and a write that takes one of the issue's gone holds
-	// the issue's row, so the write reads to again under that row.
+	// the issue's owner lock, so the write reads to again under that lock.
 	if input.Kind == graphstore.TupleTriggeredBy || input.Kind == graphstore.TupleConstrainedBy {
 		write.farEnds = []namedEnd{{storedEnd: toEnd, address: input.To}}
 	}

@@ -64,7 +64,7 @@ func seedRun(t *testing.T, database *store.Store, author model.Actor) string {
 }
 
 // markChangedByRun writes the node kind:id again, as the store holds it, on a context carrying
-// run, as a write made for the run writes a node it changed (graphstore.WithRun, Node.Changed): the
+// run, as a write made for the run writes a node it changed (store.WithRun, Node.Changed): the
 // store appends one changed_by_run tuple from the node to the run's interaction.
 func markChangedByRun(t *testing.T, database *store.Store, kind, id, run string) {
 	t.Helper()
@@ -79,7 +79,7 @@ func markChangedByRun(t *testing.T, database *store.Store, kind, id, run string)
 		t.Fatalf("read %s:%s: held %t, %v", kind, id, held, err)
 	}
 	node.Changed, node.Restates = true, true
-	if err := graphstore.Write(graphstore.WithRun(ctx, run), tx, []graphstore.Node{node}, nil); err != nil {
+	if err := graphstore.Write(store.WithRun(ctx, run), tx, []graphstore.Node{node}, nil); err != nil {
 		t.Fatalf("write %s:%s for run %s: %v", kind, id, run, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -210,10 +210,12 @@ func hasDifference(found []Difference, at, cause string) bool {
 // one writer of a run's node from its row does (graphstore.WriteRun), and has read nothing of the
 // store or of going_events while it waits there; then it writes the run's interaction node and its
 // asker's person node in one statement, in ascending (kind, id), each held as the same key a
-// transaction still open inserted, and appends their tuples after both, so it has appended no tuple
-// while it waits at either. The run is one an older pod recorded with one frame and no node, asked
-// by a person no write has recorded. The test follows the pass alone (backfillRuns), so a lock
-// another pass of Backfill takes is not read as this batch's.
+// transaction still open inserted, and appends their tuples after both, in a later statement of the
+// same write phase. That phase is sent as one batch whose statements are all parsed before the
+// first runs, so the append's table is locked while the node write waits, as every store write's
+// is, and no graph_tuples lock is read for it here. The run is one an older pod recorded with one
+// frame and no node, asked by a person no write has recorded. The test follows the pass alone
+// (backfillRuns), so a lock another pass of Backfill takes is not read as this batch's.
 func requireTheOwedRunLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -226,7 +228,7 @@ func requireTheOwedRunLockOrder(t *testing.T) {
 	now := time.Now()
 	interaction := holdWrite(t, database, &lockstep.Hold{
 		Name: "the run's interaction node row", Step: lockstep.StepNode, Taken: true,
-		Kind: graphstore.KindInteraction, ID: run, Statement: "with incoming as (", Unlocked: []string{"graph_tuples"},
+		Kind: graphstore.KindInteraction, ID: run, Statement: "insert into graph_nodes (",
 	}, []graphstore.Node{{
 		Kind: graphstore.KindInteraction, ID: run, Supertag: graphstore.KindInteraction,
 		Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
@@ -234,7 +236,7 @@ func requireTheOwedRunLockOrder(t *testing.T) {
 	}}, nil)
 	asker := holdWrite(t, database, &lockstep.Hold{
 		Name: "person alice's node row", Step: lockstep.StepNode, Taken: true,
-		Kind: graphstore.KindPerson, ID: alice.ID, Statement: "with incoming as (", Unlocked: []string{"graph_tuples"},
+		Kind: graphstore.KindPerson, ID: alice.ID, Statement: "insert into graph_nodes (",
 	}, []graphstore.Node{graphstore.PersonNode(alice.ID, alice, now, graphstore.NoEvent)}, nil)
 
 	report := followTheRun(t, database, "writeOwedRun", func(ctx context.Context, database *store.Store) (BackfillReport, error) {

@@ -9,7 +9,7 @@ import (
 )
 
 // The version a human approved is compared with a later version byte for byte once both have had
-// the eight server-owned attributes taken off every ask block (dispatch://INFRA-1150 R10, the
+// the eight server-owned attributes taken off every ask block (the
 // carry's attribute case): what the approved version's blocks showed of a decision is no part of
 // what he approved, since an answer is held on the ask's node alone (R3), so a version that differs
 // from his only by those attributes carries his approval, and one that differs by any other

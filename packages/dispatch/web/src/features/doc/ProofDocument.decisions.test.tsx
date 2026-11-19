@@ -483,7 +483,43 @@ test("a pane's decision block hosts its answer form and tells its host which que
   }
 });
 
-test("a project document's copy of an ask on another of its project's documents shows its source's state and answer from the live text", async () => {
+// The live text's asks answer a copy's source, its state and its answer, and its markdown holds
+// none of them; a Dispatch of the release before sends no asks and renders them on the copy's
+// opening line instead, which the page reads where the member is absent.
+test.each([
+  {
+    name: "the live text's asks",
+    text: {
+      markdown:
+        ':::ask{#b-1 urgency="high" multiple="false"}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n',
+      token: "sha256:notes",
+      version: 2,
+      asks: [
+        {
+          block_id: "b-1",
+          state: "answered",
+          answered_by: "bob",
+          answered_at: "2026-11-16T09:00:00Z",
+          selected: ["Ship"],
+          answer: "After the fix & the review.",
+          copied_from: "ask-source",
+          copied_from_document: "dispatch://CORE/artifact/plan",
+        },
+      ],
+    },
+  },
+  {
+    name: "the opening line the release before renders",
+    text: {
+      markdown:
+        ':::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z" selected="[&#x22;Ship&#x22;]" answer="After the fix &amp; the review." copied_from="ask-source" copied_from_document="dispatch://CORE/artifact/plan"}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n',
+      token: "sha256:notes",
+      version: 2,
+    },
+  },
+])("a project document's copy of an ask on another of its project's documents shows its source's state and answer from $name", async ({
+  text,
+}) => {
   const notes: Artifact = {
     ...artifact,
     id: "artifact-notes",
@@ -498,13 +534,7 @@ test("a project document's copy of an ask on another of its project's documents 
   // The document's own asks hold no row for the copy: its source is on the project's plan, and no
   // route lists a project's asks.
   queryClient.setQueryData(["artifact", notes.id, "asks"], []);
-  // What the live text renders on the copy from the store: its source's state, answer and address.
-  queryClient.setQueryData(["artifact", notes.id, "text"], {
-    markdown:
-      ':::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z" selected="[&#x22;Ship&#x22;]" answer="After the fix &amp; the review." copied_from="ask-source" copied_from_document="dispatch://CORE/artifact/plan"}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n',
-    token: "sha256:notes",
-    version: 2,
-  });
+  queryClient.setQueryData(["artifact", notes.id, "text"], text);
   const { editors, sync, view } = renderProofDocument({
     document: notes,
     owner: { artifactId: notes.id, kind: "document", project: "CORE", slug: "notes" },

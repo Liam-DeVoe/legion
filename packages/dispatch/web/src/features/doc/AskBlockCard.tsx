@@ -54,10 +54,10 @@ export interface AskBlockCardProps {
   rowResolution: boolean;
   /** The server's read of the ask the block shows, keyed by its block id: its own ask, or a
    *  copy's source, from the owner's asks (`servedAskOf`) or, for a copy whose source they do not
-   *  list, from what the live text renders on the block (`renderedAskOf`). The block's state,
-   *  answer, answerer, time and a copy's source are read from it, since the answer is held on the
-   *  ask alone; without it the block's own attributes are read, as a text body and a version that
-   *  holds them carry them, and a block that records no state reads as open. */
+   *  list, from what the live text answers for the block in its asks (`liveAskOf`). The block's
+   *  state, answer, answerer, time and a copy's source are read from it, since the answer is held
+   *  on the ask alone; without it the block's own attributes are read, as a text body and a
+   *  version that holds them carry them, and a block that records no state reads as open. */
   served?: ServedAsk;
 }
 

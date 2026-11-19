@@ -2214,7 +2214,7 @@ package api
 // Read main's own number and every open pull request's again at the next forward merge rather
 // than from this line.)
 //
-// 161: dispatch://INFRA-1150 -- the `decisions` design-gate step is gone, since a person's
+// 161: the `decisions` design-gate step is gone, since a person's
 // decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
 // that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
 // `criteria` or `spec`, and a call naming `decisions` is refused as a step the deployment does not

@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// restoreFixture is an issue whose answers left its spec in both shapes of the restore
-// (dispatch://INFRA-1150 R6): the spec, its decisions document and a third document that cites,
+// restoreFixture is an issue whose answers left its spec in both shapes of the restore: the
+// spec, its decisions document and a third document that cites,
 // and the asks.
 type restoreFixture struct {
 	spec, decisions, notes testDocument
@@ -191,7 +191,7 @@ func danglingOf(t *testing.T, database *store.Store) (moved, returning []string)
 	return moved, returning
 }
 
-// The dangling-citation counter of dispatch://INFRA-1150 R8 reads its two sets over the restore's
+// The dangling-citation counter reads its two sets over the restore's
 // work (ReadRestoreWork), before and after the move, and counts a node that cites one target from
 // its text and its block once.
 //

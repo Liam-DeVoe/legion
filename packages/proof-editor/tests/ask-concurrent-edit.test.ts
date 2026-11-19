@@ -418,7 +418,7 @@ test("typing at a caret in a two-list ask inserts the text", async () => {
 });
 
 // Settlement takes an ask's `state` off the live block once the fleet keeps the answer on the
-// ask's node alone (dispatch://INFRA-1150 R3). The editor's schema gives that server attribute no
+// ask's node alone. The editor's schema gives that server attribute no
 // default, so an edit inside the block - here a letter typed into its question - writes none back
 // into the shared document, although y-prosemirror writes every attribute the editor's node holds.
 test("an edit inside an ask block that holds no state leaves no state in Yjs", async () => {

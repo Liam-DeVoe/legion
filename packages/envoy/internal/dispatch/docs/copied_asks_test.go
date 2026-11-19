@@ -11,10 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -68,29 +71,16 @@ func asksOn(t *testing.T, service *Service, document string) int {
 	return count
 }
 
-// requireCopiedStates fails t unless the document, as an agent reads it (copyAsAgentReadsIt),
-// holds each of want.
+// requireCopiedStates fails t unless the document, as an agent reads it (asAgentReadsIt): its
+// markdown and one line per entry of its asks member, holds each of want.
 func requireCopiedStates(t *testing.T, service *Service, document string, want ...string) {
 	t.Helper()
-	text := copyAsAgentReadsIt(t, service, document)
-	for _, opener := range want {
-		if !strings.Contains(text, opener) {
-			t.Fatalf("copy text lacks %q:\n%s", opener, text)
+	text := asAgentReadsIt(t, service, document)
+	for _, part := range want {
+		if !strings.Contains(text, part) {
+			t.Fatalf("copy text lacks %q:\n%s", part, text)
 		}
 	}
-}
-
-// copyAsAgentReadsIt is the document as an agent reads it (TextWithAnswers): each ask block
-// carrying its ask's, or its copy's source's, answer state and answer, and a copy the ask it is a
-// copy of, rendered on read from the asks, since no stored byte holds them (dispatch://INFRA-1150
-// R3).
-func copyAsAgentReadsIt(t *testing.T, service *Service, document string) string {
-	t.Helper()
-	text, _, _, err := service.TextWithAnswers(context.Background(), document, false)
-	if err != nil {
-		t.Fatalf("read copy: %v", err)
-	}
-	return text
 }
 
 // documentAddress is the address settlement names a copy's source document by (refs.ArtifactRef).
@@ -107,20 +97,20 @@ func documentAddress(t *testing.T, service *Service, document string) string {
 	return refs.ArtifactRef(issueKey, project, nil, slug, kind, primary)
 }
 
-// copiedFrom is the attributes a copy carries naming source, the ask copied from, on document.
+// copiedFrom is how the asks entry of a copy names source, the ask copied from, on document.
 func copiedFrom(t *testing.T, service *Service, source, document string) string {
 	t.Helper()
 	return `copied_from="` + source + `" copied_from_document="` + documentAddress(t, service, document) + `"`
 }
 
-// copiedSourceStates are the openers of a copy of copiedAsksDocument showing the states
+// copiedSourceStates are the asks entries of a copy of copiedAsksDocument showing the states
 // copiedAskSource leaves its sources on original in, each naming its source ask and document.
 func copiedSourceStates(t *testing.T, service *Service, original string, asks map[string]string) []string {
 	t.Helper()
 	return []string{
-		`:::ask{#copy-answered urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected="[&#x22;Yes&#x22;]" ` + copiedFrom(t, service, asks["copy-answered"], original) + `}`,
-		`:::ask{#copy-resolved urgency="med" multiple="false" state="resolved" ` + copiedFrom(t, service, asks["copy-resolved"], original) + `}`,
-		`:::ask{#copy-open urgency="med" multiple="false" state="open" ` + copiedFrom(t, service, asks["copy-open"], original) + `}`,
+		`#copy-answered state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected=["Yes"] ` + copiedFrom(t, service, asks["copy-answered"], original) + "\n",
+		`#copy-resolved state="resolved" ` + copiedFrom(t, service, asks["copy-resolved"], original) + "\n",
+		`#copy-open state="open" ` + copiedFrom(t, service, asks["copy-open"], original) + "\n",
 	}
 }
 
@@ -150,7 +140,7 @@ func TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone(t *testing.T) 
 	})
 	settleCurrentGeneration(t, service, copied)
 	requireCopiedStates(t, service, copied,
-		`:::ask{#copy-open urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="2026-10-09T09:00:00Z" selected="[]" answer="us-east-1" `+copiedFrom(t, service, asks["copy-open"], original)+`}`)
+		`#copy-open state="answered" answered_by="bob" answered_at="2026-10-09T09:00:00Z" selected=[] answer="us-east-1" `+copiedFrom(t, service, asks["copy-open"], original)+"\n")
 	if count := asksOn(t, service, copied); count != 0 {
 		t.Fatalf("the copy opened %d asks after its source was answered, want none", count)
 	}
@@ -182,7 +172,7 @@ func TestACopysSourceDocumentIsTheSourceAsksPartOf(t *testing.T) {
 		t.Fatalf("state the source ask's node part of the other document: %v", err)
 	}
 	openCopyOf := func(document string) string {
-		return `:::ask{#copy-open urgency="med" multiple="false" state="open" ` + copiedFrom(t, service, source, document) + `}`
+		return `#copy-open state="open" ` + copiedFrom(t, service, source, document) + "\n"
 	}
 
 	copied := createIssueDocument(t, service.store, 1, "# Copy")
@@ -450,7 +440,7 @@ func TestACopyOfTwoMatchingAsksShowsTheEarlierAsked(t *testing.T) {
 		t.Fatalf("the copy opened %d asks, want none", count)
 	}
 	requireCopiedStates(t, service, copied,
-		`:::ask{#tie urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected="[]" answer="eu-west-1" `+copiedFrom(t, service, earlier, original)+`}`)
+		`#tie state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected=[] answer="eu-west-1" `+copiedFrom(t, service, earlier, original)+"\n")
 }
 
 // A copy taken before its source was reworded asks what the source asked then, which the source's
@@ -519,7 +509,7 @@ func TestAnAnswerOrResolutionOfACopysSourceAfterARewordingOpensTheCopysOwnAsk(t 
 			copied := createIssueDocument(t, service.store, 1, "# Copy")
 			seedServiceText(t, service, copied, "Record\n\n"+shipBlock)
 			settleCurrentGeneration(t, service, copied)
-			requireCopiedStates(t, service, copied, `:::ask{#ship urgency="med" multiple="false" state="open" `+copiedFrom(t, service, source.ID, original)+`}`)
+			requireCopiedStates(t, service, copied, `#ship state="open" `+copiedFrom(t, service, source.ID, original)+"\n")
 
 			source = rewordShip(t, service, original)
 			var answer *model.AskAnswer
@@ -533,12 +523,12 @@ func TestAnAnswerOrResolutionOfACopysSourceAfterARewordingOpensTheCopysOwnAsk(t 
 				t.Fatalf("the copy owes %d settlements after its source was %s, want one", owed, closing)
 			}
 			settleCurrentGeneration(t, service, copied)
-			// As an agent reads the copy (copyAsAgentReadsIt), which shows a copy's source's state
-			// and names the source: no byte of the copy holds either on a fleet of one build.
-			if text := copyAsAgentReadsIt(t, service, copied); strings.Contains(text, `state="`+closing+`"`) || strings.Contains(text, "copied_from") {
+			// As an agent reads the copy (asAgentReadsIt), whose asks member shows a copy's source's
+			// state and names the source: no byte of the copy holds either.
+			if text := asAgentReadsIt(t, service, copied); strings.Contains(text, `state="`+closing+`"`) || strings.Contains(text, "copied_from") {
 				t.Fatalf("the copy of the earlier wording shows its source %s on the reworded question:\n%s", closing, text)
 			}
-			requireCopiedStates(t, service, copied, `:::ask{#ship urgency="med" multiple="false" state="open"}`+"\nShip on Monday?")
+			requireCopiedStates(t, service, copied, `:::ask{#ship urgency="med" multiple="false"}`+"\nShip on Monday?", `#ship state="open"`+"\n")
 			if blocks := openAskBlocksOn(t, service, copied); blocks != "ship" {
 				t.Fatalf("the copy's open asks = %q, want its own ship", blocks)
 			}
@@ -549,20 +539,26 @@ func TestAnAnswerOrResolutionOfACopysSourceAfterARewordingOpensTheCopysOwnAsk(t 
 // tuesdayBlock is shipBlock reworded, its question and options both changed.
 const tuesdayBlock = ":::ask{#ship urgency=\"med\" multiple=\"false\"}\nShip on Tuesday?\n\n- Tuesday: Ship it.\n- No: Later.\n:::\n"
 
-// mondayAnswered is the ship block on its source once its ask was answered Yes at mondayAnswer.
-const mondayAnswered = `:::ask{#ship urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-09T09:00:00Z" selected="[&#x22;Yes&#x22;]"}` +
-	"\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::"
+// mondayAnswered is the ship block on its source, and its asks entry once its ask was answered Yes
+// at mondayAnswer.
+var mondayAnswered = []string{
+	`:::ask{#ship urgency="med" multiple="false"}` + "\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::",
+	`#ship state="answered" answered_by="alice" answered_at="2026-10-09T09:00:00Z" selected=["Yes"]` + "\n",
+}
 
 var mondayAnswer = model.AskAnswer{User: "alice", Selected: []string{"Yes"}, At: time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC)}
 
 // decidedShip is how a test closes the ship block's ask, answered with mondayAnswer or resolved as
-// closing names (closeSource's answer, nil for a resolution), and the block's opener once its
-// source carries that decision on the Monday wording.
-func decidedShip(closing string) (*model.AskAnswer, string) {
+// closing names (closeSource's answer, nil for a resolution), and the block and its asks entry
+// once its source carries that decision on the Monday wording.
+func decidedShip(closing string) (*model.AskAnswer, []string) {
 	if closing == "answered" {
 		return &mondayAnswer, mondayAnswered
 	}
-	return nil, `:::ask{#ship urgency="med" multiple="false" state="resolved"}` + "\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::"
+	return nil, []string{
+		`:::ask{#ship urgency="med" multiple="false"}` + "\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::",
+		`#ship state="resolved"` + "\n",
+	}
 }
 
 // askEditsOf counts the ask.edited events of ask.
@@ -616,7 +612,7 @@ func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testi
 				if edits := askEditsOf(t, service, source.ID); edits != 0 {
 					t.Fatalf("the %s ask has %d ask.edited events, want none", closing, edits)
 				}
-				requireCopiedStates(t, service, original, opener)
+				requireCopiedStates(t, service, original, opener...)
 				if line := logs.Lines(source.ID); !strings.Contains(line, "wrote a decided ask's wording back into its block") || !strings.Contains(line, original) {
 					t.Fatalf("the repair logged %q, want its line naming the ask and the document", line)
 				}
@@ -652,8 +648,11 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 		t.Fatalf("reword the decided ask's row: %v", err)
 	}
 	ask.EditedAt = askTimestamp(&editedAt)
-	changes, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, service.serverURL), ask.Question)
+	changes, writeRefs, err := planAskReferences(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, service.serverURL), ask.ID, ask.Question)
 	if err != nil {
+		t.Fatalf("plan the reworded question's references: %v", err)
+	}
+	if err := store.RunWrite(ctx, tx, writeRefs); err != nil {
 		t.Fatalf("index the reworded question: %v", err)
 	}
 	if _, err := service.events.Append(ctx, tx, documentAskEvent(owner, document, "ask.edited", SettlementActor,
@@ -695,7 +694,7 @@ func TestASettlementRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
 			if decided.State != closing || decided.Question != "Ship on Monday?" || len(decided.Options) != 2 || decided.Options[0].Label != "Yes" {
 				t.Fatalf("the %s ask reads %s %q %v after its document's settlement, want the wording it was decided on", closing, decided.State, decided.Question, decided.Options)
 			}
-			requireCopiedStates(t, service, original, opener)
+			requireCopiedStates(t, service, original, opener...)
 			line := logs.Lines(source.ID)
 			if !strings.Contains(line, "restored a decided ask's wording") || !strings.Contains(line, original) || !strings.Contains(line, `question="Ship on Monday?"`) {
 				t.Fatalf("the settlement logged %q, want a line naming the ask, its document and the restored question", line)
@@ -738,7 +737,7 @@ func TestARestorationOfACopysSourceSettlesTheCopyAgain(t *testing.T) {
 				copied := createIssueDocument(t, service.store, 1, "# Copy")
 				seedServiceText(t, service, copied, "Record\n\n"+tuesdayBlock)
 				settleCurrentGeneration(t, service, copied)
-				requireCopiedStates(t, service, copied, `:::ask{#ship urgency="med" multiple="false" state="`+closing+`"`)
+				requireCopiedStates(t, service, copied, `#ship state="`+closing+`"`)
 
 				switch restoration {
 				case "settlement":
@@ -759,7 +758,7 @@ func TestARestorationOfACopysSourceSettlesTheCopyAgain(t *testing.T) {
 				if strings.Contains(text, `state="`+closing+`"`) || strings.Contains(text, "copied_from") {
 					t.Fatalf("the copy of the reworded question still shows its source %s once the source was restored:\n%s", closing, text)
 				}
-				requireCopiedStates(t, service, copied, `:::ask{#ship urgency="med" multiple="false" state="open"}`+"\nShip on Tuesday?")
+				requireCopiedStates(t, service, copied, `:::ask{#ship urgency="med" multiple="false"}`+"\nShip on Tuesday?", `#ship state="open"`+"\n")
 				if blocks := openAskBlocksOn(t, service, copied); blocks != "ship" {
 					t.Fatalf("the copy's open asks = %q, want its own ship", blocks)
 				}
@@ -815,7 +814,7 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 				t.Fatalf("the restored ask's own document owes %d settlements after the boot, want one", owed)
 			}
 			settleCurrentGeneration(t, service, original)
-			requireCopiedStates(t, service, original, opener)
+			requireCopiedStates(t, service, original, opener...)
 			text, err := service.Text(ctx, original)
 			if err != nil {
 				t.Fatalf("read the document: %v", err)
@@ -929,12 +928,12 @@ func TestACopyOfADecidedAsksEditedTextOpensItsOwnAskAndACopyOfItsDecidedWordingS
 	reworded := createIssueDocument(t, service.store, 1, "# Reworded copy")
 	seedServiceText(t, service, reworded, "Record\n\n"+tuesdayBlock)
 	settleCurrentGeneration(t, service, reworded)
-	// As an agent reads the copy (copyAsAgentReadsIt), which shows a copy's source's state and
-	// names the source: no byte of the copy holds either on a fleet of one build.
-	if text := copyAsAgentReadsIt(t, service, reworded); strings.Contains(text, `state="answered"`) || strings.Contains(text, "copied_from") {
+	// As an agent reads the copy (asAgentReadsIt), whose asks member shows a copy's source's state
+	// and names the source: no byte of the copy holds either.
+	if text := asAgentReadsIt(t, service, reworded); strings.Contains(text, `state="answered"`) || strings.Contains(text, "copied_from") {
 		t.Fatalf("the copy of the reworded text shows the decision on the question it replaced:\n%s", text)
 	}
-	requireCopiedStates(t, service, reworded, `:::ask{#ship urgency="med" multiple="false" state="open"}`+"\nShip on Tuesday?")
+	requireCopiedStates(t, service, reworded, `:::ask{#ship urgency="med" multiple="false"}`+"\nShip on Tuesday?", `#ship state="open"`+"\n")
 	if blocks := openAskBlocksOn(t, service, reworded); blocks != "ship" {
 		t.Fatalf("the copy of the reworded text's open asks = %q, want its own ship", blocks)
 	}
@@ -946,7 +945,7 @@ func TestACopyOfADecidedAsksEditedTextOpensItsOwnAskAndACopyOfItsDecidedWordingS
 		t.Fatalf("the copy of the decided wording opened %d asks, want none", count)
 	}
 	requireCopiedStates(t, service, decided,
-		`:::ask{#ship urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-09T09:00:00Z" selected="[&#x22;Yes&#x22;]" `+copiedFrom(t, service, source.ID, original)+`}`)
+		`#ship state="answered" answered_by="alice" answered_at="2026-10-09T09:00:00Z" selected=["Yes"] `+copiedFrom(t, service, source.ID, original)+"\n")
 }
 
 // A copy taken while its source was open stays a copy of it across the source's retraction and
@@ -961,7 +960,7 @@ func TestACopyOfARestoredSourceRewordedAndAnsweredOpensItsOwnAsk(t *testing.T) {
 	copied := createIssueDocument(t, service.store, 1, "# Copy")
 	seedServiceText(t, service, copied, "Record\n\n"+shipBlock)
 	settleCurrentGeneration(t, service, copied)
-	shown := `:::ask{#ship urgency="med" multiple="false" state="open" ` + copiedFrom(t, service, source.ID, original) + `}`
+	shown := `#ship state="open" ` + copiedFrom(t, service, source.ID, original) + "\n"
 	requireCopiedStates(t, service, copied, shown)
 
 	editLiveTree(t, service, original, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -989,9 +988,9 @@ func TestACopyOfARestoredSourceRewordedAndAnsweredOpensItsOwnAsk(t *testing.T) {
 		t.Fatal(err)
 	}
 	settleCurrentGeneration(t, service, copied)
-	// As an agent reads the copy (copyAsAgentReadsIt), which shows a copy's source's state and
-	// names the source: no byte of the copy holds either on a fleet of one build.
-	if text := copyAsAgentReadsIt(t, service, copied); strings.Contains(text, `state="answered"`) || strings.Contains(text, "copied_from") {
+	// As an agent reads the copy (asAgentReadsIt), whose asks member shows a copy's source's state
+	// and names the source: no byte of the copy holds either.
+	if text := asAgentReadsIt(t, service, copied); strings.Contains(text, `state="answered"`) || strings.Contains(text, "copied_from") {
 		t.Fatalf("the copy of the restored source's earlier wording shows the answer to its new one:\n%s", text)
 	}
 	if blocks := openAskBlocksOn(t, service, copied); blocks != "ship" {
@@ -1043,7 +1042,7 @@ func TestThreeCopiesOfARetractedAskShareTheOneAskTheFirstOpens(t *testing.T) {
 		open = openAsksUnder(t, service, "shared")
 		shown = map[string]string{}
 		for _, copy := range copies {
-			shown[copy] = copyAsAgentReadsIt(t, service, copy)
+			shown[copy] = asAgentReadsIt(t, service, copy)
 		}
 		pending = pendingSettlements(t, service)
 		if len(open) == 1 && pending == 0 && sharesOneAsk(t, service, copies, open[0], shown) {
@@ -1056,7 +1055,7 @@ func TestThreeCopiesOfARetractedAskShareTheOneAskTheFirstOpens(t *testing.T) {
 
 // sharesOneAsk reports whether opener, a copy holding the block's one open ask, is one of copies
 // and every other copy names that ask in copied_from and never the retracted source, as each copy
-// reads to an agent (shown, copyAsAgentReadsIt).
+// reads to an agent (shown, asAgentReadsIt).
 func sharesOneAsk(t *testing.T, service *Service, copies []string, opener string, shown map[string]string) bool {
 	t.Helper()
 	if !slices.Contains(copies, opener) {
@@ -1181,7 +1180,7 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 	open := openAsksUnder(t, service, "shared")
 	shown := map[string]string{}
 	for _, copy := range copies {
-		shown[copy] = copyAsAgentReadsIt(t, service, copy)
+		shown[copy] = asAgentReadsIt(t, service, copy)
 	}
 	pending := pendingSettlements(t, service)
 	if len(open) != 1 || pending != 0 || !sharesOneAsk(t, service, copies, open[0], shown) {
@@ -1262,13 +1261,17 @@ func answerSource(ctx context.Context, service *Service, original string, source
 }
 
 // closeSource answers source, the ask of blockID on original, with answer, or resolves it when
-// answer is nil, in its route's order (closeAskTx, the answer's WriteBlock, the resolve's Apply):
-// the source's owner row and ask row, then SettleCopiesOf, which takes the project's copy lock and
-// marks the copies owed, then the ask row, the source's block kept in step with it while another
-// build serves (KeepAskBlockInStep, which writes nothing on a fleet of one build) and the
-// ask.answered or ask.resolved event, and commits. between, when set, runs right after
-// SettleCopiesOf, while the transaction holds the copy lock and the copies' pending rows. It
-// returns its error rather than failing the test, so it can run off the test's goroutine.
+// answer is nil, in its route's order (closeAskTx, the answer's WriteBlock, the resolve's Apply)
+// and its two phases: the source's owner lock and its read of the ask row, then SettleCopiesOf,
+// which takes the project's copy lock and queues the copies' pending rows, then the ask row, the
+// source's block kept in step with it while another build serves (KeepAskBlockInStep, which
+// writes nothing on a fleet of one build) and the ask.answered or ask.resolved event, with what
+// a resolution states on the ask's node right after it, queued as a route joined to the ledger
+// queues its own writes, and commits: the write phase writes the copies' pending rows first.
+// between, when set, runs while the write phase stands right after those rows, holding the copy
+// lock and the copies' pending rows: the batch waits there on a gate lock this helper holds
+// (closeSourceGate) until between has returned, so the statements after the rows run only then.
+// It returns its error rather than failing the test, so it can run off the test's goroutine.
 func closeSource(ctx context.Context, service *Service, original, blockID string, source model.Ask, answer *model.AskAnswer, between func()) error {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	tx, err := service.store.Pool.Begin(ctx)
@@ -1280,29 +1283,57 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 	defer ledger.Discard()
 	owner, _, err := lockArtifactOwner(ctx, tx, original)
 	if err != nil {
-		return fmt.Errorf("lock the source's owner row: %w", err)
+		return fmt.Errorf("lock the source's owner: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `select 1 from asks where id = $1 for no key update`, source.ID); err != nil {
-		return fmt.Errorf("lock the source ask: %w", err)
+	// The route reads the ask under the owner's lock, with no row lock (readAskForTransition).
+	if _, err := tx.Exec(ctx, `select 1 from asks where id = $1`, source.ID); err != nil {
+		return fmt.Errorf("read the source ask: %w", err)
 	}
 	if err := service.SettleCopiesOf(closing, source); err != nil {
 		return fmt.Errorf("mark the copies owed: %w", err)
 	}
+	var gate *pgxpool.Conn
+	openGate := func() error { return nil }
 	if between != nil {
-		between()
+		if gate, err = service.store.Pool.Acquire(ctx); err != nil {
+			return fmt.Errorf("acquire the gate's connection: %w", err)
+		}
+		defer gate.Release()
+		if _, err := gate.Exec(ctx, `select pg_advisory_lock($1)`, closeSourceGate); err != nil {
+			return fmt.Errorf("hold the gate: %w", err)
+		}
+		opened := false
+		openGate = func() error {
+			if opened {
+				return nil
+			}
+			opened = true
+			_, err := gate.Exec(context.Background(), `select pg_advisory_unlock($1)`, closeSourceGate)
+			return err
+		}
+		defer openGate()
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			b.Queue("pass the gate", `select pg_advisory_xact_lock($1) as close_source_gate`, closeSourceGate)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("queue the gate: %w", err)
+		}
 	}
 	eventType := "ask.resolved"
 	if answer != nil {
 		eventType = "ask.answered"
 		encoded, _ := json.Marshal(answer)
-		if _, err := tx.Exec(ctx, `update asks set state = 'answered', answer = $2 where id = $1`, source.ID, encoded); err != nil {
-			return fmt.Errorf("answer the source ask: %w", err)
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			b.Queue("answer the source ask", `update asks set state = 'answered', answer = $2 where id = $1`, source.ID, encoded)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("queue the source's answer: %w", err)
 		}
 		source.State, source.Answer = "answered", answer
 	}
 	var held graphstore.Uncaused
 	if answer == nil {
-		if source, err = WriteAskResolution(ctx, tx, source, "resolved", "Waived.", alice, &held); err != nil {
+		if source, err = WriteAskResolution(closing, tx, source, "resolved", "Waived.", alice, &held); err != nil {
 			return fmt.Errorf("resolve the source ask: %w", err)
 		}
 	}
@@ -1310,20 +1341,64 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 	if err := service.KeepAskBlockInStep(closing, source, alice); err != nil {
 		return fmt.Errorf("keep the source's block in step: %w", err)
 	}
-	appended, err := service.events.Append(ctx, tx, documentAskEvent(
-		owner, original, eventType, alice, model.NewAskEventPayload(source, model.ReferenceChanges{}),
-	))
-	if err != nil {
-		return fmt.Errorf("append the source's %s event: %w", eventType, err)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		if err := service.events.QueueAppend(b, documentAskEvent(
+			owner, original, eventType, alice, model.NewAskEventPayload(source, model.ReferenceChanges{}),
+		), func(model.Event) {}); err != nil {
+			return err
+		}
+		return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+	}); err != nil {
+		return fmt.Errorf("queue the source's close: %w", err)
 	}
-	if err := graphstore.Caused(ctx, tx, held, appended.ID); err != nil {
-		return fmt.Errorf("state the source's resolution: %w", err)
+	if between == nil {
+		if err := ledger.Commit(ctx); err != nil {
+			return fmt.Errorf("commit closing the source: %w", err)
+		}
+		return nil
 	}
-	if err := ledger.Commit(ctx); err != nil {
-		return fmt.Errorf("commit closing the source: %w", err)
+	committed := make(chan error, 1)
+	go func() { committed <- ledger.Commit(ctx) }()
+	reached := func() error {
+		for {
+			waiting, err := storetest.CountLockWaits(ctx, service.store, "%close_source_gate%")
+			if err != nil {
+				return err
+			}
+			if waiting > 0 {
+				return nil
+			}
+			select {
+			case err := <-committed:
+				committed <- err
+				return fmt.Errorf("the close committed (%v) before its write phase reached the gate", err)
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}
+	// Whatever happens here, the gate opens and the commit returns before this does, so nothing
+	// rolls the transaction back under the commit.
+	reachErr := reached()
+	if reachErr == nil {
+		between()
+	}
+	openErr := openGate()
+	commitErr := <-committed
+	switch {
+	case reachErr != nil:
+		return reachErr
+	case openErr != nil:
+		return fmt.Errorf("open the gate: %w", openErr)
+	case commitErr != nil:
+		return fmt.Errorf("commit closing the source: %w", commitErr)
 	}
 	return nil
 }
+
+// closeSourceGate is the advisory lock closeSource's write phase waits on while between runs.
+const closeSourceGate int64 = 0x434C4F5345474154
 
 // A copy settling while its source is answered, with the copy's block still in it, so both take the
 // project's copy lock (the copy's settlement to read its source, the answer to mark the copy owed),
@@ -1332,7 +1407,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 // settlement holds the copy's owner row, which the answer's mark of the copy's pending row reaches
 // only through a foreign key's `for key share`. Both finish, nothing is owed once the settlement
 // after the answer has run, and the copy shows its source's answer as an agent reads it, rendered
-// from the source's ask, while no byte of the copy holds it (dispatch://INFRA-1150 R3).
+// from the source's ask, while no byte of the copy holds it.
 func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *testing.T) {
 	for _, order := range []string{"answer first", "settlement first"} {
 		t.Run(order, func(t *testing.T) {
@@ -1349,7 +1424,7 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 			seedServiceText(t, service, copied, "Kept\n\n"+shared)
 			settleCurrentGeneration(t, service, copied)
 			requireCopiedStates(t, service, copied, `state="open" `+copiedFrom(t, service, source.ID, original))
-			answeredCopy := `state="answered" answered_by="alice" answered_at="2026-10-09T09:00:00Z" selected="[]" answer="eu-west-1" ` +
+			answeredCopy := `state="answered" answered_by="alice" answered_at="2026-10-09T09:00:00Z" selected=[] answer="eu-west-1" ` +
 				copiedFrom(t, service, source.ID, original)
 			// The copy owes a settlement and still holds the block, so that settlement reads its source
 			// under the copy lock.
@@ -1492,5 +1567,5 @@ func TestACopyNamesTheEarliestAskedMatchThoughALaterAskAsksItsWordingNow(t *test
 	if count := asksOn(t, service, copied); count != 0 {
 		t.Fatalf("the copy opened %d asks, want none", count)
 	}
-	requireCopiedStates(t, service, copied, `:::ask{#tie urgency="med" multiple="false" state="open" `+copiedFrom(t, service, earlier, original)+`}`)
+	requireCopiedStates(t, service, copied, `#tie state="open" `+copiedFrom(t, service, earlier, original)+"\n")
 }

@@ -579,11 +579,11 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 // the write records (reasoningWrite): it is the one conversion, which the route and the command
 // both run.
 //
-// It first takes, in one call, the issue's row `for no key update` - the owner row the lock order
-// on api/inbox_read.go's markInboxReadThreads puts before every other, and the owner of the
-// document it converts - and the owner row of the document of every check the map names (its race
-// with a retirement or an index pass: lockReasoningOwners). So two conversions of one issue queue
-// there and the second reads what the first wrote. It reads the document's newest version. A
+// It first takes, in one call, the issue's owner lock - the lock the order on
+// api/inbox_read.go's markInboxReadThreads puts before every other, and the owner of the document
+// it converts - and the owner lock of the document of every check the map names (its race with a
+// retirement or an index pass: lockReasoningOwners). So two conversions of one issue queue there
+// and the second reads what the first wrote. It reads the document's newest version. A
 // document whose address carries a moved_to tuple already is converted: the call answers that
 // lens, AlreadyConverted, and writes nothing. Otherwise it parses the document (parsePremortem),
 // holds entries to it (checkPremortemMap), retires the document and moves its address to the lens
@@ -620,9 +620,10 @@ func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Ac
 		checks = append(checks, entry.Checks...)
 	}
 	if err := lockReasoningOwners(ctx, tx, key, checks); err != nil {
-		return PremortemReport{}, nil, fmt.Errorf("take the owner rows of %s and of the documents of the checks its map names: %w", key, err)
+		return PremortemReport{}, nil, fmt.Errorf("take the owner locks of %s and of the documents of the checks its map names: %w", key, err)
 	}
-	_, _, err := issueStatus(ctx, tx, key, "")
+	// The issue's owner lock is held already, so taking it again returns at once.
+	_, _, err := issueStatus(ctx, key, lockedOwnerRead(tx))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PremortemReport{}, nil, &PremortemDocumentError{Missing: true, Problem: fmt.Sprintf("no issue %s holds a document %q", key, slug)}
 	}

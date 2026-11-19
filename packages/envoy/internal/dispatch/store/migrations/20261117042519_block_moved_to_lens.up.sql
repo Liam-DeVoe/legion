@@ -18,7 +18,9 @@
 -- chain is read - where that lens stands, which is a graph_nodes row of kind lens that is not
 -- gone, and null where the address states no such moved_to or its lens is gone. A lens moves
 -- nowhere, so the chain from a document's address is that one tuple. From a block's address it
--- answers what migration 20261117002006 answers, unchanged.
+-- answers what migration 20261117002006 answers, through the same function that migration reads
+-- every move through (moved_to_reach), so its chain rules - an ask far end ends a chain - are
+-- that function's alone.
 --
 -- Rolling deploy. create or replace keeps the function's name, its argument and its result type.
 -- The release before this one calls block_moved_to with block addresses alone, which the body
@@ -29,8 +31,7 @@ create or replace function block_moved_to(address text) returns text
   language plpgsql stable strict
   as $$
 declare
-  reached text := address;
-  passed text[] := array[address];
+  reached text;
 begin
   if strpos(address, '#') = 0 then
     select moved.to_id into reached
@@ -48,26 +49,6 @@ begin
     end if;
     return null;
   end if;
-  for hop in 0 .. 8 loop
-    if exists (select 1 from document_blocks d where d.node_id = reached) then
-      return reached;
-    end if;
-    exit when hop = 8;
-    select moved.to_id into reached
-    from (
-      select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted, t.at, t.seq
-      from graph_tuples t
-      where t.from_kind = 'block' and t.from_id = reached and t.kind = 'moved_to'
-      order by t.to_kind, t.to_id, t.at desc, t.seq desc
-    ) moved
-    where moved.asserted and moved.to_kind = 'block'
-    order by moved.at desc, moved.seq desc
-    limit 1;
-    if not found or reached = any(passed) then
-      return null;
-    end if;
-    passed := passed || reached;
-  end loop;
-  return null;
+  return (select reach.id from moved_to_reach(address) reach where reach.kind = 'block');
 end
 $$;

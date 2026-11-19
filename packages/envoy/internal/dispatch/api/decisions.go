@@ -17,16 +17,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The server's half of the Decisions view: the Decisions read, Keep, and each person's last read
-// version of a document. A decision is one node of the store (dispatch://INFRA-1150 R1): an
+// version of a document. A decision is one node of the store: an
 // agent's is a `decision` block node of any document of the issue, and a person's is the answered
 // ask's own node. Every read of a decision answers from those nodes, through decisionread, and no
 // read answers from the text of an issue's decisions document (R11).
 
 // issueDecisions is GET /api/v1/issues/{key}/decisions. entries is the read of the store
-// (dispatch://INFRA-1150 R4): one entry for each node that holds a question the issue asked or a
+// alone: one entry for each node that holds a question the issue asked or a
 // decision of any of its documents (decisionEntries). open_questions are the open asks its spec
 // still holds. document and decisions are the members the release before answers, and they
 // answer from the store (R11, ruling F4): decisions is each decision node and each answered ask
@@ -79,7 +80,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 
 // standingDecisionsDocument is the dispatch:// address of issue key's decisions document while it
 // stands (decisions_documents()), and nil once it is retired or where the issue holds none: the
-// Decisions read's old `document` member (dispatch://INFRA-1150 R11, ruling F4). Nothing reads
+// Decisions read's old `document` member. Nothing reads
 // the document's text.
 func (s *server) standingDecisionsDocument(ctx context.Context, key string) (*string, error) {
 	var issueKey, session *string
@@ -173,7 +174,7 @@ func (s *server) specOpenQuestions(
 	return questions, nil
 }
 
-// decisionEntry is one entry of the Decisions read's `entries` (dispatch://INFRA-1150 R4): the
+// decisionEntry is one entry of the Decisions read's `entries`: the
 // node itself. node is the node that holds it - an ask's own node (kind ask), or an agent's
 // decision's block node (kind block) - and ref that node's dispatch:// address, which is where
 // the entry links; document is the document whose block shows it, null for an ask on the issue
@@ -343,7 +344,7 @@ func decisionEntriesRead() string {
 		       coalesce(doc.kind, ''), doc.issue_key, coalesce(doc.project_key, ''), doc.session_id, coalesce(doc.is_primary, false),
 		       doc.id is not null and (
 		         exists (select 1 from document_blocks b
-		                 where m.kind = '` + graphstore.KindAsk + `' and b.artifact_id = doc.id and b.block_id = q.block_id offset 0)
+		                 where m.kind = '` + graphstore.KindAsk + `' and b.artifact_id = doc.id and b.block_id = q.block_id and b.type = 'ask' offset 0)
 		         or exists (select 1 from document_blocks b
 		                    where m.kind = '` + refs.BlockNodeKind + `' and b.node_kind = m.kind and b.node_address = m.id offset 0)
 		         or not exists (select 1 from document_block_versions v
@@ -404,8 +405,10 @@ func decisionEntriesRead() string {
 //     still owes its block index is listed.
 //
 // An entry names the document that holds its node's block where a document_blocks row holds that
-// block, or where the document owes its block index and no row can say so yet: an answered ask
-// whose block left its document keeps its row, which still names that document, and names none.
+// block - for an ask, a row of type ask at the ask's block id - or where the document owes its block
+// index and no row can say so yet: an answered ask whose block left its document keeps its row,
+// which still names that document, and names none, and so does one whose block id a block of
+// another type took, since that block is not the ask's.
 // kept_by and kept_text_sum are the Keep decisionread read (model.Decision's Kept), so they and
 // `kept` are one read of the node.
 //
@@ -416,8 +419,8 @@ func decisionEntriesRead() string {
 // decisionread refuses - is left out and logged, and the read goes on. reader is the answer's
 // own, and each entry registers its text with it once the slice has stopped growing.
 //
-// It answers too the Decisions read's old `decisions` member (dispatch://INFRA-1150 R11, ruling
-// F4): decisionread's model.Decision of each entry that is a decision node or an answered ask, in
+// It answers too the Decisions read's old `decisions` member: decisionread's model.Decision of
+// each entry that is a decision node or an answered ask, in
 // the order of the entries, so a page of the release before reads what the store holds.
 func (s *server) decisionEntries(ctx context.Context, who model.Actor, key string, reader *displayTreeReader) ([]decisionEntry, []model.Decision, error) {
 	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -701,7 +704,7 @@ type keepDecisionInput struct {
 // decision, a `decision` block of any document of the issue, whose node the Keep acts on
 // (keepDecisionNode); or, until the decisions step retires it, the heading block a section of the
 // issue's decisions document opens with, kept on the decision_keeps row alone, which the
-// conversion carries onto the section's decision node (dispatch://INFRA-1150 R11, ruling F3). The
+// conversion carries onto the section's decision node. The
 // sum is the `text_sha256` the read served them, and a decision whose text has changed since is
 // 409 DECISION_CHANGED with nothing written: a Keep over text nobody read is the one thing Keep
 // exists to prevent, as `409 ASK_EDITED` holds an answer to the wording it was given on. Any other
@@ -773,7 +776,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 // retirement, would otherwise write its row on a heading the step carried onto no node, and
 // answer 200. Such a Keep - the heading opening no section of a decisions document that stands -
 // is 404 TARGET_NOT_FOUND, with nothing written, as a Keep of a heading of a retired document is
-// (dispatch://INFRA-1150 F3); one whose section's text changed while it waited is 409
+// too; one whose section's text changed while it waited is 409
 // DECISION_CHANGED, as keepDecision answers one posted over text that changed before.
 // kept for one release: heading-keep
 func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
@@ -814,16 +817,19 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 }
 
 // keepDecisionNode is the Keep of decision, an agent's decision node of document (readDecisionNode),
-// in tx, as two appends on the node (dispatch://INFRA-1150 R2): a kept_by tuple to the person who
+// in tx, as two appends on the node: a kept_by tuple to the person who
 // kept it and a kept_text_sum value holding the text sum they read it at, with decision_keeps, the
 // row the decision's block keys, as their projection, written in the same transaction. The Keep
 // records that the decision has been reviewed and not who else did, so a kept_by to a person
 // another Keep named is retracted, and the node holds one. The row's changed_version is the
 // version that last changed the decision's text (readDecisionNode).
 //
-// It writes as the store's writers do: the issue's owner row first, then the person's node (one
-// the store already holds moves nothing), the projection row, the decision.kept event, and last
-// the tuples, under that event (graphstore.WriteUncaused, graphstore.Caused).
+// It writes as the store's writers do: the issue's owner lock first, under which it reads the
+// node's current keepers, and then one write-phase batch (store.RunWrite), so the transaction holds
+// its id only for that batch: the person's node (one the store already holds moves nothing), the
+// projection row, the decision.kept event, and last the tuples, under that event
+// (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent). The event's
+// changed_version is the one the row is written with, which no statement of the batch reads back.
 func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
 	own := issueOwner(*document.IssueKey)
 	if err := s.deps.Events.LockOwners(ctx, tx, own.event("", actor, nil)); err != nil {
@@ -856,31 +862,32 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 			ToKind: graphstore.KindValue, ToID: decision.TextSHA256, At: at, Who: actor, Asserted: true,
 		},
 	)
-	held, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{graphstore.PersonNode(login, actor, at, graphstore.NoEvent)}, tuples)
-	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
-	}
+	held := graphstore.PlanUncaused([]graphstore.Node{graphstore.PersonNode(login, actor, at, graphstore.NoEvent)}, tuples)
 	keep := model.DecisionKeep{ArtifactID: document.ID}
-	if err := tx.QueryRow(ctx, `
-		insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by, kept_at)
-		values ($1::uuid, $2, $3, $4, $5, $6)
-		on conflict (artifact_id, block_id) do update
-			set text_sha256 = excluded.text_sha256, changed_version = excluded.changed_version,
-				kept_by = excluded.kept_by, kept_at = excluded.kept_at
-		returning block_id, text_sha256, changed_version, kept_by, kept_at
-	`, document.ID, decision.BlockID, decision.TextSHA256, decision.ChangedVersion, login, at).
-		Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
-	}
-	event, err := s.appendEvent(ctx, tx, own.event("decision.kept", actor, map[string]any{
-		"artifact_id":     document.ID,
-		"block_id":        decision.BlockID,
-		"changed_version": keep.ChangedVersion,
-	}))
-	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
-	}
-	if err := graphstore.Caused(ctx, tx, held, event.ID); err != nil {
+	var event model.Event
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := graphstore.QueueNodes(b, held); err != nil {
+			return err
+		}
+		b.Queue("", `
+			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by, kept_at)
+			values ($1::uuid, $2, $3, $4, $5, $6)
+			on conflict (artifact_id, block_id) do update
+				set text_sha256 = excluded.text_sha256, changed_version = excluded.changed_version,
+					kept_by = excluded.kept_by, kept_at = excluded.kept_at
+			returning block_id, text_sha256, changed_version, kept_by, kept_at
+		`, document.ID, decision.BlockID, decision.TextSHA256, decision.ChangedVersion, login, at).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt)
+		})
+		if err := s.deps.Events.QueueAppend(b, own.event("decision.kept", actor, map[string]any{
+			"artifact_id":     document.ID,
+			"block_id":        decision.BlockID,
+			"changed_version": decision.ChangedVersion,
+		}), func(written model.Event) { event = written }); err != nil {
+			return err
+		}
+		return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+	}); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err
 	}
 	return keep, event, nil
@@ -889,8 +896,8 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 // keptDecision is the decision Keep acts on at blockID of document, and whether it is a node's:
 // an agent's decision node of a document of the issue (readDecisionNode), else the section a
 // heading block of the issue's decisions document opens while that document stands, read through
-// the decisions step's section reader (docs' DecisionHeading over decisions_documents(),
-// dispatch://INFRA-1150 R11, ruling F3). A decision marked replaced, a heading under `## Replaced`
+// the decisions step's section reader (docs' DecisionHeading over decisions_documents()).
+// A decision marked replaced, a heading under `## Replaced`
 // among them, and a heading of a retired decisions document are no decision Keep acts on.
 func (s *server) keptDecision(ctx context.Context, who model.Actor, document model.Artifact, blockID string) (model.Decision, bool, error) {
 	notFound := errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", blockID, document.Name)

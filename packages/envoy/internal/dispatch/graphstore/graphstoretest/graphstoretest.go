@@ -12,14 +12,20 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // SeedAuthorOnly reserves each of nodes for its author by writing its row straight into the
 // store, in the caller's transaction: the node row at visibility author, with the base
-// attributes the store's writer states of a node its insert makes (graphstore.BaseAttributeFacts)
-// for a node the store does not hold, and the one visibility tuple that move states for a node it
-// holds at another visibility. A node already reserved for its author moves nothing and states
-// nothing.
+// attributes the store's writer states of a node its insert makes - its visibility and state, and
+// its project and parties where it carries them - for a node the store does not hold, and the one
+// visibility tuple that move states for a node it holds at another visibility. A node already
+// reserved for its author moves nothing and states nothing.
+//
+// Each node is one statement, which reads whether the store holds the node, moves or makes its
+// row and states its facts at once, and the nodes' statements are one batch of their own
+// (store.RunWrite), as a write of the store's own runs: no Go code reads what one statement did
+// before the next is sent.
 //
 // The store's writers take a node reserved for its author only of a kind the read registry
 // flags (graphstore.AdmitAuthorOnly), and no kind cybermonklabs/legion#3178 registers is flagged,
@@ -27,70 +33,82 @@ import (
 // are still held to answering such a node to its author alone, and a test of them seeds the node
 // here, as the rows a writer would have stored, rather than through a writer that refuses it.
 func SeedAuthorOnly(ctx context.Context, tx pgx.Tx, nodes ...graphstore.Node) error {
-	for _, node := range nodes {
-		node.Visibility = graphstore.VisibilityAuthor
-		madeBy, err := json.Marshal(node.MadeBy.Recorded())
-		if err != nil {
-			return fmt.Errorf("encode the writer of %s %s: %w", node.Kind, node.ID, err)
-		}
-		var held bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from graph_nodes where kind = $1 and id = $2)`,
-			node.Kind, node.ID).Scan(&held); err != nil {
-			return fmt.Errorf("read whether the store holds %s %s: %w", node.Kind, node.ID, err)
-		}
-		var facts []graphstore.UncausedTuple
-		if held {
-			tag, err := tx.Exec(ctx, `update graph_nodes set visibility = $3 where kind = $1 and id = $2 and visibility <> $3`,
-				node.Kind, node.ID, node.Visibility)
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		for _, node := range nodes {
+			args, err := authorOnlyParams(node)
 			if err != nil {
-				return fmt.Errorf("reserve %s %s for its author: %w", node.Kind, node.ID, err)
+				return err
 			}
-			if tag.RowsAffected() == 0 {
-				continue
-			}
-			facts = []graphstore.UncausedTuple{{Tuple: graphstore.Tuple{
-				FromKind: node.Kind, FromID: node.ID, Kind: graphstore.AttributeVisibility,
-				ToKind: graphstore.KindValue, ToID: node.Visibility,
-				At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
-			}}}
-		} else {
-			attributes := []byte("{}")
-			if node.Attributes != nil {
-				if attributes, err = json.Marshal(node.Attributes); err != nil {
-					return fmt.Errorf("encode the attributes of %s %s: %w", node.Kind, node.ID, err)
-				}
-			}
-			var project *string
-			if node.Project != "" {
-				project = &node.Project
-			}
-			var parties []string
-			if len(node.Parties) > 0 {
-				parties = node.Parties
-			}
-			if _, err := tx.Exec(ctx, `
-				insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties)
-				values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-			`, node.Kind, node.ID, node.Supertag, node.Visibility, node.State, attributes, node.MadeAt, madeBy,
-				node.SourceEvent, project, parties); err != nil {
-				return fmt.Errorf("write the row of %s %s: %w", node.Kind, node.ID, err)
-			}
-			facts = graphstore.BaseAttributeFacts([]graphstore.Node{node})
-		}
-		for _, fact := range facts {
-			who, err := json.Marshal(fact.Who.Recorded())
-			if err != nil {
-				return fmt.Errorf("encode the writer of %s %s's %s: %w", node.Kind, node.ID, fact.Kind, err)
-			}
-			if _, err := tx.Exec(ctx, `
+			// The row reserved for its author where the store holds it at another visibility, and
+			// its visibility tuple; the row made where the store holds none, and its base
+			// attributes, in the order the store's writer states them; nothing where the store
+			// holds the row reserved already.
+			b.Queue(fmt.Sprintf("seed %s %s reserved for its author", node.Kind, node.ID), `
+				with node as (
+					select $1::text as kind, $2::text as id, $3::text as supertag, $4::text as visibility, $5::text as state,
+					       $6::jsonb as attributes, $7::timestamptz as made_at, $8::jsonb as made_by, $9::bigint as source_event,
+					       $10::text as project_key, $11::text[] as parties, $12::text as parties_value
+				),
+				reserved as (
+					update graph_nodes set visibility = node.visibility
+					from node
+					where graph_nodes.kind = node.kind and graph_nodes.id = node.id and graph_nodes.visibility <> node.visibility
+					returning graph_nodes.kind
+				),
+				made as (
+					insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties)
+					select kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties
+					from node
+					on conflict (kind, id) do nothing
+					returning kind
+				)
 				insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-				values ($1, $2, $3, $4, $5, $6, $7, $8, null, $9)
-			`, fact.FromKind, fact.FromID, fact.Kind, fact.ToKind, fact.ToID, fact.At, who, fact.SourceEvent, fact.Asserted); err != nil {
-				return fmt.Errorf("state %s %s's %s: %w", node.Kind, node.ID, fact.Kind, err)
-			}
+				select node.kind, node.id, attribute.kind, $13::text, attribute.value, node.made_at, node.made_by, node.source_event, null, true
+				from node
+				cross join lateral (values
+					(0, $14::text, node.visibility), (1, $15::text, node.state),
+					(2, $16::text, node.project_key), (3, $17::text, node.parties_value)
+				) as attribute(ordinal, kind, value)
+				where attribute.value is not null
+				  and (exists (select 1 from made) or (attribute.ordinal = 0 and exists (select 1 from reserved)))
+				order by attribute.ordinal
+			`, args...)
+		}
+		return nil
+	})
+}
+
+// authorOnlyParams are the seventeen parameters SeedAuthorOnly's statement binds for node, in its
+// order: the node's row at visibility author, the value its parties attribute states
+// (graphstore.PartiesValue), and the kinds of value tuple it states.
+func authorOnlyParams(node graphstore.Node) ([]any, error) {
+	node.Visibility = graphstore.VisibilityAuthor
+	madeBy, err := json.Marshal(node.MadeBy.Recorded())
+	if err != nil {
+		return nil, fmt.Errorf("encode the writer of %s %s: %w", node.Kind, node.ID, err)
+	}
+	attributes := []byte("{}")
+	if node.Attributes != nil {
+		if attributes, err = json.Marshal(node.Attributes); err != nil {
+			return nil, fmt.Errorf("encode the attributes of %s %s: %w", node.Kind, node.ID, err)
 		}
 	}
-	return nil
+	var project, partiesValue *string
+	if node.Project != "" {
+		project = &node.Project
+	}
+	var parties []string
+	if len(node.Parties) > 0 {
+		parties = node.Parties
+		value, err := graphstore.PartiesValue(node.Parties)
+		if err != nil {
+			return nil, fmt.Errorf("the parties of %s %s: %w", node.Kind, node.ID, err)
+		}
+		partiesValue = &value
+	}
+	return []any{node.Kind, node.ID, node.Supertag, node.Visibility, node.State, attributes, node.MadeAt, madeBy,
+		node.SourceEvent, project, parties, partiesValue, graphstore.KindValue,
+		graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.AttributeProject, graphstore.AttributeParties}, nil
 }
 
 // AuthoredFacts is what the reasoning write (api's writeReasoningNodes) states beside node, for a

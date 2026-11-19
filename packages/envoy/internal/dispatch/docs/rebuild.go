@@ -136,7 +136,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		}
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w (document %s, latest saved version %d)", ErrDocumentLoads, artifactID, latest)
 	}
-	// The owner row before the room lock the write below takes, as every writer that takes both
+	// The owner's lock before the room lock the write below takes, as every writer that takes both
 	// does (lockDocumentRoom). Held, it also keeps the open asks the replacement must keep, and
 	// the approval request the version moves, from changing under this transaction.
 	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
@@ -189,7 +189,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		return RebuildReport{}, VersionResult{}, &ErrInvalidAskBlock{Reason: err}
 	}
 	// A rebuild is a person's own write: its route needs the person scope (api's routeScopes).
-	if err := s.refuseDroppedAskBlocks(ctx, artifactID, tree, true); err != nil {
+	if err := s.refuseDroppedAskBlocks(ctx, artifactID, tree, dropper{person: true, remover: personOf(actor), actor: actor}); err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
 	// A closed issue's document shows its asks as the close left them, and the tree read from the
@@ -198,8 +198,8 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// live writes to the document either never reached it, its history not loading then, or are
 	// in the history this replaces. So the close's final sweep is written into the tree here
 	// (closedIssueAskState): every resolved ask's block and copy, and every answered ask's copy,
-	// from the rows as they stand under the issue's row this transaction holds, and every readable
-	// ask block with no ask row marked resolved. The sweep is written as the fleet stands
+	// from the rows as they stand under the issue's owner lock this transaction holds, and every
+	// readable ask block with no ask row marked resolved. The sweep is written as the fleet stands
 	// (anotherBuildServes), as the close writes it: while another build serves, each block gets the
 	// attributes that build's pages read its state from; once the fleet is one build, every reader
 	// reads the state from the store, and each such block has the seven attributes a version can
@@ -254,7 +254,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 
 	// RebuildTx replaces the history only if its head is still the one loaded above, which is the
 	// history validated as one that cannot load: a second rebuild of the document on another
-	// process that loaded the same history waits on the owner row above until this one commits,
+	// process that loaded the same history waits on the owner lock above until this one commits,
 	// then finds the head moved and is refused.
 	report, err := s.persistence.RebuildTx(ctx, tx, artifactID, loadedHead, seed)
 	if err != nil {
@@ -449,7 +449,7 @@ func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, scope
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
 	}
 	// The erase is an operator's (envoy-dispatch erase), no agent's write.
-	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded, true); err != nil {
+	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded, dropper{person: true}); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, err)
 	}
 	margin, moved := keptMargin(marginOf(doc), scope)

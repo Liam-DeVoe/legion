@@ -156,15 +156,15 @@ func pointerBlockRow(t *testing.T, ctx context.Context, database *store.Store, a
 // the pointer tuples and of a risk's place (spec requirement r-constraint-risk,
 // pointerRules): each rule takes the kinds it allows, and refuses every other far end and near
 // end with ErrInvalidPointer, as an InvalidPointerError naming the tuple kind, its far end's kind
-// and the kinds the rule allows, before the write appends anything - the transaction of a refused
-// write that wrote no node still commits, and the log holds no tuple more than it held. A block's
-// type is read off its document_blocks row whether or not that row names its node yet. A second
-// has_kind of a lens is ErrLensKindAsserted. Write, WriteUncaused and Caused each hold the rule,
-// and WriteArms refuses a ruled tuple it cannot check. A retarget of a lens's kind appends a
-// retraction and an assertion and touches no part_of tuple; a retarget of a pre-mortem's away
-// from pre-mortem is ErrLensKindKept in one body whether a risk hangs under it or not, and a
-// retarget to pre-mortem is taken. Two writes asserting a kind of one kindless lens queue at the
-// lens's row, and the second is refused.
+// and the kinds the rule allows - with no statement of the write failing, so the transaction of a
+// refused write still runs one, and once its caller abandons it the log holds no tuple more than
+// it held (abandonRefusedWrite). A block's type is read off its document_blocks row whether or
+// not that row names its node yet. A second has_kind of a lens is ErrLensKindAsserted. Write,
+// WriteUncaused and Caused each hold the rule, and WriteArms refuses a ruled tuple it cannot
+// check. A retarget of a lens's kind appends a retraction and an assertion and touches no part_of
+// tuple; a retarget of a pre-mortem's away from pre-mortem is ErrLensKindKept in one body whether
+// a risk hangs under it or not, and a retarget to pre-mortem is taken. Two writes asserting a kind
+// of one kindless lens queue at the lens's row, and the second is refused.
 func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 	fixture := newPointerFixture(t)
 	database := fixture.database
@@ -273,11 +273,9 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				} else {
 					requirePointerRefused(t, err, refused.message)
 				}
-				// The refused write wrote no node, and a statement that failed would have aborted
-				// the transaction: it commits, and holds no tuple the refused write stated.
-				if err := tx.Commit(ctx); err != nil {
-					t.Fatalf("the transaction of the refused write does not commit: %v", err)
-				}
+				// The refused write's transaction is abandoned, as its caller abandons it, and
+				// holds no tuple the refused write stated (abandonRefusedWrite).
+				abandonRefusedWrite(t, ctx, tx)
 				if after := countTuples(t, ctx, database); after != before {
 					t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
 				}
@@ -311,7 +309,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				FromKind: KindRisk, FromID: riskAstray, Kind: TuplePartOf, ToKind: KindLens, ToID: lensPreMortem,
 				At: pointerAt, Who: pointerWho, SourceEvent: NoEvent,
 			}
-			if _, _, err := WriteArmsUncaused(1, nil, nil, []Claim{claim}); !errors.Is(err, errPointerInArms) {
+			if _, _, _, err := WriteArmsUncaused(1, nil, nil, []Claim{claim}); !errors.Is(err, errPointerInArms) {
 				t.Errorf("WriteArmsUncaused of a risk's part_of claim = %v, want errPointerInArms", err)
 			}
 			// A part_of out of any node but a risk is a place no rule holds.
@@ -719,6 +717,22 @@ func requireCheckRefused(t *testing.T, ctx context.Context, database *store.Stor
 	}
 	if after := countTuples(t, ctx, database); after != before {
 		t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
+	}
+}
+
+// abandonRefusedWrite is what the caller of a refused write does with its transaction. A refusal
+// that reads the store is the callback of a statement of the write phase, whose later statements
+// - the write's append among them - have run by the time Send reads it, so the caller ends the
+// transaction rather than commit it; a refusal decided in Go sends nothing. Either is no failed
+// statement: a statement that failed would have aborted the transaction, which then runs nothing
+// more, so the transaction still runs one before it is rolled back.
+func abandonRefusedWrite(t *testing.T, ctx context.Context, tx pgx.Tx) {
+	t.Helper()
+	if _, err := tx.Exec(ctx, `select 1`); err != nil {
+		t.Fatalf("the transaction of the refused write runs no statement, so a statement of the write failed: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("roll the refused write back: %v", err)
 	}
 }
 

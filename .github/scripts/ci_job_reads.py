@@ -434,7 +434,8 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                              "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
-        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
+        (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
+        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
 )
 
 
@@ -1460,7 +1461,7 @@ ENVOY_RACE_LANE = (
             "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
-    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "30m", (RacePackage("internal/dispatch/api"),)),
+    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
@@ -1681,7 +1682,7 @@ TEXT_CHECK_TESTS = {
         "TestEveryReviewReadOrdersByReviewOrder",
         "TestTheReviewOrderGuardReadsBothOrders"},
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": {
-        "TestOnlyWriteReviewWritesReviews",
+        "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
 }
@@ -2198,12 +2199,14 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("go_test_step_expansion_test", "Test the go test step expansion",
             f"{SCRIPTS}/go-test-step-expansion.test.sh", [
-        (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:38)"),
+        (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:40)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
-        (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its last case reads this file's own go test line, the wrapper one"),
-        (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its last case reads this file's own go test line, the GODEBUG one"),
+        (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its two-steps case reads this file's own go test line, the wrapper one"),
+        (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its two-steps case reads this file's own go test line, the GODEBUG one"),
+        ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
+        (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     ]),
 ]
 
@@ -3002,9 +3005,16 @@ GATES = [
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
+    # TestAReadingIsAChildNodeOfTheDecisionItReads runs this tree's dispatch command under bun, so
+    # the job installs Bun and the workspace, and reads every package that command loads.
     gate("envoy_go_race_api", "envoy-go-race-api",
          runs=[race_step(RACE_JOBS["envoy-go-race-api"]), ceiling_run("envoy-go-race-api")],
-         reads=ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+         reads=reads(
+             ("packages/envoy-client/**", f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862 (runDispatchCLI) runs "
+                                          "`bun ../../../../envoy-client/bin/dispatch.ts`, which loads envoy-client's sources"),
+             ("packages/contracts/**", f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862: that command imports @legion/contracts"),
+         ) + envoy_client_dep(f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862 runs packages/envoy-client/bin/dispatch.ts")
+         + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + bun_job("envoy-go-race-api")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [

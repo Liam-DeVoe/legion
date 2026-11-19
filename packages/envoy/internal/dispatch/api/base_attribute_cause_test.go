@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// A tuple holds the write that caused it (R1 of dispatch://INFRA-1149), and the two base
+// A tuple holds the write that caused it (R1 of this change), and the two base
 // attributes every node carries - `visibility` and `state` - are attribute tuples under that
 // rule (R8). So a comment's `visibility` and `state` must name the event the same transaction
 // appended, exactly as its `authored_by` does.

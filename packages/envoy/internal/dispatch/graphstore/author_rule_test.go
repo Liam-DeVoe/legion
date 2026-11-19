@@ -146,7 +146,7 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 
 	// The authored_by edge is attribution and the rule is visibility, and they part on a session
 	// that is not proven: a pod's write on a session its body named states its authored_by to that
-	// session (AuthorOf, as dispatch://INFRA-1149 has it), while the rule counts the workload its
+	// session (AuthorOf, as this change has it), while the rule counts the workload its
 	// author; a session only a body named, the shared bearer's writes, keeps its authored_by too,
 	// while the rule counts it as nobody. A session the broker proved is its own author under both.
 	for _, row := range []struct {

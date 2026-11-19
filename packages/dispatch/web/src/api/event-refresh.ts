@@ -196,22 +196,33 @@ const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
     rowsOf<Ask>(data).some(openAndNotHandedOn),
 };
 
-/** Every document's live text (`["artifact", id, "text"]`) that renders a copy of an ask on
- *  another document (`copied_from`): a project document's page reads a copy's source from that
- *  text (`renderedAskOf`), since no route lists a project's asks, and an answer, a resolution or a
- *  reopening of the source changes no byte of the copy's document, so no event of that document
- *  refreshes it. Of any document, since the key names the document by id alone; a text that
- *  renders no copy is not read again. */
+/** Every document's live text (`["artifact", id, "text"]`) that holds a copy of an ask on another
+ *  document: an entry of its `asks` naming the source (`copied_from`), or, from a Dispatch of the
+ *  release before, which sends no `asks`, a `copied_from` on an ask block's opening line. A
+ *  project document's page reads a copy's source from that text (`liveAskOf`), since no route
+ *  lists a project's asks, and an answer, a resolution or a reopening of the source changes no
+ *  byte of the copy's document, so no event of that document refreshes it. Of any document, since
+ *  the key names the document by id alone; a text that holds no copy is not read again. */
 const LIVE_TEXTS_RENDERING_COPIES: RefreshTarget = {
   queryKey: ["artifact"],
-  when: (data, query) =>
-    query.queryKey.length === 3 &&
-    query.queryKey[2] === "text" &&
-    typeof data === "object" &&
-    data !== null &&
-    "markdown" in data &&
-    typeof data.markdown === "string" &&
-    data.markdown.includes("copied_from="),
+  when: (data, query) => {
+    if (query.queryKey.length !== 3 || query.queryKey[2] !== "text") return false;
+    if (typeof data !== "object" || data === null) return false;
+    if ("asks" in data && Array.isArray(data.asks)) {
+      return data.asks.some(
+        (entry: unknown) =>
+          typeof entry === "object" &&
+          entry !== null &&
+          "copied_from" in entry &&
+          typeof entry.copied_from === "string"
+      );
+    }
+    return (
+      "markdown" in data &&
+      typeof data.markdown === "string" &&
+      data.markdown.includes("copied_from=")
+    );
+  },
 };
 
 /** The project the ask of a cached thread names, or undefined when it names none: its issue's
@@ -1357,7 +1368,7 @@ const TRUNCATED_KIND_READS: Readonly<Partial<Record<string, readonly RefreshTarg
 };
 
 /**
- * The reads that carry a changed target's backlinks, which `refs.ReplaceCounted` names in the
+ * The reads that carry a changed target's backlinks, which `refs.CountedChanges` names in the
  * transaction that appends the event: an issue's detail (its count), its references tab and its
  * panel; an ask's read, its thread, the list its row lives in (its issue's asks, or its
  * document's), the Inbox row showing its count, and its panel; a document's panel; a block's

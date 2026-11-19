@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"slices"
 	"testing"
@@ -12,54 +11,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// documentRemovalStatement is the removal's delete of the document's own row (removeArtifact),
-// after the rows it clears and the reference rows package refs forgets, none of which writes
-// artifacts.
-const documentRemovalStatement = "delete from artifacts where id = $1"
-
-// artifactRemoval is the removal of an untouched document of the rig's issue (removeArtifact),
-// through its route. It takes the issue's row as its owner row (beginArtifactWrite), then the
-// document's room, an advisory lock no table shows; it writes the document's node gone
-// (docs.WriteRemovedNode, graphstore.WriteUncaused), deletes the document's row, appends
-// artifact.removed and then appends what the node write states under that event
-// (graphstore.Caused). The document's node exists from its create, so the node step is held as
-// the table it is written to; the document's row is deleted under a key the run holds no lock on
-// before its delete, so it is held as its table too, and no foreign key names the node from it.
-// Each run removes a document of its own, made by typing a title no run has typed.
-func (r *storeWriterRig) artifactRemoval() storeWriter {
-	return storeWriter{
-		name: "removeArtifact",
-		steps: []storeStep{
-			r.issueOwnerStep(issueOwnerStatement),
-			{
-				name: "the document's node", order: nodeStep,
-				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
-				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
-			},
-			{
-				name: "the document's row", order: projectionStep,
-				hold: holdTableWrites("artifacts"), at: documentRemovalStatement,
-				takes: []tableLock{{"artifacts", rowExclusiveMode}},
-			},
-			eventAppendStep(),
-			tupleAppendStep(),
-		},
-		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
-			document := emptyDocument(t, r.handler, r.issue, r.fresh("lock-removal")+".md")
-			return storeWriterRun{
-				made: graphstore.Node{Kind: graphstore.KindArtifact, ID: document.RefKey},
-				write: func() error {
-					response := dispatchRequest(t, r.call, http.MethodDelete, "/api/v1/artifacts/"+document.ID, nil, "alice")
-					if response.Code != http.StatusNoContent {
-						return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
-					}
-					return nil
-				},
-			}
-		},
-	}
-}
 
 // runDocumentRig is an issue of alice's and a run she asked, for a test to make a document under
 // the run's header and then end the document.

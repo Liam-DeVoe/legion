@@ -128,13 +128,13 @@ func requireRestatedBlock(t *testing.T, document parentDocument, blockID, state 
 const laterBlockState = graphstore.StateProposed
 
 // TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn holds the block index to R8 of
-// dispatch://INFRA-1149: a write that writes a node again sets only the values it owns, so the
+// this change: a write that writes a node again sets only the values it owns, so the
 // index pass, writing a block again, keeps the block's stored visibility, and its stored state
 // unless the pass itself makes the block gone or brings a gone block back (blockNode,
 // graphstore.Node's Restates).
 //
 // A document is indexed through the real pass, and its requirement block is then marked
-// proposed by SQL, as dispatch://INFRA-1950's build writes that mark: the node row's state moved
+// proposed by SQL, as a later release's build writes that mark: the node row's state moved
 // and one state tuple appended, at that build's sentinel cause (markBlockState). The pass over a
 // version that changes another block's words and the pass over one that changes the
 // requirement's own words each leave it proposed and its visibility as it was; the pass over a
@@ -203,7 +203,7 @@ func TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn(t *testing.T) {
 	requireBlockState(t, document, requirement, graphstore.StateLive, visibility, states)
 }
 
-// markBlockState writes, by SQL, a state of a block's node as dispatch://INFRA-1950's build
+// markBlockState writes, by SQL, a state of a block's node as a later release's build
 // writes it: one state tuple, an attribute of the node with the value itself as its far end
 // (graphstore.KindValue), carrying the write's time and writer at the sentinel cause, as the
 // store's writer states a base attribute it moved (write.go's baseAttributeTuple), and the node

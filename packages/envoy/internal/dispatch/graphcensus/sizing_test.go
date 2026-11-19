@@ -109,7 +109,7 @@ func TestTheSizingReportsTheOwedDocumentsAndTheAgeOfTheOldest(t *testing.T) {
 }
 
 // Two runs over one unchanged database print one report, which is what the growth check holds
-// the command to (dispatch://INFRA-1149's c-growth diffs the two). An age measured against
+// the command to (the check c-growth diffs the two). An age measured against
 // now() would move between the two runs, so the backlog lines carry the oldest debt's own
 // timestamp and an age measured against the newest write the database recorded.
 func TestTwoSizingRunsOverAnUnchangedDatabaseAgree(t *testing.T) {
@@ -333,8 +333,11 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 			('CORE-1', 5, 'ask.resolved', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false, now()),
 			('CORE-1', 6, 'ask.asked_of', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false, now()),
 			('CORE-1', 7, 'ask.follower_added', '{"kind":"session","id":"ses_sized"}',
-			 jsonb_build_object('ask_id', $2::text, 'session_id', 'ses_sized'), false, now())
-	`, message, "6a0e5d4c-3b2a-4f19-8e7d-6c5b4a392817"); err != nil {
+			 jsonb_build_object('ask_id', $2::text, 'session_id', 'ses_sized'), false, now()),
+			-- The removal of an untouched scratch document, which states its node gone.
+			('CORE-1', 8, 'artifact.removed', '{"kind":"user","id":"alice"}',
+			 jsonb_build_object('artifact', jsonb_build_object('id', $3::text)), false, now())
+	`, message, "6a0e5d4c-3b2a-4f19-8e7d-6c5b4a392817", "7b1f6e5d-4c3b-4a20-9f8e-7d6c5b4a3928"); err != nil {
 		t.Fatalf("write the events: %v", err)
 	}
 	// The comment's comment.created, as the API appends one for a person's comment on a document:
@@ -536,6 +539,8 @@ const (
 	commentBatchSite  = "graphcensus/backfill.go#writeCommentBatch"
 	roleBatchSite     = "graphcensus/backfill.go#writeRoleBatch"
 	sessionBatchSite  = "graphcensus/backfill.go#writeSessionBatch"
+	objectBatchSite   = "graphcensus/projects_backfill.go#writeObjectBatch"
+	scopeBatchSite    = "graphcensus/projects_backfill.go#writeScopeBatch"
 	batchRecordSite   = "outbox/publisher.go#recordBatch"
 	fallbackSite      = "outbox/mentions.go#recordFallbackCopies"
 )
@@ -587,6 +592,22 @@ var countedBy = map[writtenKind][]string{
 	{roleBatchSite, graphstore.KindPage, graphstore.TuplePartOf}:               {graphstore.KindPage},
 	{sessionBatchSite, graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 	{sessionBatchSite, graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+	// The backfill's pass over the issues, documents, asks and messages the build before the store
+	// wrote: each one's node and its visibility, state and project, as its create states them.
+	// The seeded history's are all in project CORE, so none states parties, and every comment and
+	// block already names its project, so the scope pass states nothing.
+	{objectBatchSite, graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
+	{objectBatchSite, graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
+	{objectBatchSite, graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
+	{objectBatchSite, graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
+	{objectBatchSite, graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
+	{objectBatchSite, graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
+	{objectBatchSite, graphstore.KindAsk, graphstore.AttributeVisibility}:      {graphstore.KindAsk},
+	{objectBatchSite, graphstore.KindAsk, graphstore.AttributeState}:           {graphstore.KindAsk},
+	{objectBatchSite, graphstore.KindAsk, graphstore.AttributeProject}:         {graphstore.KindAsk},
+	{objectBatchSite, graphstore.KindMessage, graphstore.AttributeVisibility}:  {graphstore.KindMessage},
+	{objectBatchSite, graphstore.KindMessage, graphstore.AttributeState}:       {graphstore.KindMessage},
+	{objectBatchSite, graphstore.KindMessage, graphstore.AttributeProject}:     {graphstore.KindMessage},
 	// The outbox's record of a batch: the comment's comment.created, which the bus delivers to
 	// the role sizer, whose holder it resolves and records; and the receipt of the comment's
 	// mention, a delivery to ses_sized, which claimed no role and so takes a page of its own. A
@@ -607,13 +628,15 @@ var countedBy = map[writtenKind][]string{
 // writeTheStore drives the store's writers over the history seedSizedHistory wrote, one after
 // another, and answers how many tuples of each kind each of them appended, read off graph_tuples
 // by the sequences each one's tuples took. Each is the writer itself and not a copy of what it
-// writes: the block index (refs.IndexBlocks), the backfill's five passes, and the outbox, run
-// whole, publishing the log and then a held copy. The other sites graphstore's
-// storeWriteCallSites names append no kind these do not: the API's comment path states what the
-// backfill's comment pass states of a comment (graphstore.CommentFacts, graphstore.AuthorFacts),
-// the settle of a delivery attempt, the follow of an ask and the seed's followers each state a
-// session's node, the sites that cause a version's index append what the block index stated, and
-// the erase appends nothing.
+// writes: the block index (refs.IndexBlocks), the backfill's passes, and the outbox, run whole,
+// publishing the log and then a held copy. The other sites graphstore's storeWriteCallSites names
+// append no kind these do not: the API's comment path states what the backfill's comment pass
+// states of a comment (graphstore.CommentFacts, graphstore.AuthorFacts), the creates of an issue,
+// a document, an ask and a message state what the backfill's object pass states of each, a
+// document's removal states the state that pass states, and so does the roll tick's sweep of a
+// document a build before this one removed (StateOrphanedGone), the settle of a delivery attempt,
+// the follow of an ask and the seed's followers each state a session's node, the sites that cause
+// a version's index append what the block index stated, and the erase appends nothing.
 func writeTheStore(t *testing.T, database *store.Store) map[writtenKind]int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -622,6 +645,14 @@ func writeTheStore(t *testing.T, database *store.Store) map[writtenKind]int64 {
 			t.Helper()
 			if done, err := pass(ctx, database); err != nil {
 				t.Fatalf("backfill the %s kind: %v", done.Kind, err)
+			}
+		}
+	}
+	passes := func(pass func(context.Context, *store.Store) ([]KindBackfill, error)) func(*testing.T, *store.Store) {
+		return func(t *testing.T, database *store.Store) {
+			t.Helper()
+			if _, err := pass(ctx, database); err != nil {
+				t.Fatalf("run a backfill pass: %v", err)
 			}
 		}
 	}
@@ -635,6 +666,8 @@ func writeTheStore(t *testing.T, database *store.Store) map[writtenKind]int64 {
 		{commentBatchSite, backfill(backfillComments)},
 		{roleBatchSite, backfill(backfillRoles)},
 		{sessionBatchSite, backfill(backfillSessions)},
+		{objectBatchSite, passes(backfillObjectNodes)},
+		{scopeBatchSite, passes(backfillScopes)},
 		{batchRecordSite, publishTheLog},
 		{fallbackSite, publishAFallbackCopy},
 	}
@@ -795,7 +828,7 @@ func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 // a version that drops a block, which the index states gone, moves a paragraph out of a callout,
 // which it states as the retraction of one parent and the assertion of the other, and brings the
 // dropped block back, beside the blocks each version writes afresh, a reference and the texts
-// INFRA-1253 states; a comment with each fact its write states, its mention's delivery, and the
+// the blocks child moves; a comment with each fact its write states, its mention's delivery and the
 // bus's and a fallback copy's delivery of it; the read marks that comment and a message move, a
 // clear, a dismissal and a snooze; a message with a reply and a delivery; the events of an ask;
 // and a row of each further table a term counts (seedSizedRelations). Every term is printed with
@@ -852,23 +885,27 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// person it waits on.
 		"message_delivery": {tuples: 1, writes: 1}, "read_mark": {tuples: 1, writes: 2}, "clear": {tuples: 1, writes: 1},
 		"dismissal": {tuples: 1, writes: 1}, "snooze": {tuples: 1, writes: 1},
-		"message": {tuples: 4, writes: 2}, "message_pointer": {tuples: 1, writes: 1}, "reply": {tuples: 2, writes: 1},
+		"message": {tuples: 3, writes: 2}, "message_relation": {tuples: 2, writes: 2}, "message_pointer": {tuples: 1, writes: 1},
+		"reply": {tuples: 2, writes: 1},
 		// The mention is one tuple to its role and one to the session the role resolved to.
 		"mention": {tuples: 1, writes: 2}, "participation": {tuples: 1, writes: 2}, "person_delivery": {tuples: 1, writes: 2},
 		"ask_asked_of": {tuples: 4, writes: 1}, "body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
 		// The attempts are the mention's and the message's.
 		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 2},
 		// CORE-2 is a child of CORE-1 and waits on it. The archive was written before the window.
-		"issue": {tuples: 2, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 1},
+		"issue": {tuples: 3, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 1},
+		"artifact_part_of": {tuples: 1, writes: 1},
+		// The scratch document removed in the window.
+		"artifact_removed": {tuples: 1, writes: 1},
 		"document_version": {tuples: 2, writes: 3}, "criterion": {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
 		"result": {tuples: 16, writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
 		// The leaf's part_of the root and its depends_on it, and CORE-1's affects of the root.
 		"component": {tuples: 2, writes: 2}, "component_relation": {tuples: 1, writes: 3},
-		"ask": {tuples: 8, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 5, writes: 1},
+		"ask": {tuples: 3, writes: 1}, "ask_opened": {tuples: 6, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 5, writes: 1},
 		"ask_resolved": {tuples: 1, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
 		"decision": {tuples: 5, writes: 10 * sizingWindowDays, assumed: true},
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
-		// No table holds a kind of dispatch://INFRA-1950's yet, so each term reads the writes it
+		// No table holds a kind of the lenses child's yet, so each term reads the writes it
 		// is assumed at, and the tuples its writer appends (storeKinds names each writer).
 		"interaction":  {tuples: 9, writes: 10 * sizingWindowDays, assumed: true},
 		"frame":        {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},

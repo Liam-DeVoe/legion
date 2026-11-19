@@ -5,7 +5,7 @@
 // branch's head, and the fork point with main would hold none of the routes, tables or rows its
 // parent added, so a child that deleted one of them would pass. The run, which knows which
 // branch the work lands on, names the commit, as the Verification document's runs of
-// dispatch://INFRA-1149 do with `BASELINE_SHA=${BASELINE_SHA:-$(git merge-base origin/main HEAD)}`.
+// this change do with `BASELINE_SHA=${BASELINE_SHA:-$(git merge-base origin/main HEAD)}`.
 //
 // It is an ordinary package rather than a _test.go file because cmd/dispatch is package main and
 // can import no other package's test helpers, the reason packages/envoy/internal/testtmp gives

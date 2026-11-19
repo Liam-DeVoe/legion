@@ -2,8 +2,8 @@
 --
 -- A retired document leaves every list of its issue's or its project's documents and plays no
 -- role, while its row, its versions, its reviews, its comments, its block texts and its slug stay,
--- so its address and its versions stay readable and a citation of it stays valid
--- (dispatch://INFRA-1150 R11). docs.RetireDocument is the one writer of the column: it sets it,
+-- so its address and its versions stay readable and a citation of it stays valid.
+-- docs.RetireDocument is the one writer of the column: it sets it,
 -- clears the document's role, states the document's node gone and appends document.retired, in
 -- one transaction. retired_at is null for every document that stands.
 --

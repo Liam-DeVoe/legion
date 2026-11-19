@@ -500,7 +500,7 @@ with q as (select
 // arms' own columns, true of a row the caller leaves out, and empty for a query that leaves
 // nothing out. Search leaves nothing out; the related-item check passes relatedExcludedOwners,
 // because the page it takes is ten rows deep (suggestionSearchDepth) and rows dropped after
-// that page took places in it and hid the matches the check exists to find (INFRA-1160).
+// that page took places in it and hid the matches the check exists to find.
 //
 // seen is the parameter the acting credential is bound at. This is the one choke point both
 // bodies pass through, and the related-item check's two shapes of each with them, so binding

@@ -105,31 +105,33 @@ type Node struct {
 	// a node stored gone, which comes back live, and writes gone whenever it says gone. A node
 	// the store does not hold is made as the writer states it. Every writer that writes a node
 	// again for facts of its own restates it: the block index (refs.IndexBlocks), CommentFacts,
-	// IssueNode, ArtifactNode, AskNode and MessageNode, and the backfill
-	// (internal/dispatch/graphcensus). A write that means to move a node's state or visibility
-	// leaves it false. WriteArms reads none of it: its upsert moves nothing on a node already
-	// there.
+	// IssueNode, ArtifactNode, AskNode and MessageNode, the backfill
+	// (internal/dispatch/graphcensus), and the seed (cmd/dispatch-seed), which writes its
+	// author's node and its followers' session nodes again in later batches. A write that means
+	// to move a node's state or visibility leaves it false. WriteArms reads none of it: its
+	// upsert moves nothing on a node already there.
 	Restates bool
 	// KeepsCause says the write keeps the cause the store holds of a node already there, its
 	// row's source_event, whatever else of the row it moves. It is for a write that moves only a
 	// base attribute of a node another write caused: a request's write of a node's state (api's
 	// writeNodeState), at NoEvent. That write is no cause of the node's other facts, and a row it
-	// put at the sentinel would take the event of the next write Caused moves onto it
-	// (causeNodes) - the next index pass of a block's document, for a version that changed nothing
-	// of the block. The base attributes it states still carry its own SourceEvent, so one at
-	// NoEvent states each at the sentinel, which no repeat key drops: proposed, live and proposed
-	// again are three tuples. A node the store does not hold is made at the write's own
-	// SourceEvent, since it has no cause to keep.
+	// put at the sentinel would take the event of the next held write QueueCaused moves onto it
+	// - the next index pass of a block's document, for a version that changed nothing of the
+	// block. The base attributes it states still carry its own SourceEvent, so one at NoEvent
+	// states each at the sentinel, which no repeat key drops: proposed, live and proposed again
+	// are three tuples; its node write states them itself, in its move, since the row carries no
+	// mark in place of the cause it keeps (nodeMark). A node the store does not hold is made at
+	// the write's own SourceEvent, since it has no cause to keep.
 	KeepsCause bool
 	// Changed marks a node this write created or changed, which a write made for a run names as
-	// changed by it (WithRun): Write and Caused, on a context holding a run, append one
-	// TupleChangedByRun from it to that run's interaction, dated and signed as the node is. Its
-	// writer sets it, because the store cannot infer it: a block's words are no column of its
-	// node, so an edit of them moves nothing a node write compares. A node a write only names - an
-	// author's person or session node, a block row a pass gives the node it lacked - is never
-	// marked. A writer that changes a node it writes as another write made it, so that the tuple
-	// is dated and signed otherwise than the node, names it through WriteChangedForRun instead. No
-	// read answers it.
+	// changed by it (store.WithRun): QueueWrite and QueueCaused, on a write phase made for a run,
+	// append one TupleChangedByRun from it to that run's interaction, dated and signed as the
+	// node is. Its writer sets it, because the store cannot infer it: a block's words are no
+	// column of its node, so an edit of them moves nothing a node write compares. A node a write
+	// only names - an author's person or session node, a block row a pass gives the node it
+	// lacked - is never marked. A writer that changes a node it writes as another write made it,
+	// so that the tuple is dated and signed otherwise than the node, names it through
+	// PlanChangedForRun instead. No read answers it.
 	Changed bool
 }
 

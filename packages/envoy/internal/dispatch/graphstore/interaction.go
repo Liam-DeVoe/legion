@@ -115,13 +115,13 @@ func FrameTuple(run, value string, at time.Time) Tuple {
 	}
 }
 
-// QueueFrameTuple queues on batch the one statement Write sends for tuple, one frame value of a run
-// (FrameTuple): the append of value tuples under their repeat key (appendTuples). It is Write for
+// QueueFrameTuple queues on batch the append Write makes of tuple, one frame value of a run
+// (FrameTuple): one insert of a value tuple under its repeat key (queueAppend). It is Write for
 // that one tuple, for the frame path, which sends it in one round trip beside a statement of its
 // own (api's appendGoingEvent): a frame value is no base attribute a value is refused for, no
 // pointer a type rule holds and no change of its node (Tuple.Changes), so Write reads nothing and
-// appends nothing else for it. Any other tuple is refused and nothing is queued: it goes through
-// Write, which holds it to whatever applies.
+// appends nothing else for it, whatever run its write phase is made for. Any other tuple is
+// refused and nothing is queued: it goes through Write, which holds it to whatever applies.
 func QueueFrameTuple(batch *pgx.Batch, tuple Tuple) error {
 	if tuple.FromKind != KindInteraction || tuple.Kind != AttributeFrame || tuple.ToKind != KindValue || tuple.Changes {
 		return fmt.Errorf("the %s tuple out of %s %s is no frame value of a run, which is all a queued append takes: append it through Write",
@@ -171,7 +171,8 @@ type RunWritten struct {
 // lowercase form the POST writes. It answers what it wrote (RunWritten): Held is false where the
 // record holds no such row, and nothing is written then. A run whose node the store holds already
 // is left as it is, answering Held and nothing written: its node and every frame written with it
-// are another write's, and this writer mends nothing.
+// are another write's, and this writer mends nothing. Its reads - the row, the node, the frames -
+// are its read phase, and that one Write, after all of them, its write phase.
 //
 // It takes the run's going_requests row `for no key update` before it reads whether the node is
 // there, so two writers of one run - two frames this build writes of a run an older pod recorded,

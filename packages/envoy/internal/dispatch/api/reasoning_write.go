@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // reasoningNode is one node of the reasoning kinds a request writes under an issue: a lens
@@ -44,7 +45,7 @@ type reasoningNode struct {
 // the caller the route resolved (reasoningCaller): a caller that resolves no request - a command
 // - passes the actor it acts as for both of its actors. farEnds are the far ends of its tuples the
 // route found under the issue, each named by the address the request gave, which the write reads
-// again under the issue's row (refuseGoneFarEnds): the lens a lens is triggered by.
+// again under the issue's owner lock (refuseGoneFarEnds): the lens a lens is triggered by.
 type reasoningWrite struct {
 	reasoningCaller
 	issue   string
@@ -53,28 +54,29 @@ type reasoningWrite struct {
 	farEnds []namedEnd
 }
 
-// lockIssueRow takes the issue's row `for no key update`, the owner row the lock order on
-// api/inbox_read.go's markInboxReadThreads puts before every other, and answers the issue's
-// project: the first lock of every reasoning write that names no check. A write that names one
-// takes the row before, with the owner rows of its checks' documents (lockReasoningOwners), and
-// then takes here a row its transaction holds, which waits on nothing. An issue that does not
-// exist is pgx.ErrNoRows.
-func lockIssueRow(ctx context.Context, tx pgx.Tx, key string) (string, error) {
+// lockIssueOwner takes the issue's owner lock (store.LockOwner), the lock the order on
+// api/inbox_read.go's markInboxReadThreads puts before every other, and then reads the issue's
+// project in a statement of its own, so that read sees every commit of the lock's previous holder
+// (store.LockOwnerAndRead): the first lock of every reasoning write that names no check. A write
+// that names one takes the lock before, with the owner locks of its checks' documents
+// (lockReasoningOwners), and then takes here a lock its transaction holds, which returns at once.
+// An issue that does not exist is pgx.ErrNoRows.
+func lockIssueOwner(ctx context.Context, tx pgx.Tx, key string) (string, error) {
 	var project string
-	err := tx.QueryRow(ctx, `select project_key from issues where key = $1`+ownerRowLock, key).Scan(&project)
+	err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(key), `select project_key from issues where key = $1`, []any{key}, &project)
 	return project, err
 }
 
-// lockReasoningOwners takes every owner row a reasoning write stands under, in one
-// events.LockOwnerRows call, so once each and in ascending owner key, before the write reads a
+// lockReasoningOwners takes every owner lock a reasoning write stands under, in one
+// events.LockOwnerRows call, so once each and in ascending lock key, before the write reads a
 // node: the issue's own, and the owner of the document of each check a prevented_by of the write
 // asserts, which checks names by the dispatch:// addresses the request gave, none for a write that
 // asserts no prevented_by. A retirement of a document (docs.RetireDocument) and an index pass that
 // marks a block gone (refs.IndexBlocks, under the revision fence) each take that document's owner
-// row first, so an assertion that races either runs wholly before it, and is retracted with the
+// lock first, so an assertion that races either runs wholly before it, and is retracted with the
 // rest, or wholly after it, and reads the document retired or the check gone, and is refused (spec
-// requirement r-constraint-risk). Two writes that name each other's issues take the rows they
-// share in one order, so neither holds a row the other waits for.
+// requirement r-constraint-risk). Two writes that name each other's issues take the locks they
+// share in one order, so neither holds a lock the other waits for.
 //
 // The document a check stands in is read off its address with no lock, before the locks: a
 // document block's id is its document's ref_key, '#' and its block id, a ref_key names one
@@ -142,16 +144,18 @@ func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []
 // project of the issue (the project graphstore.IssueNode states of the issue's own node), and
 // between no parties.
 //
-// It takes the issue's row first (lockIssueRow) and reads the project off it, a row its caller
-// holds already where the write asserts a prevented_by (lockReasoningOwners); an issue that does
-// not exist is pgx.ErrNoRows. Under that row it reads each node's parent again and refuses one the
-// store holds gone (refuseGoneParents), 409 NODE_GONE, and each far end the route found under the
-// issue (refuseGoneFarEnds), 404 NOT_FOUND, before anything is written. Then it writes
-// every node, the authors' among them, and every tuple in one graphstore.Write: the nodes in
-// ascending (kind, id), the type rules of the pointer tuples checked before the first tuple is
-// appended (graphstore's pointerRules, whose refusals are 400 INVALID_POINTER and 409
-// POINTER_ALREADY_ASSERTED), and every node and tuple at graphstore.NoEvent. No event is appended,
-// because no write of these kinds sends a delivery: a reader learns of one by reading it.
+// It takes the issue's owner lock first and reads the project in the statement after it
+// (lockIssueOwner), a lock its caller holds already where the write asserts a prevented_by
+// (lockReasoningOwners); an issue that does not exist is pgx.ErrNoRows. Under that lock it reads
+// each node's parent again and refuses one the store holds gone (refuseGoneParents), 409
+// NODE_GONE, and each far end the route found under the issue (refuseGoneFarEnds), 404
+// NOT_FOUND, before anything is written. Then it writes every node, the authors' among them, and
+// every tuple in one graphstore.Write, one batch of statements no Go read comes between: the nodes
+// in ascending (kind, id), the type rules of the pointer tuples read and decided by statements
+// queued between the node write and the append (graphstore's pointerRules, whose refusals are 400
+// INVALID_POINTER and 409 POINTER_ALREADY_ASSERTED, which end the transaction), and every node and
+// tuple at graphstore.NoEvent. No event is appended, because no write of these kinds sends a
+// delivery: a reader learns of one by reading it.
 //
 // That each far end a tuple names exists, is not gone and may be seen by the caller is the
 // route's to check before it calls this, through the read registry's loader for that end's kind,
@@ -162,16 +166,16 @@ func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []
 // end that stands under no issue - a has_kind tuple's lens_kind, a constraint of the catalogue a
 // lens_kind reaches - are no nodes FindNodeUnderIssue answers but 404 for, and are found through
 // refs.Node with the caller's visibility instead (pointerEnd). A far end that stands under `{key}`
-// is read again under the issue's row, since a write may take it gone while the request waits for
-// that row (refuseGoneFarEnds). A caller whose write asserts a prevented_by first takes the owner
-// row of each check's document with the issue's (its race with a retirement or an index pass:
-// lockReasoningOwners).
+// is read again under the issue's owner lock, since a write may take it gone while the request
+// waits for that lock (refuseGoneFarEnds). A caller whose write asserts a prevented_by first takes
+// the owner lock of each check's document with the issue's (its race with a retirement or an
+// index pass: lockReasoningOwners).
 //
 // It answers the nodes the request wrote, in the order it named them, without their authors':
 // the nodes this write made, which are the ones a write made for a run names as changed by it
 // (graphstore.TupleChangedByRun). Each is marked changed (graphstore.Node's Changed) and no
-// author's node is, so graphstore.Write, on a context holding a run, appends that run's
-// changed_by_run out of each of them alone.
+// author's node is, so graphstore.Write, on a context holding a run (store.WithRun), appends that
+// run's changed_by_run out of each of them alone.
 func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) ([]graphstore.Node, error) {
 	written := make([]graphstore.Node, len(write.nodes))
 	for index, node := range write.nodes {
@@ -192,7 +196,7 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 			MadeAt: write.at, MadeBy: madeBy, SourceEvent: graphstore.NoEvent, Changed: true,
 		}
 	}
-	project, err := lockIssueRow(ctx, tx, write.issue)
+	project, err := lockIssueOwner(ctx, tx, write.issue)
 	if err != nil {
 		return nil, err
 	}
@@ -255,11 +259,11 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 }
 
 // refuseGoneParents is the 409 NODE_GONE of a write of nodes one of whose parents the store holds
-// gone, read once the issue's row is held: the node a lens is invoked on, the lens a finding or a
-// risk is written under, the issue a constraint stands under (refuseGoneNode). The route found
-// each parent present before it took that row, and a write that takes a parent gone in the
-// meantime holds the same row - the state route (writeNodeState), and a version's index pass,
-// whose owner row is its issue's - so this read sees what that write committed, and nothing of
+// gone, read once the issue's owner lock is held: the node a lens is invoked on, the lens a
+// finding or a risk is written under, the issue a constraint stands under (refuseGoneNode). The
+// route found each parent present before it took that lock, and a write that takes a parent gone
+// in the meantime holds the same lock - the state route (writeNodeState), and a version's index
+// pass, whose owner is its issue - so this read sees what that write committed, and nothing of
 // the request is stored under a gone node. A parent the request writes itself, a finding's lens
 // written in the same request, is none of these.
 func refuseGoneParents(ctx context.Context, tx pgx.Tx, nodes []reasoningNode) error {
@@ -297,11 +301,11 @@ func refuseGoneNode(ctx context.Context, tx pgx.Tx, end storedEnd) error {
 }
 
 // refuseGoneFarEnds is the 404 NOT_FOUND of a write one of whose tuples points at a far end the
-// store holds gone (storedGone), read once the issue's row is held: ends are the far ends the
-// route found under the issue, each named by the address the request gave - the lens a lens is
+// store holds gone (storedGone), read once the issue's owner lock is held: ends are the far ends
+// the route found under the issue, each named by the address the request gave - the lens a lens is
 // triggered by, and the lens a triggered_by or the constraint a constrained_by of the pointer
-// route points at. The route found each not gone before it took that row, and a write that takes
-// one gone in the meantime holds the same row (writeNodeState), so this read sees what that write
+// route points at. The route found each not gone before it took that lock, and a write that takes
+// one gone in the meantime holds the same lock (writeNodeState), so this read sees what that write
 // committed. A gone far end answers what the route answers for one it found gone, the 404 of an
 // address nobody holds under the issue (nodeNotFound), and nothing of the request is stored.
 func refuseGoneFarEnds(ctx context.Context, tx pgx.Tx, issue string, ends []namedEnd) error {
@@ -349,7 +353,7 @@ const (
 // names, dated and signed by the write and at graphstore.NoEvent: the one it appends, the one it
 // retracts, or, for a retarget, the one the node holds now, which moves to toKind and toID.
 // farEnds are the far ends the route found under the issue, each named by the address the request
-// gave, which the write reads again under the issue's row (refuseGoneFarEnds): the lens of a
+// gave, which the write reads again under the issue's owner lock (refuseGoneFarEnds): the lens of a
 // triggered_by and the constraint of a constrained_by.
 type reasoningPointer struct {
 	issue        string
@@ -362,14 +366,15 @@ type reasoningPointer struct {
 // writeReasoningPointer is the one write path of a pointer tuple a request appends, retracts or
 // retargets out of a lens, a risk or a requirement block, and of the moved_to the pre-mortem
 // conversion appends out of the document it retires (retireConvertedDocument), in the caller's
-// transaction. It takes the issue's row first (lockIssueRow), which a caller that asserts a
-// prevented_by holds already (lockReasoningOwners), and reads the node the tuple goes out of again
-// under it: one a write took gone since the route found it is 409 NODE_GONE (refuseGoneNode), as
-// a gone parent is for writeReasoningNodes, and a far end of farEnds a write took gone is the
-// route's 404 (refuseGoneFarEnds). Then it writes through the store, which holds
+// transaction. It takes the issue's owner lock first (lockIssueOwner), which a caller that asserts
+// a prevented_by holds already (lockReasoningOwners), and reads the node the tuple goes out of
+// again under it: one a write took gone since the route found it is 409 NODE_GONE
+// (refuseGoneNode), as a gone parent is for writeReasoningNodes, and a far end of farEnds a write
+// took gone is the route's 404 (refuseGoneFarEnds). Then it writes through the store, which holds
 // the tuple to its type rule (graphstore's pointerRules) and takes the node rows that rule names
-// after the owner row: an append and a retraction through graphstore.Write, a retarget through
-// graphstore.Retarget. No event is appended, as none is for the nodes these tuples tie
+// after the owner lock: an append and a retraction through graphstore.Write, one batch of their
+// own, a retarget through graphstore.Retarget, whose read phase takes the node's row and reads its
+// pointers before that batch. No event is appended, as none is for the nodes these tuples tie
 // (writeReasoningNodes). The pointer is marked as changing the node it goes out of
 // (graphstore.Tuple's Changes), so a write made for a run names that node, and not its far end,
 // as changed by it.
@@ -382,7 +387,7 @@ type reasoningPointer struct {
 // its far end. That both ends exist, are not gone and may be seen by the caller is the route's to
 // check before it calls this; a far end that stands under the issue is read again here.
 func writeReasoningPointer(ctx context.Context, tx pgx.Tx, write reasoningPointer) error {
-	if _, err := lockIssueRow(ctx, tx, write.issue); err != nil {
+	if _, err := lockIssueOwner(ctx, tx, write.issue); err != nil {
 		return err
 	}
 	if err := refuseGoneNode(ctx, tx, storedEnd{kind: write.pointer.FromKind, id: write.pointer.FromID}.stored()); err != nil {
@@ -432,7 +437,7 @@ func holdsPointer(ctx context.Context, tx pgx.Tx, pointer graphstore.Tuple) (boo
 
 // nodeStateWrite is one request's write of one node's state: the node target names, under the
 // issue issue names, moved to state, signed by who and dated at. allowed is the route's rule over
-// the node as the store holds it, read once the issue's row is held. A rule that answers a
+// the node as the store holds it, read once the issue's owner lock is held. A rule that answers a
 // refusal stores nothing.
 type nodeStateWrite struct {
 	issue   string
@@ -450,8 +455,8 @@ type nodeStateWrite struct {
 var errNodeNotHeld = errors.New("the store holds no row of the node")
 
 // writeNodeState is the one write path of a node's state a request asks for - the state route and
-// the settle (node_state.go) - in the caller's transaction. It takes the issue's row first
-// (lockIssueRow), as writeReasoningPointer does, so two writes of one node's state queue there
+// the settle (node_state.go) - in the caller's transaction. It takes the issue's owner lock first
+// (lockIssueOwner), as writeReasoningPointer does, so two writes of one node's state queue there
 // and the second reads what the first wrote. It reads the node's row: a node the store holds no
 // row of is errNodeNotHeld, and a node at gone 409 NODE_GONE (nodeGone), since no write writes on
 // a gone node, so a write the route found the node live for and that queued behind its gone is
@@ -479,7 +484,7 @@ var errNodeNotHeld = errors.New("the store holds no row of the node")
 //
 // It answers the node as the write leaves it and the state it held before.
 func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graphstore.Node, string, error) {
-	if _, err := lockIssueRow(ctx, tx, write.issue); err != nil {
+	if _, err := lockIssueOwner(ctx, tx, write.issue); err != nil {
 		return graphstore.Node{}, "", err
 	}
 	node, held, err := graphstore.ReadNode(ctx, tx, write.target.end.kind, write.target.end.id)

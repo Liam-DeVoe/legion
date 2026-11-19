@@ -20,11 +20,12 @@ const (
 
 // TestAPartOfOrOnTupleWiderThanItsParentIsRefused holds the store to the rule that no node every
 // reader may see stands under or on a node reserved for its author (spec requirement
-// r-node-visibility, checkPlacedVisibility). A project risk's part_of moved to an author-only
+// r-node-visibility, pointerCheck). A project risk's part_of moved to an author-only
 // lens, and a project lens's part_of - the node it stands on - moved to an author-only
 // constraint, each as a move to a new parent appends it, through the store's own tuple write, are
 // refused with ErrVisibilityWiderThanParent, as a VisibilityWiderThanParentError naming both
-// nodes, before anything is appended: the log holds no tuple more than it held, and each node
+// nodes, with no statement of the write failing: once its caller abandons the refused write's
+// transaction, the log holds no tuple more than it held, and each node
 // still stands where it stood. A write that makes a project risk under the hidden lens is refused
 // too and leaves no node, Caused holds the rule as Write does, and WriteArms refuses such a
 // part_of it cannot check. An author-only risk under the hidden lens is taken, and so is a
@@ -82,11 +83,9 @@ func TestAPartOfOrOnTupleWiderThanItsParentIsRefused(t *testing.T) {
 			defer tx.Rollback(ctx)
 			err = refused.write(ctx, tx)
 			requireWiderThanParent(t, err, refused.childKind, refused.childID, refused.parentKind, refused.parentID)
-			// The refused write wrote no node, and a statement that failed would have aborted the
-			// transaction: it commits, and holds no tuple the refused write stated.
-			if err := tx.Commit(ctx); err != nil {
-				t.Fatalf("the transaction of the refused write does not commit: %v", err)
-			}
+			// The refused write's transaction is abandoned, as its caller abandons it, and holds
+			// no tuple the refused write stated (abandonRefusedWrite).
+			abandonRefusedWrite(t, ctx, tx)
 			if after := countTuples(t, ctx, database); after != before {
 				t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
 			}

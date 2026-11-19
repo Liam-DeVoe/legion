@@ -65,6 +65,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/credential-requests/machine-lookup",
 	"POST /api/v1/credential-requests/{id}/approve",
 	"POST /api/v1/credential-requests/{id}/deny",
+	"POST /api/v1/credential-requests/{id}/dismiss",
 	"POST /api/v1/delivery/session-groups",
 	"POST /api/v1/going/requests",
 	// The pre-mortem conversion dispatch_premortem_convert performs: it retires a document once,

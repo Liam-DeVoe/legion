@@ -22,11 +22,12 @@ import (
 //     this binary's image.
 //   - `--store`, the node and tuple store held against the tables that project it
 //     (graphcensus.StoreCensus), in both directions and for every kind, refusing a kind it
-//     checked no row of but a kind of dispatch://INFRA-1150 that holds no row and no node; with
-//     the store-only lines of copied_from and moved_to, which no table projects, refusing a far
-//     end of either that does not resolve; with the dangling-citation counter's line and the
-//     collision census over the restore's work (graphcensus.DanglingCitations, CollisionsOf);
-//     and with what the decisions step's third phase still owes (graphcensus.DecisionsCensus:
+//     checked no row of but a tie kind of decisions, readings and asks that holds no row and no
+//     node; with the store-only lines of copied_from and moved_to, which no table projects,
+//     refusing a far end of either that does not resolve; with the dangling-citation counter's
+//     line and the collision census over the restore's work (graphcensus.DanglingCitations,
+//     CollisionsOf); and with what the decisions step's third phase still owes
+//     (graphcensus.DecisionsCensus:
 //     the decisions documents, their unconverted sections and the specs whose answered asks left
 //     them), none of which refuses. `--verbose` adds one line for each citation the counter
 //     counted.

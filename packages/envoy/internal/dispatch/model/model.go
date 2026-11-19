@@ -286,7 +286,7 @@ type Project struct {
 // GatedStepCriteria and GatedStepSpec are the two design-gate steps Project.GatedSteps names,
 // each one a document of the root issue: its Verification document and its primary document.
 // GatedStepsKnown is the set in the order the gate runs them, which the route checks a published
-// list against. The `decisions` step is gone (dispatch://INFRA-1150 R11): no write of this build
+// list against. The `decisions` step is gone: no write of this build
 // stores it, and a stored list that holds it reads without it (api's gatedStepsWithout).
 const (
 	GatedStepCriteria = "criteria"
@@ -591,7 +591,7 @@ type Issue struct {
 	PlanArtifactID         string `json:"plan_artifact_id"`
 	// DecisionsArtifactID is the id of the issue's decisions document while it stands
 	// (decisions_documents()), "" once it is retired or where the issue holds none. A page of the
-	// release before reads it (dispatch://INFRA-1150 R11).
+	// release before reads it.
 	// kept for one release: compat-objects
 	DecisionsArtifactID string `json:"decisions_artifact_id"`
 	LastSeq             int    `json:"last_seq"`
@@ -1209,7 +1209,7 @@ type Artifact struct {
 	// "" for every other document. It is set from the document's slug when the row is created, as
 	// Primary is, and no request field sets it; the one write that clears it is the document's
 	// retirement. A decisions document an earlier release stored answers its stored role,
-	// `decisions`, until the decisions step retires it (dispatch://INFRA-1150 R11).
+	// `decisions`, until the decisions step retires it.
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
@@ -1649,6 +1649,29 @@ type ArtifactBlock struct {
 	DescendantIDs []string              `json:"-"`
 }
 
+// TextAsk is one entry of the asks member the text routes answer (GET
+// /api/v1/artifacts/{id}/text and its issue and project slug variants): an ask block of the
+// markdown they serve, in document order, with its answer as the ask's node holds it. A person's
+// answer is held once, on the ask's node, so that markdown holds none of it; each field carries
+// the name and the value the server-owned attribute of the block carried in the release before.
+// State is the block's ask's state; for a copy of an ask of another document of the same owner,
+// the source's, with CopiedFrom the source's id and CopiedFromDocument its document's dispatch://
+// address; for a block of a closed issue's document that no settlement has indexed, resolved; and
+// absent for any other block no ask indexes yet, a question nobody has opened, which the text
+// routes showed with no state before they took the attributes off. AnsweredBy, AnsweredAt (RFC
+// 3339), Selected (empty where no option was chosen) and Answer (absent where the answer has no
+// words) are present on an answered ask alone.
+type TextAsk struct {
+	BlockID            string    `json:"block_id"`
+	State              string    `json:"state,omitempty" enum:"open,answered,resolved"`
+	AnsweredBy         string    `json:"answered_by,omitempty"`
+	AnsweredAt         string    `json:"answered_at,omitempty"`
+	Selected           *[]string `json:"selected,omitempty"`
+	Answer             *string   `json:"answer,omitempty"`
+	CopiedFrom         string    `json:"copied_from,omitempty"`
+	CopiedFromDocument string    `json:"copied_from_document,omitempty"`
+}
+
 // BlockAttributeValue is one attribute a typed block carries: the name its type declares it
 // under, the value the block holds, as its opening line writes it with no escape and no quotes
 // (pmdoc.TypedBlockAttributes), and the kind the block schema declares that attribute
@@ -2011,9 +2034,10 @@ type AskAnsweredEventPayload struct {
 // blocked_by, external_links; for issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
-// assignee moved, whose Inbox rows the write can move (api.issueWriteThreadLogins): for a close
-// or a reopen every login with a Replies row on one of the issue's open asks
-// (events.IssueThreadLogins), for an assignee move the assignee the issue was taken from and the
+// assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
+// or a reopen every login with a Replies row on one of the issue's open asks, read by the
+// event's own insert, after the ask writes the transaction queued before it
+// (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the
 // one it was given to, for the two together the sorted union of both, and for any other status
 // move []. Each is absent from an event written before them.
 //
@@ -2045,6 +2069,15 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 		Issue:                   issue,
 		ReferenceChangesPayload: NewReferenceChangesPayload(changes),
 	}
+}
+
+// WithOwnerLastSeq is the payload carrying seq as the issue's last_seq. An issue event's payload
+// holds the issue row as the event leaves it, and the event's own sequence is what that row's
+// last_seq becomes when it is appended, so the append derives both from one expression
+// (events.Broker.QueueAppend) and no writer counts the events queued before its own.
+func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
+	p.LastSeq = seq
+	return p
 }
 
 // AskEditEventPayload is the full edited ask plus its prior mutable content, the actor who made
@@ -2104,7 +2137,7 @@ type BlockInvalidEventPayload struct {
 }
 
 // AskOption is an answer choice. ID is the id of the block this option is stored as - the part
-// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.IndexAskParts) - which every read that shows
+// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.PlanAskParts) - which every read that shows
 // an ask's options carries (api.attachAskPartIDs) and no write accepts: a caller that sends an
 // option back as it read it has its id emptied (api.validateAskOptions). Absent on a write's own
 // response and while the ask's parts are not indexed yet.
@@ -3447,8 +3480,8 @@ type DecisionKeep struct {
 // (internal/dispatch/decisionread). FromBlock is the decision's own block, To the node it names,
 // CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it,
 // TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
-// last changed in, and Stale true when that text changed after the tuple was written
-// (dispatch://INFRA-1150 R5). The three are absent where the store holds none.
+// last changed in, and Stale true when that text changed after the tuple was written. The three
+// are absent where the store holds none.
 //
 // kept for one release: compat-objects
 type DecisionLink struct {
@@ -3468,7 +3501,7 @@ type DecisionLink struct {
 // Unsure is true where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the
 // node. ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is
 // the sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
-// old `decisions` member answers it for one release (dispatch://INFRA-1150 R11).
+// old `decisions` member answers it for one release.
 //
 // kept for one release: compat-objects
 type Decision struct {
@@ -3563,6 +3596,10 @@ type EditOp struct {
 	Index      json.RawMessage `json:"index,omitempty"`
 	Type       string          `json:"type,omitempty"`
 	Attributes map[string]any  `json:"attributes,omitempty"`
+	// Into is an insert's third anchor, `block:<id>`: the markdown goes inside that block, after
+	// its last child, read as that block's content (docs.insertInto), where After and Before put
+	// it beside one. An insert names exactly one of the three.
+	Into string `json:"into,omitempty"`
 }
 
 // Route is a validated issue delivery route.

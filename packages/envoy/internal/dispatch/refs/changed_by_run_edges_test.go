@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -56,7 +57,7 @@ func TestARunsChangedByRunFromADocumentIsListedInBothDirectionsAndCounted(t *tes
 	}
 	// The issue create's own write of the two nodes, made for the run (api's createIssue).
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		return graphstore.Write(graphstore.WithRun(ctx, run), tx, []graphstore.Node{
+		return graphstore.Write(store.WithRun(ctx, run), tx, []graphstore.Node{
 			graphstore.Created(graphstore.IssueNode(issue, project, alice, at)),
 			graphstore.Created(graphstore.ArtifactNode(refKey, project, "", alice, at)),
 		}, nil)

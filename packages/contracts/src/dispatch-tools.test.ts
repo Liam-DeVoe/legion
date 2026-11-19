@@ -135,7 +135,7 @@ const DECISION_BLOCK_RULE =
 
 /** The same rule as the Dispatch skill words it, in `## Asks and ask blocks`. */
 const SKILL_DECISION_BLOCK_RULE =
-  "An ask block in a comment, message or close reason is refused: ask in the issue's " +
+  "A decision block in a comment, message or close reason is refused: ask in the issue's " +
   "document, or `dispatch ask`.";
 
 /** Every tool that writes a body, with the argument carrying that body: the close reason, the

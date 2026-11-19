@@ -548,7 +548,8 @@ async function run(
   argv: readonly string[],
   extra: Record<string, string | undefined>,
   stdin = "",
-  fetchImpl?: typeof fetch
+  fetchImpl?: typeof fetch,
+  nearestAncestorNamed?: (names: readonly string[]) => string | undefined
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -562,6 +563,7 @@ async function run(
     readText: (path) => (path === "-" ? stdin : readFileSync(path, "utf-8")),
     cwd: stateDir,
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    ...(nearestAncestorNamed === undefined ? {} : { nearestAncestorNamed }),
   });
   return { code, stdout, stderr };
 }
@@ -1615,6 +1617,44 @@ describe("the dispatch CLI", () => {
     expect(stdout).toBe("CORE Core\nSMOKE684 Smoke\n");
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
   });
+
+  // An insert's into, the block its markdown goes inside, reaches Dispatch as the caller wrote it,
+  // and `doc-edit --help` names the key with its spelling and a reading inserted into an ask.
+  test("dispatch doc-edit sends an insert's into as given, and its help names into", async () => {
+    const op = {
+      op: "insert",
+      into: "block:a1",
+      markdown: ":::reading{#r1}\nThe agent reads the answer as REST for every service.\n:::",
+    };
+    let sent: { ops?: unknown } | undefined;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (request.method === "POST" && pathname === "/api/v1/artifacts/doc-2/edits") {
+        sent = await request.json();
+        return Response.json({ applied: 1, version: { number: 4 }, token: "sha256:read" });
+      }
+      return fetch(request);
+    }) as typeof fetch;
+    const { code, stdout } = await run(
+      ["doc-edit", "--issue", "DSP-2", "--ops-json", JSON.stringify([op])],
+      omp,
+      "",
+      fetchImpl
+    );
+    expect(code, stdout).toBe(0);
+    expect(stdout).toContain("Applied 1 ops (version 4)");
+    expect(sent?.ops).toEqual([op]);
+
+    const help = await run(["doc-edit", "--help"], omp);
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain(
+      '\n        into (text): Insert inside this block, after its last child: "block:<id>" is the one form it takes.'
+    );
+    expect(help.stdout).toContain(
+      '{"op":"insert","into":"block:a1","markdown":":::reading{#r1}\\nThe agent reads the answer as REST for every service.\\n:::"}'
+    );
+  });
 });
 
 // Two refusals an agent meets as the exit status of a command and the words on its own stdout,
@@ -1864,6 +1904,93 @@ describe("the dispatch CLI's envoy.json", () => {
     expect(code).toBe(0);
     const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/messages");
     expect(posted?.body).toMatchObject({ actor: { id: "subagent-1" } });
+  });
+
+  // Codex sets CODEX_THREAD_ID in every shell command it runs and lets no plugin export a variable
+  // into those shells, so a Codex shell with no DISPATCH_HOST is host codex, acting as that thread.
+  test("a Codex shell with no DISPATCH_HOST is host codex, acting as CODEX_THREAD_ID", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const { code, stdout } = await run(["message", "--issue", "DSP-1", "--body", "hello"], {
+      ...fromFile,
+      DISPATCH_HOST: undefined,
+      DISPATCH_SESSION_ID: undefined,
+      CODEX_THREAD_ID: "codex-thread-1",
+    });
+    expect(stdout).not.toStartWith("dispatch: ");
+    expect(code).toBe(0);
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/messages");
+    expect(posted?.body).toMatchObject({ actor: { id: "codex-thread-1" } });
+  });
+
+  // A Codex session started from a Claude Code Bash inherits DISPATCH_HOST=claude,
+  // CLAUDE_CODE_CHILD_SESSION=1 and the Claude session's id; the Codex plugin's shim sets
+  // DISPATCH_HOST=codex, so the command acts as the Codex thread and never as the Claude session.
+  test("DISPATCH_HOST=codex acts as CODEX_THREAD_ID over an inherited Claude Code session, reading no CODEX_HOME file", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const codexHome = brokenConfigDirectory();
+    const { code, stdout } = await run(["message", "--issue", "DSP-1", "--body", "hello"], {
+      ...fromFile,
+      DISPATCH_HOST: "codex",
+      DISPATCH_SESSION_ID: undefined,
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDE_CODE_SESSION_ID: "claude-ses",
+      CLAUDE_CONFIG_DIR: brokenConfigDirectory(),
+      CODEX_HOME: codexHome,
+      CODEX_THREAD_ID: "codex-thread-2",
+    });
+    expect(stdout).not.toStartWith("dispatch: ");
+    expect(code).toBe(0);
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/messages");
+    expect(posted?.body).toMatchObject({ actor: { id: "codex-thread-2" } });
+  });
+
+  // A Codex session started from a Claude Code shell inherits that shell's DISPATCH_HOST=claude,
+  // CLAUDE_CODE_CHILD_SESSION=1 and Claude session id, and a Claude Code session started from a
+  // Codex shell inherits CODEX_THREAD_ID: the nearer of the two processes decides.
+  test("a shell carrying both hosts' variables acts as the nearer of codex and claude", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const both = {
+      ...fromFile,
+      DISPATCH_HOST: "claude",
+      DISPATCH_SESSION_ID: undefined,
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDE_CODE_SESSION_ID: "claude-ses",
+      CODEX_THREAD_ID: "codex-thread-3",
+    };
+    const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
+    const underCodex = await run(argv, both, "", undefined, () => "codex");
+    expect(underCodex.code).toBe(0);
+    const underClaude = await run(argv, both, "", undefined, () => "claude");
+    expect(underClaude.code).toBe(0);
+    const unknown = await run(argv, both, "", undefined, () => undefined);
+    expect(unknown.code).toBe(0);
+    const actors = requests
+      .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
+      .map((request) => (request.body as { actor: { id: string } }).actor.id);
+    expect(actors).toEqual(["codex-thread-3", "claude-ses", "claude-ses"]);
+  });
+
+  test("a Codex shell started from an Oh My Pi shell acts as the nearer of codex and omp", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const both = { ...fromFile, CODEX_THREAD_ID: "codex-thread-4" };
+    const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
+    expect((await run(argv, both, "", undefined, () => "codex")).code).toBe(0);
+    expect((await run(argv, both, "", undefined, () => "omp")).code).toBe(0);
+    const actors = requests
+      .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
+      .map((request) => (request.body as { actor: { id: string } }).actor.id);
+    expect(actors).toEqual(["codex-thread-4", "ses-1"]);
+  });
+
+  test("DISPATCH_HOST=codex with no CODEX_THREAD_ID refuses naming it, sending nothing", async () => {
+    const { code, stdout } = await run(["projects"], {
+      ...fromFile,
+      DISPATCH_HOST: "codex",
+      DISPATCH_SESSION_ID: "ses-1",
+    });
+    expect(stdout).toStartWith("dispatch: CODEX_THREAD_ID is not set");
+    expect(code).toBe(2);
+    expect(requests).toEqual([]);
   });
 
   test("with neither DISPATCH_HOST nor CLAUDE_CODE_CHILD_SESSION=1 it refuses naming DISPATCH_HOST, whatever else Claude Code left", async () => {
@@ -2270,16 +2397,16 @@ describe("cliRefusals", () => {
   });
 
   // The whole line is pinned, not its `dispatch: ` prefix: `opencode` was an accepted host until
-  // it was removed, so the refusal naming it, and naming omp and claude as the ones left, is the
+  // it was removed, so the refusal naming it, and naming omp, claude and codex as the ones accepted, is the
   // user-visible behaviour that removal produces. A prefix-only assertion passes again the moment
   // the host comes back, or the message stops naming the hosts it accepts.
-  test("a host the command does not accept is refused by name, with the two it accepts", async () => {
+  test("a host the command does not accept is refused by name, with the three it accepts", async () => {
     const { code, stdout } = await run(["projects"], {
       DISPATCH_HOST: "opencode",
       DISPATCH_SESSION_ID: "ses-1",
     });
     expect(code).toBe(2);
-    expect(stdout).toBe('dispatch: DISPATCH_HOST is "opencode", not omp or claude.\n');
+    expect(stdout).toBe('dispatch: DISPATCH_HOST is "opencode", not omp, claude or codex.\n');
     expect(requests).toEqual([]);
   });
 

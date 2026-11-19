@@ -12,11 +12,11 @@ import (
 // of a lens (holdGone), posts meanwhile a lens triggered by it through POST .../lenses, and then
 // commits the gone; and the same for a triggered_by at a lens out of a lens invoked after it, and
 // for a requirement's constrained_by at a constraint, each through POST .../nodes/{id}/pointers.
-// Each post finds its far end live before the gone commits and then waits at the issue's row, so
-// it reads the far end again once the gone has committed (refuseGoneFarEnds) and answers the 404
-// NOT_FOUND an address nobody holds answers, naming the far end as the post did, and no tuple
-// points at the gone node: no lens is triggered by the gone lens, and no requirement is
-// constrained by the gone constraint. A write that did not read its far end again under that row
+// Each post finds its far end live before the gone commits and then waits at the issue's owner
+// lock, so it reads the far end again once the gone has committed (refuseGoneFarEnds) and answers
+// the 404 NOT_FOUND an address nobody holds answers, naming the far end as the post did, and no
+// tuple points at the gone node: no lens is triggered by the gone lens, and no requirement is
+// constrained by the gone constraint. A write that did not read its far end again under that lock
 // would wait there and then point at the gone node.
 func TestAFarEndTakenGoneWhileAWriteWaitsAnswersNotFound(t *testing.T) {
 	rig := newReasoningRig(t)

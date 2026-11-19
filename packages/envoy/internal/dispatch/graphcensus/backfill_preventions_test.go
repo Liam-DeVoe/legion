@@ -190,9 +190,9 @@ func TestTheBackfillRetractsThePreventedByOfChecksNobodyRuns(t *testing.T) {
 }
 
 // requireTheEndedPreventionsLockOrder holds writeEndedPreventions to its steps. The checks of both
-// documents stand under issue PREV-1, whose row is the owner row of each: the batch takes it first,
-// as the index pass that drops a check and the retirement of its document take it, and while it
-// waits there it has read nothing of the store and appended nothing. It then appends the
+// documents stand under issue PREV-1, whose owner lock is the owner lock of each: the batch takes
+// it first, as the index pass that drops a check and the retirement of its document take it, and
+// while it waits there it has read nothing of the store and appended nothing. It then appends the
 // retractions through the store's writer, which takes no node row, so it never queues behind the
 // rows of the risks or of their checks, held `for update` for the whole run, and it appends no
 // event. The test follows the pass alone (backfillEndedPreventions), so a lock another pass of
@@ -200,11 +200,11 @@ func TestTheBackfillRetractsThePreventedByOfChecksNobodyRuns(t *testing.T) {
 func requireTheEndedPreventionsLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	seed := seedEndedPreventions(t, database, "PREV")
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue " + seed.issue + "'s row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: seed.issue,
-		Statement: "select closed_at is null from issues where key = $1 for no key update",
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue " + seed.issue + "'s owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"graph_nodes", "graph_tuples"},
-	}, `select 1 from issues where key = $1 for update`, seed.issue)
+	}, store.IssueOwner(seed.issue))
 	holds := []*lockstep.Hold{owner}
 	for _, held := range []struct{ kind, id string }{
 		{refs.BlockNodeKind, seed.goneCheck}, {refs.BlockNodeKind, seed.retiredCheck},

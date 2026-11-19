@@ -53,7 +53,7 @@ func blockChanges(t *testing.T, tx pgx.Tx, artifact string) map[string]blockChan
 // One block-index pass can cover more than one version: a document past the deferral bound, or
 // versions a build before wrote during the roll, is indexed by the reconciliation at its latest
 // owed version alone (docs' indexOwedDocument). A block's text-change time is read off its row
-// (dispatch://INFRA-1150 c-spec-tie), so the row dates the change to the version that made it,
+// (c-spec-tie), so the row dates the change to the version that made it,
 // and not to the version the pass indexed. Version 1 is indexed; version 2 rewrites b1, version 3
 // leaves b1 alone and rewrites b2, and one pass indexes version 3. b1's row then reads version 2
 // and version 2's time, and its text is recorded at version 2, which is the text read at version

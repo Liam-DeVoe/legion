@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // holdGone takes the node target names to gone in a transaction it holds open - writeNodeState,
-// which takes the issue's row first and then moves the node, and a lens's findings and risks with
-// it - sends post meanwhile, waits until post waits on that transaction or answers, commits it,
-// and answers what post answered. name names the post in a failure.
+// which takes the issue's owner lock first and then moves the node, and a lens's findings and
+// risks with it - sends post meanwhile, waits until post waits on that transaction or answers,
+// commits it, and answers what post answered. name names the post in a failure.
 func holdGone(t *testing.T, rig reasoningRig, name string, target stateTarget, post func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	t.Helper()
 	ctx := context.Background()
@@ -36,6 +37,24 @@ func holdGone(t *testing.T, rig reasoningRig, name string, target stateTarget, p
 	}); err != nil {
 		t.Fatalf("take %s to gone: %v", target.address, err)
 	}
+	// The sessions already waiting on the gone's owner lock before the post is sent: a pass of
+	// the server's own may queue there too, and the post is the one more that waits.
+	var gone int64
+	if err := tx.QueryRow(ctx, `select pg_backend_pid()`).Scan(&gone); err != nil {
+		t.Fatalf("read the gone's backend: %v", err)
+	}
+	waitingOnGone := func() int {
+		t.Helper()
+		var waiting int
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select count(*) from pg_stat_activity
+			where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)) and query = $2
+		`, gone, store.OwnerLockStatement).Scan(&waiting); err != nil {
+			t.Fatalf("read what waits on the gone: %v", err)
+		}
+		return waiting
+	}
+	before := waitingOnGone()
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- post() }()
 	var answer *httptest.ResponseRecorder
@@ -45,22 +64,14 @@ func holdGone(t *testing.T, rig reasoningRig, name string, target stateTarget, p
 			return true
 		default:
 		}
-		// The post waits at the issue's row (lockIssueRow), the lock the gone holds: only
-		// then has it found what it names live and not yet written. It may wait there behind a
-		// pass of the server's own that queued at that row first, so it is found by its statement
-		// and not by the transaction it waits on.
-		var waiting bool
-		if err := rig.database.Pool.QueryRow(ctx, `
-			select exists (select 1 from pg_stat_activity
-				where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0
-				  and query like '%project_key from issues where key = $1 for no key update%')
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read what waits on the gone: %v", err)
-		}
-		return waiting
+		// The post waits at the issue's owner lock (lockIssueOwner), the lock the gone holds:
+		// only then has it found what it names live and not yet written. It may wait there
+		// behind a pass of the server's own that queued at that lock first, so it is found as
+		// one more session waiting on the gone at the owner lock's statement.
+		return waitingOnGone() > before
 	})
 	if answer != nil {
-		t.Errorf("%s answered %d %s while the gone of %s was still open, want it held at the issue's row",
+		t.Errorf("%s answered %d %s while the gone of %s was still open, want it held at the issue's owner lock",
 			name, answer.Code, answer.Body.String(), target.address)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -85,11 +96,11 @@ func lensTarget(lens lensInvoked) stateTarget {
 // gone of a lens (holdGone), posts a finding to that lens through POST .../nodes/{id}/findings
 // meanwhile, and then commits the gone; and the same for a risk under a pre-mortem lens through
 // POST .../risks. Each post finds its lens live before the gone commits and then waits at the
-// issue's row, so it reads the lens again once the gone has committed (refuseGoneParents) and is
-// refused 409 NODE_GONE naming the lens, and no finding and no risk stands under the gone lens. A
-// write that did not read its lens again under that row would wait there and then write under the
-// gone lens, and its finding or its risk would stand live under it, since the gone read what
-// stood under the lens before the post wrote anything.
+// issue's owner lock, so it reads the lens again once the gone has committed (refuseGoneParents)
+// and is refused 409 NODE_GONE naming the lens, and no finding and no risk stands under the gone
+// lens. A write that did not read its lens again under that lock would wait there and then write
+// under the gone lens, and its finding or its risk would stand live under it, since the gone read
+// what stood under the lens before the post wrote anything.
 func TestAFindingOrARiskWrittenWhileItsLensIsTakenGoneIsRefused(t *testing.T) {
 	rig := newReasoningRig(t)
 	ctx := context.Background()
