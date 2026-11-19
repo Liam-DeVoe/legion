@@ -134,8 +134,9 @@ func newestResultStands(check model.CheckBlock) model.CheckPassStands {
 // where none is no and one is unknown (R7), or where a branch head could not be read, or where a
 // pass is held up only by a commit Dispatch could not place. Every answer names each subject's
 // state. A yes names a role only where each subject names it (R6), in the order of the first
-// subject: two roles that passed at two heads are no role that passed at each. The answer takes
-// the reason of an unknown subject only for a pass and a fail at one commit: a subject's
+// subject: two roles that passed at two heads are no role that passed at each. An unknown answer
+// takes the reason model.PassStandsReasonPassAndFail where any subject holds a pass and a fail at
+// its commit, whatever the order of the subjects, and a no takes no reason: a subject's
 // read_failed is the subject's alone.
 func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted map[string]bool) model.CheckPassStands {
 	stands := model.CheckPassStands{Answer: model.PassStandsYes, Subjects: make([]model.PassStandsSubject, 0, len(compared.subjects))}
@@ -147,10 +148,12 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 			stands.Answer = model.PassStandsNo
 		case subject.Answer == model.PassStandsUnknown && stands.Answer == model.PassStandsYes:
 			stands.Answer = model.PassStandsUnknown
-			if subject.Reason == model.PassStandsReasonPassAndFail {
-				stands.Reason = subject.Reason
-			}
 		}
+	}
+	if stands.Answer == model.PassStandsUnknown && slices.ContainsFunc(stands.Subjects, func(subject model.PassStandsSubject) bool {
+		return subject.Reason == model.PassStandsReasonPassAndFail
+	}) {
+		stands.Reason = model.PassStandsReasonPassAndFail
 	}
 	placedNowhere := slices.ContainsFunc(check.Results, func(result model.CheckResult) bool {
 		return result.Verdict == "pass" && standingCommit(result) == model.CommitUnknown
