@@ -491,7 +491,7 @@ func (j *checkJudge) newestApproval(statement string) (string, time.Time) {
 
 // countingRuns is the runs of c that count at the subject (step 4).
 func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
-	if countsAtACommit(c) {
+	if CountsAtACommit(c) {
 		runs = resultsWhere(runs, func(r Result) bool { return j.carries(c.ID, resultCommit(r)) })
 	}
 	if c.Subject == SubjectCode {
@@ -502,11 +502,11 @@ func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
 	return resultsWhere(runs, func(r Result) bool { return subject != "" && readOf(c, r.Commit, r.Deploy, r.GraphTx) == subject })
 }
 
-// countsAtACommit is whether a result of c counts at the commit where its job ran (resultCommit),
+// CountsAtACommit is whether a result of c counts at the commit where its job ran (resultCommit),
 // by the rule of carries: a check of the code, and a program check of production or of the graph,
 // whose test is code (R7: "The procedure is the text of the check and the code that runs it"). A
 // query or an agent of production or of the graph reads no commit.
-func countsAtACommit(c Check) bool {
+func CountsAtACommit(c Check) bool {
 	return c.Subject == SubjectCode || c.Procedure == ProcedureProgram
 }
 
@@ -526,7 +526,7 @@ func readOf(c Check, commit, deploy, graphTx string) string {
 
 // countingFaults is the failing examples of c that count at the subject (step 7).
 func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
-	if !countsAtACommit(c) {
+	if !CountsAtACommit(c) {
 		return faults
 	}
 	return resultsWhere(faults, func(r Result) bool { return j.carries(c.ID, resultCommit(r)) })
@@ -569,11 +569,11 @@ func (j *checkJudge) carries(check, commit string) bool {
 // whatever CI refused elsewhere (R7, R8). refused is whether a result taken out would have counted
 // at the subject, and rule the least rule, by its name, of those refusals, so that the order of
 // the results, which says nothing, does not choose the rule that the state names. A check whose
-// results count at no commit (countsAtACommit), a query or an agent of production or of the graph,
+// results count at no commit (CountsAtACommit), a query or an agent of production or of the graph,
 // has no result of a commit, so it keeps each candidate, whatever commit a result's TestCommit
 // names: only CI's refusal at S.Commit counts for it, before its results are read.
 func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string, refused bool, keptRuns, keptFaults []Result) {
-	if !countsAtACommit(c) {
+	if !CountsAtACommit(c) {
 		return "", false, runs, faults
 	}
 	kept := func(r Result) bool {

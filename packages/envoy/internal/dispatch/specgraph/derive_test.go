@@ -350,12 +350,14 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			in.Results = append(in.Results, none)
 		}, want: `specgraph: result 3: it sets the leg "", and result 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		// The commit of a run result is decided by the text of its check that ran it
-		// (countsAtACommit): a run result of a program check of production or of the graph is a record
-		// of its job at its test_commit, where its test ran, and one of a query or an agent of
-		// production or of the graph is a record of its job at no commit, whatever test_commit it
-		// names, since such a check reads no commit and no state reads a leg of it. Of a result whose
-		// text the entry does not hold, it reads the commit that the result names and no test_commit,
-		// since that text alone could make the test_commit the commit where its job ran.
+		// (CountsAtACommit): a run result of a program check of production or of the graph is a record
+		// of its job at its test_commit, where its test ran, one of an agent or a query of the code is
+		// a record of its job at its commit, as one of a program check of the code is, and one of a
+		// query or an agent of production or of the graph is a record of its job at no commit,
+		// whatever test_commit it names, since such a check reads no commit and no state reads a leg
+		// of it. Of a result whose text the entry does not hold, it reads the commit that the result
+		// names and no test_commit, since that text alone could make the test_commit the commit where
+		// its job ran.
 		{name: `a run result of a program check of production in a named leg where the runs of its job at its test_commit are of the leg ""`,
 			add: []Check{checkStateProductionProgram}, change: func(in *Input) {
 				q := checkStateProductionProgram
@@ -370,6 +372,20 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 				in.Results = append(in.Results, Result{Check: g.ID, CheckDigest: g.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
 					GraphTx: "tx1", Job: g.Test.Job, Leg: new("linux"), TestCommit: "c1", At: checkStateRun, Seq: 3})
 			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "graph-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{name: `a run result of an agent of the code in a named leg where the runs of its job at its commit are of the leg ""`,
+			add: []Check{checkStateCodeAgent}, change: func(in *Input) {
+				a := checkStateCodeAgent
+				in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+				in.Results = append(in.Results, Result{Check: a.ID, CheckDigest: a.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Commit: "c1", Job: "go-checks", Leg: new("linux"), At: checkStateRun, Seq: 3})
+			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{name: `a run result of a query of the code in a named leg where the runs of its job at its commit are of the leg ""`,
+			add: []Check{checkStateCodeQuery}, change: func(in *Input) {
+				q := checkStateCodeQuery
+				in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+				in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: q.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Commit: "c1", Job: "go-checks", Leg: new("linux"), At: checkStateRun, Seq: 3})
+			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		{name: `control: a run result of a query of production that names that job and test_commit c1, in a named leg`,
 			add: []Check{checkStateProduction}, change: func(in *Input) {
 				in.JobRuns = []JobRun{{Job: "production-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}

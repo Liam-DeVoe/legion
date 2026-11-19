@@ -165,7 +165,7 @@ func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sw
 // at another commit than A where the input reads what the base reads with each result of the check
 // whose commit is A (resultCommit) taken out of results.json, and no place at A, where R48 gives
 // none. A query or an agent of production or of the graph has no result of a commit
-// (countsAtACommit), so a refusal of it at another commit than the subject's takes out nothing,
+// (CountsAtACommit), so a refusal of it at another commit than the subject's takes out nothing,
 // whatever commit a result's test_commit names, and it has no right. The sweep adds one refusal at
 // a time to uncited.json of each base (sweepBases), at each commit that a record of the base names,
 // for each check of its approved spec that the base does not refuse there.
@@ -199,7 +199,7 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 						return uncited
 					})
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
-					if countsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && resultCommit(r) == commit }) {
+					if CountsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && resultCommit(r) == commit }) {
 						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, s, c.ID, commit)
 					}
 					inputs = append(inputs, in)
@@ -265,7 +265,7 @@ var addableMembers = map[string]struct {
 // nothing, since the commit of a result has one reading, its commit (resultCommit), for the judge
 // and for the leg rule alike; one on a result of a query or an agent of production or of the graph
 // moves nothing, also where CI refused the check at that commit, since such a check reads no commit
-// (countsAtACommit); and a commit on a result of a check of production or of the graph is refused.
+// (CountsAtACommit); and a commit on a result of a check of production or of the graph is refused.
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)

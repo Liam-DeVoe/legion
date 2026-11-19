@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,13 +21,33 @@ import (
 // graphCheck is the check of the graph of production-and-graph, a query.
 const graphCheck = "the-graph-holds-a-delivery-of-each-message"
 
-// readsNoCommit is each kind of check that reads no commit, as production-and-graph's query of the
-// graph is written in it (scenarioAs).
-var readsNoCommit = []struct {
+// checkKind is a kind of check by its name: its procedure and its subject.
+type checkKind struct {
 	kind      string
 	procedure specgraph.Procedure
 	subject   specgraph.Subject
-}{
+}
+
+// eachKind is each kind of check: each procedure of each subject.
+func eachKind() []checkKind {
+	var kinds []checkKind
+	for _, s := range []struct {
+		name    string
+		subject specgraph.Subject
+	}{{"the code", specgraph.SubjectCode}, {"production", specgraph.SubjectProduction}, {"the graph", specgraph.SubjectGraph}} {
+		for _, p := range []struct {
+			name      string
+			procedure specgraph.Procedure
+		}{{"a program check", specgraph.ProcedureProgram}, {"a query", specgraph.ProcedureQuery}, {"an agent", specgraph.ProcedureAgent}} {
+			kinds = append(kinds, checkKind{p.name + " of " + s.name, p.procedure, s.subject})
+		}
+	}
+	return kinds
+}
+
+// readsNoCommit is each kind of check that reads no commit, as production-and-graph's query of the
+// graph is written in it (scenarioAs).
+var readsNoCommit = []checkKind{
 	{"a query of the graph", specgraph.ProcedureQuery, specgraph.SubjectGraph},
 	{"an agent of the graph", specgraph.ProcedureAgent, specgraph.SubjectGraph},
 	{"a query of production", specgraph.ProcedureQuery, specgraph.SubjectProduction},
@@ -70,9 +91,15 @@ func editResults(t *testing.T, dir string, change func(results []map[string]any)
 // Each row: production-and-graph with its check of the graph written as the row's kind, its two
 // runs reported by the job production-checks and its failing run in the leg x, where that job's
 // runs at c1 are of the leg "": with test_commit c1 on that run, the command prints what it prints
-// with none. The controls: a program check's failing run in the leg x at its test_commit c1 is
-// refused, since its test ran there, for the program check of production as the scenario writes it
-// and for that check written as a program check of the graph.
+// with none. The controls: for each kind of check whose results count at a commit, a run result in
+// the leg x at the commit c1 where it counts, where the runs of its job at c1 are of the leg "", is
+// refused with the line of the leg rule. Those kinds are read from specgraph.CountsAtACommit over
+// eachKind, so a kind that it counts at a commit later has its row here with no edit of a list. For
+// a check of the code, refusal's check of the code written as the kind, with its pass at its
+// commit c1 by the job go-checks; for a check of production or of the graph, production-and-graph's
+// program check of production written as the kind, with its failure at its test_commit c1, the
+// commit of the test that ran, by the job production-checks. Each kind counts at a commit or is
+// one of readsNoCommit, and not both.
 func TestTheLegRuleReadsNoCommitOfACheckThatReadsNoCommit(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -103,27 +130,33 @@ func TestTheLegRuleReadsNoCommitOfACheckThatReadsNoCommit(t *testing.T) {
 			expect(t, got[1], got[0])
 		})
 	}
-	// refusedInLegX gives result 3 of the scenario at dir, the program check's failure at test_commit
-	// c1, the leg x, and expects the refusal of the leg rule.
-	refusedInLegX := func(t *testing.T, dir string) {
-		t.Helper()
-		editResults(t, dir, func(results []map[string]any) {
-			if r := results[2]; r["check"] != "a-production-restart-loses-no-message" || r["outcome"] != "fail" || r["test_commit"] != "c1" {
-				t.Fatalf("result 3 of production-and-graph is no failure of its program check at test_commit c1: %v", r)
-			}
-			results[2]["leg"] = "x"
+	for _, k := range eachKind() {
+		counts := specgraph.CountsAtACommit(specgraph.Check{Subject: k.subject, Procedure: k.procedure})
+		if listed := slices.Contains(readsNoCommit, k); counts == listed {
+			t.Errorf("%s: it counts at a commit %t, and it is one of readsNoCommit %t; want one of the two", k.kind, counts, listed)
+		}
+		if !counts {
+			continue
+		}
+		// the scenario of the row, the check that it writes as the kind, and the run result of that
+		// check at c1: its number, the member that names c1, and its job
+		scenario, check, n, member, job := "production-and-graph", "a-production-restart-loses-no-message", 3, "test_commit", "production-checks"
+		if k.subject == specgraph.SubjectCode {
+			scenario, check, n, member, job = "refusal", "a-restart-loses-no-message", 1, "commit", "go-checks"
+		}
+		t.Run("control: "+k.kind+" in the leg x at its "+member+" c1", func(t *testing.T) {
+			t.Parallel()
+			dir := scenarioAs(t, scenario, check, k.procedure, k.subject)
+			editResults(t, dir, func(results []map[string]any) {
+				if r := results[n-1]; r["check"] != check || r["kind"] != "run" || r[member] != "c1" || r["job"] != job || r["leg"] != "" {
+					t.Fatalf("result %d of %s is no run of %s at its %s c1 by %s in the leg \"\": %v", n, scenario, check, member, job, r)
+				}
+				results[n-1]["leg"] = "x"
+			})
+			expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{code: 2, stderr: "spec-check: " + filepath.Join(dir, "results.json") +
+				fmt.Sprintf(`: result %d: it sets the leg "x", and job run 1 of its job %q at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`, n, job) + "\n"})
 		})
-		expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{code: 2, stderr: "spec-check: " + filepath.Join(dir, "results.json") +
-			`: result 3: it sets the leg "x", and job run 1 of its job "production-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix` + "\n"})
 	}
-	t.Run("control: a program check of production in the leg x at its test_commit c1", func(t *testing.T) {
-		t.Parallel()
-		refusedInLegX(t, copyScenario(t, "production-and-graph"))
-	})
-	t.Run("control: a program check of the graph in the leg x at its test_commit c1", func(t *testing.T) {
-		t.Parallel()
-		refusedInLegX(t, scenarioAs(t, "production-and-graph", "a-production-restart-loses-no-message", specgraph.ProcedureProgram, specgraph.SubjectGraph))
-	})
 }
 
 // R48: "At that commit, such a check reads unknown, and no earlier result of it counts." R7: "Of

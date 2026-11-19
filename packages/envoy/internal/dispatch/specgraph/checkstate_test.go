@@ -413,7 +413,7 @@ func TestCheckState(t *testing.T) {
 			c.Uncited = map[string]map[string]string{"c1": {checkStateGraphProgram.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "no_failing_example"}},
 		// An agent or a query of the code counts its results at their commit, as C does
-		// (countsAtACommit): a refusal there takes them out at c2, where they count, its runs and its
+		// (CountsAtACommit): a refusal there takes them out at c2, where they count, its runs and its
 		// failing examples alike. With its pass at c1 the refusal at c1 takes out the run; with its
 		// pass at c2 the failing example of c1 decides, and the refusal takes out that example.
 		{name: "control: an agent of the code whose results at c1 count at c2", change: func(c *checkCase) {

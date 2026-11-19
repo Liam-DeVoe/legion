@@ -63,7 +63,7 @@ type Result struct {
 	// check whose subject is production or the graph. A result of any other check may name one; no
 	// rule of the state reads it there, and the leg rule groups no run result by it (jobCommit):
 	// resultCommit reads a result's Commit first, and a query or an agent of production or of the
-	// graph reads no commit (countsAtACommit). One rule reads it on every result, the rule of a name
+	// graph reads no commit (CountsAtACommit). One rule reads it on every result, the rule of a name
 	// (nameFault): like each name that a result sets, it holds a letter or a digit, since a value of
 	// neither names no commit, and the reader and the entry refuse such a value with a line that names
 	// the record, as they refuse each other name of nothing. A result of a program check of
@@ -77,7 +77,7 @@ type Result struct {
 // 4 and 7): the Commit of a result of a check of the code, and else the TestCommit, the commit of
 // the test of a program check of production or of the graph, whose results name no commit (fault).
 // It is the one reading of that fact for a check whose results count at a commit
-// (countsAtACommit): the judge counts r there, and legFault groups r there with the other records
+// (CountsAtACommit): the judge counts r there, and legFault groups r there with the other records
 // of its job (jobCommit).
 func resultCommit(r Result) string {
 	return cmp.Or(r.Commit, r.TestCommit)
@@ -85,7 +85,7 @@ func resultCommit(r Result) string {
 
 // jobCommit is the commit where the job of the result r ran, by procedure, the text of the check
 // that ran r, nil when the caller does not hold it, as Result.fault reads it: resultCommit for a
-// check whose results count at a commit (countsAtACommit), and none for a query or an agent of
+// check whose results count at a commit (CountsAtACommit), and none for a query or an agent of
 // production or of the graph, which reads no commit, whatever test_commit r names. With no text in
 // hand it is the commit that r names, which a result of a check of the code names, and never its
 // test_commit: only the text of a program check of production or of the graph makes that the
@@ -94,7 +94,7 @@ func jobCommit(procedure *Check, r Result) string {
 	switch {
 	case procedure == nil:
 		return r.Commit
-	case countsAtACommit(*procedure):
+	case CountsAtACommit(*procedure):
 		return resultCommit(r)
 	}
 	return ""
