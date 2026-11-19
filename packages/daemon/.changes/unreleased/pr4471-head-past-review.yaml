@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+    An approval of one head no longer merges another head pushed after it. A push, a new head or a
+    reopen at another head that reaches the pull request while the issue is in `accepting`, `retro`
+    or `merging`, and a merge at another head in `accepting` or `retro`, now send the issue back to
+    `reviewing` whenever the approval that decided the round no longer stands on the head, as a new
+    head already re-asked the round in `reviewing`. A retry of a held phase past the review applies
+    the same rule before it starts that phase's worker. No head is exempt, retro's own push
+    included, since retro commits nothing. The move counts a pass under its own pair
+    (`accepting-reviewing`, `retro-reviewing`, `merging-reviewing`), starts the reviewer with a
+    `Reason:` naming the approved head and what replaced it, tells the architect in a
+    `phase-finished` notice whose reason begins `moved back to reviewing by the daemon:`, tells the
+    implementer in retro or the merger in merging that its phase ended, and posts the reason on the
+    issue. The merger's task now ends with `Approved head: <sha>`, or `Approved head: none.` where
+    the record holds no approval, and its prompt merges nothing unless the pull request's head is
+    that head, sending the issue back to `reviewing` instead.
+custom:
+    Issue: pr4471

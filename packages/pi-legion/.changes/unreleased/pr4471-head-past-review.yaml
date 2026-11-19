@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The `legion-worker`, `legion-retro` and `legion-architect` skills say that a head the approval
+    does not name that reaches the pull request after the review sends the issue back to
+    `reviewing`, whoever pushed it, retro included, and that the merger merges only the head its
+    task names as `Approved head: <sha>`. They no longer say that nothing in Legion compares the
+    head that merges with the head a review approved.
+custom:
+    Issue: pr4471
