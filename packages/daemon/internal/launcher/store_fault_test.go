@@ -276,30 +276,39 @@ func TestAStartWhoseSessionStoreIsConfiguredWrongIsChargedNamingItsCause(t *test
 // checks passed, exits at once, and its exit says so (shimwire.LauncherExit.Session): under the
 // generation's proxy, whose dial of the database for the child's own connection is refused; and
 // under a URL file no proxy serves, which the launcher dials itself once the child exits with an
-// error, and which refuses it. A child that exits while the store answers, on its own or with an
-// error of its own, exits as itself.
+// error, and which refuses it. A child that exits while the store answers exits as itself: Oh My
+// Pi under the proxy, whose own connections reach the database; and, under a URL file, a shell in
+// Oh My Pi's place that exits with an error or at 0, since what those two controls test is how the
+// launcher classifies an exit when its own ask of the store is answered, not what Oh My Pi does.
 func TestAnOhMyPiThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *testing.T) {
 	ompBinary := testbin.OMP(t)
 	for name, tc := range map[string]struct {
 		// proxied is whether the generation has a proxy of its own; refuse is whether the store
-		// stops answering once the start's checks have passed; resumeNothing has the child resume
-		// a session no table holds, which it refuses with an error of its own.
-		proxied, refuse, resumeNothing bool
-		want                           shimwire.SessionRefusal
+		// stops answering once the start's checks have passed.
+		proxied, refuse bool
+		// shell, when set, is the child in Oh My Pi's place, run by /bin/sh, and code the status
+		// it exits with.
+		shell string
+		code  int
+		want  shimwire.SessionRefusal
 	}{
 		"under the proxy, the child's own connection is refused":               {proxied: true, refuse: true, want: shimwire.SessionStoreUnreachable},
 		"control: under the proxy, the store answers and the child ends":       {proxied: true},
 		"under a URL file, the store refuses the child and the launcher":       {refuse: true, want: shimwire.SessionStoreUnreachable},
-		"control: under a URL file, the store answers a child that fails":      {resumeNothing: true},
-		"control: under a URL file, the store answers and the child ends at 0": {},
+		"control: under a URL file, the store answers a child that fails":      {shell: "exit 3", code: 3},
+		"control: under a URL file, the store answers and the child ends at 0": {shell: "exit 0"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dsn := testdb.Database(t, "legion_launcher_child_store_test")
 			createSessionTables(t, dsn)
 			home := t.TempDir()
-			testbin.OMPHome(t, ompBinary, home)
-			testbin.WriteOMPProfile(t, home, "providers:\n  operator:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n"+
-				"    apiKey: unused\n    models:\n      - id: store-fault-test\n        name: Store fault test\n", "modelRoles:\n  default: operator/store-fault-test\n")
+			argv := []string{"/bin/sh", "-c", tc.shell}
+			if tc.shell == "" {
+				testbin.OMPHome(t, ompBinary, home)
+				testbin.WriteOMPProfile(t, home, "providers:\n  operator:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n"+
+					"    apiKey: unused\n    models:\n      - id: store-fault-test\n        name: Store fault test\n", "modelRoles:\n  default: operator/store-fault-test\n")
+				argv = []string{ompBinary, "--mode", "rpc"}
+			}
 			var g *rig
 			var urlFile string
 			var down atomic.Bool
@@ -328,10 +337,6 @@ func TestAnOhMyPiThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *te
 					t.Fatal(err)
 				}
 			}
-			argv := []string{ompBinary, "--mode", "rpc"}
-			if tc.resumeNothing {
-				argv = append(argv, "--resume="+filepath.Join(t.TempDir(), "sessions", "x", "2026-10-08T12-00-00-000Z_0010.jsonl"))
-			}
 			env := append(testbin.OMPEnviron(home), ompsessions.StorageVariable+"="+ompsessions.SQLStorage, ompsessions.DSNFileVariable+"="+urlFile,
 				"LEGION_WORKSPACE="+filepath.Join(t.TempDir(), "workspace"))
 			if got := g.start(shimwire.LauncherStart{ID: "start-1", Generation: 1, Argv: argv, Env: env}); !got.OK {
@@ -341,8 +346,8 @@ func TestAnOhMyPiThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *te
 			if exit.Session != tc.want {
 				t.Fatalf("the child's exit = %+v, want its session refusal %q\nlauncher log:\n%s", exit, tc.want, g.stderr.String())
 			}
-			if tc.resumeNothing && exit.Code == 0 {
-				t.Fatalf("the child resuming a session it does not have exited %+v, want an error of its own", exit)
+			if tc.shell != "" && exit.Code != tc.code {
+				t.Fatalf("the shell child %q exited %+v, want status %d", tc.shell, exit, tc.code)
 			}
 		})
 	}
