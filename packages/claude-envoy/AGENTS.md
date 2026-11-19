@@ -139,15 +139,15 @@ Dispatch asks stay on Dispatch.
 
 ## The Legion phase reminder
 
-A Legion phase worker is reminded at the end of every turn for as long as the daemon answers that
-its claim owes work (`POST /legion/v1/claims/owed`), and nudged in words that name no phase and no
-operation when that answer cannot be read. The machine is not this package's: `@legion/pi-shared`
-holds it once for both harnesses (`phase-stall.ts`, the reminder's rhythm and the count, nothing
-of the phase; `phase-reminder.ts`, the runner that asks the daemon what the claim owes, delivers
-each reminder and tells the architect; `stall-limits.ts`, the four numbers), `@sjawhar/pi-legion`
-drives it from Oh My Pi's session hooks (`packages/pi-legion/AGENTS.md`), `src/legion-phase-hook.ts`
-drives it here from Claude Code's own hooks, and `legion claude-bridge` is transport that holds no
-copy of it (`packages/daemon/internal/claudebridge`). Nothing of the machine is re-decided here.
+A Legion phase worker whose turn ends with its phase still open — no successful `handoff_complete`
+since the daemon's assignment — is reminded at the end of every turn, for as long as the phase
+stays open. The machine is not this package's: `@legion/pi-shared` holds it once for both
+harnesses (`phase-stall.ts`, the states and the count; `phase-reminder.ts`, the runner that
+delivers each reminder, tells the architect and reads the daemon's record; `stall-limits.ts`, the
+four numbers), `@sjawhar/pi-legion` drives it from Oh My Pi's session hooks
+(`packages/pi-legion/AGENTS.md`), and `src/legion-phase-hook.ts` drives it here, from Claude
+Code's own hooks. Nothing of the machine is re-decided in this package. `legion claude-bridge` is
+transport and holds no copy of it (`packages/daemon/internal/claudebridge`).
 
 **The hooks.** `scripts/build.ts`'s `LEGION_HOOKS` generates five entries into
 `legion/hooks/hooks.json`, each an `mcp_tool` hook on the server `legion` — the pane's own MCP
@@ -155,7 +155,7 @@ server, which `--mcp-config` registers under that bare name
 (`packages/daemon/internal/claudelaunch`) — calling the tool `legion_phase_hook` that
 `src/envoy-channel-server.ts` registers from `phaseHookToolDefinition()`. Claude Code substitutes
 each `${…}` as a string, which the endpoint parses. `Stop` (30 s, since its answer waits on the
-runner's owed check, bounded at `OWED_READ_BOUND_MS`) carries `${last_assistant_message}`
+runner's record check, which bounds its own daemon read at 5 s) carries `${last_assistant_message}`
 and `${stop_hook_active}`; `StopFailure` (10 s) the last message; `PostToolUse` and
 `PostToolUseFailure` (10 s) `${tool_name}` and `${agent_id}`; `UserPromptSubmit` (10 s)
 `${prompt}`. They belong to the generated `legion/` plugin alone, never to `hooks/hooks.json`:
@@ -172,44 +172,57 @@ same session, and it is the only one of that run; every later one is written int
 the bridge's inbox from a timer, because a line written while a turn runs is appended to that turn
 and the run would never settle for the daemon. `StopFailure` runs instead of `Stop` when the turn
 ended on an API error ("Hooks reference", code.claude.com/docs/en/hooks), and its
-`${last_assistant_message}` is then the error text itself, not what the worker said: the machine
-takes it as `refused`, which earns no continuation and arms one timer (the `StopFailure` arm of
-`src/legion-phase-hook.ts` says why), and Claude Code ignores whatever this hook returns. What ends
-a session the provider keeps refusing is the daemon: the bridge reports each turn's outcome to
-`POST /legion/v1/claims/turn-outcome`, the daemon fails the claim once the trailing run of
-refusals reaches `launch_failure_limit`, and from then on it answers that the claim owes nothing,
-so no reminder goes out; a failed claim is replaced by a retry in a session of its own.
+`${last_assistant_message}` is then the error text itself, not what the worker said: that is the
+provider refusing the turn, so the machine takes it as `refused`: it earns no continuation, since
+continuing into another turn at once would only buy another refusal, which is what left
+dispatch://INFRA-264's implementer reminded for ever.
+It does arm one timer, because the task that refused turn carried ended with it and nothing else
+would wake this worker, so one transient refusal would leave the issue idle.
+Claude Code ignores whatever this hook returns, which now costs nothing. What ends a session the provider keeps refusing is the daemon: the bridge reports each
+turn's outcome to `POST /legion/v1/claims/turn-outcome` and the daemon fails the claim once the
+trailing run of refusals reaches `launch_failure_limit`, and the runner's record check then drops
+every reminder, since a failed claim is replaced by a retry in a session of its own.
 `PostToolUse` and `PostToolUseFailure` are the worker
 working, which puts the count back to zero; a non-empty `${agent_id}` is a subagent's
 call and is ignored. `UserPromptSubmit` is this server's only sight of an inbound turn — the
 daemon's task reaches Claude Code's stdin from the bridge, never this process — so it declares the
-turn, drops the armed timer, and reads the prompt: the reminder it last wrote is itself and
-changes nothing, and anything else (the daemon's task, an Envoy delivery, the recreated-workspace
-notice) is an inbound message, which puts the count back to zero and says nothing of what the
-claim owes. The tool is visible to the model, and a call it does not recognise is answered with
-`PHASE_HOOK_REFUSAL` and records nothing, so the model cannot zero its own count.
+turn, drops the armed timer, and classifies the prompt: the reminder it last wrote is itself and
+changes nothing, a line this server wrote (an Envoy delivery, the recreated-workspace notice) is
+an inbound event, and anything else is an assignment. The tool is visible to the model, and a call
+it does not recognise is answered with `PHASE_HOOK_REFUSAL` and records nothing, so the model
+cannot zero its own count.
 
-**What ends the reminding.** The daemon's answer alone: once the `legion` tool's
-`handoff_complete`, its `request_backward_move`, a completion from the shell or a move of the
-issue leaves the claim owing nothing, the next owed check says so and no reminder goes out.
+**What closes the phase.** Nothing a hook sees: the `legion` tool's `handoff_complete`, and its
+`request_backward_move`, are calls of the same MCP server, and its CallTool handler tells the
+endpoint (`phaseClosed`) once one of the two returned without throwing — the two operations
+`createLegionTool` closes the Oh My Pi host's phase on. Until that lands, a completed worker's
+record still says `open`, and only the runner's record check, which fails open when the daemon
+does not answer, stands between it and a reminder telling it to complete again.
 
-**What the update message's answer does.** The CallTool handler tells the endpoint
-(`updateAnswered`) once the `legion` tool's `ready_for_update` returned without throwing, and the
-machine moves to `awaiting-update`, the wait the daemon ends (`PhaseStall` says why nothing
-reminds in it, and `recordedPhaseStall` how the record holds it): the `Stop` of the turn the worker
-answered in blocks nothing, so that turn ends and the daemon sees it end, and the daemon replaces
-the pod once every role in it has answered and no turn runs, or at the round's bound. A blocked
-`Stop` would instead continue that turn, and the work it did would go with the pod.
+**What the update message's answer does.** The same CallTool handler tells the endpoint
+(`updateAnswered`) once the `legion` tool's `ready_for_update` returned without throwing
+(INFRA-484). It closes no phase — answering is not completing — and moves the machine to
+`awaiting-update`, the wait the daemon ends: the `Stop` of the turn the worker answered in blocks
+nothing, so that turn ends and the daemon sees it end. The daemon replaces the pod once every
+role in it has answered and no turn runs, or at the round's bound.
+A blocked `Stop` would instead continue that turn, and the work it did
+would go with the pod. Nothing is written into that wait and no timer is armed in it, because the
+daemon is what wakes the worker: a round, once opened, ends only by replacing its pod or because
+that pod is gone, so the process is replaced and the task the round held behind it reaches the
+worker on the new pod, in the same session. The record holds the wait as the plain `waiting` a
+WAITING reply buys (`recordedPhaseStall`): only a relaunched process reads a record, and that
+relaunch is the round over.
 
 **The state file.** This host has no transcript entry to record in, so the record is
 `<CLAUDE_CONFIG_DIR>/legion-phase-stall-<session id>.json` (`phaseStallFile`), written whole
 through a temporary file in the same directory renamed into place, before the hook answers. It
-carries the shared entry — `state` (`active`, `waiting`), `count`, `reported`, the
+carries the shared entry — `state` (`closed`, `open`, `waiting`), `count`, `reported`, the
 architect notice's `reportKey` and `lastMessage`, the head of what the worker last said, which the
 notice quotes after a relaunch — and one key only this host keeps, `recreatedNoticeSent`. A
 missing file is a fresh session; an unreadable one, one that is not JSON, or one holding no state
-this build knows is one `warn` and a fresh start. A state an earlier build wrote (`open`, `closed`,
-`quiet`, `text-call`) reads as `active` (`phaseStallFrom`). Claude Code may
+this build knows is one `warn` and a fresh start. A file the build now in the pods wrote holds
+`{"state":"quiet"}` or `{"state":"text-call"}`, which read as an open phase with no reminder yet,
+so a session carried across the cutover is reminded rather than left alone. Claude Code may
 restart this server inside the same `claude` process, which is why the count is on disk and not
 in memory alone, and the only reason `recreatedNoticeSent` is: a launch whose
 `LEGION_WORKSPACE_RECREATED` is not `true` clears it, so the next launch that recreates the
@@ -218,7 +231,7 @@ workspace is told again.
 **Its inputs.** The four numbers come from the worker's own environment, which the daemon fills
 from its own under both runtimes: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle a
 later reminder waits), `LEGION_STALL_WAITING_MS` (900000, what a reply starting WAITING buys),
-`LEGION_STALL_RESUME_MS` (120000, the wait before a relaunched worker's first owed check) and
+`LEGION_STALL_RESUME_MS` (120000, the reminder for a worker relaunched into an open phase) and
 `LEGION_STALL_ARCHITECT_AFTER` (3 unanswered reminders before the architect is told over Envoy,
 through this server's own listener client). A worker whose launcher recreated its workspace is
 told so over the same inbox, once per launch, as an Oh My Pi worker is
