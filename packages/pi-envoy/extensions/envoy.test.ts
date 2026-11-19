@@ -1119,9 +1119,10 @@ function acceptResponse(
  * Boots ses_delivery against a Dispatch whose accept answers `accept` for the nth accept
  * (Dispatch's own once-only rule by default), recording every accept and every other Dispatch
  * message call. `entries` are what the session's file already holds, as a restarted session reads
- * them, and `branch` its active branch (the entries by default); every entry the session appends
- * is read back with them. `delivered(n)` resolves once the session has taken `n` deliveries, cards
- * and user turns together, `recordedWhenDelivered` says how many handled-attempt entries the
+ * them, and `branch` its active branch (the entries by default), whose entries are entries of the
+ * session too, as on a host; every entry the session appends is read back with them.
+ * `delivered(n)` resolves once the session has taken `n` deliveries, cards and user turns
+ * together, `recordedWhenDelivered` says how many handled-attempt entries the
  * session had appended when each went out, and `sends` holds each of them, in the order the host
  * was handed them. `idle` is the host's `ctx.isIdle()`, which a context without it lacks.
  */
@@ -1301,7 +1302,11 @@ async function bootDirectSession(
       ...(options.sessionFile !== undefined && {
         getSessionFile: () => options.sessionFile,
       }),
-      getEntries: () => [...prior, ...fixture.entries],
+      getEntries: () => {
+        const known = new Set([...prior, ...fixture.entries]);
+        const branchOnly = (options.branch ?? []).filter((entry) => !known.has(entry));
+        return [...prior, ...branchOnly, ...fixture.entries];
+      },
       ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
     },
   };

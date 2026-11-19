@@ -105,16 +105,22 @@ A `low` card is not handed while a card handed to start a turn has not started i
 since the host reads idle until it starts that turn.
 The host emits no `message_end` for a stored card,
 so its frame is recorded shown once the session's store holds its entry
-(`writtenCardIdentity` in the branch).
+(`writtenCardIdentity` in any entry of the session, on any branch of its tree).
 Oh My Pi stores a session from its first assistant message on,
 under file storage and under SQL storage (`OMP_SESSION_STORAGE=sql`) alike.
-So one witness is the branch: it holds an assistant message (`storeHoldsBranch`).
+From then on, it stores every entry it records, on every branch.
+So one witness is the session's entries: one of them is an assistant message (`storeHoldsSession`).
+A card stored on a branch with no reply is in the store too, once another branch holds a reply.
 Under file storage, a session file on disk is a witness too.
 It also shows a session that the host stored before its first reply (`ensureOnDisk`).
 Under SQL storage, the session is rows of a database, and no file is ever on disk.
 The Legion daemon starts each workflow session on SQL storage.
 With no witness, the frame of a `low` card waits for the first assistant message.
-`extensions/card-delivery-omp.test.ts` runs each `low` card case on both storages.
+`extensions/card-delivery-omp.test.ts` runs `a low card is read at the next turn`
+and `a low card stored on a branch with no reply, then left for one with a reply, is answered done`
+on SQL storage.
+Its other `low` card cases run on file storage, and they cover the file witness.
+So the CI job stays inside its time limit.
 No check of the wake is armed for a `low` card,
 so a `low` card that comes while the session starts is in no startup set and is owed no wake,
 and no fold wake counts it.

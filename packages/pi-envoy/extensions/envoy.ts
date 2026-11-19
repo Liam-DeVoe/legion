@@ -225,7 +225,7 @@ import {
   shellCommandShutdownReport,
   shellCommandWithheldReport,
 } from "../src/typed-shell";
-import { type CardDelivery, storeHoldsBranch, UnwrittenFrames } from "../src/unwritten-frames";
+import { type CardDelivery, storeHoldsSession, UnwrittenFrames } from "../src/unwritten-frames";
 import { type AskGateRegistration, registerAskGate } from "./askgate/askgate";
 import {
   ADVISOR_GATE_ENTRY_TYPE,
@@ -1365,11 +1365,13 @@ export default function envoyExtension(pi: PiApi): void {
     // - is still that session's to be shown.
     hostIsOn: (card) => hostSessionID() === card,
     settled: hostSettled,
-    // The branch of the session this instance serves once Oh My Pi's store holds that session, the
-    // one witness that a stored card reached it (`storedCheck`). The store holds a session from its
-    // first assistant message on (`storeHoldsBranch`), file storage and SQL storage alike; under
-    // file storage, a session file on disk says so too, as for a session the host wrote before
-    // that. Under `OMP_SESSION_STORAGE=sql`, which every Legion workflow session runs
+    // Every entry of the session this instance serves, on every branch of its tree, once Oh My
+    // Pi's store holds that session, the one witness that a stored card reached it
+    // (`storedCheck`). The store holds a session from its first assistant message on, on any branch
+    // (`storeHoldsSession`), file storage and SQL storage alike, and from then on every entry the
+    // host records, so a card stored on a branch with no reply is in it too; under file storage, a
+    // session file on disk says so as well, as for a session the host wrote before that. Under
+    // `OMP_SESSION_STORAGE=sql`, which every Legion workflow session runs
     // (packages/daemon/internal/podsafety/podsafety.go), no file is ever on disk. A card stored
     // before the store holds the session is lost with the process until then, and a session that
     // names no file (`--no-session`) is stored nowhere.
@@ -1378,8 +1380,8 @@ export default function envoyExtension(pi: PiApi): void {
       if (hostContext === undefined || hostSessionID() !== sessionID) return undefined;
       const file = hostContext.sessionManager.getSessionFile();
       if (file === undefined) return undefined;
-      const branch = hostContext.sessionManager.getBranch?.() ?? [];
-      return existsSync(file) || storeHoldsBranch(branch) ? branch : undefined;
+      const entries = hostContext.sessionManager.getEntries();
+      return existsSync(file) || storeHoldsSession(entries) ? entries : undefined;
     },
     recordDelivered: async (card, identity) => {
       await ledger?.recordDeliveredFor(card, identity);

@@ -111,11 +111,12 @@ export interface UnwrittenFramesHost {
    * notice, or handed back what an interrupt withdrew.
    */
   settled(): boolean;
-  /** The entries of the active branch of the session this instance serves, once Oh My Pi's store
-   *  holds that session (`storeHoldsBranch`, or its file on disk under file storage); undefined
-   *  before that (Oh My Pi stores no session before its first assistant message), for a session
-   *  the host stores nowhere, or while the host is on another session. A stored card is written
-   *  once an entry here names its frame (`writtenCardIdentity`). */
+  /** Every entry of the session this instance serves, on every branch of its tree, in the order
+   *  the host recorded them, once Oh My Pi's store holds that session (`storeHoldsSession`, or
+   *  its file on disk under file storage); undefined before that (Oh My Pi stores no session
+   *  before its first assistant message), for a session the host stores nowhere, or while the
+   *  host is on another session. A stored card is written once an entry here names its frame
+   *  (`writtenCardIdentity`), on whatever branch the host stored it. */
   storedEntries(): readonly unknown[] | undefined;
   /** Records a frame the host wrote in the ledger of `sessionID`, the session it was shown in
    *  (`DeliveryLedger.recordDeliveredFor`). The write binds to that session and records nothing
@@ -171,19 +172,20 @@ export function unwrittenCardKeys(identity: {
 }
 
 /**
- * Whether Oh My Pi's store holds every entry of `branch`, the active branch of a session the host
- * stores (one that names a session file), as the branch tells it: the branch holds an assistant
- * message. The host stores no session before its first assistant message. When it records that
- * message it hands the store the whole session, and from then on it hands the store each entry as
- * it records it (`SessionManager` `#shouldHaveSessionFile` and `#recordEntry`, at the pinned
- * build). That is so under file storage, and under `OMP_SESSION_STORAGE=sql`, where the session is
- * rows of a database and the file the host names is never on disk; there the store takes each
- * entry at once and writes it to the database right after, as it does every entry. The host reads
- * every branch of its tree, so a branch with no assistant message can be stored too: a stored card
- * there waits, and is never recorded early.
+ * Whether Oh My Pi's store holds every entry of `entries`, all the entries of a session the host
+ * stores (one that names a session file), on every branch of its tree, as they tell it: one of
+ * them is an assistant message. The host stores no session before its first assistant message,
+ * whichever branch holds it. When it records that message it hands the store the whole session,
+ * every branch, and from then on it hands the store each entry as it records it, on whatever
+ * branch the leaf is (`SessionManager` `#shouldHaveSessionFile`, whose
+ * `#historyContainsAssistantMessage` reads every entry, and `#recordEntry`, at the pinned build).
+ * So a card stored on a branch with no reply, once another branch holds one, is stored. That is so
+ * under file storage, and under `OMP_SESSION_STORAGE=sql`, where the session is rows of a database
+ * and the file the host names is never on disk; there the store takes each entry at once and
+ * writes it to the database right after, as it does every entry.
  */
-export function storeHoldsBranch(branch: readonly unknown[]): boolean {
-  return branch.some((entry) => {
+export function storeHoldsSession(entries: readonly unknown[]): boolean {
+  return entries.some((entry) => {
     if (typeof entry !== "object" || entry === null || !("type" in entry)) return false;
     if (entry.type !== "message" || !("message" in entry)) return false;
     const { message } = entry;
@@ -452,10 +454,10 @@ export class UnwrittenFrames {
    * they came, and records as written each stored card of this session whose entry the session's
    * store holds (`UnwrittenFramesHost.storedEntries`): the host emits no `message_end` for a
    * stored card, so that store is its one witness. The store holds a session from its first
-   * assistant message on, so a stored card handed before that waits for it. A card is written at
-   * the end of the branch, so the branch is read from its end, and only until each handed card is
-   * found. Answers whether a stored card of this session still waits, held or handed, so the
-   * caller checks again later.
+   * assistant message on, so a stored card handed before that waits for it. A card is the newest
+   * entry the host records when it stores it, so the entries are read from their end, and only
+   * until each handed card is found. Answers whether a stored card of this session still waits,
+   * held or handed, so the caller checks again later.
    */
   async storedCheck(): Promise<boolean> {
     if (this.#host.settled() && !this.#turnStarting()) this.#handHeldStored();
