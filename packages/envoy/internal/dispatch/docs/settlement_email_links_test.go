@@ -19,6 +19,11 @@ import (
 // write so that they read back: the email rule leaves it unlinked, and the base links it whole.
 const laterAddress = "smith@example.com"
 
+// unwritableAddresses are two texts whose email rule reading has no spelling that reads back: the
+// renderer writes the earlier address as an explicit link, and after an explicit link the rule
+// links laterAddress, which it leaves unlinked in the text typed.
+var unwritableAddresses = []string{"b-_www.@example.com./bob-smith@example.com", "`c`&period;.@x_y.com/bob-smith@example.com"}
+
 // A person who types or pastes an address the renderer cannot write as the email rule reads it
 // gives the room the rule's tree, which no markdown reads back as: the renderer writes the earlier
 // address as an explicit link, and after an explicit link the rule links `smith@example.com`,
@@ -271,38 +276,56 @@ func TestASettlementWhoseLiveFallbackWritesNothingVersionsItsReadWithTheBaseEmai
 }
 
 // An edit through the service that writes one of the shapes whose rule's reading has no spelling
-// that reads back - an insert, a replacement of blocks, an accepted suggestion - is stored, as an
-// upload of the same text is, with the base's link on `smith@example.com`: main stores each (R4 of
-// INFRA-4224). The room holds that tree, and the settlement's version reads back as it.
+// that reads back is stored, as an upload of the same text is, with the base's link on
+// `smith@example.com` (R4 of INFRA-4224): an insert, a replacement of blocks and an accepted
+// suggestion, which main stores so, and a delete or a rejected suggestion that takes out the text
+// between the first address and `/bob-smith@example.com`, which joins the two into the shape. The
+// text before that delete reads back with `smith@example.com` unlinked, so the base's link is the
+// edit's. The room holds that tree, its rendering reads back as it, and the settlement's version
+// reads back as it.
 func TestAnEditOfAnAddressTheRuleCannotWriteStoresTheBaseEmailLinks(t *testing.T) {
 	writer := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
-	for _, shape := range []string{"b-_www.@example.com./bob-smith@example.com", "`c`&period;.@x_y.com/bob-smith@example.com"} {
+	for _, shape := range unwritableAddresses {
+		// The shape with " and " before `/bob-`, which the rule reads with `smith@example.com`
+		// unlinked, and which reads back so.
+		parted := strings.Replace(shape, "/bob-", " and /bob-", 1)
 		for _, row := range []struct {
-			name string
-			edit func(service *Service, artifactID string) error
+			name, seed string
+			edit       func(t *testing.T, service *Service, artifactID string) error
 		}{
-			{name: "an insert", edit: func(service *Service, artifactID string) error {
+			{name: "an insert", seed: "First.\n", edit: func(_ *testing.T, service *Service, artifactID string) error {
 				_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: shape + "\n"}}, writer, nil)
 				return err
 			}},
-			{name: "a replacement of blocks", edit: func(service *Service, artifactID string) error {
+			{name: "a replacement of blocks", seed: "First.\n", edit: func(_ *testing.T, service *Service, artifactID string) error {
 				_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "replace", Find: "First.", With: shape + "\n\nMore."}}, writer, nil)
 				return err
 			}},
-			{name: "an accepted suggestion", edit: func(service *Service, artifactID string) error {
+			{name: "an accepted suggestion", seed: "First.\n", edit: func(_ *testing.T, service *Service, artifactID string) error {
 				spec := MarkSpec{Kind: MarkSuggestion, ID: "s1", By: writer}
 				if _, err := joinedMarkQuote(service, artifactID, spec, "First.", nil); err != nil {
 					return err
 				}
 				return joinedAcceptSuggestion(service, artifactID, "s1", shape, model.Actor{Kind: "user", ID: "alice"})
 			}},
+			{name: "a delete of the text before the later address", seed: "First.\n\n" + parted + "\n", edit: func(_ *testing.T, service *Service, artifactID string) error {
+				_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Find: " and "}}, writer, nil)
+				return err
+			}},
+			{name: "a rejected suggestion of the text before the later address", seed: "First.\n\n" + parted + "\n", edit: func(t *testing.T, service *Service, artifactID string) error {
+				browserMarkWithAttrs(t, service, artifactID, "proofSuggestion", " and ", pmdoc.Attrs{"id": "ins", "by": "user:bob", "kind": "insert"})
+				return joinedRejectSuggestion(service, artifactID, "ins", model.Actor{Kind: "user", ID: "alice"})
+			}},
 		} {
 			t.Run(row.name+" of "+shape, func(t *testing.T) {
 				service, artifactID := newTestService(t)
 				service.settle = time.Hour // the test runs each settlement itself
-				seedServiceText(t, service, artifactID, "First.\n")
+				seedServiceText(t, service, artifactID, row.seed)
 				settleCurrentGeneration(t, service, artifactID)
-				if err := row.edit(service, artifactID); err != nil {
+				if node, href := runHolding(liveTree(t, service, artifactID), laterAddress); node != nil && href != "" {
+					t.Fatalf("the seeded room links %s already: %s", laterAddress, linkSummary(liveTree(t, service, artifactID)))
+				}
+				if err := row.edit(t, service, artifactID); err != nil {
 					t.Fatalf("the edit was refused: %v", err)
 				}
 				room := liveTree(t, service, artifactID)
@@ -318,6 +341,48 @@ func TestAnEditOfAnAddressTheRuleCannotWriteStoresTheBaseEmailLinks(t *testing.T
 				}
 				requireSettledAtLatestVersion(t, service, artifactID)
 				requireReadsBackAs(t, "the latest version", latestVersionMarkdown(t, service, artifactID), liveTree(t, service, artifactID))
+			})
+		}
+	}
+}
+
+// A replace whose `with` is one paragraph writing one of the shapes whose rule's reading has no
+// spelling that reads back, in a paragraph or over a whole one, answers the token of the tree the
+// room stores, the one with the base's link on `smith@example.com`: the settlement after it
+// repairs nothing, so the document's token is still the one the edit answered, and a second edit
+// passing that token as its document precondition is applied (verification v16 of INFRA-4224). At
+// 677a5306 the replace answered the token of the rule's tree, the settlement gave the room the
+// base's link, and the second edit was refused as stale.
+func TestAnInlineReplaceOfAnAddressTheRuleCannotWriteAnswersTheTokenOfTheStoredTree(t *testing.T) {
+	writer := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	for _, shape := range unwritableAddresses {
+		for _, row := range []struct{ name, seed string }{
+			{name: "inside a paragraph", seed: "First.\n\nSee PLACEHOLDER here.\n"},
+			{name: "as a whole paragraph", seed: "First.\n\nPLACEHOLDER\n"},
+		} {
+			t.Run(row.name+" of "+shape, func(t *testing.T) {
+				service, artifactID := newTestService(t)
+				service.settle = time.Hour // the test runs each settlement itself
+				seedServiceText(t, service, artifactID, row.seed)
+				settleCurrentGeneration(t, service, artifactID)
+				outcome, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "replace", Find: "PLACEHOLDER", With: shape}}, writer, nil)
+				if err != nil {
+					t.Fatalf("the replace was refused: %v", err)
+				}
+				if outcome.Token == "" {
+					t.Fatal("the replace answered no token")
+				}
+				settleCurrentGeneration(t, service, artifactID)
+				if err := service.roomFailure(artifactID); err != nil {
+					t.Fatalf("the settlement failed the room: %v", err)
+				}
+				if settled := documentToken(t, service, artifactID); settled != outcome.Token {
+					t.Errorf("the replace answered the token %s, and the document's token after the settlement is %s", outcome.Token, settled)
+				}
+				second := []model.EditOp{{Op: "replace", Find: "First.", With: "First, again."}}
+				if _, err := joinedApplyOps(service, artifactID, second, writer, &model.EditPrecondition{Document: outcome.Token}); err != nil {
+					t.Errorf("a second edit under the token the replace answered was refused: %v", err)
+				}
 			})
 		}
 	}

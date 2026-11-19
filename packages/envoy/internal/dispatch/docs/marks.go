@@ -328,11 +328,17 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 				return updateErr
 			})
 		}
-		// A reject is not checked: it removes the text a browser insert added, which gives back
-		// the document the insert started from.
+		// A reject runs no read-back check: it removes the text a browser insert added, which gives
+		// back the document the insert started from. The text it joins can still be an address the
+		// renderer cannot write as the joined tree reads it, which takes the base's email links, as
+		// it does after an edit (fallBackWrittenEmailLinks), so the room holds the tree its
+		// rendering reads back as.
 		if !accept {
 			next, err := rejectedInsert(tree, id)
 			if err != nil {
+				return err
+			}
+			if next, err = fallBackWrittenEmailLinks(tree, next); err != nil {
 				return err
 			}
 			return write(next)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1079,6 +1080,16 @@ func (t *batchTree) finder() (*pmdoc.QuoteFinder, error) {
 // budget; each run of a batch - a conditional one runs to check its anchors and preconditions as
 // well as to apply - takes its own, so no run charges the batch's padding twice. What the batch
 // leaves is weighed against what one upload may hold where it is written (refuseGrowth).
+//
+// What the batch leaves is stored with the base's email links where the renderer cannot write its
+// own so that they read back (fallBackWrittenEmailLinks): once, over the tree the last operation
+// left, against start's. So the tree the batch answers, the one its write stores and its token
+// names (editBatch.outcome), is the tree its rendering reads back as, whichever operation wrote the
+// address - an inline replace, a delete of the text beside it - rather than one the settlement
+// repairs after the edit has answered. That fallback refuses nothing: the insert and the
+// replacement of blocks run theirs inside the check that refuses their other misreads
+// (pmdoc.FallBackMisreadWrite), and every other operation, which runs no read-back check of the
+// whole document, refuses no misread here either.
 func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidator, before string) (editBatch, error) {
 	tree := start
 	beforeTree := start.node
@@ -1145,14 +1156,84 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 		}
 		tree = newBatchTree(next)
 	}
+	stored, err := fallBackWrittenEmailLinks(beforeTree, tree.node)
+	if err != nil {
+		return editBatch{}, err
+	}
 	return editBatch{
-		tree:       tree.node,
+		tree:       stored,
 		beforeTree: beforeTree,
 		before:     before,
 		unchanged:  unchanged,
 		operations: len(ops),
 		written:    written,
 	}, nil
+}
+
+// fallBackWrittenEmailLinks is after, the tree a write over before leaves, as the write stores it.
+// Where after reads back otherwise in a way before did not, and the renderer cannot write after's
+// email links so that they read back, the address takes the base's links (pmdoc.FallBackMisread,
+// R4 of INFRA-4224), as in an upload of the same text: text the write joins into an address no
+// spelling of the rule's reading reads back as is stored as the base reads it. It refuses nothing:
+// a misread of any other kind stays in after, for the write's own checks, which have run. The
+// document is read back only where a textblock the write changed holds an `@`
+// (changesTextHoldingAt), since the email rule reads an address only from a textblock's text and
+// every address holds one; any other write costs that walk alone. err is pmdoc's bug, never a
+// refusal.
+func fallBackWrittenEmailLinks(before, after *pmdoc.Node) (*pmdoc.Node, error) {
+	if !changesTextHoldingAt(before, after) {
+		return after, nil
+	}
+	stored, _, err := pmdoc.FallBackMisread(before, after)
+	return stored, err
+}
+
+// changesTextHoldingAt reports whether after, the tree a write over before leaves, holds a
+// textblock whose own text holds an `@` (ownTextHoldsAt) and that before does not hold: no
+// textblock of before under the same block id equals it (pmdoc.Node.Equal), each of before's
+// standing for one of after's, so a copy the write made beside its original is the write's. A
+// textblock with no id is compared with before's that have none. It walks after, and before only
+// where after holds such a textblock, and renders and parses nothing. A textblock is compared
+// whole, not by its text alone (pmdoc.BlockText): a replace can take the link off an address and
+// leave the text as it was. And BlockText leaves out a block with no id, which a write makes: the
+// half a split leaves, or the paragraph a retype wraps (pmdoc.RetypeBlock).
+func changesTextHoldingAt(before, after *pmdoc.Node) bool {
+	written := map[string][]*pmdoc.Node{}
+	left := 0
+	pmdoc.Walk(after, func(node *pmdoc.Node) bool {
+		if ownTextHoldsAt(node) {
+			id := blockID(node)
+			written[id] = append(written[id], node)
+			left++
+		}
+		return true
+	})
+	if left == 0 {
+		return false
+	}
+	pmdoc.Walk(before, func(node *pmdoc.Node) bool {
+		if !ownTextHoldsAt(node) {
+			return true
+		}
+		id := blockID(node)
+		if index := slices.IndexFunc(written[id], node.Equal); index >= 0 {
+			written[id] = slices.Delete(written[id], index, index+1)
+			left--
+		}
+		return left > 0
+	})
+	return left > 0
+}
+
+// ownTextHoldsAt reports whether a text node directly under node holds an `@`: only a textblock
+// holds text nodes, and they are its own text.
+func ownTextHoldsAt(node *pmdoc.Node) bool {
+	for _, child := range node.Children {
+		if child.Type == "text" && strings.IndexByte(child.Text, '@') >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func hasTableAnchorMutation(ops []model.EditOp) bool {
@@ -2344,6 +2425,10 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	if err := refuseReshapedReplacement(valid, next, found, op.With, backs); err != nil {
 		return nil, err
 	}
+	// What the inline path wrote is judged by the block checks above alone. An address its text
+	// writes that the renderer cannot write as next reads it takes the base's email links once the
+	// batch has run, over the batch's whole tree (applyBatch, fallBackWrittenEmailLinks), so the
+	// tree answered here can still be the rule's.
 	if !blocks {
 		return next, nil
 	}
