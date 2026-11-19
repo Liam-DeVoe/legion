@@ -36,5 +36,8 @@ body: |-
   one of them that the delivery answers state no figure of (`unowned-p0`'s `issues.n`, the count
   of stored days, or any statistic or series the eval does not state) is `400 EVAL_FIELD_INVALID`
   naming `target_judges[i]`. The Delivery page and the Pipeline name the statistics each target
-  judges under its card, and colour each day by that day's value of them, so a target judged by
-  another statistic than the catalogue's reads and colours as it is judged.
+  judges under its card. A card's badge is its eval's verdict of the whole window; every other
+  figure, count, bar and per-day cell is coloured only where the target judges the statistic it
+  shows, by its own value of that statistic, a day's bar or cell only for a rate or a quantile of
+  the day's samples (so under a count such as `runs.concluded` or `deploys.deploys` no day is
+  coloured), and a chart draws its target line exactly where its bars may be coloured.
