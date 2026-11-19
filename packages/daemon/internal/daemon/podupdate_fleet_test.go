@@ -240,10 +240,17 @@ func (r *fleetRig) drifts(issue string, reasons ...string) {
 }
 
 // tick is one orphan sweep over every claim the store holds, which is what the daemon's own tick
-// puts to the round. The claims of an issue podless says records no pod are read with none, as
-// every sweep between an operator's suspension and the next launch reads them (supervise's
-// letGo).
+// puts to the round (sweepClaims).
 func (r *fleetRig) tick() {
+	r.t.Helper()
+	r.s.reconcilePodUpdates(r.ctx, r.sweepClaims())
+}
+
+// sweepClaims is what one sweep is handed: every claim the store holds, with the claims of an
+// issue podless says records no pod read with none, as every sweep between an operator's
+// suspension and the next launch reads them (supervise's letGo). It is read on the test's own
+// goroutine, which is the one a failed read may stop.
+func (r *fleetRig) sweepClaims() []supervise.Claim {
 	r.t.Helper()
 	claims, err := r.sup.Claims(r.ctx)
 	if err != nil {
@@ -254,7 +261,7 @@ func (r *fleetRig) tick() {
 			claims[i].Locator = nil
 		}
 	}
-	r.s.reconcilePodUpdates(r.ctx, claims)
+	return claims
 }
 
 // podless makes every later sweep read the claims of issue as recording no pod, which is what a

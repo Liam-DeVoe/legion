@@ -98,7 +98,6 @@ type Runtime struct {
 	holdReplace  func()
 	replaceNoPod bool
 	holdResume   func()
-	holdDrift    func(runtime.Known)
 	queue        []runtime.Observation
 	minted       int
 }
@@ -276,17 +275,6 @@ func (r *Runtime) HoldResume(hold func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.holdResume = hold
-}
-
-// HoldPodDrift makes every later PodDrift run hold with the claim it reads before it answers,
-// which is where the Sandbox runtime reads the pod from the cluster: a read the cluster is slow to
-// answer holds the daemon's sweep for as long. A test holds there to move the clock as such a read
-// would, and then lets the call go on. nil clears it; the hook runs with none of the fake's own
-// locks held, so it may drive the fake again.
-func (r *Runtime) HoldPodDrift(hold func(runtime.Known)) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.holdDrift = hold
 }
 
 func (r *Runtime) fail(method string, err error) {
@@ -515,12 +503,6 @@ func (r *Runtime) LaunchBound() time.Duration {
 // runtime.ErrPodGone for a claim ScriptPodGone named, as a runtime answers a claim whose
 // recorded pod is not there.
 func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
-	r.mu.Lock()
-	hold := r.holdDrift
-	r.mu.Unlock()
-	if hold != nil {
-		hold(k)
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "PodDrift", Pod: copyKnown(k)})
