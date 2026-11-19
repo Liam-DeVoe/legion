@@ -415,25 +415,12 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
 		// never take, a writer its route refuses or an id of another issue, and the work the
 		// record is of went on without it. The line is what says the record is not in Dispatch,
-		// since nothing else would. The refusal is read as Dispatch's own error, not through
-		// dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER.
-		// recordRefused ended the row only on a *dispatch.Error, so refusal is set.
-		var refusal *dispatch.Error
-		errors.As(cause, &refusal)
-		told = func() {
-			r.log.Warn("outbox step record refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
-				"step", value.ID, "status", refusal.Status, "code", refusal.Code, "error", cause)
-		}
+		// since nothing else would.
+		told = r.recordDropped(row, "step", value.ID, cause)
 	case record.PlanRecord:
 		// Nobody is told, for the step record's reasons: the plan is history of a run that went
-		// on without it, and the line is what says Dispatch does not hold it. Its refusal is read
-		// as the step record's is, and for the same reason.
-		var refusal *dispatch.Error
-		errors.As(cause, &refusal)
-		told = func() {
-			r.log.Warn("outbox plan record refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
-				"plan", value.ID, "status", refusal.Status, "code", refusal.Code, "error", cause)
-		}
+		// on without it, and the line is what says Dispatch does not hold it.
+		told = r.recordDropped(row, "plan", value.ID, cause)
 	}
 	var scoped context.Context
 	var finished func(write func(pgx.Tx) error) error
@@ -456,6 +443,20 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		told()
 	}
 	return nil
+}
+
+// recordDropped is the one line that says Dispatch refused a record of the record lane for good
+// and its row dropped it: kind is the record's kind, step or plan, which names the record in the
+// message and is the log key its id goes under. The refusal is read as Dispatch's own error, not
+// through dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER;
+// recordRefused ended the row only on a *dispatch.Error, so the refusal is set.
+func (r *outbox) recordDropped(row record.OutboxRow, kind, id string, cause error) func() {
+	var refusal *dispatch.Error
+	errors.As(cause, &refusal)
+	return func() {
+		r.log.Warn("outbox "+kind+" record refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
+			kind, id, "status", refusal.Status, "code", refusal.Code, "error", cause)
+	}
 }
 
 // messageRefusedPreview is how much of a refused message's first line its notice quotes: enough to
