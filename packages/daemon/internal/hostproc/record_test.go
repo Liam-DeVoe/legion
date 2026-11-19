@@ -59,10 +59,14 @@ func checkOnAGoroutinesGoroutine(scanner, root string) {
 // A test binary with a record writes its binary line as it starts, and each scan Check lets list
 // once, with the test that made it: on the test's own goroutine, and on a goroutine started by a
 // goroutine the test's helper started (checkOnAGoroutinesGoroutine), whose stacks name no test.
-// The root of the test's own is os.TempDir(), which is no mount of proc and the same in the child.
+// The root of the test's own is the package's directory, where go test runs each test binary: no
+// mount of proc, and the same in the child, which starts in its parent's working directory.
 func TestEachScanIsRecordedWithTheTestThatMadeIt(t *testing.T) {
 	record := newRecord(t)
-	own := os.TempDir()
+	own, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 	reason := hostproc.Because("it takes only this test's own pid")
 	hostproctest.Allowed(t, func() {
 		hostproc.Check("the test goroutine's scanner", own, hostproc.Reason{})

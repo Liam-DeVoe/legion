@@ -1,3 +1,9 @@
+//go:build linux
+
+// This file builds only under Linux: every row of it reads hostproc's refusal, which exists only
+// where a /proc is a mount of proc (hostproc_other.go), and the cache trimmer's rows take this
+// package's Linux-only test helpers (trimSettings, usageAt, rebasedOnto, inProcessRemovals).
+
 package launcher
 
 import (
