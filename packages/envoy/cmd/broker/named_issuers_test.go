@@ -630,9 +630,9 @@ func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
 		})
 	}
 
-	// exchange trades the token of account's pod, minted by issuer with key for the exchange's
+	// trade trades the token of account's pod, minted by issuer with key for the exchange's
 	// audience, under the session account's entry fixes.
-	exchange := func(t *testing.T, addr string, issuer *oidctest.Issuer, key *oidctest.Key, account, session string) (int, map[string]any) {
+	trade := func(t *testing.T, addr string, issuer *oidctest.Issuer, key *oidctest.Key, account, session string) (int, map[string]any) {
 		t.Helper()
 		token := mintPodToken(t, issuer, key, account, exchangeAudience, "pod-"+uuid.NewString())
 		return newLiveBroker(addr, proofKey(t)).exchange(t, exchangeForm(token, session))
@@ -673,7 +673,7 @@ func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
 			{"the exchange refuses a token of C for a read entry's account", c, cKey, reading, sessionOfReading, false},
 		} {
 			t.Run(row.name, func(t *testing.T) {
-				status, body := exchange(t, broker.Addr, row.issuer, row.key, row.account, row.session)
+				status, body := trade(t, broker.Addr, row.issuer, row.key, row.account, row.session)
 				if row.taken {
 					taken(t, status, body)
 				} else {
@@ -691,11 +691,11 @@ func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
 		broker.Await(t, "token exchange")
 		t.Run("the broker boots and answers /healthz 200", func(t *testing.T) { requireHealthy(t, broker.Addr) })
 		t.Run("the exchange takes a token of A", func(t *testing.T) {
-			status, body := exchange(t, broker.Addr, a, aKey, namedWorker, namedSession)
+			status, body := trade(t, broker.Addr, a, aKey, namedWorker, namedSession)
 			taken(t, status, body)
 		})
 		t.Run("a token of B gets 503 OIDC_ISSUER_UNAVAILABLE", func(t *testing.T) {
-			status, body := exchange(t, broker.Addr, b, bKey, namedWorker, namedSession)
+			status, body := trade(t, broker.Addr, b, bKey, namedWorker, namedSession)
 			if status != http.StatusServiceUnavailable || body["code"] != issuerUnavailable || body["access_token"] != nil {
 				t.Fatalf("answered %d %v, want 503 %s and no access token", status, body, issuerUnavailable)
 			}
@@ -710,7 +710,7 @@ func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
 			broker := startBroker(t, brokerOptions{Binary: binary, Env: namedIssuersEnv(t, storetest.URL(t), one.issuers,
 				audience, "BROKER_EXCHANGE_ACCOUNTS="+namingNone+"=ACME=ada@example.com="+sessionOfNone)})
 			broker.Await(t, "token exchange")
-			status, body := exchange(t, broker.Addr, a, aKey, namingNone, sessionOfNone)
+			status, body := trade(t, broker.Addr, a, aKey, namingNone, sessionOfNone)
 			taken(t, status, body)
 		})
 	}
