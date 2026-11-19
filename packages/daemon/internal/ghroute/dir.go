@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // DirFor is the gh directory of the bundle under ownersDir that answers for the repository
@@ -34,6 +35,8 @@ import (
 // not installed on the owner holding it, or GitHub refused that lease — and the `from` owner's
 // token, which is what an owner-only answer would hand out, cannot write it. Failing closed
 // leaves git and gh saying so, where the other answer is a push that is refused at the remote.
+// That refusal holds OwnerNotServedError's words inside a longer line, so the leak guard reads
+// it as the setup failure it is and not as an owner the project does not serve.
 func DirFor(ownersDir, owner, name string) (string, error) {
 	if name == "" {
 		return ownerDir(ownersDir, owner)
@@ -62,11 +65,13 @@ func DirFor(ownersDir, owner, name string) (string, error) {
 //
 // An owner the bundle holds no directory for is refused: the role's App has no installation on
 // owner, so no token of this bundle reaches anything of it, and an answer of nothing would have
-// git prompt.
+// git prompt. The refusal is leakguard.OwnerNotServedError, which the leak guard reads, exactly,
+// in `legion gh`'s refusal of its REST visibility read: it then reads that repository's
+// visibility with no credential instead.
 func ownerDir(ownersDir, owner string) (string, error) {
 	dir := ghconfig.Dir(ownersDir, owner)
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		return dir, nil
 	}
-	return "", fmt.Errorf("the role's GitHub App is not installed on %q: %s holds no gh directory for it", owner, ownersDir)
+	return "", &leakguard.OwnerNotServedError{Owner: owner, OwnersDir: ownersDir}
 }
