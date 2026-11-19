@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An application_name is the base, one space and the identity, with the base cut on a rune
@@ -201,20 +204,17 @@ func TestEndSessionsOfEndsTheSessionsOfOneIdentityAlone(t *testing.T) {
 	}
 
 	// pg_terminate_backend answers once the backend is signalled, and the backend gives its locks
-	// up as it exits, so the lock is tried until it is free, which it must be within 10 s. Each try
-	// is a transaction-level lock, given back as its own statement ends.
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		var taken bool
-		if err := ending.Pool.QueryRow(ctx, `select pg_try_advisory_xact_lock($1)`, key).Scan(&taken); err != nil {
-			t.Fatalf("try the ended transaction's lock: %v", err)
-		}
-		if taken {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the ended transaction's lock is still held 10 s after its session was ended")
-		}
-	}
+	// up as it exits, so the lock is tried until it is free, for as long as the test binary's
+	// deadline leaves less a second for the pools' close. Each try is a transaction-level lock,
+	// given back as its own statement ends.
+	testwait.UntilDeadline(t, time.Second, 50*time.Millisecond,
+		fmt.Sprintf("backend %d, whose session EndSessionsOf ended, to give up its advisory lock %d", holderPID, key), func() bool {
+			var taken bool
+			if err := ending.Pool.QueryRow(ctx, `select pg_try_advisory_xact_lock($1)`, key).Scan(&taken); err != nil {
+				t.Fatalf("try the ended transaction's lock: %v", err)
+			}
+			return taken
+		})
 	var one int
 	err = tx.QueryRow(ctx, `select 1`).Scan(&one)
 	if !SessionEnded(err) {
