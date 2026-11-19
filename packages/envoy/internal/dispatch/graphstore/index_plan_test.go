@@ -533,6 +533,16 @@ func asLiteral(t *testing.T, argument any) string {
 			quotedValues = append(quotedValues, quoted(element))
 		}
 		return "array[" + strings.Join(quotedValues, ", ") + "]"
+	case []*string:
+		quotedValues := make([]string, 0, len(value))
+		for _, element := range value {
+			if element == nil {
+				quotedValues = append(quotedValues, "null")
+				continue
+			}
+			quotedValues = append(quotedValues, quoted(*element))
+		}
+		return "array[" + strings.Join(quotedValues, ", ") + "]::text[]"
 	case int:
 		return strconv.Itoa(value)
 	case time.Time:

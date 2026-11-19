@@ -667,8 +667,9 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// The approval before this request, and the transaction's now() beside it in the same batch:
 	// a request that opens an approval ask dates its node and its row by that now(), the row's
 	// created_at column default, which its insert writes explicitly (openApprovalAsk), and reading
-	// it here costs that request no round trip of its own. A request that opens none reads it for
-	// nothing.
+	// it here costs that request no round trip of its own. A request that renews the open one
+	// dates its requester's follow by it (renewApprovalAsk), and one that does neither reads it
+	// for nothing.
 	var now time.Time
 	batch := &pgx.Batch{}
 	applyApproval := queueApprovals(batch, []*model.Artifact{&artifact})
@@ -728,7 +729,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	var appended []*model.Event
 	var opened *model.Event
 	if open != nil {
-		if appended, err = s.renewApprovalAsk(documentCtx, tx, ledger, open, actor, documents, summary); err != nil {
+		if appended, err = s.renewApprovalAsk(documentCtx, tx, ledger, open, actor, documents, summary, now); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -758,12 +759,16 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.storeDisplayTrees(r.Context(), ask.ID, ask.Question)
 	}
 	// 201 says this request opened the request, reworded it or handed it to the human; 200 says the
-	// open request already stood as asked. A rewording is never this route's only write: the
+	// open request already stood as asked, whether or not it made its requester a follower
+	// (ask.follower_added, renewApprovalAsk). A rewording is never this route's only write: the
 	// hand-back that follows it appends an event of its own, which is published here, while the
 	// rewording's goes to the ledger and is published by Commit.
 	status := http.StatusOK
-	if len(appended) > 0 {
-		status = http.StatusCreated
+	for _, event := range appended {
+		if event.Type != "ask.follower_added" {
+			status = http.StatusCreated
+			break
+		}
 	}
 	var askAnswer *shapedAsk
 	if ask != nil {
@@ -932,16 +937,18 @@ func (s *server) openApprovalAsk(
 // "" when it named none, which keeps the open request's own; documents are the documents this
 // request names, which are added to the open request's, each at its current version. A request
 // that names fewer documents than the open one takes nothing away: the open request's documents
-// stand until it is answered.
+// stand until it is answered. now is the transaction's now(), which the route read beside the
+// approval.
 //
 // The turn decides, read once before anything is written. A request waiting on its agent - moved
 // to a later version, or answered in its thread - goes back to the human: a new summary, or a
 // document the open request did not name, first rewords it (docs.RewriteApprovalAsk, ask.edited,
 // whose event goes to the ledger, which publishes it), then handBackApprovalAsk hands it back. A
 // request already waiting on the human is left as it stands. The same summary over the same
-// documents, or none, is a retry and records nothing. Anything else is refused, since an approval
-// request carries nothing new: rewording it would rewrite the card the human is reading, with no
-// turn of theirs, and refuse an answer they had started (ASK_EDITED).
+// documents, or none, is a retry: it changes the request in nothing, and records only that a
+// session that did not follow the request follows it now (ask.follower_added). Anything else is
+// refused, since an approval request carries nothing new: rewording it would rewrite the card the
+// human is reading, with no turn of theirs, and refuse an answer they had started (ASK_EDITED).
 func (s *server) renewApprovalAsk(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -950,6 +957,7 @@ func (s *server) renewApprovalAsk(
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
 	summary string,
+	now time.Time,
 ) ([]*model.Event, error) {
 	openSummary, err := docs.ApprovalAskSummary(*open)
 	if err != nil {
@@ -984,31 +992,56 @@ func (s *server) renewApprovalAsk(
 		}
 		appended = append(appended, handedBack)
 	}
-	// The requester follows the request again. Its events are queued by now, so a session
-	// requester's node is caused by the last of them, the follow queued right after it; a retry
-	// appends none, and the node it makes, if the store holds none yet, stays at the sentinel. A
-	// follow given no cause states no base attribute of its own and holds the node's two for the
-	// step after it, which appends them at the cause the follow was given, the sentinel included
-	// (asks.Followed). The events are dated by the transaction's now(), their column's default.
-	// The follow is planned here, in the read phase, under the owner lock this request holds
-	// (asks.PlanFollowAuthor), and queued after those events.
-	cause, at := graphstore.NoEvent, open.CreatedAt
-	if len(appended) > 0 {
-		if at, err = ledger.Now(ctx); err != nil {
-			return nil, err
-		}
-		cause = graphstore.LatestEvent
-	}
-	follow, err := asks.PlanFollowAuthor(ctx, tx, open.ID, actor, at)
+	// The requester follows the request again. The follow is planned here, in the read phase,
+	// under the owner lock this request holds (asks.PlanFollowAuthor), whose read of the
+	// requester's follower row also says whether the follow is new (PlannedFollow.Added), so no
+	// second read asks it. A renewal that appended no event above - an unchanged request that
+	// already waits on the human - and adds the requester as a follower records that as
+	// ask.follower_added, in this transaction, as the follower route does: a follower is a
+	// destination of the issue's later ask events, and an earlier event of the issue that now
+	// reaches it must hold a later comment's mention to it until the outbox has read the change,
+	// which a new event of the issue does (model.MentionCopyHolderSQL). The follower route takes
+	// the owner lock this route holds, so no other follow of this ask commits between the plan's
+	// read and this transaction's commit. The plan needs nothing of that event but its time, which
+	// is now: the events are dated by the transaction's now(), their column's default.
+	//
+	// A renewal that appended events queues the follow right after them, so a session
+	// requester's node is caused by the last of them. One that appends ask.follower_added queues
+	// the follow before it, given no cause, and appends what the follow holds under it once it is
+	// appended, as the follower route does; a retry that appends neither, the requester following
+	// already, leaves the node it makes, if the store holds none yet, at the sentinel. A follow
+	// given no cause states no base attribute of its own and holds the node's two for the step
+	// after it, which appends them at the cause it is handed, the sentinel included
+	// (asks.Followed).
+	follow, err := asks.PlanFollowAuthor(ctx, tx, open.ID, actor, now)
 	if err != nil {
 		return nil, err
 	}
+	followCause := graphstore.NoEvent
+	if len(appended) > 0 {
+		followCause = graphstore.LatestEvent
+	}
+	var held graphstore.Uncaused
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		followed, err := follow.Queue(ctx, b, cause)
+		var err error
+		held, err = follow.Queue(ctx, b, followCause)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	heldCause := followCause
+	if len(appended) == 0 && follow.Added {
+		followed, err := s.queueEvent(ledger, ownerOf(open.IssueKey, open.ArtifactID).event(
+			"ask.follower_added", actor, model.AskFollowerEventPayload{AskID: open.ID, SessionID: actor.ID, By: actor},
+		))
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return graphstore.QueueCaused(ctx, b, followed, cause)
+		appended = append(appended, followed)
+		heldCause = graphstore.LatestEvent
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		return graphstore.QueueCaused(ctx, b, held, heldCause)
 	}); err != nil {
 		return nil, err
 	}
