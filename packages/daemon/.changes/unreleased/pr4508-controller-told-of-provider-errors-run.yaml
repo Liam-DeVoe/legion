@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The project''s controller is told of a run of six provider-error turns on one worker even when no controller was registered at the sixth turn, which is the default, since an operator launches the controller: the notice is written at that worker''s next turn that ends in a provider error, once for the run. A notice whose write failed, or that found the worker''s earlier notice still unsent, is written at the next such turn as well. Migration `20261119114140_provider_errors_told` adds `claims.provider_errors_told_run`, the mark that the run was told.'
+time: 2026-11-19T13:24:51.146927660Z
+custom:
+    Issue: pr4508
