@@ -2802,10 +2802,15 @@ func TestASlowPublisherLosesTheHoldAnswersItsWriteInFlightNamedAndStandsBy(t *te
 	case <-time.After(takeOverWithin):
 		t.Fatalf("the comment the slow publisher was writing had no answer %v after the other process took the hold", takeOverWithin)
 	}
-	ended := standby.endedSessions(t, holder)
-	if _, ok := ended[held.writer]; !ok {
-		t.Errorf("the other process logged no end of the slow publisher's write's backend %d; it ended %v", held.writer, ended)
-	}
+	// The write's answer can reach this test before the other process's lines about the sessions it
+	// ended reach its output, since it logs them once the whole statement has answered: wait for
+	// the line naming the write's backend, then read them all.
+	var ended map[int32]string
+	waitUntil(t, takeOverWithin, fmt.Sprintf("the other process logging the end of the slow publisher's write's backend %d", held.writer), func() bool {
+		ended = standby.endedSessions(t, holder)
+		_, ok := ended[held.writer]
+		return ok
+	})
 	t.Logf("the other process ended %d sessions of the slow publisher", len(ended))
 	requirePlantedSessionsLive(t, planted, ended)
 
