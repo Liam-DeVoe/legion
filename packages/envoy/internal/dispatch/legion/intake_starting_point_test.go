@@ -2,6 +2,7 @@ package legion
 
 import (
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -91,5 +92,44 @@ func TestAWholeReadOfADaemonThatRunsNoWorkflowNamesThatReason(t *testing.T) {
 	requireWholeRead(t, reads[0], ReadReasonStart, false)
 	if reads[0].error == nil || !strings.Contains(*reads[0].error, ErrNoDispatchURL.Error()) {
 		t.Errorf("the whole read of a daemon that runs no workflow recorded the error %v, want it to name that reason: %q", orNone(reads[0].error), ErrNoDispatchURL.Error())
+	}
+}
+
+// TestAFailedWholeReadSetsNoRun: only a good whole read takes the run that served it as the
+// cursor's run (recordWhole). A read that fails, here one answered with another project's state
+// served by another run, keeps the run of the cursor's last good read: a cursor that took the
+// failed read's run would take a later boot of that run, at or below the cursor, for one it already
+// holds, and read nothing where a daemon whose counter went back needs a whole read.
+func TestAFailedWholeReadSetsNoRun(t *testing.T) {
+	const otherRun = "9e3c5a71-2f4d-4b86-a0c9-6d1e8b7f3a52"
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	// A gap whose read the daemon refuses: the read is owed, and the message that called for it is
+	// taken, as a message is while a read is owed, under the rig's run.
+	daemon.refuses(http.StatusServiceUnavailable)
+	rig.publish("INFRA", change(20, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.run == nil || *c.run != rigRun {
+		t.Fatalf("after the refused gap read the cursor is %+v under the run %s, want a read owed under %s", c, orNone(c.run), rigRun)
+	}
+
+	// The owed read, tried again a minute later, is answered with another project's state, which
+	// another run serves: a failed read.
+	other := strings.Replace(daemonState("INFRA", 25, planning("INFRA")), rigRun, otherRun, 1)
+	other = strings.Replace(other, `"daemon":{"project":"INFRA"`, `"daemon":{"project":"LINUX"`, 1)
+	daemon.serves(other)
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	rig.intake.SettingsChanged(t.Context())
+	rig.awaitWholeReads(3)
+
+	reads := readRecords(t, rig.database, "INFRA")
+	requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, false)
+	if c := cursorOf(t, rig.database, "INFRA"); c.run == nil || *c.run != rigRun || !c.readOwed {
+		t.Errorf("after a failed read served by %s the cursor follows the run %s with a read owed %v, want %s, its last good read's, and the read still owed",
+			otherRun, orNone(c.run), c.readOwed, rigRun)
 	}
 }
