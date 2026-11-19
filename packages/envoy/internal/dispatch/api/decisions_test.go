@@ -974,6 +974,92 @@ func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
 	}
 }
 
+// A decisions view parses each stored version it reads once, and the next view parses none of
+// them again: the process keeps each version's cut, the parser's refusal included (storedCuts).
+// alice keeps listDecision at the version that wrote it and its link to hold-it, which a build of
+// another renderer version stored in its own spelling (respellVersion), so the keeps' pass and the
+// links' pass both name that version. She keeps tableDecision at version 1 under a sum its text
+// does not have, and its links were created at version 1, which a build of another renderer
+// version stored as markdown the parser refuses: both passes name that version too. Each view
+// parses the document as it stands once (readDecisions); the first parses each of the two
+// versions once, and the second parses neither. Both views read the decisions alike.
+func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
+	fixture := newDecisionsFixture(t)
+	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
+	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
+		"op":       "insert",
+		"markdown": "## " + listDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third",
+		"before":   "## Replaced",
+	}})
+	written := readIssueDecisions(t, handler, key)
+	steps, table := decisionNamed(t, written, listDecision), decisionNamed(t, written, tableDecision)
+	if steps.ChangedVersion != version.Number || len(steps.Links) != 1 || steps.Links[0].CreatedVersion != version.Number {
+		t.Fatalf("the decision = %#v, want it changed at version %d and linking one spec block since then", steps, version.Number)
+	}
+	for _, link := range table.Links {
+		if link.CreatedVersion != 1 {
+			t.Fatalf("the decision's links = %#v, want each created at version 1", table.Links)
+		}
+	}
+	if keep := keepBlock(t, handler, id, steps.BlockID, steps.TextSHA256); keep.ChangedVersion != version.Number {
+		t.Fatalf("the keep of %q = %#v, want it at version %d", listDecision, keep, version.Number)
+	}
+	if keep := keepBlock(t, handler, id, table.BlockID, table.TextSHA256); keep.ChangedVersion != 1 {
+		t.Fatalf("the keep of %q = %#v, want it at version 1", tableDecision, keep)
+	}
+
+	ctx := context.Background()
+	another := pmdoc.RendererVersion - 1
+	respelled := respellVersion(t, database, id, version.Number, &another)
+	refused := "[spec]: https://example.com/spec\n\n" + versionText(t, database, id, 1)
+	if _, read := decisionCuts(refused); read {
+		t.Fatalf("the parser reads %q; the test needs markdown it refuses", refused)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update artifact_versions set markdown = $2, renderer_version = $3 where artifact_id = $1 and number = 1
+	`, id, refused, another); err != nil {
+		t.Fatalf("store version 1 as markdown this build refuses: %v", err)
+	}
+	kept := strings.Replace(steps.Text, "- first\n\n- second", "- first\n- second", 1)
+	for blockID, sum := range map[string]string{steps.BlockID: decisionTextSum(kept), table.BlockID: decisionTextSum(table.Text + " Unread.")} {
+		if _, err := database.Pool.Exec(ctx, `
+			update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
+		`, id, blockID, sum); err != nil {
+			t.Fatalf("keep %s under the sum %s: %v", blockID, sum, err)
+		}
+	}
+
+	parsed := map[string]int{}
+	decisionCutsObserver = func(markdown string) { parsed[markdown]++ }
+	t.Cleanup(func() { decisionCutsObserver = nil })
+	for _, view := range []struct {
+		name string
+		want int
+	}{{"first", 1}, {"second", 0}} {
+		clear(parsed)
+		read := readIssueDecisions(t, handler, key)
+		steps, table := decisionNamed(t, read, listDecision), decisionNamed(t, read, tableDecision)
+		if steps.WaitingReview || len(staleTargets(steps)) != 0 {
+			t.Errorf("the %s view reads %q as %#v, want it kept, waiting for no review, and its link up to date",
+				view.name, listDecision, steps)
+		}
+		if !table.WaitingReview || len(table.Links) != 2 || len(staleTargets(table)) != 0 {
+			t.Errorf("the %s view reads %q as %#v, want it waiting for review and both its links as they are",
+				view.name, tableDecision, table)
+		}
+		document := 0
+		for markdown, times := range parsed {
+			if markdown != respelled && markdown != refused {
+				document += times
+			}
+		}
+		if parsed[respelled] != view.want || parsed[refused] != view.want || document != 1 {
+			t.Errorf("the %s view parsed version %d %d times, version 1 (refused) %d times and the document as it stands %d times, want %d, %d and 1",
+				view.name, version.Number, parsed[respelled], parsed[refused], document, view.want, view.want)
+		}
+	}
+}
+
 // A decision whose heading stands in a list item has no cut. alice keeps such a decision, its
 // heading alone, and the version her keep names, which a build of another renderer version
 // stored, holds the decision at the document's level in another spelling of that heading, before
