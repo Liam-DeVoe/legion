@@ -14,7 +14,7 @@ import {
   DAEMON_RESEND_MAX_DELAY_MS,
   LegionDaemonApiError,
 } from "./daemon-client";
-import { createTaskTake } from "./task-take";
+import { createTaskTake, heldTakeNote, taskWaitingNote } from "./task-take";
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): unknown {
@@ -707,4 +707,267 @@ test("a closed take sends nothing more, drops an answer that still arrives, clea
   expect(routed("task-seen")).toEqual([body(4, 12)]);
   expect(marks).toEqual([true, false]);
   expect(ran).toEqual([]);
+});
+
+// dispatch://INFRA-4130 R1: while a run is going and the claim holds a value the record owes and
+// the worker did not take, the host adds one note to the run's next tool result, once for each
+// task number (`noteFor`), and the take still goes only at the run's end. R6: while the take is
+// pending (`pending`), no reminder turn starts ahead of it.
+
+/** The daemon's refusal of a take, naming the hold that stands. */
+const refused = (hold: string): LegionTake => ({ outcome: "refused", hold });
+
+/** The take of task 4 at revision 12, asked while the host was idle, overtaken by a run that
+ * started before the daemon's answer, and answered refused `in-turn` during that run: the daemon
+ * writes the value again at that run's end. */
+async function refusedInTurnDuringRun() {
+  const taking = rig();
+  taking.take.ready();
+  const answer = Promise.withResolvers<LegionTake>();
+  taking.takes.push({ late: answer.promise });
+  taking.take.relayed(put(4, 12));
+  await taking.advance(0);
+  taking.take.runStarted();
+  answer.resolve(refused("in-turn"));
+  await taking.advance(0);
+  expect(taking.routed("take")).toEqual([body(4, 12)]);
+  return taking;
+}
+
+test("the two notes name the task, say it starts when this turn ends, and carry no task", () => {
+  expect(taskWaitingNote(5)).toBe(
+    "Legion: task 5 of this claim waits for this turn to end. It starts as your next turn when this turn ends, unless the daemon holds or drops it then. Finish what is in hand, stop at a safe point, and end this turn. This note carries no task: do not start its work in this turn."
+  );
+  expect(heldTakeNote("tester", 7)).toBe(
+    "Legion: the tester's task 7 on this issue waits for this turn to end, because the roles of an issue share one working copy. It starts when this turn ends, unless the daemon holds it then. Finish what is in hand, stop at a safe point, and end this turn. This note carries no task."
+  );
+});
+
+test("a value held while the host is busy sends one note naming its number, asks no take until the run ends, and takes at the run's end", async () => {
+  const { take, routed, takes, ran, advance } = rig();
+  take.ready();
+  take.runStarted();
+  // A tool result before any value is owed carries no note.
+  expect(take.noteFor()).toBeUndefined();
+
+  // S2: the value arrives during the run; the next tool result notes its number, and no take goes
+  // into the run.
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(take.noteFor()).toBe(4);
+  expect(routed("take")).toEqual([]);
+  // S3: the tool results after it note nothing more, nor does a newer revision of that number.
+  expect(take.noteFor()).toBeUndefined();
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(take.noteFor()).toBeUndefined();
+  // S4: a newer value naming another number gets one note of its own.
+  take.relayed(put(5, 14));
+  await advance(0);
+  expect(take.noteFor()).toBe(5);
+  expect(take.noteFor()).toBeUndefined();
+  expect(routed("take")).toEqual([]);
+
+  // The run's end is where the take goes, at the newest value, and its text starts the next run.
+  takes.push({ answer: ACCEPTED });
+  expect(take.runEnded(false)).toBeUndefined();
+  await advance(0);
+  expect(routed("take")).toEqual([body(5, 14)]);
+  expect(ran).toEqual([TEXT]);
+  // That run is the task's own turn, which notes nothing.
+  take.runStarted();
+  expect(take.noteFor()).toBeUndefined();
+  expect(take.runEnded(false)).toBe(5);
+});
+
+test("a value whose take is in flight when a run starts gets one note", async () => {
+  const { take, routed, takes, advance } = rig();
+  take.ready();
+  takes.push({ silent: true });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  // The host is idle while the take is in flight: no tool result, no note.
+  expect(take.noteFor()).toBeUndefined();
+
+  // A run no take started (a background job's result, a reminder) begins before the answer.
+  take.runStarted();
+  expect(take.noteFor()).toBe(4);
+  expect(take.noteFor()).toBeUndefined();
+});
+
+test("a value refused in-turn during a run gets one note", async () => {
+  const { take } = await refusedInTurnDuringRun();
+  expect(take.noteFor()).toBe(4);
+  expect(take.noteFor()).toBeUndefined();
+});
+
+test("a value refused by a hold gets one note in the next run", async () => {
+  for (const hold of ["issue-in-turn", "stale-plugin"]) {
+    const { take, routed, takes, advance } = rig();
+    take.ready();
+    takes.push({ answer: refused(hold) });
+    take.relayed(put(4, 12));
+    await advance(0);
+    expect(routed("take"), hold).toEqual([body(4, 12)]);
+    expect(take.noteFor(), hold).toBeUndefined();
+
+    // A run starts while the hold stands (a reminder's, a card's): the number the worker did not
+    // take is noted at its first tool result, once.
+    take.runStarted();
+    expect(take.noteFor(), hold).toBe(4);
+    expect(take.noteFor(), hold).toBeUndefined();
+  }
+});
+
+test("a value that arrives after the run's last tool result gets no note, and is taken at the run's end", async () => {
+  const { take, routed, takes, advance } = rig();
+  take.ready();
+  take.runStarted();
+  // The run's last tool result comes before any value is owed.
+  expect(take.noteFor()).toBeUndefined();
+
+  // The value arrives after it, and the run ends with no tool result in between.
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(routed("take")).toEqual([]);
+  takes.push({ answer: refused("issue-in-turn") });
+  take.runEnded(false);
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+
+  // No note was handed out: the idle host notes nothing, and the first tool result of the next
+  // run, while the hold stands, is the first to note the number.
+  expect(take.noteFor()).toBeUndefined();
+  take.runStarted();
+  expect(take.noteFor()).toBe(4);
+});
+
+test("a take refused in-turn during a run stays pending until that run ends or a newer revision arrives", async () => {
+  // Until the run ends: the daemon writes the value again at that turn's end, and the take asks
+  // at the new revision.
+  const ended = await refusedInTurnDuringRun();
+  expect(ended.take.pending()).toBe(true);
+  ended.take.runEnded(false);
+  await ended.advance(0);
+  expect(ended.take.pending()).toBe(false);
+  expect(ended.routed("take")).toEqual([body(4, 12)]);
+  ended.takes.push({ answer: ACCEPTED });
+  ended.take.relayed(put(4, 13));
+  await ended.advance(0);
+  expect(ended.routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ended.ran).toEqual([TEXT]);
+
+  // Until a newer revision, whichever comes first: here the daemon deletes the value during the
+  // run, and nothing is pending while the run still goes.
+  const deleted = await refusedInTurnDuringRun();
+  expect(deleted.take.pending()).toBe(true);
+  deleted.take.relayed({ claim: caller.claimToken, epoch: EPOCH, revision: 13, op: "delete" });
+  await deleted.advance(0);
+  expect(deleted.take.pending()).toBe(false);
+
+  // An in-turn answer that arrives while the host is idle sets nothing: the run that overtook the
+  // take has ended, and the daemon's write at its end follows. The next run finds nothing pending.
+  const idle = rig();
+  idle.take.ready();
+  const answer = Promise.withResolvers<LegionTake>();
+  idle.takes.push({ late: answer.promise });
+  idle.take.relayed(put(4, 12));
+  await idle.advance(0);
+  idle.take.runStarted();
+  idle.take.runEnded(false);
+  answer.resolve(refused("in-turn"));
+  await idle.advance(0);
+  expect(idle.take.pending()).toBe(false);
+  idle.take.runStarted();
+  expect(idle.take.pending()).toBe(false);
+});
+
+test("pending() holds a value the take has not asked about, idle before the ready or busy, and lets it go once refused", async () => {
+  const { take, takes, advance } = rig();
+  expect(take.pending()).toBe(false);
+  // Before the ready, the take asks nothing.
+  take.read({ task: value(4, 12), finished: 3 });
+  expect(take.pending()).toBe(true);
+  takes.push({ answer: refused("issue-in-turn") });
+  take.ready();
+  await advance(0);
+  expect(take.pending()).toBe(false);
+
+  // While a run goes, the take asks nothing either.
+  take.runStarted();
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(take.pending()).toBe(true);
+  // A value naming a finished number is owed nothing.
+  take.read({ task: value(4, 13), finished: 4 });
+  expect(take.pending()).toBe(false);
+});
+
+test("pending() holds a take in flight until the daemon answers it", async () => {
+  const { take, takes, advance } = rig();
+  take.ready();
+  const answer = Promise.withResolvers<LegionTake>();
+  takes.push({ late: answer.promise });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(take.pending()).toBe(true);
+  take.runStarted();
+  expect(take.pending()).toBe(true);
+
+  answer.resolve(refused("stale-plugin"));
+  await advance(0);
+  expect(take.pending()).toBe(false);
+});
+
+test("pending() holds an accepted take until its turn starts, its text held through a run included", async () => {
+  // Sent to an idle host: pending until the run it starts.
+  const idle = rig();
+  idle.take.ready();
+  idle.takes.push({ answer: ACCEPTED });
+  idle.take.relayed(put(4, 12));
+  await idle.advance(0);
+  expect(idle.ran).toEqual([TEXT]);
+  expect(idle.take.pending()).toBe(true);
+  idle.take.runStarted();
+  expect(idle.take.pending()).toBe(false);
+  expect(idle.take.runEnded(false)).toBe(4);
+  expect(idle.take.pending()).toBe(false);
+
+  // Accepted during a run it did not start: the text is held until that run's end, and the take
+  // is pending until the run the text starts.
+  const held = rig();
+  held.take.ready();
+  const answer = Promise.withResolvers<LegionTake>();
+  held.takes.push({ late: answer.promise });
+  held.take.relayed(put(4, 12));
+  await held.advance(0);
+  held.take.runStarted();
+  answer.resolve(ACCEPTED);
+  await held.advance(0);
+  expect(held.ran).toEqual([]);
+  expect(held.take.pending()).toBe(true);
+  expect(held.take.noteFor()).toBeUndefined();
+  expect(held.take.runEnded(false)).toBeUndefined();
+  expect(held.ran).toEqual([TEXT]);
+  expect(held.take.pending()).toBe(true);
+  held.take.runStarted();
+  expect(held.take.pending()).toBe(false);
+});
+
+test("pending() holds a take refused in-turn during the run going now, and no other refusal", async () => {
+  const inTurn = await refusedInTurnDuringRun();
+  expect(inTurn.take.pending()).toBe(true);
+
+  // Another hold answered during a run is the daemon's to end with a newer write: nothing waits.
+  const other = rig();
+  other.take.ready();
+  const answer = Promise.withResolvers<LegionTake>();
+  other.takes.push({ late: answer.promise });
+  other.take.relayed(put(4, 12));
+  await other.advance(0);
+  other.take.runStarted();
+  answer.resolve(refused("issue-in-turn"));
+  await other.advance(0);
+  expect(other.take.pending()).toBe(false);
 });

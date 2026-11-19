@@ -151,7 +151,9 @@ export interface LegionDaemonClient {
    * once its ready has answered and before it claims its role, since the ready decision itself
    * may write the value (`src/legion-claim-core.ts`); the worker reads it again when its relay
    * begins a new epoch and when it gains its role again, since a value relayed while the session
-   * was not subscribed is lost (`src/task-take.ts`). */
+   * was not subscribed is lost (`src/task-take.ts`). `holds`, absent where the daemon names none,
+   * is the takes of the issue's other claims held behind the caller's turn, each the held claim's
+   * role and its task's number, which the worker notes to its agent (`heldTakeNote`). */
   readonly task: (input: z.input<typeof LegionTaskRequest>) => Promise<LegionTask>;
   /** `claim.TaskSeenRequest`: the worker's report of a task value it was handed, whether or not
    * its host is idle; it answers 204. `signal` aborts the request, as a sender that bounds each

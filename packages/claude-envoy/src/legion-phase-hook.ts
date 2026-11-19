@@ -410,6 +410,8 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     project: configuredValue(deps.env["LEGION_PROJECT"]),
     limits,
     log: deps.log,
+    // The next change of dispatch://INFRA-4130 wires this to the bridge's take-pending answer.
+    taskPending: () => false,
   })
   reminder.restore(restored.entry)
 

@@ -37,6 +37,12 @@ import type { StallLimits } from "./stall-limits";
  * cannot be cancelled (`SessionContext.setTimeout` returns void and there is no clearTimeout), so
  * a monotonic generation, bumped by everything that makes an armed timer stale, is the whole
  * defence against two timers sending two reminders.
+ *
+ * A task the claim's take holds is the worker's next turn, and a reminder says nothing it does not
+ * (dispatch://INFRA-4130 R6). So while the take is pending (`taskPending`) no reminder starts a
+ * turn ahead of it: the settle that would continue the run arms the timer instead, counting
+ * nothing, and a timer that fires sends nothing and arms itself again. A take the daemon refuses
+ * for a hold is no longer pending, so the reminding goes on as before.
  */
 
 /**
@@ -87,6 +93,14 @@ export interface PhaseReminderDeps {
   readonly log: PhaseReminderLog;
   /** The bound on one daemon read; `RECORD_READ_BOUND_MS` when it is left out. */
   readonly recordBoundMs?: number;
+  /**
+   * Whether the claim's take is pending: it holds a task value it will ask about, a take is in
+   * flight, or a take was accepted and its turn has not started (`TaskTake.pending` in
+   * `./task-take`, which Oh My Pi's host reads). The task is then the next turn, so no reminder
+   * starts one. Claude Code's host asks its bridge, which answers over a socket, so the answer
+   * may be a promise.
+   */
+  readonly taskPending: () => boolean | Promise<boolean>;
 }
 
 export interface PhaseReminder {
@@ -424,14 +438,24 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
 
   /**
    * D4: the one guard. A timer fires only while nothing has happened since it was armed, the phase
-   * is still open, no turn is running, and the record check passes. The check awaits the daemon, so
-   * the generation and the turn are read again after it.
+   * is still open, no turn is running, and the record check passes. While the claim's take is
+   * pending it sends nothing and arms itself again at the reminder's delay, with the same reminder.
+   * The pending query and the check await the host and the daemon, so the generation and the turn
+   * are read again after each.
    */
   const armReminder = (reminder: string, delayMs: number): void => {
     const armedAt = generation;
     armed = { at: Date.now() + delayMs, generation: armedAt };
     deps.armTimer(async () => {
       if (generation !== armedAt || stall.state === "closed" || turnRunning) return;
+      const pending = await deps.taskPending();
+      if (generation !== armedAt || turnRunning) return;
+      // The task is the next turn: this reminder waits for it rather than going before it, and
+      // comes after the delay again unless that turn, or anything else, makes it stale first.
+      if (pending) {
+        armReminder(reminder, deps.limits.reminderMs);
+        return;
+      }
       const check = await recordCheck();
       if (!check.reminds) return;
       if (generation !== armedAt || turnRunning) return;
@@ -519,8 +543,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       // The continuation is the first reminder of a run and the only one of it: the worker has
       // been reminded already (`before`) or has had this run's continuation (`continued`), and
       // the reminder comes from a timer instead. The run then settles, the daemon sees the turn
-      // end, and the next reminder comes with its delay.
-      if (before !== 0 || continued) {
+      // end, and the next reminder comes with its delay. A pending take gets the same: its task
+      // is the next turn, so this settle continues nothing and counts nothing.
+      if (before !== 0 || continued || (await deps.taskPending())) {
         continued = false;
         armReminder(reminder, deps.limits.reminderMs);
         return undefined;

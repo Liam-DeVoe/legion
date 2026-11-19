@@ -49,6 +49,23 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * run's last step has stopped, `getFollowUpMessages`, and goes on with no `agent_end` or
  * `agent_start` between), so the task would run inside a run whose end names no task.
  *
+ * Nothing tells a busy worker that its task waits but the host's note (dispatch://INFRA-4130 R1).
+ * At each tool result of the run the host asks `noteFor`, which gives the number of an owed value
+ * the worker did not take — one not asked about, a take in flight, or a take the daemon refused at
+ * this revision, whatever its hold — once for each task number in this process, and the host adds
+ * `taskWaitingNote` to that tool result, which the model reads at its next step. The note carries
+ * no task and starts no turn: the take still goes at the run's end. `heldTakeNote` is R2's note,
+ * for a take of another claim of the issue that the daemon holds behind this claim's turn, which
+ * the host learns of from the `holds` of a `claims/task` read.
+ *
+ * The take is pending (`pending`, R6) while it holds an owed value it has not asked about at this
+ * revision, while a take is in flight, while an accepted take's turn has not started, its text
+ * held included, and while a take of the held revision stands refused `in-turn` during the run
+ * going now: the daemon writes the value again at that run's end, so the take asks again then. That
+ * last state ends at the run's end or at a newer revision, whichever comes first, and a refusal by
+ * any other hold is not pending, since the daemon writes the value again only once its hold ends.
+ * The host's reminder starts no turn while the take is pending: the task is the next turn.
+ *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
  * gave no answer to — a refused, reset or closed connection, an unreachable host or network, a
  * connect or read timeout, a DNS failure, no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502,
@@ -63,6 +80,31 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * A take its host replaced (`close`) does nothing more: what it was sending stops, an answer that
  * still arrives for it is dropped, and its task-turn mark is cleared.
  */
+
+/** The daemon's hold for a take refused because the claim is in a turn (`supervise.HoldInTurn`,
+ * `packages/daemon/internal/supervise/take.go`): it writes the value again at that turn's end. */
+const HOLD_IN_TURN = "in-turn";
+
+/** R1's note: the claim's own task `number` waits for the end of the turn going now. */
+export function taskWaitingNote(number: number): string {
+  return (
+    `Legion: task ${number} of this claim waits for this turn to end. It starts as your next ` +
+    "turn when this turn ends, unless the daemon holds or drops it then. Finish what is in hand, " +
+    "stop at a safe point, and end this turn. This note carries no task: do not start its work " +
+    "in this turn."
+  );
+}
+
+/** R2's note: the `role`'s task `number` on this issue waits for the end of this claim's turn,
+ * which holds it because the roles of an issue share one working copy. */
+export function heldTakeNote(role: string, number: number): string {
+  return (
+    `Legion: the ${role}'s task ${number} on this issue waits for this turn to end, because the ` +
+    "roles of an issue share one working copy. It starts when this turn ends, unless the daemon " +
+    "holds it then. Finish what is in hand, stop at a safe point, and end this turn. This note " +
+    "carries no task."
+  );
+}
 
 /** A claim's task value: the task's number, and the bucket's epoch and revision of the write that
  * put it there. */
@@ -137,6 +179,24 @@ export interface TaskTake {
    * deletes its value, so nothing is told of it.
    */
   readonly reportRefused: (number: number) => void;
+  /**
+   * Whether the take is pending, so that no reminder turn starts ahead of it (R6): it holds an
+   * owed value it has not asked about at this revision, a take is in flight, an accepted take's
+   * turn has not started (its text held included), or a take of the held revision was refused
+   * `in-turn` during the run going now, which the daemon answers by writing the value again at
+   * that run's end. The last ends at the run's end or at a newer revision, whichever comes first;
+   * an `in-turn` refusal that arrives while the host is idle came after that run's end, and sets
+   * nothing. False once the take is closed.
+   */
+  readonly pending: () => boolean;
+  /**
+   * The number to note at this tool result of the run (R1, `taskWaitingNote`): that of an owed
+   * value held while a run is going that is neither accepted nor the task running — one not asked
+   * about, a take in flight, or a take refused at this revision, whatever its hold. Each number is
+   * given once in this process, and a call that gives it records it, so only the host's call at a
+   * tool result may make it. Undefined in every other state, and once the take is closed.
+   */
+  readonly noteFor: () => number | undefined;
   /** The take is replaced by another of the same host: every request it is sending stops, an
    * answer that still arrives for one changes nothing, its task-turn mark is cleared, and every
    * call after this one does nothing. */
@@ -173,6 +233,10 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   let accepted: number | undefined;
   let running: number | undefined;
   let heldText: string | undefined;
+  // The pair whose take the daemon refused `in-turn` during the run going now, which it writes
+  // again at that run's end; and the task numbers this process has noted to its host (`noteFor`).
+  let refusedInTurn: string | undefined;
+  const noted = new Set<number>();
   let seeing: Sending | undefined;
   let taking: Sending | undefined;
   let marked = false;
@@ -241,6 +305,10 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
         if (held?.number === value.number) held = undefined;
         return;
       case "refused":
+        // A take the run going now overtook: the daemon writes the value again at that run's
+        // end, so the take is pending until then (`pending`). One the host meets idle came after
+        // that run's end, which the daemon's write follows, so it sets nothing.
+        if (answer.hold === HOLD_IN_TURN && busy) refusedInTurn = keyOf(value);
         return;
     }
   };
@@ -275,6 +343,11 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     );
   };
 
+  /** The take holds an owed value it has not asked about at this revision, a take is in flight, or
+   * an accepted take's turn has not started: the task's turn is still to come. */
+  const turnToCome = (): boolean =>
+    (owed(held) && !asked.has(keyOf(held))) || taking !== undefined || accepted !== undefined;
+
   /** Asks about the held value where it may, and keeps the task-turn mark to what is pending. */
   const settle = (): void => {
     const key = held === undefined ? undefined : keyOf(held);
@@ -282,11 +355,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       asked.add(key);
       ask(held, key);
     }
-    const pending =
-      reading > 0 ||
-      (owed(held) && key !== undefined && !asked.has(key)) ||
-      taking !== undefined ||
-      accepted !== undefined;
+    const pending = reading > 0 || turnToCome();
     if (pending === marked) return;
     marked = pending;
     deps.setPending(pending);
@@ -367,6 +436,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     runEnded: (providerError) => {
       if (closed) return undefined;
       busy = false;
+      refusedInTurn = undefined;
       const ended = running;
       running = undefined;
       // That run's report names the task with no provider error, which finishes it on the
@@ -387,6 +457,18 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       if (closed || finishing !== number) return;
       finishing = 0;
       settle();
+    },
+    pending: () => {
+      if (closed) return false;
+      // A refusal `in-turn` holds only the revision it answered: a newer one ends it.
+      return turnToCome() || (owed(held) && keyOf(held) === refusedInTurn);
+    },
+    noteFor: () => {
+      if (closed || !busy || !owed(held)) return undefined;
+      const { number } = held;
+      if (number === accepted || number === running || noted.has(number)) return undefined;
+      noted.add(number);
+      return number;
     },
     close: () => {
       if (closed) return;

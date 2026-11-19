@@ -279,6 +279,8 @@ export default function legionExtension(pi: PiApi): void {
     project: process.env.LEGION_PROJECT,
     limits,
     log: logger,
+    // The next change of dispatch://INFRA-4130 wires this to the claim's take (`taskPending`).
+    taskPending: () => false,
   });
 
   // The model fallback (src/model-fallback.ts) on the cooldown machine
