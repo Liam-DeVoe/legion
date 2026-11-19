@@ -311,6 +311,16 @@ decisions_linked() {
   [ "$status" = 200 ] && jq -e 'any(.decisions[]; (.links | length > 0) and (.asks | length > 0))' "$work/body" >/dev/null
 }
 
+# map_repository BUILD REPOSITORY PROJECT writes on BUILD the repository mapping of REPOSITORY
+# (owner/name) to PROJECT, the one row GET /api/v1/settings/repo-projects answers for it. It writes
+# through PUT /api/v1/settings/repo-projects/{owner}/{repo} while both builds have that route; once
+# the write route goes, this helper writes the same row into repo_projects on each build's own
+# database, and the change that removes the route changes it.
+map_repository() {
+  send "$1" carol PUT "/api/v1/settings/repo-projects/$2" "$(jq -cn --arg p "$3" '{project: $p}')"
+  created "$1" "carol maps $2 to $3"
+}
+
 # seed_lists BUILD writes, through the routes both builds have, a row into every list an answer
 # read below holds, which the seed above leaves empty, so that no field of such a row can differ
 # unseen (the lists check): a priority and the work under it, in flight and parked; each first
@@ -327,10 +337,8 @@ seed_lists() {
   created "$build" "carol writes the priority blob-work"
   # A repository mapping of each project, so GET /api/v1/settings/repo-projects answers a row of
   # each, which the route answers only for a project its reader sees.
-  for project in PUB PRIV; do
-    send "$build" carol PUT "/api/v1/settings/repo-projects/acme/${project,,}-map" "$(jq -cn --arg p "$project" '{project: $p}')"
-    created "$build" "carol maps acme/${project,,}-map to $project"
-  done
+  map_repository "$build" acme/pub-map PUB
+  map_repository "$build" acme/priv-map PRIV
   for project in PUB PRIV; do
     key=$project-1
     send "$build" carol PUT "/api/v1/projects/$project/gated-steps" '{"steps":["decisions","criteria","spec"]}'
@@ -471,11 +479,13 @@ pass
 
 # The fixed list, read as every caller. {LABEL} is the id the build's seed recorded under LABEL,
 # so each build is asked for its own object; the route is named as written here. The repository
-# mappings (GET /api/v1/settings/repo-projects) are on it while their routes exist: the route
-# answers only the rows of projects its reader sees, which with every project public is the answer
-# it gave before. The third search writes a phrase, so its answer's query.operators holds a row. It
-# names no OR: in a run with `"first paragraph" OR remark`, PRIV-1's comment and its spec were
-# answered in one order at one build and in the other at the other, every caller alike.
+# mappings (GET /api/v1/settings/repo-projects) are on it: the route answers only the rows of
+# projects its reader sees, which with every project public is the answer it gave before, and
+# map_repository writes a row of each project at both builds, so the list is never empty and is
+# never named in unfillable_lists. The third search writes a phrase, so its answer's
+# query.operators holds a row. It names no OR: in a run with `"first paragraph" OR remark`, PRIV-1's
+# comment and its spec were answered in one order at one build and in the other at the other,
+# every caller alike.
 readonly reads=(
   /auth/whoami
   /api/v1/whoami
