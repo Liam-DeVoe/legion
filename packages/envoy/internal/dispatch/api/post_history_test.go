@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // readPostHistory is one history read as an authenticated person makes it.
@@ -217,7 +218,7 @@ func TestDeletedPostHistoryGivesTheMarkAndNoBody(t *testing.T) {
 // read (queueDeletedPostSettlement). A row that stands as the read found it is settled, an
 // unresolved comment attempt's null session and resolve error included. One whose session moved
 // after the read refuses the settle, as one the read never found does, and the route answers
-// both as it answers any failed write, with nothing settled.
+// both 409 DELETE_CONTENDED with Retry-After: 1, with nothing settled.
 func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
@@ -335,8 +336,10 @@ func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
 					}
 					recorder := httptest.NewRecorder()
 					(&server{}).writeHandlerError(recorder, settle)
-					if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), `"code":"`+codeInternal+`"`) {
-						t.Fatalf("the route answers the refusal %d %s, want 500 %s", recorder.Code, recorder.Body.String(), codeInternal)
+					if code, _ := refusalOf(t, recorder); recorder.Code != http.StatusConflict || code != deleteContended ||
+						recorder.Header().Get("Retry-After") != "1" {
+						t.Fatalf("the route answers the refusal %d (Retry-After %q) %s, want 409 %s with Retry-After 1",
+							recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String(), deleteContended)
 					}
 					if err := tx.Rollback(ctx); err != nil {
 						t.Fatalf("roll the refused settle back: %v", err)
@@ -359,5 +362,114 @@ func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The settle's refusal as the delete route meets it, driven rather than reasoned about: a send of
+// the post is pending, and a transaction of this test's own makes the write that send's own sender
+// makes on its row, holding no owner lock - it pins the session its send resolved to - and holds
+// the row until it commits. The delete reads the attempt as it stood before that write and queues
+// its settle behind it; the write commits, and the settle meets a row its read did not find. The
+// delete answers 409 DELETE_CONTENDED with Retry-After: 1 and writes nothing - the body stands,
+// no deleted_at, no kept body, the attempt still pending - and the same delete sent again reads
+// the attempt as it stands then and answers 200.
+func TestADeleteWhoseSendMovesWhileItIsWrittenAnswersDeleteContended(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "TEST", "A send that moves under its delete", "before")
+	for _, kind := range []struct {
+		name string
+		// open writes a post of alice's with one send pending that nothing has resolved yet.
+		open func(t *testing.T) string
+		// route is the delete's path less the post's id; posts and attempts are the post's table
+		// and its attempts', and owner the column naming the post in post_body_history and in
+		// attempts.
+		route, posts, attempts, owner string
+		// move is the pin the send's own sender writes on its row (recordCommentDeliveryResolution,
+		// renewMessageDeliveryClaim).
+		move string
+	}{
+		{
+			name: "comment",
+			open: func(t *testing.T) string {
+				t.Helper()
+				comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "a comment whose send moves"}, "alice")
+				if _, err := database.Pool.Exec(ctx, `
+					insert into comment_deliveries (comment_id, target, attempt, delivery, state)
+					values ($1, 'role:reviewer', 1, 'steer', 'pending')
+				`, comment.ID); err != nil {
+					t.Fatalf("seed the pending attempt of comment %s: %v", comment.ID, err)
+				}
+				return comment.ID
+			},
+			route: "/api/v1/comments/", posts: "comments", attempts: "comment_deliveries", owner: "comment_id",
+			move: `update comment_deliveries set session_id = coalesce(session_id, 's1') where comment_id = $1`,
+		},
+		{
+			name: "message",
+			open: func(t *testing.T) string {
+				t.Helper()
+				message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "a message whose send moves"}, "alice")
+				if _, err := database.Pool.Exec(ctx, `
+					insert into message_deliveries (message_id, attempt, delivery, session_id, state)
+					values ($1, 1, 'steer', '', 'pending')
+				`, message.ID); err != nil {
+					t.Fatalf("seed the pending attempt of message %s: %v", message.ID, err)
+				}
+				return message.ID
+			},
+			route: "/api/v1/messages/", posts: "messages", attempts: "message_deliveries", owner: "message_id",
+			move: `update message_deliveries set session_id = coalesce(nullif(session_id, ''), 's1') where message_id = $1`,
+		},
+	} {
+		t.Run(kind.name, func(t *testing.T) {
+			id := kind.open(t)
+			holder, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the sender's transaction: %v", err)
+			}
+			defer holder.Rollback(ctx)
+			if _, err := holder.Exec(ctx, kind.move, id); err != nil {
+				t.Fatalf("move the pending attempt as its sender does: %v", err)
+			}
+
+			deleted := make(chan *httptest.ResponseRecorder, 1)
+			go func() { deleted <- dispatchRequest(t, handler, http.MethodDelete, kind.route+id, nil, "alice") }()
+			if queued := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); queued < 1 {
+				t.Fatalf("the delete never queued its settle behind the sender's write on the attempt")
+			}
+			if err := holder.Commit(ctx); err != nil {
+				t.Fatalf("commit the sender's write: %v", err)
+			}
+
+			refused := <-deleted
+			if code, text := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "DELETE_CONTENDED" ||
+				text != "a send of this post moved while the delete was being written; nothing was written, and the same delete can be sent again" {
+				t.Fatalf("a delete whose send moved under it: status=%d body=%s, want 409 DELETE_CONTENDED",
+					refused.Code, refused.Body.String())
+			}
+			if got := refused.Header().Get("Retry-After"); got != "1" {
+				t.Fatalf("the refusal's Retry-After = %q, want 1", got)
+			}
+			var body, state string
+			var markedDeleted bool
+			var kept int
+			if err := database.Pool.QueryRow(ctx, `
+				select p.body, p.deleted_at is not null,
+				       (select count(*) from post_body_history h where h.`+kind.owner+` = p.id),
+				       (select state from `+kind.attempts+` d where d.`+kind.owner+` = p.id)
+				from `+kind.posts+` p where p.id = $1
+			`, id).Scan(&body, &markedDeleted, &kept, &state); err != nil {
+				t.Fatalf("read the post after the refused delete: %v", err)
+			}
+			if body == "" || markedDeleted || kept != 0 || state != model.DeliveryStatePending {
+				t.Fatalf("after the refused delete the post reads body %q, deleted %v, %d kept bodies, its attempt %s; "+
+					"want it standing with nothing kept and the attempt pending: the delete wrote nothing", body, markedDeleted, kept, state)
+			}
+
+			if again := dispatchRequest(t, handler, http.MethodDelete, kind.route+id, nil, "alice"); again.Code != http.StatusOK {
+				t.Fatalf("the same delete sent again: status=%d body=%s, want 200", again.Code, again.Body.String())
+			}
+		})
 	}
 }

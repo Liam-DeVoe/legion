@@ -93,10 +93,30 @@ func queuePostBodyHistory(ledger *docs.Ledger, kind refs.ItemKind, itemID, body 
 	return ledger.Queue(step)
 }
 
-// deletedPostDeliveryError is what a send of a deleted post still pending is settled with: the
-// text that would have been sent is gone, so nothing can send it. It is written in the shape
-// settleUndeliverableMention writes its two causes in (delivery_sweep.go).
-const deletedPostDeliveryError = "not sent: the post was deleted"
+// deletedPostDeliveryError is what a send of a deleted post still pending is settled with. It says
+// that the post's delete ended the attempt and nothing about whether a frame reached the session:
+// a sender whose claim the delete settled after its frame left (queueDeletedPostSettlement) never
+// learns which, and one that learns it before its send sends nothing (deliverResolvedCommentMention).
+const deletedPostDeliveryError = "ended by the post's delete"
+
+// deleteContended is the code of a delete whose settle met a send of its post that the send's own
+// sender moved after the delete's read found it (queueDeletedPostSettlement). Nothing is written,
+// and the same delete sent again reads the attempts as they stand then.
+const deleteContended = "DELETE_CONTENDED"
+
+// deleteContendedRetryAfter is the Retry-After, in whole seconds, that refusal carries. What the
+// caller waits for is a sender's write already committing - the statement that moved the attempt,
+// which held its row while the delete waited on it - and no budget this caller has spent, so the
+// wait is the shortest whole second HTTP can ask for, as the results write's checkContendedRetryAfter
+// is for the same reason.
+const deleteContendedRetryAfter = 1
+
+// errDeleteContended is that refusal: 409 DELETE_CONTENDED with Retry-After: 1. Both deletes
+// answer it, through the settle they both queue.
+var errDeleteContended error = &apiError{
+	status: http.StatusConflict, code: deleteContended, retryAfter: deleteContendedRetryAfter,
+	message: "a send of this post moved while the delete was being written; nothing was written, and the same delete can be sent again",
+}
 
 // clearDeletedPostBody plans the clear a delete of either kind makes, under the owner lock the
 // caller already holds, and returns it as one step of the caller's write phase with the
@@ -248,9 +268,9 @@ func messageAttemptsRead(pending []model.MessageDelivery) pendingAttemptsRead {
 // the read did, but an attempt's own sender moves a pending row holding no owner lock
 // (pendingAttemptsRead). So the statement settles every attempt still pending and answers of each
 // whether the read found it as it stands: were it to settle another count, or a row the read
-// found otherwise, its callback refuses, Commit returns that refusal, which the route answers as
-// it answers any failed write (500 INTERNAL), and the receipts never land beside rows they do not
-// describe.
+// found otherwise, its callback refuses with errDeleteContended, Commit returns that refusal, which
+// the route answers as it is (409 DELETE_CONTENDED, Retry-After: 1), and the receipts never land
+// beside rows they do not describe.
 func queueDeletedPostSettlement(b *store.WriteBatch, itemID string, read pendingAttemptsRead) {
 	b.Queue("", `
 		update `+read.table+` d set state = 'failed', error = $2, claimed_at = now()
@@ -273,8 +293,7 @@ func queueDeletedPostSettlement(b *store.WriteBatch, itemID string, read pending
 			return err
 		}
 		if settled != read.pending || matched != settled {
-			return fmt.Errorf("settle the pending sends of %s %s: the settle met %d pending attempts, %d of them as the read under its owner lock found them, which found %d",
-				read.table, itemID, settled, matched, read.pending)
+			return errDeleteContended
 		}
 		return nil
 	})

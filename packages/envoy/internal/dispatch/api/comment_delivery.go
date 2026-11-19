@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -311,6 +312,15 @@ func (s *server) claimCommentDeliveryAttempt(
 	stored, err := s.lockedCommentAllowingClosed(ctx, tx, comment.ID)
 	if err != nil {
 		return claimedCommentDelivery{}, err
+	}
+	// An unbound call is a Retry, which resumes or opens an attempt of the comment, so it is the
+	// comment as this owner lock leaves it that decides whether any text is left to send: a
+	// delete that committed while the Retry waited on the lock refuses it here, where the route's
+	// own check read the comment before the lock (createCommentDelivery). A bound call takes its
+	// own attempt and no other, which that delete has already settled (queueDeletedPostSettlement),
+	// so it finds the attempt settled below and sends nothing.
+	if resume.attempt == 0 && stored.DeletedAt != nil {
+		return claimedCommentDelivery{}, deletedPostError(refs.ItemComment)
 	}
 	// The mention's own mode comes from the row this lock is taken on, so the send is keyed by it
 	// without a read of its own (model.CommentMentionIdempotencyKey).
@@ -654,9 +664,9 @@ func (s *server) recordCommentDeliveryResolution(
 
 // deliverResolvedCommentMention delivers one mention of a comment: it claims an attempt in one
 // short transaction, resolves with nothing held, records that resolution on the claimed row,
-// sends, then records the outcome in a second transaction, and settles behind it every earlier
-// attempt its send superseded (supersedeOvertakenAttempts). The listener never runs inside a
-// transaction.
+// sends while that record still found the claim its own, then records the outcome in a second
+// transaction, and settles behind it every earlier attempt its send superseded
+// (supersedeOvertakenAttempts). The listener never runs inside a transaction.
 //
 // resume binds the claim (claimCommentDeliveryAttempt): the attempt the mention sender's lane was
 // queued for and the claim this process has held on it since its comment committed, an owed
@@ -707,15 +717,25 @@ func (s *server) deliverResolvedCommentMention(
 	decided := claimed.pending != nil && claimed.pending.Attempt == 1 &&
 		(claimed.pending.SessionID != nil || claimed.pending.ResolveError != nil) && mentionsDecideRoutes(created)
 	target, resolveError := s.mentionResolutionFor(ctx, target, claimed.pending)
-	recorded, held, _, err := s.recordCommentDeliveryResolution(ctx, stored, target, claimed.attemptClaim, resolveError)
+	recorded, held, mine, err := s.recordCommentDeliveryResolution(ctx, stored, target, claimed.attemptClaim, resolveError)
 	if err != nil {
 		return model.CommentDelivery{}, err
+	}
+	// The statement that recorded the resolution is scoped to this sender's claim, and it is the
+	// last word on that claim before the send. A claim it no longer found is no longer this
+	// sender's to send on: a delete settled the attempt while the resolution ran
+	// (queueDeletedPostSettlement moves claimed_at for exactly this), or another sender took it
+	// over. So nothing is sent, and the settle reads the row as it stands and appends whatever
+	// receipt that row still owes, as the message sender's settle does once its renew finds its
+	// claim gone (deliverMessageResuming).
+	if !mine {
+		return s.completeCommentDelivery(ctx, stored, recorded, actor, held, sendOutcome{})
 	}
 	frame, err := json.Marshal(struct {
 		Event    model.Event `json:"event"`
 		Delivery any         `json:"delivery"`
 	}{
-		Event: created,
+		Event: mentionFrameEvent(created, stored),
 		Delivery: map[string]any{
 			"attempt":    claimed.attempt,
 			"mode":       target.Delivery,
@@ -839,6 +859,36 @@ func mentionsDecideRoutes(created model.Event) bool {
 		return decided
 	}
 	return false
+}
+
+// mentionFrameEvent is the comment.created event a mention's frame replays, carrying the
+// comment's text as stored holds it - the comment as its claim read it under the owner lock
+// (claimCommentDeliveryAttempt) - rather than as the event recorded it when the comment was
+// created: its body, cut to the share an event carries (model.EventBody), and the time of its
+// last edit, which are what an edit of a comment moves. The rest of the event - the mentions as
+// they were resolved, the thread, the routes the outbox decided on - is the creation's, which no
+// later write changes. So a frame never carries text an edit replaced, and it says what the body
+// sent beside it says (listenerSendInput). created carries the creating request's
+// model.CommentEventPayload or, for every later sender, the map loadCommentCreatedEvent decoded,
+// as mentionsDecideRoutes reads it; either is copied, never written, since the mention sender
+// hands one event to every mention of its comment.
+func mentionFrameEvent(created model.Event, stored model.Comment) model.Event {
+	body, truncated := model.EventBody(stored.Body)
+	switch payload := created.Payload.(type) {
+	case model.CommentEventPayload:
+		payload.Body, payload.BodyTruncated, payload.EditedAt = body, truncated, stored.EditedAt
+		created.Payload = payload
+	case map[string]any:
+		copied := maps.Clone(payload)
+		copied["body"], copied["edited_at"] = body, stored.EditedAt
+		// The key is omitted where the body rides whole, as the payload's own omitempty omits it.
+		delete(copied, "body_truncated")
+		if truncated {
+			copied["body_truncated"] = true
+		}
+		created.Payload = copied
+	}
+	return created
 }
 
 // loadCommentCreatedEvent reads comment's comment.created event within the comment's owner, so

@@ -1019,8 +1019,8 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it
-	// (brokerTokenActor's 429, and the results write's 409 CHECK_CONTENDED);
-	// writeHandlerError writes the header.
+	// (brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and both deletes' 409
+	// DELETE_CONTENDED); writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header

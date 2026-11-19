@@ -10,10 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // refusedAsDeleted fails t unless the response is the one refusal a deleted post makes.
@@ -169,47 +169,19 @@ func TestAFollowUpUnderADeletedAnswerIsRefused(t *testing.T) {
 	}
 }
 
-// replyLockWaitWindow bounds how long the probe below waits for the reply to queue on the
-// issue's row. It is far longer than the reply's own first read and shorter than the package's
-// test timeout, so a reply that never reaches the lock is reported rather than hanging the run.
-const replyLockWaitWindow = 20 * time.Second
-
-// waitForALockWaiter blocks until a backend of this database waits on a lock it has not been
-// granted, which is the reply's transaction queuing on the issue row this test holds. The two
-// backends are this test's own: nothing else writes this database while the test runs.
-func waitForALockWaiter(t *testing.T, database *store.Store) {
-	t.Helper()
-	deadline := time.Now().Add(replyLockWaitWindow)
-	for {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks l join pg_stat_activity a on a.pid = l.pid
-			where not l.granted and a.datname = current_database()
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read the lock waiters: %v", err)
-		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("nothing waited for the issue's row within %s: the reply never reached the lock", replyLockWaitWindow)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 // The window the delete commits in, driven rather than reasoned about. A transaction of this
-// test's own takes the issue row exactly as lockIssue takes it, the reply reads the message -
-// standing, since nothing is committed yet - and then queues on that row; the holder marks the
-// message deleted and commits, which is the delete this route must not post behind; the reply
-// takes the lock and reads the row again under it. The delete is written here rather than sent
-// to DELETE /api/v1/messages/{id} because that route takes the same row lock, and a second
-// waiter cannot commit inside the first one's wait.
+// test's own takes the issue's advisory owner lock, the lock lockIssue takes for the delete route
+// and for this reply alike (store.LockOwner); the reply reads the message - standing, since
+// nothing is committed yet - and then waits on that lock; the holder marks the message deleted
+// and commits, which is the delete this route must not post behind; the reply takes the lock and
+// reads the row again under it. The delete is written here rather than sent to DELETE
+// /api/v1/messages/{id} because that route takes the same owner lock, and a second waiter cannot
+// commit inside the first one's wait.
 //
 // Before the re-read (message_delivery.go's replyMessage) the deleted check read the row taken
 // before the lock, so this reply was judged on a message that still stood and posted under a
 // deleted one.
-func TestAReplyIsRefusedByADeleteThatCommitsWhileItWaitsForTheIssueRow(t *testing.T) {
+func TestAReplyIsRefusedByADeleteThatCommitsWhileItWaitsForTheOwnerLock(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A delete inside the reply's window", "before")
 	message := createIssueMessage(t, handler, issue.Key,
@@ -224,13 +196,12 @@ func TestAReplyIsRefusedByADeleteThatCommitsWhileItWaitsForTheIssueRow(t *testin
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("open the transaction that holds the issue's row: %v", err)
+		t.Fatalf("open the transaction that holds the issue's owner lock: %v", err)
 	}
 	defer holder.Rollback(ctx)
-	// The statement lockIssue runs (issueStatus under ownerRowLock, server.go).
-	if _, err := holder.Exec(ctx,
-		`select status, closed_at is null from issues where key = $1 for no key update`, issue.Key); err != nil {
-		t.Fatalf("hold the issue's row: %v", err)
+	// The lock lockIssue takes (store.LockOwnerAndRead, server.go): the issue's advisory owner lock.
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("hold the issue's owner lock: %v", err)
 	}
 
 	replied := make(chan *httptest.ResponseRecorder, 1)
@@ -238,7 +209,9 @@ func TestAReplyIsRefusedByADeleteThatCommitsWhileItWaitsForTheIssueRow(t *testin
 		replied <- sessionRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply",
 			map[string]any{"actor": sessionActor(), "attempt": 1, "body": "answering a message that was withdrawn"})
 	}()
-	waitForALockWaiter(t, database)
+	if early, answered, _ := storetest.AwaitOwnerLockWaiter(t, database, "the reply", replied); answered {
+		t.Fatalf("the reply answered %d before it waited on the issue's owner lock: %s", early.Code, early.Body.String())
+	}
 
 	if _, err := holder.Exec(ctx,
 		`update messages set body = '', deleted_at = now(), deleted_by = $2::jsonb where id = $1`,
@@ -249,7 +222,7 @@ func TestAReplyIsRefusedByADeleteThatCommitsWhileItWaitsForTheIssueRow(t *testin
 		t.Fatalf("commit the delete: %v", err)
 	}
 
-	refusedAsDeleted(t, "a reply the delete beat to the issue's row", <-replied)
+	refusedAsDeleted(t, "a reply the delete beat to the issue's owner lock", <-replied)
 	var replies int
 	if err := database.Pool.QueryRow(ctx,
 		`select count(*) from messages where in_reply_to = $1`, message.ID).Scan(&replies); err != nil {

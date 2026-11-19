@@ -302,6 +302,11 @@ type pendingMessageDelivery struct {
 	// session's message - is queued for a stopped session.
 	connectedOnly bool
 	frame         []byte
+	// message is the message this attempt is sent with, carrying the text its row held under the
+	// claim's lock (recordPendingMessageDelivery): the body and edited_at an edit moves. The
+	// frame is built from it and the send carries its body, so neither carries text an edit or a
+	// delete that committed while the claim waited on its lock took away.
+	message model.Message
 }
 
 // messageDeliveryRoute is what a targeted send resolves against the listener: the session a
@@ -383,10 +388,26 @@ func (s *server) recordPendingMessageDelivery(
 	}
 	// FOR NO KEY UPDATE, as the accept's is: the session's reply takes an attempt row and then
 	// this row FOR KEY SHARE through its insert's foreign key, and FOR UPDATE would wait for that
-	// while this transaction waits below for the attempt row the reply holds.
+	// while this transaction waits below for the attempt row the reply holds. The text is read
+	// here too, under the issue's owner lock every writer of it holds (lockedMessageForCorrection),
+	// so the frame and the send carry the body as the lock's previous holder left it, not as the
+	// caller read it before the lock.
 	var target string
-	if err := tx.QueryRow(ctx, `select target from messages where id = $1 for no key update`, message.ID).Scan(&target); err != nil {
+	var deleted bool
+	if err := tx.QueryRow(ctx, `
+		select target, body, edited_at, deleted_at is not null from messages where id = $1 for no key update
+	`, message.ID).Scan(&target, &message.Body, &message.EditedAt, &deleted); err != nil {
 		return pendingMessageDelivery{}, err
+	}
+	// An unbound send is a Retry (createDelivery), which resumes or opens an attempt of the
+	// message, so it is this row that decides whether any text is left to send: a delete that
+	// committed while the Retry waited on the lock refuses it here, where the route's own check
+	// read the message before the lock. A bound sender takes its own attempt and no other, which
+	// that delete has already settled (queueDeletedPostSettlement), so it finds the attempt no
+	// longer pending below and sends nothing; one bound to the first attempt of a message that has
+	// none opens nothing for a deleted message either (below).
+	if resumeAttempt == 0 && deleted {
+		return pendingMessageDelivery{}, deletedPostError(refs.ItemMessage)
 	}
 	pending := pendingMessageDelivery{resolved: resolved}
 	if resumeAttempt > 0 {
@@ -409,6 +430,14 @@ func (s *server) recordPendingMessageDelivery(
 			&bound.Attempt, &bound.Delivery, &bound.SessionID, &pending.urgency, &pending.connectedOnly, &free,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
+			// A deleted message opens no first attempt. Its delete settled each attempt it had
+			// pending and wrote none for a message that had none, so there is no attempt of it to
+			// open, settled or not: an attempt opened failed here would be one the delete never
+			// ended, with a receipt the delete never appended. The sender is told, as a bound
+			// sender whose attempt was settled is, that it has nothing to send.
+			if deleted {
+				return pendingMessageDelivery{}, errAttemptNotPending
+			}
 			return s.openFirstMessageDeliveryAttempt(
 				ctx, tx, message, target, actor, resolved, replyThread, resumeAttempt,
 			)
@@ -584,7 +613,8 @@ func (s *server) openFirstMessageDeliveryAttempt(
 
 // finishPendingMessageDelivery builds the frame this claimed attempt will be sent with and
 // commits the claim transaction. Both claim paths end here, so a bound sender's frame says
-// exactly what an ordinary one's does.
+// exactly what an ordinary one's does. message is the message as the claim read it under its
+// lock, which the attempt's send carries too (pendingMessageDelivery.message).
 func finishPendingMessageDelivery(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -620,7 +650,7 @@ func finishPendingMessageDelivery(
 	if err != nil {
 		return fmt.Errorf("encode target delivery frame: %w", err)
 	}
-	pending.frame = frame
+	pending.frame, pending.message = frame, message
 	return tx.Commit(ctx)
 }
 
@@ -736,9 +766,10 @@ func (s *server) deliverMessage(
 }
 
 // errAttemptNotPending reports that the attempt a bound sender owns is no longer its to send:
-// something else settled it, superseded it, or is sending it right now. Only a bound sender
-// (resumeAttempt > 0) can see it, and its caller drops the send rather than opening another
-// attempt - a second attempt here is a second frame on the wire.
+// something else settled it, superseded it, or is sending it right now, or it is the first
+// attempt of a message deleted before it had one (recordPendingMessageDelivery). Only a bound
+// sender (resumeAttempt > 0) can see it, and its caller drops the send rather than opening
+// another attempt - a second attempt here is a second frame on the wire.
 var errAttemptNotPending = errors.New("delivery attempt is no longer pending")
 
 // deliverMessageResuming is deliverMessage bound to one attempt. resumeAttempt > 0 sends that
@@ -787,6 +818,9 @@ func (s *server) deliverMessageResuming(
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
+	// The message as the claim read it under its lock, so the send, any queued copy and the
+	// settle carry the text the frame does.
+	message = pending.message
 	// The key is scoped to the message and the mode, stable across every attempt of that pair,
 	// so a retry of a send that already landed repeats its dedupe key and is recognised as the
 	// repeat it is (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts says by what). The
