@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A start whose session store does not answer now waits a minute and tries again, keeping the claim''s session and charging nothing, on four start paths that counted it as a launch failure or forgot the session: a tmux session folder the daemon cannot read or list, a pod''s session database proxy that cannot reach the database, and a Claude Code session''s keeper that cannot reconnect to the session table or read the session''s rows back.'
+time: 2026-11-19T12:51:42.135776693Z
+custom:
+    Issue: pr4505
