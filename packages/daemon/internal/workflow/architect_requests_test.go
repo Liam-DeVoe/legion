@@ -118,7 +118,7 @@ type requestWindow struct {
 // read the issue's generation, and for accepting the run of its step. Between that read and the
 // fact an adoption can take the sub-architect's own issue out of the tree, a person can move the
 // issue under a sibling's sub-architect, a person's todo can re-enter the issue at its next
-// generation, and a conflict can send the work back so that accepting starts again. The fact
+// generation, and a move back can send the work back so that accepting starts again. The fact
 // judges each again on the record it reads (Engine.Apply) and refuses, unspent, with nothing moved:
 // ISSUE_OUTSIDE_TREE, ISSUE_NOT_OWNED, the request's own STALE_GENERATION, and for accepting its
 // STALE_ENTRY. Each control is the same request with no change between the read and the fact, and
@@ -140,8 +140,8 @@ func TestAnArchitectsRequestIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 			}},
 		}
 		if request.at == phase.Accepting {
-			windows = append(windows, requestWindow{"a conflict sent the work back and accepting started again", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
-				move(t, pool, engine, "LEGION-211", TriggerConflict, "", record.PhaseRow{})
+			windows = append(windows, requestWindow{"a move back sent the work back and accepting started again", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+				move(t, pool, engine, "LEGION-211", TriggerBackward, phase.Implementing, record.PhaseRow{})
 				move(t, pool, engine, "LEGION-211", TriggerImplementationReady, "", record.PhaseRow{})
 			}, func(_, _ record.Issue, nowEntry record.StepEntry, fact intake.Fact) *intake.Refusal {
 				return fact.(intake.EnteredRequest).StaleEntry(nowEntry)

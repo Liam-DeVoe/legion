@@ -175,13 +175,13 @@ export interface LegionDaemonClient {
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The owner's `register_plan` (contract 171): the plan in one version of a document of the
+  /** The owner's `register_plan` (contract 178): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
    * a plan it does not take is refused `PLAN_REFUSED`, every reason in the sentence. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
-  /** The owner's `stop_task` (contract 171): one task of the plan Legion runs for the issue stops,
+  /** The owner's `stop_task` (contract 178): one task of the plan Legion runs for the issue stops,
    * and the issue is held `task-stopped` until a later version of the plan changes that task or,
    * on a root, a person sets the root `todo`. */
   readonly taskStop: (

@@ -204,8 +204,7 @@ func (w Walk) row(from phase.Phase, trigger TriggerKind, target phase.Phase, sna
 
 // returnsWork says whether trigger is a failed step returning its task's work to an earlier step:
 // the tester's fail and a review's request for changes. A backward move names its own
-// target, which a backward row of the line serves, and a conflicting head goes back to
-// implementing whatever the plan says (TriggerConflict).
+// target, which a backward row of the line serves.
 func returnsWork(trigger TriggerKind) bool {
 	return trigger == TriggerTesterFailed || trigger == TriggerReviewRejected
 }

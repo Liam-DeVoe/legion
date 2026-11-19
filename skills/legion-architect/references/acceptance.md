@@ -58,8 +58,9 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
   in `accepting` moves nothing: the daemon names the checks GitHub reported and leaves the decision
   to you, so read the head's checks on GitHub before you accept and send a red head back with
-  `request_backward_move`. Only a head that conflicts with its base goes back to `implementing`
-  by itself (*A conflicting head*, below).
+  `request_backward_move`. A head that conflicts with its base moves no phase either: the daemon
+  asks the implementer to merge the base forward while the issue stays in `accepting`
+  (*A conflicting head*, below).
 - No `after_merge` result is asked here: the production check records it after the close, where
   the project's `production_check` opens one.
 - A finding ask on the issue holds the acceptance: one a worker sent you, or one `dispatch read`
@@ -94,9 +95,9 @@ until this round, where its head must meet it.
 Then, in one turn:
 
 1. Where the task has a tester step, `envoy_publish` to the tester's role topic: "The next round of
-   <KEY> is its last round: a full test round of every check of the issue with no `ci_check`, not
-   the forward-merge re-check." The backward move's reason reaches only the implementer. On a task
-   with no tester step, the implementer's own record of each check at the merge head
+   <KEY> is its last round: a full test round of every check of the issue with no `ci_check`." The
+   backward move's reason reaches only the implementer. On a task with no tester step, the
+   implementer's own record of each check at the merge head
    (`skill://legion-worker/references/conflicts-and-rewrites.md`) is that full round.
 2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
    branch your addressing line names into the branch, push, end your forward-merge comment with
@@ -104,11 +105,11 @@ Then, in one turn:
    counts a review round, or a conflict round, which `review_round_cap` leaves out, where the
    record holds the head conflicting with its base.
 
-While the parent waits in `accepting`, a conflict on its head or a child's merge needs no move of
-its own: the last round's forward merge resolves them all, so spend no backward move per child.
-A move for a child's merge counts toward `review_round_cap`, since the record holds no conflict on
-the head to leave it out; a move for a conflict the record does hold is left out, and still costs
-the implementer a forward merge the last round makes anyway.
+While the parent waits in `accepting`, a child's merge needs no move of its own: the last round's
+forward merge resolves them all, so spend no backward move per child. A conflict on its head the
+daemon answers itself, asking the implementer to merge the base forward while the parent stays in
+`accepting` (*A conflicting head*, below). A move for a child's merge counts toward
+`review_round_cap`, since the record holds no conflict on the head to leave it out.
 
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's
 deploy skill says.
@@ -170,36 +171,44 @@ step of the task: `implementing`, or `testing` where the task has a tester step.
 - A squash into a base other than the default branch, where the repository allows only squash or
   the base's rules require a linear history: the merger tells the architect its addressing line
   names which open pull requests of the tree build on the merged branch. Each one whose issue
-  stands past `implementing` and that GitHub then reports `CONFLICTING` comes back to
-  `implementing` (*A conflicting head*, below), and the architect that owns its issue hears of it
-  by `checks-red`. For each pull request on that list whose issue is yours, tell its implementer
-  (`envoy_publish` to its role topic) to merge that base forward in its implementing round. One
-  whose issue is still in `implementing` gets no move, no task and no `checks-red` from the daemon.
+  stands past `implementing` and that GitHub then reports `CONFLICTING` stays in its phase, and
+  the daemon asks its implementer to merge the base forward once the next step needs a mergeable
+  head (*A conflicting head*, below); the architect that owns its issue hears of that ask by
+  `checks-red`. For each pull request on that list whose issue is yours and still in
+  `implementing`, tell its implementer (`envoy_publish` to its role topic) to merge that base
+  forward in its implementing round: the daemon sends no `checks-red` for such an issue, and
+  tells its implementer itself only when a check the base requires has no green result on the
+  head, the base requires a current branch, or the daemon could not read the base's rules.
 
 ## A conflicting head
 
-What returns the tree to review, where its task has a review step, is a changed diff: a
-conflict-resolution merge whose fingerprint (the unchanged-diff check,
-`skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the fingerprint of the
-head before it. A conflict merge whose fingerprint is unchanged does not, and no Legion check
-compares the head that merges with the one an approval named: a repository that wants a later push
-reviewed says so in its own rulesets.
+A head that conflicts with its base keeps the issue in its phase. The daemon reads GitHub's
+mergeability twice, at least a minute apart, and acts only on a conflict both reads report, and
+only when the next step needs a mergeable head: the issue stands in `accepting`, `retro` or
+`merging`; a check the base requires has no green result on the head, since GitHub runs no check
+on a conflicting head; the base requires a pull request to be current with it; or the daemon
+could not read the base's rules. Otherwise it records the conflict and nothing else, the tester
+and the reviewer go on at that head, an approval of that head ends the review round, and the
+daemon acts once the issue enters `accepting`.
 
-Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
-(`gh pr view <n> --json mergeable,mergeStateStatus`). From `testing`, `reviewing`, `accepting`,
-`retro` and `merging` alike the daemon acts on it itself: it moves the issue back to
-`implementing`, starts the implementer, and tells you with a `checks-red` notice naming the phase
-the issue was taken out of and whose reason reads
-`the head conflicts with <base>: GitHub runs no checks on it; merge <base> forward`. You start
-nothing for it.
+When it acts, it asks the implementer, in a merge-forward message on the implementer's role
+topic, to merge the base forward in the issue workspace and push, with no handoff and no
+completion; in `testing`, `reviewing` and `merging` it tells the phase's worker to stop writing
+the workspace; and it tells you once with
+a `checks-red` notice naming the phase the issue stays in, the head, the base and why. You start
+nothing for it. In `implementing` the daemon tells the implementer alone, and no notice comes to
+you.
 
-The daemon then runs the task's steps from `implementing`: the implementer merges the bookmark
-forward with the destination and pushes it (the procedure in
-`skill://legion-worker/references/conflicts-and-rewrites.md`), posting the before and after
-fingerprints; a tester step re-runs the bare gates only and the class search of every earlier
-round's findings at the new head; a reviewer step approves the new head by SHA, or continues its
-round if it had not approved; the daemon carries the issue through your acceptance, where the
-task holds it, and retro to the merger's merge.
+Once the merge lands, the phase's worker is told the new head and reads what the merge changed.
+For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
+A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
+A completion that names the replaced head, or names no head once the merge landed, is refused
+(`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head. Past review, the daemon asks the reviewer to read the merge and approve the
+new head by its SHA, or request changes, and to tell you and the phase's worker what it decided:
+in `accepting`, wait for that approval of the new head before `sign_off`, and send the issue back
+with `request_backward_move` when the reviewer requests changes. No Legion check compares the head
+that merges with the one an approval named: a repository that wants a later push reviewed says so
+in its own rulesets.
 
 ## A review thread GitHub will not resolve
 

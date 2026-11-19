@@ -12,7 +12,7 @@ import (
 var allWorkflowTriggers = []TriggerKind{
 	TriggerGateOpened, TriggerPlannerCompleted, TriggerImplementationReady, TriggerTesterPassed,
 	TriggerTesterFailed, TriggerReviewApproved, TriggerReviewRejected, TriggerRetroCompleted,
-	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward, TriggerConflict,
+	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward,
 }
 
 // testLines are the lines the table tests hold TableOf to: today's, which an issue with no plan
@@ -40,11 +40,6 @@ func todaysTable() []Row {
 		{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: allow, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Testing, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Reviewing, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Accepting, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Retro, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Merging, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
 	}
 	for _, text := range phase.BackwardPairs() {
@@ -140,8 +135,8 @@ func TestBackwardRowsOfEachLineAreBackwardPairs(t *testing.T) {
 			t.Fatalf("line %v: table backward moves = %v, its pairs of phase.BackwardPairs = %v", line, sortedPairs(fromTable), sortedPairs(fromPhase))
 		}
 		// The backward trigger carries every pair: a worker may ask for any move back the phases
-		// allow, and the daemon's own move for a conflicting head is a trigger of its own
-		// (TriggerConflict) over the same pairs rather than a pair the backward trigger is missing.
+		// allow, and a move back another trigger makes (a tester's fail, a review's request for
+		// changes) is over a pair the backward trigger carries too, never one it is missing.
 		if !maps.Equal(fromTrigger, fromPhase) {
 			t.Fatalf("line %v: %s rows = %v, want %v", line, TriggerBackward, sortedPairs(fromTrigger), sortedPairs(fromPhase))
 		}
@@ -232,9 +227,6 @@ func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger Tr
 		return in(phase.Testing)
 	case TriggerReviewApproved, TriggerReviewRejected:
 		return in(phase.Reviewing)
-	case TriggerConflict:
-		at, implementing := slices.Index(line, from), slices.Index(line, phase.Implementing)
-		return at >= 0 && implementing >= 0 && at > implementing
 	case TriggerRetroCompleted:
 		return in(phase.Retro)
 	case TriggerPullRequestMerged:
@@ -255,7 +247,7 @@ func wantTarget(line []phase.Phase, from phase.Phase, trigger TriggerKind) (phas
 	switch trigger {
 	case TriggerGateOpened:
 		return line[0], true
-	case TriggerTesterFailed, TriggerReviewRejected, TriggerConflict:
+	case TriggerTesterFailed, TriggerReviewRejected:
 		return phase.Implementing, true
 	case TriggerPullRequestMerged:
 		return phase.Done, true
