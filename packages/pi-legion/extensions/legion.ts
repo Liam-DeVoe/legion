@@ -58,7 +58,7 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { clearStartupTurn } from "@legion/pi-shared/startup-turn";
 import { subagentSessionCheck } from "@legion/pi-shared/subagent-session";
-import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes";
+import { taskNotes } from "@legion/pi-shared/task-notes";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
   type CapabilityBudgets,
@@ -577,13 +577,10 @@ export default function legionExtension(pi: PiApi): void {
   pi.on("tool_result", async (event, context) => {
     if (subagentEvent(context)) return undefined;
     stallWatch?.resultDelivered(event);
-    const notes: string[] = [];
     const waiting = phaseWorkerSession(context) ? claimSession.taskNote() : undefined;
-    if (waiting !== undefined) notes.push(taskWaitingNote(waiting));
-    if (claimSession.capability(context.sessionManager.getSessionId()) !== undefined) {
-      for (const { role, task } of claimSession.heldNotes()) notes.push(heldTakeNote(role, task));
-    }
-    return notes.length === 0 ? undefined : { additionalContext: notes.join("\n\n") };
+    const claimed = claimSession.capability(context.sessionManager.getSessionId()) !== undefined;
+    const notes = taskNotes(waiting, claimed ? claimSession.heldNotes() : []);
+    return notes === undefined ? undefined : { additionalContext: notes };
   });
   // The turn is over, so every call it held open is closed and no step runs for one of them, and
   // the turn's one abort goes with them so the next turn aborts for itself (`turnEnded` in

@@ -211,9 +211,10 @@ bridge's refusal of the kind) reads as nothing pending, and the reminder comes a
 Claude Code hands the model with its next request: `taskWaitingNote` for the owed task the
 running turn did not take (the bridge's `waiting`), and `heldTakeNote` for each take of another
 claim of the issue the daemon holds behind this turn, from the `holds` of the claim's own
-`claims/task` (`createHoldsRead` in `src/legion-claim.ts`: started at a `PostToolUse` at most once
-a minute, bounded at 3 s, not waited for, and dropped at the turn's end). Each note goes once per
-number, or once per role and number. A subagent's call and `PostToolUseFailure` carry none.
+`claims/task` (`createHoldsRead` in `@legion/pi-shared/holds-read`, the one both hosts use: started
+at a `PostToolUse` at most once a minute, bounded at 3 s, not waited for, and dropped at the turn's
+end). Each note goes once per number, or once per role and number. A subagent's call and
+`PostToolUseFailure` carry none.
 `tests/legion-phase-hook-claude.test.ts`'s "a real Claude Code turn reads the PostToolUse note" is
 the measurement that the real binary hands the model that context.
 

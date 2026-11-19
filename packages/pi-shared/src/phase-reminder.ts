@@ -94,11 +94,11 @@ export interface PhaseReminderDeps {
   /** The bound on one daemon read; `RECORD_READ_BOUND_MS` when it is left out. */
   readonly recordBoundMs?: number;
   /**
-   * Whether the claim's take is pending: it holds a task value it will ask about, a take is in
-   * flight, or a take was accepted and its turn has not started (`TaskTake.pending` in
-   * `./task-take`, which Oh My Pi's host reads). The task is then the next turn, so no reminder
-   * starts one. Claude Code's host asks its bridge, which answers over a socket, so the answer
-   * may be a promise.
+   * Whether the claim's take is pending, in the states `TaskTake.pending` names (`./task-take`,
+   * which Oh My Pi's host reads) and `LegionInbox.takePending` names
+   * (`packages/claude-envoy/src/legion-inbox.ts`, which Claude Code's host asks its bridge over a
+   * socket, so the answer may be a promise). The task is then the next turn, so no reminder
+   * starts one.
    */
   readonly taskPending: () => boolean | Promise<boolean>;
 }

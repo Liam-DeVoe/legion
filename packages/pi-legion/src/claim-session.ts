@@ -1,10 +1,11 @@
-import type { LegionTask } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
+import { claimCaller, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
-  type ClaimCaller,
-  claimCaller,
-  type LegionDaemonClient,
-} from "@legion/pi-shared/daemon-client";
+  createHoldsRead,
+  type HeldTake,
+  HOLDS_READ_BOUND_MS,
+  type HoldsRead,
+} from "@legion/pi-shared/holds-read";
 import {
   exportJjSessionAttribution,
   type PaneAttribution,
@@ -60,26 +61,16 @@ export interface ClaimSession {
    * read of this run named them, less those this process noted before (once per role and task).
    *
    * The call also starts that read while a run is going, at the first tool result or at the first
-   * one a minute or more after the last read started (`HOLDS_READ_EVERY_MS`): a `claims/task`
-   * with the claim's caller, of which only `holds` is kept. The take is handed none of it, since
-   * its inputs are the registration, the relay and its own reads. The tool result does not wait
-   * for the read, so its answer is noted at the next tool result after it. A read bounded out
-   * (`HOLDS_READ_BOUND_MS`) or failed notes nothing, an answer that comes after the run's end is
-   * dropped, and no read starts while no run is going. Empty before the claim is registered.
+   * one a minute or more after the last read started: the claim's holds read
+   * (`createHoldsRead`, `@legion/pi-shared/holds-read`), a `claims/task` with the claim's caller,
+   * of which only `holds` is kept. The take is handed none of it, since its inputs are the
+   * registration, the relay and its own reads. The tool result does not wait for the read, so its
+   * answer is noted at the next tool result after it. A read bounded out (`HOLDS_READ_BOUND_MS`)
+   * or failed notes nothing, an answer that comes after the run's end is dropped, and no read
+   * starts while no run is going. Empty before the claim is registered.
    */
   readonly heldNotes: () => readonly HeldTake[];
 }
-
-/** A take of another claim of the issue that the daemon holds behind this claim's turn: that
- * claim's role, and its task's number (`holds` of `POST /legion/v1/claims/task`). */
-export type HeldTake = NonNullable<LegionTask["holds"]>[number];
-
-/** How long after a holds read started the next may start: R2's own bound of a minute. */
-const HOLDS_READ_EVERY_MS = 60_000;
-
-/** How long a holds read is waited for: the request is aborted then, and the read notes
- * nothing. */
-const HOLDS_READ_BOUND_MS = 3_000;
 
 /**
  * What this pane's jj attribution overlay is written from
@@ -158,16 +149,10 @@ export function createClaimSession(deps: {
   // Ends the take's hold on its mark, kept until the read after the ready has answered
   // (`afterReadyRead`).
   let readAnswered: (() => void) | undefined;
-  // The holds read (`heldNotes`): the daemon and the caller it reads with, set at the
-  // registration; the run going now, counted so that an answer of an ended run is dropped; when
-  // the last read started; the takes this run's latest answer named; and the role and task of
-  // each take this process has noted.
-  let holdsFrom: { readonly daemon: LegionDaemonClient; readonly caller: ClaimCaller } | undefined;
-  let run: number | undefined;
-  let runs = 0;
-  let lastHoldsRead: number | undefined;
-  let held: readonly HeldTake[] = [];
-  const noted = new Set<string>();
+  // The holds read (`heldNotes`), made at the registration with the claim's caller, and whether a
+  // run of the session is going, which alone reads it.
+  let holdsRead: HoldsRead | undefined;
+  let running = false;
 
   const boot = async (
     context: SessionContext,
@@ -194,7 +179,17 @@ export function createClaimSession(deps: {
           run: deps.runTask,
           log: logger,
         });
-        holdsFrom = { daemon, caller };
+        holdsRead = createHoldsRead({
+          daemon,
+          caller: () => caller,
+          now: deps.now,
+          failed: (error) => {
+            logger.debug(
+              `legion: a claims/task read of the takes held behind this turn failed or had no answer within ${HOLDS_READ_BOUND_MS} ms; it notes nothing`,
+              { error: messageFor(error) }
+            );
+          },
+        });
         taking.take.read(claim);
         readAnswered = taking.take.awaitRead();
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);
@@ -239,44 +234,19 @@ export function createClaimSession(deps: {
     capability: (sessionID) => (capability?.sessionID === sessionID ? capability : undefined),
     runStarted: () => {
       if (taking === undefined) return;
-      runs += 1;
-      run = runs;
+      running = true;
+      // A read an earlier run started answers for that run alone, even where its end never came.
+      holdsRead?.turnEnded();
       taking.take.runStarted();
     },
     runEnded: (providerError) => {
-      run = undefined;
-      held = [];
+      running = false;
+      holdsRead?.turnEnded();
       return taking?.take.runEnded(providerError);
     },
     reportRefused: (number) => taking?.take.reportRefused(number),
     taskNote: () => taking?.take.noteFor(),
     taskPending: () => taking?.take.pending() ?? false,
-    heldNotes: () => {
-      const from = holdsFrom;
-      if (from === undefined || run === undefined) return [];
-      const due = held.filter((take) => !noted.has(`${take.role} ${take.task}`));
-      for (const take of due) noted.add(`${take.role} ${take.task}`);
-      const now = deps.now();
-      if (lastHoldsRead === undefined || now - lastHoldsRead >= HOLDS_READ_EVERY_MS) {
-        lastHoldsRead = now;
-        const during = run;
-        void from.daemon
-          .task(from.caller, { signal: AbortSignal.timeout(HOLDS_READ_BOUND_MS) })
-          .then(
-            (reading) => {
-              // The run it was read in has ended, and each take it names is accepted at that end.
-              if (run !== during) return;
-              held = reading.holds ?? [];
-            },
-            (error: unknown) => {
-              logger.debug(
-                `legion: a claims/task read of the takes held behind this turn failed or had no answer within ${HOLDS_READ_BOUND_MS} ms; it notes nothing`,
-                { error: messageFor(error) }
-              );
-            }
-          );
-      }
-      return due;
-    },
+    heldNotes: () => (running ? (holdsRead?.holds() ?? []) : []),
   };
 }

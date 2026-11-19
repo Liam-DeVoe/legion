@@ -92,8 +92,9 @@ import {
   roleHeldBy,
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
-import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import { claimCaller, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { findPushedBranchHead, paneHandoffReport } from "@legion/pi-shared/handoff-record"
+import { createHoldsRead, HOLDS_READ_BOUND_MS } from "@legion/pi-shared/holds-read"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
@@ -115,7 +116,6 @@ import { claudeProjectDirectory, claudeSessionId, configuredValue } from "./clau
 import { inboundOffChannelSession, serveEnvoyOff } from "./envoy-off"
 import { installedPluginVersion } from "./installed-build"
 import {
-  createHoldsRead,
   endPane,
   type LegionClaim,
   legionPane,
@@ -2373,14 +2373,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The claim's boot, for the endpoint's resume reminder and its recreated-workspace notice: both
   // need the claim, and the claim starts further down, once the channel session exists.
   const claimBooted = Promise.withResolvers<void>()
-  // dispatch://INFRA-4130 R2: the claim's own `claims/task`, read at the worker's tool calls for
-  // the takes of the issue's other claims the daemon holds behind its turn.
-  const holdsRead =
-    daemon === undefined
-      ? undefined
-      : createHoldsRead({ daemon, claim: () => claim?.capability(), now: Date.now, log: logLegion })
   const phaseHook =
-    pane === undefined || daemon === undefined || holdsRead === undefined
+    pane === undefined || daemon === undefined
       ? undefined
       : createPhaseHookEndpoint({
           stateFile: phaseStallFile(pane.configDir, identity.id),
@@ -2395,8 +2389,25 @@ export async function runEnvoyChannelServer(): Promise<void> {
           // R6 and R1: the bridge holds the claim's take, and says whether it holds one pending
           // and which task the turn running did not take. A pane with no inbox has none to ask.
           takePending: async () => inbox?.takePending(),
-          holds: holdsRead.holds,
-          turnEnded: holdsRead.turnEnded,
+          // R2: the claim's own `claims/task`, read at the worker's tool calls for the takes of
+          // the issue's other claims the daemon holds behind its turn, with the claim's caller
+          // once it is registered. The bridge holds the claim's own value, handed it from the
+          // relay and the claim's own reads (`startLegionClaim`), so this read hands it nothing.
+          holdsRead: createHoldsRead({
+            daemon,
+            caller: () => {
+              const registered = claim?.capability()
+              return registered === undefined
+                ? undefined
+                : claimCaller(registered, registered.sessionID)
+            },
+            now: Date.now,
+            failed: (error) => {
+              logLegion(
+                `a claims/task read of the takes held behind this turn failed or had no answer within ${HOLDS_READ_BOUND_MS} ms; it notes nothing: ${messageFor(error)}`,
+              )
+            },
+          }),
         })
   const toolDefinitions = [
     ...channelToolDefinitions(),

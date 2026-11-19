@@ -31,25 +31,23 @@ export const INBOX_CAPABILITIES = [
 /** How long a take-pending query (`LegionInbox.takePending`) waits for the bridge's answer. */
 export const TAKE_PENDING_TIMEOUT_MS = 2_000
 
-/**
- * What the bridge answers a take-pending query (`TakePendingAnswer` in
- * `packages/daemon/internal/claudebridge/inbox.go`): whether the claim's take holds a task — a
- * value it will ask about, a take in flight, an accepted take whose turn has not started, or a
- * take refused `in-turn` during the turn running — and the number of the task the claim is owed
- * that the turn running did not take, 0 when no turn runs or none waits.
- */
-export interface TakePending {
-  readonly pending: boolean
-  readonly waiting: number
-}
-
 /** The bridge's line back for a take-pending query: `ok` under the query's id, with the answer.
  * An older bridge refuses the kind with an error instead, and its line carries no answer. */
 const takePendingAnswer = z.object({
   id: z.string(),
   ok: z.literal(true),
+  /**
+   * What the bridge answers a take-pending query (`TakePendingAnswer` in
+   * `packages/daemon/internal/claudebridge/inbox.go`): whether the claim's take holds a task — a
+   * value it will ask about, a take in flight, an accepted take whose turn has not started, or a
+   * take refused `in-turn` during the turn running — and the number of the task the claim is
+   * owed that the turn running did not take, 0 when no turn runs or none waits.
+   */
   takePending: z.object({ pending: z.boolean(), waiting: z.number().int().nonnegative() }),
 })
+
+/** What the bridge answers a take-pending query (`takePendingAnswer`'s `takePending`). */
+export type TakePending = z.output<typeof takePendingAnswer>["takePending"]
 
 /** `InboxAnswer`: the bridge's line back for one delivery, once Claude Code took it or cannot. */
 interface InboxAnswer {

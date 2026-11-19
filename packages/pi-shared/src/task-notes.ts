@@ -27,3 +27,15 @@ export function heldTakeNote(role: string, number: number): string {
     "carries no task."
   );
 }
+
+/** What a host adds at one step: R1's note of the claim's own task `waiting` first, where one is
+ * given, then R2's note of each take in `held`, joined by a blank line; undefined where there is
+ * none. Which number and which takes are due at that step is each host's own rule. */
+export function taskNotes(
+  waiting: number | undefined,
+  held: readonly { role: string; task: number }[]
+): string | undefined {
+  const notes = waiting === undefined ? [] : [taskWaitingNote(waiting)];
+  for (const { role, task } of held) notes.push(heldTakeNote(role, task));
+  return notes.length === 0 ? undefined : notes.join("\n\n");
+}

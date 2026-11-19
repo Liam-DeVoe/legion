@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import type { LegionState } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
 import type { ActivityInput } from "@legion/pi-shared/daemon-client"
+import type { HoldsRead } from "@legion/pi-shared/holds-read"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import {
   createPhaseReminder,
@@ -17,11 +18,10 @@ import {
   sessionActivityRequest,
 } from "@legion/pi-shared/session-activity"
 import { stallLimits } from "@legion/pi-shared/stall-limits"
-import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes"
+import { taskNotes } from "@legion/pi-shared/task-notes"
 import { workspaceRecreated, workspaceRecreatedNotice } from "@legion/pi-shared/workspace-recreated"
 import { z } from "zod"
 import { configuredValue } from "./claude-session"
-import type { HeldTake } from "./legion-claim"
 import type { TakePending } from "./legion-inbox"
 
 /**
@@ -59,8 +59,9 @@ import type { TakePending } from "./legion-inbox"
  * answers that a take is pending, the `Stop` blocks nothing and the timer sends nothing. The same
  * answer names the task the turn running did not take (R1), and the claim's own `claims/task`
  * names the takes of the issue's other claims the daemon holds behind this turn (R2,
- * `createHoldsRead` in `./legion-claim`): a `PostToolUse` of the worker's own tells it of each,
- * once, as the hook's `additionalContext`, which reaches the model with its next request.
+ * `createHoldsRead` in `@legion/pi-shared/holds-read`): a `PostToolUse` of the worker's own tells
+ * it of each, once, as the hook's `additionalContext`, which reaches the model with its next
+ * request.
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -213,13 +214,11 @@ export interface PhaseHookDeps {
    * gives no answer — a refusal, as an older bridge's, no answer within the query's bound, or a
    * pane with no inbox — which this endpoint reads as no take pending and no task waiting. */
   readonly takePending: () => Promise<TakePending | undefined>
-  /** The takes the claim's holds read of this turn named (`HoldsRead.holds`, `./legion-claim`),
-   * called at each `PostToolUse` of the worker's own, which starts the next read where one is
-   * due and does not wait for it. */
-  readonly holds: () => readonly HeldTake[]
-  /** The worker's turn ended — a `Stop` that blocks nothing, a `StopFailure` — so the holds read
-   * drops what it named in it (`HoldsRead.turnEnded`). */
-  readonly turnEnded: () => void
+  /** The claim's holds read (`createHoldsRead`, `@legion/pi-shared/holds-read`): its `holds` is
+   * called at each `PostToolUse` of the worker's own, which starts the next read where one is due
+   * and does not wait for it, and its `turnEnded` at the worker's turn's end — a `Stop` that
+   * blocks nothing, a `StopFailure` — which drops what the turn's reads named. */
+  readonly holdsRead: HoldsRead
 }
 
 /** `<CLAUDE_CONFIG_DIR>/legion-phase-stall-<session id>.json`, the path the Go bridge built while
@@ -445,10 +444,9 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   })
   reminder.restore(restored.entry)
 
-  /** The numbers of the claim's own tasks this process has noted (R1), and the role and number of
-   * each take of another claim it has noted (R2): each is noted once. */
+  /** The numbers of the claim's own tasks this process has noted (R1), each once. The holds read
+   * gives each take of another claim once itself (R2). */
   const notedTasks = new Set<number>()
-  const notedHolds = new Set<string>()
 
   /**
    * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
@@ -554,7 +552,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           })
           // A `Stop` that blocks nothing ends the turn, and the daemon accepts each take the holds
           // read named at that end; a block continues the same turn, and the holds stand.
-          if (reminded === undefined) deps.turnEnded()
+          if (reminded === undefined) deps.holdsRead.turnEnded()
           // After the settle, so the report carries the wake that settle armed. The daemon
           // releases no claim whose last report is older than its last turn, so it goes at every
           // settle, whatever it says.
@@ -573,7 +571,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })
-          deps.turnEnded()
+          deps.holdsRead.turnEnded()
           return {}
         }
         case "PostToolUse":
@@ -593,24 +591,16 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // The holds read starts here, where one is due, and nothing waits for it: what it names
           // is noted at the first `PostToolUse` after its answer. The bridge's answer is waited
           // for, within its own 2 s bound and the hook's 10 s.
-          const held = deps.holds()
+          const held = deps.holdsRead.holds()
           const waiting = (await deps.takePending())?.waiting ?? 0
-          const notes: string[] = []
-          if (waiting > 0 && !notedTasks.has(waiting)) {
-            notedTasks.add(waiting)
-            notes.push(taskWaitingNote(waiting))
-          }
-          for (const { role, task } of held) {
-            const key = `${role} ${task}`
-            if (notedHolds.has(key)) continue
-            notedHolds.add(key)
-            notes.push(heldTakeNote(role, task))
-          }
-          if (notes.length === 0) return {}
+          const owed = waiting > 0 && !notedTasks.has(waiting) ? waiting : undefined
+          if (owed !== undefined) notedTasks.add(owed)
+          const notes = taskNotes(owed, held)
+          if (notes === undefined) return {}
           return {
             hookSpecificOutput: {
               hookEventName: "PostToolUse",
-              additionalContext: notes.join("\n\n"),
+              additionalContext: notes,
             },
           }
         }

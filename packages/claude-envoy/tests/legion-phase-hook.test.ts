@@ -7,11 +7,15 @@ import {
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport"
-import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import {
+  type ActivityInput,
+  claimCaller,
+  createLegionDaemonClient,
+} from "@legion/pi-shared/daemon-client"
+import { createHoldsRead } from "@legion/pi-shared/holds-read"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
 import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes"
-import { createHoldsRead, type HeldTake } from "../src/legion-claim"
 import { createInboxNotifier, type TakePending } from "../src/legion-inbox"
 import {
   createPhaseHookEndpoint,
@@ -82,9 +86,9 @@ interface Harness {
   readonly takePendingQueries: () => number
   /** The body of each `claims/task` read the holds read made, in order. */
   readonly taskReads: readonly unknown[]
-  /** The takes the holds read's latest answer named, read as the endpoint reads them; the clock
-   * the read goes by stands still, so this starts no read once one has started. */
-  readonly held: () => readonly HeldTake[]
+  /** How many of the holds read's `claims/task` reads the daemon has answered. Whatever reads a
+   * count that includes an answer finds the holds read holding that answer too. */
+  readonly answered: () => number
   /** Moves the holds read's clock on by `ms`. */
   readonly advance: (ms: number) => void
   readonly close: () => Promise<void>
@@ -149,11 +153,28 @@ async function harness(
   const daemon = createLegionDaemonClient("http://daemon.test", fetchStub)
   const lines: string[] = []
   let now = Date.parse("2026-11-19T20:00:00Z")
+  let answered = 0
   const holdsRead = createHoldsRead({
-    daemon,
-    claim: () => options.claim,
+    daemon: {
+      task: (input, init) => {
+        const reading = daemon.task(input, init)
+        // Counted by a handler on the answer itself, attached ahead of the holds read's own: that
+        // one runs straight after this one, before anything that can read the count.
+        void reading.then(
+          () => {
+            answered += 1
+          },
+          () => undefined,
+        )
+        return reading
+      },
+    },
+    caller: () =>
+      options.claim === undefined ? undefined : claimCaller(options.claim, options.claim.sessionID),
     now: () => now,
-    log: (line) => lines.push(line),
+    failed: (error) => {
+      lines.push(`holds read failed: ${String(error)}`)
+    },
   })
   let takePendingQueries = 0
   const inbox: string[] = []
@@ -186,8 +207,7 @@ async function harness(
       takePendingQueries += 1
       return options.takePending?.(takePendingQueries)
     },
-    holds: holdsRead.holds,
-    turnEnded: holdsRead.turnEnded,
+    holdsRead,
   })
   return {
     endpoint,
@@ -201,7 +221,7 @@ async function harness(
     lines,
     takePendingQueries: () => takePendingQueries,
     taskReads,
-    held: holdsRead.holds,
+    answered: () => answered,
     advance: (ms) => {
       now += ms
     },
@@ -744,7 +764,7 @@ test("a PostToolUse while the bridge holds an unasked task value adds one note n
 test("a PostToolUse while the daemon names a take held behind this turn adds one note naming the role and its number", async () => {
   const readings: PromiseWithResolvers<Record<string, unknown>>[] = []
   let waiting = 0
-  const { endpoint, taskReads, held, advance, close } = await harness({
+  const { endpoint, taskReads, answered, advance, close } = await harness({
     record: recorded("open", 0),
     claim: implementer,
     takePending: async () => ({ pending: waiting > 0, waiting }),
@@ -772,7 +792,7 @@ test("a PostToolUse while the daemon names a take held behind this turn adds one
       },
     ])
     readings[0]?.resolve(holding({ role: "tester", task: 7 }))
-    await waitFor(async () => held().length > 0, "the holds read's answer")
+    await waitFor(async () => answered() === 1, "the holds read's answer")
     expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
     // Once for each held take, and no second read inside the minute.
     expect(await toolCall()).toEqual({})
@@ -784,7 +804,7 @@ test("a PostToolUse while the daemon names a take held behind this turn adds one
     expect(await toolCall()).toEqual({})
     expect(taskReads).toHaveLength(2)
     readings[1]?.resolve(holding({ role: "tester", task: 7 }, { role: "reviewer", task: 9 }))
-    await waitFor(async () => held().length === 2, "the second holds read's answer")
+    await waitFor(async () => answered() === 2, "the second holds read's answer")
     waiting = 6
     expect(await toolCall()).toEqual(noted(taskWaitingNote(6), heldTakeNote("reviewer", 9)))
 
@@ -798,16 +818,13 @@ test("a PostToolUse while the daemon names a take held behind this turn adds one
     ).toEqual({})
     readings[2]?.resolve(holding({ role: "planner", task: 11 }))
     await endpoint.handle({ event: "UserPromptSubmit", prompt: "Carry on with LEGION-208." })
-    // Nothing is to happen, so there is no condition to wait for: the file's own small multiple
-    // of the 20 ms interval, as its other nothing-happens cases use.
-    await Bun.sleep(40)
-    expect(held()).toEqual([])
+    await waitFor(async () => answered() === 3, "the ended turn's holds read's answer")
     expect(await toolCall()).toEqual({})
     // The planner's take, still held a minute into the new turn, is noted from that turn's read.
     advance(60_000)
     expect(await toolCall()).toEqual({})
     readings[3]?.resolve(holding({ role: "planner", task: 11 }))
-    await waitFor(async () => held().length > 0, "the new turn's holds read's answer")
+    await waitFor(async () => answered() === 4, "the new turn's holds read's answer")
     expect(await toolCall()).toEqual(noted(heldTakeNote("planner", 11)))
   } finally {
     await close()
@@ -818,7 +835,7 @@ test("a PostToolUse while the daemon names a take held behind this turn adds one
 // alone can end the turn a note asks it to end. It asks the bridge nothing, starts no holds read,
 // and uses up no note: the worker's own next call carries them.
 test("a subagent's PostToolUse carries no task note", async () => {
-  const { endpoint, record, takePendingQueries, taskReads, held, close } = await harness({
+  const { endpoint, record, takePendingQueries, taskReads, answered, close } = await harness({
     record: recorded("open", 2),
     claim: implementer,
     takePending: async () => ({ pending: true, waiting: 4 }),
@@ -836,7 +853,7 @@ test("a subagent's PostToolUse carries no task note", async () => {
 
     expect(await endpoint.handle(worker)).toEqual(noted(taskWaitingNote(4)))
     expect(taskReads).toHaveLength(1)
-    await waitFor(async () => held().length > 0, "the holds read's answer")
+    await waitFor(async () => answered() === 1, "the holds read's answer")
     expect(await endpoint.handle({ event: "PostToolUse", ...subagent })).toEqual({})
     expect(await endpoint.handle(worker)).toEqual(noted(heldTakeNote("tester", 7)))
   } finally {
