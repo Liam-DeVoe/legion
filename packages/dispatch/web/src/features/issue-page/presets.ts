@@ -312,15 +312,12 @@ function withoutClosed(node: TreeNode): TreeNode {
  * The Decisions filter over `root` with every closed node left out, with its subtree: an
  * overtaken ask or decision, and each node under one, is in none of the view's parts and drawn
  * nowhere, so the view's tree holds none of them. Its count still counts them, as every
- * filter's control counts its query's own nodes: `matches` is the whole view's, less each
- * decision restating an answer that only the whole view holds, since `filterSignals` takes
- * those off by what this view's tree holds (`restatedAnswers`).
+ * filter's control counts its query's own nodes: `matches` is the whole view's.
  */
 function openDecisionsView(root: TreeNode, wanted: string, named: ReadonlySet<string>): PresetView {
   const whole = filterView(root, "decisions", wanted, named);
   const open = filterView(withoutClosed(root), "decisions", wanted, named);
-  const restatedOnlyInWhole = restatedAnswers(whole.root) - restatedAnswers(open.root);
-  return { ...open, matches: whole.matches - restatedOnlyInWhole };
+  return { ...open, matches: whole.matches };
 }
 
 /**

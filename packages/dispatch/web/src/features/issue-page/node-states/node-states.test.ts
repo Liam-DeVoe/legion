@@ -14,7 +14,12 @@ import {
 } from "react-router-dom";
 
 import { api, type WriteRequest } from "../../../api/client";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  issueTreeKey,
+} from "../../../api/queries";
 import type { CheckBlock, IssueCheckResults, IssueDetails } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
@@ -88,12 +93,7 @@ import {
 } from "../spec-filter/spec-fixtures";
 import { pathTo } from "../tree-fold";
 import { statesOfRead } from "../tree-read/tree-nodes";
-import {
-  issueTreeKey,
-  type TreeAnswer,
-  type TreeAnswerNode,
-  viewKey,
-} from "../tree-read/tree-read";
+import { type TreeAnswer, type TreeAnswerNode, viewKey } from "../tree-read/tree-read";
 import { useIssueKeymap } from "../useIssueKeymap";
 import { VerificationFilterBody } from "../verification-filter/VerificationFilterBody";
 import {

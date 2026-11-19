@@ -623,7 +623,7 @@ test("a decision node no document holds waits on nobody", () => {
  *  that waits on her: the two read the same open asks and the same decision nodes. */
 function countedAndDrawn(tree: TreeAnswer, about: IssueDetails) {
   return {
-    counted: waitingOnReader(about, "alice", isStatement, tree),
+    counted: waitingOnReader(about, "alice", isCoverageStatement, tree),
     drawn: waitingIn(buildIssueTree({ coverage, issue: about, tree, viewer: "alice" })),
   };
 }

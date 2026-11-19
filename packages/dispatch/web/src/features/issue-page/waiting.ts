@@ -66,7 +66,7 @@ export function waitingOnReader(
     return waitingOnReader(
       { ...issue, open_asks: (issue.open_asks ?? []).filter((ask) => !askIn(closed, ask)) },
       viewer,
-      isStatement,
+      isCoverageStatement,
       { ...tree, nodes: tree.nodes.filter((node) => !closed.has(nodeKey(node))) }
     );
   }

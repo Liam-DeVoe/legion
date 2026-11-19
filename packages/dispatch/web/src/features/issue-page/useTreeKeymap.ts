@@ -110,8 +110,11 @@ type LineRow = Extract<DrawnRow, { kind: "overtaken" }>;
 /** Every row the keys step through: a node's own row, and a line of overtaken nodes. */
 type KeyedRow = NodeRow | LineRow;
 
-/** Every `KeyedRow` as the browser holds it, in the order the fold drew them. */
-const NODE_ROW = "[data-node-row], [data-overtaken-line]";
+const NODE_ROW = "[data-node-row]";
+
+/** Every `KeyedRow` as the browser holds it, in the order the fold drew them. A list of its own,
+ *  not `NODE_ROW`, which a selector built on it (`KEPT_SCROLLER`) reads as one row. */
+const KEYED_ROW = `${NODE_ROW}, [data-overtaken-line]`;
 
 /** How far a tree reaches when a key steps to its end. */
 const END = Number.MAX_SAFE_INTEGER;
@@ -236,7 +239,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   /** The rows as the browser holds them, beside the fold's rows less its deeper lines: the nth
    *  element is the nth node row or line of overtaken nodes, so one index answers for both. */
   const drawn = (): { elements: HTMLElement[]; rows: KeyedRow[] } => ({
-    elements: [...(tree.container.current?.querySelectorAll<HTMLElement>(NODE_ROW) ?? [])],
+    elements: [...(tree.container.current?.querySelectorAll<HTMLElement>(KEYED_ROW) ?? [])],
     // A line of overtaken nodes is a row of its own here, as it is in the browser's.
     rows: tree.rows.filter((row): row is KeyedRow => row.kind !== "deeper"),
   });
