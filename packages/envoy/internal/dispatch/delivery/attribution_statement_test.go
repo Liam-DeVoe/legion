@@ -159,8 +159,12 @@ func listedFor(t *testing.T, ctx context.Context, pool *store.Pool, issue string
 	return listed
 }
 
-// readersOf is what the three readers by issue that need a head answer for issue: whether sha is
-// its head, the newest head's repository and number, and the base branch of its merged head.
+// readersOf is what the readers by issue answer for issue: the three that need a head (whether
+// sha is its head, the newest head's repository and number, and the base branch of its merged
+// head), and the two of the timeline: each timeline row that the timeline's window gives to issue
+// (ListPullRequestsInWindow, which reads each row's issue through attributedIssues, as the waiting
+// line and issue.deployed do), and each one that ListPullRequestsOfIssues lists for issue. A
+// timeline row is in the window only once it is merged (mergeTimelineRow).
 func readersOf(t *testing.T, ctx context.Context, pool *store.Pool, issue, sha string) string {
 	t.Helper()
 	at, err := HeadAttributedTo(ctx, pool, issue, sha)
@@ -179,7 +183,25 @@ func readersOf(t *testing.T, ctx context.Context, pool *store.Pool, issue, sha s
 	if found {
 		newestLine = fmt.Sprintf("%s#%d", newest.Repo, newest.Number)
 	}
-	return fmt.Sprintf("at head %v, newest %s, base %q", at, newestLine, branch)
+	window, err := ListPullRequestsInWindow(ctx, pool, time.Unix(0, 0), time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("ListPullRequestsInWindow: %v", err)
+	}
+	inWindow := []string{}
+	for _, pr := range window {
+		if pr.IssueKey != nil && *pr.IssueKey == issue {
+			inWindow = append(inWindow, fmt.Sprintf("%s#%d", pr.Repo, pr.Number))
+		}
+	}
+	ofIssue, err := ListPullRequestsOfIssues(ctx, pool, []string{issue})
+	if err != nil {
+		t.Fatalf("ListPullRequestsOfIssues(%s): %v", issue, err)
+	}
+	listed := []string{}
+	for _, pr := range ofIssue {
+		listed = append(listed, fmt.Sprintf("%s#%d", pr.Repo, pr.Number))
+	}
+	return fmt.Sprintf("at head %v, newest %s, base %q, window %v, of issues %v", at, newestLine, branch, inWindow, listed)
 }
 
 func wantAnswer(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int, want string) {
@@ -354,9 +376,9 @@ func TestTheFallbackIsTheResultsRowsAnswerThenTheTimelines(t *testing.T) {
 	wantListed(t, ctx, pool, "ACME-112", "#111")
 	wantListed(t, ctx, pool, "ACME-113", "#113")
 	wantListed(t, ctx, pool, "ACME-111", "#114?")
-	wantReaders(t, ctx, pool, "ACME-112", headOf(111), `at head true, newest acme/stmt#111, base "main"`)
-	wantReaders(t, ctx, pool, "ACME-113", headOf(113), `at head true, newest acme/stmt#113, base "main"`)
-	wantReaders(t, ctx, pool, "ACME-111", headOf(111), `at head false, newest none, base ""`)
+	wantReaders(t, ctx, pool, "ACME-112", headOf(111), `at head true, newest acme/stmt#111, base "main", window [], of issues [acme/stmt#111]`)
+	wantReaders(t, ctx, pool, "ACME-113", headOf(113), `at head true, newest acme/stmt#113, base "main", window [], of issues [acme/stmt#113]`)
+	wantReaders(t, ctx, pool, "ACME-111", headOf(111), `at head false, newest none, base "", window [], of issues [acme/stmt#114]`)
 }
 
 // An unread results row whose texts describe its head answers the statement, not its mark.
@@ -366,9 +388,9 @@ func TestAnUnreadRowWithValidTextsAnswersTheStatement(t *testing.T) {
 	storeStatementRow(t, ctx, pool, statementRow{number: 121, branch: "legion/ACME-121", title: "no key", stored: new("ACME-129"), unread: true, texts: readTexts("")})
 	wantAnswer(t, ctx, pool, statementRepo, 121, "ACME-121 from branch")
 	wantListed(t, ctx, pool, "ACME-121", "#121")
-	wantReaders(t, ctx, pool, "ACME-121", headOf(121), `at head true, newest acme/stmt#121, base "main"`)
+	wantReaders(t, ctx, pool, "ACME-121", headOf(121), `at head true, newest acme/stmt#121, base "main", window [], of issues []`)
 	wantListed(t, ctx, pool, "ACME-129")
-	wantReaders(t, ctx, pool, "ACME-129", headOf(121), `at head false, newest none, base ""`)
+	wantReaders(t, ctx, pool, "ACME-129", headOf(121), `at head false, newest none, base "", window [], of issues []`)
 }
 
 // A pull request with a timeline row only is listed for its issue with no head, and the readers
@@ -378,7 +400,7 @@ func TestHeadsAttributedToNamesAPullRequestWhoseHeadIsNotRead(t *testing.T) {
 	statementIssues(t, ctx, pool, "ACME-131")
 	storeStatementRow(t, ctx, pool, statementRow{number: 131, title: "t", noHead: true, timeline: &statementTimeline{issue: new("ACME-131")}})
 	wantListed(t, ctx, pool, "ACME-131", "#131?")
-	wantReaders(t, ctx, pool, "ACME-131", headOf(131), `at head false, newest none, base ""`)
+	wantReaders(t, ctx, pool, "ACME-131", headOf(131), `at head false, newest none, base "", window [], of issues [acme/stmt#131]`)
 }
 
 // No reader answers a stored issue for a pull request with facts, on either of its rows. That holds
@@ -393,7 +415,7 @@ func TestNoReaderAnswersAStoredIssueForAPullRequestWithFacts(t *testing.T) {
 	wantAnswer(t, ctx, pool, statementRepo, 141, "ACME-141 from branch")
 	wantAnswer(t, ctx, pool, statementRepo, 142, "nobody from none")
 	wantListed(t, ctx, pool, "ACME-149")
-	wantReaders(t, ctx, pool, "ACME-149", headOf(141), `at head false, newest none, base ""`)
+	wantReaders(t, ctx, pool, "ACME-149", headOf(141), `at head false, newest none, base "", window [], of issues []`)
 	for _, number := range []int{141, 142} {
 		mergeTimelineRow(t, ctx, pool, statementRepo, number)
 	}
@@ -425,7 +447,7 @@ func TestTheStatementReadsEverySideThroughTheRenamingRule(t *testing.T) {
 	wantAnswer(t, ctx, pool, renamedRepo, 5, "RENM-5 from branch")
 	wantAnswer(t, ctx, pool, "acme/new", 5, "RENM-5 from branch")
 	wantListed(t, ctx, pool, "RENM-5", "#5")
-	wantReaders(t, ctx, pool, "RENM-5", headOf(5), `at head true, newest acme/new#5, base "main"`)
+	wantReaders(t, ctx, pool, "RENM-5", headOf(5), `at head true, newest acme/new#5, base "main", window [], of issues [acme/old#5]`)
 	wantListed(t, ctx, pool, "RENM-4")
 }
 

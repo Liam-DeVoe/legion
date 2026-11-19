@@ -342,7 +342,7 @@ func TestARenameAfterBothRowsExistKeepsOneIssueForEveryReader(t *testing.T) {
 		`update repo_projects set renamed_to = $2 where repo = $1`, timelineOldRepo, timelineNewRepo)
 	var shipped []shippedPullRequest
 	readers := func(t *testing.T) {
-		wantReaders(t, ctx, pool, "ACME-5", headOf(5), `at head true, newest acme/timeline-new#5, base "main"`)
+		wantReaders(t, ctx, pool, "ACME-5", headOf(5), `at head true, newest acme/timeline-new#5, base "main", window [acme/timeline-old#5], of issues [acme/timeline-old#5]`)
 		wantListed(t, ctx, pool, "ACME-5", "#5")
 		wantListed(t, ctx, pool, "ACME-4")
 		wantAnswer(t, ctx, pool, timelineOldRepo, 5, "ACME-5 from branch")
