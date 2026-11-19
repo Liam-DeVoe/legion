@@ -162,6 +162,14 @@ on:
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
+    inputs:
+      # The commit main pointed at before the push the bypass check read: envoy-go-checks compares
+      # every migration it holds with this run's tree, the range the push landed. A dispatch
+      # without it fails that check, which cannot tell what the run lands.
+      migration-base:
+        description: The commit main pointed at before the push this run tests.
+        type: string
+        required: false
 
 # A newer push to a pull request cancels its older run, waiting or running. On pull_request the key
 # is the pull request's number: tests-closed.yaml joins this same group when the pull request
@@ -857,6 +865,7 @@ jobs:
               - 'packages/daemon/internal/registry/*'
               - 'packages/daemon/internal/repocache/*'
               - 'packages/daemon/internal/reviewround/*'
+              - 'packages/daemon/internal/rolefile/*'
               - 'packages/daemon/internal/runtime/*'
               - 'packages/daemon/internal/runtime/sandbox/*'
               - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -1208,6 +1217,7 @@ jobs:
               - '!packages/daemon/internal/record/**/*_test.go'
               - '!packages/daemon/internal/registry/**/*_test.go'
               - '!packages/daemon/internal/repocache/**/*_test.go'
+              - '!packages/daemon/internal/rolefile/**/*_test.go'
               - '!packages/daemon/internal/runtime/**/*_test.go'
               - '!packages/daemon/internal/sessionproxy/**/*_test.go'
               - '!packages/daemon/internal/shim/**/*_test.go'
@@ -2943,6 +2953,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
+              - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -2981,6 +2992,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
+              - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -3207,9 +3219,8 @@ jobs:
               - *listener_command
               # What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
               # not, so listener_command, which is that build closure, leaves them to the jobs
-              # that run the tests: the chat client, the redirect table and the router.
+              # that run the tests: the chat client and the router.
               - 'packages/envoy/going/*'
-              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/routing/*'
               # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
               # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
@@ -4300,6 +4311,7 @@ jobs:
               - 'packages/daemon/internal/registry/*'
               - 'packages/daemon/internal/repocache/*'
               - 'packages/daemon/internal/reviewround/*'
+              - 'packages/daemon/internal/rolefile/*'
               - 'packages/daemon/internal/runtime/*'
               - 'packages/daemon/internal/runtime/sandbox/*'
               - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -5450,6 +5462,7 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-go-checks.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+      migration-base: ${{ inputs.migration-base }}
 
   # The slow half: the unit tests of every package of the envoy module, the container-backed NATS
   # matrix and the integration suite, all against this job's Postgres. Its format, generated-code,
