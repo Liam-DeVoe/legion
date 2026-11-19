@@ -7,14 +7,15 @@
 # what they need and fetch nothing.
 #
 #   go-fetch.sh file FILE
-#     Run each line of FILE as one `deps` or `tools` command below, every line read and checked
-#     before the first runs. This is the form a CI job's fetch step and the ci-caches.yaml fill
-#     of its cache both run, on the same FILE (.github/go-fetch/<job>.txt), and the key of that
-#     cache hashes FILE and this script: a change to what a job fetches is then a change to the
-#     key, so the next fill holds it and no run downloads the difference while its tests run.
+#     Run each line of FILE as one `deps`, `tools` or `tidy` command below, every line read and
+#     checked before the first runs. This is the form a CI job's fetch step and the ci-caches.yaml
+#     fill of its cache both run, on the same FILE (.github/go-fetch/<job>.txt), and the key of
+#     that cache hashes FILE and this script: a change to what a job fetches is then a change to
+#     the key, so the next fill holds it and no run downloads the difference while its tests run.
 #     One command a line, `#` starting a comment anywhere on it, blank lines passed over:
 #       [GOOS=<os>] [GOARCH=<arch>] [CGO_ENABLED=<0|1>] [GOWORK=off] deps DIR [-test] [-tags T] PACKAGE...
 #       tools FILE
+#       tidy DIR
 #     DIR and the tools FILE are read from the repository root, whatever directory this runs in.
 #     The settings in front of `deps` are the platform a step builds for (a darwin vet, a
 #     CGO_ENABLED=0 build): `go list -deps` follows the imports of one GOOS, GOARCH and cgo
@@ -22,6 +23,16 @@
 #     of DIR's own module outside the go.work above it, as an image build that copies the module
 #     alone makes: its go.mod alone selects the versions, which the workspace's other modules can
 #     raise.
+#     A `tidy DIR` line downloads what `go mod tidy` of the module in DIR reads, for
+#     .github/scripts/check-go-tidy.sh, which runs `go mod tidy -diff` with the proxy off. That is
+#     more than any build of the module loads, and no `deps` line can name it: tidy reads every
+#     package any file of the module imports under any build tag and for any platform at once,
+#     the tests of each of those packages included (cmd/go's modcmd/tidy.go). So the line runs
+#     tidy itself, on a copy of the module's go.mod and go.sum (-modfile): the copy takes what
+#     tidy writes, and the module's own two files stay as they are, so the check after this step
+#     still sees an untidy module as it is. Not `go mod tidy -diff`, which exits 1 for an untidy
+#     module: the retry below would read that as a fault of the proxy and try again, and the
+#     check, which names the module and its diff, would not run.
 #   go-fetch.sh tools FILE
 #     `go install` each pin FILE lists, one package path and version per line
 #     (`helm.sh/helm/v3/cmd/helm@v3.20.2`; `#` starts a comment), into the directory
@@ -151,11 +162,37 @@ list_deps() {
   retry go list -deps "$@" > /dev/null
 }
 
+# tidy_module DIR: download what `go mod tidy` of the module in DIR reads, tidy run on a copy of
+# the module's go.mod and go.sum in a directory of its own, removed after (the header's `tidy
+# DIR`). Each attempt copies them afresh. Run in a subshell of its own: it moves to DIR and sets
+# a trap.
+tidy_module() {
+  local dir=$1
+  [ -f "$dir/go.mod" ] || { echo "go-fetch: no go.mod in $dir" >&2; exit 2; }
+  copy=$(mktemp -d) || { echo "::error::go-fetch: could not make a directory for a copy of $dir/go.mod" >&2; exit 1; }
+  trap 'rm -rf "$copy"' EXIT
+  cd "$dir"
+  retry tidy_on_copy "$dir"
+}
+
+# tidy_on_copy DIR: one attempt of tidy_module, in DIR. A function that `retry` calls in an `if`
+# runs with errexit off, so each command of its own preparation says so itself, and a failure of
+# one ends the step at once, no fault of a service.
+tidy_on_copy() {
+  cp go.mod "$copy/go.mod" || { echo "::error::go-fetch: could not copy $1/go.mod into $copy" >&2; exit 1; }
+  rm -f "$copy/go.sum" || { echo "::error::go-fetch: could not clear $copy/go.sum" >&2; exit 1; }
+  if [ -f go.sum ]; then
+    cp go.sum "$copy/go.sum" || { echo "::error::go-fetch: could not copy $1/go.sum into $copy" >&2; exit 1; }
+  fi
+  # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
+  go mod tidy -modfile="$copy/go.mod" > /dev/null
+}
+
 # The settings a fetch FILE line may put in front of `deps`, and what each may be set to.
 PLATFORM_SETTING='^(GOOS|GOARCH)=[a-z0-9]+$|^CGO_ENABLED=[01]$|^GOWORK=off$'
 
 # run_file FILE: every line of FILE read and checked first, then each run in its turn, each
-# `deps` in a subshell of its own so its cd and its settings reach no other line.
+# `deps` and `tidy` in a subshell of its own so its cd and its settings reach no other line.
 run_file() {
   local file=$1 line text n=0 i
   local -a words settings commands=() where=()
@@ -190,8 +227,15 @@ run_file() {
         [ -f "$root/${words[1]}" ] || { echo "go-fetch: $file:$n: no file ${words[1]} under the repository root" >&2; exit 2; }
         read_pins "$root/${words[1]}"
         ;;
+      tidy)
+        if [ "${#words[@]}" -ne 2 ] || [ "${#settings[@]}" -gt 0 ]; then
+          echo "go-fetch: $file:$n: tidy names one module directory and no setting: tidy DIR" >&2
+          exit 2
+        fi
+        [ -f "$root/${words[1]}/go.mod" ] || { echo "go-fetch: $file:$n: no go.mod in ${words[1]} under the repository root" >&2; exit 2; }
+        ;;
       *)
-        echo "go-fetch: $file:$n: $text is no fetch command: deps DIR PACKAGE... or tools FILE" >&2
+        echo "go-fetch: $file:$n: $text is no fetch command: deps DIR PACKAGE..., tools FILE or tidy DIR" >&2
         exit 2
         ;;
     esac
@@ -208,14 +252,20 @@ run_file() {
       words=("${words[@]:1}")
     done
     echo "go-fetch: ${where[$i]}: ${commands[$i]}" >&2
-    if [ "${words[0]}" = deps ]; then
-      (
-        for setting in "${settings[@]}"; do export "${setting?}"; done
-        list_deps "$root/${words[1]}" "${words[@]:2}"
-      ) || exit $?
-    else
-      install_tools "$root/${words[1]}"
-    fi
+    case ${words[0]} in
+      deps)
+        (
+          for setting in "${settings[@]}"; do export "${setting?}"; done
+          list_deps "$root/${words[1]}" "${words[@]:2}"
+        ) || exit $?
+        ;;
+      tidy)
+        (tidy_module "$root/${words[1]}") || exit $?
+        ;;
+      *)
+        install_tools "$root/${words[1]}"
+        ;;
+    esac
   done
 }
 

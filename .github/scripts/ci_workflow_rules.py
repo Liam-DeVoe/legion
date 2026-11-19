@@ -396,7 +396,7 @@ def check_race_fill_packages(packages: list, problems: list) -> None:
 # restores it (actions/cache/restore, or actions/cache, which restores before the job's later
 # steps and saves after them), and the entry is there so that the job's fetch downloads nothing.
 # That fetch is each `go-fetch.sh file <fetch file>` line of the job's steps after the restore; a
-# fetch file is the list of go-fetch.sh's own `deps` and `tools` commands kept under
+# fetch file is the list of go-fetch.sh's own `deps`, `tools` and `tidy` commands kept under
 # .github/go-fetch/ (FETCH_COMMAND below). A go-fetch.sh line is a line of a step's run: script
 # that names GO_FETCH, read through script_lines, so a comment is none, and its fetch file is
 # resolved against the step's working directory (step_workdir: its own, else the job's or the
@@ -699,26 +699,28 @@ def check_fill(job_id: str, family: str, filled: tuple, readers: list, problems:
 # ------------------------------------------------------------ the keys of the Go module caches
 # A Go family's entry is right for a run only while it holds what that run's fetches download,
 # and files decide that: go-fetch.sh itself, the fetch files the family's readers run, each tools
-# pin file those name, and the module files of each deps line's workspace. A key that hashes them
-# all changes when any of them does, so a push to main that changes one fills a fresh entry. A key
-# that leaves one out is found unchanged after that file moves, and every reader then downloads
-# the difference on each run with nothing failing. A fetch file's line is one command (`#` starts
-# a comment anywhere on it, and a blank line is none):
+# pin file those name, the module files of each deps line's workspace, and those each tidy line's
+# module reads. A key that hashes them all changes when any of them does, so a push to main that
+# changes one fills a fresh entry. A key that leaves one out is found unchanged after that file
+# moves, and every reader then downloads the difference on each run with nothing failing. A fetch
+# file's line is one command (`#` starts a comment anywhere on it, and a blank line is none):
 #   [GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] [GOWORK=off] deps <dir> [go list flags and packages...]
 #   tools <file>
+#   tidy <dir>
 # with every path from the repository root, which FETCH_COMMAND spells. The hashFiles list is
 # compared as the literal paths it names, as every key of this repository names them; a glob in
 # it covers no file here, so such a key is refused, never passed.
 HASH_FILES = re.compile(r"-\$\{\{\s*hashFiles\((?P<files>[^)]*)\)\s*\}\}$")
 FETCH_COMMAND = re.compile(r"(?:GOOS=\S+\s+)?(?:GOARCH=\S+\s+)?(?:CGO_ENABLED=[01]\s+)?(?:GOWORK=off\s+)?deps\s+(?P<dir>[^\s-]\S*)(?:\s.*)?"
-                           r"|tools\s+(?P<file>\S+)")
+                           r"|tools\s+(?P<file>\S+)"
+                           r"|tidy\s+(?P<module>[^\s-]\S*)")
 
 
 @cache
 def fetch_file_commands(path: str):
-    """A fetch file's commands, as ([(line number, 'deps' or 'tools', its directory or file as a
-    repository path)], [(line number, a line that is neither)]), or None when the repository has
-    no such file."""
+    """A fetch file's commands, as ([(line number, 'deps', 'tools' or 'tidy', its directory or
+    file as a repository path)], [(line number, a line that is none of them)]), or None when the
+    repository has no such file."""
     if not (REPO / path).is_file():
         return None
     commands, faults = [], []
@@ -727,11 +729,11 @@ def fetch_file_commands(path: str):
         if not text:
             continue
         found = FETCH_COMMAND.fullmatch(text)
-        named = repository_path(found["dir"] or found["file"]) if found else ""
+        named = repository_path(found["dir"] or found["file"] or found["module"]) if found else ""
         if not found or named == ".." or named.startswith("../") or named.startswith("/"):
             faults.append((number, raw.strip()))
         else:
-            commands.append((number, "deps" if found["dir"] else "tools", named))
+            commands.append((number, "deps" if found["dir"] else "tidy" if found["module"] else "tools", named))
     return commands, faults
 
 
@@ -777,12 +779,53 @@ def module_files(directory: str) -> list:
     return []
 
 
+def replace_dirs(text: str) -> list:
+    """The directories a go.mod's replace directives name (`replace X [v] => ../y`), in the order
+    they name them: each replacement that is a path relative to the go.mod's own directory. A
+    module path with a version, and an absolute path, which names no file of this repository,
+    are left out."""
+    dirs, block = [], False
+    for raw in text.split("\n"):
+        line = raw.split("//", 1)[0].strip()
+        if block:
+            if line == ")":
+                block = False
+                continue
+            entry = line
+        elif re.match(r"replace\b", line):
+            entry = line[len("replace"):].strip()
+            if entry == "(":
+                block = True
+                continue
+        else:
+            continue
+        target = entry.split("=>", 1)[1].split() if "=>" in entry else []
+        if len(target) == 1 and re.match(r"\.\.?(/|$)", target[0].strip('"`')):
+            dirs.append(target[0].strip('"`'))
+    return dirs
+
+
+def tidy_files(directory: str) -> list:
+    """The module files `go mod tidy` in `directory` reads to choose its modules: the go.mod there
+    and the go.sum beside it, and the go.mod of each directory a replace directive of that go.mod
+    names (resolved against its own directory). Tidy reads no go.work, and go applies the main
+    module's replace directives alone. [] when the directory holds no go.mod, which go-fetch.sh
+    refuses too."""
+    if not (REPO / directory / "go.mod").is_file():
+        return []
+    files = [repository_path(directory, "go.mod"), repository_path(directory, "go.sum")]
+    for target in replace_dirs(read_repository_text(REPO / directory / "go.mod")):
+        files.append(repository_path(directory, target, "go.mod"))
+    return files
+
+
 def family_files(family: str, readers: list, filled: bool, problems: list) -> set:
     """The files every key of `family` must hash: GO_FETCH, each fetch file its readers run after
-    their restores, each tools file those name and the module files of each deps line's
-    workspace. A fetch file the repository does not have, or a line of one that is no command,
-    is refused. A reader's `deps`, `tools` or unreadable go-fetch.sh line is rule 21's refusal
-    for a family ci-caches.yaml fills (`filled`) and this rule's for any other (go-docs)."""
+    their restores, each tools file those name, the module files of each deps line's workspace and
+    those of each tidy line's module. A fetch file the repository does not have, or a line of one
+    that is no command, is refused. A reader's `deps`, `tools` or unreadable go-fetch.sh line is
+    rule 21's refusal for a family ci-caches.yaml fills (`filled`) and this rule's for any other
+    (go-docs)."""
     files = {GO_FETCH}
     for reader in readers:
         if not filled:
@@ -799,19 +842,24 @@ def family_files(family: str, readers: list, filled: bool, problems: list) -> se
             commands, faults = parsed
             for number, text in faults:
                 problems.append(error(fetch, f"line {number} of {fetch} is `{text}`, which is neither "
-                                             f"`[GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] [GOWORK=off] deps <dir> ...` nor "
-                                             f"`tools <file>` with its path from the repository root: go-fetch.sh's "
+                                             f"`[GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] [GOWORK=off] deps <dir> ...`, "
+                                             f"`tools <file>` nor `tidy <dir>` with its path from the repository "
+                                             f"root: go-fetch.sh's "
                                              f"{FILE_MODE} mode cannot run it, and this rule cannot read which files the "
                                              f"keys of the families that fetch it must hash"))
             for number, kind, named in commands:
                 if kind == "tools":
                     files.add(named)
                     continue
-                modules = module_files(named)
-                if not modules:
+                modules = module_files(named) if kind == "deps" else tidy_files(named)
+                if not modules and kind == "deps":
                     problems.append(error(fetch, f"line {number} of {fetch} runs deps in {named}, with no go.work or "
                                                  f"go.mod at or above it up to the repository root, so this rule cannot "
                                                  f"name the module files the keys of the families that fetch it must hash"))
+                elif not modules:
+                    problems.append(error(fetch, f"line {number} of {fetch} runs tidy in {named}, which holds no go.mod, "
+                                                 f"so this rule cannot name the module files the keys of the families "
+                                                 f"that fetch it must hash"))
                 files.update(modules)
     return files
 
@@ -823,10 +871,11 @@ def check_go_cache_keys(documents: dict, problems: list) -> list:
     go-docs) has a key that ends `-${{ hashFiles(<files>) }}`, and its list names every file
     family_files gives that family: go-fetch.sh, each fetch file the family's readers run (its
     readers read as check_go_fetch_fills reads them, over those workflows but ci-caches.yaml,
-    whose restores are lookups), each tools file those name and the module files of each deps
-    line's workspace. A key with no hashFiles, or a list missing a file, is refused naming the
-    workflow, the job, the step, the family and each missing file; a file the list names beyond
-    those is allowed. A save keyed `${{ steps.<id>.outputs.cache-primary-key }}` is held as the
+    whose restores are lookups), each tools file those name, the module files of each deps line's
+    workspace and those each tidy line's module reads (tidy_files). A key with no hashFiles, or a
+    list missing a file, is refused naming the workflow, the job, the step, the family and each
+    missing file; a file the list names beyond those is allowed. A save keyed
+    `${{ steps.<id>.outputs.cache-primary-key }}` is held as the
     key of that restore. It returns its report line on a pass that read at least one key."""
     start = len(problems)
     workflows = directory_workflows()

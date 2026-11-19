@@ -364,18 +364,21 @@
 #      calls, which restores and saves go-docs) whose key does not end
 #      `-${{ hashFiles(<files>) }}` with every file the family's entry depends on in that list:
 #      .github/scripts/go-fetch.sh; each fetch file the family's readers run, read as rule 21
-#      reads them; each `tools <file>` those fetch files name; and the module files of each
+#      reads them; each `tools <file>` those fetch files name; the module files of each
 #      `deps <dir>` line's workspace - the nearest go.work at or above <dir>, its go.work.sum
 #      and the go.mod and go.sum of each directory it uses, or with no go.work the nearest go.mod
-#      and its go.sum. It names the workflow, the job, the step, the family and each file the
-#      list lacks. A file beyond those is allowed, and the list is read as the literal paths it
-#      names, so a glob in it covers nothing. A fetch file holds one command a line, `#` starting
-#      a comment: `[GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] deps <dir> [go list flags and
-#      packages...]` or `tools <file>`, each path from the repository root; a line that is
-#      neither, and a fetch file a reader runs that the repository does not have, are refused
-#      too. A save keyed by its restore's `${{ steps.<id>.outputs.cache-primary-key }}` is held
-#      as that restore's key. A key that leaves out such a file is found unchanged after the
-#      file moves, so every reader downloads the difference on each run and nothing fails.
+#      and its go.sum; and those of each `tidy <dir>` line's module, which `go mod tidy` reads
+#      with no go.work: <dir>'s go.mod and go.sum, and the go.mod of each directory a replace
+#      directive of that go.mod names. It names the workflow, the job, the step, the family and
+#      each file the list lacks. A file beyond those is allowed, and the list is read as the
+#      literal paths it names, so a glob in it covers nothing. A fetch file holds one command a
+#      line, `#` starting a comment: `[GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] deps <dir>
+#      [go list flags and packages...]`, `tools <file>` or `tidy <dir>`, each path from the
+#      repository root; a line that is none of them, a tidy line whose <dir> holds no go.mod,
+#      and a fetch file a reader runs that the repository does not have, are refused too. A
+#      save keyed by its restore's `${{ steps.<id>.outputs.cache-primary-key }}` is held as that
+#      restore's key. A key that leaves out such a file is found unchanged after the file moves,
+#      so every reader downloads the difference on each run and nothing fails.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of

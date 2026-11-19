@@ -24,10 +24,13 @@ source "$script_dir/test-lib.sh"
 # `go env NAME...` answers one line per name: GOPATH from GO_FETCH_TEST_GOPATH, GOMODCACHE from
 # GO_FETCH_TEST_GOMODCACHE and GOPROXY from GO_FETCH_TEST_GOPROXY. Each `go install` records the
 # GOBIN and the GOPROXY it ran under, and each `go list` the GOPROXY, GOOS, GOARCH,
-# CGO_ENABLED and GOWORK it ran under. A stand-in pulumi writes the sdks/ directory package add
-# writes, so a second attempt in the same directory would find it there. pulumi and `go build`
-# each record the sha256 of the go.mod and main.go they find in their directory, so a case can
-# hold what they ran on to the consumer's own files, not only to the step's exit.
+# CGO_ENABLED and GOWORK it ran under. Each `go mod tidy -modfile=FILE` records the GOPROXY it ran under,
+# FILE, and the sha256 of FILE and of the go.sum beside it (or `none`), then appends a line to
+# both, as tidy writes them, so a case can hold what tidy ran on to the module's own files and see
+# whether a second attempt started from them afresh. A stand-in pulumi writes the sdks/ directory
+# package add writes, so a second attempt in the same directory would find it there. pulumi and
+# `go build` each record the sha256 of the go.mod and main.go they find in their directory, so a
+# case can hold what they ran on to the consumer's own files, not only to the step's exit.
 mkdir -p "$work/bin"
 for name in go pulumi; do
   cat > "$work/bin/$name" <<'STANDIN'
@@ -52,6 +55,15 @@ fi
 if [ "$(basename "$0")" = go ] && [ "$1" = list ]; then
   echo "GOPROXY=${GOPROXY:-} GOOS=${GOOS:-} GOARCH=${GOARCH:-} CGO_ENABLED=${CGO_ENABLED:-}" >> "$GO_FETCH_TEST_CALLS.list-env"
   echo "GOWORK=${GOWORK:-}" >> "$GO_FETCH_TEST_CALLS.list-gowork"
+fi
+if [ "$(basename "$0")" = go ] && [ "$1" = mod ] && [ "$2" = tidy ]; then
+  modfile=${3#-modfile=}
+  sum=${modfile%.mod}.sum
+  summed=none
+  [ ! -f "$sum" ] || summed=$(sha256sum < "$sum" | cut -d' ' -f1)
+  echo "GOPROXY=${GOPROXY:-} modfile=$modfile go.mod=$(sha256sum < "$modfile" | cut -d' ' -f1) go.sum=$summed" >> "$GO_FETCH_TEST_CALLS.tidy"
+  echo "// what tidy writes" >> "$modfile"
+  echo "what tidy writes" >> "$sum"
 fi
 if [ "$(basename "$0")" = pulumi ]; then
   echo "PULUMI_BACKEND_URL=${PULUMI_BACKEND_URL:-} PULUMI_HOME=${PULUMI_HOME:-} PULUMI_SKIP_UPDATE_CHECK=${PULUMI_SKIP_UPDATE_CHECK:-} PULUMI_API=${PULUMI_API:-}" >> "$GO_FETCH_TEST_CALLS.pulumi-env"
@@ -109,16 +121,16 @@ done
 # fetch <args...>: runs the script under test with the stand-ins and no waits. Leaves its stderr
 # in `err`, its exit code in `rc`, the stand-ins' calls in `calls`, the environment each pulumi
 # call saw in `pulumi_env`, each install's GOBIN in `gobin` and its GOPROXY in `goproxy`, each
-# listing's GOPROXY and platform in `list_env` and its GOWORK in `list_gowork`, what
-# package add and the build found in their directory in `seen`, and the failing cp's, mktemp's and
-# mkdir's calls in `cp_calls`, `mktemp_calls` and `mkdir_calls`. PATH_FIRST, when set, goes on
-# PATH before the stand-ins. `go env` answers $work/modcache for GOMODCACHE and
+# listing's GOPROXY and platform in `list_env` and its GOWORK in `list_gowork`, each tidy's GOPROXY,
+# file and what it ran on in `tidy`, what package add and the build found in their directory in
+# `seen`, and the failing cp's, mktemp's and mkdir's calls in `cp_calls`, `mktemp_calls` and
+# `mkdir_calls`. PATH_FIRST, when set, goes on PATH before the stand-ins. `go env` answers $work/modcache for GOMODCACHE and
 # `https://proxy.example|direct` for GOPROXY, or TEST_GOMODCACHE and TEST_GOPROXY when set.
 # SCRIPT, when set, is the copy of the script to run instead of this repository's, and
 # GO_FETCH_PROXY, when the case sets it, reaches the script; the caller's own is cleared.
 fetch() {
   rm -f "$work/calls" "$work/calls.pulumi-env" "$work/calls.gobin" "$work/calls.goproxy" "$work/calls.seen" \
-    "$work/calls.cp" "$work/calls.mktemp" "$work/calls.mkdir" "$work/calls.list-env" "$work/calls.list-gowork" "$work/count"
+    "$work/calls.cp" "$work/calls.mktemp" "$work/calls.mkdir" "$work/calls.list-env" "$work/calls.list-gowork" "$work/calls.tidy" "$work/count"
   set +e
   PATH="${PATH_FIRST:+$PATH_FIRST:}$work/bin:$PATH" GO_FETCH_TEST_CALLS="$work/calls" GO_FETCH_TEST_COUNT="$work/count" \
     GO_FETCH_TEST_GOPATH="$work/gopath:$work/other-gopath" GO_FETCH_TEST_GOMODCACHE="${TEST_GOMODCACHE-$work/modcache}" \
@@ -134,6 +146,7 @@ fetch() {
   goproxy=$(cat "$work/calls.goproxy" 2>/dev/null || true)
   list_env=$(cat "$work/calls.list-env" 2>/dev/null || true)
   list_gowork=$(cat "$work/calls.list-gowork" 2>/dev/null || true)
+  tidy=$(cat "$work/calls.tidy" 2>/dev/null || true)
   seen=$(cat "$work/calls.seen" 2>/dev/null || true)
   cp_calls=$(cat "$work/calls.cp" 2>/dev/null || true)
   mktemp_calls=$(cat "$work/calls.mktemp" 2>/dev/null || true)
@@ -234,7 +247,10 @@ check "says the module cache alone serves the fetch" "$(contains "$err" 'GO_FETC
 # The file mode reads its paths from the repository root two directories above the script, so
 # its cases run a copy of the script in a repository of their own.
 repo="$work/repo"
-mkdir -p "$repo/.github/scripts" "$repo/mod/a" "$repo/mod/b" "$repo/infra" "$repo/fetch"
+mkdir -p "$repo/.github/scripts" "$repo/mod/a" "$repo/mod/b" "$repo/infra" "$repo/fetch" "$repo/tidymod" "$repo/nosum"
+printf 'module example.com/tidymod\n\ngo 1.27.3\n\nrequire example.com/dep v1.0.0\n' > "$repo/tidymod/go.mod"
+printf 'example.com/dep v1.0.0 h1:AAAA=\nexample.com/dep v1.0.0/go.mod h1:BBBB=\n' > "$repo/tidymod/go.sum"
+printf 'module example.com/nosum\n\ngo 1.27.3\n' > "$repo/nosum/go.mod"
 cp "$go_fetch" "$repo/.github/scripts/go-fetch.sh"
 cp "$work/tools.txt" "$repo/fetch/tools.txt"
 cat > "$repo/fetch/job.txt" <<'FETCH'
@@ -274,10 +290,59 @@ check "exits 1" "$(is "$rc" 1)"
 check "names the command that failed" "$(contains "$err" 'failed 2 times: go list -deps ./cmd/x')"
 check "installs nothing after it" "$(is "$(grep -c ' install ' <<< "$calls")" 0)"
 
+# sha FILE: the sha256 of FILE, as the stand-in records it.
+sha() { sha256sum < "$1" | cut -d' ' -f1; }
+tidy_mod=$(sha "$repo/tidymod/go.mod") tidy_sum=$(sha "$repo/tidymod/go.sum")
+printf 'tidy tidymod  # what check-go-tidy.sh reads\n' > "$repo/fetch/tidy.txt"
+
+echo "case: a tidy line runs go mod tidy in the module on a copy of its go.mod and go.sum, and leaves the module's own two files as they were"
+TEST_GO_FETCH_PROXY='https://fetch.example|direct' TEST_ENV_GOPROXY=off SCRIPT="$repo/.github/scripts/go-fetch.sh" \
+  fetch file "$repo/fetch/tidy.txt"
+check "exits 0" "$(is "$rc" 0)"
+check "runs one go command: go mod tidy in the module, its go.mod and go.sum those of a copy" \
+  "$(contains "$calls" "^$repo/tidymod go mod tidy -modfile=/[^ ]*/go.mod$")"
+check "and nothing else" "$(is "$(grep -c . <<< "$calls")" 1)"
+check "the copy is the module's go.mod" "$(contains "$tidy" " go.mod=$tidy_mod ")"
+check "and its go.sum" "$(contains "$tidy" " go.sum=$tidy_sum$")"
+check "through GO_FETCH_PROXY, never the job's off" "$(contains "$tidy" '^GOPROXY=https://fetch.example|direct ')"
+check "the module's go.mod is as it was" "$(is "$(sha "$repo/tidymod/go.mod")" "$tidy_mod")"
+check "and its go.sum" "$(is "$(sha "$repo/tidymod/go.sum")" "$tidy_sum")"
+copy=$(sed -n 's/.* modfile=\([^ ]*\) .*/\1/p' <<< "$tidy")
+check "the copy is outside the repository" "$(is "$(grep -c "^$repo/" <<< "$copy")" 0)"
+check "and removed after" "$(is "$(test -e "$(dirname "$copy")" && echo there || echo gone)" gone)"
+check "names the line it runs" "$(contains "$err" "^go-fetch: $repo/fetch/tidy.txt:1: tidy tidymod$")"
+
+echo "case: a tidy line of a module with no go.sum gives tidy a copy with none"
+printf 'tidy nosum\n' > "$repo/fetch/nosum.txt"
+SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/nosum.txt"
+check "exits 0" "$(is "$rc" 0)"
+check "the copy is the module's go.mod" "$(contains "$tidy" " go.mod=$(sha "$repo/nosum/go.mod") ")"
+check "and has no go.sum" "$(contains "$tidy" ' go.sum=none$')"
+check "the module still has none" "$(is "$(test -e "$repo/nosum/go.sum" && echo there || echo none)" none)"
+
+echo "case: a tidy that fails is tried again on a fresh copy"
+FAIL_MATCH='mod tidy' FAIL_TIMES=1 SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/tidy.txt"
+check "exits 0" "$(is "$rc" 0)"
+check "runs tidy twice" "$(is "$(grep -c ' go mod tidy ' <<< "$calls")" 2)"
+check "the second on the module's go.mod, not what the first wrote" \
+  "$(is "$(sed -n 2p <<< "$tidy" | grep -c " go.mod=$tidy_mod ")" 1)"
+check "and on its go.sum" "$(is "$(sed -n 2p <<< "$tidy" | grep -c " go.sum=$tidy_sum$")" 1)"
+check "says it tries again" "$(contains "$err" 'failed; trying again')"
+
+echo "case: a tidy that fails every attempt fails the run, naming the module, and removes the copy"
+FAIL_MATCH='mod tidy' FAIL_TIMES=99 GO_FETCH_ATTEMPTS=2 SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/tidy.txt"
+check "exits 1" "$(is "$rc" 1)"
+check "names the module whose tidy failed" "$(contains "$err" "failed 2 times: tidy_on_copy $repo/tidymod$")"
+copy=$(sed -n '1s/.* modfile=\([^ ]*\) .*/\1/p' <<< "$tidy")
+check "the copy is removed" "$(is "$(test -e "$(dirname "$copy")" && echo there || echo gone)" gone)"
+check "the module's go.mod and go.sum are as they were" \
+  "$(is "$(sha "$repo/tidymod/go.mod") $(sha "$repo/tidymod/go.sum")" "$tidy_mod $tidy_sum")"
+
 echo "case: every line of a fetch file is checked before the first runs"
 for bad in 'deps mod' 'deps absent ./a' 'GOFLAGS=-mod=mod deps mod ./a' 'GOOS=Darwin deps mod ./a' 'CGO_ENABLED=2 deps mod ./a' \
     'GOWORK=auto deps mod ./a' 'GOWORK=off tools fetch/tools.txt' \
-    'tools fetch/absent.txt' 'GOOS=linux tools fetch/tools.txt' 'tools fetch/tools.txt extra' 'list mod ./a' 'go list -deps ./a'; do
+    'tools fetch/absent.txt' 'GOOS=linux tools fetch/tools.txt' 'tools fetch/tools.txt extra' 'list mod ./a' 'go list -deps ./a' \
+    'tidy' 'tidy tidymod extra' 'GOOS=linux tidy tidymod' 'tidy mod' 'tidy absent' 'GOWORK=off tidy tidymod'; do
   printf 'deps mod ./a\n%s\n' "$bad" > "$repo/fetch/bad.txt"
   SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/bad.txt"
   check "'$bad' exits 2" "$(is "$rc" 2)"

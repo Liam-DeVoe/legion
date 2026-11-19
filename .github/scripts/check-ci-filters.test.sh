@@ -2789,6 +2789,65 @@ check "fails" "$(is "$status" 1)"
 check "names the file and the line" \
   "$(contains "$out" '::error file=.github/go-fetch/deep.txt::line 3 of .github/go-fetch/deep.txt is `install example.com/tool@v1.0.0`, which is neither')"
 
+# A tidy line's `go mod tidy` reads no go.work: what decides the modules it fetches is the go.mod
+# and go.sum of the module the line names, and the go.mod of each directory a replace directive of
+# that go.mod names. tidy_tree <root>: fetch_tree with `tidy tidier` in deep.txt, tidier a module
+# in no workspace whose go.mod replaces a module with ../other, and with a replacement that is a
+# module version, which names no file. tidy_keys <root>: every key of the family hashing those
+# three files too.
+tidy_tree() {
+  fetch_tree "$1"
+  mkdir -p "$1/tidier" "$1/other"
+  printf 'module example.com/tidier\n\ngo 1.27.3\n\nrequire example.com/other v0.0.0\n\nreplace (\n\texample.com/other => ../other // the sibling\n\texample.com/far v1.0.0 => example.com/near v1.0.1\n)\n' \
+    > "$1/tidier/go.mod"
+  : > "$1/tidier/go.sum"
+  printf 'module example.com/other\n\ngo 1.27.3\n' > "$1/other/go.mod"
+  printf 'tidy tidier  # what check-go-tidy.sh reads\n' >> "$1/.github/go-fetch/deep.txt"
+}
+tidy_keys() {
+  local file
+  for file in ci-caches.yaml suite.yaml deep.yaml; do
+    replace_every "$1/.github/workflows/$file" "'mod/go.sum') }}" "'mod/go.sum', 'tidier/go.mod', 'tidier/go.sum', 'other/go.mod') }}"
+  done
+}
+
+echo "case: a Go module cache key that hashes a tidy line's go.mod, go.sum and replaced module's go.mod"
+root=$(fixture cache-keys-tidy)
+tidy_tree "$root"
+tidy_keys "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the keys rule 22 held" "$(contains "$out" '^report: rule 22: 7 Go module cache keys')"
+
+echo "case: a Go module cache key that does not hash the files a tidy line's module reads"
+root=$(fixture cache-keys-no-tidy-files)
+tidy_tree "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the module's go.mod and go.sum and the replaced module's go.mod, and no go.sum of that" \
+  "$(contains "$out" 'job deep of .github/workflows/deep.yaml step "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" keys Go family go-fetch-suite with `go-fetch-suite-.*`, whose hashFiles list lacks other/go.mod, tidier/go.mod, tidier/go.sum:')"
+check "and is one problem for each of the family's four keys" "$(contains "$out" '^::error::4 CI filter problem(s)$')"
+
+echo "case: a tidy line in a directory that holds no go.mod"
+root=$(fixture cache-keys-tidy-no-module)
+tidy_tree "$root"
+tidy_keys "$root"
+printf 'tidy mod/lib\n' >> "$root/.github/go-fetch/deep.txt"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the line and the directory" \
+  "$(contains "$out" '::error file=.github/go-fetch/deep.txt::line 4 of .github/go-fetch/deep.txt runs tidy in mod/lib, which holds no go.mod')"
+
+echo "case: a tidy line naming more than its module"
+root=$(fixture cache-keys-tidy-extra)
+tidy_tree "$root"
+tidy_keys "$root"
+printf 'tidy tidier ./...\n' >> "$root/.github/go-fetch/deep.txt"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the line as no command" \
+  "$(contains "$out" '::error file=.github/go-fetch/deep.txt::line 4 of .github/go-fetch/deep.txt is `tidy tidier ./...`, which is neither')"
+
 echo "case: a fetch file a reader runs that the repository does not have"
 root=$(fixture cache-keys-no-file)
 fetch_tree "$root"
