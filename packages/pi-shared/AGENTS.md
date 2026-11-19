@@ -104,9 +104,10 @@ stays the one listener slot it is, written only by the paths that establish a Le
 `test/omp-harness.ts` runs the real Oh My Pi binary (`LEGION_TEST_OMP`) for each plugin's
 `*-omp.test.ts`; `test/omp-natives.ts` shares one natives cache per binary with the Go tests;
 `test/host-registry.ts` is the `AgentRegistry` stand-in every plugin suite's mock spreads in.
-Every omp a test starts gets `OMP_THREADS_ENV` (`TOKIO_WORKER_THREADS=1`, `test/omp-natives.ts`)
-in its environment: the natives' Tokio runtime otherwise starts one worker per CPU, and on a
-288-CPU machine one omp held 1,177 threads, more than a test under a 512-task limit can start.
+Every omp a test starts gets `OMP_THREADS_ENV` (`TOKIO_WORKER_THREADS=1` and `RAYON_NUM_THREADS=1`,
+`test/omp-natives.ts`) in its environment: the natives' Tokio runtime and rayon's global pool
+otherwise each start one thread per CPU, and on a 288-CPU machine one omp held 1,177 threads with
+neither set and about 316 with Tokio's alone, more than a test under a 512-task limit can start.
 `spawnRpc` and `spawnInteractive` give it, and so do the files that run the binary themselves.
 `spawnRpc` takes **absolute** extension paths — this module lives in another package than its
 callers, so `import.meta.dir` here is not the caller's — and pi-envoy's `dispatch-first-omp.test.ts`

@@ -746,11 +746,12 @@ function ompFlags(options: {
 }
 
 /** The environment `spawnRpc` and `spawnInteractive` start omp with: `home` as HOME, `bin` first
- * on PATH, and one Tokio worker thread (`OMP_THREADS_ENV`). */
+ * on PATH, and one thread for each of the natives' pools (`OMP_THREADS_ENV`). */
 function ompEnv(options: { readonly home: string; readonly bin?: string }): {
   HOME: string;
   PATH: string;
   TOKIO_WORKER_THREADS: string;
+  RAYON_NUM_THREADS: string;
 } {
   return {
     HOME: options.home,

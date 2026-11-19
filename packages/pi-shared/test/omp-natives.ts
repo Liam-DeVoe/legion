@@ -23,14 +23,19 @@ import {
 import * as path from "node:path";
 
 /**
- * What every omp a test starts carries in its environment beside its own: one Tokio worker thread
- * for the natives. Their Tokio runtime starts one worker per CPU unless `TOKIO_WORKER_THREADS`
- * names a number, so on a 288-CPU machine one omp held 1,177 threads, and a case that started one
- * could not run under a limit of 512 tasks: omp exited with "Failed to start HTTP Client thread:
- * EAGAIN". With one worker the same omp holds about 316. The harness's `spawnRpc` and
+ * What every omp a test starts carries in its environment beside its own: one thread for each of
+ * the natives' two pools. Their Tokio runtime starts one worker per CPU unless
+ * `TOKIO_WORKER_THREADS` names a number, so on a 288-CPU machine one omp held 1,177 threads, and a
+ * case that started one could not run under a limit of 512 tasks: omp exited with "Failed to start
+ * HTTP Client thread: EAGAIN". With one Tokio worker the same omp still held about 316, of them 288
+ * unnamed threads of rayon's global pool, which also starts one per CPU unless `RAYON_NUM_THREADS`
+ * names a number; a case whose omp started that pool, or ran a subagent's shell beside it, reached
+ * the 512 tasks, and omp panicked ("The global thread pool has not been initialized … Resource
+ * temporarily unavailable") or the shell call failed. With one thread each, the omp of
+ * commit-trailers' implementer case held 25 to 34 threads. The harness's `spawnRpc` and
  * `spawnInteractive` give it, and so does every other place a test runs the binary.
  */
-export const OMP_THREADS_ENV = { TOKIO_WORKER_THREADS: "1" } as const;
+export const OMP_THREADS_ENV = { TOKIO_WORKER_THREADS: "1", RAYON_NUM_THREADS: "1" } as const;
 
 /** Each binary's one lookup in this process, since naming its cache reads the whole binary. */
 const caches = new Map<string, Promise<string>>();
