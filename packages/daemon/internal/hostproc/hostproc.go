@@ -87,20 +87,37 @@ var inTest = testing.Testing
 // stack of the goroutine that reached it, and exits with RefusalStatus.
 //
 // Each call it judges in a test binary, the ones it lets list and the one it refuses, goes to the
-// binary's record of scans when the binary has one (RecordEnv), with the test that made it.
+// binary's record of scans when the binary has one (RecordEnv), with the test that made it and the
+// kind classify gave its root, the one verdict the refusal is made by.
 func Check(scanner, root string, reason Reason) {
 	if !inTest() {
 		return
 	}
-	refused := reason.why == "" && isProc(root) && !namespaceOwn(root)
-	record(scanner, root, reason, refused)
-	if !refused {
+	kind := classify(root, reason)
+	record(scanner, root, reason, kind)
+	if kind != ScanRefused {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s %s would list %s, a /proc of the machine, in a test that gave it neither a /proc of its "+
 		"own nor a reason (hostproc.Because): the processes of the machine are no test's to judge by\n%s",
 		Refusal, scanner, root, debug.Stack())
 	exit(RefusalStatus)
+}
+
+// classify is Check's verdict on a scanner's root: ScanOwn for one that is no mount of proc,
+// ScanReason for a mount of proc the scanner holds a Reason for, ScanNamespace for the /proc of a
+// PID namespace whose first process this one is, and ScanRefused for any other mount of proc.
+func classify(root string, reason Reason) string {
+	switch {
+	case !isProc(root):
+		return ScanOwn
+	case reason.why != "":
+		return ScanReason
+	case namespaceOwn(root):
+		return ScanNamespace
+	default:
+		return ScanRefused
+	}
 }
 
 // namespaceOwn says whether root is the /proc of a PID namespace this process is the first process

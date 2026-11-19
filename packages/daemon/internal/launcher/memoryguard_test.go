@@ -419,19 +419,38 @@ func useGuardOf(t *testing.T, rig *guardRig) {
 // (useGuestOf) and a microVM pod's memory guard (useGuardOf). No launcher of either pod builds that
 // watch, so this calls each builder as the launcher would, with a Config that names no /proc, in a
 // child of its own: a builder that gave its watch no pod would build one over the machine's /proc,
-// which the watch's construction refuses (hostproc.Check), and the refusal ends the child.
+// which the watch's construction refuses (hostproc.Check), and the refusal ends the child. A
+// builder that gave it another root of the test's (the pod's cgroup directory) passes that check,
+// so the child also reads the Config the watch was built with, beneath the rig's builder, and holds
+// it to the pod's own /proc and cgroup.
 func TestTheWatchARigsLauncherDoesNotBuildReadsItsPodToo(t *testing.T) {
 	discard := func(string, ...any) {}
 	t.Run("the guest watch of a guard pod", func(t *testing.T) {
 		hostproctest.Allowed(t, func() {
-			useGuardPod(t, newGuardPod(t), nil)
+			var built memoryguard.GuestConfig
+			previous := newGuest
+			newGuest = func(cfg memoryguard.GuestConfig) *memoryguard.Guest { built = cfg; return previous(cfg) }
+			t.Cleanup(func() { newGuest = previous })
+			pod := newGuardPod(t)
+			useGuardPod(t, pod, nil)
 			_ = newGuest(memoryguard.GuestConfig{Logf: discard})
+			if built.Proc != pod.proc || built.Cgroup != pod.cgroup {
+				t.Fatalf("the guest watch was built over /proc %q and cgroup %q, want the pod's %q and %q", built.Proc, built.Cgroup, pod.proc, pod.cgroup)
+			}
 		})
 	})
 	t.Run("the memory guard of a microVM pod", func(t *testing.T) {
 		hostproctest.Allowed(t, func() {
-			useGuestPod(t, newGuardPod(t), nil)
+			var built memoryguard.Config
+			previous := newMemoryGuard
+			newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard { built = cfg; return previous(cfg) }
+			t.Cleanup(func() { newMemoryGuard = previous })
+			pod := newGuardPod(t)
+			useGuestPod(t, pod, nil)
 			_ = newMemoryGuard(memoryguard.Config{Logf: discard})
+			if built.Proc != pod.proc || built.Cgroup != pod.cgroup {
+				t.Fatalf("the memory guard was built over /proc %q and cgroup %q, want the pod's %q and %q", built.Proc, built.Cgroup, pod.proc, pod.cgroup)
+			}
 		})
 	})
 }

@@ -87,7 +87,6 @@ proof_wrapper="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/.github/sc
 proof_label=''
 evidence=''
 work=''
-driver=''
 nats_pid=''
 port_nats=''
 check=setup
@@ -124,7 +123,6 @@ live_daemon_proof() {
   transcript_to "$evidence/transcript.log"
 
   work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-$slug.$$.XXXXXXXX")
-  driver=$work/$slug.test
   started=$SECONDS
   check_started=$SECONDS
   trap cleanup EXIT
@@ -188,17 +186,12 @@ live_daemon_proof() {
   note "JetStream on nats://127.0.0.1:$port_nats, store $work/nats-store, log $evidence/nats.log"
   pass
 
-  begin driver
-  go -C "$root/packages/daemon" test -c -tags e2e -o "$driver" ./internal/daemon ||
-    fail "the driver did not build"
-  note "built $(basename "$driver") from $root/packages/daemon with -tags e2e"
-  pass
-
   begin proof
-  # The driver's steps print their own `== <name>` / `ok <name>` pair between this check's, so the
-  # run's checks and the proof's read alike. The daemon's own log goes to the evidence directory
-  # rather than into them. go test runs the driver in its package's directory, beneath the
-  # wrapper's supervisor, and the wrapper's own lines (`private-proc: ...`: the tests that read a
+  # go test builds the driver and runs it in its package's directory, beneath the wrapper's
+  # supervisor, so a driver that does not build fails this check. The driver's steps print their
+  # own `== <name>` / `ok <name>` pair between this check's, so the run's checks and the proof's
+  # read alike. The daemon's own log goes to the evidence directory rather than into them. The
+  # wrapper's own lines (`private-proc: ...`: the way it made the namespace, the tests that read a
   # process table, and how many binaries ran in a namespace of their own) end the proof's log.
   (cd "$root/packages/daemon" &&
     LEGION_E2E_NATS_URL="nats://127.0.0.1:$port_nats" \
@@ -206,7 +199,7 @@ live_daemon_proof() {
       TMPDIR="$work" \
       "$proof_wrapper" go test -tags e2e -count=1 -timeout 20m -v \
       -run "^$test_name\$" ./internal/daemon) 2>&1 | tee "$evidence/proof.log" ||
-    fail "the proof's driver failed; see $evidence/proof.log and $evidence/daemon.log"
+    fail "the proof's driver did not build, or failed; see $evidence/proof.log and $evidence/daemon.log"
   # A driver that skipped, or whose -test.run matched nothing, exits 0 having proved nothing.
   grep -q "^--- PASS: $test_name" "$evidence/proof.log" ||
     fail "the proof's driver ran no step: it skipped, or -test.run matched no test; see $evidence/proof.log"

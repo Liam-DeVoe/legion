@@ -108,22 +108,13 @@ func openRecord() {
 	writeRecord("binary", strconv.Itoa(os.Getpid()))
 }
 
-// record writes what Check judged of one scan, once per test, scanner, root, verdict and reason.
-func record(scanner, root string, reason Reason, refused bool) {
+// record writes what Check judged of one scan, the kind classify gave its root, once per test,
+// scanner, root, kind and reason.
+func record(scanner, root string, reason Reason, kind string) {
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
 	if recorder.file == nil {
 		return
-	}
-	kind := ScanRefused
-	switch {
-	case refused:
-	case !isProc(root):
-		kind = ScanOwn
-	case reason.why != "":
-		kind = ScanReason
-	default:
-		kind = ScanNamespace
 	}
 	fields := []string{"scan", kind, testOf(), scanner, root, reason.why}
 	key := strings.Join(fields, "\x00")

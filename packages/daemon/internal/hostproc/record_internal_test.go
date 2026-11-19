@@ -39,18 +39,23 @@ func useRecord(t *testing.T) func() []string {
 	}
 }
 
-// Each scan is recorded as Check judged it: a root that is no mount of proc as the test's own, a
-// mount of proc read by a reason as that, the /proc of a namespace this process is PID 1 of (the
-// one way past a refusal with no reason) as that, and a refusal as one; each once, however often a
-// loop makes it, and its text kept to one line.
+// Each scan is recorded as Check judged it, with the kind the same classify gave that decided the
+// refusal: a root that is no mount of proc as the test's own, a mount of proc read by a reason as
+// that, and a refusal as one, which Check also ends the binary on; the /proc of a namespace this
+// process is PID 1 of (the one way past a refusal with no reason, which this binary is not) as
+// that; each once, however often a loop makes it, and its text kept to one line.
 func TestEachScanIsRecordedAsCheckJudgedIt(t *testing.T) {
 	lines := useRecord(t)
+	var exited []int
+	previousExit := exit
+	t.Cleanup(func() { exit = previousExit })
+	exit = func(code int) { exited = append(exited, code) }
 	own := t.TempDir()
-	record("the own scanner", own, Reason{}, false)
-	record("the own scanner", own, Reason{}, false)
-	record("the reasoned scanner", "/proc", Because("it reads\tits own pid\nalone"), false)
-	record("the namespace's scanner", "/proc", Reason{}, false)
-	record("the refused scanner", "/proc", Reason{}, true)
+	Check("the own scanner", own, Reason{})
+	Check("the own scanner", own, Reason{})
+	Check("the reasoned scanner", "/proc", Because("it reads\tits own pid\nalone"))
+	record("the namespace's scanner", "/proc", Reason{}, ScanNamespace)
+	Check("the refused scanner", "/proc", Reason{})
 	const test = "TestEachScanIsRecordedAsCheckJudgedIt"
 	want := []string{
 		"scan\town\t" + test + "\tthe own scanner\t" + own + "\t",
@@ -60,6 +65,31 @@ func TestEachScanIsRecordedAsCheckJudgedIt(t *testing.T) {
 	}
 	if got := lines(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("the record holds\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if len(exited) != 1 || exited[0] != RefusalStatus {
+		t.Fatalf("Check exited %v, want once with %d, on the refused scan alone", exited, RefusalStatus)
+	}
+}
+
+// classify is the one verdict on a root: each kind for the root and reason that make it, a
+// namespace's /proc aside, which needs this process to be its PID 1.
+func TestClassifyGivesEachRootItsKind(t *testing.T) {
+	own := t.TempDir()
+	for _, c := range []struct {
+		root   string
+		reason Reason
+		want   string
+	}{
+		{own, Reason{}, ScanOwn},
+		{own, Because("a reason changes nothing of a root of the test's own"), ScanOwn},
+		{"/proc", Because("it reads its own pid alone"), ScanReason},
+		{"/proc", Because("   "), ScanRefused},
+		{"/proc", Reason{}, ScanRefused},
+		{"/proc/self/..", Reason{}, ScanRefused},
+	} {
+		if got := classify(c.root, c.reason); got != c.want {
+			t.Errorf("classify(%q, %q) = %q, want %q", c.root, c.reason, got, c.want)
+		}
 	}
 }
 
