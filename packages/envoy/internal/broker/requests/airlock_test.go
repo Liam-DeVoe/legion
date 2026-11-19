@@ -189,3 +189,33 @@ func TestARequestApprovedAcrossARulesChangeIsReleasedUnderTheEntryItWasDecidedUn
 		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by it; want %s and 1", by, audits, GrantEndedActor)
 	}
 }
+
+// TestANameNoLongerServedPausesItsGrantWhateverItsEntry: a name whose entry fingerprint its grant
+// recorded, and that the policy then stops serving — here a retag the loader refuses — pauses its
+// grant rather than ending it, as it does a name the rules do not name: the policy holds no entry
+// of it to compare, and a retag that serves the name again releases the grant again. Only a name
+// the policy serves under another entry ends the grant.
+func TestANameNoLongerServedPausesItsGrantWhateverItsEntry(t *testing.T) {
+	digests := map[string]string{"AUTO_TOKEN": "entry-one"}
+	m, enr, key := newAirlockFixture(t, digests)
+	granted, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the token", "AUTO_TOKEN"), "", nil)
+	if err != nil || granted.GrantID == nil {
+		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want a grant", granted, err)
+	}
+	refused := policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1")
+	refused.Tags[policy.TagAdmin] = "yes"
+	retag(t, m, refused)
+	if _, served := m.Policy.Get().Secrets["AUTO_TOKEN"]; served {
+		t.Fatal("the policy still serves AUTO_TOKEN under a malformed admin tag; want it refused")
+	}
+	if release, err := m.Values(t.Context(), *granted.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+		t.Fatalf("Values while the policy does not serve AUTO_TOKEN = %v, %v; want ErrGrantNotLive and no value", release.Values, err)
+	}
+	if by, audits := endedForGood(t, m, *granted.GrantID); by != "" || audits != 0 {
+		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by %s; want it paused, not ended", by, audits, GrantEndedActor)
+	}
+	retag(t, m, policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1"))
+	if release, err := m.Values(t.Context(), *granted.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
+		t.Fatalf("Values once AUTO_TOKEN is served again = %v, %v; want the value", release.Values, err)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -134,6 +135,81 @@ func TestAJudgedGrantLivesByItsRulesEntryAndNotByAnOwner(t *testing.T) {
 	}
 }
 
+// bootedJudgeFixture is newJudgeFixture wired as cmd/broker wires its one rules file: the policy
+// loader fingerprints each entry of the rules the broker booted on (policy.Loader.AirlockDigest,
+// whose fingerprints are in the policy version), and the chain verifier holds a judge's approval
+// to that same file. boot is a pod booting on rules, which the loader, m.Airlock and the chain
+// all read from then on.
+func bootedJudgeFixture(t *testing.T) (m *Machine, session string, key *ecdsa.PrivateKey, boot func(airlock.Rules)) {
+	t.Helper()
+	m, session, key = newJudgeFixture(t)
+	booted := m.Airlock
+	loader := policytest.Loader(fixtureStore(m), fixtureService)
+	loader.AirlockDigest = func(name string) string { return booted.Digest(name) }
+	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+	if err != nil {
+		t.Fatalf("policy.NewCurrent: %v", err)
+	}
+	m.Policy = current
+	return m, session, key, func(rules airlock.Rules) {
+		t.Helper()
+		booted, m.Airlock = rules, rules
+		m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, rules)
+		if err := m.Policy.Refresh(t.Context()); err != nil {
+			t.Fatalf("policy refresh: %v", err)
+		}
+	}
+}
+
+// TestARulesEditUnderAJudgedGrantEndsItForGood: an edit to the rules entry of the key the judge
+// decided — its judge taken off, lowered below the grant's lifetime, or the entry dropped — ends
+// a judged grant for good, as every edit to an entry ends the grants that entry affects, at the
+// release and at the next request that would reuse it. The grant also holds AUTO_TOKEN, which its
+// session got at once. The pod boots on the edited file, so its chain, which holds a judge's
+// approval to the rules in force, refuses the grant as well, and so does stillAllowed's judge arm;
+// either refusal alone would leave the grant live, and booting the decided file again would
+// release it. No request reuses the grant whose judge was lowered: a request for its 600 seconds
+// is refused when it is written, the judge now granting at most 599.
+func TestARulesEditUnderAJudgedGrantEndsItForGood(t *testing.T) {
+	names := []string{"DEEL_API_KEY", "AUTO_TOKEN"}
+	for _, c := range []struct {
+		name  string
+		edit  func(airlock.Rules) airlock.Rules
+		reuse bool
+	}{
+		{name: "the entry has no judge at all", edit: withJudge("DEEL_API_KEY", nil)},
+		{name: "the entry has no judge at all", edit: withJudge("DEEL_API_KEY", nil), reuse: true},
+		{name: "the entry's judge is below the grant's lifetime", edit: withJudge("DEEL_API_KEY", new(uint32(599)))},
+		{name: "the rules no longer name the secret", edit: withoutEntry("DEEL_API_KEY")},
+		{name: "the rules no longer name the secret", edit: withoutEntry("DEEL_API_KEY"), reuse: true},
+	} {
+		path := map[bool]string{false: "the release", true: "the next request"}[c.reuse]
+		t.Run(c.name+", at "+path, func(t *testing.T) {
+			m, session, key, boot := bootedJudgeFixture(t)
+			judged := judgedGrant(t, m, session, key, 600, names...)
+			decided := m.Airlock
+			boot(c.edit(decided))
+
+			if c.reuse {
+				again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes again", 600, names...), "", nil)
+				if err != nil || again.GrantID != nil || again.State != "pending" {
+					t.Fatalf("Create under the edited rules = %+v, %v; want no grant handed back and a new pending request", again, err)
+				}
+			} else if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "AUTO_TOKEN") != "" {
+				t.Fatalf("Values under the edited rules = %+v, %v; want ErrGrantNotLive and nothing released", release, err)
+			}
+			if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
+				t.Fatalf("after %s under the edited rules: revoked_by %q with %d grant.revoked rows by %s; want the grant ended once for good", path, by, audits, GrantEndedActor)
+			}
+
+			boot(decided)
+			if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "AUTO_TOKEN") != "" {
+				t.Fatalf("Values once the decided rules are booted again = %+v, %v; want the grant still ended", release, err)
+			}
+		})
+	}
+}
+
 // deelAsAdmin is the fixture's own DEEL_API_KEY tagged as an administrator's secret: the same
 // owner, tier and value, now carrying admin: "true" and, beside it, the two things policy.TagRules
 // demands of such a secret — a requesters list naming the person every session below is signed
@@ -216,6 +292,110 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 		}
 		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
 			t.Fatalf("the grant the reuse found = revoked_by %q with %d grant.revoked rows by %s; want the reuse to have ended it once", by, audits, GrantEndedActor)
+		}
+	})
+}
+
+// autoTokenAsAdmin is the fixture's own AUTO_TOKEN, the agent-tier key the operator's session gets
+// at once, tagged as an administrator's secret: the same owner and value, now human tier, since
+// policy.TagRules refuses an admin secret below it, and carrying the requesters list and the
+// max-grant the tag demands beside it, as deelAsAdmin does.
+func autoTokenAsAdmin() secrets.LocalSecret {
+	admin := policytest.ListedSecret("AUTO_TOKEN", fixtureOperator, policy.TierHuman, fixtureOperator, "auto-v1")
+	admin.Tags[policy.TagAdmin] = policy.AdminTrue
+	return admin
+}
+
+// TestAnAdministratorsTagOnAKeyGrantedAtOnceEndsTheJudgedGrantBesideIt: a judged grant may hold,
+// beside the key the judge decided, a key its session got at once, which needed no decision
+// (TestTheJudgesGrantBesideAKeyGrantedAtOnceReleasesBoth). When that key's owner tags it as an
+// administrator's, the grant holds an administrator's secret that no person approved, exactly as
+// when the judged key itself is tagged: the release and the next request that would reuse the
+// grant both refuse it and end it for good, and taking the tag off again does not bring it back.
+// A grant of the same two keys that the owner approved is not ended: its key granted at once now
+// wants an approval nobody gave, so it releases nothing while the tag stands, and it releases
+// again once the tag is off.
+func TestAnAdministratorsTagOnAKeyGrantedAtOnceEndsTheJudgedGrantBesideIt(t *testing.T) {
+	names := []string{"DEEL_API_KEY", "AUTO_TOKEN"}
+	released := func(release Release) bool {
+		return releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "AUTO_TOKEN") != ""
+	}
+	untag := func(t *testing.T, m *Machine) {
+		t.Helper()
+		retag(t, m, policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1"))
+	}
+
+	t.Run("a release refuses it and ends it for good", func(t *testing.T) {
+		m, session, key := newJudgeFixture(t)
+		judged := judgedGrant(t, m, session, key, 600, names...)
+		if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" || releasedValue(release, "AUTO_TOKEN") == "" {
+			t.Fatalf("Values(the judge's grant) before any tag = %+v, %v; want both keys released", release, err)
+		}
+
+		// Another session of the owner's holds a grant of the same two keys that the owner
+		// approved themselves.
+		own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
+		pending := pendingJudgeable(t, m, own, ownKey, "post the release notes from the other box", 600, names...)
+		handOver(t, m, *pending.RecordID)
+		byOwner, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
+		if err != nil || byOwner.GrantID == "" {
+			t.Fatalf("ApplyDecision by the owner = %+v, %v; want a grant", byOwner, err)
+		}
+
+		before := m.Policy.Get().Version
+		retag(t, m, autoTokenAsAdmin())
+		if m.Policy.Get().Version == before {
+			t.Fatalf("the policy version stood still at %s, so the re-checks this test is about never ran", before)
+		}
+
+		release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{})
+		if !errors.Is(err, ErrGrantNotLive) || released(release) {
+			t.Fatalf("Values(the judge's grant of a key now an administrator's) = %+v, %v; want ErrGrantNotLive and nothing released", release, err)
+		}
+		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
+			t.Fatalf("the judged grant's revoked_by = %q with %d grant.revoked rows by %s; want it ended once for good", by, audits, GrantEndedActor)
+		}
+		if release, err := m.Values(t.Context(), byOwner.GrantID, own, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
+			t.Fatalf("Values(the owner's grant) while AUTO_TOKEN is an administrator's = %+v, %v; want ErrGrantNotLive: nobody approved AUTO_TOKEN", release, err)
+		}
+		if by, audits := endedForGood(t, m, byOwner.GrantID); by != "" || audits != 0 {
+			t.Fatalf("the owner's grant: revoked_by %q with %d grant.revoked rows by %s; want it not ended", by, audits, GrantEndedActor)
+		}
+
+		// The tag taken off again does not bring the judged grant back, and the owner's grant
+		// releases both keys again.
+		untag(t, m)
+		if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
+			t.Fatalf("Values of the judged grant once the tag is gone = %+v, %v; want it still ended", release, err)
+		}
+		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
+			t.Fatalf("once the tag is gone: revoked_by %q with %d grant.revoked rows; want the one end", by, audits)
+		}
+		if release, err := m.Values(t.Context(), byOwner.GrantID, own, nil, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" || releasedValue(release, "AUTO_TOKEN") == "" {
+			t.Fatalf("Values(the owner's grant) once the tag is gone = %+v, %v; want both keys released", release, err)
+		}
+	})
+
+	t.Run("the next request ends it rather than handing it back", func(t *testing.T) {
+		m, session, key := newJudgeFixture(t)
+		judged := judgedGrant(t, m, session, key, 600, names...)
+		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes again", 600, names...), "", nil)
+		if err != nil || reused.GrantID == nil || *reused.GrantID != judged {
+			t.Fatalf("a request for the same names and lifetime while AUTO_TOKEN is an ordinary key = %+v, %v; want the judged grant %s handed back", reused, err, judged)
+		}
+
+		retag(t, m, autoTokenAsAdmin())
+		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes once more", 600, names...), "", nil)
+		if err != nil || again.GrantID != nil || again.State != "pending" {
+			t.Fatalf("Create once AUTO_TOKEN is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
+		}
+		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
+			t.Fatalf("the grant the reuse found = revoked_by %q with %d grant.revoked rows by %s; want the reuse to have ended it once", by, audits, GrantEndedActor)
+		}
+
+		untag(t, m)
+		if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
+			t.Fatalf("Values of the judged grant once the tag is gone = %+v, %v; want it still ended", release, err)
 		}
 	})
 }

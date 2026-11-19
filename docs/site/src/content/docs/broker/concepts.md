@@ -1049,7 +1049,9 @@ not bound. On an entry that lists methods and paths, a request carrying
 (`request carries a method override header`), because a service that honours one of those
 acts on the method the header names and not on the one the entry allowed.
 Each entry's own fingerprint is part of what a grant was decided under, so
-an edit to one secret's entry ends the grants that entry affects and no others.
+an edit to one secret's entry ends the grants that entry affects and no others, at the release
+and at the next request that would reuse one, before the grant's approval chain and policy are
+checked again.
 
 What the airlock does not stop is as much of the design as what it does:
 
@@ -1273,13 +1275,17 @@ approves that secret lists the grant and can end it, and a judged grant of a sha
 every signed-in person's page.
 
 A judged grant is held to the rules in force rather than to a person's standing, and to the
-`admin` tag over both. Each release re-checks that the secret's entry still gives the judge at
-least the grant's lifetime; a grant whose entry lost its `judge`, or whose seconds fell below
-that lifetime, releases nothing (`GRANT_NOT_LIVE`). A secret its owner tags as an
-administrator's after the judge decided it ends that grant for good, at the release and at the
-next request that would reuse it: a person approves every release of one, so no judged grant
-goes on releasing it, and taking the tag off again does not bring the grant back: the session
-asks afresh, as a new request, which its person decides while the tag stands. The chain check
+`admin` tag over both. An edit to the rules entry of a key the judge decided ends that grant for
+good, as an edit to any entry ends the grants that entry affects ([The airlock](#the-airlock)):
+one that takes the key's `judge` away, lowers it below the grant's lifetime, or drops the entry
+does so at the release and at the next request that would reuse the grant, so putting the entry
+back does not bring the grant back (`GRANT_NOT_LIVE`). Each release also re-checks that the
+secret's entry still gives the judge at least the grant's lifetime. A key its owner tags as an
+administrator's after the judge decided ends that grant for good too, at the release and at the
+next request that would reuse it, whether the judge decided that key or the session got it at
+once beside the judged ones: a person approves every release of one, so no judged grant goes on
+releasing it, and taking the tag off again does not bring the grant back: the session asks
+afresh, as a new request, which its person decides while the tag stands. The chain check
 ([The audit record](#the-audit-record)) admits a judge's approval only on a record that names
 agent secrets alone, each one a key the rules still give the judge seconds of, and a lifetime
 within each one's seconds, so a forged record, and one a rules change left behind, release
