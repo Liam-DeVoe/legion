@@ -218,6 +218,38 @@ const shapes: HeavyShape[] = [
     },
   },
   {
+    // The proof marks' own walk (`remarkProofMarks`, `proof-sdk-upstream`'s
+    // src/formats/remark-proof-marks.ts) moves each child inside an open `<span data-proof>` into
+    // it as `remarkDispatchMarks` does, which was ported from it; unpatched, its splice of each
+    // moved child read 47.59 times the steps for 8 times the spans (1,053 at 7, 50,113 at 62,
+    // 2026-11-19), and `patches/proof-sdk@…tgz.patch` makes it one pass.
+    name: "a paragraph of 500 proof spans side by side",
+    grow: (size) =>
+      Array.from(
+        { length: size },
+        (_, id) => `<span data-proof="authored" data-id="p${id}" data-by="human:reader">w</span>`
+      ).join(" "),
+    full: 500,
+    opensContainers: false,
+    expectDoc: (doc) => {
+      expect(doc.childCount).toBe(1);
+      expect(doc.textContent).toBe(Array.from({ length: 500 }, () => "w").join(" "));
+    },
+  },
+  {
+    // Every run is a child the same walk moves into the one span, and each `<em>` is read for the
+    // `</em>` that closes it (`convertHtmlFormatting`); unpatched, the walk read 52.08 times the
+    // steps for 8 times the runs (1,881 at 7, 97,966 at 62, 2026-11-19).
+    name: "a proof span holding 500 runs in emphasis tags",
+    grow: (size) =>
+      `<span data-proof="authored" data-id="p" data-by="human:reader">${"<em>w</em> ".repeat(size)}</span>`,
+    full: 500,
+    opensContainers: false,
+    expectDoc: (doc) => {
+      expect(doc.childCount).toBe(1);
+    },
+  },
+  {
     // Each ask's opening tag, its text and its closing tag are three children of the paragraph
     // (`remarkDispatchMarks`'s `normalizeSplitDispatchSpans`), so a walk that splices each child
     // it moves into an ask out of the paragraph shifts the rest of it twice an ask.

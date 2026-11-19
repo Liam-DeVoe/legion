@@ -309,12 +309,13 @@ the pmdoc fixture generator, which imports `@legion/proof-editor/headless`. A se
 the rewrite, so `tests/heavy-bodies.test.ts` parses through a bare `unified().use(remarkParse)`
 processor as well: a duplicate copy fails that test.
 
-## The four dependency patches
+## The dependency patches
 
-Four of the root `package.json`'s `patchedDependencies` entries are the parsers this package reads
-markdown with, patched so that a body costs time in proportion to its length rather than to its
-square (sjawhar/legion#2519). Each patch leaves the package's output as it was, and each patches
-both `lib/` and `dev/lib/`, because Vite resolves the `development` export condition.
+Five of the root `package.json`'s `patchedDependencies` entries are the parsers this package reads
+markdown with and the proof marks' transform, patched so that a body costs time in proportion to
+its length rather than to its square (sjawhar/legion#2519). Each patch leaves the package's output
+as it was, and each of the four parser patches patches both `lib/` and `dev/lib/`, because Vite
+resolves the `development` export condition.
 
 | Patch | What it makes linear |
 | --- | --- |
@@ -322,6 +323,7 @@ both `lib/` and `dev/lib/`, because Vite resolves the `development` export condi
 | `micromark-core-commonmark@2.0.3` | `lib/label-end.js`. The scan for an opening `[` resumes where the scan of the previous `]` stopped and then goes on below the label start that `]` balanced, rather than walking every event again on each `]`; and the definition lookup is skipped outright where the document defines nothing, and otherwise bails, without serializing the label, once the label holds more characters that are not markdown whitespace than the longest defined identifier. The patch counts each event the scan reads and each label character the lookup counts or serializes (`labelEndScan`). It also counts the events each resolver reads - attention, label end, ATX heading, setext underline and code text, each `splice` from its own arguments (`spliceCounted`: each event it removes or puts in, and each event after them it shifts) - and, for content, the events `micromark-util-subtokenize` hands back. `lib/work-counts.js` holds every count of this patch and of `micromark@4.0.2`'s in one registry, by name, and the package's entry exports it as `workCounts()` and `workCount(name)`. `lib/list.js` takes a list item's blank-line continuation without asking `blankLine` whether the line is blank: that continuation opens with `effects.check(blankLine, …)`, and where the line is already over - the code is a line ending or the end of the document, which is what a line of only spaces and tabs is once the continuations above have taken their indentation - the answer is yes and the check's store and restore are work for nothing. Every open list item runs it once per blank line, so a body of D nested items and N blank lines runs D*N of them: on 50 nested items and 32 KB of blank lines, about two fifths of what micromark spent |
 | `micromark-extension-gfm-footnote@2.1.0` | `lib/syntax.js`'s call scan, the same backwards walk. Footnote definitions are flow constructs, so they are all known before text is tokenized: with none defined the walk is skipped, and otherwise it resumes where the previous `]`'s walk stopped |
 | `mdast-util-from-markdown@2.0.3` | `lib/index.js`'s `prepareList`, which spliced each list item's enter and its exit into the whole event array and so moved everything after them once per item. It now records where each one goes and `compile` rebuilds the events once, the sort being stable so an inner item's exit stays before an outer item's |
+| `proof-sdk@./proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz` (`proof-sdk-upstream`, the committed tarball, whose pin stays as it is) | `src/formats/remark-proof-marks.ts`, the `remarkProofMarks` transform every headless parse runs. `normalizeSplitProofSpans` spliced each child inside an open `<span data-proof>` out of its parent, and `visit` spliced a block's whole span in place, each shifting every later child; and `visit` converted the legacy HTML formatting of every proof span of a node's whole subtree again at each level of its walk. The children are now read once and written back once, and each level converts only its own spans' children: a paragraph of 500 spans side by side read 47.59 times the transform's steps for 8 times the spans before (1,053 at 7, 50,113 at 62) and reads them in proportion now. The patch is written against the fork's own `src/`, to go to sjawhar/proof-sdk as it is |
 
 `tests/heavy-bodies.test.ts` and `tests/nested-directive.test.ts` hold the parse to a cost in
 proportion to the body, on the shapes named in them: each row parses its shape at the longest body

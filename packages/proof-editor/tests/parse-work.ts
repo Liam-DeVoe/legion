@@ -2,7 +2,7 @@
  * The work a parse does, counted, for the rows that hold a heavy body's parse to a cost in
  * proportion to its length.
  *
- * A row reads its counts around one parse (packages/proof-editor/AGENTS.md, "The four dependency
+ * A row reads its counts around one parse (packages/proof-editor/AGENTS.md, "The dependency
  * patches"). The patches of `micromark` and `micromark-core-commonmark` count into one registry,
  * `workCounts()` of `micromark-core-commonmark` (`patches/micromark-core-commonmark@2.0.3.patch`,
  * `lib/work-counts.js`, which micromark's patched modules count into too), each counter by its
