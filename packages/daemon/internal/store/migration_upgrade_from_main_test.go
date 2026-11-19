@@ -63,6 +63,11 @@ import (
 // sent again as written (20261114061900) are named here too: an upgrade of a database main
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
+// t-e-54's claim sessions (20261116144907, cybermonklabs/legion#4220) are named here too: that
+// version stands between INFRA-2614's 20261114061900 and the role-holders publication's
+// 20261116165926, and an upgrade of a database main migrated applies it there. It creates
+// claim_sessions, every name of a session a claim has recorded, filled from the sessions the
+// claims rows hold, and it touches no outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337
 // and dispatch://INFRA-3136's 20261118073048 and 20261118172458, so an upgrade of a database main
@@ -122,6 +127,9 @@ var thisBranchsMigrations = []int{
 	// dispatch://INFRA-2614: the architect stall marks, the architect entry upgrade, the claim
 	// handshake and the phase entry's mark that a task is sent again as written.
 	20261113181500, 20261113182000, 20261114020537, 20261114061900,
+	// t-e-54 (cybermonklabs/legion#4220): the claim sessions, every name of a session a claim has
+	// recorded, held to the claim that recorded it first.
+	20261116144907,
 	// The kind list with the role-holders publication.
 	20261116165926,
 	// The reviewer's reviewed commit.
@@ -147,12 +155,12 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-3027's 20261112070503, dispatch://INFRA-3219's 20261112180548,
 // dispatch://INFRA-2981's 20261113082214 and 20261113110610, dispatch://INFRA-3276's
 // 20261113082415, dispatch://INFRA-3146's 20261113090512, dispatch://INFRA-3274's 20261114031356,
-// dispatch://INFRA-2614's 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the
-// role-holders publication's 20261116165926, the reviewer's reviewed commit, 20261116234034,
-// cybermonklabs/legion#4400's 20261117000528, 20261117004117 and 20261117064152,
-// dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337, and
-// dispatch://INFRA-3136's 20261118073048 and 20261118172458, which is why the loop below holds the
-// list rather than counting it, so that a version added above any of them is named here rather
+// dispatch://INFRA-2614's 20261113181500, 20261113182000, 20261114020537 and 20261114061900,
+// t-e-54's 20261116144907, the role-holders publication's 20261116165926, the reviewer's reviewed
+// commit, 20261116234034, cybermonklabs/legion#4400's 20261117000528, 20261117004117 and
+// 20261117064152, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
+// and dispatch://INFRA-3136's 20261118073048 and 20261118172458, which is why the loop below holds
+// the list rather than counting it, so that a version added above any of them is named here rather
 // than read as main's.
 const mainsNewestMigration = 20261111212544
 
@@ -269,5 +277,94 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	}
 	if merged != 0 {
 		t.Fatalf("merge-lane rows after the upgrade = %d, want 20261029120800 to have deleted every one", merged)
+	}
+}
+
+// todaysMainsNewestMigration is main's newest migration at this branch's last merge of main
+// (f27003af63): the update ask mark's cutover. It and the other migrations main numbered after
+// this branch's claim_sessions (20261116144907) — the role-holders publication (20261116165926),
+// the reviewer's reviewed commit (20261116234034), the step records' three (20261117000528,
+// 20261117004117, 20261117064152) and the pull request statuses (20261117112334) — stand above
+// it. A deployment of main applies them first, so this branch's daemon finds a database whose
+// newest recorded version stands above its own new migration.
+const todaysMainsNewestMigration = 20261117200337
+
+// thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
+const thisBranchsClaimSessions = 20261116144907
+
+// A database today's main migrated has recorded every migration up to main's newest,
+// 20261117200337, but claim_sessions, which is numbered below it. Store.Migrate applies every
+// migration that database has not recorded, whatever version stands highest (apply asks each
+// migration whether its own version is recorded), so the upgrade applies 20261116144907 below that
+// newest: claim_sessions is created, and its backfill holds the session a claim of main's daemon
+// recorded for that claim. So this branch's migration keeps its number.
+//
+// The database is built from the migrations numbered up to main's newest alone (review round 13),
+// so a migration added after this test still finds the database today's main left, and the upgrade
+// applies it too, after claim_sessions.
+//
+// The control (the pull request records the run): a loader that skips a migration numbered below
+// the newest version recorded leaves claim_sessions unapplied, and the test fails naming it.
+func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	var mains []migrations.Migration
+	ours, later, newest := false, 0, 0
+	for _, migration := range all {
+		switch {
+		case migration.Version == thisBranchsClaimSessions:
+			ours = true
+		case migration.Version <= todaysMainsNewestMigration:
+			mains = append(mains, migration)
+		default:
+			later++
+		}
+		newest = max(newest, migration.Version)
+	}
+	if !ours {
+		t.Fatalf("the embedded set has no migration %d, so this test upgrades nothing", thisBranchsClaimSessions)
+	}
+	if _, err := store.migrate(ctx, mains); err != nil {
+		t.Fatalf("migrate the database as today's main did: %v", err)
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != todaysMainsNewestMigration {
+		t.Fatalf("the database today's main migrated reports version %d (%v), want main's newest, %d", version, err, todaysMainsNewestMigration)
+	}
+	const token, session = "legion-legion-legion-901-implementer", "ses_main"
+	if _, err := store.pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, 'legion', 'LEGION-901', 'LEGION-901', 'implementer', 1, $2, '/state/sessions/2026-11-17T00-00-00-000Z_ses_main.jsonl',
+			'idle', 0, 0, 0, 0)`, token, session); err != nil {
+		t.Fatalf("seed a claim main's daemon recorded: %v", err)
+	}
+
+	applied, err := store.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("upgrade the database today's main migrated: %v", err)
+	}
+	if applied != 1+later {
+		t.Errorf("the upgrade applied %d migrations, want %d: claim_sessions and the %d numbered after main's newest", applied, 1+later, later)
+	}
+	var recorded int
+	if err := store.pool.QueryRow(ctx, `select count(*) from schema_version where version = $1::bigint`, thisBranchsClaimSessions).Scan(&recorded); err != nil {
+		t.Fatalf("read whether the upgrade recorded %d: %v", thisBranchsClaimSessions, err)
+	}
+	if recorded != 1 {
+		t.Errorf("the upgrade recorded claim_sessions (%d) %d times, want once", thisBranchsClaimSessions, recorded)
+	}
+	var holder string
+	if err := store.pool.QueryRow(ctx, `select claim from claim_sessions where project = 'legion' and kind = 'session' and name = $1`,
+		session).Scan(&holder); err != nil {
+		t.Fatalf("read the hold of %s after the upgrade: %v", session, err)
+	}
+	if holder != token {
+		t.Errorf("%s is held for %q after the upgrade, want %s, the claim that recorded it", session, holder, token)
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
+		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
 	}
 }
