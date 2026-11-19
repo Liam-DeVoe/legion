@@ -10,10 +10,6 @@ export interface IssueUpdateMutation {
   variables: IssueUpdateInput | undefined;
 }
 
-/** What a request to send a field's draft did: sent it, queued it behind the write still out,
- *  found nothing to send, or refused it (a closed issue, or a value Dispatch would not take). */
-export type SubmitOutcome = "sent" | "queued" | "unchanged" | "refused";
-
 export interface IssueDrafts {
   discardTitle: () => void;
   discardRoute: () => void;
@@ -23,11 +19,10 @@ export interface IssueDrafts {
   requestParentSubmit: () => boolean;
   requestRouteSubmit: () => boolean;
   requestStatusSubmit: (status: string) => boolean;
-  /** `submitTitle`, answering whether the title was sent or queued. */
+  /** Asks for the title's draft to be sent, answering whether it was sent or queued behind the
+   *  write out. */
   requestTitleSubmit: () => boolean;
   retry: () => void;
-  /** Asks for the title's draft to be sent, and says what came of it. */
-  submitTitle: () => SubmitOutcome;
   parent: string;
   parentDirty: boolean;
   route: string;
@@ -45,7 +40,12 @@ export interface IssueDrafts {
 
 const routePattern = /^(role:[a-z0-9-]+|session:[0-9a-f-]{16,})$/;
 
-/** One field's draft (decision 315). */
+/** Whose value a field's draft is (decision 332): "issue", a value the issue gave the field;
+ *  "typed", text the reader typed and has not ended since; "ended", a choice the reader ended -
+ *  queued, out, or refused and not yet sent. */
+type Own = "issue" | "typed" | "ended";
+
+/** One field's draft (decisions 315 and 332). */
 interface FieldState {
   /** The issue's value as last read: a prop, or a write's landing. */
   server: string;
@@ -53,6 +53,8 @@ interface FieldState {
   out: string | null;
   /** The reader's text, raw. */
   draft: string;
+  /** Whose the draft is. Only a draft that is the issue's follows the issue's value. */
+  own: Own;
   /** The reader's last ended choice, normalized, until it is sent, discarded or replaced, or the
    *  reference becomes it; else null. */
   queued: string | null;
@@ -109,11 +111,24 @@ const changed = (rules: FieldRules, state: FieldState): boolean =>
 const dropQueuedReference = (state: FieldState): FieldState =>
   state.queued === reference(state) ? { ...state, queued: null } : state;
 
-function requestOutcome(
-  rules: FieldRules,
-  state: FieldState,
-  closed: boolean
-): Exclude<SubmitOutcome, "sent"> {
+/** What an answer leaves of a field's draft: a queued value the reference has become is
+ *  dropped, and an ended choice the issue now holds, with nothing out and nothing left to send,
+ *  is the issue's value. */
+function answered(rules: FieldRules, state: FieldState): FieldState {
+  const next = dropQueuedReference(state);
+  const held =
+    next.own === "ended" &&
+    next.out === null &&
+    next.queued === null &&
+    rules.normalize(next.draft) === next.server;
+  return held ? { ...next, own: "issue" } : next;
+}
+
+/** What the end of an edit does with a field's draft: queues it to be sent, finds nothing to
+ *  send, or refuses it (a closed issue, or a value Dispatch would not take). */
+type RequestOutcome = "queued" | "unchanged" | "refused";
+
+function requestOutcome(rules: FieldRules, state: FieldState, closed: boolean): RequestOutcome {
   if (closed || !rules.valid(rules.normalize(state.draft))) return "refused";
   return changed(rules, state) ? "queued" : "unchanged";
 }
@@ -122,55 +137,70 @@ function requestOutcome(
  * One field's draft, as one pure step per event. `reference` is the value out, else the
  * issue's, and a draft is `changed` when its text normalized differs from it. `queued` is the
  * reader's last ended choice not yet sent (decision 324), which the hook's drain sends once the
- * guard lets a write go.
+ * guard lets a write go. `own` says whose the draft is (decision 332): the issue's, text the
+ * reader typed and has not ended since, or a choice the reader ended.
  *
- * - `write(text)`, the reader's typing: the draft is the text, and nothing else moves. Typing
- *   ends no edit, so it neither chooses a value nor withdraws one, even typed back to the value
- *   out or the issue's: the value queued stays the reader's last ended choice, and the end of
- *   the edit chooses again. Moved with each keystroke, the queued value went as the write ahead
- *   of it landed, half typed, and the title the reader had saved never went; withdrawn by a
- *   draft typed back, an undo queued under the issue's own value was lost to a keystroke and
+ * - `write(text)`, the reader's typing: the draft is the text, and typed; nothing else moves.
+ *   Typing ends no edit, so it neither chooses a value nor withdraws one, even typed back to the
+ *   value out or the issue's: the value queued stays the reader's last ended choice, and the end
+ *   of the edit chooses again. Moved with each keystroke, the queued value went as the write
+ *   ahead of it landed, half typed, and the title the reader had saved never went; withdrawn by
+ *   a draft typed back, an undo queued under the issue's own value was lost to a keystroke and
  *   its deletion.
  * - `request`, the end of an edit, a blur, a switch's send: the reader's choice, which replaces
  *   any value queued. Refused for a closed issue or a value Dispatch would not take, it asks for
  *   nothing; an unchanged draft takes the reference and asks for nothing; a changed one is
- *   queued as its text normalized, which the hook's drain then sends.
+ *   queued as its text normalized, an ended choice, which the hook's drain then sends.
  * - `discard`, Escape or Cancel: the draft takes the reference and asks for nothing. While a
  *   write is out that is the value out, the value the issue is about to hold (decision 316).
+ * - A draft that `request` or `discard` puts back to the reference is the reader's ended choice
+ *   while a write is out, since the value out is one, and the issue's when nothing is out.
  * - `sent(value)`, the guard let the write go: the value is out, and nothing is queued.
- * - `server(value)`, a prop change or a landing's answer: an unchanged draft with nothing out
- *   and nothing queued takes the value. With a value queued the draft is the reader's text,
- *   though another reader may have set the issue to it: moved on to that reader's next title,
- *   it showed a title the reader never typed. While a value is out the reference stays that
- *   value.
+ * - `server(value)`, a prop change or a landing's answer: a draft that is the issue's takes the
+ *   value while nothing is out. A typed or ended draft stays, whatever the value: judged against
+ *   the issue's value now, a draft another reader set the issue to read as not changed, and,
+ *   moved on to that reader's next title, it showed a title the reader never typed, which the end
+ *   of the edit then did not send. While a value is out the reference stays that value.
  * - `settled(landed)`, this field's write ended: a landed write's draft that is still its value
- *   takes the value it landed with. A refusal keeps the draft, which is then changed against the
- *   issue's value: the reader's unsent choice, which Retry and the end of the next edit send.
+ *   takes the value it landed with, and an ended choice is then the issue's; text the reader
+ *   typed again after the write went stays typed, their open text. A refusal keeps the draft,
+ *   and whose it is, which is then changed against the issue's value: the reader's unsent
+ *   choice, which Retry and the end of the next edit send.
  *
  * After `server` and `settled` a queued value is kept: it was valid when the reader ended the
  * edit that chose it, and a new reference does not undo that choice. It is dropped only once the
- * new reference is that value, which leaves it nothing to send.
+ * new reference is that value, which leaves it nothing to send. An ended choice the issue then
+ * holds, with nothing out and nothing queued, is the issue's value, and follows it from then on.
  */
 function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): FieldState {
   switch (event.type) {
     case "write":
-      return { ...state, draft: event.text };
+      return { ...state, draft: event.text, own: "typed" };
     case "request": {
       const outcome = requestOutcome(rules, state, event.closed);
-      if (outcome === "queued") return { ...state, queued: rules.normalize(state.draft) };
+      if (outcome === "queued") {
+        return { ...state, own: "ended", queued: rules.normalize(state.draft) };
+      }
+      if (outcome === "refused") return { ...state, queued: null };
       return {
         ...state,
-        draft: outcome === "unchanged" ? reference(state) : state.draft,
+        draft: reference(state),
+        own: state.out === null ? "issue" : "ended",
         queued: null,
       };
     }
     case "discard":
-      return { ...state, draft: reference(state), queued: null };
+      return {
+        ...state,
+        draft: reference(state),
+        own: state.out === null ? "issue" : "ended",
+        queued: null,
+      };
     case "sent":
       return { ...state, out: event.value, queued: null };
     case "server": {
-      const follows = state.out === null && state.queued === null && !changed(rules, state);
-      return dropQueuedReference({
+      const follows = state.out === null && state.own === "issue";
+      return answered(rules, {
         ...state,
         draft: follows ? event.value : state.draft,
         server: event.value,
@@ -179,10 +209,11 @@ function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): F
     case "settled": {
       if (state.out === null) return state;
       const took = event.landed && rules.normalize(state.draft) === state.out;
-      return dropQueuedReference({
+      return answered(rules, {
         ...state,
         draft: took ? state.server : state.draft,
         out: null,
+        own: took && state.own === "ended" ? "issue" : state.own,
       });
     }
   }
@@ -192,10 +223,9 @@ const fieldAt = (value: string): FieldState => ({
   server: value,
   out: null,
   draft: value,
+  own: "issue",
   queued: null,
 });
-
-const asked = (outcome: SubmitOutcome): boolean => outcome === "sent" || outcome === "queued";
 
 export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): IssueDrafts {
   // Read and written synchronously: a request and the drain it starts run in one task, and so do
@@ -216,6 +246,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
       next.server === state.server &&
       next.out === state.out &&
       next.draft === state.draft &&
+      next.own === state.own &&
       next.queued === state.queued
     ) {
       return;
@@ -225,37 +256,37 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
   }, []);
 
   // A value is marked out inside the guard, as its write goes: a write the guard holds back is
-  // not out, and its value stays queued. Answers the field it sent, or null.
-  function drainPendingSubmits(): Field | null {
+  // not out, and its value stays queued.
+  function drainPendingSubmits(): void {
     for (const field of fields) {
       const value = states.current[field].queued;
       if (value === null) continue;
-      const went = updateIssueGuard.guard(() => {
+      updateIssueGuard.guard(() => {
         apply(field, { type: "sent", value });
         updateIssue.mutate(fieldRules[field].wire(value));
       });
-      return went ? field : null;
+      return;
     }
-    return null;
   }
 
-  function submit(field: Field): SubmitOutcome {
+  // The end of an edit: a changed draft is queued, and the drain sends it at once if the guard
+  // lets a write go, else as the write out ends. A queued draft was sent or waits to be: what
+  // a caller needs is that it is asked for, not which.
+  function submit(field: Field): RequestOutcome {
     const closed = issue.closed_at !== null;
     const outcome = requestOutcome(fieldRules[field], states.current[field], closed);
     apply(field, { type: "request", closed });
-    if (outcome !== "queued") return outcome;
-    return drainPendingSubmits() === field ? "sent" : "queued";
-  }
-
-  function submitTitle(): SubmitOutcome {
-    const outcome = submit("title");
-    setTitleError(outcome === "refused" ? "Title is required." : null);
+    if (outcome === "queued") drainPendingSubmits();
     return outcome;
   }
 
-  const requestTitleSubmit = () => asked(submitTitle());
-  const requestRouteSubmit = () => asked(submit("route"));
-  const requestParentSubmit = () => asked(submit("parent"));
+  const requestTitleSubmit = () => {
+    const outcome = submit("title");
+    setTitleError(outcome === "refused" ? "Title is required." : null);
+    return outcome === "queued";
+  };
+  const requestRouteSubmit = () => submit("route") === "queued";
+  const requestParentSubmit = () => submit("parent") === "queued";
 
   // The field a write carried takes the value it carried: a write that landed with no answer is
   // passed the issue as it was, and a later read brings any value Dispatch normalized. The other
@@ -335,7 +366,6 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     requestRouteSubmit,
     requestTitleSubmit,
     retry,
-    submitTitle,
     parent: parent.draft,
     parentDirty: changed(fieldRules.parent, parent),
     route: route.draft,
