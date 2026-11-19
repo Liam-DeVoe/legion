@@ -901,17 +901,22 @@ const leftoverFixtures = fileURLToPath(
  *  with the child (`rowOf`): it prints what the call answered, or the message of what it threw.
  *  The call is the subject of the row that runs the child, so the child's row does not charge it
  *  as a call that makes a container (`Row.made`): it runs to the deadline `WAITS` sets, and not
- *  for `makeMs`. Where `RUN` is set it then runs a row's `finally`, as the leftover rows do: a stop
- *  that takes `STOP_MS`, which the row's `Waits.ends` counts, and then the removal of each container
- *  whose mark names `RUN` (`removeContainersOf`), and prints whether that removal ended or what it
- *  threw. */
+ *  for `makeMs`. Where `BEFORE` is set (`{ what, ms }`), the row first waits `ms`, a wait it names
+ *  `what` (`during`), as a row awaits a start of its own. Where `RUN` is set it then runs a row's
+ *  `finally`, as the leftover rows do: a stop that takes `STOP_MS`, which the row's `Waits.ends`
+ *  counts, and then the removal of each container whose mark names `RUN` (`removeContainersOf`),
+ *  and prints whether that removal ended or what it threw. */
 const fixtureCallScript = `
-import { docker, removeContainersOf } from ${JSON.stringify(leftoverFixtures)};
+import { docker, during, removeContainersOf } from ${JSON.stringify(leftoverFixtures)};
 import { rowOf } from ${JSON.stringify(fileURLToPath(import.meta.url))};
-const { ARGS = "[]", RUN, STOP_MS, WAITS = "" } = process.env;
+const { ARGS = "[]", BEFORE, RUN, STOP_MS, WAITS = "" } = process.env;
 const row = { ...rowOf(JSON.parse(WAITS)), made() {} };
 const ended = {};
 try {
+  if (BEFORE !== undefined) {
+    const { what, ms } = JSON.parse(BEFORE);
+    await during(what, () => Bun.sleep(ms));
+  }
   ended.stdout = await docker(row, ...JSON.parse(ARGS));
 } catch (error) {
   ended.error = error instanceof Error ? error.message : String(error);
@@ -929,9 +934,10 @@ console.log(JSON.stringify(ended));
 `;
 
 /** Runs the leftover rows' fixture `docker` with `args` in a child whose `docker` is the one in
- *  `bin` (`fixtureCallScript`), for a row of the waits `waits` that starts with the child, and
- *  then, where `end` is given, that row's `finally`: a stop of `end.stopMs` and the removal of the
- *  containers whose mark names `end.run`. Charges `row` for the child. Answers what the call
+ *  `bin` (`fixtureCallScript`), for a row of the waits `waits` that starts with the child: first,
+ *  where `before` is given, a wait of `before.ms` that the row names `before.what`; then the call;
+ *  and then, where `end` is given, that row's `finally`: a stop of `end.stopMs` and the removal of
+ *  the containers whose mark names `end.run`. Charges `row` for the child. Answers what the call
  *  answered or threw, what the removal did, and the lines the child printed; kills the child and
  *  throws where it has not ended within everything the row waits for (`Row.ms`). */
 export async function fixtureDockerInChild(
@@ -939,7 +945,13 @@ export async function fixtureDockerInChild(
   bin: string,
   args: readonly string[],
   waits: Waits,
-  end?: { readonly stopMs: number; readonly run: string }
+  {
+    before,
+    end,
+  }: {
+    readonly before?: { readonly what: string; readonly ms: number };
+    readonly end?: { readonly stopMs: number; readonly run: string };
+  } = {}
 ) {
   row.child(`the fixture's docker ${args.join(" ")}`);
   const { stdout, stderr } = await inChild(
@@ -948,6 +960,7 @@ export async function fixtureDockerInChild(
     {
       WAITS: JSON.stringify(waits),
       ARGS: JSON.stringify(args),
+      ...(before === undefined ? {} : { BEFORE: JSON.stringify(before) }),
       ...(end === undefined ? {} : { RUN: end.run, STOP_MS: String(end.stopMs) }),
     },
     row.ms

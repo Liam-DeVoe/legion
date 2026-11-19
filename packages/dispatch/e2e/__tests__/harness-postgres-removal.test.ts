@@ -1040,6 +1040,53 @@ test.skipIf(!onLinux)(
   rowMs(ranOut)
 );
 
+/** How long the next row's child waits, a wait its row names, before its fixture call: past the
+ *  row's deadline (`ranOutMs`), by more than the room one start of a stand-in takes under load. */
+const usedUpMs = ranOutMs + 3_000;
+/** What the next row waits for (`Waits`): one child, and in it the named wait past the deadline
+ *  and the fixture call after it, which starts nothing. */
+const usedUp: Waits = { children: 1, reads: 0, bounds: [usedUpMs] };
+
+// The image-ready row ran out its deadline on 2026-11-19 in its removal of the builder of its
+// image, which Docker took 17 and 21 minutes over while its daemon stalled. The row's next fixture
+// call, a `psql`, then started after the deadline, was stopped at once, and its line said that the
+// `psql` "did not end within" the row's time, naming a call that had had no time at all. A fixture
+// call that its row's deadline finds already passed now starts nothing, and its line says so and
+// names the wait during which the deadline passed (`during` of harness-postgres-leftover-fixtures.ts).
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a fixture's docker call that its row's deadline finds already passed starts nothing, says the deadline had passed before it, and names the wait that used it up",
+  async () => {
+    const row = rowOf(usedUp);
+    const { tmp } = scratch();
+    try {
+      const docker = standInDocker(tmp, ["echo answered"]);
+      const args = ["ps", "--all", "--quiet"];
+      const what = "the row's own wait past its deadline";
+
+      const { ended, lines } = await fixtureDockerInChild(
+        row,
+        docker.bin,
+        args,
+        { children: 0, reads: 0, bounds: [ranOutMs] },
+        { before: { what, ms: usedUpMs } }
+      );
+
+      const line = new RegExp(
+        `^e2e/__tests__/harness-postgres-leftover-fixtures\\.ts: docker ${args.join(" ")} did not start: the ${ranOutMs / 1000} s the row waits in all had run out \\d+\\.\\d s before it, during ${what}, from \\d+\\.\\d s to \\d+\\.\\d s of the row$`
+      );
+      expect(ended).toEqual({ error: expect.stringMatching(line) });
+      expect(holding(lines, ": docker ps ")).toEqual([expect.stringMatching(line)]);
+      // The call started nothing: the stand-in `docker` got no call.
+      expect(existsSync(join(docker.bin, "calls"))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one child, and in it the
+  // named wait past the deadline.
+  rowMs(usedUp)
+);
+
 /** How long the next row's `finally` takes over its stop, as a leftover row's stop of a stack it
  *  started does: more than the half of `rowRoomMs` that a removal of what the row made has above
  *  the row's deadline, so the removal after it has time left only where the deadline did not count
@@ -1083,8 +1130,7 @@ test.skipIf(!onLinux)(
       const args = ["create", "--name", name, "--label", `${label}=1`, "postgres"];
 
       const { ended } = await fixtureDockerInChild(row, docker.bin, args, ranOutThenStop, {
-        stopMs: endStopMs,
-        run,
+        end: { stopMs: endStopMs, run },
       });
 
       expect(ended).toEqual({

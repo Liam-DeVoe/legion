@@ -176,31 +176,62 @@ export function kill(child: Child): void {
   child.process.kill("SIGKILL");
 }
 
+/** One wait of this process's rows (`during`): what it waits for, and when it began and when it
+ *  ended on the machine's clock (`machine`), `ended` unset while it runs. */
+interface Wait {
+  readonly what: string;
+  readonly began: number;
+  ended?: number;
+}
+
+/** Every wait of this process's rows so far, in the order they began (`during`). The rows of one
+ *  file run one after another, so the waits that ran at a row's deadline are that row's own. */
+const waits: Wait[] = [];
+
+/** Waits for `wait()`, which its row names `what`, and records when it began and when it ended
+ *  (`waits`), so that the line of a fixture call that the row's deadline finds already passed
+ *  names the wait that used that deadline up (`ranOut`). Each wait in this file of a child, of
+ *  Docker or of Postgres is one; a row names its other waits so, such as a provider's start of a
+ *  stack that the row awaits itself. */
+export async function during<T>(what: string, wait: () => Promise<T>): Promise<T> {
+  const record: Wait = { what, began: machine.now() };
+  waits.push(record);
+  try {
+    return await wait();
+  } finally {
+    record.ended = machine.now();
+  }
+}
+
 /** Waits for `child` to exit, and kills it and throws where it has not within `ms`. */
-export async function exited(child: Child, ms: number, what: string): Promise<number> {
-  const code = await Promise.race([child.process.exited, sleep(ms).then(() => undefined)]);
-  if (code !== undefined) return code;
-  kill(child);
-  throw new Error(`${what} did not end within ${ms / 1000} s: ${child.output.stderr}`);
+export function exited(child: Child, ms: number, what: string): Promise<number> {
+  return during(what, async () => {
+    const code = await Promise.race([child.process.exited, sleep(ms).then(() => undefined)]);
+    if (code !== undefined) return code;
+    kill(child);
+    throw new Error(`${what} did not end within ${ms / 1000} s: ${child.output.stderr}`);
+  });
 }
 
 /** Waits for the first line `child` prints on its stdout, and answers it. Throws, naming `what`
  *  and what the child wrote on stderr, where the child exits before it printed one, and kills the
  *  child and throws where it has printed none within `ms`. */
-async function firstLine(child: Child, ms: number, what: string): Promise<string> {
-  const deadline = Date.now() + ms;
-  while (!child.output.stdout.includes("\n")) {
-    const code = await Promise.race([child.process.exited, sleep(200).then(() => undefined)]);
-    if (code !== undefined && !child.output.stdout.includes("\n")) {
-      await Promise.race([child.drained, sleep(10_000)]);
-      throw new Error(`${what} exited ${code} before it served: ${child.output.stderr}`);
+function firstLine(child: Child, ms: number, what: string): Promise<string> {
+  return during(what, async () => {
+    const deadline = Date.now() + ms;
+    while (!child.output.stdout.includes("\n")) {
+      const code = await Promise.race([child.process.exited, sleep(200).then(() => undefined)]);
+      if (code !== undefined && !child.output.stdout.includes("\n")) {
+        await Promise.race([child.drained, sleep(10_000)]);
+        throw new Error(`${what} exited ${code} before it served: ${child.output.stderr}`);
+      }
+      if (Date.now() > deadline) {
+        kill(child);
+        throw new Error(`${what} did not serve within ${ms / 1000} s: ${child.output.stderr}`);
+      }
     }
-    if (Date.now() > deadline) {
-      kill(child);
-      throw new Error(`${what} did not serve within ${ms / 1000} s: ${child.output.stderr}`);
-    }
-  }
-  return child.output.stdout.split("\n")[0] ?? "";
+    return child.output.stdout.split("\n")[0] ?? "";
+  });
 }
 
 /** The environment of a child of a row: this one's, with the row's own `TMPDIR` and the one
@@ -355,50 +386,95 @@ interface Called {
   readonly stderr: string;
 }
 
+/** How a fixture call that its row's time did not let end ended (`untilDeadline`): "late" where
+ *  that time ran out while the call ran, which stopped it, and "unstarted" where it had run out
+ *  before the call, which then started nothing. */
+type Unended = "late" | "unstarted";
+
 /** Runs `program` with `args`, a call of Docker or Postgres that sets up the row `row`, or reads
  *  it, for as long as the row still has time for: until `by`, the row's deadline but for a removal
  *  of what it made (`Row.cleanup`), on the machine's clock, as a start's removal runs its `docker rm`
  *  (`machine` of `e2e/harness-postgres-container-removal.ts`). It sets no time of its own: a shared
  *  daemon took 133 s over one `docker create` on 2026-11-19 while it answered every other call, and
- *  a fixed bound of 120 s gave that call up, and left the container it made. Answers how the call
- *  ended (`Called`), or "late" where `by` came first, which stopped it. */
+ *  a fixed bound of 120 s gave that call up, and left the container it made. Where `by` has passed
+ *  already, it starts nothing: a call with no time at all is no call that ran out its time. The
+ *  call is a wait of the row (`during`). Answers how the call ended (`Called`), or how `by` ended
+ *  it (`Unended`). */
 async function untilDeadline(
   row: Row,
   program: string,
   args: readonly string[],
   by = row.deadline
-): Promise<Called | "late"> {
-  const stop = new AbortController();
-  const ended = new AbortController();
-  void machine.sleep(Math.max(0, by - machine.now()), ended.signal).then(() => {
-    if (!ended.signal.aborted) stop.abort();
-  });
-  try {
-    const { stdout, stderr } = await execFileAsync(program, args, {
-      signal: stop.signal,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
+): Promise<Called | Unended> {
+  if (machine.now() >= by) return "unstarted";
+  return during(`${program} ${args.join(" ")}`, async () => {
+    const stop = new AbortController();
+    const ended = new AbortController();
+    void machine.sleep(Math.max(0, by - machine.now()), ended.signal).then(() => {
+      if (!ended.signal.aborted) stop.abort();
     });
-    return { status: 0, stdout, stderr };
-  } catch (error) {
-    if (stop.signal.aborted) return "late";
-    const failed = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
-    const stderr = typeof failed.stderr === "string" ? failed.stderr : "";
-    return {
-      status: typeof failed.code === "number" ? failed.code : 1,
-      stdout: typeof failed.stdout === "string" ? failed.stdout : "",
-      stderr: stderr === "" && error instanceof Error ? error.message : stderr,
-    };
-  } finally {
-    ended.abort();
-  }
+    try {
+      const { stdout, stderr } = await execFileAsync(program, args, {
+        signal: stop.signal,
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      return { status: 0, stdout, stderr };
+    } catch (error) {
+      if (stop.signal.aborted) return "late";
+      const failed = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+      const stderr = typeof failed.stderr === "string" ? failed.stderr : "";
+      return {
+        status: typeof failed.code === "number" ? failed.code : 1,
+        stdout: typeof failed.stdout === "string" ? failed.stdout : "",
+        stderr: stderr === "" && error instanceof Error ? error.message : stderr,
+      };
+    } finally {
+      ended.abort();
+    }
+  });
 }
 
-/** The one line, and the error, of a fixture call `call` of `row` that ran out the row's
- *  deadline: it names the call, the row's time, and what the removal of what it made did
- *  (`removed`). */
-function ranOut(row: Row, call: string, removed = ""): Error {
-  const line = `${named}: ${call} did not end within the ${row.ms / 1000} s the row waits in all, so the row stopped it${removed}`;
+/** `ms` in seconds, to a tenth, as the lines of this file give a time. */
+function seconds(ms: number): string {
+  return (ms / 1000).toFixed(1);
+}
+
+/** What used up the time of the row `row` that ended at `by` (`waits`): the wait of the row that
+ *  ran at `by`, the one of them that ended last where several did, with when it began and ended
+ *  from the row's start; or, where none ran then, the last that ended before it, after which the
+ *  time went in a wait the row does not name. */
+function usedUp(row: Row, by: number): string {
+  const start = row.deadline - row.ms;
+  const mine = waits.filter((wait) => wait.began >= start);
+  const endOf = (wait: Wait) => wait.ended ?? Number.POSITIVE_INFINITY;
+  const ran = mine
+    .filter((wait) => wait.began <= by && endOf(wait) > by)
+    .sort((a, b) => endOf(b) - endOf(a))[0];
+  if (ran !== undefined) {
+    const to = ran.ended === undefined ? "on" : `to ${seconds(ran.ended - start)} s`;
+    return `during ${ran.what}, from ${seconds(ran.began - start)} s ${to} of the row`;
+  }
+  const before = mine.filter((wait) => endOf(wait) <= by).at(-1);
+  return before?.ended === undefined
+    ? "in a wait the row does not name"
+    : `after ${before.what}, which ended at ${seconds(before.ended - start)} s of the row, in a wait the row does not name`;
+}
+
+/** The one line, and the error, of a fixture call `call` of `row` that its time did not let end
+ *  (`Unended`), where that time ended at `by`: the row's deadline, or its time for its removals
+ *  (`Row.cleanup`). A call that ran out that time names the call, the row's time, and what the
+ *  removal of what it made did (`removed`); a call that the time found already passed names the
+ *  call, how long before it the time had run out, and the wait that used it up (`usedUp`). */
+function ranOut(row: Row, call: string, how: Unended, by = row.deadline, removed = ""): Error {
+  const time =
+    by === row.deadline
+      ? `the ${row.ms / 1000} s the row waits in all`
+      : "the row's time for its removals";
+  const line =
+    how === "late"
+      ? `${named}: ${call} did not end within the ${row.ms / 1000} s the row waits in all, so the row stopped it${removed}`
+      : `${named}: ${call} did not start: ${time} had run out ${seconds(machine.now() - by)} s before it, ${usedUp(row, by)}`;
   console.error(line);
   return new Error(line);
 }
@@ -408,7 +484,7 @@ function ranOut(row: Row, call: string, removed = ""): Error {
  *  comes first. */
 export async function psql(row: Row, url: string, sql: string): Promise<Called> {
   const read = await untilDeadline(row, "psql", [url, "-XAtc", sql]);
-  if (read === "late") throw ranOut(row, `psql ${url} -XAtc '${sql}'`);
+  if (typeof read === "string") throw ranOut(row, `psql ${url} -XAtc '${sql}'`, read);
   return read;
 }
 
@@ -446,7 +522,9 @@ async function removeMade(row: Row, args: readonly string[]): Promise<string> {
   if (args[0] === "commit") {
     const image = args.at(-1) ?? "";
     const removal = await untilDeadline(row, "docker", ["image", "rm", "--force", image], by);
-    if (removal === "late") return `, and the removal of the image ${image} it made did not end`;
+    if (typeof removal === "string") {
+      return `, and the removal of the image ${image} it made did not ${removal === "late" ? "end" : "start"}`;
+    }
     return removal.status === 0
       ? `, and removed the image ${image} it made`
       : `, and left the image ${image} it made: ${removal.stderr.trim()}`;
@@ -462,7 +540,7 @@ async function removeMade(row: Row, args: readonly string[]): Promise<string> {
     ["ps", "--all", "--quiet", "--no-trunc", ...filters],
     by
   );
-  if (listed === "late" || listed.status !== 0) {
+  if (typeof listed === "string" || listed.status !== 0) {
     return `, and could not list the container ${name} it may have made`;
   }
   const ids = listed.stdout.split("\n").filter(Boolean);
@@ -491,7 +569,11 @@ export async function docker(row: Row, ...args: string[]): Promise<string> {
   const call = `docker ${args.join(" ")}`;
   if (args[0] === "create" || args[0] === "run" || args[0] === "commit") row.made(call);
   const ended = await untilDeadline(row, "docker", args);
-  if (ended === "late") throw ranOut(row, call, await removeMade(row, args));
+  // A call that started nothing made nothing.
+  if (typeof ended === "string") {
+    const removed = ended === "late" ? await removeMade(row, args) : "";
+    throw ranOut(row, call, ended, row.deadline, removed);
+  }
   if (ended.status !== 0) throw new Error(`${call}: ${ended.stderr}`);
   return ended.stdout;
 }
@@ -507,7 +589,7 @@ export async function exists(
 ): Promise<boolean> {
   const call = `docker ${kind} inspect ${name}`;
   const read = await untilDeadline(row, "docker", [kind, "inspect", name]);
-  if (read === "late") throw ranOut(row, call);
+  if (typeof read === "string") throw ranOut(row, call, read);
   if (read.status === 0) return true;
   if (/no such (container|volume|object)/i.test(read.stderr)) return false;
   throw new Error(`${call}: ${read.stderr}`);
@@ -542,7 +624,7 @@ export async function containersOf(row: Row, run: string, by = row.deadline): Pr
     `{{.ID}} {{.Label "${markLabel}"}}`,
   ];
   const listed = await untilDeadline(row, "docker", args, by);
-  if (listed === "late") throw ranOut(row, `docker ${args.join(" ")}`);
+  if (typeof listed === "string") throw ranOut(row, `docker ${args.join(" ")}`, listed, by);
   if (listed.status !== 0) throw new Error(`docker ${args.join(" ")}: ${listed.stderr}`);
   return listed.stdout.split("\n").flatMap((line) => {
     const space = line.indexOf(" ");
@@ -563,10 +645,12 @@ export async function containersOf(row: Row, run: string, by = row.deadline): Pr
  *  can take minutes over one removal while it answers every other call at once (`dockerMs` of
  *  e2e/harness-postgres-container-removal.ts), so a removal has no bound of its own: the bound of the row
  *  that runs it is what ends one that hangs. */
-async function dockerRemoval(args: readonly string[]): Promise<{ status: number; said: string }> {
-  const run = Bun.spawn(["docker", ...args], { stdout: "ignore", stderr: "pipe" });
-  const [status, stderr] = await Promise.all([run.exited, new Response(run.stderr).text()]);
-  return { status, said: stderr.trim() || `exit ${status}` };
+function dockerRemoval(args: readonly string[]): Promise<{ status: number; said: string }> {
+  return during(`docker ${args.join(" ")}`, async () => {
+    const run = Bun.spawn(["docker", ...args], { stdout: "ignore", stderr: "pipe" });
+    const [status, stderr] = await Promise.all([run.exited, new Response(run.stderr).text()]);
+    return { status, said: stderr.trim() || `exit ${status}` };
+  });
 }
 
 /** Removes each container of `ids`, by its id, and once it has tried them all throws naming each
@@ -597,6 +681,17 @@ export async function removeImage(name: string): Promise<void> {
   if (status !== 0) throw new Error(`docker image rm --force ${name}: ${said}`);
 }
 
+/** Removes the container `id`, which a row made and its line names `what`, as a start removes one
+ *  (`removeContainer`): however long Docker takes over it while it answers each ask, within the
+ *  start's own bound, which the row's limit counts among the waits of its `finally`
+ *  (`Waits.ends`). Throws, naming the container and why, where the removal gives it up. */
+export async function removeWithin(id: string, what: string): Promise<void> {
+  const removal = await during(`the removal of ${what}`, () => removeContainer(id, what));
+  if (removal.kind === "failed") {
+    throw new Error(`${named}: ${what} is not removed: ${removal.reason}`);
+  }
+}
+
 /** Removes each container whose mark names `run`, the run directory of a stack the row `row`
  *  started, by the id Docker lists it under, listed by the row's time for its removals
  *  (`Row.cleanup`): a container's name is no one stack's alone. */
@@ -611,7 +706,9 @@ export async function removeContainersOf(row: Row, run: string): Promise<void> {
 export async function stopCluster(row: Row, bin: string, data: string): Promise<void> {
   const args = ["-D", data, "-m", "immediate", "-w", "stop"];
   const stopped = await untilDeadline(row, join(bin, "pg_ctl"), args, row.cleanup);
-  if (stopped === "late") throw ranOut(row, `${join(bin, "pg_ctl")} ${args.join(" ")}`);
+  if (typeof stopped === "string") {
+    throw ranOut(row, `${join(bin, "pg_ctl")} ${args.join(" ")}`, stopped, row.cleanup);
+  }
 }
 
 /** Removes what a stack the row `row` started left, by the paths it recorded for it: its
@@ -746,7 +843,7 @@ export async function startUnjudged(
   // The image's first server is its initialisation's, which it stops before its last one starts.
   const initialised = async () => {
     const logs = await untilDeadline(row, "docker", ["logs", id]);
-    if (logs === "late") throw ranOut(row, `docker logs ${id}`);
+    if (typeof logs === "string") throw ranOut(row, `docker logs ${id}`, logs);
     return `${logs.stdout}${logs.stderr}`.includes("init process complete");
   };
   // The container by the id Docker made it under, and then its socket directory, which is in /tmp

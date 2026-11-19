@@ -24,7 +24,14 @@ import { join } from "node:path";
 
 import { pgConnectionsVariable, pgImageVariable, stackPostgres } from "../harness-postgres";
 import { removalBounds } from "../harness-postgres-container-removal";
-import { docker, psql, removeIds, removeImage } from "./harness-postgres-leftover-fixtures";
+import {
+  docker,
+  during,
+  psql,
+  removeAll,
+  removeImage,
+  removeWithin,
+} from "./harness-postgres-leftover-fixtures";
 import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
@@ -44,15 +51,15 @@ const watchMs = 8_000;
  *  at 120 s; and 8 s of reads. Besides the create and the commit it read 12.3 to 22.8 s on a
  *  shared Linux machine under a load of about 270 to 300, on 2026-11-17; 240 s leaves the 120 s
  *  wait and a slow Docker daemon room. Its `finally` then stops the stack, a `docker rm` of its
- *  container, and removes the row's image, a `docker image rm`, each of which a start's own
- *  removal gives up at `removalBounds.boundMs` (`ends`): a fixture call that runs out the row's
- *  deadline leaves them their own time. */
+ *  container, removes the builder of its image, and removes the image, a `docker image rm`, each
+ *  of which a start's own removal gives up at `removalBounds.boundMs` (`ends`): a fixture call
+ *  that runs out the row's deadline leaves them their own time. */
 const slowInit: Waits = {
   children: 0,
   reads: 0,
   makes: 2,
   bounds: [240_000],
-  ends: [removalBounds.boundMs, removalBounds.boundMs],
+  ends: [removalBounds.boundMs, removalBounds.boundMs, removalBounds.boundMs],
 };
 
 test.skipIf(skipped)(
@@ -66,20 +73,15 @@ test.skipIf(skipped)(
     const own = randomBytes(8).toString("hex");
     const slow = `dispatch-e2e-pg-slow-init-${own}`;
     const dir = mkdtempSync(join(tmpdir(), "pg-image-ready-"));
+    let builder = "";
     let made = false;
     try {
       const script = join(dir, "slow.sh");
       writeFileSync(script, `sleep ${initSleep}\n`);
-      const builder = (await docker(row, "create", "--name", `${slow}-builder`, image)).trim();
-      try {
-        await docker(row, "cp", script, `${builder}:/docker-entrypoint-initdb.d/slow.sh`);
-        await docker(row, "commit", builder, slow);
-        made = true;
-      } finally {
-        // The image declares a volume, so the builder's create made an anonymous one, which goes
-        // with it: a removal without `--volumes` left one on the daemon at each run.
-        await removeIds([builder]);
-      }
+      builder = (await docker(row, "create", "--name", `${slow}-builder`, image)).trim();
+      await docker(row, "cp", script, `${builder}:/docker-entrypoint-initdb.d/slow.sh`);
+      await docker(row, "commit", builder, slow);
+      made = true;
 
       const provider = stackPostgres({
         dir,
@@ -91,7 +93,9 @@ test.skipIf(skipped)(
         },
       });
       if (provider === undefined) throw new Error(`${pgImageVariable} named no provider`);
-      const database = await provider.start(0);
+      const database = await during("the image provider's start of the row's stack", () =>
+        provider.start(0)
+      );
       try {
         // Each read names the server that answered by its start time, so a start that returned
         // with the temporary server shows as two servers even where no read fell in the moment
@@ -109,11 +113,20 @@ test.skipIf(skipped)(
         await database.stop();
       }
     } finally {
-      if (made) await removeImage(slow);
-      rmSync(dir, { recursive: true, force: true });
+      // The builder goes at the row's end, after its reads, within a removal's own bound, which
+      // the row's limit counts (`Waits.ends`), and every removal runs even where another fails
+      // (`removeAll`). A daemon that many sessions shared took 17 and 21 minutes over this
+      // removal on 2026-11-19, while it stalled; between the commit and the provider's start, with
+      // no bound of its own, it used up the row's deadline. The image declares a volume, so the
+      // builder's create made an anonymous one, which goes with it (`removeContainer`).
+      await removeAll(
+        () => builder !== "" && removeWithin(builder, `the builder ${slow}-builder`),
+        () => made && removeImage(slow),
+        () => rmSync(dir, { recursive: true, force: true })
+      );
     }
   },
   // What the row waits for, summed by the fixtures' program (`rowMs`): its create and its commit,
-  // the provider's start, the reads and the stop.
+  // the provider's start, the reads, the stop and the removals of the builder and the image.
   rowMs(slowInit)
 );
