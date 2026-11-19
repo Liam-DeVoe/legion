@@ -71,6 +71,61 @@ func sweepKindGroups(t *testing.T, facts []supervise.Claim, kinds []int, of []sw
 	return groups
 }
 
+// sweepRaceKindGroups is the part of the all-role groups the detector runs: the same-state group
+// of each kind the sweep asks, and each of its asked claims beside the ready claim of every other
+// role. The plain build's sweepKindGroups holds every kind beside every state and role, and every
+// pair alone; this smaller set keeps the states where the sweep's concurrent ask and publish run
+// together under -race inside the race step's budget. Every selected claim and every lookup this
+// construction needs must be present, or the test fails by name.
+func sweepRaceKindGroups(t *testing.T, facts []supervise.Claim, kinds []int, of []sweepFact, asks func(supervise.Claim) bool) [][]int {
+	t.Helper()
+	states := supervise.States()
+	index := map[[3]int]int{}
+	for _, i := range kinds {
+		c := facts[i]
+		index[[3]int{slices.Index(states, c.State), sweepRoleIndex(c.Role), slices.Index(of, factsOf(c))}] = i
+	}
+	lookup := func(state int, role int, fact int) int {
+		key := [3]int{state, role, fact}
+		i, ok := index[key]
+		if !ok {
+			t.Fatalf("no claim of the race groups is a %s %s claim of the facts %s", states[state], sweepRoleList[role], of[fact])
+		}
+		return i
+	}
+	selected := slices.DeleteFunc(slices.Clone(kinds), func(i int) bool { return !asks(facts[i]) })
+	var groups [][]int
+	seen := map[[2]int]bool{}
+	for _, i := range selected {
+		c := facts[i]
+		state, fact := slices.Index(states, c.State), slices.Index(of, factsOf(c))
+		key := [2]int{state, fact}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		g := make([]int, 0, sweepRoleCount)
+		for r := range sweepRoleCount {
+			g = append(g, lookup(state, r, fact))
+		}
+		groups = append(groups, g)
+	}
+	ready, session := slices.Index(states, supervise.StateReady), slices.Index(of, factSession)
+	for _, i := range selected {
+		g := []int{i}
+		for r := range sweepRoleCount {
+			if r != sweepRoleIndex(facts[i].Role) {
+				g = append(g, lookup(ready, r, session))
+			}
+		}
+		groups = append(groups, g)
+	}
+	if len(selected) == 0 || len(groups) == 0 {
+		t.Fatal("the race build selected no claim or no group: it would hold no concurrent sweep path")
+	}
+	return groups
+}
+
 // sweepUnmetNeighbours is each claim of kinds, with each role other than its own and each state,
 // such that no group of groups puts a claim of that role in that state beside it, named.
 func sweepUnmetNeighbours(facts []supervise.Claim, kinds []int, groups [][]int) (missing []string) {

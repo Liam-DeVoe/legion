@@ -673,7 +673,9 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 		t.Fatalf("%d pairs of fields that a kind of claim leaves empty are set together on it in no set of fields, for example %s", len(missing), missing[0])
 	}
 	groups := sweepKindGroups(t, facts, kinds, sweepKinds)
-	if missing := sweepUnmetNeighbours(facts, kinds, groups); len(missing) > 0 {
+	if raceEnabled {
+		groups = sweepRaceKindGroups(t, facts, kinds, sweepKinds, r.asks)
+	} else if missing := sweepUnmetNeighbours(facts, kinds, groups); len(missing) > 0 {
 		t.Fatalf("%d claims of a role and a state stand beside a kind of claim in no group of every role, for example %s", len(missing), missing[0])
 	}
 	sets, setsWrong := 0, 0
@@ -769,7 +771,9 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 
 	opening := sweepKindsOfFacts(facts, factSession, factSession|factLocator)
 	openingGroups := sweepKindGroups(t, facts, opening, []sweepFact{factSession, factSession | factLocator})
-	if missing := sweepUnmetNeighbours(facts, opening, openingGroups); len(missing) > 0 {
+	if raceEnabled {
+		openingGroups = sweepRaceKindGroups(t, facts, opening, []sweepFact{factSession, factSession | factLocator}, r.asks)
+	} else if missing := sweepUnmetNeighbours(facts, opening, openingGroups); len(missing) > 0 {
 		t.Fatalf("at the round's opening, %d claims of a role and a state stand beside a claim with a session in no group of every role, for example %s", len(missing), missing[0])
 	}
 	opened, openedWrong := 0, 0
@@ -844,8 +848,12 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 		t.Fatalf("checked %d claims over %d fields, %d states of the machine's view, %d sets of fields, %d pairs and %d openings, %d owed and %d refused: a set with no field, no view state, no set of fields, no pair in the plain build or no opening tried, or no owed or no refused claim, shows nothing",
 			checked, fields, views, sets, pairs, opened, owed, refused)
 	}
-	t.Logf("checked %d claims over %d fields of a claim at every depth, %d states of the machine's view beside the claim, %d sets of fields that put every pair together and all of them at once, in groups that put each kind of claim beside every other role in every state, %d pairs of fields alone, and the round's opening with each field and each set: %d owed an ask, %d refused one",
-		checked, fields, views, sets, pairs, owed, refused)
+	grouped := "in groups that put each kind of claim beside every other role in every state"
+	if raceEnabled {
+		grouped = "in same-state groups and beside each role's ready claim for the kinds the sweep asks"
+	}
+	t.Logf("checked %d claims over %d fields of a claim at every depth, %d states of the machine's view beside the claim, %d sets of fields that put every pair together and all of them at once, %s, %d pairs of fields alone, and the round's opening with each field and each set: %d owed an ask, %d refused one",
+		checked, fields, views, sets, grouped, pairs, owed, refused)
 }
 
 // The sweep's ask reaches a ready claim the rule owes an ask whatever else the claim holds, through
