@@ -161,17 +161,23 @@ const (
 
 // endDied is a death's cause. Where the runtime read a cause the daemon tells in plain words it is
 // that sentence (plainCause), the daemon's own and unquoted, then, for an eviction for the pod's
-// own disk, its disk limit or its ephemeral-storage request, where the role's large files belong
-// (diskTask), and then the runtime's own account of the death (deathAccount), quoted; a death of
-// any other cause is the account alone, quoted, behind "the process died". The record's sentence
-// carries it into the role's next task (RelaunchSentence, interruptedTask), so that task reads
-// what ended the process and its number before the runtime's detail (dispatch://INFRA-1117 R9).
+// own disk, the note of what the kubelet counted and where the role's large files belong, and then
+// the runtime's own account of the death (deathAccount), quoted; a death of any other cause is the
+// account alone, quoted, behind "the process died". An eviction for the pod's disk limit gets the
+// note of what that limit counts, the pod's test database among it where the pod kept that on a
+// counted volume (diskLimitTask); one over its ephemeral-storage request keeps the note of R9
+// alone (diskTask), since the kubelet's message there names only the container's own layer and
+// logs. The record's sentence carries it into the role's next task (RelaunchSentence,
+// interruptedTask), so that task reads what ended the process and its number before the
+// runtime's detail (dispatch://INFRA-1117 R9, R11).
 func endDied(observation runtime.Observation) string {
 	account := strconv.Quote(deathAccount(observation))
 	switch plain, kind := plainCause(observation.Cause), observation.Cause.Kind; {
 	case plain == "":
 		return "the process died: " + account
-	case kind == runtime.DeathDiskLimit || kind == runtime.DeathDiskRequest:
+	case kind == runtime.DeathDiskLimit:
+		return plain + ". " + diskLimitTask(observation.Cause) + " " + runtimeDetail + account
+	case kind == runtime.DeathDiskRequest:
 		return plain + ". " + diskTask + " " + runtimeDetail + account
 	default:
 		return plain + ". " + runtimeDetail + account

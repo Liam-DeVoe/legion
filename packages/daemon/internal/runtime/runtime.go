@@ -637,6 +637,7 @@ const (
 	// a disk limit of its own: the pod's ephemeral-storage limit, a container's or an emptyDir's
 	// sizeLimit. DeathCause.Limit is that limit, from the kubelet's message or, where the message
 	// holds one of the kubelet's limit sentences and its limit does not parse, from the pod's spec.
+	// DeathCause.TestDatabaseCounted says whether the limit counted the pod's test database.
 	DeathDiskLimit DeathCauseKind = "disk_limit"
 	// DeathDiskRequest: the kubelet evicted the pod for node disk pressure, and its message named
 	// a container of the pod using more ephemeral storage than the container requested. What the
@@ -650,9 +651,10 @@ const (
 )
 
 // DeathCause is what a runtime read of the cause of a process's end where it is one of the
-// DeathCauseKind causes, with the quantities that kind names, in bytes; the zero value, Kind "",
-// is every other end. The quantities are the runtime's parse of what the cluster wrote, never its
-// text, so the words the daemon builds from them are the daemon's own.
+// DeathCauseKind causes, with the quantities that kind names, in bytes, and for a disk limit
+// whether it counted the pod's test database; the zero value, Kind "", is every other end. The
+// quantities are the runtime's parse of what the cluster wrote, never its text, so the words the
+// daemon builds from them are the daemon's own.
 type DeathCause struct {
 	Kind DeathCauseKind
 	// Limit is the memory limit of DeathMemoryLimit and the disk limit of DeathDiskLimit.
@@ -662,6 +664,14 @@ type DeathCause struct {
 	// gave as its use and its request of the resource the node was short of.
 	Container    string
 	Use, Request int64
+	// TestDatabaseCounted is DeathDiskLimit's: the pod kept its own test database on a volume the
+	// kubelet's ephemeral-storage limit counts, an emptyDir. It is false for a pod whose test
+	// database is on a disk of its own (runtime.kubernetes.test_postgres_disk), which the limit
+	// does not count, and for a pod that runs none. Where it is true, the role's next task names
+	// the test database among what the limit counts (supervise's endDied). It is read from the
+	// ended pod's own spec and not from the deployment's setting, since a pod made before the
+	// setting changed keeps the volume it was made with.
+	TestDatabaseCounted bool
 }
 
 // Observation is one runtime fact about one process, with the moment it was observed and, for a

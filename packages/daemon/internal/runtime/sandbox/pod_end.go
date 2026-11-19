@@ -184,7 +184,8 @@ var diskLimitSentences = []*regexp.Regexp{
 // diskEviction is the cause of the end of pod, a pod selfEvicted names, where the kubelet evicted
 // it for passing a disk limit of its own (runtime.DeathDiskLimit): the limit its message gives in
 // one of diskLimitSentences, parsed, or, where the message holds one of those sentences and its
-// limit does not parse, the limit the pod's spec holds it to as a whole (specDiskLimit). Only those
+// limit does not parse, the limit the pod's spec holds it to as a whole (specDiskLimit), with
+// whether that limit counted the pod's test database (testDatabaseCounted). Only those
 // sentences show an end of the pod's own disk. The word ephemeral-storage in a message is no such
 // sign: the kubelet writes it in its node-pressure sentences ("The node was low on resource:
 // ephemeral-storage. "), never in a limit sentence, which says "ephemeral local storage", and a
@@ -203,7 +204,7 @@ func diskEviction(pod *corev1.Pod) runtime.DeathCause {
 			continue
 		}
 		if limit, err := resource.ParseQuantity(named[1]); err == nil && limit.Sign() > 0 {
-			return runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: limit.Value()}
+			return runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: limit.Value(), TestDatabaseCounted: testDatabaseCounted(pod)}
 		}
 		diskEnd = true
 	}
@@ -211,9 +212,22 @@ func diskEviction(pod *corev1.Pod) runtime.DeathCause {
 		return runtime.DeathCause{}
 	}
 	if limit := specDiskLimit(pod); limit > 0 {
-		return runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: limit}
+		return runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: limit, TestDatabaseCounted: testDatabaseCounted(pod)}
 	}
 	return runtime.DeathCause{}
+}
+
+// testDatabaseCounted is whether pod kept its own test database where the kubelet's
+// ephemeral-storage limit counts it: its spec holds the testPGVolume volume as an emptyDir, which
+// the limit counts as it counts the role homes. A testPGVolume a generic ephemeral volume provides
+// (runtime.kubernetes.test_postgres_disk) is a disk of the pod's own, which the limit does not
+// count, and a pod that runs no test database holds no such volume. It reads the ended pod's own
+// spec rather than the runtime's setting: a pod made before the setting changed keeps the volume
+// it was made with, and the role is told what the limit of the pod that ended counted.
+func testDatabaseCounted(pod *corev1.Pod) bool {
+	return slices.ContainsFunc(pod.Spec.Volumes, func(v corev1.Volume) bool {
+		return v.Name == testPGVolume && v.EmptyDir != nil
+	})
 }
 
 // specDiskLimit is the ephemeral-storage limit pod's spec holds the pod to as a whole, which is the

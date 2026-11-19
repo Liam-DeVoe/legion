@@ -73,10 +73,7 @@ func (g *rig) leaveTheStore() {
 // message naming over its request only a container this pod's spec does not hold; and a node's
 // refusal at admission, which carries the same reason and no condition and passed no limit.
 func TestPlainCauseAnEvictionWithNoDisruptionTargetIsMarkedWithTheCauseItsMessageNames(t *testing.T) {
-	for _, tc := range []struct {
-		name, message string
-		want          runtime.DeathCause
-	}{
+	checkSelfEvictions(t, []selfEviction{
 		{name: "the pod's own limit", message: "Pod ephemeral local storage usage exceeds the total limit of containers 10Gi. ",
 			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("10Gi")}},
 		{name: "a container's limit", message: `Container roles exceeded its local ephemeral storage limit "40Gi". `,
@@ -98,7 +95,54 @@ func TestPlainCauseAnEvictionWithNoDisruptionTargetIsMarkedWithTheCauseItsMessag
 				Use: bytesOf("7Gi"), Request: bytesOf("6Gi")}},
 		{name: "a message naming over its request a container that is not this pod's",
 			message: lowOnDisk + "Container planner was using 12Gi, request is 1Gi, has larger consumption of ephemeral-storage. "},
-	} {
+	})
+}
+
+// A disk-limit eviction of an issue pod carries whether that limit counted the pod's test
+// database, as the ended pod's own spec holds it (dispatch://INFRA-1117 R11): it did where the
+// pod keeps its `testpg` volume in an emptyDir, whether the kubelet's message gives the limit or
+// the pod's spec does, and it did not where `testpg` is a generic ephemeral volume, a disk of the
+// pod's own (runtime.kubernetes.test_postgres_disk), or where the pod runs no test database. The
+// role homes emptyDir every issue pod holds counts for nothing here: only the test database's
+// volume is read.
+func TestPGDiskADiskLimitEvictionCarriesWhetherTheLimitCountedTheTestDatabase(t *testing.T) {
+	const podLimit = "Pod ephemeral local storage usage exceeds the total limit of containers 10Gi. "
+	roleHomes := corev1.Volume{Name: roleHomesVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
+	inEmptyDir := corev1.Volume{Name: testPGVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
+	onItsOwnDisk := corev1.Volume{Name: testPGVolume, VolumeSource: corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
+		VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("20Gi")}},
+		}},
+	}}}
+	checkSelfEvictions(t, []selfEviction{
+		{name: "the test database in an emptyDir", message: podLimit, volumes: []corev1.Volume{roleHomes, inEmptyDir},
+			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("10Gi"), TestDatabaseCounted: true}},
+		{name: "the test database in an emptyDir, the limit read from the spec",
+			message: `Container roles exceeded its local ephemeral storage limit "unreadable". `, volumes: []corev1.Volume{roleHomes, inEmptyDir},
+			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("80Gi"), TestDatabaseCounted: true}},
+		{name: "the test database on a disk of its own", message: podLimit, volumes: []corev1.Volume{roleHomes, onItsOwnDisk},
+			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("10Gi")}},
+		{name: "no test database", message: podLimit, volumes: []corev1.Volume{roleHomes},
+			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("10Gi")}},
+	})
+}
+
+// selfEviction is one `Evicted` end with no DisruptionTarget condition of the tester's pod: the
+// kubelet's message, the volumes the pod's spec holds beside the one every pod of the rig has
+// (podObject), and the cause the pod's death carries.
+type selfEviction struct {
+	name, message string
+	volumes       []corev1.Volume
+	want          runtime.DeathCause
+}
+
+// checkSelfEvictions ends the tester's pod of a reservedIssuePod as each case says and checks that
+// its claim observes it Gone, read neither way, with the case's cause, the pod gone from the store
+// or not.
+func checkSelfEvictions(t *testing.T, cases []selfEviction) {
+	t.Helper()
+	for _, tc := range cases {
 		for _, gone := range []bool{false, true} {
 			name := tc.name
 			if gone {
@@ -108,7 +152,10 @@ func TestPlainCauseAnEvictionWithNoDisruptionTargetIsMarkedWithTheCauseItsMessag
 				g := reservedIssuePod(t, rolesReservation())
 				status := endedPodStatus(evictedReason)
 				status.Message = tc.message
-				g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) { p.Status = status })
+				g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) {
+					p.Spec.Volumes = append(p.Spec.Volumes, tc.volumes...)
+					p.Status = status
+				})
 				g.podEndHeld(recorded)
 				if gone {
 					g.leaveTheStore()

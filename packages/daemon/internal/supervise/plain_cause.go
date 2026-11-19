@@ -21,7 +21,9 @@ import (
 // which the runtime checked, so no word of the kubelet's message reaches the sentence. Ephemeral
 // storage over its request is told as the container's own disk, outside $TMPDIR, since that is
 // the whole of what the kubelet counts as the container's there: $TMPDIR is on the issue's
-// volume, which it does not count.
+// volume, which it does not count. In the role's next task alone the sentence of either disk
+// eviction is followed by a note of what the kubelet counted and where large files go (diskTask,
+// diskLimitTask).
 //
 // The memory limit's sentence is the one statement the role's next task makes that its pod ran
 // out of memory: it says what outOfMemoryTask's own statement says, that the container runs every
@@ -44,12 +46,41 @@ func plainCause(cause runtime.DeathCause) string {
 	return ""
 }
 
-// diskTask follows the plain sentence of a death for the pod's own disk in the role's next task
-// (endDied), for an eviction for its disk limit and for one over its ephemeral-storage request
-// alike: the disk the kubelet counted is the container's own, and $TMPDIR is on the issue's
-// volume, outside it, so that is where the role's large files go (dispatch://INFRA-1117 R9). The
-// notices of a failed claim do not carry it, since their reader is not the role.
+// diskTask follows the plain sentence of an eviction over the pod's ephemeral-storage request
+// (runtime.DeathDiskRequest) in the role's next task (endDied), and it closes the note of an
+// eviction for the pod's disk limit (diskLimitTask). The kubelet's message of an eviction over the
+// request names only the container's own layer and its logs, so the note there says nothing of
+// what else the pod's disk holds: $TMPDIR is on the issue's volume, outside what the kubelet
+// counted, so that is where the role's large files go (dispatch://INFRA-1117 R9). The notices of
+// a failed claim do not carry it, since their reader is not the role.
 const diskTask = "Keep large files under $TMPDIR, on the issue's volume."
+
+// diskLimitCounts is what the kubelet's ephemeral-storage limit counts of an issue pod, told to a
+// role whose pod passed it (diskLimitTask): the role homes volume, an emptyDir that holds each
+// role's home and its /tmp and /var/tmp, and the `roles` container's own logs and writable layer.
+// The issue's volume, where $TMPDIR is, is a disk a claim provides, which the limit does not
+// count, and so is the test database's where the deployment gives it one
+// (runtime.kubernetes.test_postgres_disk, dispatch://INFRA-1117 R11).
+const diskLimitCounts = "That limit counts each role's home, /tmp and /var/tmp, the container's logs and what is written in the container's own layer."
+
+// testDatabaseCounts follows diskLimitCounts where the limit also counted the pod's test
+// database (runtime.DeathCause.TestDatabaseCounted), a pod that keeps it in an emptyDir: the
+// databases test runs make and never drop stay on that volume, and they filled it in 48 of the 53
+// disk-limit evictions dispatch://INFRA-1117 R11 counted, so the role is told to drop them.
+const testDatabaseCounts = "It also counts the pod's test database, which fills up with the databases test runs make and never drop. " +
+	"Drop each database a test run makes when the run ends."
+
+// diskLimitTask follows the plain sentence of an eviction for the pod's disk limit
+// (runtime.DeathDiskLimit) in the role's next task (endDied): what that limit counted, the pod's
+// test database among it where the runtime read the pod kept it on a counted volume, and then
+// where large files go (diskTask). The notices of a failed claim do not carry it, since their
+// reader is not the role.
+func diskLimitTask(cause runtime.DeathCause) string {
+	if cause.TestDatabaseCounted {
+		return diskLimitCounts + " " + testDatabaseCounts + " " + diskTask
+	}
+	return diskLimitCounts + " " + diskTask
+}
 
 // runtimeDetail introduces the runtime's own account of a death behind the plain sentence of its
 // cause (deathCause, endDied), so a reader tells the daemon's words from the runtime's.

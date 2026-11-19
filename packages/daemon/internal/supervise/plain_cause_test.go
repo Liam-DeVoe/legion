@@ -6,6 +6,7 @@ package supervise
 // it passed.
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,12 +20,12 @@ import (
 // container killed for memory, the use and the request of the container a node-pressure eviction
 // named over its memory or its ephemeral-storage request, and the disk limit of an eviction for
 // the pod's own disk. The task of either disk eviction also says to keep large files under
-// $TMPDIR. The runtime's own detail follows, quoted. The memory limit's sentence is the task's one
-// statement that the pod ran out of memory: the out-of-memory note behind it keeps its guidance
-// and drops its own statement, which an out-of-memory end the daemon names no limit of still
-// carries whole. The claim's record of the death, which the operator's listing and a failed
-// claim's notices read, opens with the same sentence. A death the daemon names no cause of reads
-// as it always did.
+// $TMPDIR, and that of the disk limit first says what the limit counts. The runtime's own detail
+// follows, quoted. The memory limit's sentence is the task's one statement that the pod ran out
+// of memory: the out-of-memory note behind it keeps its guidance and drops its own statement,
+// which an out-of-memory end the daemon names no limit of still carries whole. The claim's record
+// of the death, which the operator's listing and a failed claim's notices read, opens with the
+// same sentence. A death the daemon names no cause of reads as it always did.
 func TestPlainCauseADeathForMemoryOrDiskIsToldInTheRolesNextTaskBeforeTheRuntimesDetail(t *testing.T) {
 	const detail = "pod legion-legion-legion-208 (uid uid-pod-1) Failed: container roles terminated (Error, exit code 137)"
 	quoted := strconv.Quote("gone: " + detail)
@@ -69,6 +70,7 @@ func TestPlainCauseADeathForMemoryOrDiskIsToldInTheRolesNextTaskBeforeTheRuntime
 			name:  "an eviction for the pod's own disk",
 			cause: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: 10 << 30},
 			told: "Your process ended because the kubelet evicted the pod because its container's own disk, outside $TMPDIR, passed its 10 GiB limit. " +
+				"That limit counts each role's home, /tmp and /var/tmp, the container's logs and what is written in the container's own layer. " +
 				"Keep large files under $TMPDIR, on the issue's volume. The runtime's detail: " + quoted + ".",
 			recorded: "the kubelet evicted the pod because its container's own disk, outside $TMPDIR, passed its 10 GiB limit. " +
 				"The runtime's detail: gone: " + detail,
@@ -148,6 +150,7 @@ func TestPlainCauseADeathWithATaskNoTurnConfirmedIsToldInTheNextTask(t *testing.
 	next := prompts[len(prompts)-1].Message
 	for _, says := range []string{
 		"Your previous process ended because the kubelet evicted the pod because its container's own disk, outside $TMPDIR, passed its 10 GiB limit. " +
+			"That limit counts each role's home, /tmp and /var/tmp, the container's logs and what is written in the container's own layer. " +
 			"Keep large files under $TMPDIR, on the issue's volume. The runtime's detail: " + strconv.Quote("gone: "+detail) + ".",
 		"You were not in a turn then.",
 	} {
@@ -157,6 +160,63 @@ func TestPlainCauseADeathWithATaskNoTurnConfirmedIsToldInTheNextTask(t *testing.
 	}
 	if !strings.HasSuffix(next, "implement the plan") {
 		t.Errorf("the relaunched role is next sent %q, want its task at the end of it", next)
+	}
+}
+
+// A role whose pod the kubelet evicted for its disk limit is told in its next task, between the
+// sentence of that death and the runtime's detail, what the limit counts and where large files go
+// (dispatch://INFRA-1117 R11): each role's home, /tmp and /var/tmp, the container's logs and its
+// own layer, and $TMPDIR. Where the runtime read that the pod kept its test database on a volume
+// the limit counts (runtime.DeathCause.TestDatabaseCounted), the note names the test database
+// too, and the databases test runs never drop that fill it. Where the pod kept it on a disk of its
+// own, or ran none, the note names no database at all.
+func TestPGDiskTheNoteOfADiskLimitEvictionNamesWhatTheLimitCounts(t *testing.T) {
+	const detail = "pod legion-legion-legion-208 (uid uid-pod-1) Failed: container roles terminated (Error, exit code 137)"
+	const lead = "the kubelet evicted the pod because its container's own disk, outside $TMPDIR, passed its 10 GiB limit."
+	counted := []string{"each role's home", "/tmp", "/var/tmp", "the container's logs", "the container's own layer", "$TMPDIR"}
+	for _, tc := range []struct {
+		name                string
+		testDatabaseCounted bool
+		names, namesNoneOf  []string
+	}{
+		{name: "the test database on a disk of its own, or none", names: counted, namesNoneOf: []string{"database"}},
+		{name: "the test database on a counted volume", testDatabaseCounted: true,
+			names: slices.Concat(counted, []string{"test database", "never drop"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
+			h.must(StreamTurnStart{Claim: testToken})
+
+			h.must(RuntimeObservation{Observation: runtime.Observation{
+				Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), Detail: detail,
+				Cause: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: 10 << 30, TestDatabaseCounted: tc.testDatabaseCounted},
+			}})
+			h.relaunched()
+
+			task := h.wantPrompts(2)[1].Message
+			start, end := strings.Index(task, lead), strings.Index(task, "The runtime's detail:")
+			if start < 0 || end < start {
+				t.Fatalf("the relaunched role's task is %q, want the death's sentence %q and then the runtime's detail", task, lead)
+			}
+			note := task[start+len(lead) : end]
+			for _, name := range tc.names {
+				in := note
+				if name == "/tmp" {
+					// /var/tmp holds /tmp, so /tmp is looked for with /var/tmp taken out.
+					in = strings.ReplaceAll(note, "/var/tmp", "")
+				}
+				if !strings.Contains(in, name) {
+					t.Errorf("the note behind the death's sentence is %q, want it to name %q", note, name)
+				}
+			}
+			for _, name := range tc.namesNoneOf {
+				if strings.Contains(note, name) {
+					t.Errorf("the note behind the death's sentence is %q, want it to name no %q", note, name)
+				}
+			}
+		})
 	}
 }
 
