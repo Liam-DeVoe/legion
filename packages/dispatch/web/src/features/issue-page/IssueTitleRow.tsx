@@ -71,13 +71,17 @@ export function IssueTitleRow({
   const returning = useRef(false);
   // The draft a switch or a hide of this edit sent or queued since the reader last changed it,
   // trimmed as it went, or null: a change the reader makes clears it (the editor's `onChange`),
-  // and so does the next edit (`openEdit`). A draft goes once: neither a later switch nor the end
-  // of the edit sends it again, which `requestTitleSubmit` would do after its write was refused
-  // or stopped. A draft still queued (`titleQueued`) has not gone yet: after the write ahead of
-  // it is refused nothing drains it, so the end of the edit sends it. A text the reader writes
-  // after that is theirs to send, though it may be the same text: another reader's write can have
-  // changed the title since, and the draft, not changed, took that title.
+  // and so does the next edit (`openEdit`). A draft goes once: once it has gone (`went`), neither
+  // a later switch or hide nor the end of the edit sends it again, which `requestTitleSubmit`
+  // would do after its write was refused or stopped. A draft still queued (`titleQueued`) has
+  // not gone: after the write ahead of it is refused nothing drains it, so the next switch or
+  // hide, or the end of the edit, sends it. A text the reader writes after that is theirs to
+  // send, though it may be the same text: another reader's write can have changed the title
+  // since, and the draft, the issue's once its write landed, took that title.
   const sent = useRef<string | null>(null);
+  // Whether this edit's draft has gone: it is the draft a switch or a hide sent or queued, and
+  // it no longer waits queued behind another write.
+  const went = () => drafts.title.trim() === sent.current && !drafts.titleQueued;
   // The editor's text as the reader last wrote it in this edit. The draft takes that text trimmed
   // as a write of it lands with the edit open (`onIssueSettled`). While the draft is the
   // reader's text trimmed, the editor and the heading under it hold the reader's text, so the
@@ -123,22 +127,21 @@ export function IssueTitleRow({
   // Sends a changed draft while the reader is away, and leaves the edit open with their text and
   // caret (decision 295): today's page sends the draft as the window loses the focus, and a tab
   // the browser discards, a tab closed while away or a close of the issue elsewhere would lose it.
-  // A draft is changed when it is not empty once trimmed, differs once trimmed from the title it
-  // is judged against - the title of the write still out while one is, else the issue's
-  // (`titleDirty`) - and is not the draft this edit already sent or queued. An empty draft sends
-  // nothing and says nothing while the reader is away: its "Title is required." waits for the end
-  // of the edit.
+  // A draft is changed when it is not empty once trimmed, and differs once trimmed from the title
+  // it is judged against - the title of the write still out while one is, else the issue's
+  // (`titleDirty`). A changed draft that has gone (`went`) is not sent again; one a switch only
+  // queued, behind a write Dispatch then refused, is sent by the next switch or hide. An empty
+  // draft sends nothing and says nothing while the reader is away: its "Title is required."
+  // waits for the end of the edit.
   const sendAway = () => {
     const draft = drafts.title.trim();
-    if (isClosed || !drafts.titleDirty || draft === "" || draft === sent.current) return;
-    const outcome = drafts.submitTitle();
-    if (outcome === "sent" || outcome === "queued") sent.current = draft;
+    if (isClosed || !drafts.titleDirty || draft === "" || went()) return;
+    if (drafts.requestTitleSubmit()) sent.current = draft;
   };
-  // Ends the edit as the editor's blur does: the draft is sent unless this edit already sent it
-  // (`sent`, a draft still queued aside), and a press under way holds the heading at the editor's
-  // height until it ends.
+  // Ends the edit as the editor's blur does: the draft is sent unless it has gone (`went`), and a
+  // press under way holds the heading at the editor's height until it ends.
   const endEdit = () => {
-    if (drafts.title.trim() !== sent.current || drafts.titleQueued) drafts.requestTitleSubmit();
+    if (!went()) drafts.requestTitleSubmit();
     if (pressing.current) {
       // The press under way lets the heading go as it ends.
       heldForPress.current = true;

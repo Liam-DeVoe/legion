@@ -1580,6 +1580,63 @@ test("a draft a switch queued that went as the write ahead of it landed, and tha
   }
 });
 
+// A draft a switch queued waits behind the write out, so it has not gone. Dispatch then refuses
+// that write, and nothing drains a draft after a refusal: it is still the reader's to send, and a
+// hide of the page sends it, as a page hidden before the tab is closed must. Taken for a draft
+// that went, it was sent by neither a hide nor a second switch, and a closed tab lost it.
+test("a draft a switch queued behind a title's write that Dispatch then refuses is sent as the page is hidden", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, title: "Plan the review" }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    const { editor } = await openTitleEditor(user, "Review the plan");
+    await user.clear(editor);
+    await user.keyboard("Plan the review");
+    blurWindow(editor);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      landing.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
+      await landing.promise.catch(() => undefined);
+    });
+    await screen.findByText("Could not update this issue.");
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    try {
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+    }
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Plan the review" },
+      keyedAttempt
+    );
+    expect(editor).toHaveValue("Plan the review");
+    await titleLanded(queryClient, "Plan the review");
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
 // A draft goes once in the edit that sent it. A new edit is the reader's own: one opened on the
 // title a switch sent and Dispatch refused, and ended with nothing typed, sends that title again,
 // as any edit ended on a title the issue does not hold does.
