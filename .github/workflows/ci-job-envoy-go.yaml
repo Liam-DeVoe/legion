@@ -37,16 +37,16 @@ jobs:
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
     # plain race-impossible step's five 10-minute runs, which is 51; after that step's measured
     # 5 minutes (about 2 before the API's and delivery's xid window tests joined it, which took
-    # 134 s and 4 s on a two-vCPU pod, and the NATS auth service's restart storm takes 17 s on a
-    # dev box) the unit step's own 20 is 26; after the unit step, which runs strictly fewer
-    # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, the store-form count's own 5 is 46 (two packages, which go test starts at once
-    # with -p at least 2, so its -timeout bounds the step); after that step's seconds, the
-    # database skip count's own timeout-minutes of 25 is 67 (its -timeout bounds each package,
-    # not the step, so the step has a limit of its own, and its comment below says why 25); after
-    # that step's measured 6 minutes, natslive's default 10, the bus matrix's own 5 and the auth
-    # service's own 5 are 68, the integration step's 5 is less, and the callout check's own 6,
-    # after the seconds those two steps measure, is about 55.
+    # 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s) the unit step's
+    # own 20 is 26; after the unit step, which runs strictly fewer packages than the 35 minutes it
+    # measured before the race lane's left it and so cannot exceed that, the store-form count's
+    # own 5 is 46 (two packages, which go test starts at once with -p at least 2, so its -timeout
+    # bounds the step); after that step's seconds, the database skip count's own timeout-minutes
+    # of 25 is 67 (its -timeout bounds each package, not the step, so the step has a limit of its
+    # own, and its comment below says why 25); after that step's measured 6 minutes, natslive's
+    # default 10, the bus matrix's own 5 and the auth service's own 5 are 68, the integration
+    # step's 5 is less, and the callout check's own 6, after the seconds those two steps measure,
+    # is about 55.
     timeout-minutes: 70
     services:
       postgres:
@@ -117,22 +117,22 @@ jobs:
       # seeds and fewer edits under it (raceEnabled), so this is their full-size run. So is the
       # NATS auth service's restart storm's: five hundred connections, two hundred under the
       # detector (raceEnabled), whose instrumentation makes each in-process connect several times
-      # the cost (natscallout's race_disabled_test.go says why). The API's seven source guards,
-      # and one_expression_guard_test.go beside them, carry that tag too and are deliberately not
-      # here: they read the module's source, the text-check job runs their fifteen tests by name,
-      # and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of this step rather than
-      # have each of them run twice. It comes before the unit step for the reason the API
-      # package's own run did: run beside the other package binaries,
+      # the cost (natscallout's race_disabled_test.go says why). The API's
+      # seven source guards, and one_expression_guard_test.go beside them, carry that tag too and
+      # are deliberately not here: they read the module's source, the text-check job runs their
+      # fifteen tests by name, and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of
+      # this step rather than have each of them run twice. It comes before the unit step for the
+      # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
       # wait for the event log's safe horizon, which any open transaction on this job's Postgres
       # delays. The five -run lists are derived in .github/scripts/ci_job_reads.py from the race
       # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
-      # either and missing here fails the ci-filters job naming this step. Measured over three
+      # either and missing here fails the ci-filters job naming this step. The restart storm took
+      # 17 s on a dev box. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
       # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
-      # delivery 4.106 s (INFRA-636), and the restart storm took 17 s on a dev box. 10 minutes each
-      # is ample.
+      # delivery 4.106 s (INFRA-636). 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
@@ -155,10 +155,11 @@ jobs:
       # what this step leaves out and what the other jobs run cannot drift apart. The broker's
       # packages, internal/broker and everything under it, are left out too: the database-skips
       # step below runs them with -json and fails on a failed test as on a skipped one, so this step
-      # ran each of them a second time (DATABASE_SKIPS_TREE in ci_job_reads.py). What is left is the
-      # rest of the module, the two longest packages of it (the API's and the documents service's)
-      # now among the ones the lane runs, so its 20 minutes are ample. The two tests of the web
-      # app's display-tree fixture are skipped:
+      # ran each of them a second time (DATABASE_SKIPS_TREE in ci_job_reads.py); that step in turn
+      # leaves out the race lane's packages under the tree, the auth service's natscallout today
+      # (DATABASE_SKIPS_PATTERN). What is left is the rest of the module, the two longest packages
+      # of it (the API's and the documents service's) now among the ones the lane runs, so its 20
+      # minutes are ample. The two tests of the web app's display-tree fixture are skipped:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
       # it, so a run here would ask nothing of it, and
       # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it

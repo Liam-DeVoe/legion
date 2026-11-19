@@ -542,9 +542,16 @@ const hostOnlyConfig = "host: 127.0.0.1\n"
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
 // holding the port of the URL it returns, and returns it once it accepts connections. When the
 // test ends the server is shut down, the relay closed and the server's directory removed; until
-// then AwaitConsumerStored finds the server by the relay address its URL names. It is the one
-// place a server of this package is made: every helper here is a call on it.
+// then AwaitConsumerStored finds the server by the relay address its URL names. The relay listens
+// on 127.0.0.1; startOn is start with the relay on another loopback address.
 func start(t testing.TB, config string, serverArgs []string) *Server {
+	t.Helper()
+	return startOn(t, "127.0.0.1", config, serverArgs)
+}
+
+// startOn is start with the relay listening on host. It is the one place a server of this
+// package is made: every helper here is a call on it.
+func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	t.Helper()
 	if config == "" {
 		config = hostOnlyConfig
@@ -553,7 +560,7 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 	if err != nil {
 		t.Fatalf("make the server's directory: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("hold the server's port: %v", err)

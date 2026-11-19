@@ -716,7 +716,8 @@ jobs:
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
               # internal/bus presents a service's NATS credential through natscred, whose session
-              # half trades through the token client.
+              # half trades through the token client, which holds the broker's address as a
+              # brokeraddr.Address.
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/internal/ctxlock/*'
@@ -749,6 +750,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapi/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              - 'packages/envoy/internal/dispatch/githubreads/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/legion/*'
@@ -921,10 +923,10 @@ jobs:
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
               # internal/bus presents a service's NATS credential through natscred, whose session
-              # half trades through the token client.
+              # half trades through the token client: it holds the broker's address as a
+              # brokeraddr.Address, prints a broker failure through internal/redact and follows no
+              # redirect (internal/redirects).
               - 'packages/envoy/internal/brokerclient/*'
-              # The token client's broker address, which prints only its redacted form and whose
-              # calls follow no redirect.
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
@@ -2096,6 +2098,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapi/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              - 'packages/envoy/internal/dispatch/githubreads/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/legion/*'
@@ -2800,6 +2803,9 @@ jobs:
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/logtest/*'
+              # gcp/clusteredhub_listener_live_test.go's issuer of the projected tokens a listener
+              # that requires a credential verifies.
+              - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
@@ -3256,6 +3262,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/files/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              - 'packages/envoy/internal/dispatch/githubreads/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/legion/*'
@@ -3522,6 +3529,8 @@ jobs:
               - 'packages/contracts/fixtures/dispatch-public-url.json'
               # src/__tests__/transport.test.ts:3.
               - 'packages/contracts/fixtures/envoy-session-no-interests.json'
+              # src/__tests__/ask-reply-recipients.test.ts renders the copies this fixture holds.
+              - 'packages/contracts/fixtures/ask-reply-recipients.json'
               # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
               # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
               # an edit of the list alone must start both jobs, or the side it disagrees with
@@ -3588,10 +3597,12 @@ jobs:
               - 'packages/contracts/fixtures/daemon-api/state.json'
               # The API package's test binary, whose xid window tests the race-impossible step runs
               # (ci_job_reads.py, RACE_IMPOSSIBLE_SCRIPT): its live-feed fixtures
-              # (internal/dispatch/api/delivery_live_diff_test.go:1016) and the committed OpenAPI
-              # document (internal/dispatch/api/openapi_test.go:189-190).
+              # (internal/dispatch/api/delivery_live_diff_test.go:1016), the committed OpenAPI
+              # document (internal/dispatch/api/openapi_test.go:189-190) and the ask reply's copies
+              # (internal/dispatch/api/session_answers_test.go:1496).
               - 'packages/contracts/fixtures/live/**'
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              - 'packages/contracts/fixtures/ask-reply-recipients.json'
               # The daemon's own fixture, the server.started envelope its intake decodes:
               # internal/dispatch/startup/started_test.go:379 reads it and
               # TestTheBuiltEnvelopeIsTheSharedFixture holds this package's build to it, so a
@@ -3806,6 +3817,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/files/**/*_test.go'
               - '!packages/envoy/internal/dispatch/githubapi/**/*_test.go'
               - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'
               - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
@@ -3955,6 +3967,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/files/filestest/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              - 'packages/envoy/internal/dispatch/githubreads/*'
               - 'packages/envoy/internal/dispatch/horizontest/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -4022,6 +4035,10 @@ jobs:
               - 'packages/contracts/schemas/dispatch-openapi.json'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
+              # internal/dispatch/api/session_answers_test.go's
+              # TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes this fixture and
+              # fails when the committed file differs, so an edit of it alone must start this job.
+              - 'packages/contracts/fixtures/ask-reply-recipients.json'
               # The step that sizes this job's Postgres runs this script, which runs
               # internal/dispatch/store/cmd/connections (and so testlimits and the store, above).
               - '.github/scripts/pg-connection-ceiling.sh'
@@ -4065,6 +4082,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/events/**/*_test.go'
               - '!packages/envoy/internal/dispatch/files/**/*_test.go'
               - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'
               - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
@@ -4138,6 +4156,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/docs/docstest/*'
               - 'packages/envoy/internal/dispatch/duty/*'
               - 'packages/envoy/internal/dispatch/events/*'
+              - 'packages/envoy/internal/dispatch/githubreads/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
@@ -4185,6 +4204,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
               - '!packages/envoy/internal/dispatch/duty/**/*_test.go'
               - '!packages/envoy/internal/dispatch/events/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
