@@ -249,7 +249,7 @@ func (s privateSeed) asSession(t *testing.T, session, project, method, target st
 	token := "broker-token-of-" + session + "-in-" + project
 	s.broker.Says(token, brokertoken.Introspection{
 		Active: true, Session: session, Person: seedCarol,
-		ProjectScope: brokertoken.ProjectScopeNamed, Project: project, Scope: "dispatch.write",
+		ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: s.agent.jkt,
 	})
 	response := httptest.NewRecorder()

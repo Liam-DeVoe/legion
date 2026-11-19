@@ -209,8 +209,8 @@ func TestNoPrivateProjectRefusesNoMapping(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createProjects(t, handler, "PUB", "PUB2")
 	for _, row := range []struct{ repo, project, want string }{
-		{"acme/a.b", "PUB", `{"repo":"acme/a.b","project":"PUB","default":false,"renamed_to":null,"created_by":{"kind":"user","id":"alice"},"created_at":"<masked>"}`},
-		{"acme/a_b", "PUB2", `{"repo":"acme/a_b","project":"PUB2","default":false,"renamed_to":null,"created_by":{"kind":"user","id":"alice"},"created_at":"<masked>"}`},
+		{"acme/a.b", "PUB", `{"repo":"acme/a.b","project":"PUB","default":false,"renamed_to":null,"created_by":{"kind":"user","id":"alice","proven":true},"created_at":"<masked>"}`},
+		{"acme/a_b", "PUB2", `{"repo":"acme/a_b","project":"PUB2","default":false,"renamed_to":null,"created_by":{"kind":"user","id":"alice","proven":true},"created_at":"<masked>"}`},
 	} {
 		response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+row.repo, map[string]any{"project": row.project}, "alice")
 		got := createdAtMember.ReplaceAllString(strings.TrimSpace(response.Body.String()), `"created_at":"<masked>"`)

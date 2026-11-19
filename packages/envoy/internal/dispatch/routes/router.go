@@ -167,6 +167,10 @@ type AppContextOptions struct {
 	PrivateProjects []string
 	BusProjects     api.BusProjects
 	AgentStream     agentstream.Source
+	// AgentPublisher queues a person's targeted message on its session's own subject when no store
+	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
+	// test hooks with NATS disabled, and nil otherwise. See api.Deps.AgentPublisher.
+	AgentPublisher api.AgentPublisher
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
@@ -269,6 +273,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		PrivateProjects:        opts.PrivateProjects,
 		BusProjects:            opts.BusProjects,
 		AgentStream:            opts.AgentStream,
+		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		SignInIssuer:           opts.SignInIssuer,
@@ -365,23 +370,25 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 // serve is New, answering besides the handler the mux every route is mounted on, whose patterns
 // a walk of what the server serves reads (readclass.Patterns).
 func serve(ctx *AppContext) (http.Handler, *http.ServeMux, api.Background) {
-	r, mux, background := mount(ctx)
+	mux := http.NewServeMux()
+	r, background := mount(ctx, mux)
 	if ctx.devSignInHost == "" {
 		return r.enforceCookieOrigin(mux), mux, background
 	}
 	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), mux, background
 }
 
-// mount builds the router and its mux with every route mounted, and answers the API server's
-// background work. Each pattern beside the API route table is mounted through readclass.Handle
-// with what it reads; api.Register mounts the table and the two sockets.
-func mount(ctx *AppContext) (*router, *http.ServeMux, api.Background) {
+// mount builds New's router, mounts every route the server serves on mux, the API's table among
+// them (api.Register), and answers the API server's background work. Each pattern beside the API
+// route table is mounted through readclass.Handle with what it reads; api.Register mounts the
+// table and the two sockets. A test reads the server's routes from this mounting itself
+// (TestAKeyedWriteNeverRunsUnkeyed, TestEveryGETRouteHasAReadClass).
+func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 	r := &router{
 		ctx:          ctx,
 		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
 		assets:       newAssetCache(maxCachedAssetBytes),
 	}
-	mux := http.NewServeMux()
 	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
@@ -401,7 +408,7 @@ func mount(ctx *AppContext) (*router, *http.ServeMux, api.Background) {
 	if ctx.devSignInHost != "" {
 		readclass.Handle(mux, none, "GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
 	}
-	return r, mux, background
+	return r, background
 }
 
 // ───── auth ─────────────────────────────────────────────────────────────────
@@ -1045,6 +1052,9 @@ func contentType(path string) string {
 		return "image/png"
 	case ".json":
 		return "application/json; charset=utf-8"
+	case ".woff2":
+		// The typeface the dashboard ships (packages/dispatch/web/src/fonts/inter).
+		return "font/woff2"
 	default:
 		return "application/octet-stream"
 	}

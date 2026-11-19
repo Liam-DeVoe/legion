@@ -27,7 +27,7 @@ type PendingEntry struct {
 	Session RecordSessionResp `json:"session"`
 	// A secret request's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>, where a person
 	// signed in to the broker decides it; absent for a machine login, which is decided with its
-	// typed code.
+	// typed code, and on a broker with BROKER_SIGNIN=off, which serves no page.
 	ApproveURL string `json:"approve_url,omitempty"`
 }
 
@@ -181,7 +181,7 @@ type PersonSubjectRevokedResponse struct {
 	// the broker applied at the address carried (SupersededBy), so a later replacement at the
 	// address has been applied since, and this one changed nothing; Dispatch leaves it owed and
 	// reports it, since its own generations for the address are then below the broker's. The
-	// broker's migration 0032 says how such a revoke can arrive.
+	// broker's migration 0033 says how such a revoke can arrive.
 	State string `json:"state"`
 	// The greatest session generation a revoke the broker applied at the address carried, which is
 	// above this revoke's; given with state "superseded" alone.

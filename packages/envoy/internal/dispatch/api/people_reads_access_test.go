@@ -91,15 +91,15 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 		users  []string
 		agents []string
 		// pages is which of alice's and carol's pages the caller opens; the other answers as a
-		// login nobody holds. carol's one comment is on PRIV, but her agents' sessions, which her
-		// broker token proved (seedSessionWork), wrote on PUB too, and a write of a session proved
-		// hers is one of hers (personPageHeldQuery's session_authored): a caller that sees PUB or
-		// PRIV opens her page, and one that sees neither does not, though it may read her in the
-		// people list. alice's one comment is on PUB, so a caller that sees only PRIV cannot open
-		// hers. Every caller opens its own person's page.
+		// login nobody holds. A page opens on what its person wrote, and a write of a session the
+		// broker proved is that session's and opens no page (personPageShownQuery, R15 of the
+		// person-identity change). carol's one comment is on PRIV, so a caller that sees PRIV opens
+		// her page and one that does not cannot, though it may read her in the people list; her
+		// agents' writes on PUB (seedSessionWork) open nothing. alice's one comment is on PUB, so a
+		// caller that sees only PRIV cannot open hers. Every caller opens its own person's page.
 		pages []string
 	}{
-		{callerAlice, everyone, publicOnly, []string{seedAlice, seedCarol}},
+		{callerAlice, everyone, publicOnly, []string{seedAlice}},
 		{callerBob, ofPrivate, privateOnly, []string{seedCarol}},
 		{callerCarol, everyone, every(2), []string{seedAlice, seedCarol}},
 		{callerCarolPrivToken, ofPrivate, privateOnly, []string{seedCarol}},

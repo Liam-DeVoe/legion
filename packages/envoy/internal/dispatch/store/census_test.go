@@ -1307,10 +1307,12 @@ func TestTheBrokerRevocationsGuardMigrationAppliesOverAnEarlierHeadsShape(t *tes
 
 // 20261118200651 replaces guard_people_binding_columns and guard_broker_revocation_columns whole
 // (create or replace function), catalog-only statements: the census exempts it from the table limit,
-// even at a limit of one byte, and refuses nothing.
+// even at a limit of one byte, and refuses nothing. The database is migrated through the migration
+// just before it, 20261118161237_block_index_object_nodes_owed since the base merged at
+// 31abc36687, so it is the one migration pending.
 func TestCensusExemptsTheLaterClockMigrationAtAnyTableSize(t *testing.T) {
 	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261118152422)
+	migrateThrough(t, store, 20261118161237)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261118200651), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)

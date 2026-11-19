@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -47,8 +47,10 @@ func writeAs(t *testing.T, handler http.Handler, login, method, path, body strin
 }
 
 // eventsStartSinceAs opens the live socket as login, subscribes to the events view with no resume
-// and answers the since its events_start names.
-func eventsStartSinceAs(t *testing.T, server *httptest.Server, login string) int64 {
+// and answers the since its events_start names. The events_start is read behind the event horizon
+// (waitEventsStart), for as long as the horizon says another client of the instance holds it, so
+// no fixed deadline fails the read on a shared cluster. own is the store the router reads.
+func eventsStartSinceAs(t *testing.T, server *httptest.Server, own *store.Store, login string) int64 {
 	t.Helper()
 	conn, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", http.Header{"X-Dispatch-User": {login}})
 	if err != nil {
@@ -62,24 +64,18 @@ func eventsStartSinceAs(t *testing.T, server *httptest.Server, login string) int
 	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "sub": "events", "view": map[string]string{"kind": "events"}}); err != nil {
 		t.Fatalf("subscribe as %s: %v", login, err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	for {
-		var frame struct {
-			Type  string `json:"type"`
-			Since string `json:"since"`
-		}
-		if err := conn.ReadJSON(&frame); err != nil {
-			t.Fatalf("read the events subscription's frames as %s: %v", login, err)
-		}
-		if frame.Type != "events_start" {
-			continue
-		}
-		since, err := strconv.ParseInt(frame.Since, 10, 64)
-		if err != nil {
-			t.Fatalf("events_start as %s names since %q, not a decimal event id: %v", login, frame.Since, err)
-		}
-		return since
+	var frame struct {
+		Type  string `json:"type"`
+		Since string `json:"since"`
 	}
+	if data := waitEventsStart(t, conn, own); json.Unmarshal(data, &frame) != nil || frame.Type != "events_start" {
+		t.Fatalf("the events subscription's first frame as %s is %s, want its events_start", login, data)
+	}
+	since, err := strconv.ParseInt(frame.Since, 10, 64)
+	if err != nil {
+		t.Fatalf("events_start as %s names since %q, not a decimal event id: %v", login, frame.Since, err)
+	}
+	return since
 }
 
 // TestTheEventHeadsAPersonReadsDoNotMoveWithAProjectTheyCannotSee: the heads a person reads of
@@ -117,13 +113,13 @@ func TestTheEventHeadsAPersonReadsDoNotMoveWithAProjectTheyCannotSee(t *testing.
 	if head := whoamiHeadAs(t, handler, alice); head != before {
 		t.Errorf("alice's whoami event_head moved from %d to %d with carol's comment on PRIV-1, a project alice does not see", before, head)
 	}
-	if since := eventsStartSinceAs(t, server, alice); since != before {
+	if since := eventsStartSinceAs(t, server, database, alice); since != before {
 		t.Errorf("alice's events_start since = %d, want her head %d: it moved with PRIV's events", since, before)
 	}
 	if head := whoamiHeadAs(t, handler, carol); head != newest {
 		t.Errorf("carol's whoami event_head = %d, want the newest event %d, her own comment on PRIV-1", head, newest)
 	}
-	if since := eventsStartSinceAs(t, server, carol); since != newest {
+	if since := eventsStartSinceAs(t, server, database, carol); since != newest {
 		t.Errorf("carol's events_start since = %d, want the newest event %d", since, newest)
 	}
 

@@ -10,8 +10,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The ask and message writers, and the comment writer's project (dispatch://INFRA-3862, slice N
-// of its plan, t-a-26). object_nodes_issue_test.go holds the issue and document writers and
+// The ask and message writers, and the comment writer's project.
+// object_nodes_issue_test.go holds the issue and document writers and
 // defines the helpers these read through.
 
 // eventNaming answers the id of the newest event of type whose payload names the object id, at

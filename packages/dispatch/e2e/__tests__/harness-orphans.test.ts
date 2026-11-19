@@ -126,6 +126,7 @@ test(
     await eventually(() => !pids.some(groupAlive), 15_000);
     expect(pids.filter(groupAlive)).toEqual([]);
   },
+  // The row drives a parent it kills and its reaper: a cold bun start of two listeners, then a reap bounded below at 15 s.
   ROW_MS
 );
 
@@ -181,6 +182,7 @@ test(
       parent.kill("SIGKILL");
     }
   },
+  // The row drives a starter it kills and its reaper, whose stops each end by themselves within a minute.
   ROW_MS
 );
 
@@ -255,6 +257,7 @@ test(
       parent.kill("SIGKILL");
     }
   },
+  // The row drives a parent through one foreground step, kills it, and reads the reaper's stops as they end.
   ROW_MS
 );
 
@@ -381,6 +384,7 @@ test(
     expect(name).toMatch(/^dispatch-e2e-pg-starting-[0-9a-f]{8}-0-1$/u);
     expect(answered).toContain(`docker rm --force --volumes ${name}`);
   },
+  // The row drives a parent into a stand-in docker start, kills it, and waits for the reaper's one removal.
   ROW_MS
 );
 
@@ -397,6 +401,7 @@ test(
     );
     expect(answered).toContain(`pg_ctl -D ${join(dir, "template", "pgdata")} -m immediate -w stop`);
   },
+  // The row drives a parent into a stand-in pg_ctl start, kills it, and waits for the reaper's one stop.
   ROW_MS
 );
 
@@ -416,6 +421,7 @@ test(
     );
     expect(removals(answered)).toBeGreaterThanOrEqual(2);
   },
+  // The row drives a killed parent's stand-in docker run past the reaper's first removal, and waits for its second.
   ROW_MS
 );
 
@@ -517,5 +523,6 @@ test.skipIf(!provider)(
       }
     }
   },
+  // The row drives a real Postgres container's first start, runs its initdb, kills the parent, and waits for the removal.
   POSTGRES_ROW_MS
 );

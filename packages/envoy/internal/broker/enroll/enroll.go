@@ -241,7 +241,7 @@ type execer interface {
 // re-verification checks against recordID's approved credential-request record. recordID may be
 // "" only for a credential with no backing record at all (test fixtures unrelated to the
 // machine-login flow); AuthenticateLauncher refuses such a credential outright. approver is the
-// account that approved it (migration 0032), which a revoke of that account, once it no longer
+// account that approved it (migration 0033), which a revoke of that account, once it no longer
 // holds the operator's address, ends it by; the zero value records none, as an approval an
 // older Dispatch relayed carries none.
 func (s *Service) mintLauncherCredential(ctx context.Context, exec execer, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject) (uuid.UUID, error) {
@@ -1970,7 +1970,7 @@ func endSignIn(ctx context.Context, tx pgx.Tx, id, person, actor, reason string)
 const NoAccountSignInActor = "broker:sign-in-recording-no-account"
 
 // RecordPersonSignIn records a person's trade in tx (store.RecordPersonSignIn), the exchange's own
-// transaction, and, when that trade ended a sign-in from before migration 0032, which records no
+// transaction, and, when that trade ended a sign-in from before migration 0033, which records no
 // account and so might have been any account's, ends the launcher credential that sign-in held and
 // every session it enrolled (endCredential), as revoking the sign-in does. The sessions another
 // account enrolled there would otherwise go on reading that account's secrets on this box after a

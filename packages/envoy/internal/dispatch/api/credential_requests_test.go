@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // With approvetimingtest.Env set, this package's tests time each approve's relay; the package
@@ -350,10 +351,9 @@ func TestAnApproveCarriesTheSessionGenerationItsCheckRead(t *testing.T) {
 }
 
 func TestCredentialRouteTransportFailureIsAgentSecretsUnavailable(t *testing.T) {
-	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	deadURL := dead.URL
-	dead.Close() // nothing listens here now: every call is a transport failure.
-	handler := newCredentialTestHandler(t, deadURL)
+	// Nothing listens at the broker's port, and the test holds it, so every call is a transport
+	// failure (testport.Refused).
+	handler := newCredentialTestHandler(t, "http://"+testport.Refused(t))
 
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/credential-grants?approver=me", nil, "alice")
 	if response.Code != http.StatusServiceUnavailable {
@@ -583,10 +583,7 @@ func TestCredentialCapabilitiesFollowTheBrokersMetadata(t *testing.T) {
 		}
 	})
 	t.Run("the broker cannot be read", func(t *testing.T) {
-		dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-		deadURL := dead.URL
-		dead.Close()
-		if !ask(t, newCredentialTestHandler(t, deadURL)) {
+		if !ask(t, newCredentialTestHandler(t, "http://"+testport.Refused(t))) {
 			t.Fatalf("machine_code_page = false, want true: a page that vanishes on one failed read is worse than one that lingers")
 		}
 	})

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 type eventLogRow struct {
@@ -15,16 +17,8 @@ type eventLogRow struct {
 	Project    string  `json:"project"`
 }
 
-// readEventLogPage reads one page of GET /api/v1/events/log as alice, once served's horizon is
-// proven above every event committed before the call (safeHorizon). The log answers only the
-// events at or below the safe horizon, and a read that any transaction holding an id on the test
-// cluster holds back past referencesSinceWait answers at the horizon it was left with, short of
-// what the test has just written: storetest's own "create database … template …" and "drop
-// database … with (force)" of the package's other tests do so. Proven first, the horizon the read
-// answers at is at least that high, whatever the read then waits on.
-func readEventLogPage(t *testing.T, served *server, handler http.Handler, query string) ([]eventLogRow, map[int64]json.RawMessage) {
+func readEventLogPage(t *testing.T, handler http.Handler, query string) ([]eventLogRow, map[int64]json.RawMessage) {
 	t.Helper()
-	safeHorizon(t, served)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/events/log"+query, nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /api/v1/events/log%s: status=%d body=%s", query, response.Code, response.Body.String())
@@ -41,10 +35,26 @@ func readEventLogPage(t *testing.T, served *server, handler http.Handler, query 
 	return rows, byID
 }
 
+// readEventLogBehindHorizon reads the event log's first page until holds accepts it: the log
+// answers only the events at or below the server's safe horizon (sinceHorizon), which a
+// transaction held anywhere on the Postgres instance keeps back (awaitHorizonRead).
+func readEventLogBehindHorizon(t *testing.T, handler http.Handler, database *store.Store, what string, holds func([]eventLogRow) bool) ([]eventLogRow, map[int64]json.RawMessage) {
+	t.Helper()
+	type page struct {
+		rows []eventLogRow
+		byID map[int64]json.RawMessage
+	}
+	read := awaitHorizonRead(t, database, what, func() page {
+		rows, byID := readEventLogPage(t, handler, "")
+		return page{rows: rows, byID: byID}
+	}, func(read page) bool { return holds(read.rows) }, func(read page) string { return fmt.Sprintf("%+v", read.rows) })
+	return read.rows, read.byID
+}
+
 // The event log is every event whatever owns it: a project's own event, an issue's and a project
 // document's all appear, in id order, each exactly as its owner's event list serves it.
 func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "CORE", "Logged issue", "A spec")
 	if response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 		"question": "Which path?",
@@ -54,23 +64,27 @@ func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
 	}
 	document := createProjectDocument(t, handler, "CORE", "Design notes", "# Design notes\n")
 
-	rows, logged := readEventLogPage(t, served, handler, "")
-	var sawProject, sawIssue, sawDocument bool
+	owners := func(rows []eventLogRow) (sawProject, sawIssue, sawDocument bool) {
+		for _, row := range rows {
+			switch {
+			case row.Type == "project.created" && row.IssueKey == nil && row.ArtifactID == nil && row.Project == "CORE":
+				sawProject = true
+			case row.IssueKey != nil && *row.IssueKey == issue.Key:
+				sawIssue = true
+			case row.Type == "artifact.created" && row.IssueKey == nil && row.ArtifactID != nil && *row.ArtifactID == document.ID:
+				sawDocument = true
+			}
+		}
+		return sawProject, sawIssue, sawDocument
+	}
+	rows, logged := readEventLogBehindHorizon(t, handler, database, "the event log, with the project's, the issue's and the document's events", func(rows []eventLogRow) bool {
+		sawProject, sawIssue, sawDocument := owners(rows)
+		return sawProject && sawIssue && sawDocument
+	})
 	for index, row := range rows {
 		if index > 0 && row.ID <= rows[index-1].ID {
 			t.Fatalf("event %d has id %d after id %d; want ascending ids", index, row.ID, rows[index-1].ID)
 		}
-		switch {
-		case row.Type == "project.created" && row.IssueKey == nil && row.ArtifactID == nil && row.Project == "CORE":
-			sawProject = true
-		case row.IssueKey != nil && *row.IssueKey == issue.Key:
-			sawIssue = true
-		case row.Type == "artifact.created" && row.IssueKey == nil && row.ArtifactID != nil && *row.ArtifactID == document.ID:
-			sawDocument = true
-		}
-	}
-	if !sawProject || !sawIssue || !sawDocument {
-		t.Fatalf("event log = %+v; want the project's, the issue's and the document's events (project %t, issue %t, document %t)", rows, sawProject, sawIssue, sawDocument)
 	}
 
 	for _, owner := range []string{"/api/v1/issues/" + issue.Key + "/events", "/api/v1/artifacts/" + document.ID + "/events"} {
@@ -97,7 +111,7 @@ func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
 // Paging by the last id read with a small limit yields the same events as one page: no gap and
 // no repeat, ending on a short page.
 func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "CORE", "Paged issue", "A spec")
 	for index := range 3 {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -108,14 +122,15 @@ func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
 	}
 	createProjectDocument(t, handler, "CORE", "Paged notes", "# Paged notes\n")
 
-	whole, _ := readEventLogPage(t, served, handler, "")
-	if len(whole) < 5 {
-		t.Fatalf("event log holds %d events; want at least 5 to page", len(whole))
-	}
+	// Once one page holds them, the horizon stands above every event written so far, so the pages
+	// below read the same log.
+	whole, _ := readEventLogBehindHorizon(t, handler, database, "the event log, at least 5 events to page", func(rows []eventLogRow) bool {
+		return len(rows) >= 5
+	})
 	var paged []eventLogRow
 	after := int64(0)
 	for {
-		page, _ := readEventLogPage(t, served, handler, fmt.Sprintf("?after=%d&limit=2", after))
+		page, _ := readEventLogPage(t, handler, fmt.Sprintf("?after=%d&limit=2", after))
 		paged = append(paged, page...)
 		if len(page) < 2 {
 			break
@@ -132,7 +147,7 @@ func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
 	}
 
 	from := whole[1].ID
-	rest, _ := readEventLogPage(t, served, handler, fmt.Sprintf("?after=%d", from))
+	rest, _ := readEventLogPage(t, handler, fmt.Sprintf("?after=%d", from))
 	if len(rest) != len(whole)-2 || rest[0].ID != whole[2].ID {
 		t.Fatalf("after=%d answered %+v; want the events after it, starting at id %d", from, rest, whole[2].ID)
 	}

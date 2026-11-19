@@ -40,11 +40,16 @@ var Scopes = []string{ScopePerson, ScopeApprove}
 // token: a person who narrows a token afterwards narrows what it may do next, and must not
 // retroactively un-approve what it approved while it held approve (docs.carryVerdict reads these
 // scopes to decide whether an answer can carry an approval).
+//
+// SessionProven says the credential itself proved Session - a broker-issued token's own session -
+// rather than the request naming it (a personal token's `?session=` or body actor). Absent means
+// Dispatch did not see the credential prove it, which is also every act recorded before the mark.
 type ActorAct struct {
-	Session   string   `json:"session,omitempty"`
-	TokenID   string   `json:"token_id,omitempty"`
-	TokenName string   `json:"token_name,omitempty"`
-	Scopes    []string `json:"scopes,omitempty"`
+	Session       string   `json:"session,omitempty"`
+	SessionProven bool     `json:"session_proven,omitempty"`
+	TokenID       string   `json:"token_id,omitempty"`
+	TokenName     string   `json:"token_name,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
 }
 
 // Holds reports whether the act was made under one scope, as Credential.Holds reports it of the
@@ -55,9 +60,9 @@ func (a *ActorAct) Holds(scope string) bool {
 	return a == nil || slices.Contains(a.Scopes, scope)
 }
 
-// Credential is the request's credential as optionalActor resolved it: the scopes it holds, and
-// the agent it names. A pointer, so Actor stays comparable with ==, which this package's callers
-// and its tests rely on.
+// Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
+// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
+// which this package's callers and its tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
 	Scopes []string
@@ -94,6 +99,15 @@ type Credential struct {
 	// cannot compare with the account it records: refused at its admission, its mints and its
 	// approves once people records an account for its person, whenever it was made.
 	BrokerForeignAccount bool
+	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
+	// one the secrets broker minted from a read entry, naming a service and a session and no
+	// person and no project. Dispatch serves it on the routes its read list names
+	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
+	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
+	// Scopes: those are what a route can require of a credential, and read meets no route's
+	// requirement; it narrows what this credential may call rather than widening it. False for
+	// every other credential.
+	ReadOnly bool
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -132,6 +146,18 @@ type Actor struct {
 	// does an agent's own write on a route that always took tokens, which is recorded as the
 	// session it always was.
 	Act *ActorAct `json:"act,omitempty"`
+	// Proven says a credential itself proved Kind and ID: a browser's cookie its person, a
+	// broker-issued token its session, and actingPerson's person. It is set by the server and
+	// never read from a request body. An actor whose ID the body named - under the shared agent
+	// token, a personal token or a service-account token, none of which proves a session -
+	// carries none, and neither does any row recorded before the mark existed, so a reader that
+	// counts only proven writers counts no claimed one. A row Dispatch derives from an earlier
+	// write carries that write's actor, and so its mark, whatever credential the request that
+	// derives it presented: an approval a new version carries (docs.writeCarriedReview) and the
+	// answer it gives the open approval request name the person whose review it carries, proven
+	// when that review's credential proved them, even when the request that wrote the version
+	// proved nobody.
+	Proven bool `json:"proven,omitempty"`
 	// Credential is what authenticated the request: the OAuth scopes it holds and how it names
 	// the agent behind it. It is a fact of the request and never of the record, so it is not
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
@@ -153,7 +179,7 @@ type Actor struct {
 // own actor for a browser caller (messages.go, message_delivery.go, comment_delivery.go,
 // issue_claim.go) keep the cookie's credential in memory and hand that actor to no document
 // write. A layer that needs the request's own credential reads it from optionalActor
-// (callerHoldsScope).
+// (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
 	a.Viewer = nil
@@ -220,9 +246,9 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
-// Origin, Project and Act are not compared: they say where a write came from and who it acted
-// for, which two requests of one credential differ in, so comparing them would call one
-// credential two.
+// Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
+// for and whether its credential proved its id, which two requests of one credential differ in,
+// so comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
 	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
 }
@@ -778,7 +804,8 @@ type Issue struct {
 	Components       IssueComponents `json:"components"`
 	ExternalLinks    []ExternalLink  `json:"external_links"`
 	Route            *string         `json:"route"`
-	// Repo is the issue's own repository, owner/name, a mapping of its project; nil when it inherits.
+	// Repo is the issue's own repository, owner/name: any repository GitHub could hold, whether
+	// or not a project maps it; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
 	// nearest ancestor's, else its project's default mapping, else nil.
@@ -1146,8 +1173,10 @@ type WriteSuggestion struct {
 // it. LikelyDuplicate is the closest open issue of an unforced create whose near-copy score
 // reached the nudge bar but not the refusal's: a field of its own, because every released client
 // prints each TitleMatches entry as something the filer forced past. NearCopyCheck is set, to
-// why, exactly when the near-copy check before the create did not answer, so a filer knows the
-// create went in unchecked; it is absent on every other write, which runs no such check.
+// why, exactly when the near-copy check before the create made no check that could stop it: its
+// read did not answer, or it found a near copy whose refusal could not be recorded, which it then
+// names; so a filer knows the create went in unchecked. It is absent on every other write, which
+// runs no such check.
 // Related is always an array, never null.
 //
 // OtherProjects rides beside Related, never inside it: a write that asks a person a question -
@@ -1214,9 +1243,69 @@ type RelatedCheckTiming struct {
 	Over300MS int  `json:"over_300ms"`
 }
 
+// NearCopyCheck is one row of near_copy_checks: one answer the near-copy gate gave an issue
+// create. Outcome is refused (the gate refused it and nothing was written: every 409
+// POSSIBLE_DUPLICATE has this row, written before the answer; so does a refusal whose row landed
+// unseen when the create let in past it then failed), forced (written past a refusal with
+// `force`), nudged (written, its closest open issue named as a likely duplicate), passed (written
+// with nothing named, forced or not) or not_made (the gate made no check that could stop the
+// create, and it went in unchecked), and Reason says why a check was not made: bound (the read ran
+// out of its bound or its request went away), failed (the read failed) or unrecorded (the read
+// found a near copy, but the row of its refusal could not be confirmed, so it refused nothing);
+// null for every other outcome. Force is whether the create asked for `force`.
+//
+// Spec is the spec as sent, held for a refused create alone, which has no issue to hold it ("" for
+// one that sent none); it is absent from a page (NearCopyChecksPage) and from every other row.
+// SpecSHA256 is the spec's sha256 in hex on every row. Issue is the issue the create wrote, null
+// for a refusal. Candidates are the candidates the gate read at or above NudgeScore, at most
+// five, best score first, with each one's title as it then stood; RefuseScore and NudgeScore are
+// the bars the build read them against, and BuildCommit is the legion commit it was built from,
+// null for a build nothing stamped.
+type NearCopyCheck struct {
+	ID          string                   `json:"id"`
+	CreatedAt   time.Time                `json:"created_at"`
+	Project     string                   `json:"project"`
+	ActorKind   string                   `json:"actor_kind"`
+	ActorID     string                   `json:"actor_id"`
+	Outcome     string                   `json:"outcome" enum:"refused,forced,nudged,passed,not_made"`
+	Reason      *string                  `json:"reason" enum:"bound,failed,unrecorded"`
+	Force       bool                     `json:"force"`
+	Title       string                   `json:"title"`
+	Spec        *string                  `json:"spec,omitempty"`
+	SpecSHA256  string                   `json:"spec_sha256"`
+	Parent      *string                  `json:"parent"`
+	Issue       *string                  `json:"issue"`
+	Candidates  []NearCopyCheckCandidate `json:"candidates"`
+	RefuseScore float64                  `json:"refuse_score"`
+	NudgeScore  float64                  `json:"nudge_score"`
+	BuildCommit *string                  `json:"build_commit"`
+}
+
+// NearCopyCheckCandidate is one issue the near-copy gate read for a create, with the score it
+// read and the title the issue held at that moment.
+type NearCopyCheckCandidate struct {
+	Key   string  `json:"key"`
+	Title string  `json:"title"`
+	Score float64 `json:"score"`
+}
+
+// NearCopyChecksPage is GET /api/v1/near-copy-checks: one project's near-copy gate answers
+// recorded within [From, To), oldest first, at most the page's limit. Project, From and To echo
+// the query, From and To null when not given. NextAfter is the id to pass as ?after= for the
+// next page, null when this page holds the last row the window selects.
+type NearCopyChecksPage struct {
+	Project   string          `json:"project"`
+	From      *time.Time      `json:"from"`
+	To        *time.Time      `json:"to"`
+	Checks    []NearCopyCheck `json:"checks"`
+	NextAfter *string         `json:"next_after"`
+}
+
 // IssueChild is a child item embedded in an issue detail response. The subtree counts
 // include the child itself, every status (icebox included); done is `status = 'done'`.
-// ActiveAt is the newest updated_at anywhere in the child's subtree.
+// ActiveAt is the newest updated_at anywhere in the child's subtree. Needs and Claim are the
+// child's own, each left out when it has none: Needs the sorted keys of the issues it waits on,
+// the elements of Issue's blocked_by, and Claim the claim holding it, in Issue's shape.
 type IssueChild struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -1225,6 +1314,8 @@ type IssueChild struct {
 	SubtreeTotal  int            `json:"subtree_total"`
 	ActiveAt      time.Time      `json:"active_at"`
 	ExternalLinks []ExternalLink `json:"external_links"`
+	Needs         []string       `json:"needs,omitempty"`
+	Claim         *IssueClaim    `json:"claim,omitempty"`
 }
 
 // ArchitectureTree is GET /api/v1/projects/{key}/architecture: the project's
@@ -1605,13 +1696,17 @@ type CheckResultRetraction struct {
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
 // `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
-// one result is the one derived from that run.
+// one result is the one derived from that run. Text is the block's words with every link and
+// dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
+// content whole, links and references kept, as the reader is shown it, present only for a
+// caller that sent `Dispatch-Trees: 1`.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
 	IssueKey        string        `json:"issue_key"`
 	ArtifactID      string        `json:"artifact_id"`
 	Text            string        `json:"text"`
+	TextTree        DisplayTree   `json:"text_tree,omitempty"`
 	When            string        `json:"when"`
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
@@ -1668,14 +1763,16 @@ type IssueCoverage struct {
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
 // any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
-// parsing the sentence back.
+// parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
+// are: the words with no link or reference, and the block's whole content as a tree.
 type RequirementCoverage struct {
-	BlockID   string   `json:"block_id"`
-	Ref       string   `json:"ref"`
-	Text      string   `json:"text"`
-	Checks    int      `json:"checks"`
-	PlanTasks int      `json:"plan_tasks"`
-	Gaps      []string `json:"gaps"`
+	BlockID   string      `json:"block_id"`
+	Ref       string      `json:"ref"`
+	Text      string      `json:"text"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
+	Checks    int         `json:"checks"`
+	PlanTasks int         `json:"plan_tasks"`
+	Gaps      []string    `json:"gaps"`
 }
 
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
@@ -3408,6 +3505,47 @@ type GraphReferences struct {
 	Node         GraphNode   `json:"node"`
 	Edges        []GraphEdge `json:"edges"`
 	UnknownKinds []string    `json:"unknown_kinds,omitempty"`
+}
+
+// ReferenceTarget is what one reference of a batched reference read points at: Ref, the
+// reference as the request named it, Kind, the kind of node it names (a GraphNode kind), Name,
+// the words a reader is shown for the target in place of its text (refs.TargetNames), and Gone,
+// whether nothing answers to that reference now. A gone target carries no name: its node was
+// deleted, so there is nothing left to name it by. Ambiguous says why a member is gone when its
+// reference writes a short id that two or more items carry: the read answers that member gone
+// and answers every other member, where GET /api/v1/references refuses such an id with a 409.
+// TextTree is a block's whole text as the tree a reader is shown, every link and dispatch://
+// reference kept and nothing cut, where Name stops at the block's stored excerpt: a typed
+// block's is of its own content, what stands between its opening line and its closing one, read
+// by the block's kind. A document's block has the closing fence's indentation taken out of each
+// line, which a block in a list item or a footnote definition carries; a block of a comment, a
+// message or an ask, stored from the start of its line, has its opening line's indentation, up
+// to three spaces, taken off before the directive is read and up to as many columns taken off
+// each later line, as its own text's parse reads them, the indentation left on a line, and the
+// spaces or tabs after a list marker or `>`, written as spaces with each tab counted to the next
+// multiple of four from its own column. With its opening line at column 0, such a block keeps
+// every line as written; an opening line four spaces or a tab in opens no typed block, so that
+// text answers the tree of its whole stored text. A typed block in a quote answers the tree of its
+// whole stored text, its opening line included, and so does a block of a comment, a message or an
+// ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its
+// text. Only a member whose Kind is block carries one, and only for a caller that sent
+// `Dispatch-Trees: 1`.
+type ReferenceTarget struct {
+	Ref  string `json:"ref"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Gone bool   `json:"gone"`
+	// Ambiguous is true for a reference whose short id two or more items carry in the scope
+	// that the reference names. Such a member is gone, with the name "", and every other
+	// member of the read is answered. The key is left out otherwise.
+	Ambiguous bool        `json:"ambiguous,omitempty"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
+}
+
+// ReferenceTargets is GET /api/v1/reference-targets: one member per ?ref= the request named, in
+// the request's order, a reference named twice answered twice.
+type ReferenceTargets struct {
+	Targets []ReferenceTarget `json:"targets"`
 }
 
 // BlockLink is one link from a block of one document to a block of a document: its edge kind,

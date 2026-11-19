@@ -32,10 +32,12 @@ func (s privateSeed) liveHeader(t *testing.T, caller privateCaller) http.Header 
 	return withBearer(s.bearer(t, caller))
 }
 
-// dialLive opens the live socket at url as header presents and reads it.
-func dialLive(t *testing.T, url string, header http.Header) *socketClient {
+// dialLive opens the live socket at url, a server of the seed's handler (liveURLOf), as header
+// presents and reads it. The socket names the seed's store (servedBy), the one its server reads,
+// so a wait behind the event horizon reads that horizon's own account of itself.
+func (s privateSeed) dialLive(t *testing.T, url string, header http.Header) *socketClient {
 	t.Helper()
-	return openLiveSocketAt(t, gws.DefaultDialer, url, header).read()
+	return openLiveSocketAt(t, gws.DefaultDialer, url, header).servedBy(s.database).read()
 }
 
 // liveEvent is what these tests read of an event a live socket sent.
@@ -119,7 +121,7 @@ func TestTheLiveSocketSendsNoEventOfAHiddenProject(t *testing.T) {
 	since := eventHead(t, seed.database)
 	live := make(map[privateCaller]*socketClient, len(privateCallers))
 	for _, caller := range privateCallers {
-		client := dialLive(t, url, seed.liveHeader(t, caller))
+		client := seed.dialLive(t, url, seed.liveHeader(t, caller))
 		subscribeEvents(t, client, "live", nil)
 		live[caller] = client
 	}
@@ -144,7 +146,7 @@ func TestTheLiveSocketSendsNoEventOfAHiddenProject(t *testing.T) {
 	}
 	// A page that resumes from before the comments is replayed them under the same rule.
 	for _, caller := range privateCallers {
-		client := dialLive(t, url, seed.liveHeader(t, caller))
+		client := seed.dialLive(t, url, seed.liveHeader(t, caller))
 		if start := subscribeEventsStart(t, client, "replay", &since); !start.ReplayComplete {
 			t.Fatalf("%s's resume from %d says its replay is not complete: %+v", caller, since, start)
 		}
@@ -159,7 +161,7 @@ func TestTheLiveSocketSendsNoEventOfAHiddenProject(t *testing.T) {
 // without ending: a project that has just been made holds nothing the page read before.
 func TestAnOpenSocketIsSentTheEventsOfAProjectMadeAfterItSubscribed(t *testing.T) {
 	seed := seedPrivateProject(t)
-	client := dialLive(t, liveURLOf(t, seed.handler), seed.liveHeader(t, callerAlice))
+	client := seed.dialLive(t, liveURLOf(t, seed.handler), seed.liveHeader(t, callerAlice))
 	subscribeEvents(t, client, "feed", nil)
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/projects", map[string]string{"key": "NEW", "name": "Project NEW"}, http.StatusCreated)
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues", map[string]string{"project": "NEW", "title": "The issue of NEW"}, http.StatusCreated)
@@ -211,7 +213,7 @@ func TestARemovedPersonsSocketRefreshesWithoutTheProject(t *testing.T) {
 		t.Run(removal.name, func(t *testing.T) {
 			seed := seedPrivateProject(t)
 			removal.grant(t, seed)
-			client := dialLive(t, liveURLOf(t, seed.handler), asUser(removal.person))
+			client := seed.dialLive(t, liveURLOf(t, seed.handler), asUser(removal.person))
 			subscribeEvents(t, client, "feed", nil)
 			issue := "/api/v1/issues/" + seed.issue[seedPrivate] + "/comments"
 			seen := createdID(t, seed.request(t, callerCarol, http.MethodPost, issue, map[string]any{"body": "Before the removal."}))
@@ -252,7 +254,7 @@ func TestAResumeOverEventsTheCallerMayNotReadIsComplete(t *testing.T) {
 	seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/people/"+seedBob, nil, http.StatusOK)
 	url := liveURLOf(t, seed.handler)
 	for _, caller := range callersBlindToPrivate {
-		client := dialLive(t, url, seed.liveHeader(t, caller))
+		client := seed.dialLive(t, url, seed.liveHeader(t, caller))
 		if got := subscribeEventsStart(t, client, "feed", &since); !got.ReplayComplete {
 			t.Errorf("%s's resume from %d across PRIV's events says its replay is not complete: %+v", caller, since, got)
 		}
@@ -263,7 +265,7 @@ func TestAResumeOverEventsTheCallerMayNotReadIsComplete(t *testing.T) {
 // why the caller's page does or does not owe a refresh.
 func requireResumeComplete(t *testing.T, seed privateSeed, url string, caller privateCaller, since int64, want bool, why string) {
 	t.Helper()
-	client := dialLive(t, url, seed.liveHeader(t, caller))
+	client := seed.dialLive(t, url, seed.liveHeader(t, caller))
 	if got := subscribeEventsStart(t, client, "feed", &since); got.ReplayComplete != want {
 		t.Errorf("%s's resume from %d says replay_complete %t, want %t: %s", caller, since, got.ReplayComplete, want, why)
 	}
@@ -330,7 +332,7 @@ func TestAResumeAcrossAnAccessChangeOwesARefreshOnlyToWhomItMoved(t *testing.T) 
 	since := eventHead(t, seed.database)
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+dave, nil, http.StatusOK)
 	url := liveURLOf(t, seed.handler)
-	client := dialLive(t, url, asUser(dave))
+	client := seed.dialLive(t, url, asUser(dave))
 	if got := subscribeEventsStart(t, client, "feed", &since); got.ReplayComplete {
 		t.Errorf("dave's resume from %d across his addition to PRIV says its replay is complete, so his page lacks PRIV: %+v", since, got)
 	}

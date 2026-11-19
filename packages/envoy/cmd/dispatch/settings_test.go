@@ -752,7 +752,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.PprofAddr != "" {
 				t.Errorf("unset: PprofAddr = %q, want none", boot.PprofAddr)
 			}
-			refusedWith(t, map[string]string{"DISPATCH_PPROF_PORT": "0"}, "DISPATCH_PPROF_PORT")
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PPROF_PORT": "0"}); boot.PprofAddr != "127.0.0.1:0" {
+				t.Errorf("0: PprofAddr = %q, want 127.0.0.1:0, a port the kernel chooses", boot.PprofAddr)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PPROF_PORT": "65536"}, "DISPATCH_PPROF_PORT")
 		},
 		"DISPATCH_MAX_LIVE_ROOMS": func(t *testing.T) {
 			documentCapReachesTheService(t, "DISPATCH_MAX_LIVE_ROOMS", func(rooms, _ int) int { return rooms })
@@ -876,7 +879,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if err != nil {
 				t.Fatalf("build the webhook sweeper: %v", err)
 			}
-			if _, err := sweeper.Open(); err == nil || !strings.Contains(err.Error(), "ENVOY_NATS_REPLICAS=3: ") {
+			if _, err := sweeper.Open(t.Context()); err == nil || !strings.Contains(err.Error(), "ENVOY_NATS_REPLICAS=3: ") {
 				t.Errorf("the redelivery bucket at ENVOY_NATS_REPLICAS=3 on one server: err = %v, want the server's refusal naming the setting", err)
 			}
 			github := githubapptest.NewWebhook(t, &key.PublicKey, replicasTestClientID, nil)

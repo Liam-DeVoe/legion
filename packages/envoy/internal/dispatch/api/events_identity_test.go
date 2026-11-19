@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -51,6 +52,8 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
 		StreamHeartbeat: time.Second,
+		// The subscribe below waits on the event feed (eventFeedFrame).
+		HorizonStallAfter: horizontest.StallWarning, HorizonWarnEvery: horizontest.StallWarning,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -60,7 +63,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).servedBy(database).read()
 	subscribeEvents(t, client, "events", nil)
 
 	person.ended.Store(true)
@@ -180,7 +183,7 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	}
 }
 
-// A document socket's open admits its person by the cookie alone (docs.Service.CallerResolves), so
+// A document socket's open admits its person by the cookie alone (signInStillResolves), so
 // its heartbeat resolves that cookie alone too, whatever else the upgrade carried. A bearer beside
 // the cookie that resolves on its own - the same person's personal token - does not keep the
 // socket open once the cookie's session has ended, and one that resolves to nobody does not close
@@ -254,27 +257,6 @@ func TestDocumentSocketHeartbeatResolvesTheCookieItWasOpenedBy(t *testing.T) {
 				t.Fatalf("the document socket stayed open %s after its cookie's session ended, beside %s", time.Since(ended).Round(time.Millisecond), test.name)
 			}
 		})
-	}
-}
-
-// socketWithoutReResolution serves the document websocket and cannot say how its caller resolves
-// again: a document service a heartbeat could not re-check.
-type socketWithoutReResolution struct{ docs.API }
-
-func (socketWithoutReResolution) ServeHTTP(http.ResponseWriter, *http.Request) {}
-
-// A document service that serves the document socket must also resolve its caller again
-// (docs.Service.CallerResolves), since every heartbeat of the socket asks it. One that cannot is
-// refused when the server starts, naming the method, rather than mounted with no re-check, with
-// another credential's precedence, or left off the mux without a word.
-func TestADocumentSocketThatCannotResolveItsCallerAgainIsRefusedAtStart(t *testing.T) {
-	refusal := func() (refused any) {
-		defer func() { refused = recover() }()
-		register(http.NewServeMux(), t.Context(), Deps{Docs: socketWithoutReResolution{}})
-		return nil
-	}()
-	if message, _ := refusal.(string); !strings.Contains(message, "CallerResolves") {
-		t.Fatalf("register with a document socket that cannot resolve its caller again: recovered %v, want a refusal naming CallerResolves", refusal)
 	}
 }
 

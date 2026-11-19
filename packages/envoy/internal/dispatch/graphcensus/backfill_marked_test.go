@@ -79,7 +79,8 @@ func takeMarkedSnapshot(t *testing.T, database *store.Store) markedSnapshot {
 
 // D3's contract for the backfill: each pass walks only the rows its marker does not mark, names
 // their nodes in the transaction that writes their tuples, and reads no marked row. So the run can
-// be taken again at any time, as dispatch://INFRA-1253 takes it before it proves the old arms may
+// be taken again at any time, as the child that moves issues, their documents, a block's text
+// and rank, results and components takes it before it proves the old arms may
 // go, and it does only the rows still owed.
 //
 // The corpus is what a build before the store left: a document of three blocks, a mention and a
@@ -312,13 +313,15 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 			t.Fatalf("settle the block index of the document of %s: %d rows, %v", issue.key, tag.RowsAffected(), err)
 		}
 	}
+	// The backfill's mark is its own (store_owed_at), which the release before this one neither
+	// reads nor drains, and not the null version every release reads.
 	owed := func(issue string) bool {
 		t.Helper()
 		var owes bool
 		if err := database.Pool.QueryRow(ctx, `
-			select version is null from document_block_versions where artifact_id = $1::uuid
+			select store_owed_at is not null from document_block_versions where artifact_id = $1::uuid
 		`, documents[issue]).Scan(&owes); err != nil {
-			t.Fatalf("read whether the document of %s is owed a block index: %v", issue, err)
+			t.Fatalf("read whether the document of %s holds the backfill's mark: %v", issue, err)
 		}
 		return owes
 	}

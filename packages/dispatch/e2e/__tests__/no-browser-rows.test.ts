@@ -11,6 +11,7 @@ import {
   staleExemptions,
   unexplainedRows,
 } from "../no-browser-rows";
+import { rowLimit } from "./bounded-subprocess";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
 // Unlike e2e/__tests__/row-configurations.test.ts, this file imports no Playwright config: it
@@ -39,21 +40,21 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // it. Measured at this head, that listing under DISPATCH_E2E_PROCESSES=2 exits 1 with
 // `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone" not found. Available
 // projects: "chromium"`.
-const defaultListing = retained(listing("e2e/playwright.config.ts", {}));
+const defaultListing = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));
 const multiprocessListing = retained(
-  listing("e2e/playwright.config.ts", { DISPATCH_E2E_PROCESSES: "2" })
+  listing(import.meta.url, "e2e/playwright.config.ts", { DISPATCH_E2E_PROCESSES: "2" })
 );
 const signInListing = retained(
-  listing("e2e/playwright.config.ts", {
+  listing(import.meta.url, "e2e/playwright.config.ts", {
     DISPATCH_E2E_PROCESSES: "2",
     DISPATCH_E2E_SIGNIN: "oidc",
   })
 );
 const outsideSignInListing = retained(
-  listing("e2e/playwright.config.ts", { DISPATCH_E2E_SIGNIN: "google" })
+  listing(import.meta.url, "e2e/playwright.config.ts", { DISPATCH_E2E_SIGNIN: "google" })
 );
 const clockListing = retained(
-  listing("e2e/playwright.config.ts", {}, projectArguments(clockProjectNames))
+  listing(import.meta.url, "e2e/playwright.config.ts", {}, projectArguments(clockProjectNames))
 );
 
 const scannedFiles = specFiles(e2eDirectory);
@@ -62,16 +63,6 @@ const realRows = rowsOfFiles(e2eDirectory, scannedFiles);
 // that asserts it and the one that prints the evidence line only when every rule held.
 const realUnexplained = unexplainedRows(realRows, exemptions);
 const realStale = staleExemptions(realRows, exemptions);
-
-// With four listings at once, over two cores they shared with the two source scans below, the
-// whole file cost 13.72, 17.11 and 23.22 seconds in three runs of it, read before the google
-// listing joined them; that listing names one spec. Each listing on its own is a few seconds:
-// the default one 3.59 seconds and the wall-clock one 1.25, read with `time bunx playwright test
-// --config e2e/playwright.config.ts --list --reporter=json` and the same line naming the three
-// wall-clock projects. This file allows three minutes, which is far above every one of those
-// readings: the ceiling is the point at which something is wrong rather than slow, not a budget
-// for a listing.
-const listingTimeout = 180_000;
 
 /** The planted controls, read by name rather than by pointing `specFiles` at their directory:
  *  they are no part of the suite, and a file that was would run in it. */
@@ -183,7 +174,7 @@ test(
       );
     }
   },
-  listingTimeout
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
 );
 
 test("a planted row that drives no browser is named, and one that drives a browser is not", () => {

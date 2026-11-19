@@ -64,7 +64,7 @@ var errPrivateProjectsUnavailable = errors.New("the project stays public: every 
 // errPrivateProjectNotProvisioned is a switch to private of a project the deployment does not name
 // among those it has provisioned as private: 409 PRIVATE_PROJECT_NOT_PROVISIONED, wrapped after the
 // project's key.
-var errPrivateProjectNotProvisioned = errors.New("is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (agent-infra's legion.PrivateProjects)")
+var errPrivateProjectNotProvisioned = errors.New("is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (the infrastructure repository's privateprojects.Projects())")
 
 // errPrivateProjectsIncomplete is a switch to private while the store cannot hold the project
 // private yet: 409 PRIVATE_PROJECTS_INCOMPLETE, naming why and the command that repairs it.

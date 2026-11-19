@@ -276,9 +276,11 @@ mask() {
 }
 
 # keep_answer NAME BUILD [EXTRA] keeps the last answer, masked as BUILD's (mask), as
-# $work/answers/NAME.status and NAME.body, for same_answers.
+# $work/answers/NAME.status and NAME.body, for same_answers, and the body as it was sent as
+# NAME.raw.
 keep_answer() {
   printf '%s' "$status" >"$work/answers/$1.status"
+  cp "$work/body" "$work/answers/$1.raw"
   mask "$2" "$work/body" "${3:-}" >"$work/answers/$1.body"
 }
 
@@ -301,8 +303,11 @@ first_difference() {
 compared=0
 differed=0
 # same_answers WHAT LEFT RIGHT: the answers kept as LEFT and RIGHT (keep_answer) are the same
-# status and the same bytes. A pair that differs is written to $work/differences under WHAT, with
-# both answers around the first byte that differs; no_difference reads that file.
+# status and the same bytes. Bytes the two requests were sent alike are the same answer before any
+# mask: a caller cannot tell them apart, and a mask could only part them (a refusal that names the
+# caller's own list, which a fill also names). Other bytes are compared masked, each with its own
+# fill. A pair that differs is written to $work/differences under WHAT, with both answers around
+# the first byte that differs; no_difference reads that file.
 same_answers() {
   local what=$1 left=$work/answers/$2 right=$work/answers/$3 at
   compared=$((compared + 1))
@@ -311,6 +316,8 @@ same_answers() {
     differed=$((differed + 1))
     printf '%s: %s answered HTTP %s, %s HTTP %s\n   %s: %s\n   %s: %s\n' "$what" "$2" "$(<"$left.status")" \
       "$3" "$(<"$right.status")" "$2" "$(head -c 400 "$left.body")" "$3" "$(head -c 400 "$right.body")" >>"$work/differences"
+  elif cmp -s "$left.raw" "$right.raw"; then
+    :
   elif at=$(first_difference "$left.body" "$right.body"); then
     differed=$((differed + 1))
     printf '%s (HTTP %s): the answers differ at byte %s\n   %s: %s\n   %s: %s\n' "$what" "$(<"$right.status")" "$at" \

@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -35,7 +36,9 @@ type KindBackfill struct {
 	// Rows is how many projection rows it gave a node, Nodes and Tuples how many of each it
 	// wrote, and Skipped how many rows it could not do and left as they were.
 	Rows, Nodes, Tuples, Skipped int64
-	// Owed is how many documents it marked owed a block index, for the block kind alone.
+	// Owed is how many documents it marked owed this release's block index (store_owed_at),
+	// for the block kind alone: those whose rows it named the nodes of, and those another
+	// release indexed after the store last stated them (markStaleDocuments).
 	Owed int64
 	// Complete is whether every row of the kind the store can hold now names its node, which
 	// is when the arm of graph_edges over that kind's table answers nothing: each of the four
@@ -71,12 +74,29 @@ type BackfillReport struct {
 // it replaces dates and sequences it.
 //
 // A block's parent is the one fact it does not write. The parent is the nesting of the
-// rendered version, which no column of document_blocks holds, so the run marks the document
-// owed a block index instead - document_block_versions.version to null, as refs.RebuildAll
-// marks it - and the reconciliation states the part_of tuple and writes parent_block_id, which
-// is the one writer of that column. The mark is written by the batch that names the document's
-// block nodes, in its transaction, so a run stopped anywhere leaves every document whose batch
-// committed owed, and a second run, which reads no row a batch marked, need not find them again.
+// rendered version, which no column of document_blocks holds, and the version's stored markdown
+// cannot give it either, since a paragraph's id is no part of that text (sizing's
+// replayParents): only the server renders the document whose blocks the ids name. So the run
+// marks the document instead, and the reconciliation's index pass states every block's node,
+// part_of tuple and parent_block_id, which is the one writer of that column, and clears the mark
+// (refs.IndexBlocks). The mark is this release's own, document_block_versions.store_owed_at
+// (migration 20261116221539), and not the null version the release before this one reads too: a
+// pod of that release, during a roll or after a rollback, would drain a null version as a debt of
+// its own, write the rows and state no part_of, and the document would be owed nothing again. The
+// mark is written by the batch that names the document's block nodes, in its transaction, so a
+// run stopped anywhere leaves every document whose batch committed marked, and a second run,
+// which reads no row a batch marked, need not find them again.
+//
+// A row the release before this one deleted - the row of a block its version dropped, or of a
+// link a block no longer holds - is nothing the run reads: no row of it is left to read, and a
+// node stated gone because its row is missing would be a repair. That release deleted it while it
+// indexed a version after the store had stated the document, so the version the store last stated
+// the document's blocks at (store_version, which only this release's index pass writes) is below
+// the version the document's rows stand at. The run marks each such document too
+// (markStaleDocuments), by those two versions and by no row of either side, and the
+// reconciliation's index pass over the latest version then states each such block gone and
+// retracts each such link, from the version's render (refs.IndexBlocks). No release deletes a
+// comment's row (writeCommentBatch).
 //
 // Each pass walks only the rows its marker does not mark, which for the three projected tables is
 // the node column pair the view's old arms test (migration 20261109215947), names their nodes on
@@ -85,6 +105,13 @@ type BackfillReport struct {
 // rollback, when pods of the release before this one wrote rows with no node - and each run does
 // only the rows still owed: a second run over tables every row of which is marked writes no node,
 // no tuple and no marker (TestASecondBackfillWritesNothingOverMarkedRows).
+//
+// Every node it writes through graphstore.Write restates its node (graphstore.Node's Restates):
+// the run owns a row's facts, not the state or the visibility of the node that row names, so a
+// node another write made and then marked - a later release's proposed requirement, or a node it
+// reserved for its author - keeps what that write gave it, and one stored gone comes back live,
+// as the writer whose row it is would bring it back. The roles and the sessions go through
+// graphstore.WriteArms, whose upsert moves nothing on a node already there.
 //
 // It is no repair. Its input is each row's own content: it never reads one side of a
 // projection to write the other, so a row whose node is already written is left alone and a
@@ -114,11 +141,15 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 		report.Kinds = append(report.Kinds, done)
 		writeKindBackfill(out, done)
 	}
-	// The project of every node (dispatch://INFRA-3862): the node of each issue, document, ask
-	// and message written before its kind's writer wrote one, and the project of each comment
-	// and block node written before a node named its project. Both run after the passes above,
-	// so a comment or a block those passes wrote a node for takes its project from them, and the
-	// fill finds nothing of it to do.
+	// The project of every node, which a read limited to a project depends on: the node of each
+	// issue, document, ask and message written before its kind's writer wrote one, and the
+	// project of each comment and block node written before a node named its project. Both run
+	// after the passes above, so a comment or a block those passes wrote a node for takes its
+	// project from them, and the fill finds nothing of it to do. A row the object pass leaves
+	// because the store holds its node in another project (graphstore.ErrProjectMoved), which no
+	// second run cures, holds back neither the rest of that pass nor the fill: the run answers it
+	// after both.
+	var moved error
 	for _, write := range []func(context.Context, *store.Store) ([]KindBackfill, error){
 		backfillObjectNodes, backfillScopes,
 	} {
@@ -127,11 +158,32 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 		for _, kind := range done {
 			writeKindBackfill(out, kind)
 		}
-		if err != nil {
-			return report, err
+		switch {
+		case onlyProjectMoved(err):
+			moved = err
+		case err != nil:
+			return report, errors.Join(moved, err)
 		}
 	}
-	return report, nil
+	return report, moved
+}
+
+// onlyProjectMoved is whether err holds failures and every one is graphstore.ErrProjectMoved:
+// the rows backfillObjectNodes leaves while writing every other one.
+func onlyProjectMoved(err error) bool {
+	if err == nil {
+		return false
+	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return errors.Is(err, graphstore.ErrProjectMoved)
+	}
+	for _, one := range joined.Unwrap() {
+		if !errors.Is(one, graphstore.ErrProjectMoved) {
+			return false
+		}
+	}
+	return true
 }
 
 func writeKindBackfill(out io.Writer, done KindBackfill) {
@@ -153,11 +205,13 @@ type blockRow struct {
 }
 
 // backfillBlocks writes a node and an in_document tuple for every block row that names none,
-// and marks each document it touched owed a block index (writeBlockBatch). A block whose address
-// is past refs.MaxBlockNodeBytes is no node of the store by design, so it is neither written nor
-// counted as skipped: the writers leave it unprojected too. A row a version write deleted after
-// its batch was read is not written either (writeBlockBatch), and is counted nowhere: it is no
-// row of the database any more.
+// and marks each document it touched owed this release's index pass (writeBlockBatch). It then
+// marks each document another release indexed after the store last stated it
+// (markStaleDocuments), whose rows no longer name every block and link the store holds. A block
+// whose address is past refs.MaxBlockNodeBytes is no node of the store by design, so it is neither
+// written nor counted as skipped: the writers leave it unprojected too. A row a version write
+// deleted after its batch was read is not written either (writeBlockBatch), and is counted
+// nowhere: it is no row of the database any more.
 func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
 	// The documents the run marked, each once however many of its batches marked it.
@@ -172,7 +226,15 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 			break
 		}
 		after = rows[len(rows)-1].address
-		written, tuples, err := writeBlockBatch(ctx, database, rows)
+		writable := make([]blockRow, 0, len(rows))
+		for _, row := range rows {
+			if _, parties := graphstore.SessionScope(row.project, row.session); partiesRefused(parties) {
+				done.Skipped++
+				continue
+			}
+			writable = append(writable, row)
+		}
+		written, tuples, err := writeBlockBatch(ctx, database, writable)
 		if err != nil {
 			return done, err
 		}
@@ -185,6 +247,13 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 		if len(rows) < backfillBatch {
 			break
 		}
+	}
+	stale, err := markStaleDocuments(ctx, database)
+	if err != nil {
+		return done, err
+	}
+	for _, document := range stale {
+		documents[document] = struct{}{}
 	}
 	done.Owed = int64(len(documents))
 	if err := database.Pool.QueryRow(ctx, `
@@ -270,13 +339,18 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // node already, and only the rows left are written: a node written for a deleted row would bring
 // the block back as a live node with an in_document tuple and no projection row.
 //
-// The same transaction marks each document it wrote a block of owed a block index, which is how
-// the block's parent is reached (Backfill). The mark commits with the rows that name their nodes:
-// marked after the whole pass instead, a run stopped by an error in a later batch, or killed,
-// would leave the documents of its committed batches unmarked, and a second run reads no row a
-// committed batch named, so nothing would mark them again. Their document_block_versions rows
-// are the ones lockBlockDocuments already holds, so the mark takes no lock out of the store's
-// order.
+// The same transaction marks each document it wrote a block of, which is how the block's parent
+// is reached (Backfill): store_owed_at, the column migration 20261116221539 adds, which only this
+// release reads and which its index pass clears once it has stated every block of the document
+// (refs' standsAtVersion). The null version the release before this one reads too is left alone,
+// since that release would drain it, write the rows and state nothing. The mark is an update of a
+// row the document already holds: every pass that writes a document's block rows writes that row
+// first, in either release, and it goes only with the artifact, whose delete takes the block rows
+// with it. The mark commits with the rows that name their nodes: marked after the whole pass
+// instead, a run stopped by an error in a later batch, or killed, would leave the documents of its
+// committed batches unmarked, and a second run reads no row a committed batch named, so nothing
+// would mark them again. Their document_block_versions rows are the ones lockBlockDocuments
+// already holds, so the mark takes no lock out of the store's order.
 //
 // The count is this batch's own tuples and the two base attributes graphstore.Write states
 // for each node its insert makes, which this batch does not state itself: every node here is
@@ -307,15 +381,13 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	blockIDs := make([]string, 0, len(held))
 	artifacts := make([]string, 0, len(held))
 	for _, row := range held {
-		var parties []string
-		if row.project == "" && row.session != "" {
-			parties = []string{graphstore.PartySession(row.session)}
-		}
+		project, parties := graphstore.SessionScope(row.project, row.session)
 		nodes = append(nodes, graphstore.Node{
 			Kind: refs.BlockNodeKind, ID: row.address, Supertag: refs.BlockSupertag,
 			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
-			Project: row.project, Parties: parties,
+			Project: project, Parties: parties,
 			MadeAt: row.createdAt, MadeBy: backfillActor, SourceEvent: row.event,
+			Restates: true,
 		})
 		tuples = append(tuples, graphstore.Tuple{
 			FromKind: refs.BlockNodeKind, FromID: row.address, Kind: refs.TupleInDocument,
@@ -341,16 +413,96 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	owed := slices.Clone(artifacts)
 	slices.Sort(owed)
 	if _, err := tx.Exec(ctx, `
-		insert into document_block_versions (artifact_id)
-		select id::uuid from unnest($1::text[]) as document (id)
-		on conflict (artifact_id) do update set version = null
+		update document_block_versions set store_owed_at = now()
+		where artifact_id = any($1::uuid[])
 	`, slices.Compact(owed)); err != nil {
-		return nil, 0, fmt.Errorf("mark the documents of a block batch owed a block index: %w", err)
+		return nil, 0, fmt.Errorf("mark the documents of a block batch owed this release's block index: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, 0, fmt.Errorf("commit a block batch: %w", err)
 	}
 	return held, int64(len(tuples)) + statedOf(nodes), nil
+}
+
+// markStaleDocuments marks, a batch at a time, every document another release indexed after this
+// release's store last stated its blocks and that holds no mark yet, and answers the documents it
+// marked. The release before this one, indexing a version of a document the store has stated,
+// deletes the rows of the blocks and the links that version drops and states no node gone and
+// retracts no tuple; it leaves store_version, which only this release's index pass writes, below
+// the version it wrote (migration 20261116221539). That is the whole of what this reads: the two
+// versions the document's row records, and no row of either side of a projection, so no document
+// is chosen by reading its blocks against its tuples. The reconciliation's index pass over the
+// marked document's latest version then states each such block gone and retracts each such link,
+// as its render decides (refs.IndexBlocks).
+//
+// A document the store has never stated (store_version null) is no document of this pass: the
+// store holds nothing of it for a deletion to strand, and its rows name no node, which the block
+// pass reaches. A document whose version is null is owed an index already, and the pass that
+// indexes it finds the store stale by the same two versions. A second run finds nothing a first
+// one marked, and nothing once the reconciliation has indexed the documents it marked, since that
+// pass sets store_version to the version it indexed.
+func markStaleDocuments(ctx context.Context, database *store.Store) ([]string, error) {
+	var marked []string
+	after := "00000000-0000-0000-0000-000000000000"
+	for {
+		rows, err := database.Pool.Query(ctx, `
+			select artifact_id::text from document_block_versions
+			where store_version < version and store_owed_at is null and artifact_id > $1::uuid
+			order by artifact_id
+			limit $2
+		`, after, backfillBatch)
+		if err != nil {
+			return marked, fmt.Errorf("read the documents another release indexed after the store: %w", err)
+		}
+		batch, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return marked, fmt.Errorf("read the documents another release indexed after the store: %w", err)
+		}
+		if len(batch) == 0 {
+			return marked, nil
+		}
+		after = batch[len(batch)-1]
+		written, err := markStaleBatch(ctx, database, batch)
+		if err != nil {
+			return marked, err
+		}
+		marked = append(marked, written...)
+		if len(batch) < backfillBatch {
+			return marked, nil
+		}
+	}
+}
+
+// markStaleBatch marks the documents of one batch in one transaction, under the locks a version
+// write holds while it writes a document's blocks (lockBlockDocuments), and only those whose two
+// versions still say so under them: an index pass of this release that reached a document in
+// between has stated its blocks at the version it indexed, and owes it nothing. It answers the
+// documents it marked.
+func markStaleBatch(ctx context.Context, database *store.Store, batch []string) ([]string, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin the batch of documents another release indexed: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockBlockDocuments(ctx, tx, batch); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `
+		update document_block_versions set store_owed_at = now()
+		where artifact_id = any($1::uuid[]) and store_version < version and store_owed_at is null
+		returning artifact_id::text
+	`, batch)
+	if err != nil {
+		return nil, fmt.Errorf("mark the documents another release indexed after the store: %w", err)
+	}
+	marked, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("mark the documents another release indexed after the store: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit the batch of documents another release indexed: %w", err)
+	}
+	return marked, nil
 }
 
 // lockBlockDocuments takes the rows the fence's writers hold while they write a document's blocks
@@ -729,13 +881,23 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 			break
 		}
 		after = batch[len(batch)-1].id
-		nodes, tuples, err := writeCommentBatch(ctx, database, batch)
-		if err != nil {
-			return done, err
+		writable := make([]commentRow, 0, len(batch))
+		for _, row := range batch {
+			if partiesRefused(row.parties) {
+				done.Skipped++
+				continue
+			}
+			writable = append(writable, row)
 		}
-		done.Rows += int64(len(batch))
-		done.Nodes += nodes
-		done.Tuples += tuples
+		if len(writable) > 0 {
+			rows, nodes, tuples, err := writeCommentBatch(ctx, database, writable)
+			if err != nil {
+				return done, err
+			}
+			done.Rows += rows
+			done.Nodes += nodes
+			done.Tuples += tuples
+		}
 		if len(batch) < backfillBatch {
 			break
 		}
@@ -792,9 +954,7 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 		if err := json.Unmarshal(author, &row.author); err != nil {
 			return nil, fmt.Errorf("read the author of comment %s: %w", row.id, err)
 		}
-		if row.project == "" && session != "" {
-			row.parties = []string{graphstore.PartySession(session)}
-		}
+		row.project, row.parties = graphstore.SessionScope(row.project, session)
 		batch = append(batch, row)
 	}
 	return batch, rows.Err()
@@ -816,17 +976,23 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 // batch that names them, the comment's authored_by tuple and the aliases the server proved.
 // Write makes an author's node as Authored's arms make it and moves nothing on one that is
 // already there, since every writer of a person or a session node writes it as AuthorFacts does:
-// project-visible, live and carrying no attribute.
+// project-visible, live and carrying no attribute. The batch restates that node too, so a state
+// or a visibility another write gave it stays.
 //
-// The rows the batch read are still the rows it writes, so it reads none of them again: no route
-// deletes a comment or changes its owner, its author, its time or the artifact its anchor names,
-// and the erase deletes only a row that names its node, which no row of this batch does.
-func writeCommentBatch(ctx context.Context, database *store.Store, batch []commentRow) (int64, int64, error) {
+// The batch is read before this transaction. Another run can mark a row and the erase can then
+// remove it before this run writes. heldCommentRows takes the owners in store order and keeps
+// only rows that still exist and remain unmarked, so a cached batch cannot restore erased nodes.
+// It answers how many rows it gave a node, how many nodes it wrote and how many tuples it stated.
+func writeCommentBatch(ctx context.Context, database *store.Store, batch []commentRow) (int64, int64, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("begin the comment batch: %w", err)
+		return 0, 0, 0, fmt.Errorf("begin the comment batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	batch, err = heldCommentRows(ctx, tx, batch)
+	if err != nil {
+		return 0, 0, 0, err
+	}
 	nodes := make([]graphstore.Node, 0, 2*len(batch))
 	var tuples []graphstore.Tuple
 	ids := make([]string, 0, len(batch))
@@ -846,6 +1012,9 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 			for _, author := range authors {
 				if _, made := written[[2]string{author.Kind, author.ID}]; !made {
 					written[[2]string{author.Kind, author.ID}] = struct{}{}
+					// The author's node is the person's or the session's, whose state and
+					// visibility no comment of theirs owns.
+					author.Restates = true
 					nodes = append(nodes, author)
 				}
 			}
@@ -855,7 +1024,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		addresses = append(addresses, row.id)
 	}
 	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-		return 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
+		return 0, 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		update comments c
@@ -863,10 +1032,10 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		from unnest($1::text[], $2::text[]) as p (id, address)
 		where c.id = p.id::uuid
 	`, ids, addresses, graphstore.KindComment); err != nil {
-		return 0, 0, fmt.Errorf("name the nodes of a comment batch on their rows: %w", err)
+		return 0, 0, 0, fmt.Errorf("name the nodes of a comment batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, fmt.Errorf("commit a comment batch: %w", err)
+		return 0, 0, 0, fmt.Errorf("commit a comment batch: %w", err)
 	}
 	// Each comment's node states its visibility and its state, and its project or its parties
 	// where it belongs to one.
@@ -876,7 +1045,54 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 			stated++
 		}
 	}
-	return int64(len(nodes)), int64(len(tuples)) + stated, nil
+	return int64(len(batch)), int64(len(nodes)), int64(len(tuples)) + stated, nil
+}
+
+// heldCommentRows rechecks a cached batch's marker under the owner rows the erase takes first.
+// Comments keep their owners, so those locks order the recheck and write against every erase. It
+// answers the rows that still stand unmarked in a slice of its own and leaves batch as it is.
+func heldCommentRows(ctx context.Context, tx pgx.Tx, batch []commentRow) ([]commentRow, error) {
+	ids := make([]string, len(batch))
+	for index, row := range batch {
+		ids[index] = row.id
+	}
+	rows, err := tx.Query(ctx, `
+		select coalesce(c.issue_key, a.issue_key, ''), coalesce(c.artifact_id::text, ''), c.id::text
+		from comments c left join artifacts a on a.id = c.artifact_id
+		where c.id = any($1::text[]::uuid[]) and c.node_kind is null
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the owners of a comment batch: %w", err)
+	}
+	owners := events.OwnerRows{}
+	var issue, document, id string
+	if _, err := pgx.ForEachRow(rows, []any{&issue, &document, &id}, func() error {
+		owners.Add(issue, document, "comment "+id)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the owners of a comment batch: %w", err)
+	}
+	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
+		return nil, err
+	}
+	rows, err = tx.Query(ctx, `select id::text from comments where id = any($1::text[]::uuid[]) and node_kind is null`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the unmarked rows of a comment batch: %w", err)
+	}
+	standing := make(map[string]bool, len(batch))
+	if _, err := pgx.ForEachRow(rows, []any{&id}, func() error {
+		standing[id] = true
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the unmarked rows of a comment batch: %w", err)
+	}
+	held := make([]commentRow, 0, len(batch))
+	for _, row := range batch {
+		if standing[row.id] {
+			held = append(held, row)
+		}
+	}
+	return held, nil
 }
 
 // roleRow is one role the store census holds to a node (addressedRoles) whose node or page the
@@ -1021,8 +1237,9 @@ type sessionRow struct {
 // It walks only the sessions that carry no node, and a node another write made meanwhile is
 // written `do nothing` (graphstore.WriteArms), so a second run, and a run beside a live server,
 // writes nothing for a session the store already holds. The writer is the run (backfillActor);
-// the cause is the first ask.follower_added event that named the session, or the sentinel for a
-// session only a row names, and the time is that event's, or the earliest row's that names it.
+// the cause is the first event that named the session - an ask.follower_added, a comment.delivery
+// receipt, or the event that stored a comment the erase took - or the sentinel for a session only
+// a row names, and the time is that event's, or the earliest row's that names it.
 //
 // No arm of graph_edges answers a session, so its Complete switches nothing off: it reads whether
 // every session the census names holds its node.

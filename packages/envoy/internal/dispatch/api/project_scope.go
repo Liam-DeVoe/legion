@@ -22,6 +22,11 @@ package api
 // on one nobody holds, and holds the two to one answer; undecidableWrites refuses to mount a
 // project's write that walk has no probe for.
 //
+// A read-only token, which carries `project_scope` `none` and the scope `read` alone and names a
+// service and no person, never reaches these checks: the read-only gate register puts outside
+// them answers that token 403 READ_ONLY_TOKEN on every route the read list does not name, every
+// write among them (refuseReadOnlyToken, readScopeRoutes).
+//
 // A target outside a credential's list is the handler's missing object, so no refusal names the
 // project an object it cannot see belongs to. The two writes that take their project from the body
 // rather than the path, the issue create and the going request (scopeProjectInBody), refuse a
@@ -62,7 +67,8 @@ const (
 // without resolving anything: a browser cookie, a personal agent token, a Kubernetes
 // service-account token and the shared token each prove no session, so a request presenting no
 // DPoP-bound token is outside the session check. A credential that does not resolve is outside it
-// too: its own refusal is the handler's to write.
+// too: its refusal is written further in, by the keyed layer for a keyed write and by the handler
+// for any other.
 func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
 	if _, presented := brokertoken.Presented(r); !presented {
 		return model.Actor{}, false
@@ -291,6 +297,11 @@ func addressesOneSession(route apiRoute) bool {
 // session that accepted a delivery or answered an ask under it would write as nobody. The
 // refusal's message names `agent-secrets login`, the command that signs a person in on that
 // machine, since running it is the whole remedy.
+//
+// A read-only token names a service and no person too, but it is no such caller: it reads only
+// what the read list names, and signing a person in is no remedy for it. It never reaches this
+// check, since the read-only gate register puts outside it has already answered it 403
+// READ_ONLY_TOKEN (refuseReadOnlyToken).
 //
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at

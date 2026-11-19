@@ -31,7 +31,7 @@ func TestTheVisibilityArgumentCarriesTheViewer(t *testing.T) {
 		{
 			name:   "a reader with no viewer",
 			reader: model.Actor{Kind: "user", ID: "alice"},
-			want:   `{"author":{"kind":"user","id":"alice","owner":null,"service":null},"sees":[],"open":false,"all":false,"private":true}`,
+			want:   `{"author":{"kind":"person","id":"alice"},"sees":[],"open":false,"all":false,"private":true}`,
 		},
 		{
 			name:   "the shared bearer with no viewer",
@@ -43,7 +43,7 @@ func TestTheVisibilityArgumentCarriesTheViewer(t *testing.T) {
 			reader: model.Actor{Kind: "user", ID: "bob@outside.example", Viewer: &model.Viewer{
 				Person: "bob@outside.example", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true,
 			}},
-			want: `{"author":{"kind":"user","id":"bob@outside.example","owner":null,"service":null},"person":"bob@outside.example",` +
+			want: `{"author":{"kind":"person","id":"bob@outside.example"},"person":"bob@outside.example",` +
 				`"sees":["PRIV"],"open":false,"all":false,"private":true}`,
 		},
 		{
@@ -51,7 +51,7 @@ func TestTheVisibilityArgumentCarriesTheViewer(t *testing.T) {
 			reader: model.Actor{Kind: "session", Owner: &carol, Viewer: &model.Viewer{
 				Person: carol, Sees: []string{"PRIV"}, AnyPrivate: true, Lists: []string{"PRIV"},
 			}},
-			want: `{"author":{"kind":"session","id":"","owner":"carol@example.com","service":null},"person":"carol@example.com",` +
+			want: `{"author":{"kind":"person","id":"carol@example.com"},"person":"carol@example.com",` +
 				`"sees":["PRIV"],"open":false,"all":false,"private":true,"lists":["PRIV"]}`,
 		},
 		{
@@ -59,7 +59,7 @@ func TestTheVisibilityArgumentCarriesTheViewer(t *testing.T) {
 			reader: model.Actor{Kind: "session", ID: "ses_1", Viewer: &model.Viewer{
 				Session: "ses_1", Open: true,
 			}},
-			want: `{"author":{"kind":"session","id":"ses_1","owner":null,"service":null},"session":"ses_1",` +
+			want: `{"author":null,"session":"ses_1",` +
 				`"sees":[],"open":true,"all":false,"private":false}`,
 		},
 		{

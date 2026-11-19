@@ -306,15 +306,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The whole credential, through model.Actor.SameCredential and never SameAs alone, which
-	// would make any two personal tokens one writer: a run is read by the credential that
-	// asked it. A run whose author names nobody is read by nobody, and that is a test of its
-	// own - graphstore.ProvesAuthor again, asked here of the author the row holds - because
-	// SameCredential calls two credentials that name nobody the one credential: without it,
-	// such a row would be served to every holder of the deployment's shared token, which
-	// resolves as {} exactly as that author does. The POST refuses such an asker before
-	// anything is recorded, so no row this route writes carries one.
-	if !graphstore.ProvesAuthor(request.Author) || !request.Author.SameCredential(actor) {
+	if !goingRunIsTheCallers(request.Author, actor) {
 		writeGoingRequestNotFound(w)
 		return
 	}
@@ -418,6 +410,22 @@ func writeGoingFrame(w http.ResponseWriter, frame goingEvent) error {
 // every run a caller may not read is answered with it.
 func writeGoingRequestNotFound(w http.ResponseWriter) {
 	writeError(w, codeGoingRequestNotFound, http.StatusNotFound, "no answer run of that id is yours to read")
+}
+
+// goingRunIsTheCallers reports whether caller may read the run whose recorded author is author:
+// the test of a run's owner the stream applies. It is the whole credential, through
+// model.Actor.SameCredential and never SameAs alone, which would make any two personal tokens one
+// writer: a run is read by the credential that asked it. A run whose author names nobody is
+// nobody's, and that is a test of its own - graphstore.NamesCredential, asked here of the author
+// the row holds - because SameCredential calls two credentials that name nobody the one
+// credential: without it, such a row would be served to every holder of the deployment's shared
+// token, which resolves as {} exactly as that author does. The POST refuses such an asker before
+// anything is recorded, so no row the POST writes carries one. It asks the row no question of
+// the author rule (graphstore.ProvesAuthor): a row recorded before model.Actor's Proven existed,
+// by a broker session that names no owner and no workload, names that session, which the rule
+// now counts as nobody, and the session that asked it still presents the same credential.
+func goingRunIsTheCallers(author, caller model.Actor) bool {
+	return graphstore.NamesCredential(author) && author.SameCredential(caller)
 }
 
 // getGoingCapability answers whether this deployment has a model configured, and nothing else:

@@ -76,9 +76,10 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	}
 	// Above deferBlockIndexBlocks the write indexes this version's references alone: migration
 	// 0122's trigger marked the document owed a block index (document_block_versions.version
-	// null) when the version's row was inserted, and nothing here settles that mark, so the
-	// block-index reconciliation (RunBlockIndexReconciliation) indexes the blocks and the
-	// mentions they hold out of the request.
+	// null) when the version's row was inserted, indexDocument adds this build's own mark
+	// (oweDocumentIndex), and nothing here settles either, so the block-index reconciliation
+	// (RunBlockIndexReconciliation) indexes the blocks and the mentions they hold out of the
+	// request.
 	if blocks := len(rendered.offsets); rendered.tree != nil && blocks > deferBlockIndexBlocks {
 		slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
 			"artifact", artifactID, "version", version, "blocks", blocks, "bound", deferBlockIndexBlocks)
@@ -95,8 +96,18 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 // or one whose blocks the write deferred (deferBlockIndexBlocks) - is indexUnrenderedVersion,
 // which indexes no blocks: migration 0122's trigger left the document owed when the version's row
 // was inserted, for the block-index reconciliation, which reads the document itself.
+//
+// That trigger's mark is the null version, which the release before this one reads and drains
+// too, so during a roll a pod of that release can index this version first and write its rows
+// naming no node. Such a version therefore takes this build's own mark as well, in this same
+// transaction (oweDocumentIndex), which that release neither reads nor clears: this build's
+// reconciliation then indexes the version after it, names every row's node and states what each
+// projects (refs.IndexBlocks).
 func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if rendered.tree == nil {
+		if err := oweDocumentIndex(ctx, tx, artifactID); err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
 		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
 		return changes, graphstore.Uncaused{}, err
 	}

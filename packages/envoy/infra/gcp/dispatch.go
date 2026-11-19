@@ -104,7 +104,7 @@ const (
 // counted pools and its permanent listeners. The listener's and the front door's pods open none.
 // TestDispatchConnectionsPerPodIsTheServers fails when a counted pool's size changes and this
 // does not.
-const dispatchConnectionsPerPod = 112
+const dispatchConnectionsPerPod = 113
 
 // Autopilot's bounds for the app pod's total request, the general-purpose compute class's for a pod
 // with pod anti-affinity, which every Dispatch pod carries, or with the safe-to-evict annotation,
@@ -240,7 +240,7 @@ type DispatchArgs struct {
 	// one. Unset renders nothing.
 	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
 	// PrivateProjects are the keys of the projects whose private namespace, stores and grants the
-	// deployment has provisioned (agent-infra passes legion.PrivateProjects); only these can be
+	// deployment has provisioned (the infrastructure repository passes privateprojects.Projects()); only these can be
 	// made private. It renders DISPATCH_PRIVATE_PROJECTS, sorted and each key once; empty or unset
 	// renders nothing. A key that is not a project key is an input error naming it.
 	PrivateProjects []string `pulumi:"privateProjects,optional"`
@@ -313,6 +313,13 @@ type DispatchArgs struct {
 	// the largest. Unset renders nothing and both binaries set no limit, so a deployed stream keeps
 	// the one it has (bus.ParseStreamMaxBytes).
 	StreamMaxBytes *int `pulumi:"streamMaxBytes,optional"`
+	// SenderMessagesPerMinute and SenderMessageBurst limit the messages each agent session sends
+	// through the listener: ENVOY_SENDER_MESSAGES_PER_MINUTE, from 1 to 60000, and
+	// ENVOY_SENDER_MESSAGE_BURST, at least 1 and only with a rate, on the listener's container
+	// alone, since the app reads neither. Each of the listenerReplicas pods keeps its own count.
+	// Unset renders nothing: no limit, and a rate with no burst takes the rate as its burst.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
 
 	// SigningKeyGenerations is the ordered key set the server holds, the shape
 	// auth.ParseSigningKeys reads DISPATCH_SIGNING_KEY into: the first entry signs every new
@@ -563,12 +570,13 @@ type Dispatch struct {
 // dispatchSettings are the plain inputs, validated, with the defaults applied, so they are known at
 // preview. images.tools is frontDoorToolsImage. With clusterOnly set only hostname, region and
 // deletionProtection are resolved: no other field is read by the cluster the mode builds.
-// natsReplicas and streamMaxBytes are 0 when their inputs are unset, where the component renders
-// neither setting, and signingKeyGenerations is the generations the component registers a signing
-// key for, in the order the server holds them, [0] when its input is unset. frontDoor and
-// signInOn are the two groups of inputs a consumer sets together or not at all: frontDoor is set
-// when any tailnet input is, where the component builds the front door and Dispatch is reached at
-// its tailnet name, and signInOn when any sign-in input is, where the app runs browser sign-in.
+// natsReplicas, streamMaxBytes, senderMessagesPerMinute and senderMessageBurst are 0 when their
+// inputs are unset, where the component renders none of those settings, and signingKeyGenerations
+// is the generations the component registers a signing key for, in the order the server holds
+// them, [0] when its input is unset. frontDoor and signInOn are the two groups of inputs a
+// consumer sets together or not at all: frontDoor is set when any tailnet input is, where the
+// component builds the front door and Dispatch is reached at its tailnet name, and signInOn when
+// any sign-in input is, where the app runs browser sign-in.
 // With neither the component is the sandbox: Dispatch is reached in the cluster alone, by readers
 // the app's NetworkPolicy admits, and tailnetDNSName, tags, the tailscale and tools images,
 // outsideOrigin, signIn and signInOutside are empty, since nothing reads them. signInOutside is
@@ -601,6 +609,7 @@ type dispatchSettings struct {
 	frontDoorReplicas, listenerReplicas         int
 	natsInCluster                               bool
 	natsReplicas, streamMaxBytes                int
+	senderMessagesPerMinute, senderMessageBurst int
 	signingKeyGenerations                       []int
 	appResources                                dispatchAppResources
 	pprofPort                                   int
@@ -925,6 +934,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"natsInCluster", args.NatsInCluster != nil},
 		{"natsReplicas", args.NatsReplicas != nil},
 		{"streamMaxBytes", args.StreamMaxBytes != nil},
+		{"senderMessagesPerMinute", args.SenderMessagesPerMinute != nil},
+		{"senderMessageBurst", args.SenderMessageBurst != nil},
 		{"signingKeyGenerations", len(args.SigningKeyGenerations) > 0},
 		{"appCpu", args.AppCpu != nil},
 		{"appMemory", args.AppMemory != nil},
@@ -1120,12 +1131,18 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, err
 	return origin.String(), nil
 }
 
-// refuseDispatchHostname refuses a hostname that is not hostnameRule's shape. Both resolvers run
-// it, so a cluster-only component holds its hostname, which names every cloud resource, to the
-// rule the full resolver holds it to, with the same refusal.
+// refuseDispatchHostname refuses a hostname that is not hostnameRule's shape, and one
+// weborigin.ReservedLabel refuses, since the front door puts <hostname>.<tailnetDnsName> on its
+// certificate (dispatch_frontdoor.go, its certificate field). Both resolvers run it, in every mode:
+// a stack in the cluster-only mode or the sandbox, which builds no front door, keeps a hostname a
+// front door can later serve, and its hostname, which names every cloud resource, is held to the
+// rule the full resolver holds it to, with the same refusals.
 func refuseDispatchHostname(hostname string) error {
 	if !hostnameRule.MatchString(hostname) {
 		return fmt.Errorf("hostname %q must match %s", hostname, hostnameRule)
+	}
+	if err := weborigin.ReservedLabel(hostname); err != nil {
+		return fmt.Errorf("hostname: %w", err)
 	}
 	return nil
 }
@@ -1385,6 +1402,12 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, core.InputErrorf("streamMaxBytes", "streamMaxBytes %d is below 1; leave it unset for no limit", limit)
 		}
 		s.streamMaxBytes = *args.StreamMaxBytes
+	}
+	// The listener's sender limit, which the app does not read. It is checked here, before anything
+	// registers: dispatchListenerEnv runs only once natsUrl resolves, and reports every refusal of
+	// core's as natsUrl's.
+	if s.senderMessagesPerMinute, s.senderMessageBurst, err = core.CheckSenderLimit("", args.SenderMessagesPerMinute, args.SenderMessageBurst); err != nil {
+		return dispatchSettings{}, err
 	}
 	if s.signingKeyGenerations, err = newDispatchSigningKeyGenerations(args); err != nil {
 		return dispatchSettings{}, err

@@ -11,13 +11,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestACommentOwnedByALongRefKeyLeavesOutItsTuple is dispatch://INFRA-1149's R2 at the bound for a
+// TestACommentOwnedByALongRefKeyLeavesOutItsTuple is this change's R2 at the bound for a
 // comment's relations. An artifact's ref_key is bounded only by its own key's index, at
 // maxNewArtifactKeyBytes (2,692), which is wider than a tuple key holds beside the comment's own
 // address: a comment owned by such a document would key a graph_tuples entry past the roughly 2,704
 // bytes a btree entry holds. commentStored now leaves such a comment whole out of the store - no
 // node, no tuples, its row's node columns null - so the write goes on and the old comments arm of
 // graph_edges answers its owned_by edge, rather than the tuple arm answering it short that edge.
+// The write leaves no node and no tuple end past the bound anywhere in the store either.
 func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 	ctx := context.Background()
 	_, database, _ := newTestServer(t, testServerOptions{})
@@ -73,6 +74,7 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
+	requireNoAddressPastTheBound(t, database)
 
 	// The comment has no node, and its row names none, so the old comments arm of graph_edges
 	// answers its owned_by edge once rather than the tuple arm answering it short the edge.
@@ -90,7 +92,7 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 	requireGraphEdge(t, database, graphstore.KindComment, commentID, graphstore.TupleOwnedBy, refKey)
 }
 
-// TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode is dispatch://INFRA-1149's R2 at
+// TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode is this change's R2 at
 // the bound for a comment's author. A session id carries no length bound, so a comment whose author
 // is a session past the store's address bound names an author the store cannot key: AuthorFacts
 // writes no session node, no authored_by tuple and no alias, and the comment keeps its own row.
@@ -171,6 +173,33 @@ func requireGraphEdge(t *testing.T, database *store.Store, fromKind, fromID, kin
 	}
 	if count != 1 {
 		t.Fatalf("graph_edges answers %d %s edge(s) of %s %s, want exactly one from the old arm", count, kind, fromKind, fromID)
+	}
+}
+
+// requireNoAddressPastTheBound reads graph_nodes and graph_tuples whole for an address past the
+// store's bound: a node whose id is, or a tuple with either end that is. The reads above ask
+// after the comment's own node and tuples by name, and a write that kept the comment out but
+// keyed something else by the long ref_key would pass every one of them. A value is no address,
+// so a value's to_id is not counted.
+func requireNoAddressPastTheBound(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	var longNodes, longTuples int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where octet_length(id) > $1`,
+		graphstore.MaxAddressBytes).Scan(&longNodes); err != nil {
+		t.Fatalf("count the nodes past the bound: %v", err)
+	}
+	if longNodes != 0 {
+		t.Errorf("the store holds %d node(s) whose id is past the %d-byte bound, want none", longNodes, graphstore.MaxAddressBytes)
+	}
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from graph_tuples
+		where octet_length(from_id) > $1 or (to_kind <> 'value' and octet_length(to_id) > $1)
+	`, graphstore.MaxAddressBytes).Scan(&longTuples); err != nil {
+		t.Fatalf("count the tuples with an end past the bound: %v", err)
+	}
+	if longTuples != 0 {
+		t.Errorf("the store holds %d tuple(s) with an end past the %d-byte bound, want none", longTuples, graphstore.MaxAddressBytes)
 	}
 }
 

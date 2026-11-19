@@ -232,7 +232,7 @@ func TestADocumentSocketClosesOnceTheHourlyConfirmationRestrictsItsPerson(t *tes
 func TestALiveSocketClosesOnceTheHourlyConfirmationRestrictsItsPerson(t *testing.T) {
 	rig := newRestrictableRig(t, time.Second)
 	header := http.Header{"Cookie": []string{rig.cookie.Name + "=" + rig.cookie.Value}}
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/live", header).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/live", header).servedBy(rig.database).read()
 	subscribeEvents(t, client, "events", nil)
 	time.Sleep(3 * time.Second)
 	if refreshes := rig.pool.Refreshes(); refreshes != 0 {

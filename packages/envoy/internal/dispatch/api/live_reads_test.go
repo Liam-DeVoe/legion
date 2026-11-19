@@ -21,20 +21,18 @@ const (
 	liveReadsAbsentSession = "0b8a3c1e-5f2d-4a7b-9c3e-1d2f3a4b5c63"
 )
 
-// liveReadsWait bounds a wait for a live view's first answer; liveReadsQuiet is how long a view
-// that answers as an absent session must then stay silent.
-const (
-	liveReadsWait  = 5 * time.Second
-	liveReadsQuiet = 300 * time.Millisecond
-)
+// liveReadsQuiet is how long a view that answers as an absent session must then stay silent.
+const liveReadsQuiet = 300 * time.Millisecond
 
 // TestEveryLiveViewKeepsTheRuleOfItsHTTPRead: every view kind /ws/live serves (deliveryLiveKinds
 // and the server's liveKinds) names the GET row whose rule it keeps (liveViewReads), and answers
 // each caller of verification v16 as that row answers the caller: refused with the row's own code
-// where the row refuses, and served where it serves. An agent view keeps its row's session rule
-// as well (access.SessionClause, which GET /api/v1/agents lists sessions by): of a session the
-// caller's roster lists, the view relays the session; of any other, it answers exactly what a
-// session nobody answers for answers, and never tells the session a viewer is attached.
+// where the row refuses, and served where it serves. A Legion board view is of PRIV's board, so a
+// caller that may not see PRIV is refused the view as the board's GET answers it, as a project
+// nobody holds. An agent view keeps its row's session rule as well (access.SessionClause, which
+// GET /api/v1/agents lists sessions by): of a session the caller's roster lists, the view relays
+// the session; of any other, it answers exactly what a session nobody answers for answers, and
+// never tells the session a viewer is attached.
 //
 // Control: today's views (no read rule on the live socket). bob's timeline is served where its
 // GET row refuses him, and alice's agent view relays PRIV's session, and the test fails naming each.
@@ -50,6 +48,9 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 	}
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL, agentStream: source})
 	seedHubSettings(t, seed.database)
+	// PRIV names a Legion daemon, so its board's GET and view answer a caller that sees PRIV.
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/legion/daemon",
+		map[string]any{"state_url": "http://legion-priv.internal:8080"}, http.StatusOK)
 	for session, project := range map[string]string{liveReadsPrivSession: seedPrivate, liveReadsPubSession: seedPublic} {
 		seed.asSession(t, session, project, http.MethodPost, "/api/v1/issues/"+seed.issue[project]+"/comments",
 			map[string]any{"body": "Done on " + project + "."}, http.StatusCreated)
@@ -80,23 +81,34 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 			return LiveView{DeliveryLiveView: livePipelineView(nil)}
 		case liveAgentView:
 			return agentView(session)
+		case legionBoardView:
+			return LiveView{DeliveryLiveView: legionView(seedPrivate)}
 		}
 		return eventsView()
 	}
 	target := func(kind, session string) string {
 		route := strings.TrimPrefix(liveViewReads[kind], http.MethodGet+" ")
 		route = strings.ReplaceAll(route, "{session_id}", session)
+		route = strings.ReplaceAll(route, "{key}", seedPrivate)
 		if kind == deliveryLiveTimeline || kind == deliveryLiveMeasures {
 			route += "?from=" + from + "&to=" + to
 		}
 		return route
 	}
 	// first opens a socket as caller, subscribes the view, and answers the first frame it is sent.
+	// The events view's first frame, its events_start, stands behind the event horizon, which any
+	// transaction on the Postgres instance holds back, so its wait is the horizon's
+	// (eventFeedFrame); every other view answers from the server's own reads, under the hang guard
+	// of eventFeedWait.
 	first := func(caller privateCaller, kind, session string) (*socketClient, any) {
 		t.Helper()
-		client := dialLive(t, url, seed.liveHeader(t, caller))
+		client := seed.dialLive(t, url, seed.liveHeader(t, caller))
 		client.send(t, liveSubscribe("v", view(kind, session), ""))
-		return client, client.next(t, liveReadsWait, fmt.Sprintf("%s's %s view", caller, kind))
+		what := fmt.Sprintf("%s's %s view", caller, kind)
+		if kind == liveEventsView {
+			return client, eventFeedFrame(t, client, what)
+		}
+		return client, client.next(t, eventFeedWait, what)
 	}
 
 	for _, caller := range privateCallers {

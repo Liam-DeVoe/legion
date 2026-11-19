@@ -23,7 +23,7 @@ func TestALiveFrameNamesNoObjectItsReaderCannotSee(t *testing.T) {
 		map[string]any{"question": "Which way does PUB ship?"}))
 	clients := map[privateCaller]*socketClient{}
 	for _, caller := range []privateCaller{callerAlice, callerCarol} {
-		client := dialLive(t, url, seed.liveHeader(t, caller))
+		client := seed.dialLive(t, url, seed.liveHeader(t, caller))
 		subscribeEvents(t, client, "live", nil)
 		clients[caller] = client
 	}

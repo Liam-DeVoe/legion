@@ -25,6 +25,17 @@ var scopeIndexRelations = []string{
 	"session_projects", "project_access", "access_group_members", "people", "projects", "graph_nodes", "graph_tuples",
 }
 
+// nearEndIndexes are graph_tuples' indexes led by a tuple's near end. With only a dozen
+// constrained_by tuples, a correct catalogue arm may plan through one of them (graph_tuples_current,
+// or after #3178's spec v50 R2 change a bitmap of graph_tuples_as_of_out) as readily as through
+// its far end's index, so the catalogue read's index half is planned with them dropped, in the
+// plan's own transaction, which rolls back: what is left to serve the arm is its far end's index
+// (readsByFarEnd) or a sequential read.
+var nearEndIndexes = []string{
+	"drop index if exists graph_tuples_current",
+	"drop index if exists graph_tuples_as_of_out",
+}
+
 // TestTheVisibilityArmsProbeByIndex: over verification v16's seed and a dozen more agents and
 // catalogue nodes, analyzed, a refs read of the nodes of each scope - a project's issues (whose rule
 // holds the party arm too), asks' blocks, components, people, sessions, roles, pages, and catalogue
@@ -41,8 +52,11 @@ var scopeIndexRelations = []string{
 //   - With sequential scans off, no plan reads a scope's table sequentially, which would mean the
 //     arm has no index path: on tables of a page or two a sequential read is cheaper than an
 //     index probe, so only with them off does a plan say whether an index serves the arm. The
-//     catalogue constraint's arm reads its tuple through graph_tuples_inbound, keyed on the
-//     tuple's far end, as the one current-tuple rule is written to.
+//     catalogue constraint's arm reads its tuple through graph_tuples_as_of_in
+//     (graph_tuples_inbound until #3178's spec v50 R2 change), keyed on the tuple's far end, as
+//     the one current-tuple rule is written to. The arm names its kind as the literal
+//     'constraint': inside its fenced subquery the node's kind would be a parameter, and
+//     `t.to_kind = n.kind` would leave neither partial index usable.
 //
 // The block schema's nodes take the every-viewer scope, which adds no read, and no read of the
 // graph resolves one, so no read here plans one.
@@ -123,7 +137,11 @@ func TestTheVisibilityArmsProbeByIndex(t *testing.T) {
 				for _, hashed := range hashedSubplans(t, plan) {
 					t.Errorf("%s plans %s, a hashed subplan that reads its whole table once per statement:\n%s", subject, hashed, plan)
 				}
-				unindexed := planStatement(t, database, statement, "set local enable_seqscan = off")
+				settings := []string{"set local enable_seqscan = off"}
+				if read.catalogue {
+					settings = append(settings, nearEndIndexes...)
+				}
+				unindexed := planStatement(t, database, statement, settings...)
 				for _, relation := range scopeIndexRelations {
 					if explaintest.SeqScansRelation(t, unindexed, relation) {
 						t.Errorf("%s reads %s sequentially with sequential scans off, so its arm has no index path:\n%s",
@@ -131,7 +149,7 @@ func TestTheVisibilityArmsProbeByIndex(t *testing.T) {
 					}
 				}
 				if read.catalogue && !readsByFarEnd(t, unindexed) {
-					t.Errorf("%s does not read its constrained_by tuple through graph_tuples_inbound on (to_kind, to_id):\n%s",
+					t.Errorf("%s does not read its constrained_by tuple by its far end (to_kind, to_id) through graph_tuples_as_of_in or graph_tuples_inbound:\n%s",
 						subject, unindexed)
 				}
 			}
@@ -162,12 +180,14 @@ func hashedSubplans(t *testing.T, plan json.RawMessage) []string {
 	return hashed
 }
 
-// readsByFarEnd reports whether plan reads graph_tuples through graph_tuples_inbound under a
-// condition on the tuple's far end, the index's leading (to_kind, to_id).
+// readsByFarEnd reports whether plan reads graph_tuples through an index of the tuple's far end
+// under a condition on it, the index's leading (to_kind, to_id): graph_tuples_as_of_in, or
+// graph_tuples_inbound, which #3178's spec v50 R2 change drops for it. Each is matched by name.
 func readsByFarEnd(t *testing.T, plan json.RawMessage) bool {
 	t.Helper()
 	for _, scan := range explaintest.IndexScans(t, plan) {
-		if scan.Index == "graph_tuples_inbound" && strings.Contains(scan.Cond, "to_kind") && strings.Contains(scan.Cond, "to_id") {
+		farEnd := scan.Index == "graph_tuples_as_of_in" || scan.Index == "graph_tuples_inbound"
+		if farEnd && strings.Contains(scan.Cond, "to_kind") && strings.Contains(scan.Cond, "to_id") {
 			return true
 		}
 	}

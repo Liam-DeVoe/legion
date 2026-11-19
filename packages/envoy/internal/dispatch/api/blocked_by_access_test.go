@@ -27,7 +27,7 @@ func TestAVisibleIssueNamesNoHiddenIssueThatBlocksIt(t *testing.T) {
 		t.Fatalf("carol, who sees PRIV, reads no %s on %s, so the test reads nothing: %s", hidden, visible, read.Body.String())
 	}
 	// The event log answers only the events at or below the safe horizon, and a read held below
-	// the link's event would pass over it unread (readEventLogPage).
+	// the link's event would pass over it unread (awaitHorizonRead says what holds it back).
 	safeHorizon(t, served)
 
 	shared := "agent-token"

@@ -40,7 +40,7 @@ func TestAnEntryTokenActsWhateverItsPersonsAccount(t *testing.T) {
 	const person = "dana@example.com"
 	ctx := context.Background()
 	people := store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil)
-	entry := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopeNamed, Project: "ACC"}
+	entry := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{"ACC"}}
 	own := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopePerson}
 	acts := func(when string, caller brokertoken.Caller) {
 		t.Helper()

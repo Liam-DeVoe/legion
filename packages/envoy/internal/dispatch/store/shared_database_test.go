@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	brokerstore "github.com/sjawhar/envoy/internal/broker/store"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // adminDatabaseURL is the test server's maintenance database, on which a test makes databases of
@@ -31,7 +31,7 @@ func adminDatabaseURL(t *testing.T) string {
 // itself rather than a clone, in whichever order the packages run. So the two migration sets
 // must create no schema-global name in common: a function, a table, a type, a sequence or an
 // index that both create fails the second set's migration (two functions named
-// refuse_recorded_account_change did, in broker migration 0033 and Dispatch migration
+// refuse_recorded_account_change did, in broker migration 0034 and Dispatch migration
 // 20261117160116). Each order is migrated into a fresh database of its own, twice, the second
 // pass applying nothing.
 //
@@ -42,7 +42,7 @@ func TestTheBrokerAndDispatchSchemasShareOneDatabase(t *testing.T) {
 	admin := adminDatabaseURL(t)
 	for _, order := range []string{"broker first", "Dispatch first"} {
 		t.Run(order, func(t *testing.T) {
-			dsn := testpg.DatabaseOn(t, admin, "dispatch_shared")
+			dsn := testdb.DatabaseOn(t, admin, "dispatch_shared")
 			dispatch, err := Open(ctx, dsn)
 			if err != nil {
 				t.Fatalf("open the shared database as Dispatch: %v", err)
@@ -84,7 +84,7 @@ func TestTheBrokerAndDispatchSchemasShareOneDatabase(t *testing.T) {
 func TestTheBrokerAndDispatchMigrationsCreateNoNameInCommon(t *testing.T) {
 	ctx := context.Background()
 	admin := adminDatabaseURL(t)
-	dispatch, err := Open(ctx, testpg.DatabaseOn(t, admin, "dispatch_names"))
+	dispatch, err := Open(ctx, testdb.DatabaseOn(t, admin, "dispatch_names"))
 	if err != nil {
 		t.Fatalf("open Dispatch's database: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestTheBrokerAndDispatchMigrationsCreateNoNameInCommon(t *testing.T) {
 	if err := dispatch.Migrate(ctx); err != nil {
 		t.Fatalf("migrate Dispatch alone: %v", err)
 	}
-	broker, err := brokerstore.Open(ctx, testpg.DatabaseOn(t, admin, "broker_names"))
+	broker, err := brokerstore.Open(ctx, testdb.DatabaseOn(t, admin, "broker_names"))
 	if err != nil {
 		t.Fatalf("open the broker's database: %v", err)
 	}

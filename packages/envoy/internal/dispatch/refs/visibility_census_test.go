@@ -174,10 +174,12 @@ const (
 // readsWithoutAViewer names each exported read of the store that takes no acting person, with
 // the reason it binds no predicate (storeReads lists them from the package's source).
 var readsWithoutAViewer = map[string]string{
-	"AskPartIDs":           nodeDetail,
-	"BlockChanges":         nodeDetail,
-	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":          nodeDetail,
+	"AskPartIDs":   nodeDetail,
+	"BlockChanges": nodeDetail,
+	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":  nodeDetail,
+	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
+		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
 	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
@@ -317,6 +319,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		})
 	}
 	for _, kind := range nodeKinds {
+		record("TargetNames", "TargetNames of kind "+kind, func() error {
+			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}})
+			return err
+		})
 		record("Node", "Node of kind "+kind, func() error {
 			_, _, err := Node(ctx, recorder, who, kind, "no-such-node", true)
 			return err
@@ -380,6 +386,20 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
+			return err
+		})
+	}
+	// ResolvePrefixes reads one statement per kind of item it is asked, a pinned block's
+	// included, each asked on its own. A message id is resolved within an issue alone, so its
+	// scope names one.
+	for _, asked := range []ShortID{
+		{Kind: "ask", Prefix: "00000000"}, {Kind: "comment", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"},
+		{Kind: "message", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"}, {Kind: "artifact", Prefix: "00000000"},
+		{Kind: "block", Scope: Scope{Document: "CORE-1/spec"}, Prefix: "00000000"},
+		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
+	} {
+		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
+			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked})
 			return err
 		})
 	}
@@ -466,8 +486,8 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 // storeReads is every exported function of this package that reads the store, read out of the
 // package's own source rather than kept as a list: one that takes the Queryer it reads on, or
 // the *pgx.Batch it queues its statement in. viewing is those that take a model.Actor beside it,
-// the reads of the graph for a viewer, and without is the rest. A method is named by its
-// receiver's type and its own name.
+// or a *model.Actor where nil is no person (ResolvePrefixes), the reads of the graph for a
+// viewer, and without is the rest. A method is named by its receiver's type and its own name.
 func storeReads(t *testing.T) (viewing, without []string) {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
@@ -491,7 +511,7 @@ func storeReads(t *testing.T) (viewing, without []string) {
 			var viewer, queries bool
 			for _, parameter := range function.Type.Params.List {
 				switch types.ExprString(parameter.Type) {
-				case "model.Actor":
+				case "model.Actor", "*model.Actor":
 					viewer = true
 				case "Queryer", "*pgx.Batch":
 					queries = true

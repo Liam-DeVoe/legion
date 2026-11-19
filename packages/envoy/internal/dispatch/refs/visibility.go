@@ -199,11 +199,11 @@ func VisibilityKinds() []string {
 	return slices.Sorted(maps.Keys(nodeRegistry))
 }
 
-// VisibilityArg is the one argument every rendered predicate binds, as jsonb: the acting
-// credential as graphstore's one author rule compares it (`author`), and what the reader's viewer
-// sees, in the shape the access package's clauses read ("person", "session", "open", "all",
-// "sees", "private", and "lists", the credential's own list, absent when it lists none). A read
-// binds it once and names its placeholder in each predicate it renders.
+// VisibilityArg is the one argument every rendered predicate binds, as jsonb: the author the
+// acting credential proved, as graphstore's one author rule compares it (`author`), and what the
+// reader's viewer sees, in the shape the access package's clauses read ("person", "session",
+// "open", "all", "sees", "private", and "lists", the credential's own list, absent when it lists
+// none). A read binds it once and names its placeholder in each predicate it renders.
 //
 // A reader with no viewer is the closed viewer: it sees no project and no party, is not open, and
 // reads as though some project were private, so a read that reached the store without the

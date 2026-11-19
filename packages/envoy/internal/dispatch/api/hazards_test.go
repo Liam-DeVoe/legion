@@ -574,7 +574,7 @@ func TestTheAccessChangedEventCarriesNoAccessList(t *testing.T) {
 		t.Fatalf("dave adds carol to PRIV: %d %s", added.Code, added.Body.String())
 	}
 	// The event log answers only the events at or below the safe horizon, which a transaction
-	// elsewhere on the test cluster can hold below the change just made (readEventLogPage).
+	// elsewhere on the test cluster can hold below the change just made (awaitHorizonRead).
 	safeHorizon(t, rig.served)
 	logged := agentRequest(t, rig.handler, http.MethodGet, "/api/v1/events/log", nil, token)
 	if logged.Code != http.StatusOK || !strings.Contains(logged.Body.String(), `"type":"project.access_changed"`) {

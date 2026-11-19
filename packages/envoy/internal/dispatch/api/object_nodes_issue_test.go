@@ -13,9 +13,10 @@ import (
 )
 
 // Every issue, document, ask and message is a node of the store that names its project, or, for
-// an object no project owns, the parties it is between (dispatch://INFRA-3862, slice N of its
-// plan). Each node is written at its kind's own create site, inside that write's transaction and
-// before its row, and the facts the node write states carry the event that caused the create.
+// an object no project owns, the parties it is between, so a read can be limited to what a
+// reader's projects hold. Each node is written at its kind's own create site, inside that
+// write's transaction and before its row, and the facts the node write states carry the event
+// that caused the create.
 // The tests of this file hold the issue and document writers to that; object_nodes_items_test.go
 // holds the ask and message writers.
 
@@ -64,9 +65,13 @@ func requireObjectNode(t *testing.T, database *store.Store, kind, id, supertag, 
 		t.Errorf("node %s/%s is %+v, want supertag %s, live, project-visible, project %q, parties %v, caused by event %d",
 			kind, id, node, supertag, project, parties, event)
 	}
+	wantParties, err := graphstore.PartiesValue(parties)
+	if err != nil {
+		t.Fatalf("join the parties %v: %v", parties, err)
+	}
 	stated := map[string]string{
 		"visibility": graphstore.VisibilityProject, "state": graphstore.StateLive,
-		"project": project, "parties": graphstore.PartiesValue(parties),
+		"project": project, "parties": wantParties,
 	}
 	for attribute, value := range stated {
 		history, err := graphstore.History(ctx, database.Pool, kind, id, attribute)

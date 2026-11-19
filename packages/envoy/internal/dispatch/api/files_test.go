@@ -321,17 +321,24 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 // cannot name is reported as a failure rather than a hang.
 const uploadLockProbeWindow = 20 * time.Second
 
-// uploadIssueLock is the statement an upload's transaction takes the issue row with
-// (storeArtifact's issue branch, through requireOpenOwnerStatus and issueOpenStatus under
-// ownerRowLock), as pg_stat_activity shows it, and it is the only statement of this test's two
-// writers that an upload runs: pg_stat_activity shows a holder at whatever statement it is on,
+// uploadIssueLock is the head of the statement an upload's transaction takes the issue row with
+// (storeArtifact's issue branch, through requireOpenOwnerStatus and issueStatus under
+// ownerRowLock), as pg_stat_activity shows it, up to where its project clause starts; the
+// statement ends in ownerRowLock (holdsUploadIssueLock). It is the only statement of this test's
+// two writers that an upload runs: pg_stat_activity shows a holder at whatever statement it is on,
 // and the settlement's is one of the document's own reads or lockEventOwner's of last_seq
 // (events/broker.go), never this one. It is also the first statement the upload's transaction
 // makes, so an upload that opened its transaction before writing its object would sit on it for
 // the whole of Put. One that ran further statements between the row and Put would show one of
 // those instead and be retried to the window's end, whose failure names what it read rather
 // than timing out mutely.
-const uploadIssueLock = "select status, closed_at is null from issues where key = $1 for no key update"
+const uploadIssueLock = "select status, closed_at is null from issues where key = $1 and "
+
+// holdsUploadIssueLock reports whether query, a statement as pg_stat_activity shows it, is the
+// upload's lock of the issue row (uploadIssueLock).
+func holdsUploadIssueLock(query string) bool {
+	return strings.Contains(query, uploadIssueLock) && strings.HasSuffix(strings.TrimSpace(query), strings.TrimSpace(ownerRowLock))
+}
 
 // issueRowLockHolder is what the probe reads of the backend whose transaction holds the issue's
 // row, so a red run names the writer it lost the row to.
@@ -470,7 +477,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 			looked = true
 			holder = readIssueRowLockHolder(t, database, issue)
 			t.Logf("the issue's row refused the probe (55P03) while the store holds the upload's bytes; its lock is held by %s", heldBy())
-			if holder != nil && strings.Contains(holder.query, uploadIssueLock) {
+			if holder != nil && holdsUploadIssueLock(holder.query) {
 				t.Fatalf("the upload holds the issue's row while its bytes are in the store: %s", holder)
 			}
 		}

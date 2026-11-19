@@ -147,10 +147,9 @@ func viewerSees(viewer *model.Viewer, project string) bool {
 // refuseHiddenMapping refuses a PUT of repo over mapping, the repository's mapping as its write's
 // locks hold it (lockRepoProjectWrite), when mapping is of a project viewer cannot see: with the
 // lane refusal's hidden form for repo's own lane, the bytes a PUT of a neighbour on that lane is
-// answered, so the caller cannot tell the repository's own name from a neighbour's. It runs
-// before refuseRepoProjectInUse, so REPO_PROJECT_IN_USE, which names the project and its issue
-// count, answers only a caller who sees the project. The DELETE of such a mapping answers 204 and
-// writes nothing, as for a repository no mapping holds (hiddenMapping).
+// answered, so the caller cannot tell the repository's own name from a neighbour's. The DELETE of
+// such a mapping answers 204 and writes nothing, as for a repository no mapping holds
+// (hiddenMapping).
 func refuseHiddenMapping(viewer *model.Viewer, repo string, mapping *model.RepoProject) error {
 	if !hiddenMapping(viewer, mapping) {
 		return nil
