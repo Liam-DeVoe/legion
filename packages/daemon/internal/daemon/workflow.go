@@ -1316,7 +1316,7 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). Its branch create runs the private-name rules boot compiled
+// (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
 // (privateNameRules). All are set before the records' wake can reach the outbox (outboxWake).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
