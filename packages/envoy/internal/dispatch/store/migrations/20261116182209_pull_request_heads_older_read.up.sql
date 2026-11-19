@@ -29,17 +29,18 @@
 -- just before a reopen of the same second, delayed and written after the reopen's own answer,
 -- would leave the pull request closed, and nothing reads a closed row again. The facts are GitHub's
 -- own: the head, its branch, the base, the state, the title and the URL. The attribution is not
--- one: it is Dispatch's judgement of those facts, which a later rule
--- (delivery.AttributionRuleVersion) or a write of the issues changes at the same second, and a
--- read of GitHub would answer nothing new about it. The read the owe asks for writes GitHub's
--- answer at that moment; where it changes a fact once more it owes once more, and the read after
--- it, which changes nothing, settles it.
+-- one: it is Dispatch's judgement of those facts, which a pass of the reconcile writes from the
+-- stored facts with no read of GitHub (20261117111040), and which a change of the rule or a write
+-- of the issues changes at the same second; a read of GitHub would answer nothing new about it.
+-- The read the owe asks for writes GitHub's answer at that moment; where it changes a fact once
+-- more it owes once more, and the read after it, which changes nothing, settles it.
 --
 -- The third case is a write of the release before over a row this release read, at any second
 -- (acceptance of cybermonklabs/legion#4209 at ff73c7358d, D8). That release writes a row's head,
 -- state and time from an envelope, which any Envoy /v1 bearer can publish, and
 -- pull_request_heads_unread_write (20261116163242) takes the row's mark away. The reconcile reads
--- an open row again and offers an unread merged row once, but reads no closed row, so a close it
+-- an open row again, and a merged row while its texts do not describe its head or its commit
+-- messages are not read (the facts line, 20261117111040), but reads no closed row, so a close it
 -- wrote dated off GitHub's own second stood until the pull request's next event. That trigger's
 -- function is replaced here, now that pull_request_reads_owed exists, by one that takes the mark
 -- away and owes the pull request a read in the same statement, whatever the row's state and time.

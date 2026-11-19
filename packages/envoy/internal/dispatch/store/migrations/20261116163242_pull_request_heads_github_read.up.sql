@@ -22,9 +22,11 @@
 -- against no answer, which is what clearing event_at would do for the two guards, without
 -- rewriting a row and without losing GitHub's own time where a row holds it (the results read
 -- shows the time a head was learned by, and delivery.BaseBranchMergedFor orders merged rows by
--- it). This release also raises delivery.AttributionRuleVersion to 3, so the reconcile reads
--- each stored merged row from GitHub once more, at most delivery.RejudgedHeadsPerPass a pass;
--- an open row is read again by the first pass that reaches it once its last read is five minutes old.
+-- it). The reconcile then reads each stored open or merged row from GitHub once more: no row
+-- stored before this release has texts (pull_request_texts, 20261117111040), so the facts line
+-- reads it (delivery.Reconcile.readFactsLine), at most delivery.FactsQueriesPerPass queries of
+-- delivery.FactsBatchSize pull requests for each installation a pass. An open row is also read
+-- again by the first pass that reaches it once its last read is five minutes old.
 --
 -- The release before still serves beside this one while the roll lasts, and it can write a row
 -- from an envelope after this migration ran. Its insert names its columns, so a row it inserts
@@ -33,7 +35,8 @@
 -- trigger below takes it away instead: an update that changes a fact of a marked row and leaves
 -- github_read_at as it was is a write of no read of GitHub, so the row is marked unread
 -- (github_read_at null), unchecked (checked_at null, which the reconcile's open arm reads first)
--- and judged by no rule (attribution_rule 0, which the reconcile's merged arm offers once); and
+-- and judged by no rule (attribution_rule 0, which the merged arm of the release before offers
+-- once; this release has no merged arm and reads no attribution_rule); and
 -- 20261116182209 replaces this function with one that also owes the pull request a read, since the
 -- reconcile reads no closed row (pull_request_reads_owed does not exist yet here). This
 -- release's own writes set github_read_at on every write: the moment the read of GitHub whose
