@@ -166,8 +166,9 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// read-through of the pull requests GitHub names for that commit reads after the write. It is
 	// nil when there is nothing to ask GitHub about — a deployment with no App key, an issue that
 	// resolves to no repository, and a read of Dispatch's own row of the issue's repository that
-	// failed, which is logged and stores the result as every answer but the proof of absence
-	// does. A failed read of Dispatch's own rows of the issue's links is another read, which the
+	// failed, which is logged; with no repository to ask about, none of the refusals below is
+	// asked, and the result is stored, as with no App key. A failed read of Dispatch's own rows of
+	// the issue's links is another read, which the
 	// refusal below makes where there is a repository to ask about and GitHub does not say it
 	// holds the commit, and it refuses the record with 500 and stores nothing
 	// (refuseUnknownCommit, results_linked.go).

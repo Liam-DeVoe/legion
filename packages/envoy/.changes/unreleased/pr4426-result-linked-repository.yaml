@@ -42,8 +42,10 @@ body: |-
   `PUT /api/v1/settings/repo-projects/{owner}/{repo}` and
   `GET /api/v1/github/app-installation/{owner}/{repo}` hold the path's repository to the names
   GitHub allows, as `renamed_to` already is: a path such as `acme/...git` or `acme/.git`, whose
-  name is `..` or empty once `.git` is trimmed, is `400 INVALID_REPO_PROJECT`. `DELETE` reads its
-  path as before, so a mapping stored under such a name can still be removed. Delivery, the CI
+  name is `..` or empty once `.git` is trimmed, is `400 INVALID_REPO_PROJECT`. `DELETE` removes
+  the mapping stored under its path's own spelling where one is, and otherwise reads its path as
+  before, so a mapping stored under such a name, or under a name that still ends in `.git`, can
+  still be removed, and the CI reconcile's warning names the request that removes it. Delivery, the CI
   reconcile, the architecture importer and the results read of a check CI proves each refuse a
   stored repository name GitHub does not allow, naming it, before they make any GitHub request,
   so a mapping or a `renamed_to` stored before this release, and a pull request row stored under
