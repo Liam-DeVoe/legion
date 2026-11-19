@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
@@ -25,21 +26,20 @@ const (
 // markInboxReadThreads, against a real Postgres. writeIssues writes a batch's issue nodes through
 // graphstore.Write and then copies the batch's issues rows; writeItemNodes writes the nodes of an
 // ask batch (writeAsks) and of a message batch (writeMessages) the same way, before the batch's
-// first asks or messages row. Each batch takes no owner row: it writes its nodes in ascending
+// first asks or messages row. Each batch takes no owner lock: it writes its nodes in ascending
 // (kind, id), whatever order it lists them in, graphstore.Write appends the base attributes those
 // nodes carry right after them, at the sentinel, and only then does the batch write its rows, each
 // of which names its node by its own key. The ask batch appends each ask's opening event after its
 // row; that event causes none of the tuples, which carry the sentinel, and it is appended with no
-// owner row taken, as the seed numbers it itself.
+// owner lock taken, as the seed numbers it itself.
 //
 // Each batch is followed through one hold of each step, every hold taken before the batch starts
 // (lockstep.Follow), and the test reads where the batch's own backend waits behind each and which
-// tables it holds locks on by then. The owner row is held for the whole run, and the batch must
-// never queue behind it: the project's row for the issue batch, the row an issue's create
-// allocates its number under and a project's event is appended under, and the issue's row for the
-// item batches, which every ask and message of the plan belongs to. Both are held `for no key
-// update`, as an owner row is taken (events.LockOwnerRows), which the `for key share` of the rows'
-// foreign keys does not wait on. The two nodes are new, so each is held as a row another
+// tables it holds locks on by then. The owner lock is held for the whole run, and the batch must
+// never queue behind it: the project's for the issue batch, the lock an issue's create allocates
+// its number under and a project's event is appended under, and the issue's for the item batches,
+// which every ask and message of the plan belongs to (store.LockOwners, the advisory lock every
+// writer of the server takes first). The two nodes are new, so each is held as a row another
 // transaction inserted and has not committed; they are listed with the higher one first. The
 // tuples carry the sentinel, which no repeat key covers, so the tuple append is held as the table
 // it writes, in share mode, which conflicts with an insert's lock and with no read; the node write
@@ -82,12 +82,9 @@ func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
 		}
 		first := f.run.plan.issues[0]
 		f.followObjectBatch(t, objectBatch{
-			run:   "the issue batch",
-			table: "issues",
-			owner: ownerRow{
-				name: "the project's row", kind: "project", key: seedLockProject,
-				statement: `select true from projects where key = $1 for no key update`,
-			},
+			run:       "the issue batch",
+			table:     "issues",
+			owner:     ownerLock{name: "the project's owner lock", owner: store.ProjectOwner(seedLockProject)},
 			upper:     nodes[0],
 			lower:     nodes[1],
 			firstRow:  `copy "issues"`,
@@ -116,7 +113,7 @@ func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
 		f.followObjectBatch(t, objectBatch{
 			run:       "the ask batch",
 			table:     "asks",
-			owner:     issueOwnerRow,
+			owner:     issueOwnerLock,
 			upper:     nodes[0],
 			lower:     nodes[1],
 			firstRow:  "insert into asks (",
@@ -147,7 +144,7 @@ func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
 		f.followObjectBatch(t, objectBatch{
 			run:       "the message batch",
 			table:     "messages",
-			owner:     issueOwnerRow,
+			owner:     issueOwnerLock,
 			upper:     nodes[0],
 			lower:     nodes[1],
 			firstRow:  "insert into messages (",
@@ -160,28 +157,25 @@ func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
 	})
 }
 
-// ownerRow is an owner row a batch must not take: how a failure names it, the owner key it is
-// ordered by, split at its colon as lockstep.Hold names one, and the statement that takes it.
-type ownerRow struct {
-	name, kind, key, statement string
+// ownerLock is an owner whose lock a batch must not take: how a failure names it, and the owner.
+type ownerLock struct {
+	name  string
+	owner store.Owner
 }
 
-// issueOwnerRow is the fixture's issue, the owner of every ask and message the item batches write
+// issueOwnerLock is the fixture's issue, the owner of every ask and message the item batches write
 // and of the opening event the ask batch appends for each ask.
-var issueOwnerRow = ownerRow{
-	name: "the issue's row", kind: "issue", key: seedLockIssue,
-	statement: `select closed_at is null from issues where key = $1 for no key update`,
-}
+var issueOwnerLock = ownerLock{name: "the issue's owner lock", owner: store.IssueOwner(seedLockIssue)}
 
 // objectBatch is one batch of the seed whose nodes graphstore.Write writes before the batch writes
 // the rows that name them: the batch as a failure names it and the table of its rows, the owner
-// row it must not take, its two nodes, listed in the plan with upper first, how the statement that
-// writes its first row starts, that row as a failure names it and the statement that holds its
-// key, and the write that runs the batch. keyColumn is the column of table holding the id of the
-// row's node.
+// whose lock it must not take, its two nodes, listed in the plan with upper first, how the
+// statement that writes its first row starts, that row as a failure names it and the statement
+// that holds its key, and the write that runs the batch. keyColumn is the column of table holding
+// the id of the row's node.
 type objectBatch struct {
 	run, table   string
-	owner        ownerRow
+	owner        ownerLock
 	upper, lower graphstore.Node
 	firstRow     string
 	rowLabel     string
@@ -192,15 +186,13 @@ type objectBatch struct {
 }
 
 // followObjectBatch holds each step of batch, runs it, and follows it through the holds
-// (lockstep.Follow): no owner row, the node rows in ascending (kind, id), the tuple append, then
+// (lockstep.Follow): no owner lock, the node rows in ascending (kind, id), the tuple append, then
 // the first row, which names the upper node. It then reads back that every row of the batch names
 // a node of the store in the fixture's project with the project the node write stated of it.
 func (f *seedLockFixture) followObjectBatch(t *testing.T, batch objectBatch) {
 	t.Helper()
 	ctx := context.Background()
-	owner := lockstep.HoldRow(t, f.database, &lockstep.Hold{
-		Name: batch.owner.name, Step: lockstep.StepOwner, Kind: batch.owner.kind, ID: batch.owner.key,
-	}, batch.owner.statement, batch.owner.key)
+	owner := lockstep.HoldOwner(t, f.database, &lockstep.Hold{Name: batch.owner.name, Step: lockstep.StepOwner}, batch.owner.owner)
 	node := func(held graphstore.Node) *lockstep.Hold {
 		hold := &lockstep.Hold{
 			Name: "the node row of " + held.Kind + "/" + held.ID, Step: lockstep.StepNode, Taken: true,

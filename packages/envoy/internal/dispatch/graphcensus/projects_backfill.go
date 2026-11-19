@@ -39,10 +39,10 @@ type objectKind struct {
 	// rows answers each address of ids $1 with its stable row identity. A document's UUID
 	// distinguishes replacements even when their created_at values are equal.
 	rows string
-	// owners answers, for a kind some writer deletes rows of, the owner row each row of the ids $1
-	// stands under, as (issue, document id, id): the row that writer takes before anything else
-	// (api's removeArtifact takes its document's issue row). It is empty for a kind no writer
-	// deletes a row of.
+	// owners answers, for a kind some writer deletes rows of, the owner each row of the ids $1
+	// stands under, as (issue, document id, id): the owner whose lock that writer takes before
+	// anything else (api's removeArtifact takes its document's issue's). It is empty for a kind no
+	// writer deletes a row of.
 	owners string
 }
 
@@ -511,7 +511,7 @@ func derefText(value *string) string {
 // Under those locks it reads the nodes the store holds of the batch (heldNodes). One that is not
 // gone, its row's own (ownLiveStatement, for a document a removal can take; any such one for the
 // rest, whose address no later row takes) and naming a project or parties was written meanwhile, by
-// another run of the backfill that took the owner rows first, and is left as it is; one that is
+// another run of the backfill that took the owner locks first, and is left as it is; one that is
 // not gone and its row's own but names neither is written again, which states its project or
 // parties alone. A document whose node is not gone but not its row's own is one a build before
 // this one removed and made again at the address: its node is stated gone, by the backfill, and

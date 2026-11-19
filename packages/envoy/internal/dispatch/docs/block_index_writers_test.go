@@ -586,7 +586,7 @@ var indexPasses = map[string]string{
 	// the store lacks of them, and a node another write made it leaves alone.
 	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
 	// The backfill of the project of every node: the rows of the issues, documents, asks and
-	// messages that their marker does not mark, each read again under its owner row before its node is
+	// messages that their marker does not mark, each read again under its owner lock before its node is
 	// written, and the comment and block nodes that name no project, each with the row its
 	// project is read from.
 	"graphcensus/projects_backfill.go#writeObjectBatch": "the issue, document, ask and message rows their marker does not mark",

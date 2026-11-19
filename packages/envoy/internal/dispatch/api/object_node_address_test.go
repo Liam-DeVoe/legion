@@ -23,7 +23,7 @@ import (
 
 // A build before this one writes no node, so a document it removes leaves the node this build
 // wrote for it standing behind no row (graphcensus's orphaned class). A document this build then
-// makes of the same issue and name takes that address. Its create holds the issue's row and has
+// makes of the same issue and name takes that address. Its create holds the issue's owner lock and has
 // found no row at the address, so the node there is the removed document's: the create states it
 // gone and then live, both under its own artifact.created event and dated at the new row's
 // created_at, and the new document's node carries no statement of the removed one's as its own.
@@ -31,20 +31,20 @@ import (
 // release marked it with while the document stood (laterNodeState),
 // which is no less the removed document's.
 //
-// The earlier build's removal takes the document's owner row first, as every writer of the store
+// The earlier build's removal takes the document's owner lock first, as every writer of the store
 // does: a settlement of the document, which the document's own room runs in the background, takes
-// the issue's row, then the document's revision fence, then the document's row as a version's
-// insert checks its foreign key, and a removal that deleted the document without the owner row
-// held its row and then waited at the delete's cascade into that fence, which the settlement
-// held: a deadlock, now and then, in the rows above. The last row forces that order
-// (removeBesideASettlement): a transaction holds the issue's row and the fence while the removal
-// runs, and takes the document's row only once the removal waits. The removal must wait at the
-// issue's row and finish after the settlement commits.
+// the issue's owner lock, then the document's revision fence, then the document's row as a
+// version's insert checks its foreign key, and a removal that deleted the document without the
+// owner lock held its row and then waited at the delete's cascade into that fence, which the
+// settlement held: a deadlock, now and then, in the rows above. The last row forces that order
+// (removeBesideASettlement): a transaction holds the issue's owner lock and the fence while the
+// removal runs, and takes the document's row only once the removal waits. The removal must wait at
+// the issue's owner lock and finish after the settlement commits.
 //
 // Its controls are the create's gone step taken out: the node then states nothing for the new
 // document, and keeps the removed one's event and its one live statement; the gone step taken
 // for a live node alone, which moves the marked node live with no gone statement between; and
-// the removal's owner row taken out, which deadlocks the last row.
+// the removal's owner lock taken out, which deadlocks the last row.
 func TestADocumentMadeWhereAnOrphanedNodeStandsStatesItGoneThenLive(t *testing.T) {
 	for _, orphan := range []struct {
 		name, state string
@@ -341,11 +341,11 @@ func earlierBuildRemoval(ctx context.Context, database *store.Store, artifactID 
 }
 
 // removeBesideASettlement removes the untouched document as an earlier build does while a
-// transaction holds what a settlement of it takes, in the store's lock order: the issue's row,
-// then the document's revision fence row (document_block_versions), and then, once the removal
-// waits, the document's own row `for key share`, as a version's insert checks its foreign key.
-// The removal must wait at the issue's row, so the settlement's last step takes nothing the
-// removal holds; it then commits, and the removal finishes.
+// transaction holds what a settlement of it takes, in the store's lock order: the issue's owner
+// lock, then the document's revision fence row (document_block_versions), and then, once the
+// removal waits, the document's own row `for key share`, as a version's insert checks its foreign
+// key. The removal must wait at the issue's owner lock, so the settlement's last step takes nothing
+// the removal holds; it then commits, and the removal finishes.
 func removeBesideASettlement(t *testing.T, database *store.Store, issue, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -354,13 +354,11 @@ func removeBesideASettlement(t *testing.T, database *store.Store, issue, artifac
 		t.Fatalf("begin the settlement: %v", err)
 	}
 	defer settlement.Rollback(ctx)
-	for _, step := range []struct{ what, statement, key string }{
-		{"the issue's row", `select closed_at is null from issues where key = $1 for no key update`, issue},
-		{"the document's revision fence", `select 1 from document_block_versions where artifact_id = $1::uuid for no key update`, artifactID},
-	} {
-		if tag, err := settlement.Exec(ctx, step.statement, step.key); err != nil || tag.RowsAffected() != 1 {
-			t.Fatalf("take %s as a settlement does: %d row(s), %v", step.what, tag.RowsAffected(), err)
-		}
+	if err := store.LockOwners(ctx, settlement, store.IssueOwner(issue)); err != nil {
+		t.Fatalf("take the issue's owner lock as a settlement does: %v", err)
+	}
+	if tag, err := settlement.Exec(ctx, `select 1 from document_block_versions where artifact_id = $1::uuid for no key update`, artifactID); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("take the document's revision fence as a settlement does: %d row(s), %v", tag.RowsAffected(), err)
 	}
 	// The removal runs on a connection of its own, so the wait read is its own and never a
 	// background settlement's queued on the same row.
@@ -382,7 +380,7 @@ func removeBesideASettlement(t *testing.T, database *store.Store, issue, artifac
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the removal waited on no lock within 10s of the settlement taking the issue's row and the fence, so this row proves nothing")
+			t.Fatal("the removal waited on no lock within 10s of the settlement taking the issue's owner lock and the fence, so this row proves nothing")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

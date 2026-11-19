@@ -28,7 +28,7 @@ import (
 // runs, are paths of TestEveryApiStoreWriterTakesTheStoreLockOrder, which holds that node step
 // with the block index's.
 //
-// What each create is held to is the order this slice adds: its owner rows first, then the
+// What each create is held to is the order this slice adds: its owner lock first, then the
 // object's node, written before the row that holds the object, the event, appended after that
 // row, and the facts the node write stated, appended after the event that causes them. The id of
 // each object is drawn inside its own transaction, so no other transaction can hold its node or

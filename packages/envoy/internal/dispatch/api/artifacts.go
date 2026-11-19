@@ -411,7 +411,7 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 // the insert leaves carries it, so the reads this transaction makes of the artifact it just
 // created see it as every later reader will.
 //
-// The create's one time is read here, in the read phase, under the owner row the caller holds: its
+// The create's one time is read here, in the read phase, under the owner lock the caller holds: its
 // row's created_at and its node's statements are both dated with it (graphstore.StatementTime),
 // past every statement about the address, so a read as of a time reads them in the order the
 // store appends them. Which row the node's live statement names is read from its cause, this
@@ -421,7 +421,7 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 // between the parties of the conversation that does. A ref_key past the store's address bound is
 // no node of it (graphstore.AddressFits), as every writer of the store leaves such an address out,
 // and the write is then the zero Uncaused. No row stands at the address, since the slug is free
-// under the owner row this transaction holds, so a node there that is not gone stands behind no
+// under the owner lock this transaction holds, so a node there that is not gone stands behind no
 // row: a document a build before this one removed, stating nothing, live or at a state a later
 // release marked it with (graphstore.Node's Restates). The write states it gone and then live,
 // both under this upload's event, so the new document's node carries no statement of the removed

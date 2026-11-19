@@ -55,7 +55,7 @@ import (
 // node its create would have written - live, made by its creator at its created_at, at the
 // sentinel, as the backfill writes it (graphcensus's backfillObjectNodes) - and only then is it
 // stated gone, by the person who removed it, at the time this transaction reads from the
-// database's clock under the owner row it holds (graphstore.StatementTime): later than every
+// database's clock under the owner lock it holds (graphstore.StatementTime): later than every
 // statement about the address, so a document made there next is dated later still. Where the
 // store holds a node already, live or gone, no first node is written: a live one is stated gone,
 // and a gone one (an earlier document's, whose address a build before this one took again) is

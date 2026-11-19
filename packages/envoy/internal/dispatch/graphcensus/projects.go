@@ -226,7 +226,7 @@ var orphanKindList = func() string {
 // gone, and the backfill would state that node gone and live again over the mark.
 //
 // Time keeps the order the store appends in, which is what a read as of a time reads: this
-// build's create and removal read their one time under the address's owner row, from the
+// build's create and removal read their one time under the address's owner lock, from the
 // database's clock and past every statement the store holds about the address
 // (graphstore.StatementTime), and the backfill dates a statement past every one before it too.
 //

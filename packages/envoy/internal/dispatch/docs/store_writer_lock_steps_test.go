@@ -224,8 +224,9 @@ const (
 	// docsTupleStatement is graphstore's tuple append for a write that wrote nodes, which states
 	// their base attributes and moves them onto the cause in the same statement (queueAppend).
 	docsTupleStatement = "with written as ("
-	// docsCursorStatement is the block-index tick's move of its build's event cursor row.
-	docsCursorStatement = "insert into block_index_event_cursors (build_commit, event_id)"
+	// docsCursorStatement is the block-index tick's move of its build's event cursor row, which
+	// records whether the tick found another build and the debt of the object pass with it.
+	docsCursorStatement = "insert into block_index_event_cursors (build_commit, event_id, another_build_seen, object_nodes_owed_at)"
 	// docsMarkingStatement is the block-index tick's marking (markVersionedDocuments), which takes
 	// the document_block_versions row of each document it marks `for no key update`.
 	docsMarkingStatement = "with held as ( select b.artifact_id from document_block_versions b"
