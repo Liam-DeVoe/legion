@@ -54,7 +54,7 @@ packages="$*"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 # go-offline: a build's notices step runs this (lint's, envoy-go-checks' pack step, the releases
-# and the image builds), no test, over the modules that build already loaded.
+# and the image builds), no test.
 # One --ignore per module path; module paths hold no whitespace, so the split is the list.
 # shellcheck disable=SC2046
 set -- "$@" $("$go_cmd" list -m -f '--ignore={{.Path}}')
@@ -80,7 +80,7 @@ fi
 # build take a module's source from another path (a fork), so that path, not the module's own, is
 # where its source is.
 # go-offline: a build's notices step runs this (lint's, envoy-go-checks' pack step, the releases
-# and the image builds), no test, over the modules that build already loaded.
+# and the image builds), no test.
 # shellcheck disable=SC2086
 "$go_cmd" list -deps -f '{{with .Module}}{{with .Replace}}{{$.Module.Path}}{{"\t"}}{{.Path}}{{with .Version}}@{{.}}{{end}}{{end}}{{end}}' $packages |
   awk 'NF' | LC_ALL=C sort -u >"$scratch/replacements.tsv"
