@@ -228,6 +228,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// no directory for the read's repository at all, and this routing would then refuse a
 		// read the caller's token can make, which is the second reason #4219 gives for running
 		// these reads under it (ghVisibilityRead).
+		//
+		// With no caller token, a read of a repository whose owner the bundle holds no directory
+		// for is refused below with leakguard.OwnerNotServedError's line (ownerGHConfigDir), and
+		// no gh runs. The guard reads exactly that refusal, and then reads the repository's
+		// visibility with no credential (leakguard.Guard.Visibility).
 		if ghCallerToken(env) == "" {
 			target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
 			target.dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo)
@@ -425,8 +430,8 @@ func ghCallModeOf(rateLimitRead, visibilityRead, writesNothing bool) ghCallMode 
 // would run with a token of the bundle's. The issue owner's token goes with the read itself alone,
 // once that answer is in.
 //
-// The refusal it lifts is ownerGHConfigDir's of the one owner the command names, an
-// *ownerNotInstalledError as ghTargetOf answered it itself and wrapped in nothing: a read's
+// The refusal it lifts is ownerGHConfigDir's of the one owner the command names, a
+// *leakguard.OwnerNotServedError as ghTargetOf answered it itself and wrapped in nothing: a read's
 // selectors name its one repository and nothing else (ghTarget.read), so that refusal is of
 // target.owner. A bundle whose renames cannot be read, a pair that moved the repository to an
 // owner the bundle holds no directory for, whose refusal wraps that owner's (ghConfigDirFor), a
@@ -435,7 +440,7 @@ func ghCallModeOf(rateLimitRead, visibilityRead, writesNothing bool) ghCallMode 
 // a command naming the owner alone or two of its repositories — stand before anything is asked,
 // so a write is refused with nothing sent. guard is the guard runGh then checks the call with.
 func liftForPublicRead(ctx context.Context, guard *leakguard.Guard, target ghTarget, refused error) error {
-	if _, ok := refused.(*ownerNotInstalledError); !target.read || !ok {
+	if _, ok := refused.(*leakguard.OwnerNotServedError); !target.read || !ok {
 		return refused
 	}
 	if _, err := guard.VisibilityWithoutCredential(ctx, target.repository()); err != nil {
@@ -544,7 +549,9 @@ func trimGhCallLog(path string) {
 //     as a git push whose credential helper answers with GH_TOKEN. That token writes the
 //     repository the guard reads, so it can read that repository too.
 //   - The bundle may hold no directory for the repository's owner. A read with the bundle's
-//     directory would then be refused, and so would the push, for a repository the token writes.
+//     directory would then be refused, and the guard could read the visibility only with no
+//     credential, which answers for a public repository alone (leakguard.OwnerNotServedError):
+//     a push to a private repository the token writes would be refused.
 //   - gh sends the caller's token first, so a read with the bundle's directory would also have to
 //     remove that token from gh's environment.
 //
