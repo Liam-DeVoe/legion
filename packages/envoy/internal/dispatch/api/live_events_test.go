@@ -872,7 +872,9 @@ func TestAStoppedEventsSubscriptionLeavesTheRelayWhileItsSocketStaysOpen(t *test
 	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
 	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
 	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// the whole family is out of it (dispatch://INFRA-1075). It also holds the replaced and the
+	// unsubscribed subscription to leaving the relay within 5 s, a wall-clock bound a parallel
+	// neighbour's load spends.
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	relay := rig.served.eventRelay
@@ -880,10 +882,10 @@ func TestAStoppedEventsSubscriptionLeavesTheRelayWhileItsSocketStaysOpen(t *test
 
 	subscribeEvents(t, client, "feed", nil)
 	subscribeEvents(t, client, "feed", nil)
-	pollUntil(t, concurrentWait, "the replaced subscription leaves the relay", func() bool { return relaySubscribers(relay) == 1 })
+	pollUntil(t, 5*time.Second, "the replaced subscription leaves the relay", func() bool { return relaySubscribers(relay) == 1 })
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "feed"})
-	pollUntil(t, concurrentWait, "the unsubscribed subscription leaves the relay", func() bool { return relaySubscribers(relay) == 0 })
+	pollUntil(t, 5*time.Second, "the unsubscribed subscription leaves the relay", func() bool { return relaySubscribers(relay) == 0 })
 	renameIssue(t, rig.handler, issue.Key, "Renamed after the unsubscribe")
 	client.quiet(t, 500*time.Millisecond, "after the page unsubscribed")
 	if !client.open() {

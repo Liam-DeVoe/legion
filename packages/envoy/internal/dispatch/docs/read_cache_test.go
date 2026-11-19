@@ -467,7 +467,9 @@ func TestRepeatedColdReadsLoadAnUnchangedDocumentOnce(t *testing.T) {
 
 // Serial: the shared fold runs under the product's coldReadTimeout (60 s, read_cache.go:81), armed
 // as the fold starts, which ends the gated load as the caller's cancellation would and sets
-// canceled: every step from the fold's start to the release must come inside it.
+// canceled: every step from the fold's start to the release must come inside it. It also holds the
+// cancelled leader to returning within 1 s of its cancel, a wall-clock bound a parallel
+// neighbour's load spends.
 func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 	database := storetest.Open(t)
 	persistence := &gatedLoadStore{
@@ -513,7 +515,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled leader = %v, want context.Canceled", err)
 		}
-	case <-time.After(roomWait(t)):
+	case <-time.After(time.Second):
 		t.Fatal("the cancelled leader stayed blocked on the shared fold")
 	}
 	close(persistence.release)

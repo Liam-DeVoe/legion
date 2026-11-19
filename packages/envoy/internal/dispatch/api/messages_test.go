@@ -519,7 +519,6 @@ func TestTargetedMessageRecordsCapabilityAndListenerFailures(t *testing.T) {
 }
 
 func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
-	t.Parallel()
 	t.Run("refused", func(t *testing.T) {
 		handler, _ := newTargetedMessageHandler(t, "http://127.0.0.1:1")
 		issue := createInteractionIssue(t, handler, "TEST", "Refused listener", "before")
@@ -555,7 +554,7 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 		}
 		select {
 		case <-cancelled:
-		case <-time.After(concurrentWait):
+		case <-time.After(time.Second):
 			t.Fatal("listener request was not cancelled after the Dispatch timeout")
 		}
 	})

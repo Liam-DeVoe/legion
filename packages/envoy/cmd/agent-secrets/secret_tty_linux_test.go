@@ -621,7 +621,6 @@ func TestPromptSignalHelper(t *testing.T) {
 // `env --default-signal`, so it does not inherit a SIGINT this test process ignores (as a job run in
 // the background of a script does), at which the prompt rightly goes on reading.
 func TestPromptCtrlCEndsTheProcessBySIGINT(t *testing.T) {
-	t.Parallel()
 	reset := []string{"env", "--default-signal=INT,TERM"}
 	helper := shellWord(os.Args[0]) + " -test.run=^TestPromptSignalHelper$"
 	for _, tc := range []struct {
@@ -655,9 +654,9 @@ func TestPromptCtrlCEndsTheProcessBySIGINT(t *testing.T) {
 			}
 			select {
 			case <-done:
-			case <-time.After(promptJobWait):
+			case <-time.After(10 * time.Second):
 				_ = cmd.Process.Kill()
-				t.Fatalf("the process did not end within promptJobWait (%s) of Ctrl-C; the terminal showed %q", promptJobWait, shown(t, controller))
+				t.Fatalf("the process did not end within 10s of Ctrl-C; the terminal showed %q", shown(t, controller))
 			}
 			status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 			out := shown(t, controller)
@@ -680,7 +679,6 @@ func TestPromptCtrlCEndsTheProcessBySIGINT(t *testing.T) {
 // limit, in a directory of its own, so a core the kernel would write shows in its wait status and
 // in that directory.
 func TestPromptQuitEndsTheProcessBySIGQUITWithNoCore(t *testing.T) {
-	t.Parallel()
 	controller, terminal := openPTY(t)
 	fd, err := unix.Dup(terminal)
 	if err != nil {
@@ -708,9 +706,9 @@ func TestPromptQuitEndsTheProcessBySIGQUITWithNoCore(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(promptJobWait):
+	case <-time.After(10 * time.Second):
 		_ = cmd.Process.Kill()
-		t.Fatalf("the process did not quit within promptJobWait (%s) of Ctrl-\\", promptJobWait)
+		t.Fatal("the process did not quit within 10s of Ctrl-\\")
 	}
 	status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 	out := shown(t, controller)

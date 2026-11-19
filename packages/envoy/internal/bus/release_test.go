@@ -48,7 +48,7 @@ func drainSubscription(t *testing.T, sub *natsgo.Subscription) {
 	if err := sub.Drain(); err != nil {
 		t.Fatalf("drain the subscription: %v", err)
 	}
-	waitFor(t, busWait, "the drain to end", func() bool { return !sub.IsValid() })
+	waitFor(t, 10*time.Second, "the drain to end", func() bool { return !sub.IsValid() })
 }
 
 // awaitHook waits for the reconnect hook to report a run, which comes after the client's restore of
@@ -110,7 +110,6 @@ func awaitPendingForTheNextBind(t *testing.T, client *bus.Client, consumer strin
 // stopped handler take the durable's deliveries. A later Subscribe on the same client binds the
 // durable afresh and is handed what was published meanwhile.
 func TestADrainedSubscriptionIsNotBoundAgainByAReconnect(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		reconnect func(*bus.Client) error
@@ -144,7 +143,7 @@ func TestADrainedSubscriptionIsNotBoundAgainByAReconnect(t *testing.T) {
 			if drained != sub {
 				t.Fatalf("DrainSubscription drained %p, want the handle Subscribe returned (%p)", drained, sub)
 			}
-			waitFor(t, busWait, "the drain to end", func() bool { return !drained.IsValid() })
+			waitFor(t, 10*time.Second, "the drain to end", func() bool { return !drained.IsValid() })
 			// The server lets the drained subscriber go on the consumer's own goroutine, after the
 			// drain's UNSUB is answered: a probe published before it has is delivered to an inbox
 			// nothing reads, and is handed to the fresh subscription below only after the ack wait.
@@ -190,7 +189,6 @@ func TestADrainedSubscriptionIsNotBoundAgainByAReconnect(t *testing.T) {
 // is bound again by the next reconnect; DrainSubscription then drains that rebound handle and gives
 // the registration up, so the durable is left free and the stopped handler is handed nothing more.
 func TestDrainSubscriptionEndsWhatARestoreBoundAfterTheSubscriptionEnded(t *testing.T) {
-	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -428,6 +426,8 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 // the handle comes back for the caller to wait on, the handler is handed what the client had
 // buffered, and the client holds no subscription once the drain ends.
 func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
+	// Serial: it holds the drain's end to 10 s after DrainSubscription, a wall-clock bound a
+	// parallel neighbour's load spends.
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -458,7 +458,7 @@ func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
 	if drained != sub {
 		t.Fatalf("DrainSubscription returned %p to wait on, want the handle Subscribe returned (%p)", drained, sub)
 	}
-	waitFor(t, busWait, "the drain to end", func() bool { return !drained.IsValid() })
+	waitFor(t, 10*time.Second, "the drain to end", func() bool { return !drained.IsValid() })
 	if got := handled.Load(); got != 1 {
 		t.Fatalf("the drained subscription's handler was handed %d message(s), want the one published before the drain", got)
 	}
@@ -680,7 +680,8 @@ func TestReleaseFailedKeepsASubscriptionThatBound(t *testing.T) {
 // No recovery binds the drained registration again, and a later Subscribe binds the durable afresh
 // and is handed what was published meanwhile.
 func TestDrainSubscriptionDrainsTheHandleARestoreBound(t *testing.T) {
-	t.Parallel()
+	// Serial: it holds the drain's end to 10 s after DrainSubscription, a wall-clock bound a
+	// parallel neighbour's load spends.
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -713,7 +714,7 @@ func TestDrainSubscriptionDrainsTheHandleARestoreBound(t *testing.T) {
 	if drained == nil || drained == sub {
 		t.Fatalf("DrainSubscription drained %p, want the handle the recovery bound, not the one Subscribe returned (%p)", drained, sub)
 	}
-	waitFor(t, busWait, "the drain to end", func() bool { return !drained.IsValid() })
+	waitFor(t, 10*time.Second, "the drain to end", func() bool { return !drained.IsValid() })
 	awaitPushBound(t, client, consumer, false, "the durable to lose its subscriber")
 
 	client.Conn.Close()

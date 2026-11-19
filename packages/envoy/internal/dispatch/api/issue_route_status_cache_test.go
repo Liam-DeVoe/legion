@@ -330,7 +330,6 @@ func TestAFailuresWindowCountsFromWhenTheFailureIsKnown(t *testing.T) {
 // listener that hangs returns unknown once the lifetime ends, not when the fetch's bound (a minute
 // here) runs out.
 func TestAShutdownEndsAFetchInFlight(t *testing.T) {
-	t.Parallel()
 	lifetime, shutdown := context.WithCancel(t.Context())
 	defer shutdown()
 	served, _ := timedRosterServer(t, 0, true, lifetime)
@@ -344,8 +343,8 @@ func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 		if roster.answered {
 			t.Fatal("a read answered a roster after the shutdown")
 		}
-	case <-time.After(concurrentWait):
-		t.Fatalf("a read waiting on a listener that hangs did not return within %s of the shutdown", concurrentWait)
+	case <-time.After(5 * time.Second):
+		t.Fatal("a read waiting on a listener that hangs did not return within 5 s of the shutdown")
 	}
 }
 

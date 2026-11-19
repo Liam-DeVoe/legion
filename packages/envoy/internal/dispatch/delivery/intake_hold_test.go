@@ -375,7 +375,9 @@ func awaitEverythingAcknowledged(t *testing.T, publisher *bus.Client) {
 //
 // Serial: it swaps process-wide state. shrinkIntakeFlowControl and its own assignment of
 // intakeMaxAckPending set package variables every intake in the process reads, and its assertion
-// is also a time: the standby handles the queued messages within 10 s.
+// is also a time: the standby handles the queued messages within 10 s. It also holds the stopping
+// holder's keyed runner to stopping within 20 s of the stop, a wall-clock bound a parallel
+// neighbour's load spends.
 func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	// One message in the holder's handler and four behind it on its key.
@@ -409,7 +411,7 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	// while the runner still ran, and the runner would hand it the next queued message of the
 	// same key rather than leaving it to the standby. The wait for the handler cannot return
 	// while that fetch is held, so waiting for the runner here cannot deadlock.
-	waitFor(t, eventWait, holder.keyedRunnerStopped, func() string {
+	waitFor(t, 20*time.Second, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
 	// The message in the holder's handler finishes as the stop waits for it.

@@ -264,6 +264,9 @@ func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T)
 // A message waiting behind its key when the intake stops is negatively acknowledged, so the next
 // process to bind the durable is handed it at once rather than after the ack wait; the message in
 // its handler then finishes and is acknowledged by the stopping intake.
+//
+// Serial: it holds the stopping intake's subscription to ending within 20 s of the stop, a
+// wall-clock bound a parallel neighbour's load spends.
 func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -293,7 +296,7 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 		defer close(stopped)
 		stopFirst()
 	}()
-	waitFor(t, eventWait, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
+	waitFor(t, 20*time.Second, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
 		return "the stopping intake kept its subscription"
 	})
 	held.release()

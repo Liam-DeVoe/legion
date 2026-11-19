@@ -141,7 +141,8 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 //
 // Serial: it swaps process-wide state. captureLogs replaces the default logger, which is where
 // deliver logs an acknowledgement that failed, so a parallel test beside it would have its own
-// lines read here and its own logger taken away.
+// lines read here and its own logger taken away. It also holds the durable's loss of its
+// subscriber to 20 s after ctx ends, a wall-clock bound a parallel neighbour's load spends.
 func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
@@ -195,7 +196,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	cancel()
 	// The intake stops delivering as ctx ends: the durable loses its subscriber at once, while the
 	// message in its handler is still running.
-	waitFor(t, eventWait, func() bool {
+	waitFor(t, 20*time.Second, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && !info.PushBound
 	}, func() string {
@@ -281,12 +282,8 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 }
 
 // TestIntakesWithoutTheAppConnectNothing: with no GitHub App neither intake reads anything, so
-// StartIntakes opens no connection and its stop returns rather than waiting on one. The stop is a
-// stop that must return, so it waits on eventWait like every other event here; how long it takes
-// is nothing this row reads, since with no App StartIntakes answers a stop that closes a channel
-// and no intake's own stop (intakeStopBudget bounds that one, in the rows that start one).
+// StartIntakes opens no connection and its stop returns at once.
 func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
-	t.Parallel()
 	stop, err := StartIntakes(t.Context(), func(string) (*bus.Client, error) {
 		t.Error("connected a client for intakes that have no GitHub App")
 		return nil, errors.New("no connection here")
@@ -301,8 +298,8 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 	}()
 	select {
 	case <-stopped:
-	case <-time.After(eventWait):
-		t.Fatal("stopping intakes with no GitHub App never returned")
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopping intakes with no GitHub App did not return")
 	}
 }
 

@@ -997,7 +997,8 @@ func TestARegisterForASessionTheRegistryNoLongerHoldsIsRefused(t *testing.T) {
 // closing its stop. The reply must then be NOT_A_SESSION, not OK with the identity of a session
 // nothing live holds and the sweep is about to revoke.
 func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
-	t.Parallel()
+	// Serial: it holds the reply's return to 5 s after the retire closes its stop, a wall-clock
+	// bound a parallel neighbour's load spends.
 	r := startRig(t, "") // logged in, so the reply actually waits
 	sess, err := newSession(4242, 1, "testhost:4242:1", testSessionID, nil, nil)
 	if err != nil {
@@ -1010,8 +1011,7 @@ func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
 	// stop closed. With a 5 s wait, Remove had to land inside those 5 s or the reply found the
 	// session still held and answered OK; and a reply that never woke on the stop raced the 5 s
 	// guard below with an answer of its own 5 s later, which found the session gone and passed.
-	// The guard is now the only bound, and it is the ten seconds this package's waitFor gives the
-	// same waits: a reply the retire does not wake fails there.
+	// The guard is now the only bound, at 5 s: a reply the retire does not wake fails there.
 	go func() { done <- r.srv.registerReply(sess, time.Hour) }()
 	r.srv.Registry.Remove(sess)
 	select {
@@ -1019,7 +1019,7 @@ func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
 		if resp.OK || resp.Code != CodeNotASession {
 			t.Fatalf("a register whose session retired mid-wait got %+v, want NOT_A_SESSION", resp)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("registerReply did not return after its session retired")
 	}
 }

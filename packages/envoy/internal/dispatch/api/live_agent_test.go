@@ -476,7 +476,8 @@ func TestTwoAgentViewsShareOneSocket(t *testing.T) {
 	// No t.Parallel: this test measures the process. Once the planner's view stops, the planner's
 	// next frame must not reach the page in a 300 ms quiet window; another test's work on the same
 	// machine could hold a wrongly relayed frame past the window, so the test would pass with the
-	// defect.
+	// defect. It also holds the unsubscribed view to leaving the planner's frames within 5 s, a
+	// wall-clock bound a parallel neighbour's load spends.
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"planner-replay"}`))
 	source.SetResponder(reviewerSessionID, true)
@@ -509,7 +510,7 @@ func TestTwoAgentViewsShareOneSocket(t *testing.T) {
 	}
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "planner"})
-	pollUntil(t, concurrentWait, "the unsubscribed view leaves the planner's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	pollUntil(t, 5*time.Second, "the unsubscribed view leaves the planner's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 	if got := source.Viewers(reviewerSessionID); got != 1 {
 		t.Fatalf("the reviewer's frames have %d viewers after the planner's view stopped, want 1", got)
 	}

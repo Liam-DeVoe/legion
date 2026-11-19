@@ -279,7 +279,6 @@ func coverage(t *testing.T, database *store.Store, identity string) (items, curr
 // written beside it hold no window, and the pass adds none: a window is the block index's to
 // write, not the queue's, so no kind but the issue has an item to cover here.
 func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	seeded := 1
 	withTriggersOff(t, database, func(q querier) { seedItems(t, q, "PRET") })
@@ -315,7 +314,7 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(eventWait):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return after its context ended")
 	}
 }

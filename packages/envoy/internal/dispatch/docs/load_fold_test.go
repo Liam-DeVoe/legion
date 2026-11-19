@@ -134,8 +134,10 @@ func TestALoadReadsOneStateWhetherItFoldsTheLogInMemoryOrStreamed(t *testing.T) 
 // rows it reads into memory waits for the slot, holding its read transaction, while the first is
 // inside its fold, and folds once the first gives the slot back; a waiter whose context ends
 // returns that context's error without folding.
+//
+// Serial: it holds the waiter whose context ended to returning within 30 s, a wall-clock bound a
+// parallel neighbour's load spends.
 func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	versioned.foldSlots = make(chan struct{}, 1)
@@ -204,7 +206,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("the waiter whose context ended returned %v, want %v", err, context.Canceled)
 		}
-	case <-time.After(roomWait(t)):
+	case <-time.After(30 * time.Second):
 		t.Fatal("the waiter whose context ended is still waiting for the slot")
 	}
 	select {

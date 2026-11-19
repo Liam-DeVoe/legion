@@ -25,7 +25,8 @@ import (
 // liveSocketCloseWait more, waiting for the answer, so the set read before the page lets it go
 // finds it there.
 func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) {
-	t.Parallel()
+	// Serial: it holds the shutdown's wait for the sockets to returning within 10 s of the signal,
+	// a wall-clock bound a parallel neighbour's load spends.
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 
 	const pages = 16
@@ -94,8 +95,8 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 	rig.stop()
 	select {
 	case <-returned:
-	case <-time.After(eventFeedWait):
-		t.Fatalf("the shutdown's wait for the sockets had not returned %s after the signal", eventFeedWait)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the shutdown's wait for the sockets had not returned 10s after the signal")
 	}
 	waitReturned()
 

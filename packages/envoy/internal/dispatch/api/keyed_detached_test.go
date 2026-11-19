@@ -525,6 +525,8 @@ func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
 // cancellation, so a close held on the issue's owner lock kept its background-work slot, and the
 // shutdown's wait for it, as long as that lock stayed held.
 func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
+	// No t.Parallel: it holds the close to answering within 15 s of its run's 1 s bound ending,
+	// a wall-clock bound a parallel neighbour's load spends.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.requestKeyRunLimit = time.Second
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while its owner lock is held", "Context\n")
@@ -558,8 +560,8 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(
 			t.Fatalf("a close held past its run's bound: status=%d body=%s, want a 5xx that releases its key",
 				response.Code, response.Body.String())
 		}
-	case <-time.After(concurrentWait):
-		t.Fatalf("a keyed close still waited on the held issue owner lock %s after its run's 1 s bound", concurrentWait)
+	case <-time.After(15 * time.Second):
+		t.Fatal("a keyed close still waited on the held issue owner lock 15 s after its run's 1 s bound")
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the issue's owner lock: %v", err)
@@ -612,7 +614,9 @@ func (h *closeCommitHold) Join(ctx context.Context, tx pgx.Tx) (context.Context,
 func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
 	// No t.Parallel: this test measures the process. The close must commit inside the keyed
 	// run's 1 s bound (requestKeyRunLimit, counted from the claim): a close the machine slows
-	// past it ends at the bound before the sweep's Join, and hold.committed never closes.
+	// past it ends at the bound before the sweep's Join, and hold.committed never closes. It also
+	// holds the sweep to ending within 15 s of that bound, a wall-clock bound a parallel
+	// neighbour's load spends.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.requestKeyRunLimit = time.Second
 	issue := createInteractionIssue(t, handler, "TEST", "Swept while its row is held", "Context\n")
@@ -651,8 +655,8 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 			t.Fatalf("a close whose sweep ended at its run's bound: status=%d body=%s, want the committed close's 200",
 				response.Code, response.Body.String())
 		}
-	case <-time.After(concurrentWait):
-		t.Fatalf("a keyed close's sweep still waited on the held owner lock %s after its run's 1 s bound", concurrentWait)
+	case <-time.After(15 * time.Second):
+		t.Fatal("a keyed close's sweep still waited on the held owner lock 15 s after its run's 1 s bound")
 	}
 	var closed bool
 	if err := database.Pool.QueryRow(ctx,

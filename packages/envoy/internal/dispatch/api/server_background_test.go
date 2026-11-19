@@ -73,7 +73,6 @@ func TestTheBackgroundWaitHoldsForAnOpenLiveSocket(t *testing.T) {
 // returns once that subscription leaves: the relay's generation stops with its last subscriber,
 // so nothing of it is left for the lifetime to end.
 func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
-	t.Parallel()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
 	if err != nil {
@@ -88,7 +87,7 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 	})
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the event stream relay", func() {
 		running.stop()
-		pollUntil(t, concurrentWait, "the stopped subscription leaves the relay", func() bool {
+		pollUntil(t, 5*time.Second, "the stopped subscription leaves the relay", func() bool {
 			return relaySubscribers(served.eventRelay) == 0
 		})
 	})

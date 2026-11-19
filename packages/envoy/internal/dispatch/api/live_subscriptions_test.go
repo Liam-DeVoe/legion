@@ -495,7 +495,9 @@ func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
 func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
 	// No t.Parallel: this test measures the process. Its first case holds the socket's writer
 	// at the gate (heldWrites), which lets the write go at the connection's write deadline
-	// (liveSocketWriteWait, 10 s): the unsubscribe must end the wait inside that span.
+	// (liveSocketWriteWait, 10 s): the unsubscribe must end the wait inside that span. Each case
+	// also holds SendWait's return once its stop lands to a wall-clock bound a parallel
+	// neighbour's load spends: 3 s after the unsubscribe, 1 s after the context or the socket ends.
 	t.Run("the page unsubscribes", func(t *testing.T) {
 		events := newFakeLiveKind(-1, 512)
 		held := &heldWrites{}
@@ -509,7 +511,7 @@ func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
 
 		// The queue never drains, and the page's unsubscribe still ends the wait.
 		client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "x"})
-		if err := running.ended(t, eventFeedWait); !errors.Is(err, context.Canceled) {
+		if err := running.ended(t, 3*time.Second); !errors.Is(err, context.Canceled) {
 			t.Fatalf("SendWait answered %v once x was unsubscribed, want its context's end", err)
 		}
 	})
@@ -578,8 +580,8 @@ func awaitReturn(t *testing.T, returned <-chan error) error {
 	select {
 	case err := <-returned:
 		return err
-	case <-time.After(eventFeedWait):
-		t.Fatalf("SendWait never returned within %s", eventFeedWait)
+	case <-time.After(time.Second):
+		t.Fatal("SendWait never returned")
 		return nil
 	}
 }
@@ -595,7 +597,8 @@ func (s *contextBoundSubscription) stop() { <-s.done }
 // subscriptions run on before the socket waits for them, so a subscription that ends on that
 // context alone ends, and the socket's handler returns.
 func TestASubscriptionsContextEndsWhenItsSocketEnds(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: each row holds the socket's handler to returning within 5 s of the socket's
+	// end, a wall-clock bound a parallel neighbour's load spends.
 	for name, end := range map[string]func(t *testing.T, rig *liveSocketRig, client *socketClient){
 		"the page closes it": func(t *testing.T, _ *liveSocketRig, client *socketClient) {
 			closing := gws.FormatCloseMessage(gws.CloseGoingAway, "")
@@ -610,7 +613,6 @@ func TestASubscriptionsContextEndsWhenItsSocketEnds(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			started := make(chan *contextBoundSubscription, 1)
 			// release ends the goroutine only once the test is over, so a socket that never ends its
 			// subscriptions' context fails the test rather than hanging the cleanups, which wait for
@@ -646,8 +648,8 @@ func TestASubscriptionsContextEndsWhenItsSocketEnds(t *testing.T) {
 			}()
 			select {
 			case <-returned:
-			case <-time.After(eventFeedWait):
-				t.Fatalf("the socket's handler had not returned %s after the socket ended: its subscription's context had not ended, so its stop never returned", eventFeedWait)
+			case <-time.After(5 * time.Second):
+				t.Fatal("the socket's handler had not returned 5s after the socket ended: its subscription's context had not ended, so its stop never returned")
 			}
 		})
 	}

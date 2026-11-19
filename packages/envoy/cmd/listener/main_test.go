@@ -4448,7 +4448,8 @@ func TestCheckSelfHealth_DurableProbeFailurePropagates(t *testing.T) {
 }
 
 func TestRunSelfHealthMonitor_RetriesPastTransientFailures(t *testing.T) {
-	t.Parallel()
+	// Serial: it holds the monitor's return to 1 s after its context ends, a wall-clock bound a
+	// parallel neighbour's load spends.
 	logger := logging.New("test")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -4485,7 +4486,7 @@ func TestRunSelfHealthMonitor_RetriesPastTransientFailures(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(listenerWait):
+	case <-time.After(time.Second):
 		t.Fatal("monitor did not stop after shutdown")
 	}
 }
@@ -4594,7 +4595,8 @@ func TestRunSelfHealthMonitor_CountsADisconnectedProbeAfterARebuild(t *testing.T
 // monitor must still be running: mixing the two counts would terminate a listener whose NATS is up
 // over a fault that never touches the disconnected path at all.
 func TestRunSelfHealthMonitor_DoesNotTerminateOnSustainedConnectedTransientFailure(t *testing.T) {
-	t.Parallel()
+	// Serial: it holds the monitor's return to 1 s after its context ends, a wall-clock bound a
+	// parallel neighbour's load spends.
 	var probeCalls atomic.Int32
 	probe := func() error {
 		probeCalls.Add(1)
@@ -4624,7 +4626,7 @@ func TestRunSelfHealthMonitor_DoesNotTerminateOnSustainedConnectedTransientFailu
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(listenerWait):
+	case <-time.After(time.Second):
 		t.Fatal("monitor did not stop after shutdown")
 	}
 }
@@ -4635,7 +4637,8 @@ func TestRunSelfHealthMonitor_DoesNotTerminateOnSustainedConnectedTransientFailu
 // up to a restart, however many of them a listener rides out, since each connected probe starts
 // the count again.
 func TestRunSelfHealthMonitor_DisconnectedFailuresDoNotAccumulateAcrossRecoveries(t *testing.T) {
-	t.Parallel()
+	// Serial: each row holds the monitor's return to 1 s after its context ends, a wall-clock
+	// bound a parallel neighbour's load spends.
 	for _, tc := range []struct {
 		name string
 		// between is the probe result that ends each outage: nil is a healthy probe, an error is a
@@ -4692,7 +4695,7 @@ func TestRunSelfHealthMonitor_DisconnectedFailuresDoNotAccumulateAcrossRecoverie
 			cancel()
 			select {
 			case <-done:
-			case <-time.After(listenerWait):
+			case <-time.After(time.Second):
 				t.Fatal("monitor did not stop after shutdown")
 			}
 		})
@@ -4983,7 +4986,6 @@ func TestRunSelfHealthMonitor_ExitsAfterThreeRebuildsThatLeaveAFault(t *testing.
 // an ordered shutdown writes no ERROR, so the monitor returns without logging it, probing again or
 // terminating.
 func TestRunSelfHealthMonitor_ShutdownCutRebuildLogsNoError(t *testing.T) {
-	t.Parallel()
 	stuck := errors.New("durable consumer not found")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -5008,7 +5010,7 @@ func TestRunSelfHealthMonitor_ShutdownCutRebuildLogsNoError(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(listenerWait):
+	case <-time.After(2 * time.Second):
 		t.Fatal("the monitor did not return after the shutdown cut its rebuild")
 	}
 	if got := terminates.Load(); got != 0 {

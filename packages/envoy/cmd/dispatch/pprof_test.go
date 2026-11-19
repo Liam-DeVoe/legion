@@ -64,8 +64,9 @@ func TestPprofInvalidPortRefusesStartup(t *testing.T) {
 // process's shutdown context ends. It binds port 0, so the kernel chooses a port no other program
 // holds, and the address startPprof reports is the one it bound; the address DISPATCH_PPROF_PORT
 // builds is TestPprofAddressIsLoopbackOnly's.
+// Serial: it holds the listener's close to 2 s after the context ends, a wall-clock bound a
+// parallel neighbour's load spends.
 func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
-	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bound, err := startPprof(ctx, "127.0.0.1:0")
@@ -97,9 +98,7 @@ func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
 	}
 
 	cancel()
-	// A give-up on the listener's close, not a reading of how fast it closes: the close follows
-	// the context, and this package names no guard of its own for a wait on an event.
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if time.Now().After(deadline) {
 			t.Fatal("the pprof listener did not refuse a connection after the shutdown context ended: a closed listener refuses at once")
