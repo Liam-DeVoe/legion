@@ -324,8 +324,9 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 // implementer is asked, on its own role topic, to merge the base forward (record.MergeForwardAsk),
 // the tester is told, on its own, to hold while the merge runs (MergeForwardHold), and the
 // architect is told once, in a checks-red notice naming testing, the phase the issue stays in. The
-// tester's connection is sent nothing at all — no abort, no prompt — its claim stays working on the
-// delivery it confirmed in step 1, and nothing is suspended. Nothing repeats once it is sent.
+// tester's connection is sent nothing at all — no abort and no prompt, both frames gone — its claim
+// stays working on the task it took in step 1, and nothing is suspended. Nothing repeats once it is
+// sent.
 func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	t := r.t
 	bound := testwait.Bounded(t, conflictSecondReadBound, time.Second)
@@ -363,7 +364,7 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	r.note("read back: one notice on the architect's role topic, checks-red naming %s — %s", notices[0].Phase, notices[0].Reason)
 
 	r.test.silent(liveSettle)
-	r.note("read back over %s: the daemon sent the tester's connection nothing at all — no abort (the frame is gone), no shutdown, no prompt", liveSettle)
+	r.note("read back over %s: the daemon sent the tester's connection nothing at all — no abort and no prompt (both frames are gone), no shutdown", liveSettle)
 	want := maps.Clone(r.heard)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleArchitect} {
 		want[role]++

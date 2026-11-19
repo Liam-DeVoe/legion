@@ -274,7 +274,7 @@ Each item below names a script, then what it proves.
 
 - `behind-entry-fence.sh`
 
-  a completion behind its phase entry is decided by the head it names and by the move that raised the entry it is behind, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the implementer's push and its synchronize as GitHub envelopes and each role's registration, turns, completions and backward moves over the daemon's own HTTP routes and worker stream:
+  a completion behind its phase entry is decided by the head it names and by the move that raised the entry it is behind, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the implementer's push and its synchronize as GitHub envelopes and each role's registration, takes, turns, completions and backward moves over the daemon's own HTTP routes and worker stream:
   the tester asks for the work back with its own backward move and ends its turn, and the implementer pushes and completes, which hands testing out again by a forward move while the tester is in a turn of its own that no task of the new entry has reached;
   from that turn, a completion naming the head the tester tested, which the record has left, is refused `409 HANDOFF_STALE_ENTRY` naming both heads, and one naming no commit is refused the same way, each with nothing recorded;
   the same completion naming the head the record holds is taken `200` and puts the issue in `reviewing`;
@@ -293,11 +293,11 @@ Each item below names a script, then what it proves.
 
 - `phase-entry-converge.sh`
 
-  the work of a phase entry reaches the worker that entry names, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the implementer's push and its synchronize as GitHub envelopes and each role's registration, turns, completions and backward moves over the daemon's own HTTP routes and worker stream:
+  the work of a phase entry reaches the worker that entry names, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the implementer's push and its synchronize as GitHub envelopes and each role's registration, takes, turns, completions and backward moves over the daemon's own HTTP routes and worker stream:
   the tester's start waits for the launch the daemon's wake pacing holds, with entry 1's task queued on its claim;
   the launch runs while the implementer is still in its turn, so that task stays held, and the issue's phase changes twice — the tester's own backward move and the implementer's push and completion — which raises the tester's phases row to entry 2 with that entry's own task while its claim still holds the task of entry 1;
-  once both turns end the tester is sent the task it held, the completion it reports for that work is refused `409 HANDOFF_STALE_ENTRY` naming both entries and recording nothing, and the entry the phase is on reaches the same connection as a task of its own, whose completion is taken;
-  a start row deleted from the outbox before any lane ran it loses no work, since with no fact of the project arriving the daemon's own entry sweep sends that entry's task to the implementer's live connection;
+  once both turns end the tester takes the task it held, the completion it reports for that work is refused `409 HANDOFF_STALE_ENTRY` naming both entries and recording nothing, and the entry the phase is on reaches the same worker as a task of its own, which it takes and whose completion is taken;
+  a start row deleted from the outbox before any lane ran it loses no work, since with no fact of the project arriving the daemon's own entry sweep writes that entry's task for the implementer, which takes it;
   and one read of `GET /legion/v1/state` carries the issue's `phaseEntry` and `givenEntry`
 
 - `task-take.sh`
