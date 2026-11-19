@@ -152,6 +152,15 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
+	return e.takeFirstPlan(ctx, tx, issue, stored, earlier)
+}
+
+// takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's
+// generation, and tells what passed over earlier (tellPassedOver): the project's default steps for
+// none (defaultRows), a plan of another generation carried from its start (CarryPlan without
+// carried), and the generation's own rows kept as they are. planFirstStep and the stop of a task
+// before that step (taskStopped) take the first plan through it.
+func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, earlier []record.PlanVersion) error {
 	switch {
 	case stored == nil:
 		version, tasks, steps := e.defaultRows(issue)
@@ -435,11 +444,16 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // architect that owns the issue no longer, or a stop of a run the issue has left since its route
 // read it (TaskStaleGeneration), is refused there, unspent, before this reads anything.
 //
-// An issue the record does not hold, or one with no plan rows, has no task to stop, and a task
-// the plan does not hold is none either (TaskNotFound, which lists the plan's tasks only where it
-// has some): an issue with no plan rows changes nothing. A stop of a task already stopped
-// changes nothing and is no refusal, so a retry of a stop already applied finds it stopped. A
-// task that is done, or left the workflow with its issue before it was done, has nothing left to
+// An issue the record does not hold, or one with no plan rows whose work started before Legion
+// took plans, has no task to stop, and a task the plan does not hold is none either (TaskNotFound,
+// which lists the plan's tasks only where it has some): an issue with no plan rows changes
+// nothing. An issue that stands before its first step has no plan rows yet, and its task is one
+// that is not done: the stop settles the plan that step would walk (planFirstStep), the newest
+// plan its owner gave or the project's default steps, then stops its task there, which stands
+// stopped before its first step (waitForFirstStep brings it back). A task that plan does not hold
+// is refused first, naming the plan's tasks, and nothing is written. A stop of a task already
+// stopped changes nothing and is no refusal, so a retry of a stop already applied finds it stopped.
+// A task that is done, or left the workflow with its issue before it was done, has nothing left to
 // stop (TaskDone, TaskLeft): each is refused here, before the store's stop, which refuses both
 // states itself and would fail the whole fact, and before the linger a root's leave begins, since
 // the task's own state is the truer answer. A stop in a lingering tree changes nothing and says
@@ -456,7 +470,26 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// settle says the stop settles the plan the issue's first step would walk, waiting, which is
+	// nil for the project's default steps.
+	settle := !w.Stored && beforeItsWork(*issue)
+	var waiting *record.StoredPlan
 	switch {
+	case settle:
+		if waiting, err = e.store.OwnersNewestPlan(ctx, tx, *issue); err != nil {
+			return intake.Result{}, err
+		}
+		tasks := []string{defaultTask}
+		if waiting != nil {
+			tasks = tasks[:0]
+			for _, task := range waiting.Tasks {
+				tasks = append(tasks, task.Task)
+			}
+		}
+		if !slices.Contains(tasks, fact.Task) {
+			return intake.Result{Refusal: intake.TaskNotFound(issue.Key, fact.Task, tasks)}, nil
+		}
+		w.Task = fact.Task
 	case !w.Stored:
 		return intake.Result{Refusal: intake.TaskNotFound(issue.Key, fact.Task, nil)}, nil
 	case fact.Task != w.Task:
@@ -474,6 +507,18 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	}
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the owner's stop of task %s", w.Task)), nil
+	}
+	if settle {
+		earlier, err := e.passOverEarlierOwners(ctx, tx, *issue)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if err := e.takeFirstPlan(ctx, tx, *issue, waiting, earlier); err != nil {
+			return intake.Result{}, err
+		}
+		if w, err = e.walk(ctx, tx, *issue); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	from := record.StandsAt(*issue)
 	why := fmt.Sprintf("task %s of %s was stopped by its owner", w.Task, issue.Key)
