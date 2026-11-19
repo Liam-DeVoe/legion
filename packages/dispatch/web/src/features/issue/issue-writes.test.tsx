@@ -1122,6 +1122,63 @@ test("IssuePage sends only the saved title when a title queued behind it is type
   }
 });
 
+// The reader saves a title, saves a second one, which waits behind the first write, and opens the
+// editor again to type a third. The first write lands while the reader is still typing: what goes
+// then is the second title, the reader's last ended choice, and what the reader has typed so far
+// stays in the editor unsent, since no end of an edit chose it (decision 324). The end of that
+// edit sends it, once. Sent as the first write landed, a title a reader was still typing reached
+// Dispatch, half written, under every other reader's eyes, and the title they saved never went.
+test("IssuePage sends the queued title and not the title the reader is still typing when the write ahead of it lands", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
+    );
+
+    title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("ab");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    title = await openTitleEditor();
+    // One character typed onto the end, as a reader goes on writing: the draft goes from "ab" to
+    // "abc" with no empty text between, which would ask for nothing by itself.
+    await user.type(title, "{End}c");
+    expect(title.value).toBe("abc");
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, title: "a" }));
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect({ editor: title.value, writes: patchIssue.mock.calls }).toEqual({
+      editor: "abc",
+      writes: [
+        ["CORE-1", { title: "a" }, keyedAttempt],
+        ["CORE-1", { title: "ab" }, keyedAttempt],
+      ],
+    });
+
+    fireEvent.blur(title);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(patchIssue.mock.calls.slice(2)).toEqual([["CORE-1", { title: "abc" }, keyedAttempt]]);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 // The reader saves a title, then types the issue's own title back and ends the edit, which queues
 // it behind the write out. Dispatch refuses that write, so the issue keeps its title, and the
 // draft typed back is that title: it has nothing to send, and follows the issue. Another reader's
