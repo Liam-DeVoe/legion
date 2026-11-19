@@ -423,9 +423,9 @@ func (r *Runtime) PodDrift(context.Context, runtime.Known) ([]string, error) { r
 // nothing if it did. What a correction reaches a pane through is its next launch, which
 // provisions a workspace of the new repository under the daemon's state directory, that
 // directory being the repository's own (workspace.Location), and tells the worker both
-// repositories (daemon's addressingFragment). AGENTS.md says that, beside the pod replacement a
-// Kubernetes deployment gets, as do the running and troubleshooting guides under
-// docs/site/src/content/docs/legion; docs/kubernetes.md says the replacement is its own
+// repositories (daemon's addressingFragment). docs/deployment.md says that ("How workspaces are
+// provisioned on the host"), as do the running and troubleshooting guides under
+// docs/site/src/content/docs/legion; docs/kubernetes.md says the pod replacement is its own
 // runtime's.
 func (r *Runtime) PodRepository(context.Context, runtime.Known) (string, error) { return "", nil }
 
