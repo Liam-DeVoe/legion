@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/planrating"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -777,8 +777,8 @@ func inThousands(n int) string {
 // planRatingOf, PLAN_RATING_INPUT). The role the daemon starts on the retro (phase.RoleFor)
 // therefore reads, in its composed prompt, which plan it rates (the issue's steps and the role that
 // worked each, never the planner's plan.md), the two fields its completion carries, both ends of
-// the scale and the most characters of a reason, as the daemon holds them (planrating.Least,
-// planrating.Most and planrating.ReasonMax, which api's planRatingOf reads), and both
+// the scale and the most characters of a reason, as the daemon holds them (steprecord.RatingLeast,
+// RatingMost and RatingReasonMax, which api's planRatingOf reads), and both
 // refusals. No other phase worker ends the retro, and the daemon refuses a rating on its
 // completion (PLAN_RATING_UNEXPECTED).
 //
@@ -790,7 +790,7 @@ func inThousands(n int) string {
 // than to send fields its tool refuses.
 // This shows the text is loaded, never that a role follows it.
 func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
-	least, most, reasonMost := planrating.Least, planrating.Most, planrating.ReasonMax
+	least, most, reasonMost := steprecord.RatingLeast, steprecord.RatingMost, steprecord.RatingReasonMax
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)

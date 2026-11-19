@@ -137,8 +137,8 @@ const schemas: Record<string, z.ZodType> = {
   // a name of the rating Go writes and the contract does not read fails the gate above, and the
   // case "the rated completion the daemon reads parses under the contract's names" below.
   "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
-  // Nor this one: the bounds `planRatingOf` holds a rating of the plan to (`planrating.Least`,
-  // `Most` and `ReasonMax`, which gen-go generates from this package's constants), written by
+  // Nor this one: the bounds `planRatingOf` holds a rating of the plan to (`steprecord.RatingLeast`,
+  // `RatingMost` and `RatingReasonMax`, which gen-go generates from this package's constants), written by
   // TestPlanRatingGolden so that the case "the rating's bounds are the daemon's" below holds the
   // file the read script reads to the contract's constants.
   "plan-rating.json": z.strictObject({

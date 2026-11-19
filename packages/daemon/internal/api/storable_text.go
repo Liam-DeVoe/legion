@@ -32,7 +32,7 @@ func unstorableJSON(body []byte) error {
 }
 
 // unstorableText refuses value when it holds U+0000, naming place and where the first one
-// stands, counted from 1 in code points as the daemon's caps count (planrating.ReasonMax).
+// stands, counted from 1 in code points as the daemon's caps count (steprecord.RatingReasonMax).
 func unstorableText(place, value string) error {
 	at := strings.IndexByte(value, 0)
 	if at < 0 {

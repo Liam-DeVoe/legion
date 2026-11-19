@@ -1274,10 +1274,10 @@ type StepRecord struct {
 }
 
 // PlanRating is a retro's rating of the plan its issue ran: Rating, on the scale
-// github.com/sjawhar/envoy/planrating holds (Least, the plan cost the work, to Most, the plan fit
-// the work), and Reason, why. The two are one value, so a step record carries a rating with its
-// reason or no rating. It mirrors dispatch.PlanRating, which the publication converts it to
-// (publishStepRecord), because the dispatch package imports no record of the daemon's;
+// github.com/sjawhar/envoy/steprecord holds (RatingLeast, the plan cost the work, to RatingMost,
+// the plan fit the work), and Reason, why. The two are one value, so a step record carries a
+// rating with its reason or no rating. It mirrors dispatch.PlanRating, which the publication
+// converts it to (publishStepRecord), because the dispatch package imports no record of the daemon's;
 // internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
 type PlanRating struct {
 	Rating int    `json:"rating"`

@@ -287,8 +287,9 @@ const DispatchHandoffBodyMax = 262144
 // from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,
 // counted as Unicode code points, the rating's reason holds. Generated from
 // LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST and LEGION_PLAN_REASON_MAX in
-// packages/contracts, so Dispatch's record of the retro, the Legion daemon's completion route
-// (through github.com/sjawhar/envoy/planrating) and the plugins' tools hold one scale.
+// packages/contracts, so Dispatch's record of the retro and the Legion daemon's completion route,
+// which both hold a rating to CheckPlanRating (the daemon through github.com/sjawhar/envoy/steprecord),
+// and the plugins' tools hold one scale.
 const PlanRatingLeast = 1
 const PlanRatingMost = 5
 const PlanReasonMax = 2000

@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/planrating"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -171,12 +171,13 @@ func TestAnArchitectsCompletionInTheRetroIsNotTheRetros(t *testing.T) {
 	assertIssuePhase(t, h, phase.Retro)
 }
 
-// A rating is a whole number from 1 to 5 and its reason says why, in one to planrating.ReasonMax
-// characters that are not all blank; the two come together. Each other shape is refused
-// PLAN_RATING_INPUT naming what is wrong, with nothing recorded. The bounds themselves are taken:
-// 1, and 5 with a reason of exactly planrating.ReasonMax characters of two bytes each, which a
-// count of bytes would refuse. Each is the completion that ends the retro of an issue of its own,
-// since the workflow moves an issue on to merging at its retro's first completion taken.
+// A rating is a whole number from 1 to 5 and its reason says why, in one to
+// steprecord.RatingReasonMax characters that are not all blank; the two come together. Each other
+// shape is refused PLAN_RATING_INPUT naming what is wrong, with nothing recorded. The bounds
+// themselves are taken: 1, and 5 with a reason of exactly steprecord.RatingReasonMax characters of
+// two bytes each, which a count of bytes would refuse. Each is the completion that ends the retro
+// of an issue of its own, since the workflow moves an issue on to merging at its retro's first
+// completion taken.
 func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
@@ -193,7 +194,7 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 		{name: "a rating with no reason", rating: new(4), says: "planRating 4 comes with no planReason"},
 		{name: "a reason with no rating", reason: new("The plan fit the work."), says: "planReason comes with no planRating"},
 		{name: "a blank reason", rating: new(4), reason: new(" \t\n"), says: "planReason is blank"},
-		{name: "a reason too long", rating: new(4), reason: new(strings.Repeat("é", planrating.ReasonMax+1)),
+		{name: "a reason too long", rating: new(4), reason: new(strings.Repeat("é", steprecord.RatingReasonMax+1)),
 			says: "planReason is 2001 characters, and it holds at most 2000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -215,7 +216,7 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 		reason string
 	}{
 		{rating: 1, reason: "The plan cost the work."},
-		{rating: 5, reason: strings.Repeat("é", planrating.ReasonMax)},
+		{rating: 5, reason: strings.Repeat("é", steprecord.RatingReasonMax)},
 	} {
 		key := fmt.Sprintf("LEGION-%d", 300+i)
 		seedIssueAt(t, h, key, phase.Retro)
@@ -512,8 +513,8 @@ func TestHandoffCompleteRequestRatedGolden(t *testing.T) {
 }
 
 // The bounds of a rating of the plan, as planRatingOf holds a completion to them: the scale
-// (planrating.Least, planrating.Most) and the most characters of the reason
-// (planrating.ReasonMax), each generated from packages/contracts. Go writes them (`-update`) for a
+// (steprecord.RatingLeast, steprecord.RatingMost) and the most characters of the reason
+// (steprecord.RatingReasonMax), each generated from packages/contracts. Go writes them (`-update`) for a
 // reader with no Go and no TypeScript, plan-ratings-read.sh, and
 // `packages/contracts/src/legion-api.test.ts` holds the file to the contract's constants, so a file
 // left behind a change of the scale fails there.
@@ -522,7 +523,7 @@ func TestPlanRatingGolden(t *testing.T) {
 		Least      int `json:"least"`
 		Most       int `json:"most"`
 		ReasonMost int `json:"reasonMost"`
-	}{Least: planrating.Least, Most: planrating.Most, ReasonMost: planrating.ReasonMax})
+	}{Least: steprecord.RatingLeast, Most: steprecord.RatingMost, ReasonMost: steprecord.RatingReasonMax})
 }
 
 // planRatingCase is one row of plan-rating-cases.json: the rating and the reason a retro's
@@ -555,10 +556,10 @@ func TestPlanRatingCasesGolden(t *testing.T) {
 	}
 	cases := []planRatingCase{
 		rated("a rating of 4 with a reason", 4, "fit"),
-		rated(fmt.Sprintf("a rating of %d", planrating.Least-1), planrating.Least-1, "fit"),
-		rated(fmt.Sprintf("a rating of %d", planrating.Least), planrating.Least, "fit"),
-		rated(fmt.Sprintf("a rating of %d", planrating.Most), planrating.Most, "fit"),
-		rated(fmt.Sprintf("a rating of %d", planrating.Most+1), planrating.Most+1, "fit"),
+		rated(fmt.Sprintf("a rating of %d", steprecord.RatingLeast-1), steprecord.RatingLeast-1, "fit"),
+		rated(fmt.Sprintf("a rating of %d", steprecord.RatingLeast), steprecord.RatingLeast, "fit"),
+		rated(fmt.Sprintf("a rating of %d", steprecord.RatingMost), steprecord.RatingMost, "fit"),
+		rated(fmt.Sprintf("a rating of %d", steprecord.RatingMost+1), steprecord.RatingMost+1, "fit"),
 		{Name: "a rating with no reason", PlanRating: new(4)},
 		{Name: "a reason with no rating", PlanReason: new("fit")},
 		rated("an empty reason", 4, ""),
@@ -573,7 +574,7 @@ func TestPlanRatingCasesGolden(t *testing.T) {
 	for _, long := range []struct{ name, char string }{
 		{"U+0061 (a), one UTF-16 unit each", "a"}, {"U+1F600, two UTF-16 units each", "\U0001F600"},
 	} {
-		for _, count := range []int{planrating.ReasonMax, planrating.ReasonMax + 1} {
+		for _, count := range []int{steprecord.RatingReasonMax, steprecord.RatingReasonMax + 1} {
 			cases = append(cases, rated(fmt.Sprintf("a reason of %d characters %s", count, long.name), 4, strings.Repeat(long.char, count)))
 		}
 	}

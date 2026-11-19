@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/planrating"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -70,7 +70,7 @@ type planLine struct {
 }
 
 // printedRating is one rating as `dispatch plans` prints it: `<rating>/<most> <reason as JSON>`,
-// most the top of the daemon's scale (planrating.Most), the contract's LEGION_PLAN_RATING_MOST,
+// most the top of the daemon's scale (steprecord.RatingMost), the contract's LEGION_PLAN_RATING_MOST,
 // which plans.ts prints each rating out of.
 type printedRating struct {
 	rating int
@@ -120,10 +120,10 @@ func parsePlans(project, out string) ([]planLine, error) {
 
 // ratingHeadPattern reads the head of one printed rating, `<rating>/<most> "`: a whole number, then
 // the top of the daemon's scale, then the quotation mark that opens the reason.
-var ratingHeadPattern = regexp.MustCompile(fmt.Sprintf(`^([1-9][0-9]*)/%d "`, planrating.Most))
+var ratingHeadPattern = regexp.MustCompile(fmt.Sprintf(`^([1-9][0-9]*)/%d "`, steprecord.RatingMost))
 
 // parseRatings reads the ratings of one line: `none`, or each rating as `<n>/<most> `, n on the
-// daemon's scale (planrating.Least to planrating.Most), and one JSON string, separated
+// daemon's scale (steprecord.RatingLeast to steprecord.RatingMost), and one JSON string, separated
 // by `, ` outside those strings.
 func parseRatings(text string) ([]printedRating, error) {
 	if text == "none" {
@@ -136,11 +136,11 @@ func parseRatings(text string) ([]printedRating, error) {
 		// which Decode would skip (plan-ratings-read.sh's ratingsOf refuses both).
 		head := ratingHeadPattern.FindStringSubmatch(rest)
 		if head == nil {
-			return nil, fmt.Errorf("the ratings %q: %q is no `<n>/%d \"<reason>\"` rating", text, rest, planrating.Most)
+			return nil, fmt.Errorf("the ratings %q: %q is no `<n>/%d \"<reason>\"` rating", text, rest, steprecord.RatingMost)
 		}
 		rating, err := strconv.Atoi(head[1])
-		if err != nil || rating < planrating.Least || rating > planrating.Most {
-			return nil, fmt.Errorf("the ratings %q: %s is no rating of the scale %d to %d", text, head[1], planrating.Least, planrating.Most)
+		if err != nil || rating < steprecord.RatingLeast || rating > steprecord.RatingMost {
+			return nil, fmt.Errorf("the ratings %q: %s is no rating of the scale %d to %d", text, head[1], steprecord.RatingLeast, steprecord.RatingMost)
 		}
 		// The reason's JSON string starts at its opening quotation mark, the head's last byte.
 		opened := len(head[0]) - 1
@@ -165,13 +165,13 @@ func parseRatings(text string) ([]printedRating, error) {
 // plan-ratings-read.sh's awk does, so the driver and the read script judge the same line alike:
 // a rating is `<n>/<most> ` and then its reason as one JSON string, so a `null` in the reason's
 // place or a space before it is no rating, and the header is `<project>: <n> finished issues` with
-// nothing after it. The scale is the daemon's (planrating.Least to planrating.Most):
+// nothing after it. The scale is the daemon's (steprecord.RatingLeast to steprecord.RatingMost):
 // its top is a rating, and a rating past either end, or out of another number, is none.
 func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 	if parsed, err := parsePlans("SR1", plansPrintedWith(`4/5 "x"`)); err != nil || len(parsed) != 1 || len(parsed[0].ratings) != 1 || parsed[0].ratings[0] != (printedRating{rating: 4, reason: "x"}) {
 		t.Fatalf("the line the command prints parsed as %+v, %v; want one rating 4/5 \"x\"", parsed, err)
 	}
-	most, least := planrating.Most, planrating.Least
+	most, least := steprecord.RatingMost, steprecord.RatingLeast
 	top := fmt.Sprintf(`%d/%d "x"`, most, most)
 	if parsed, err := parsePlans("SR1", plansPrintedWith(top)); err != nil || len(parsed) != 1 || len(parsed[0].ratings) != 1 || parsed[0].ratings[0] != (printedRating{rating: most, reason: "x"}) {
 		t.Errorf("the top of the daemon's scale, %s, parsed as %+v, %v; want one rating %d", top, parsed, err, most)
@@ -307,7 +307,7 @@ func plansPrintedHold(project, out string, want []ratedWant) ([]planLine, error)
 		case w.rating == nil && len(got.ratings) != 0:
 			return nil, fmt.Errorf("%s prints the ratings %+v, want none", w.key, got.ratings)
 		case w.rating != nil && (len(got.ratings) != 1 || got.ratings[0] != printedRating{rating: w.rating.Rating, reason: w.rating.Reason}):
-			return nil, fmt.Errorf("%s prints the ratings %+v, want the one rating %d/%d %q", w.key, got.ratings, w.rating.Rating, planrating.Most, w.rating.Reason)
+			return nil, fmt.Errorf("%s prints the ratings %+v, want the one rating %d/%d %q", w.key, got.ratings, w.rating.Rating, steprecord.RatingMost, w.rating.Reason)
 		case got.time != spent:
 			return nil, fmt.Errorf("%s prints time %s, want %s, from %s to %s", w.key, got.time, spent, started, ended)
 		case got.failed != w.failed:

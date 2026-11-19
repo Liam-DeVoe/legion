@@ -32,7 +32,7 @@ export const GATED_STEPS = ["decisions", "criteria", "spec"] as const;
  * to 5 (the plan fit the work). This is its one definition. The plugin's `plan_rating`, the
  * `dispatch_plans` description and `dispatch plans`' printer read these, and `scripts/gen-go.ts`
  * generates them into Go for Dispatch's record of the retro (`envoy/internal/contracts`) and for the
- * daemon's completion route (`github.com/sjawhar/envoy/planrating`). They are written in this
+ * daemon's completion route (`github.com/sjawhar/envoy/steprecord`). They are written in this
  * module, which the dispatch command's bundle and the dashboard already load, so both read them
  * without the daemon's API module; `legion-api.ts` re-exports them. */
 export const LEGION_PLAN_RATING_LEAST = 1;

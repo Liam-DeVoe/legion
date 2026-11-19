@@ -385,24 +385,22 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 
 // rating checks the rating a write states with its reason, the rating the agent that did a retro
 // gave the plan, and answers their two attributes, or none where the write states no rating. The
-// rating is contracts.PlanRatingLeast to contracts.PlanRatingMost, the scale packages/contracts
-// states and the daemon holds a retro's completion to, the reason is neither left out ("") nor
-// blank and holds at most contracts.PlanReasonMax code points, as the daemon counts it, so every
-// reason the daemon takes is one Dispatch takes, and kind, where the write names one, is a retro
-// (ratingOfKind).
+// rating and its reason are held to the one rule of a rating (contracts.CheckPlanRating), which
+// the daemon's completion route holds a retro's completion to as well, through steprecord, so
+// every rating the daemon takes is one Dispatch takes, and kind, where the write names one, is a
+// retro (ratingOfKind).
 func (write StepWrite) rating(id, kind string) ([]attribute, error) {
 	if write.Rating == nil {
 		return nil, nil
 	}
 	rating, reason := write.Rating.Rating, write.Rating.Reason
-	if rating < contracts.PlanRatingLeast || rating > contracts.PlanRatingMost {
+	switch contracts.CheckPlanRating(rating, reason) {
+	case contracts.PlanRatingOffScale:
 		return nil, refusal(ErrStepInput, "rating %d is no rating: a plan is rated from %d (the plan cost the work) to %d (the plan fit the work)", rating, contracts.PlanRatingLeast, contracts.PlanRatingMost)
-	}
-	if strings.TrimSpace(reason) == "" {
+	case contracts.PlanReasonBlank:
 		return nil, refusal(ErrStepInput, "rating_reason is left out or blank: a rating carries one sentence of why")
-	}
-	if length := utf8.RuneCountInString(reason); length > contracts.PlanReasonMax {
-		return nil, refusal(ErrStepInput, "rating_reason holds %d characters, more than the %d a reason holds", length, contracts.PlanReasonMax)
+	case contracts.PlanReasonLong:
+		return nil, refusal(ErrStepInput, "rating_reason holds %d characters, more than the %d a reason holds", utf8.RuneCountInString(reason), contracts.PlanReasonMax)
 	}
 	if err := ratingOfKind(id, kind); err != nil {
 		return nil, err

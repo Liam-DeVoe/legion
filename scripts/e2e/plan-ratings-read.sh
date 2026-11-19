@@ -40,7 +40,7 @@ case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
 read_require_dispatch
 
 # The scale a rating is printed on is the daemon's: the bounds its golden test writes to this file
-# from planrating.Least and planrating.Most, generated from the contract's constants, which the
+# from steprecord.RatingLeast and RatingMost, generated from the contract's constants, which the
 # printer reads too. A rating is read on it, so a line the command prints out of another top is no
 # finished issue, and the scale is written nowhere in this script.
 bounds="$here/../../packages/contracts/fixtures/daemon-api/plan-rating.json"

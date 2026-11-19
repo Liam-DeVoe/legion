@@ -689,7 +689,6 @@ jobs:
               # is a module of its own, so Go's internal rule bars it from internal/contracts,
               # where the generated values are.
               - 'packages/envoy/sessiontiming/*'
-              - 'packages/envoy/planrating/*'
               # The daemon reads an issue event's key and a role lane's role in both forms of
               # their names through this one public package, and the nats-server versions it
               # refuses through the next, for the same reason.
@@ -913,7 +912,6 @@ jobs:
               # liveness and notice rules read: it sits in the envoy module because the
               # daemon, a module of its own, cannot reach internal/contracts, where they are.
               - 'packages/envoy/sessiontiming/*'
-              - 'packages/envoy/planrating/*'
               # The doors onto the readers of a message name's two forms and onto the
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
@@ -1125,7 +1123,6 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/sessiontiming/*'
-              - 'packages/envoy/planrating/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/steprecord/*'
@@ -2457,7 +2454,6 @@ jobs:
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
-              - 'packages/envoy/planrating/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/steprecord/*'
@@ -3588,12 +3584,15 @@ jobs:
               # internal/cistore/settlement_fixture_test.go:57,
               # internal/dispatch/legion/golden_state_test.go:29 (the daemon's state golden, which
               # packages/daemon/internal/api/state_golden_test.go writes, so a change to the
-              # daemon's state shape must start this job as well as the daemon's).
+              # daemon's state shape must start this job as well as the daemon's),
+              # internal/contracts/plan_rating_test.go:21 (the daemon's verdicts on the ratings,
+              # which Dispatch's one rule of a rating must take as the daemon does).
               - 'packages/contracts/fixtures/dedupe-keys.json'
               - 'packages/contracts/fixtures/github-envelopes/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
               - 'packages/contracts/fixtures/checks-settlement/**'
               - 'packages/contracts/fixtures/daemon-api/state.json'
+              - 'packages/contracts/fixtures/daemon-api/plan-rating-cases.json'
               # The API package's test binary, whose xid window tests the race-impossible step runs
               # (ci_job_reads.py, RACE_IMPOSSIBLE_SCRIPT): its live-feed fixtures
               # (internal/dispatch/api/delivery_live_diff_test.go:1016), the committed OpenAPI
@@ -4331,7 +4330,6 @@ jobs:
               # liveness and notice rules read: it sits in the envoy module because the
               # daemon, a module of its own, cannot reach internal/contracts, where they are.
               - 'packages/envoy/sessiontiming/*'
-              - 'packages/envoy/planrating/*'
               # The doors onto the readers of a message name's two forms and onto the
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
@@ -4687,7 +4685,6 @@ jobs:
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'
-              - 'packages/envoy/planrating/**'
               - 'packages/envoy/subjectforms/**'
               - 'packages/envoy/natsversion/**'
               - 'packages/envoy/steprecord/**'
