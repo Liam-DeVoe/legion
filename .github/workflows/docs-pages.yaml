@@ -261,6 +261,7 @@ on:
       - 'packages/envoy/internal/brokertoken/*'
       - 'packages/envoy/internal/buildversion/*'
       - 'packages/envoy/internal/fileowner/*'
+      - 'packages/envoy/internal/principal/*'
       - 'packages/envoy/internal/ratelimit/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'

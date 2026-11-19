@@ -45,7 +45,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -60,6 +59,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
@@ -1587,7 +1587,7 @@ func checkAccessSettings(boot bootConfig) error {
 			if account == "" {
 				return fmt.Errorf("%s entry %d of %d is empty", list.name, index+1, len(list.accounts))
 			}
-			if !model.ServiceAccountSubject.MatchString(account) {
+			if !principal.ServiceAccountSubject.MatchString(account) {
 				return fmt.Errorf("%s entry %d of %d is not a Kubernetes service account's subject, system:serviceaccount:<namespace>:<name>", list.name, index+1, len(list.accounts))
 			}
 		}
@@ -1600,7 +1600,7 @@ func checkAccessSettings(boot bootConfig) error {
 		}
 	}
 	if fallback := boot.ProjectOwnerFallback; fallback != "" {
-		if login, err := model.PersonLogin(fallback); err != nil || login != fallback {
+		if err := principal.CheckPersonLogin(fallback); err != nil {
 			return fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
 		}
 	}

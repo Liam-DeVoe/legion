@@ -180,6 +180,16 @@ func TestARestrictedMemberCannotCreateAProject(t *testing.T) {
 	if owner := projectOwnerOf(t, database, "POD"); owner != accessCarol {
 		t.Fatalf("POD's owner = %q, want its default assignee %s", owner, accessCarol)
 	}
+
+	// A credential that acts for no person makes the project its default assignee's, so a
+	// restricted member named as the default would own it: refused, and nothing is stored.
+	before = allEvents(t, database)
+	wantRefusal(t, agentRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": "RES", "name": "Restricted's", "default_assignee": accessErin, "actor": map[string]any{"kind": "session", "id": "ses_pod"},
+	}, "agent-token"), http.StatusBadRequest, "OWNER_NOT_ALLOWED", "the shared token", "POST /api/v1/projects naming a restricted member")
+	if got := countRows(t, database, `select count(*) from projects where key = 'RES'`); got != 0 || allEvents(t, database) != before {
+		t.Fatalf("a refused create stored %d projects and moved events from %d to %d", got, before, allEvents(t, database))
+	}
 }
 
 func projectOwnerOf(t *testing.T, database *store.Store, key string) string {

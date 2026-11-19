@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/principal"
 )
 
 // The refusals of the reads and writes below. Each is wrapped with what it names, so a caller
@@ -49,12 +50,13 @@ var groupName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 // underscores and dashes, starting with a letter or digit, at most 63 long.
 func ValidGroupName(name string) bool { return groupName.MatchString(name) }
 
-// PersonPrincipal is the stored form of a person an access list or a group names: the trimmed,
-// lowercase email (model.PersonLogin), refused as ErrPrincipalInput when it is no email or holds a
-// control or bidi character.
+// PersonPrincipal is the stored form of a person an access list or a group names: the email as
+// typed, in its stored form (model.CanonicalLogin), refused as ErrPrincipalInput when it is not a
+// person's email as Dispatch stores one (principal.CheckPersonLogin): no email, a control or bidi
+// character, or a capital beyond A-Z, which names nobody who could sign in.
 func PersonPrincipal(email string) (string, error) {
-	login, err := model.PersonLogin(email)
-	if err != nil {
+	login := model.CanonicalLogin(email)
+	if err := principal.CheckPersonLogin(login); err != nil {
 		return "", fmt.Errorf("%w: %w", ErrPrincipalInput, err)
 	}
 	return login, nil
@@ -196,9 +198,10 @@ const MaxSlackChannels = 16
 var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 
 // SetSlackChannels replaces the Slack channel ids project key's credentials may post to, sorted
-// and with each id named once. The secrets broker releases the Legion Slack bot token to a
-// private project's credentials for these channels alone (R14), so only the project's owner
-// writes them: the caller makes that check first. It appends project.access_changed in tx.
+// and with each id named once. The secrets broker is to release the Legion Slack bot token to a
+// private project's credentials for these channels alone (R14; no broker reads them yet), so only
+// the project's owner writes them: the caller makes that check first. It appends
+// project.access_changed in tx.
 func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	named := make([]string, 0, len(channels))
 	for _, channel := range channels {

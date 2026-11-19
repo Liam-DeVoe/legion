@@ -49,8 +49,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/principal"
 )
 
 // Why a subject token is refused. Each stands for one answer an operator can act on: list the
@@ -565,7 +565,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 	}
 	for i, entry := range accounts {
 		where := fmt.Sprintf("account entry %d, %q", i+1, entry.Account)
-		if !model.ServiceAccountSubject.MatchString(entry.Account) {
+		if !principal.ServiceAccountSubject.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
 		if err := checkGrant(where, entry.Project, entry.Person, entry.Session, true); err != nil {
@@ -582,7 +582,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 	}
 	for i, entry := range reads {
 		where := fmt.Sprintf("read entry %d, %q", i+1, entry.Account)
-		if !model.ServiceAccountSubject.MatchString(entry.Account) {
+		if !principal.ServiceAccountSubject.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
 		if strings.TrimSpace(entry.Service) == "" {

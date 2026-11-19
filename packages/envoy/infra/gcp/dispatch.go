@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
@@ -1271,6 +1271,12 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 // (https://cloud.google.com/compute/docs/naming-resources).
 var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
 
+// appLabelValueRule is a non-empty Kubernetes label value, which an allowedApps entry is: the app
+// label of the pods the app's NetworkPolicy admits. It is at most 63 characters, a letter or digit
+// at each end, with letters, digits, dashes, underscores and dots between. An empty value would
+// make a rule for pods labelled app="", and a value of another shape fails only at apply.
+var appLabelValueRule = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$`)
+
 // refuseDispatchAccessValues refuses, when the stack plans, the access values Dispatch refuses at
 // boot (cmd/dispatch checkAccessSettings), naming the input, so one typo never reaches a Deployment
 // whose one replica would then not start: an account that is not a service account's subject, an
@@ -1281,7 +1287,7 @@ func refuseDispatchAccessValues(args *DispatchArgs) error {
 		accounts []string
 	}{{"oidcAccounts", args.OidcAccounts}, {"accessAccounts", args.AccessAccounts}} {
 		for i, account := range list.accounts {
-			if !model.ServiceAccountSubject.MatchString(account) {
+			if !principal.ServiceAccountSubject.MatchString(account) {
 				return fmt.Errorf("%s[%d] %q is not a Kubernetes service account's subject, system:serviceaccount:<namespace>:<name>, one account to an entry", list.input, i, account)
 			}
 		}
@@ -1293,10 +1299,8 @@ func refuseDispatchAccessValues(args *DispatchArgs) error {
 			}
 		}
 	}
-	if fallback := args.ProjectOwnerFallback; fallback != "" {
-		if login, err := model.PersonLogin(fallback); err != nil || login != fallback {
-			return errors.New("projectOwnerFallback must be a lowercase email, the one a full member signed in with")
-		}
+	if fallback := args.ProjectOwnerFallback; fallback != "" && principal.CheckPersonLogin(fallback) != nil {
+		return errors.New("projectOwnerFallback must be a lowercase email, the one a full member signed in with")
 	}
 	return nil
 }
@@ -1677,6 +1681,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	for i, namespace := range args.AllowedNamespaces {
 		if !dnsLabel(namespace) {
 			return dispatchSettings{}, fmt.Errorf("allowedNamespaces[%d] %q must be a DNS label", i, namespace)
+		}
+	}
+	for i, app := range args.AllowedApps {
+		if !appLabelValueRule.MatchString(app) {
+			return dispatchSettings{}, fmt.Errorf("allowedApps[%d] %q must be a pod's app label value: 1 to 63 letters, digits, dashes, underscores and dots, a letter or digit at each end", i, app)
 		}
 	}
 	return s, nil

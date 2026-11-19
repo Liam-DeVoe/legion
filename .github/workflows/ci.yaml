@@ -669,6 +669,7 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
@@ -1018,6 +1019,7 @@ jobs:
               - *listener_command
               # The testdata of envoy's internal/contracts, which the daemon compiles.
               - 'packages/envoy/internal/contracts/**'
+              - 'packages/envoy/internal/principal/*'
               # The fixtures of packages/contracts this suite's tests read, and no other file of
               # it; no go:embed or go:generate of packages/daemon reaches outside the module.
               # Each is a RULES row of .github/scripts/ci_job_reads.py, citing the test line.
@@ -1124,6 +1126,7 @@ jobs:
               - *dispatch_server
               - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/dispatchbody/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/sessiontiming/*'
@@ -1914,6 +1917,7 @@ jobs:
               - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/fileowner/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/ratelimit/*'
               # The screenshots build packages/dispatch's web app, which aliases contracts' and the
               # proof editor's sources (web/vite.config.ts:63-81), and boot its e2e harness
@@ -2777,6 +2781,7 @@ jobs:
               - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
@@ -2806,6 +2811,7 @@ jobs:
               # gcp/clusteredhub_listener_live_test.go's issuer of the projected tokens a listener
               # that requires a credential verifies.
               - 'packages/envoy/internal/oidc/oidctest/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
@@ -2933,6 +2939,7 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
@@ -2975,6 +2982,7 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
@@ -3025,6 +3033,7 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
@@ -3127,6 +3136,7 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
@@ -3232,6 +3242,7 @@ jobs:
               # not, so listener_command, which is that build closure, leaves them to the jobs
               # that run the tests: the chat client, the redirect table and the router.
               - 'packages/envoy/going/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/routing/*'
               # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
@@ -3888,6 +3899,7 @@ jobs:
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+              - '!packages/envoy/internal/principal/**/*_test.go'
               - '!packages/envoy/internal/ratelimit/**/*_test.go'
               - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/roles/**/*_test.go'
@@ -4051,6 +4063,7 @@ jobs:
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
@@ -4153,6 +4166,7 @@ jobs:
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+              - '!packages/envoy/internal/principal/**/*_test.go'
               - '!packages/envoy/internal/ratelimit/**/*_test.go'
               - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/roles/**/*_test.go'
@@ -4497,6 +4511,7 @@ jobs:
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/principal/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
@@ -4654,6 +4669,7 @@ jobs:
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+              - '!packages/envoy/internal/principal/**/*_test.go'
               - '!packages/envoy/internal/ratelimit/**/*_test.go'
               - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/roles/**/*_test.go'

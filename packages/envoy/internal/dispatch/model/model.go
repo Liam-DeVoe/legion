@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf16"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -232,36 +231,6 @@ func CanonicalLogin(login string) string {
 	return fold.ASCII(strings.TrimSpace(login))
 }
 
-// PersonLogin is the stored form of a person an access list, a group or the owner fallback names:
-// the canonical login (CanonicalLogin) of an email. It refuses a value that is no email, and one
-// holding a control character or a bidi control, which would show one address and store another,
-// as a project name refuses them. Dispatch's writes and boot and the infra component, when a stack
-// plans, hold a person to this one rule (access.PersonPrincipal, cmd/dispatch checkAccessSettings,
-// infra/gcp refuseDispatchAccessValues).
-func PersonLogin(email string) (string, error) {
-	login := CanonicalLogin(email)
-	if at := strings.IndexByte(login, '@'); at <= 0 || at == len(login)-1 || strings.ContainsAny(login, " \t\r\n,") || len(login) > 320 {
-		return "", fmt.Errorf("%q is no email", strings.TrimSpace(email))
-	}
-	for _, r := range login {
-		switch {
-		case unicode.IsControl(r):
-			return "", fmt.Errorf("%q holds a control character", login)
-		case unicode.Is(unicode.Bidi_Control, r):
-			return "", fmt.Errorf("%q holds a bidi control", login)
-		}
-	}
-	return login, nil
-}
-
-// ServiceAccountSubject is a Kubernetes service account's subject as its projected token carries it,
-// system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS subdomain,
-// so it holds no comma. Dispatch's boot holds DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS to
-// it, the infra component holds oidcAccounts and accessAccounts to it when a stack plans, and the
-// secrets broker holds its own service-account settings and exchange entries to it
-// (internal/broker/config, internal/broker/exchange).
-var ServiceAccountSubject = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
-
 // ActorOrigin describes the client environment of a session actor.
 type ActorOrigin struct {
 	Host         string `json:"host,omitempty"`
@@ -384,9 +353,9 @@ type ProjectAccess struct {
 	People     []string `json:"people"`
 	Groups     []string `json:"groups"`
 	// SlackChannels are the Slack channel ids the project's credentials may post to, at most 16,
-	// sorted, always present and [] for none. Its owner names them, and the secrets broker
-	// releases the Legion Slack bot token to a private project's credentials for these channels
-	// alone.
+	// sorted, always present and [] for none. Its owner names them. The secrets broker is to
+	// release the Legion Slack bot token to a private project's credentials for these channels
+	// alone (R14); no broker reads them yet.
 	SlackChannels []string `json:"slack_channels"`
 	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
 	// rule admits each of them once they sign in.

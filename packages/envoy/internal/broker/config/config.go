@@ -35,8 +35,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -813,7 +813,7 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 	seen := map[string]string{}
 	for _, text := range strings.Fields(value) {
 		service, subject, ok := strings.Cut(text, "=")
-		if !ok || !record.ValidService(service) || service == policy.OwnerShared || !model.ServiceAccountSubject.MatchString(subject) {
+		if !ok || !record.ValidService(service) || service == policy.OwnerShared || !principal.ServiceAccountSubject.MatchString(subject) {
 			return nil, fmt.Errorf("%s must be <service>=system:serviceaccount:<namespace>:<name> entries, each service lowercase letters, digits and hyphens, at most 64, not %s, got %q", setting, policy.OwnerShared, text)
 		}
 		if isDefaultServiceAccount(subject) {
@@ -1042,7 +1042,7 @@ func ParseAccount(setting, text, account string) (Account, error) {
 			return Account{}, err
 		}
 		return Account{Address: address, Google: true}, nil
-	case !model.ServiceAccountSubject.MatchString(account):
+	case !principal.ServiceAccountSubject.MatchString(account):
 		return Account{}, ErrAccountForm
 	case isDefaultServiceAccount(account):
 		return Account{}, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
@@ -1157,7 +1157,7 @@ func exchangeFields(text string, want int) ([]string, bool) {
 // account what vmAccountRefusal is to a VM's.
 func podAccountRefusal(setting, text, account string) error {
 	switch {
-	case !model.ServiceAccountSubject.MatchString(account):
+	case !principal.ServiceAccountSubject.MatchString(account):
 		return fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
 	case isDefaultServiceAccount(account):
 		return fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)

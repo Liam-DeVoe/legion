@@ -166,6 +166,27 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A credential that acts for no person leaves the owner to the insert, which makes the project
+	// its default assignee's (projects_owner_from_default). An owner is a full member, as access
+	// SetOwner holds every later owner to, so a default the insert would make a restricted member's
+	// owner is refused before anything is written.
+	if !acts {
+		pool, err := s.readyPool()
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		kind, err := access.MemberKind(r.Context(), pool, projectDefault)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if kind != model.MemberFull {
+			writeError(w, "OWNER_NOT_ALLOWED", http.StatusBadRequest,
+				"this credential acts for no person, so the project's owner is its default_assignee, and an owner is a full member")
+			return
+		}
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
