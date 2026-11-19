@@ -9,6 +9,7 @@ import type { PostDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import { Avatar } from "./Avatar";
+import { resendable } from "./delivery";
 import { ReplyButton } from "./ReplyButton";
 import { ReplyQuote } from "./ReplyQuote";
 import {
@@ -82,7 +83,8 @@ export function ReplyTurn({
   body: ReactNode;
   current?: boolean;
   /** The reply's deletion, where its author deleted it: it keeps ` · edited` off the byline,
-   *  since the deleted line in `body` already says what became of the text. */
+   *  since the deleted line in `body` already says what became of the text, and the retry row
+   *  off a delivered reply, which is sent again in no mode (`resendable`). */
   deleted?: PostDeletion | null;
   delivery?: ReplyDelivery;
   /** When the reply's author last replaced its body; null or absent on one nobody edited. */
@@ -106,11 +108,13 @@ export function ReplyTurn({
   replyDisabled?: boolean;
   turnID: string;
 }): ReactNode {
-  // The retry row a delivered reply keeps until the session answers it or took it as its turn.
+  // The retry row a delivered reply keeps until the session answers it or took it as its turn,
+  // and while its author has not deleted it.
   const retry =
     delivery !== undefined &&
     delivery.answeredBy === undefined &&
-    !takenAsUserTurn(delivery.attempts)
+    !takenAsUserTurn(delivery.attempts) &&
+    resendable(deleted)
       ? delivery.retry
       : undefined;
   return (

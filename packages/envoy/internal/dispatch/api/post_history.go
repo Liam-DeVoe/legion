@@ -93,11 +93,13 @@ func queuePostBodyHistory(ledger *docs.Ledger, kind refs.ItemKind, itemID, body 
 	return ledger.Queue(step)
 }
 
-// deletedPostDeliveryError is what a send of a deleted post still pending is settled with. It says
-// that the post's delete ended the attempt and nothing about whether a frame reached the session:
-// a sender whose claim the delete settled after its frame left (queueDeletedPostSettlement) never
-// learns which, and one that learns it before its send sends nothing (deliverResolvedCommentMention).
-const deletedPostDeliveryError = "ended by the post's delete"
+// deletedPostDeliveryError is what a send of a deleted post still pending is settled with
+// (contracts.DeletedPostDeliveryError, one literal with the dashboard's). It says that the post's
+// delete ended the attempt and nothing about whether a frame reached the session: a sender whose
+// claim the delete settled after its frame left (queueDeletedPostSettlement) never learns which,
+// and one that learns it before its send sends nothing (deliverResolvedCommentMention,
+// deliverMessageResuming).
+const deletedPostDeliveryError = contracts.DeletedPostDeliveryError
 
 // deleteContended is the code of a delete whose settle met a send of its post that the send's own
 // sender moved after the delete's read found it (queueDeletedPostSettlement). Nothing is written,

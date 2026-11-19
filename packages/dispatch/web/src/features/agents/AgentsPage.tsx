@@ -320,6 +320,7 @@ function AgentTargetedMessage({
       canAside={capabilitiesForTarget(read.message.target, liveAgents)?.includes("aside") !== false}
       canBtw={capabilitiesForTarget(read.message.target, liveAgents)?.includes("btw") !== false}
       canSteer={capabilitiesForTarget(read.message.target, liveAgents)?.includes("steer") !== false}
+      deleted={postDeletion(read.message)}
       deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
       header={null}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}

@@ -375,6 +375,15 @@ export const DELIVERY_DUPLICATE_WINDOW_HOURS = DELIVERY_DUPLICATE_WINDOW_MS / 3_
 export const RECEIPT_TIMEOUT_CAUSE =
   "The listener didn't answer within the send window; the message may already have been delivered.";
 
+/**
+ * The error a delete settles each send of its post still pending with: the post's delete ended
+ * the attempt, and nothing more - not whether its frame had already reached the session. Each
+ * such attempt also gets a failed receipt carrying it. Generated into Go as
+ * `contracts.DeletedPostDeliveryError`, so the string the server writes and the string the
+ * dashboard reads a delete's receipts and attempts by are one literal.
+ */
+export const DELETED_POST_DELIVERY_ERROR = "ended by the post's delete";
+
 /** `SearchResponse.degraded`'s one value today: meaning search could not run for this request (no
  * embedder configured, the query's own embedding timed out, or the model service answered an
  * error) and search fell back to keyword-only ranking. Generated into Go as

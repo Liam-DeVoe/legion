@@ -798,7 +798,8 @@ var errAttemptNotPending = errors.New("delivery attempt is no longer pending")
 // holds that session - is queued by Dispatch itself on that session's own subject
 // (queueForUnknownSession) while this sender still holds the attempt, so every sender of a
 // targeted message queues it alike: the request, a keyed repeat, a broadcast's copy, a Retry and
-// the delivery sweep.
+// the delivery sweep. The queued copy is a send too, so the sender re-checks its claim
+// immediately before it (holdMessageDeliveryClaim), as it does before every try.
 func (s *server) deliverMessageResuming(
 	ctx context.Context,
 	message model.Message,
@@ -866,7 +867,19 @@ func (s *server) deliverMessageResuming(
 		return model.MessageDelivery{}, err
 	}
 	if held && s.mayQueueForUnknownSession(message, pending, connectedOnly, outcome.failure) {
-		outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+		// The last try was a listener call with nothing held, and a delete that committed during it
+		// settled the attempt and moved its claim (queueDeletedPostSettlement); a copy published
+		// now would store the deleted body for the session to read when it registers again. So the
+		// claim is re-checked first, in a statement scoped to it, as every try's renew is, and a
+		// claim no longer this sender's publishes nothing: the settle below reads the row as it
+		// stands and appends whatever receipt that row still owes.
+		pending, held, err = s.holdMessageDeliveryClaim(ctx, message, pending, pending)
+		if err != nil {
+			return model.MessageDelivery{}, err
+		}
+		if held {
+			outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+		}
 	}
 	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)
 }
@@ -874,12 +887,9 @@ func (s *server) deliverMessageResuming(
 // renewMessageDeliveryClaim prepares one more try of an attempt this sender holds, after a try a
 // listener take-over failed: it resolves again only the recipient the attempt names - the session
 // its row is pinned to, or, for a row still unpinned, the message's own target, which is written
-// once - and renews the claim, pinning an unpinned row to the session that resolution found, in
-// one statement scoped to the claim held, as every settle statement is, in a transaction of its
-// own, as every write a keyed request makes is (markRequestKeyCommitted). It answers the attempt
-// as the next try sends and settles it, and held = false, with pending unchanged, when the claim
-// is no longer this sender's: the attempt was answered or taken meanwhile, and the settle that
-// follows reads which.
+// once - and renews the claim on that resolution (holdMessageDeliveryClaim). It answers the
+// attempt as the next try sends and settles it, and held = false, with pending unchanged, when
+// the claim is no longer this sender's.
 func (s *server) renewMessageDeliveryClaim(
 	ctx context.Context, message model.Message, pending pendingMessageDelivery,
 ) (pendingMessageDelivery, bool, error) {
@@ -892,6 +902,20 @@ func (s *server) renewMessageDeliveryClaim(
 	// lookups at mentionLookupTimeout, because it answers without them. A read cut short here
 	// would leave the attempt unanswered with no resolve error, and this sender settles it.
 	renewed.resolved = s.resolveMentionTarget(ctx, route, pending.resolved.Delivery, 0)
+	return s.holdMessageDeliveryClaim(ctx, message, pending, renewed)
+}
+
+// holdMessageDeliveryClaim renews the claim pending holds on its attempt, pinning a row still
+// unpinned to the session next resolved to, in one statement scoped to the claim held, as every
+// settle statement is, in a transaction of its own, as every write a keyed request makes is
+// (markRequestKeyCommitted). It answers next with the claim it renewed and the session the row is
+// pinned to, and held = false, with pending unchanged, when the claim is no longer this sender's:
+// the attempt was answered, taken or settled by its post's delete meanwhile, and the settle that
+// follows reads which. A sender about to queue its message passes pending as next: the row is
+// pinned already, and the statement only re-checks and renews the claim.
+func (s *server) holdMessageDeliveryClaim(
+	ctx context.Context, message model.Message, pending, next pendingMessageDelivery,
+) (pendingMessageDelivery, bool, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return pending, false, err
@@ -902,8 +926,8 @@ func (s *server) renewMessageDeliveryClaim(
 		set claimed_at = now(), session_id = coalesce(nullif(session_id, ''), $4)
 		where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 		returning claimed_at, session_id
-	`, message.ID, pending.attempt, pending.claimedAt, renewed.resolved.attemptSessionID,
-	).Scan(&renewed.claimedAt, &renewed.resolved.attemptSessionID)
+	`, message.ID, pending.attempt, pending.claimedAt, next.resolved.attemptSessionID,
+	).Scan(&next.claimedAt, &next.resolved.attemptSessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return pending, false, nil
 	}
@@ -913,7 +937,7 @@ func (s *server) renewMessageDeliveryClaim(
 	if err := tx.Commit(ctx); err != nil {
 		return pending, false, err
 	}
-	return renewed, true, nil
+	return next, true, nil
 }
 
 // messageReplyInput is the body of POST /api/v1/messages/{id}/reply.

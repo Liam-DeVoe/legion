@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
-import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import {
+  DELETED_POST_DELIVERY_ERROR,
+  DELIVERY_DUPLICATE_WINDOW_MS,
+  RECEIPT_TIMEOUT_CAUSE,
+} from "@legion/contracts";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import type { PostDeletion } from "../refs/post-marks";
 import { answeredWithErrorGuidance, duplicateText, safeRetryGuidance } from "./delivery";
 import { type TargetedMessageAttempt, TargetedMessageCard } from "./TargetedMessageCard";
 
@@ -20,6 +25,7 @@ function attempt(overrides: Partial<TargetedMessageAttempt> = {}): TargetedMessa
 function card(props: {
   attempts: readonly TargetedMessageAttempt[];
   capabilities?: readonly string[];
+  deleted?: PostDeletion;
   onRetry?: (delivery: "aside" | "btw" | "steer") => void;
 }) {
   const capabilities = props.capabilities ?? ["aside", "btw", "steer"];
@@ -30,6 +36,7 @@ function card(props: {
         canAside={capabilities.includes("aside")}
         canBtw={capabilities.includes("btw")}
         canSteer={capabilities.includes("steer")}
+        deleted={props.deleted ?? null}
         deliveries={props.attempts}
         header={null}
         onRetry={props.onRetry ?? (() => {})}
@@ -196,6 +203,32 @@ test("an attempt the session answered with an error points at a mode change inst
     expect(screen.getByRole("button", { name: "Use Send instead" })).toBeTruthy();
   } finally {
     view.unmount();
+  }
+});
+
+// A delete ends each send of its post still pending, with its own words, and Dispatch refuses
+// every new delivery of a deleted post (409 POST_DELETED). So the attempt the delete ended
+// offers no Retry and no mode change, and its line says only that the delete ended it; a failed
+// attempt of a message nobody deleted keeps its Retry.
+test("an attempt the message's delete ended offers no Retry or mode change and says the delete ended it", () => {
+  const ended = attempt({ error: DELETED_POST_DELIVERY_ERROR });
+  const view = render(
+    card({ attempts: [ended], deleted: { at: new Date().toISOString(), by: null } })
+  );
+  try {
+    expect(screen.getByText(`Failed: ${DELETED_POST_DELIVERY_ERROR}`)).toBeTruthy();
+    expect(screen.queryByText(/Retry won't deliver it twice/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /instead/ })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+  const standing = render(card({ attempts: [attempt({ error: "no live session s1" })] }));
+  try {
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use BTW instead" })).toBeTruthy();
+  } finally {
+    standing.unmount();
   }
 });
 

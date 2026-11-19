@@ -1,4 +1,5 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -729,6 +730,74 @@ test("a mention its session answered with an error is pointed at a new comment, 
         `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
       )
     );
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A delete ends each send of its post still pending, with its own words, and Dispatch refuses
+// every new delivery of a deleted post (409 POST_DELETED). So the attempt a comment's delete
+// ended reads the delete's words alone, with no Retry, while a standing comment's failed mention
+// keeps its Retry; and a deleted targeted message's card offers neither Retry nor a mode change.
+test("an attempt a post's delete ended offers no Retry or mode change, and a standing post's still does", async () => {
+  const deletion = { deleted_at: "2026-09-20T00:05:00Z", deleted_by: alice };
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", {
+        ...deletion,
+        body: "",
+        deliveries: [
+          mentionAttempt({
+            comment_id: "comment-1",
+            error: DELETED_POST_DELIVERY_ERROR,
+            session_id: "worker",
+            target: "session:worker",
+          }),
+        ],
+        mentions: [{ delivery: "btw", session_id: "worker", target: "session:worker" }],
+      }),
+      comment("comment-2", {
+        body: "@reviewer take a look",
+        deliveries: [
+          mentionAttempt({
+            comment_id: "comment-2",
+            error: "reviewer failed",
+            session_id: "reviewer",
+            target: "session:reviewer",
+          }),
+        ],
+        mentions: [{ delivery: "btw", session_id: "reviewer", target: "session:reviewer" }],
+      }),
+    ],
+    messages: [
+      thread(
+        message("message-1", {
+          ...deletion,
+          body: "",
+          deliveries: [attempt({ error: DELETED_POST_DELIVERY_ERROR, state: "failed" })],
+          target: "session:s1",
+        })
+      ),
+    ],
+  });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await screen.findByText(wholeText(`session:worker… · failed · ${DELETED_POST_DELIVERY_ERROR}`));
+    screen.getByText(
+      wholeText(
+        `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
+      )
+    );
+    const card = (await screen.findByText(`Failed: ${DELETED_POST_DELIVERY_ERROR}`)).closest(
+      "[data-turn]"
+    ) as HTMLElement;
+    expect(within(card).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /instead/ })).not.toBeInTheDocument();
+    // The one Retry on the page is the standing comment's.
     expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
   } finally {
     view.unmount();

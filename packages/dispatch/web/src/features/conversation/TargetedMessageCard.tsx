@@ -9,6 +9,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
+import type { PostDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import {
@@ -17,6 +18,7 @@ import {
   isSafeRetry,
   MODE_LABELS,
   queuedParts,
+  resendable,
   withGuidance,
 } from "./delivery";
 import { ReplyButton } from "./ReplyButton";
@@ -281,6 +283,9 @@ interface TargetedMessageCardProps {
   readonly canBtw: boolean;
   readonly canSteer: boolean;
   readonly current?: boolean;
+  /** The message's deletion, where its author deleted it (`postDeletion`): a deleted message is
+   *  sent again in no mode (`resendable`), so the card keeps no retry row. */
+  readonly deleted: PostDeletion | null;
   readonly deliveries: readonly TargetedMessageAttempt[];
   readonly header: ReactNode;
   readonly onReply?: () => void;
@@ -304,6 +309,7 @@ export function TargetedMessageCard({
   canBtw,
   canSteer,
   current = false,
+  deleted,
   deliveries,
   header,
   onReply,
@@ -316,7 +322,10 @@ export function TargetedMessageCard({
   turnID,
 }: TargetedMessageCardProps): ReactNode {
   // Narrowed once, so the render below needs no second test of the same condition.
-  const retry = answeredBy === undefined && !takenAsUserTurn(deliveries) ? onRetry : undefined;
+  const retry =
+    answeredBy === undefined && !takenAsUserTurn(deliveries) && resendable(deleted)
+      ? onRetry
+      : undefined;
   return (
     <li
       aria-current={current ? "true" : undefined}

@@ -51,7 +51,7 @@ import {
 } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { EditedMark, PostBody } from "../refs/PostBody";
-import { postDeletion } from "../refs/post-marks";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -84,6 +84,7 @@ import {
   isSafeRetry,
   MODE_LABELS,
   queuedParts,
+  resendable,
   withGuidance,
 } from "./delivery";
 import {
@@ -549,16 +550,23 @@ function commentReplyTarget(
 
 function CommentDeliveryList({
   agents,
+  deleted,
   deliveries,
   onRetry,
   retrying,
 }: {
   agents: readonly Agent[] | undefined;
+  /** The comment's deletion, where its author deleted it (`postDeletion`): a deleted comment's
+   *  mention is sent again in no mode (`resendable`). */
+  deleted: PostDeletion | null;
   deliveries: readonly CommentDeliveryAttempt[];
   onRetry: (delivery: CommentDeliveryAttempt) => void;
   retrying: boolean;
 }): ReactNode {
   if (deliveries.length === 0) return null;
+  // Asked once for the comment: every attempt of a deleted comment offers no Retry and earns none
+  // of the guidance that names one, so the attempt its delete ended reads the delete's words alone.
+  const offered = resendable(deleted);
   return (
     <ul
       aria-label="Mention deliveries"
@@ -577,9 +585,9 @@ function CommentDeliveryList({
         // mode under its own key, so it is offered only while `isSafeRetry` holds, and the
         // guidance beside it names that Retry or a new comment, both of which a closed issue
         // takes too.
-        const safeRetry = isSafeRetry(outcome);
+        const safeRetry = offered && isSafeRetry(outcome);
         const canRetry = capabilities === undefined || capabilities.includes(delivery.delivery);
-        const guidance = failureGuidance(outcome, "mention");
+        const guidance = offered ? failureGuidance(outcome, "mention") : undefined;
         const recipient = targetPart(delivery.target);
         return (
           <li
@@ -795,6 +803,7 @@ function CommentTurn({
         renderDeliveries={(comment) => (
           <CommentDeliveryList
             agents={agents}
+            deleted={postDeletion(comment)}
             deliveries={deliveriesFor(comment.id)}
             onRetry={(delivery) => retryGuard.guard(() => retry.mutate(delivery))}
             retrying={retry.isPending}
@@ -896,6 +905,7 @@ function TargetedMessageTurn({
       canBtw={capabilities?.includes("btw") !== false}
       canSteer={capabilities?.includes("steer") !== false}
       current={current}
+      deleted={postDeletion(item.root)}
       deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
       header={<Avatar actor={asker} />}
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}

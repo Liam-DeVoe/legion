@@ -4,6 +4,7 @@ import { dirname, relative, resolve } from "node:path";
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
+  DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
@@ -350,6 +351,11 @@ const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 // send. Generated from RECEIPT_TIMEOUT_CAUSE in packages/contracts so the string Dispatch writes
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
+
+// DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
+// Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
+// and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
+const DeletedPostDeliveryError = ${JSON.stringify(DELETED_POST_DELIVERY_ERROR)}
 
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's

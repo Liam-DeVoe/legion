@@ -119,6 +119,11 @@ const MintedDedupeKeyPattern = "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = "The listener didn't answer within the send window; the message may already have been delivered."
 
+// DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
+// Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
+// and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
+const DeletedPostDeliveryError = "ended by the post's delete"
+
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
