@@ -216,11 +216,18 @@ func (s *supervision) podUpdateOpenings(byIssue map[string][]supervise.Claim) (t
 }
 
 // recordPodUpdateOpening charges one opening that reached a worker to this sweep and to this
-// daemon's record of its own openings. The time written is the sweep's own now, the one every
-// opening of the sweep shares: the per-minute limit is a budget for a sweep, not a gap between
-// the openings inside one, and the sweep that follows measures its gap from the sweep that
-// opened rather than from whatever the openings' own replacements took afterwards.
-func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round string, now time.Time) {
+// daemon's record of its own openings, dated at the clock as the opening is made. The sweep's own
+// now, read at the top of the sweep, is no date for it: the walk can wait before it reaches the
+// issue — the late-round notice of an issue walked before it marks the round told under the lock
+// of each claim's machine (markUpdateTold), which a relaunch into a pod being built holds for
+// minutes — and an opening dated from the top of such a sweep reads as older than it is, so the
+// sweep after it would open another round podUpdateOpeningGap or less after the real one. Nor is
+// the date anything that comes after the opening: the replacements the walk leaves are made after
+// the walk (reconcilePodUpdates), so what they wait out is no part of it. Where one sweep opens
+// several rounds the last of them is the date kept, which is the daemon's last opening the next
+// sweep measures its gap from; the per-minute limit stays a budget for the sweep, spent at it.
+func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round string) {
+	opened := s.plan.clock.Now()
 	sweep.charge(issue)
 	s.podUpdateMu.Lock()
 	defer s.podUpdateMu.Unlock()
@@ -228,7 +235,7 @@ func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round
 		s.podUpdateOpened = map[string]string{}
 	}
 	s.podUpdateOpened[issue] = round
-	s.podUpdateOpenedAt = now
+	s.podUpdateOpenedAt = opened
 }
 
 // recordPodUpdateSweep writes what this sweep decided under the project's two limits, whole and

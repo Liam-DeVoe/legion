@@ -6144,6 +6144,8 @@ The migration drops two columns that every release from `legion-v19.16.0` on rea
 
 How many update rounds run at once is the project's to cap, with two optional top-level `legion.yaml` keys, each a positive integer (`beginPodUpdateSweep`, `podUpdateSweep`):
 `pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).
+The 50 seconds run from the moment of the last opening, not from the start of the sweep that made it:
+a sweep can wait in its walk before it opens a round, on the lock of a claim's machine that a relaunch holds, and the next sweep still opens nothing until more than 50 seconds after that opening (`recordPodUpdateOpening`).
 An issue holds one of those slots while a claim of it holds the round over the pod its claims record, or while its claims record two pods with a round open, which is a replacement in flight (`holdsOpenRound`).
 A round over a pod the claims no longer record holds none, since that pod is gone and the same sweep ends the round, and neither does a round whose claims record no pod at all.
 A round this daemon opened at an earlier sweep that no claim of the issue records yet holds a slot too, since it is an opening all the same: the post that carries a round to a machine is asynchronous, and a machine in a relaunch can take minutes to take it (`podUpdateOpenings`).

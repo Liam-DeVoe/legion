@@ -882,13 +882,14 @@ func TestPodUpdateRoundsPerMinuteJitter(t *testing.T) {
 	rig.awaitRounds("two sweeps 50 seconds after the last opening", "INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4")
 }
 
-// A sweep's openings are dated from the sweep rather than from whatever its replacements took
-// afterwards. A replacement waits its pod out, which is minutes, and the sweep makes them after
-// it has walked the issues: dated from the end of the call, the openings of a slow sweep would
-// be read as made minutes after they were, every sweep behind a slow one would fall inside the
-// gap, and the fleet would be paced by how long its pods take to come back rather than by the
-// key the operator set. A restarted daemon is at the other end of the same question: it has no
-// record of what the daemon before it opened, so its first sweep opens as a first sweep does.
+// A sweep's openings are dated from when the sweep made them rather than from whatever its
+// replacements took afterwards. A replacement waits its pod out, which is minutes, and the sweep
+// makes them after it has walked the issues: dated from the end of the call, the openings of a
+// slow sweep would be read as made minutes after they were, every sweep behind a slow one would
+// fall inside the gap, and the fleet would be paced by how long its pods take to come back rather
+// than by the key the operator set. A restarted daemon is at the other end of the same question:
+// it has no record of what the daemon before it opened, so its first sweep opens as a first sweep
+// does.
 func TestPodUpdateRoundsPerMinuteSlowSweep(t *testing.T) {
 	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4"}
 	rig := newLimitRig(t, keys...)
@@ -933,6 +934,173 @@ func TestPodUpdateRoundsPerMinuteSlowSweep(t *testing.T) {
 
 	next.tick()
 	next.awaitRounds("the first sweep of a restarted daemon", "INFRA-2", "INFRA-3", "INFRA-4")
+}
+
+// sweepHeldByARelaunch is one sweep that waits, in its walk, on the machine of the one worker of
+// relaunching, until the hold it puts on that worker ends. The issue's round is open and past its
+// bound, so the sweep tells the controller of it and marks the round told on the claim
+// (markUpdateTold), which takes the lock of the claim's machine. A relaunch into a pod being built
+// holds that lock for minutes: here the worker is held inside a Resume, and the clock moves
+// seventy seconds while the sweep waits. Every issue the walk reaches after relaunching is
+// decided only after the hold ends, and every issue before it before the hold.
+//
+// A relaunching claim records no pod (supervise's letGo), so the sweep and every sweep after it
+// read relaunching podless.
+func (r *fleetRig) sweepHeldByARelaunch(relaunching string) {
+	r.t.Helper()
+	// The locator is read before the machine is held: a read of the claim itself waits the
+	// decision in flight out (Machine.Claim).
+	architect := r.token(relaunching, claim.RoleArchitect)
+	died := *r.claimOf(relaunching, claim.RoleArchitect).Locator
+	r.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(architect, relaunching, r.pods[relaunching])})
+	entered, release := make(chan struct{}), make(chan struct{})
+	releaseMachine := sync.OnceFunc(func() { close(release) })
+	r.rt.HoldResume(func() {
+		r.rt.HoldResume(nil)
+		close(entered)
+		<-release
+	})
+	defer releaseMachine()
+	go func() {
+		m, _ := r.sup.Machine(architect)
+		_ = m.Handle(r.ctx, supervise.RuntimeObservation{
+			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		r.t.Fatal("the architect's machine never reached the Resume this test holds it in")
+	}
+	r.podless(relaunching)
+
+	// Past the round's bound, the sweep tells the controller of the round and marks it told on the
+	// relaunching claim, which waits for the relaunch. The sweep runs on a goroutine of its own,
+	// so the test can move the clock while it waits.
+	r.clock.advance(podUpdateGrace + time.Minute)
+	claims, err := r.sup.Claims(r.ctx)
+	if err != nil {
+		r.t.Fatalf("read the claims for the sweep: %v", err)
+	}
+	for i := range claims {
+		if r.noPod[claims[i].Issue] {
+			claims[i].Locator = nil
+		}
+	}
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		r.s.reconcilePodUpdates(r.ctx, claims)
+	}()
+	testwait.Eventually(r.t, "the sweep to tell the controller of the relaunching issue's late round", func() bool {
+		return len(r.controllerNotices()) == 1
+	})
+	r.clock.advance(70 * time.Second)
+	select {
+	case <-swept:
+		r.t.Fatal("the sweep ended while the relaunch held the machine it marks the round told on, so it did not wait")
+	default:
+	}
+	releaseMachine()
+	select {
+	case <-swept:
+	case <-time.After(30 * time.Second):
+		r.t.Fatal("the sweep did not end after the relaunch let the machine go")
+	}
+	released := r.clock.Now()
+	if told := r.claimOf(relaunching, claim.RoleArchitect).UpdateToldAt; told == nil || !told.Equal(released) {
+		r.t.Fatalf("the round of %s was marked told at %v, want %s: the mark waits for the relaunch, which ended at that time", relaunching, told, released)
+	}
+}
+
+// An opening is dated from the moment the sweep makes it, not from the top of the sweep. The
+// walk can wait before it reaches the issue it opens: the late-round notice of an issue walked
+// before that one marks the round told on each claim of that round, and the mark waits for a
+// relaunch that holds the claim's machine (sweepHeldByARelaunch). Dated from the top of such a
+// sweep, the opening it makes after the wait reads as older than it is, and the sweep after it
+// opens another round less than 50 seconds after the real opening.
+func TestPodUpdateRoundsPerMinuteDatesAnOpeningWhenTheSweepMakesIt(t *testing.T) {
+	relaunching, opened, next := "ACME-1", "ACME-2", "ACME-3"
+	rig := newLimitRig(t, relaunching, opened, next)
+	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
+
+	rig.tick()
+	rig.awaitRounds("the first sweep", relaunching)
+
+	rig.sweepHeldByARelaunch(relaunching)
+	rig.wantPodUpdateRecord("the sweep that waited on the relaunching claim", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(1),
+		InRound:                  []string{opened},
+		WaitingOnRoundsPerMinute: []string{next},
+	})
+	rig.awaitRounds("the opening that the waiting sweep made after the relaunch", relaunching, opened)
+
+	// Fifty seconds after the real opening, the next sweep opens nothing. Dated from the top of
+	// the sweep that waited, the opening would read as two minutes old.
+	rig.clock.advance(50 * time.Second)
+	rig.tick()
+	rig.wantPodUpdateRecord("a sweep fifty seconds after the real opening", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(1),
+		InRound:                  []string{opened},
+		WaitingOnRoundsPerMinute: []string{next},
+	})
+
+	// Half a second later the gap has passed, and the next issue opens.
+	rig.clock.advance(500 * time.Millisecond)
+	rig.tick()
+	rig.wantPodUpdateRecord("a sweep fifty and a half seconds after the real opening", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(1),
+		InRound: []string{opened, next},
+	})
+	rig.awaitRounds("the sweep after the gap", relaunching, opened, next)
+}
+
+// A sweep whose budget is two rounds can open one, wait in its walk, and open the second after
+// the wait. The daemon's last opening is then the second, and the next sweep measures its gap from
+// it: dated from the first, or from the top of the sweep, it would read as older than it is, and
+// the next sweep would open two more rounds less than 50 seconds after it.
+func TestPodUpdateRoundsPerMinuteDatesTheLastOpeningOfASweepThatWaitedBetweenTwo(t *testing.T) {
+	first, relaunching, second, third, fourth := "ACME-1", "ACME-2", "ACME-3", "ACME-4", "ACME-5"
+	rig := newLimitRig(t, first, relaunching, second, third, fourth)
+	rig.s.cfg.PodUpdateRoundsPerMinute = new(2)
+
+	// Only the issue that relaunches has drifted at the first sweep, so its round is the one that
+	// opens there; the others drift after it.
+	later := []string{first, second, third, fourth}
+	for _, key := range later {
+		rig.drifts(key)
+	}
+	rig.tick()
+	rig.awaitRounds("the first sweep, with one issue drifted", relaunching)
+	for _, key := range later {
+		rig.drifts(key, limitDrift)
+	}
+
+	rig.sweepHeldByARelaunch(relaunching)
+	rig.wantPodUpdateRecord("the sweep that opened a round, waited on the relaunching claim and opened another", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(2),
+		InRound:                  []string{first, second},
+		WaitingOnRoundsPerMinute: []string{third, fourth},
+	})
+	rig.awaitRounds("the two openings of the sweep that waited", first, relaunching, second)
+
+	// Fifty seconds after the second opening, the next sweep opens nothing.
+	rig.clock.advance(50 * time.Second)
+	rig.tick()
+	rig.wantPodUpdateRecord("a sweep fifty seconds after the second opening", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(2),
+		InRound:                  []string{first, second},
+		WaitingOnRoundsPerMinute: []string{third, fourth},
+	})
+
+	// Half a second later the gap has passed, and the next two issues open.
+	rig.clock.advance(500 * time.Millisecond)
+	rig.tick()
+	rig.wantPodUpdateRecord("a sweep fifty and a half seconds after the second opening", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(2),
+		InRound: []string{first, second, third, fourth},
+	})
+	rig.awaitRounds("the sweep after the gap", first, relaunching, second, third, fourth)
 }
 
 // The one line an operator reads for the sweep (`legion claims list`) is this record, and these

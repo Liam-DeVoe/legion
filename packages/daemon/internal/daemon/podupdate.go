@@ -253,7 +253,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		live = s.liveGroup(group)
 	}
 	if s.openPodUpdate(ctx, issue, live, pod, terms) && opening {
-		s.recordPodUpdateOpening(sweep, issue, round, now)
+		s.recordPodUpdateOpening(sweep, issue, round)
 	}
 	return nil
 }
