@@ -99,7 +99,9 @@ func inPrivateNamespace() bool {
 
 // otherUsersGit starts a git as `nobody`, in /, which that user can read, waiting on a standard input
 // the test holds open, and answers its pid. The test's end closes that input, which ends the git,
-// and waits for sudo.
+// and waits for sudo. The git is a descendant of the sudo the test started: its child where sudo
+// has no terminal, as in CI, and its grandchild where it has one, since Ubuntu's sudoers sets
+// use_pty and sudo then runs the command under a monitor sudo of its own (descendsFrom).
 func otherUsersGit(t *testing.T) int {
 	t.Helper()
 	sudo := exec.Command("sudo", "-n", "-u", "nobody", "git", "hash-object", "--stdin")
@@ -117,12 +119,12 @@ func otherUsersGit(t *testing.T) int {
 			t.Errorf("the other user's git ended with %v once its input closed", err)
 		}
 	})
-	reason := hostproc.Because("it takes only a child of the sudo this test started")
+	reason := hostproc.Because("it takes only a descendant of the sudo this test started")
 	var git int
 	testwait.Eventually(t, "the sudo to start the other user's git", func() bool {
 		pids, _ := hostproc.PIDs("the hostile row's listing", "/proc", reason)
 		for _, pid := range pids {
-			if parentPID(pid) == sudo.Process.Pid {
+			if descendsFrom(pid, sudo.Process.Pid) {
 				comm, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
 				if err == nil && string(comm) == "git\n" {
 					git = pid
@@ -133,6 +135,18 @@ func otherUsersGit(t *testing.T) int {
 		return false
 	})
 	return git
+}
+
+// descendsFrom says whether ancestor is pid's parent, or its parent's parent, or one more step up:
+// sudo with use_pty runs its command under a monitor sudo, so the command is the grandchild of the
+// sudo a test starts in a terminal.
+func descendsFrom(pid, ancestor int) bool {
+	for p, hops := parentPID(pid), 0; p > 1 && hops < 3; p, hops = parentPID(p), hops+1 {
+		if p == ancestor {
+			return true
+		}
+	}
+	return false
 }
 
 // parentPID is the PPid /proc/<pid>/status holds, 0 when it cannot be read.

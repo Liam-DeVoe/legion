@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc/hostproctest"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -412,6 +413,27 @@ func useGuardOf(t *testing.T, rig *guardRig) {
 		return previous(cfg)
 	}
 	t.Cleanup(func() { newMemoryGuard = previous })
+}
+
+// The watch a rig's launcher does not build reads the rig's pod too: a guard pod's guest watch
+// (useGuestOf) and a microVM pod's memory guard (useGuardOf). No launcher of either pod builds that
+// watch, so this calls each builder as the launcher would, with a Config that names no /proc, in a
+// child of its own: a builder that gave its watch no pod would build one over the machine's /proc,
+// which the watch's construction refuses (hostproc.Check), and the refusal ends the child.
+func TestTheWatchARigsLauncherDoesNotBuildReadsItsPodToo(t *testing.T) {
+	discard := func(string, ...any) {}
+	t.Run("the guest watch of a guard pod", func(t *testing.T) {
+		hostproctest.Allowed(t, func() {
+			useGuardPod(t, newGuardPod(t), nil)
+			_ = newGuest(memoryguard.GuestConfig{Logf: discard})
+		})
+	})
+	t.Run("the memory guard of a microVM pod", func(t *testing.T) {
+		hostproctest.Allowed(t, func() {
+			useGuestPod(t, newGuardPod(t), nil)
+			_ = newMemoryGuard(memoryguard.Config{Logf: discard})
+		})
+	})
 }
 
 // withRoles is classify with the role roles names for a pid put over its answer for that pid.

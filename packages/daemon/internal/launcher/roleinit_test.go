@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"io/fs"
 	"maps"
 	"math"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,9 +110,10 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The detached process sleeps for Detached seconds, and the stage looks for that number on the
-	// machine's /proc (detachedProcess). It is this test process's pid after a 9, so a detached
-	// sleep of another run on the same machine is never taken for this run's.
-	plan := stagePlan{Self: self, Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: fmt.Sprintf("9%010d", os.Getpid())}
+	// machine's /proc (detachedProcess). It is a number drawn at random for this run
+	// (detachedMarker), so a detached sleep of another run on the same machine is never taken for
+	// this run's.
+	plan := stagePlan{Self: self, Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: detachedMarker(t)}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -603,12 +606,25 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 	return nil
 }
 
+// detachedMarker is the number a role's detached process sleeps for, the marker detachedProcess
+// looks for: a 9 and ten digits drawn at random for the run. A pid would not do: the machine's
+// /proc lists the processes of nested PID namespaces too, where a pid of this test's is another
+// process's, and under .github/scripts/private_proc.py every run's test process has the same pid.
+func detachedMarker(t *testing.T) string {
+	t.Helper()
+	n, err := rand.Int(rand.Reader, big.NewInt(1e10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("9%010d", n)
+}
+
 // detachedProcess says whether any process of the machine still runs the detached command the
 // role started, once the role's init has exited.
 func detachedProcess(marker string) string {
 	var unreadable string
 	reason := hostproc.Because("the role's PID namespace ends with its init, so only the machine's /proc can show a process " +
-		"of it left behind, and marker is a number of the test process's own (its pid), which no process the test did not start names")
+		"of it left behind, and marker is a number drawn at random for the run (detachedMarker), which no process the test did not start names")
 	gone := testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
 		pids, err := hostproc.PIDs("detachedProcess", "/proc", reason)
 		if err != nil {
