@@ -1273,10 +1273,10 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
 
 // The same answer from elsewhere, with the page's focus rescue mounted as the app shell mounts it
 // (`RescuedMain`). The reader's click on the answer field has been answered, so no press of
-// theirs is live when the card swaps to its record: the loss is not their doing
-// (`causedByReader`), so the card's hand-off leaves it to the rescue, which moves the focus into
-// no row and scrolls nothing.
-test("an ask answered elsewhere while the reader's focus is in its form hands the focus to no row", async () => {
+// theirs is live when the card swaps to its record. Whoever caused the loss, the card hands the
+// focus to its form's own row, the reader's own place, with no scroll: the Inbox keeps that row
+// in the list with the recorded answer while it holds the focus, and no other row takes it.
+test("an ask answered elsewhere while the reader's focus is in its form hands the focus to its own row, which stays in the list with its record", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });
   const askB = issueAsk({
@@ -1318,6 +1318,8 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
 
   try {
     const card = await screen.findByTestId("ask-ask-b");
+    const row = card.closest<HTMLElement>("[data-inbox-row]");
+    if (row === null) throw new Error("ask-b row missing");
     const field = within(card).getByLabelText("Your answer");
     await user.click(field);
     await afterRescue();
@@ -1332,11 +1334,14 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
     });
     // The card swaps to its record, and the answer form goes with the focus in it.
     const kept = await screen.findByTestId("ask-ask-b");
-    expect(within(kept).getByText("JSON, always.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("JSON, always.")).toBeTruthy();
     expect(field).not.toBeInTheDocument();
     await afterRescue();
 
-    expect(document.activeElement?.closest("[data-inbox-row]") ?? null).toBeNull();
+    expect(row).toHaveFocus();
+    expect(kept.closest("[data-inbox-row]")).toBe(row);
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
     expect(scrolls).not.toHaveBeenCalled();
   } finally {
     view.unmount();
@@ -1347,10 +1352,10 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
 });
 
 // The same answer from elsewhere in the list layout, with the Inbox's keys mounted as well: the
-// card's hand-off target is its row, so the loss moves the focus into no row, and from where the
-// rescue leaves it the Inbox's `j` still steps onto a row - the first one, as `j` does from no
-// row - rather than being typed into a text box the rescue landed on.
-test("in the list, an ask answered elsewhere under the reader's focus moves it into no row, and j then focuses the first row", async () => {
+// card hands the focus to its own row, which the Inbox keeps in its place with the record, so the
+// Inbox's `j` steps from there onto the next row, as it does from any row, and nothing scrolls.
+// The held row leaves once the focus has left it.
+test("in the list, an ask answered elsewhere under the reader's focus keeps it on the ask's own row, and j then focuses the next row", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });
   const askB = issueAsk({
@@ -1359,15 +1364,21 @@ test("in the list, an ask answered elsewhere under the reader's focus moves it i
     issue_key: "CORE-2",
     question: "Which format?",
   });
+  const askC = issueAsk({
+    id: "ask-c",
+    issue: { assignee: "alice", key: "CORE-3", title: "Third issue" },
+    issue_key: "CORE-3",
+    question: "Which owner?",
+  });
   const answeredB: InboxRow = {
     ...askB,
     answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "JSON, always.", user: "bob" },
     state: "answered",
   };
   let threadB = askB;
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB, askC]);
   const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
-    ask: id === askA.id ? askA : threadB,
+    ask: id === askB.id ? threadB : id === askC.id ? askC : askA,
     answers: [],
     edits: [],
     claimant: null,
@@ -1394,6 +1405,8 @@ test("in the list, an ask answered elsewhere under the reader's focus moves it i
 
   try {
     const card = await screen.findByTestId("ask-ask-b");
+    const row = card.closest<HTMLElement>("[data-inbox-row]");
+    if (row === null) throw new Error("ask-b row missing");
     const field = within(card).getByLabelText("Your answer");
     await user.click(field);
     await afterRescue();
@@ -1403,18 +1416,20 @@ test("in the list, an ask answered elsewhere under the reader's focus moves it i
     // the answer, and the card swaps to its record with the focus in its form.
     threadB = answeredB;
     await act(async () => {
-      queryClient.setQueryData<InboxRow[]>(["inbox"], [askA]);
+      queryClient.setQueryData<InboxRow[]>(["inbox"], [askA, askC]);
       await queryClient.invalidateQueries({ queryKey: ["ask-thread", "ask-b"] });
     });
-    expect(within(await screen.findByTestId("ask-ask-b")).getByText("JSON, always.")).toBeTruthy();
+    const kept = await screen.findByTestId("ask-ask-b");
+    expect(await within(kept).findByText("JSON, always.")).toBeTruthy();
     expect(field).not.toBeInTheDocument();
     await afterRescue();
-    expect(document.activeElement?.closest("[data-inbox-row]") ?? null).toBeNull();
-    expect(selectedIds()).toEqual([]);
+    expect(row).toHaveFocus();
+    expect(rowIds()).toEqual(["ask-a", "ask-b", "ask-c"]);
+    expect(scrolls).not.toHaveBeenCalled();
 
     await user.keyboard("j");
-    expect(rowIds()[0]).toBe("ask-a");
-    expect(shortRow("ask-a")).toHaveFocus();
+    expect(shortRow("ask-c")).toHaveFocus();
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-c"]));
     expect(scrolls).not.toHaveBeenCalled();
   } finally {
     view.unmount();

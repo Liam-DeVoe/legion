@@ -500,6 +500,15 @@ function recentPress(): Press | null {
   return lastPress?.live ? lastPress : null;
 }
 
+/** Whether a press of the reader's is live (`answerPress`): their latest press, key or pick can
+ *  still be the cause of what the page draws now. True wherever no rescue is mounted, as
+ *  `causedByReader` is, since nothing records the reader's presses there. A composer reads it
+ *  before it takes the focus for a reply target (`MentionComposer`), so a box an update drew
+ *  under the reader takes no focus from where they hold it. */
+export function readerPressLive(): boolean {
+  return !rescueMounted || recentPress() !== null;
+}
+
 /** The places a press could have taken `element`'s focus from and still be the reader's own doing:
  *  the element itself, the row it is in, and the dialog, panel or selection bar it was lost from.
  *  A press in a list's panel is in that panel, so a pick that takes the panel away is the

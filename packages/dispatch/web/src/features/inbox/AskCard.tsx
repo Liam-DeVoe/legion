@@ -22,7 +22,7 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
-import { causedByReader, focusOnMount, inRow } from "../../components/focus-place";
+import { focusOnMount } from "../../components/focus-place";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -235,30 +235,23 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   med: "text-page-question",
 };
 
-/** Moves focus from inside the form to the nearest focusable ancestor instead of letting it fall
- *  to the document body, so j/k/Enter/Escape still start from the same place. In the Inbox's list
- *  layout that ancestor is the ask's row (`inRow`), so it takes the focus only for a loss the
- *  reader caused: their live press, key or pick on the control holding the focus, in its row,
- *  or in the dialog or panel it is in (`causedByReader`). A loss they did not cause there - the
- *  ask answered or resolved elsewhere, the card swapping to its record under them - moves nothing
- *  here, so the focus goes into no row and nothing scrolls: the page's focus rescue
- *  (`useFocusRescue`) answers it. In the reading column that ancestor is the column's own focus
- *  stop, which is in no row, so it takes the focus whoever caused the loss, with no scroll: the
- *  Inbox's j, k and Enter answer from there, where the rescue would land the focus on a control
- *  of what the page drew in the form's place, such as the record's Reply box, which takes the
- *  next key as text. */
+/** Moves focus from inside the form to the form's nearest focusable ancestor instead of letting
+ *  it fall to the document body, so j/k/Enter/Escape still start from the same place: whoever
+ *  caused the loss, and with no scroll. In the Inbox's list layout that ancestor is the ask's own
+ *  row, the reader's own place, so the focus goes to no other row; a row whose ask was answered
+ *  or withdrawn elsewhere stays in the list, with the card's closed state, while it holds the
+ *  focus. In the reading column it is the column's own focus stop. The Inbox's j, k and Enter
+ *  answer from either. */
 function handOffFocus(form: HTMLElement): void {
   const focused = document.activeElement;
   if (focused === null || !form.contains(focused)) return;
-  const target = form.parentElement?.closest<HTMLElement>("[tabindex]") ?? null;
-  if (target === null || (inRow(target) && !causedByReader(focused))) return;
-  target.focus({ preventScroll: true });
+  form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
 }
 
 /** The form's callback ref. When the form leaves while a control inside it has focus - the card
  *  swapping to its record once the ask is answered, or resolved elsewhere - its cleanup runs the
- *  hand-off without any event, which moves the focus to the list layout's row only for a loss
- *  the reader caused, and to the reading column's focus stop for any loss (`handOffFocus`);
+ *  hand-off without any event, which moves the focus to the form's nearest focusable ancestor,
+ *  the list layout's row or the reading column's focus stop, with no scroll (`handOffFocus`);
  *  React detaches a ref before removing its node, so the form is still in the document when this
  *  cleanup runs. The form is also kept in `formRef` for the disabled-control hand-off below: in
  *  the compact variant the answer field is unmounted while its disclosure is closed, so the

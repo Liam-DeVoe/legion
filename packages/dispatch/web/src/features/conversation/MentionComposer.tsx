@@ -32,6 +32,7 @@ import type {
   IssueCollaboratorLegionAgent,
 } from "../../api/types";
 import { Chip } from "../../components/Chip";
+import { readerPressLive } from "../../components/focus-place";
 import { AgentListRefilling, QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -525,8 +526,9 @@ interface MentionComposerProps {
   /** The reply target is this box's own standing address rather than a Reply the reader
    *  pressed: the Inbox reading column's thread box, which is the thread's permanent reply and
    *  is remounted whenever the column follows the selection onto another row. Taking a target
-   *  normally takes the focus, so the reader can write at once; a standing box takes neither,
-   *  since the reader's place is the list the column follows and the next `j` belongs to it. */
+   *  on the reader's own press takes the focus, so the reader can write at once; a standing box
+   *  takes none, since the reader's place is the list the column follows and the next `j`
+   *  belongs to it. */
   readonly standing?: boolean;
   /** Shows the Comment / Suggest / Ask switch and hands each pick to the host, which answers
    *  through `kind` - a selected document mark is the only surface where the kind can change, and
@@ -775,10 +777,12 @@ export function MentionComposer({
     }
     if (previousReply.current === replyTo.id) return;
     previousReply.current = replyTo.id;
-    // A standing box never takes the focus for its own target: nobody asked for it, and the
-    // Inbox column mounts one for every row the reader steps onto.
+    // The box takes the focus for its target only while a press of the reader's is live
+    // (`readerPressLive`), such as their Reply: a box an update the reader did not make mounted
+    // takes no focus from where they hold it. A standing box takes none either: nobody asked for
+    // it, and the Inbox column mounts one for every row the reader steps onto.
     const takeFocus = () => {
-      if (!standing) textarea.current?.focus();
+      if (!standing && readerPressLive()) textarea.current?.focus();
     };
     if (tookHeldDraft) {
       takeFocus();

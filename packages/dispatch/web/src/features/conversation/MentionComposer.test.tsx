@@ -8,6 +8,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
@@ -368,6 +369,72 @@ test("reopening the same reply restores its canonical prefills after cancel", as
     await user.paste("Draft after cancellation");
     await user.click(screen.getByRole("button", { name: "Open reply" }));
     await waitFor(() => expect(field.value).toBe("@Planner"));
+  } finally {
+    view.unmount();
+  }
+});
+
+// With the page's focus rescue mounted as the app shell mounts it (`RescuedMain`), a box that an
+// update the reader did not make mounts with its reply target takes the target's prefill and no
+// focus: the reader's click on the control holding the focus has been answered, so no press of
+// theirs is live, and the focus stays where they put it. A target the reader's own press gives
+// the box still takes the focus, since that press is live as the box takes it.
+test("a composer mounted with a reply target while no press of the reader's is live takes no focus from the element that holds it", async () => {
+  const user = userEvent.setup();
+  const fromUpdate: ReplyTarget = {
+    actor: plannerAuthor,
+    excerpt: "Question",
+    id: "comment-1",
+    mentions: [{ target: "role:Planner", title: "Planner" }],
+    parentKind: "comment",
+  };
+  const fromPress: ReplyTarget = { ...fromUpdate, excerpt: "Follow-up", id: "comment-2" };
+  const ReplyPage = ({ outside }: { outside: ReplyTarget | null }) => {
+    const [pressed, setPressed] = useState<ReplyTarget | null>(null);
+    const replyTo = pressed ?? outside;
+    return (
+      <RescuedMain>
+        <button type="button">Elsewhere</button>
+        <button onClick={() => setPressed(fromPress)} type="button">
+          Reply
+        </button>
+        {replyTo === null ? null : (
+          <MentionComposer
+            onClose={() => {}}
+            onSent={() => {}}
+            owner={{ issueKey: "CORE-1", kind: "issue" }}
+            replyTo={replyTo}
+          />
+        )}
+      </RescuedMain>
+    );
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const page = (outside: ReplyTarget | null) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <ReplyPage outside={outside} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(page(null));
+
+  try {
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    await user.click(elsewhere);
+    await afterRescue();
+    expect(elsewhere).toHaveFocus();
+
+    view.rerender(page(fromUpdate));
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await afterRescue();
+    expect(elsewhere).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Reply" }));
+    expect(field).toHaveFocus();
   } finally {
     view.unmount();
   }
