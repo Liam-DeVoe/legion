@@ -932,8 +932,8 @@ export const pageStateText = {
  * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
  * caret is in the box. Every word in it says what it is, so the colours repeat what is written
  * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
- * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of the part
- * decisions document of dispatch://INFRA-1196).
+ * builds `max-[761px]:` as a width under 761 px, so it holds 760 px, as the issue page's design
+ * decided.
  */
 export const pageComposer = {
   answering:
@@ -1222,6 +1222,13 @@ export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:tex
  */
 export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
+
+/**
+ * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs
+ * the class as literal text, so the class spells the same number; `classes.test.ts` holds the two
+ * equal.
+ */
+export const scrollFadeTrailingPx = 32;
 
 // ---------------------------------------------------------------------------------------------
 // Spec block marks: editor decorations (`ProofEditorHandle.setBlockMarks`), never classes written

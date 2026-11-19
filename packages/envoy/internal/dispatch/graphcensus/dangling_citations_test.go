@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// restoreFixture is an issue whose answers left its spec in both shapes of the restore
-// (dispatch://INFRA-1150 R6): the spec, its decisions document and a third document that cites,
+// restoreFixture is an issue whose answers left its spec in both shapes of the restore: the
+// spec, its decisions document and a third document that cites,
 // and the asks.
 type restoreFixture struct {
 	spec, decisions, notes testDocument
@@ -191,7 +191,7 @@ func danglingOf(t *testing.T, database *store.Store) (moved, returning []string)
 	return moved, returning
 }
 
-// The dangling-citation counter of dispatch://INFRA-1150 R8 reads its two sets over the restore's
+// The dangling-citation counter reads its two sets over the restore's
 // work (ReadRestoreWork), before and after the move, and counts a node that cites one target from
 // its text and its block once.
 //
@@ -290,5 +290,68 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 	moved, returning = danglingOf(t, database)
 	if len(moved) != 0 || len(returning) != 0 {
 		t.Fatalf("after the move and the return the counter reads moved %v and returning %v, want none of either", moved, returning)
+	}
+}
+
+// A born-converted issue's spec stands in its issue room: its blocks' rows are keyed by the room's
+// tree artifact, `<tree ref_key>#<block id>`, while a citation names the spec's own address. The
+// counter reads each target through moved_to_reach alone, so the room step is that function's own
+// (migration 20261118165901), after the target's moved_to tuples and before the address itself.
+// The decisions document's ask block moves into the spec's fragment of the room: a move that wrote
+// no moved_to leaves its citation dangling (the control), and with a moved_to to the spec's
+// address of the block the citation resolves through the room to the tree's node. The returning
+// ask's old spec address dangles until its block stands in the room again, and then resolves by
+// the room step alone.
+func TestTheDanglingCounterReadsAMoveIntoAnIssueRoom(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	fixture := seedRestoreFixture(t, database)
+	var tree testDocument
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('CORE-1', 'CORE', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key
+	`).Scan(&tree.id, &tree.refKey); err != nil {
+		t.Fatalf("create the issue's tree: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		with held as (insert into issue_trees (issue_key, artifact_id) values ('CORE-1', $1::uuid))
+		insert into document_rooms (artifact_id, room) values ($2::uuid, $1::uuid)
+	`, tree.id, fixture.spec.id); err != nil {
+		t.Fatalf("move the spec into the issue room: %v", err)
+	}
+	oldAddress := fixture.decisions.refKey + "#ask-b"
+	specAddress := fixture.spec.refKey + "#ask-b"
+	returningAddress := fixture.spec.refKey + "#ask-a"
+	moving, returningComment := "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"
+	citeFromComment(t, database, moving, oldAddress)
+	citeFromComment(t, database, returningComment, returningAddress)
+	wantReturning := []string{"comment:" + returningComment + " -> " + returningAddress}
+	if moved, returning := danglingOf(t, database); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
+		t.Fatalf("before the move the counter reads moved %v and returning %v, want none and %v", moved, returning, wantReturning)
+	}
+
+	if _, err := database.Pool.Exec(ctx, `
+		delete from document_blocks where artifact_id = $1::uuid and block_id = 'ask-b'
+	`, fixture.decisions.id); err != nil {
+		t.Fatalf("move the ask block out of the decisions document: %v", err)
+	}
+	insertTestBlock(t, database, tree, "ask-b", "ask")
+	wantMoved := []string{"comment:" + moving + " -> " + oldAddress}
+	if moved, _ := danglingOf(t, database); !reflect.DeepEqual(moved, wantMoved) {
+		t.Fatalf("a move into the room that wrote no moved_to reads the moved set %v, want its citation %v", moved, wantMoved)
+	}
+	writeTestTuples(t, database, nil, []graphstore.Tuple{{
+		FromKind: refs.BlockNodeKind, FromID: oldAddress, Kind: graphstore.TupleMovedTo, ToKind: refs.BlockNodeKind, ToID: specAddress,
+		At: time.Now().UTC(), Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
+	}})
+	if moved, returning := danglingOf(t, database); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
+		t.Fatalf("with the moved_to to %s, whose block the room holds at %s#ask-b, the counter reads moved %v and returning %v, want none and %v",
+			specAddress, tree.refKey, moved, returning, wantReturning)
+	}
+
+	insertTestBlock(t, database, tree, "ask-a", "ask")
+	if moved, returning := danglingOf(t, database); len(moved) != 0 || len(returning) != 0 {
+		t.Fatalf("with the returning ask's block back in the room the counter reads moved %v and returning %v, want none of either", moved, returning)
 	}
 }

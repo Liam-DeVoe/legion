@@ -85,7 +85,13 @@ const decisions: IssueDecisions = {
           from_block: "d-1",
           stale: true,
           text_changed_event: 12,
-          to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
+          // A block of the issue room: the room's node, the spec named as the document holding it.
+          to: graphNode({
+            block_id: "p-plan",
+            document: "dispatch://CORE-1/spec",
+            id: "CORE-1/tree#p-plan",
+            kind: "block",
+          }),
         },
       ],
       text: ":::decision{#d-1}\nShip it in two steps.\n:::\n",

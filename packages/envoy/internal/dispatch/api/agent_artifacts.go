@@ -26,7 +26,7 @@ const agentOwnsFilesOnly = "an agent's conversation holds files and images; a do
 // artifactOwnerKey's session arm is built from, rather than that expression, which no index holds,
 // so the partial index artifacts_session_id (0071) serves both lookups every upload makes under the
 // conversation's lock instead of a scan of every owner's artifacts.
-const (
+var (
 	agentArtifactByNameOrSlugSQL = `select ` + artifactColumns + ` from artifacts where session_id = $1 and $2 in (name, slug)
 		order by slug = $2 desc limit 1`
 	agentArtifactSlugTakenSQL = `select exists(select 1 from artifacts where session_id = $1 and slug = $2)`
@@ -58,9 +58,10 @@ func (target artifactTarget) ownerLookup(ownerQuery, agentQuery string) (query, 
 	return ownerQuery, target.refPrefix()
 }
 
-// lockAgentArtifacts serialises one conversation's uploads for the rest of tx. A conversation has
-// no row to lock, so its uploads take their slugs and version numbers one after another under this
-// transaction-scoped advisory lock instead, as an issue's do under the issue's row.
+// lockAgentArtifacts serialises one conversation's uploads for the rest of tx. A conversation is
+// no owner with a lock of its own (store.LockOwner), so its uploads take their slugs and version
+// numbers one after another under this transaction-scoped advisory lock instead, as an issue's do
+// under the issue's owner lock.
 func lockAgentArtifacts(ctx context.Context, tx pgx.Tx, session string) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('agent-artifacts:' || $1))`, session); err != nil {
 		return fmt.Errorf("lock the agent's artifacts: %w", err)

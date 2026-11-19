@@ -95,7 +95,11 @@ func (c interactionCredential) references(t *testing.T, handler http.Handler, di
 //     refused as the stream refuses a run nobody holds, and stores nothing; a second write of
 //     alice's comment under the run appends no second tuple; alice's cookie reads nothing of the
 //     run her token recorded, at its address, in the comment's references or in the count of her
-//     own person node; a run of model.Actor{} is read by nobody.
+//     own person node; a run of model.Actor{} is read by nobody. A comment alice's token writes
+//     under her live run with an Idempotency-Key, sent again under the same key and run header
+//     once the run has ended, is answered its stored 201 with the same comment, and the store
+//     holds the one comment and its one changed_by_run; the same key with no run header is
+//     422 KEY_REUSED.
 //   - The node, its authored_by and each frame value are written before either projected row, in
 //     the one transaction of their writer: triggers in the test's own database fail the write
 //     before the projected row and after it and find neither side afterwards, record the
@@ -372,7 +376,82 @@ func requireARunIsReadByTheCredentialThatRecordedIt(t *testing.T, handler http.H
 		t.Errorf("comment %s holds %d changed_by_run tuples to run %s after a second write under it, want the one", comment, held, run)
 	}
 	requireARunOfNobodyIsReadByNobody(t, handler, server, database, []interactionCredential{alice, bob, cookie, shared})
+	requireARepeatAfterItsRunEndedReadsTheWrite(t, handler, database, alice, issue, run)
 	return run, comment
+}
+
+// requireARepeatAfterItsRunEndedReadsTheWrite writes a comment under alice's live run with an
+// Idempotency-Key, ends the run, and sends the same request again under the same key and the same
+// run header. The key layer answers it the comment the first request made, its 201 replayed,
+// before the run is checked (withinGoingRun, answerRefusedRun), and the issue holds that one
+// comment with its one changed_by_run to the run. The same key sent with no run header is another
+// request, since the key's digest holds the header (writeRequestFields): 422 KEY_REUSED, and
+// nothing more is stored. Ending the run moves its going_requests.ends_at into the past, as
+// runWindowAhead moved it ahead: that row is what the run check reads (readLiveGoingRun). A fresh
+// comment under the ended run is refused first, so the replay is read off a run the check refuses.
+func requireARepeatAfterItsRunEndedReadsTheWrite(t *testing.T, handler http.Handler, database *store.Store, alice interactionCredential, issue, run string) {
+	ctx := context.Background()
+	const key = "a-comment-repeated-after-its-run-ended"
+	const words = "The comment alice's token wrote under a key for its run."
+	body := map[string]any{"body": words, "actor": map[string]any{"kind": "session", "id": "alice-agent"}}
+	keyed := func(run string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := alice.newRequest(t, http.MethodPost, "/api/v1/issues/"+issue+"/comments", body, run)
+		request.Header.Set(contracts.IdempotencyKeyHeader, key)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	held := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from comments where issue_key = $1 and body = $2`, issue, words).Scan(&count); err != nil {
+			t.Fatalf("count the issue's comments of the keyed words: %v", err)
+		}
+		return count
+	}
+
+	first := keyed(run)
+	t.Logf("%s's keyed comment under its live run: status=%d body=%s", alice.name, first.Code, first.Body.String())
+	if first.Code != http.StatusCreated {
+		t.Fatalf("write the keyed comment under the run with %s: status=%d body=%s", alice.name, first.Code, first.Body.String())
+	}
+	comment := decodeBody[writtenRecord](t, first).ID
+	if _, err := database.Pool.Exec(ctx, `update going_requests set ends_at = now() - interval '1 second' where id = $1::uuid`, run); err != nil {
+		t.Fatalf("end run %s: %v", run, err)
+	}
+	fresh := alice.request(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
+		"body": "A comment written for the run once it ended.", "actor": map[string]any{"kind": "session", "id": "alice-agent"},
+	}, run)
+	if fresh.Code != http.StatusNotFound || decodeBody[errorBody](t, fresh).Code != codeGoingRequestNotFound {
+		t.Fatalf("a fresh comment under the ended run answers %d %s, want 404 %s: the run check must refuse the run before its replay is read",
+			fresh.Code, fresh.Body.String(), codeGoingRequestNotFound)
+	}
+
+	repeated := keyed(run)
+	t.Logf("the same keyed comment under the ended run: status=%d replayed=%q body=%s",
+		repeated.Code, repeated.Header().Get(contracts.IdempotencyReplayedHeader), repeated.Body.String())
+	if repeated.Code != http.StatusCreated || repeated.Header().Get(contracts.IdempotencyReplayedHeader) != "?1" ||
+		decodeBody[writtenRecord](t, repeated).ID != comment {
+		t.Errorf("the same keyed comment sent again under %s's run once it ended answers %d (Idempotency-Replayed %q) %s, want the stored 201 replayed with comment %s",
+			alice.name, repeated.Code, repeated.Header().Get(contracts.IdempotencyReplayedHeader), repeated.Body.String(), comment)
+	}
+	if count := held(); count != 1 {
+		t.Errorf("after the repeat the issue holds %d comments of the keyed words, want the one its first request wrote", count)
+	}
+	if tuples := changedByRunCount(t, database, graphstore.KindComment, comment, run); tuples != 1 {
+		t.Errorf("after the repeat comment %s holds %d changed_by_run tuples to run %s, want the one its first request appended", comment, tuples, run)
+	}
+
+	unnamed := keyed("")
+	t.Logf("the same keyed comment with no run header: status=%d body=%s", unnamed.Code, unnamed.Body.String())
+	if unnamed.Code != http.StatusUnprocessableEntity || decodeBody[errorBody](t, unnamed).Code != contracts.IdempotencyKeyReused {
+		t.Errorf("the same key sent with no run header answers %d %s, want 422 %s: the key's comparison holds the run header",
+			unnamed.Code, unnamed.Body.String(), contracts.IdempotencyKeyReused)
+	}
+	if count := held(); count != 1 {
+		t.Errorf("after the key was sent with no run header the issue holds %d comments of the keyed words, want the one", count)
+	}
 }
 
 // requireARunOfNobodyIsReadByNobody records a run for model.Actor{}, which only a direct call writes,

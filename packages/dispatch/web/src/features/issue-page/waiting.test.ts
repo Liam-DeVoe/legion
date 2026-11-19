@@ -8,10 +8,10 @@ import type {
   IssueCoverage,
   IssueDetails,
 } from "../../api/types";
-import { wordsOf } from "../refs/tree-fragment";
-import { decisionNodes } from "./decision-nodes/decision-nodes";
-import { buildIssueTree, type TreeNode } from "./issue-tree";
-import { blockNodeId, treeContext } from "./tree-drafts";
+import { decisionNodes, decisionQuote } from "./decision-nodes/decision-nodes";
+import { buildIssueTree, isStatement, type TreeNode } from "./issue-tree";
+import { blockNodeId, coverageStatements } from "./tree-drafts";
+import { nodesInOrder } from "./tree-keys";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 import { waitingOnReader } from "./waiting";
 
@@ -289,15 +289,13 @@ function decisionNode(
   });
 }
 
-/** Whether `reference` names a statement of the issue, as the header reads it: by the coverage
- *  read's statements, each addressed as the tree addresses it, and none while that read has not
- *  answered. */
-const nodeIdOf = treeContext({ issue }, wordsOf).nodeIdOf;
-function statementsOf(read: IssueCoverage | undefined): (reference: string) => boolean {
-  const statements = new Set(read?.requirements?.map((one) => nodeIdOf(one.ref)));
-  return (reference) => statements.has(nodeIdOf(reference));
-}
-const isStatement = statementsOf(coverage);
+/** Which addresses name a statement of the issue, as the header's count is handed them: by the
+ *  one rule the tree's review list reads (`coverageStatements`). */
+const isCoverageStatement = coverageStatements(issue, coverage);
+
+/** The issue's plan, whose `requirement` blocks no coverage row holds, and the issue with it. */
+const plan = issueDocument("artifact-plan", "plan-md");
+const planned: IssueDetails = { ...quiet, artifacts: [spec, plan], plan_artifact_id: plan.id };
 
 /** The decisions of `tree`: its decision nodes (`decisionNodes`). */
 function decisionsOf(tree: TreeAnswer) {
@@ -305,14 +303,15 @@ function decisionsOf(tree: TreeAnswer) {
 }
 
 /** How many decisions wait on alice over `tree`, in the count, and the id of each node of the
- *  tree that waits on her, with the statements `read` holds: none while it has not answered. */
+ *  tree that waits on her, with the statements `read` holds (`coverageStatements`): none while it
+ *  has not answered. */
 function waits(
   tree: TreeAnswer,
   read: IssueCoverage | undefined,
   about: IssueDetails = quiet
 ): readonly [number, readonly string[]] {
   return [
-    waitingOnReader(about, "alice", statementsOf(read), tree).decisions,
+    waitingOnReader(about, "alice", coverageStatements(about, read), tree).decisions,
     waitingIn(
       buildIssueTree({
         ...(read === undefined ? {} : { coverage: read }),
@@ -354,14 +353,14 @@ test("what waits on the reader is their open questions, the review list and thei
     decisionNode("changed", ["r1"]),
     commentNode(change, "changed"),
   ]);
-  const counted = waitingOnReader(issue, "alice", isStatement, tree);
+  const counted = waitingOnReader(issue, "alice", isCoverageStatement, tree);
   expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
   expect(waitingIn(buildIssueTree({ coverage, issue, tree, viewer: "alice" }))).toEqual([
     "mine",
     "spec#b-listed",
   ]);
 
-  const unknown = waitingOnReader(issue, undefined, isStatement, tree);
+  const unknown = waitingOnReader(issue, undefined, isCoverageStatement, tree);
   expect(unknown.total).toBe(0);
   expect(waitingIn(buildIssueTree({ coverage, issue, tree }))).toEqual([]);
 });
@@ -387,14 +386,14 @@ test("waitingOnReader counts a waiting decision node", () => {
     decisionNode("untied", []),
   ]);
 
-  expect(waitingOnReader(quiet, "alice", isStatement, tree)).toEqual({
+  expect(waitingOnReader(quiet, "alice", isCoverageStatement, tree)).toEqual({
     approvals: [],
     asks: 0,
     decisions: 1,
     total: 1,
   });
   expect(waits(tree, coverage)).toEqual([1, ["spec#b-waits"]]);
-  expect(waitingOnReader(quiet, "alice", isStatement, undefined).decisions).toBe(0);
+  expect(waitingOnReader(quiet, "alice", isCoverageStatement, undefined).decisions).toBe(0);
 });
 
 // A Change is the comment the tree read hangs under its decision, which is where the
@@ -515,7 +514,7 @@ test("a Change of a decision node is no Change of another document's decision of
   const root = buildIssueTree({ coverage, issue: quiet, tree, viewer: "alice" });
 
   expect({
-    count: waitingOnReader(quiet, "alice", isStatement, tree).decisions,
+    count: waitingOnReader(quiet, "alice", isCoverageStatement, tree).decisions,
     states: [blockNodeId("decisions-md", "d1"), blockNodeId("spec", "d1")].map(
       (id) => nodeIn(root, id)?.state
     ),
@@ -530,8 +529,6 @@ test("a Change of a decision node is no Change of another document's decision of
 // and the count counts neither, and the decision tied to `r1` once the coverage read holds it
 // waits, in the tree as in the count.
 test("a tie to a requirement the coverage read does not hold puts no decision on the review list", () => {
-  const plan = issueDocument("artifact-plan", "plan-md");
-  const planned: IssueDetails = { ...quiet, artifacts: [spec, plan], plan_artifact_id: plan.id };
   const tiedToPlan = decisionNode("planned", ["p1"]);
   const tree = answerOf([
     statement,
@@ -552,6 +549,65 @@ test("a tie to a requirement the coverage read does not hold puts no decision on
   expect(waits(tree, undefined, planned)).toEqual([0, []]);
 });
 
+// R7, R13 and R35: the count and the tree read a tie by one rule for a statement
+// (`coverageStatements`), whatever address the tie writes. A tie to the spec's `r1`, which the
+// coverage read holds, puts its decision on the review list whether it writes the block short
+// (`spec#b-r1`) or by the spec's own slug. A tie to the spec's `r2` puts it on none: the tree
+// read answers `r2` as a `requirement` block of the spec, whose row is a statement as `r1`'s is,
+// but the coverage read does not hold it. Nor does a tie to another issue's `r1`, or one to a
+// `requirement` block of the plan. Each decision waits on the reader in the tree where the count
+// counts it, and nowhere else.
+test("the count and the tree read a tie by one rule for a statement, whatever address it writes", () => {
+  const tiedTo = (id: string, block: string, documentId: string, ref: string): TreeAnswerNode => {
+    const decided = decisionNode(id, [block]);
+    return {
+      ...decided,
+      links: (decided.links ?? []).map((link) => ({
+        ...link,
+        to: { ...link.to, id: documentId, ref },
+      })),
+    };
+  };
+  const tied = [
+    tiedTo("short", "r1", spec.id, `dispatch://${KEY}/spec#b-r1`),
+    tiedTo("slugged", "r1", spec.id, `dispatch://${KEY}/artifact/spec#b-r1`),
+    tiedTo("unlisted", "r2", spec.id, `dispatch://${KEY}/spec#b-r2`),
+    tiedTo("elsewhere", "r1", "artifact-other-spec", "dispatch://ACME-2/spec#b-r1"),
+    tiedTo("planned", "p1", plan.id, `dispatch://${KEY}/artifact/plan-md#b-p1`),
+  ];
+  const requirements = [
+    statement,
+    treeNode("r2", "requirement", {
+      document: { artifact_id: spec.id, position: 1, slug: "spec" },
+    }),
+    treeNode("p1", "requirement", {
+      document: { artifact_id: plan.id, position: 0, slug: "plan-md" },
+    }),
+  ];
+  const root = buildIssueTree({
+    coverage,
+    issue: planned,
+    tree: answerOf([...requirements, ...tied]),
+    viewer: "alice",
+  });
+  expect(
+    nodesInOrder(root)
+      .filter(isStatement)
+      .map((node) => node.id)
+      .sort()
+  ).toEqual(["spec#b-r1", "spec#b-r2"]);
+
+  const waitingDecisions = waitingIn(root);
+  expect(waitingDecisions).toEqual(["spec#b-short", "spec#b-slugged"]);
+  const listed = coverageStatements(planned, coverage);
+  expect(tied).toHaveLength(5);
+  for (const decided of tied) {
+    const counted = waitingOnReader(planned, "alice", listed, answerOf([...requirements, decided]));
+    const marked = waitingDecisions.includes(blockNodeId("spec", decided.id));
+    expect(counted.decisions, decided.id).toBe(marked ? 1 : 0);
+  }
+});
+
 // A decision node no document holds has no address and no document a Keep could be written
 // against, so it is no decision of the page's (`decisionNodes`): though the read answers it
 // waiting and tied to a statement, the count does not count it and the tree does not mark it
@@ -561,4 +617,46 @@ test("a decision node no document holds waits on nobody", () => {
 
   expect(decisionsOf(tree)).toEqual([]);
   expect(waits(tree, coverage)).toEqual([0, []]);
+});
+
+// A Change's quote, from a pod of the build before during a rolling deploy, whose read sends no
+// reading of a decision's text: the decision is then read by its stored text's reading
+// (`storedReading`), so the quote is the words of its first block below the heading
+// (`decisionQuote`). A paragraph whose markdown holds markup - `**` - quotes its words, not its
+// markdown, as a read reading's would: the words the server matches a quote against.
+test("a Change of a decision read with no reading is read by its stored text's reading, so its quote is its words", () => {
+  const decided = decisionsOf(
+    answerOf([
+      decisionNode("d1", [], { text: "## Purity\n\nKeep the model pure." }),
+      decisionNode("d2", [], { text: "## Purity again\n\n**Keep** the model pure.\n\nTest it." }),
+    ])
+  );
+
+  expect(decided.map((one) => one.text_tree)).toEqual([undefined, undefined]);
+  expect(decided.map((one) => decisionQuote(one))).toEqual([
+    "Keep the model pure.",
+    "Keep the model pure.",
+  ]);
+});
+
+// One rule reads a decision for a Change: a reading that holds no blocks - a `text_tree` with no
+// `content` - is no reading, so the decision is read by its stored text's reading
+// (`storedReading`). Its quote is then the words of its first paragraph. Read as the blockless
+// reading's words, which are none, the decision would hold no block to quote.
+test("a decision whose reading holds no blocks is read by its stored markdown", () => {
+  const blockless = { text_tree: { type: "doc" } };
+  const decided = decisionsOf(
+    answerOf([
+      decisionNode("d1", [], { ...blockless, text: "## Purity\n\nKeep the model pure." }),
+      decisionNode("d2", [], {
+        ...blockless,
+        text: "## Purity again\n\nKeep the model pure.\n\nTest it alone.",
+      }),
+    ])
+  );
+
+  expect(decided.map((one) => decisionQuote(one))).toEqual([
+    "Keep the model pure.",
+    "Keep the model pure.",
+  ]);
 });

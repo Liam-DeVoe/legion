@@ -191,7 +191,7 @@ with seed as (
 }$schema$::json as document
 ),
 supertag_names (name) as (
-  -- The root's closed list (dispatch://INFRA-1098/spec, R21), and only it: `proposed` is a value
+  -- The closed list of the parent change's specification (R21), and only it: `proposed` is a value
   -- of a node's state and no type, and there is no `agent` supertag, since the role is the agent.
   values ('issue'), ('document'), ('document version'), ('block'), ('callout'), ('ask'),
          ('requirement'), ('plan_task'), ('check'), ('result'), ('decision'), ('reading'),

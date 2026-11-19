@@ -1,7 +1,7 @@
 -- This migration writes the type nodes of the store alone: it moves the `supertag` nodes
 -- `decision` and `reading` to block types, writes nine `attribute` nodes, sets `markdown` on the
 -- attribute node ask/invalid and the version on the block-type supertag nodes, and appends the
--- tuples that state each value. Its ground is dispatch://INFRA-1149's R7: "A supertag write ships
+-- tuples that state each value. Its ground is the node store's rule: "A supertag write ships
 -- as a migration, in the same release as the binary that handles it. It passes the pre-apply
 -- census." No route or command writes a node of either kind
 -- (requireNoRouteOrCommandWritesAType in cmd/dispatch/supertag_nodes_test.go), so every row it

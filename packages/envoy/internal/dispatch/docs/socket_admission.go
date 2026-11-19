@@ -279,12 +279,18 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	room := issue.room
 	// A retired document takes no new text (RetireDocument), so no socket opens on it: its
 	// retirement closed every room of it, and a browser that comes back is refused here, before
-	// anything reserves a room for it.
-	if retired, err := documentRetired(r.Context(), s.queryFrom(r.Context()), asked); err != nil {
+	// anything reserves a room for it. The issue's decisions query is no document a socket edits
+	// (refs.DecisionsQuerySQL): no fragment of any room holds it.
+	retired, query, err := refusedDocument(r.Context(), s.queryFrom(r.Context()), asked)
+	switch {
+	case err != nil:
 		http.Error(w, "document not found", http.StatusNotFound)
 		return
-	} else if retired {
+	case retired:
 		http.Error(w, "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable", http.StatusConflict)
+		return
+	case query:
+		http.Error(w, "DECISIONS_QUERY: the issue's decisions query renders the issue's decisions and takes no text; write a decision as a `decision` block of the issue's spec", http.StatusConflict)
 		return
 	}
 	if err := s.awaitRoomRecovery(r.Context(), room); err != nil {

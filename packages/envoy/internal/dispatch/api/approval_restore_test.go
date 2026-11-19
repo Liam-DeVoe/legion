@@ -18,7 +18,7 @@ import (
 // nothing. Dispatch carries the document's newest approval to that version in the transaction
 // that writes it (docs.carryApproval), so the approval reads approved there, the write reports no
 // approval it superseded, and a request for approval finds nothing to ask. A person's answer is
-// held on the ask's node and changes no byte of the document (dispatch://INFRA-1150 R3), so text
+// held on the ask's node and changes no byte of the document, so text
 // restored around a block answered since is still the approved text. Text one character away
 // from the approved text is a change, and a version holding the approved text around a changed
 // ask block is judged by the carry's cases (docs.carryVerdict), which carry no question's
@@ -193,8 +193,8 @@ func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
 }
 
 // approveThenOthersAnswer writes restoreSpec and waveAsk into a new issue's spec, has alice approve
-// version 1 while the block is open, and has bob answer the block, which writes no version
-// (dispatch://INFRA-1150 R3): the block's row now holds bob's decision and alice's approval stands
+// version 1 while the block is open, and has bob answer the block, which writes no version: the
+// block's row now holds bob's decision and alice's approval stands
 // at version 1. The agent cannot delete the block bob answered (R6): its delete is refused and
 // writes no version. Bob then deletes the block, which writes version 2 and stales the approval.
 func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store.Store, title string) approvedDocument {

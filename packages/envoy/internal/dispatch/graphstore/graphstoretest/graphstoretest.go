@@ -16,10 +16,9 @@ import (
 
 // SeedAuthorOnly reserves each of nodes for its author by writing its row straight into the
 // store, in the caller's transaction: the node row at visibility author, with the base
-// attributes the store's writer states of a node its insert makes (graphstore.BaseAttributeFacts)
-// for a node the store does not hold, and the one visibility tuple that move states for a node it
-// holds at another visibility. A node already reserved for its author moves nothing and states
-// nothing.
+// attributes the store's writer states of a node its insert makes (madeFacts) for a node the
+// store does not hold, and the one visibility tuple that move states for a node it holds at
+// another visibility. A node already reserved for its author moves nothing and states nothing.
 //
 // The store's writers take a node reserved for its author only of a kind the read registry
 // flags (graphstore.AdmitAuthorOnly), and no kind dispatch://INFRA-1149 registers is flagged,
@@ -38,7 +37,7 @@ func SeedAuthorOnly(ctx context.Context, tx pgx.Tx, nodes ...graphstore.Node) er
 			node.Kind, node.ID).Scan(&held); err != nil {
 			return fmt.Errorf("read whether the store holds %s %s: %w", node.Kind, node.ID, err)
 		}
-		var facts []graphstore.UncausedTuple
+		var facts []graphstore.Tuple
 		if held {
 			tag, err := tx.Exec(ctx, `update graph_nodes set visibility = $3 where kind = $1 and id = $2 and visibility <> $3`,
 				node.Kind, node.ID, node.Visibility)
@@ -48,11 +47,11 @@ func SeedAuthorOnly(ctx context.Context, tx pgx.Tx, nodes ...graphstore.Node) er
 			if tag.RowsAffected() == 0 {
 				continue
 			}
-			facts = []graphstore.UncausedTuple{{Tuple: graphstore.Tuple{
+			facts = []graphstore.Tuple{{
 				FromKind: node.Kind, FromID: node.ID, Kind: graphstore.AttributeVisibility,
 				ToKind: graphstore.KindValue, ToID: node.Visibility,
 				At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
-			}}}
+			}}
 		} else {
 			attributes := []byte("{}")
 			if node.Attributes != nil {
@@ -75,7 +74,9 @@ func SeedAuthorOnly(ctx context.Context, tx pgx.Tx, nodes ...graphstore.Node) er
 				node.SourceEvent, project, parties); err != nil {
 				return fmt.Errorf("write the row of %s %s: %w", node.Kind, node.ID, err)
 			}
-			facts = graphstore.BaseAttributeFacts([]graphstore.Node{node})
+			if facts, err = madeFacts(node); err != nil {
+				return err
+			}
 		}
 		for _, fact := range facts {
 			who, err := json.Marshal(fact.Who.Recorded())
@@ -91,6 +92,31 @@ func SeedAuthorOnly(ctx context.Context, tx pgx.Tx, nodes ...graphstore.Node) er
 		}
 	}
 	return nil
+}
+
+// madeFacts is the base attributes the store's writer states of a node its insert makes: its
+// visibility and state, and its project and parties where it carries them, each dated, signed
+// and caused as the node is.
+func madeFacts(node graphstore.Node) ([]graphstore.Tuple, error) {
+	parties, err := graphstore.PartiesValue(node.Parties)
+	if err != nil {
+		return nil, fmt.Errorf("the parties of %s %s: %w", node.Kind, node.ID, err)
+	}
+	values := [...][2]string{
+		{graphstore.AttributeVisibility, node.Visibility}, {graphstore.AttributeState, node.State},
+		{graphstore.AttributeProject, node.Project}, {graphstore.AttributeParties, parties},
+	}
+	facts := make([]graphstore.Tuple, 0, len(values))
+	for _, value := range values {
+		if value[1] == "" {
+			continue
+		}
+		facts = append(facts, graphstore.Tuple{
+			FromKind: node.Kind, FromID: node.ID, Kind: value[0], ToKind: graphstore.KindValue, ToID: value[1],
+			At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
+		})
+	}
+	return facts, nil
 }
 
 // AuthoredFacts is what the reasoning write (api's writeReasoningNodes) states beside node, for a

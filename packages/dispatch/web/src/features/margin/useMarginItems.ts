@@ -19,7 +19,12 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import { isDecisionEntry, issueDecisionsQuery } from "../doc/spec-marks";
+import {
+  isDecisionEntry,
+  issueDecisionsQuery,
+  issueSpecAddress,
+  linkReachesDocument,
+} from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import {
   type ConversationPinKind,
@@ -73,8 +78,9 @@ export type MarginItemAction = CommentAction;
 export interface DecisionMarginItem {
   readonly blockId: string;
   readonly decision: DecisionEntry;
-  /** `decision:<node id>:<spec node id>`: the node that holds the entry, and the spec node it
-   *  shaped, so two documents' decisions under one block id are two items. */
+  /** `decision:<node id>:<KEY>/spec#<block id>`: the node that holds the entry, and the spec
+   *  block it shaped by the spec's own address, so two documents' decisions under one block id
+   *  are two items. */
   readonly id: string;
   readonly kind: "decision";
 }
@@ -489,25 +495,31 @@ export function useMarginItems(
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
   const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
-  const specRefKey = visibleArtifact?.ref_key;
+  const specAddress = issueSpecAddress(issueKey ?? "");
+  // The spec's own address as a node id spells it, `<KEY>/spec`, under which an item names the
+  // spec block it stands beside.
+  const specNode = `${issueKey ?? ""}/spec`;
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];
     const decisionItems = (decisionsView.data?.entries ?? []).flatMap((decision) => {
       if (decision.replaced || !isDecisionEntry(decision)) return [];
-      // The spec nodes this entry shaped, each once: a node of the spec on screen, by its id.
-      const nodes = new Map<string, string>();
+      // The spec blocks this entry shaped, each once: a block the spec on screen holds
+      // (linkReachesDocument), named by its id in the spec. The link's node is no name for it:
+      // a block of a spec converted into its issue's room is the room's node, `<KEY>/tree#<id>`,
+      // which belongs to no one document of the room.
+      const blocks = new Set<string>();
       for (const link of decision.shaped ?? []) {
         const blockId = link.to.block_id;
-        if (blockId !== undefined && link.to.id.startsWith(`${specRefKey}#`)) {
-          nodes.set(link.to.id, blockId);
+        if (blockId !== undefined && linkReachesDocument(link, specAddress)) {
+          blocks.add(blockId);
         }
       }
-      return [...nodes]
-        .filter(([, blockId]) => blockFilterId === undefined || blockId === blockFilterId)
-        .map(([node, blockId]) => ({
+      return [...blocks]
+        .filter((blockId) => blockFilterId === undefined || blockId === blockFilterId)
+        .map((blockId) => ({
           blockId,
           decision,
-          id: `decision:${decision.node.id}:${node}`,
+          id: `decision:${decision.node.id}:${specNode}#${blockId}`,
           kind: "decision" as const,
         }));
     });
@@ -523,7 +535,8 @@ export function useMarginItems(
     decisionsView.data,
     markPlacements,
     showsDecisions,
-    specRefKey,
+    specAddress,
+    specNode,
   ]);
   const items = useMemo<MarginItem[]>(() => {
     const commentItems = sortedThreads.map(({ root }) => ({
@@ -550,6 +563,7 @@ export function useMarginItems(
   const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue<{
     previous: Comment[] | undefined;
   }>({
+    issue: issueKey,
     onError: (_error, _input, context) => {
       queryClient.setQueryData(commentsQueryKey, context?.previous);
       void queryClient.invalidateQueries({ queryKey: commentsQueryKey });

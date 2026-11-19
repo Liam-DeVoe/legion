@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -98,6 +99,12 @@ type bootConfig struct {
 	// as. Empty means the CI reconcile pass records no verdict check at all.
 	ReviewerAppID  string
 	IdentityHeader string
+	// IAPAudience is DISPATCH_IAP_AUDIENCE under DISPATCH_IDENTITY=iap: the audience
+	// Identity-Aware Proxy signs each request's assertion for, which the assertion's aud must
+	// name; empty under any other identity. IAPKeySetURL is where IAP's signing keys are read,
+	// oidc.IAPKeySetURL, which no setting changes: a test points it at a key set it serves.
+	IAPAudience  string
+	IAPKeySetURL string
 	// SignInIssuer, SignInClientID and SignInClientSecret, with exactly one of SignInGroup and
 	// SignInDomain, configure Google sign-in (DISPATCH_SIGNIN_*): through a Cognito sign-in pool
 	// for a group, or with Google directly for a Workspace domain; empty means no sign-in.
@@ -148,6 +155,10 @@ type bootConfig struct {
 	// five minutes; only DISPATCH_TEST_CI_RECONCILE_INTERVAL, under the test hooks, sets it, since
 	// no process-level test can wait five minutes for a pass.
 	CIReconcileInterval time.Duration
+	// RedeliveryInterval is how often the webhook redelivery sweep runs, zero for
+	// redeliver.Interval's two minutes; only DISPATCH_TEST_REDELIVERY_INTERVAL, under the test
+	// hooks, sets it, since no process-level test can wait two minutes for a sweep.
+	RedeliveryInterval time.Duration
 	// DeliveryReconcileInterval is how often the delivery reconcile pass runs, zero for
 	// delivery.ReconcileInterval's five minutes; only DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL,
 	// under the test hooks, sets it, since no end-to-end test can wait five minutes for a pass.
@@ -180,6 +191,10 @@ type bootConfig struct {
 	// (docs.DecisionStep), at boot or on its tick, so a test driver's command entry point makes the
 	// first move; only DISPATCH_TEST_HOLD_DECISIONS_STEP=1, under the test hooks, sets it.
 	HoldDecisionsStep bool
+	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
+	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
+	// the test hooks, sets it.
+	ArchitectureImportAtStart bool
 	// OIDCIssuer and OIDCAudience configure verification of projected
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
@@ -408,10 +423,11 @@ func main() {
 	// this process serves, as document_search is filled above. A reading's check of its ask takes
 	// the answer from the node, which reads an ask the backfill has not stated as open, so a
 	// failure stops the boot, and the release before keeps serving in a roll until this process
-	// can. The process waits here for another booting process that holds the step. Its catch-up,
-	// its count of what the restore and the conversion owe, and its later passes run on its own
-	// tick once the server listens, below: the boot reads only what the first phase reads, so a
-	// table it does not need, held by another transaction, keeps no process from serving.
+	// can. The process waits here for the step's lock only while the first phase owes a row, so a
+	// process that holds the lock, stalled or not, keeps no boot waiting when nothing is owed. Its
+	// catch-up, its count of what the restore and the conversion owe, and its later passes run on
+	// its own tick once the server listens, below: the boot reads only what the first phase reads,
+	// so a table it does not need, held by another transaction, keeps no process from serving.
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
 	if !boot.HoldDecisionsStep {
 		if err := decisionStep.Boot(ctx); err != nil {
@@ -485,14 +501,18 @@ func main() {
 	if boot.IdentityHeader != "" {
 		slog.Warn("dispatch: using test/local header identity", "header", boot.IdentityHeader)
 	}
+	if boot.IAPAudience != "" {
+		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
+	}
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, docs.Deps{
-		Store:     database,
-		Events:    broker,
-		Identity:  requestIdentity,
-		ServerURL: serverURL,
+		Store:       database,
+		Events:      broker,
+		Identity:    requestIdentity,
+		ServerURL:   serverURL,
+		BuildCommit: buildCommit,
 	})
 	publishRoomFigures(documentService)
 	// The decisions step's third phase writes the issues' documents through this service: the
@@ -582,6 +602,12 @@ func main() {
 		os.Exit(1)
 	}
 	built.BrokerTokens = brokerTokens
+	// The registry /metrics serves (dispatchHandler), built whether or not NATS is configured:
+	// the probe answers from the moment the server does, and a process with no bus simply leaves
+	// the outbox's counter at zero. The API adds the gauges of the mention sends it holds behind
+	// an earlier event to it (api.Deps.Metrics), and the outbox those of its fallback copies.
+	met := metrics.New()
+	built.Metrics = met
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
@@ -616,8 +642,9 @@ func main() {
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
 	//     own below, because no wake announces either: a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
-	//     it, and repeats only its identity steps while another identity's rows remain) and the
-	//     task progress reconciliation (retrying, briefly, rows another writer held).
+	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
+	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
+	//     rows another writer held).
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
 	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
 	//     and the architecture import every 5 minutes, each starting after a random delay within
@@ -752,10 +779,6 @@ func main() {
 	// shutdown waits for before it closes the pool; it stays nil with no outbox.
 	var outboxPublisher *outbox.Outbox
 	var outboxStopped chan struct{}
-	// The registry /metrics serves (dispatchHandler), built whether or not NATS is configured:
-	// the probe answers from the moment the server does, and a process with no bus simply leaves
-	// the outbox's counter at zero.
-	met := metrics.New()
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
@@ -787,6 +810,7 @@ func main() {
 			KeptLanes:        natsClient,
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
+			Metrics:          met,
 		})
 		outboxStopped = make(chan struct{})
 		go func() {
@@ -820,15 +844,16 @@ func main() {
 	// still hold listener connections of their own (store.Pool.Listener).
 	//
 	// A wake is registered only for a loop that will read it: with no embedder embedqueue.Run
-	// returns at once, and without NATS or the GitHub App no intake starts to route by the
-	// settings, so neither channel is LISTENed on.
+	// returns at once, without NATS or the GitHub App no intake starts to route by the settings,
+	// and without the GitHub App this process keeps no copy of the GitHub reads' record (below),
+	// so none of those channels is LISTENed on.
 	listenerHub := &pglisten.Hub{
 		Owner: "dispatch",
 		Dial: func(ctx context.Context) (*pgx.Conn, error) {
 			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
 		},
 	}
-	var embeddingsWake, settingsWake <-chan struct{}
+	var embeddingsWake, settingsWake, gitHubReadsWake <-chan struct{}
 	if backgroundEmbedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
@@ -840,6 +865,9 @@ func main() {
 	schemaWake := schemanodes.RegisterWake(listenerHub)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
+	}
+	if appCfg != nil {
+		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
@@ -950,14 +978,36 @@ func main() {
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
 	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
 
+	// Each of the four loops below that reads GitHub under a lease records its newest attempt in
+	// the record of GitHub reads (githubreads, store.GitHubReadAttempts) when its pass ends, and
+	// this process keeps a copy of the record, loaded at start and again at every write any
+	// process makes (the wake above), which GET /healthz answers from (gitHubReads), so the probe
+	// sends the database nothing. Without the GitHub App no loop reads GitHub, and there is
+	// nothing to record or keep.
+	var (
+		recordGitHubRead githubreads.Recorder
+		gitHubReadCopy   *githubreads.Copy
+	)
+	if appCfg != nil {
+		attempts := store.NewGitHubReadAttempts(database.Pool)
+		recordGitHubRead = attempts.Record
+		gitHubReadCopy = &githubreads.Copy{}
+		go gitHubReadCopy.Run(ctx, attempts.All, gitHubReadsWake, slog.Default())
+	}
+
 	sweeper, err := webhookSweeper(natsClient, database, appCfg, boot.GitHubAPIBase, boot.NATSReplicas)
 	if err != nil {
 		slog.Error("dispatch: open webhook redelivery", "error", err)
 		os.Exit(1)
 	}
+	redeliveryInterval := redeliver.Interval
+	if boot.RedeliveryInterval > 0 {
+		redeliveryInterval = boot.RedeliveryInterval
+	}
 	if sweeper != nil {
-		slog.Info("dispatch: redelivering the GitHub App webhook's failed deliveries", "client_id", appCfg.ClientID, "interval", redeliver.Interval)
-		go sweeper.Run(ctx, redeliver.Interval, redeliverLeases)
+		sweeper.GitHubReads = recordGitHubRead
+		slog.Info("dispatch: redelivering the GitHub App webhook's failed deliveries", "client_id", appCfg.ClientID, "interval", redeliveryInterval)
+		go sweeper.Run(ctx, redeliveryInterval, redeliverLeases)
 	} else {
 		slog.Info("dispatch: webhook redelivery off: it needs NATS and the GitHub App private key")
 	}
@@ -987,6 +1037,7 @@ func main() {
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
 		}
+		reconciler.GitHubReads = recordGitHubRead
 		// The period argument is what makes one process serve each period (duty_passes): the
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
@@ -995,7 +1046,8 @@ func main() {
 		slog.Info("dispatch: CI reconcile off: it needs NATS and the GitHub App private key")
 	}
 
-	go architecture.Run(ctx, appCtx.Architecture(), architectureImportLeases)
+	appCtx.Architecture().GitHubReads = recordGitHubRead
+	go architecture.Run(ctx, appCtx.Architecture(), architectureImportLeases, boot.ArchitectureImportAtStart)
 
 	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
 	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
@@ -1007,7 +1059,7 @@ func main() {
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
 	// a client, exactly like the outbox above. Both take the event broker: each writes
 	// issue.deployed on a pull request's issue once its shipping run is known (LEGION-781).
-	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker)
+	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker).RecordGitHubReads(recordGitHubRead)
 	if boot.ReconcileAtStart {
 		reconcile.FirstPassAtStart()
 	}
@@ -1096,7 +1148,19 @@ func main() {
 		api.EndGoingRunsOverdueAtBoot(ctx, database.Pool)
 		api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
 	}()
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, decisionStep, issuers{signIn: signIn, serviceTokens: serviceTokens})
+	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
+	// loop this process did not start, for want of NATS or of the App's private key, is a read it
+	// does not run.
+	var reads *gitHubReads
+	if appCfg != nil {
+		reads = &gitHubReads{recordCopy: gitHubReadCopy, runs: map[githubreads.Read]bool{
+			githubreads.WebhookRedelivery:  sweeper != nil,
+			githubreads.ArchitectureImport: appCtx.Architecture().HasApp(),
+			githubreads.DeliveryReconcile:  reconcile.HasApp(),
+			githubreads.CIReconcile:        reconciler != nil,
+		}}
+	}
+	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, decisionStep, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1362,6 +1426,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_HORIZON_WARN_EVERY", &boot.HorizonWarnEvery},
 		{"DISPATCH_TEST_EDIT_NOTICE_QUIET", &boot.EditNoticeQuiet},
 		{"DISPATCH_TEST_CI_RECONCILE_INTERVAL", &boot.CIReconcileInterval},
+		{"DISPATCH_TEST_REDELIVERY_INTERVAL", &boot.RedeliveryInterval},
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
@@ -1381,6 +1446,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_HOLD_DECISIONS_STEP", &boot.HoldDecisionsStep},
+		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1405,11 +1471,20 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, errors.New("DISPATCH_DEV_SIGNIN_SHARED_KEY is read only with DISPATCH_DEV_SIGNIN=1, by the processes of one local harness; unset it, and set DISPATCH_SIGNING_KEY to give a deployment's processes one key")
 	}
 
+	iapAudience := strings.TrimSpace(env.get("DISPATCH_IAP_AUDIENCE"))
 	switch mode := identityMode; {
 	case mode == "" || mode == "cookie":
 		// Cookie identity takes no sign-in setting: with none set, and no DISPATCH_DEV_SIGNIN,
 		// Dispatch asks nobody to sign in, refuses every cookie an earlier sign-in minted (requestIdentityFor), and serves
 		// its agent-token API alone.
+	case mode == "iap":
+		if iapAudience == "" {
+			return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE required: DISPATCH_IDENTITY=iap admits a request only on an assertion Identity-Aware Proxy signed for that audience, /projects/<project number>/global/backendServices/<backend service id> behind a load balancer")
+		}
+		if !iapAudienceShape.MatchString(iapAudience) {
+			return bootConfig{}, fmt.Errorf("DISPATCH_IAP_AUDIENCE=%q must be the audience IAP signs its assertions for, which begins /projects/<project number>/, such as /projects/<project number>/global/backendServices/<backend service id>", iapAudience)
+		}
+		boot.IAPAudience, boot.IAPKeySetURL = iapAudience, oidc.IAPKeySetURL
 	case strings.HasPrefix(mode, "header:"):
 		boot.IdentityHeader = strings.TrimSpace(strings.TrimPrefix(mode, "header:"))
 		if boot.IdentityHeader == "" {
@@ -1419,7 +1494,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY_HEADER_TRUSTED=1 required: header identity is only for tests and local harnesses")
 		}
 	default:
-		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie or header:<Header-Name>)", mode)
+		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:<Header-Name>)", mode)
+	}
+	if iapAudience != "" && boot.IAPAudience == "" {
+		return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap")
 	}
 	envoyURL := strings.TrimSpace(env.get("ENVOY_URL"))
 	if envoyURL == "" {
@@ -1483,7 +1561,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 // or one derived from DISPATCH_DEV_SIGNIN_SHARED_KEY under a dev-only label (sessionSigningKey),
 // which the other processes of its harness derive too and a production server never signs with.
 func devSignInFence(boot bootConfig, env settingValues) error {
-	if boot.IdentityHeader != "" {
+	if boot.IdentityHeader != "" || boot.IAPAudience != "" {
 		return errors.New("DISPATCH_DEV_SIGNIN=1 mints session cookies, so DISPATCH_IDENTITY must be cookie")
 	}
 	if boot.SignInIssuer != "" {
@@ -1798,6 +1876,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
 }
@@ -1896,9 +1975,9 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, decisions, issuers))
+	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, decisions, issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
@@ -1911,6 +1990,94 @@ func dispatchHandler(handler http.Handler, registry *metrics.Registry, database 
 type issuers struct {
 	signIn        *oidc.CodeFlow
 	serviceTokens *oidc.LazyVerifier
+}
+
+// gitHubReads is what /healthz names the GitHub reads from (githubreads): which of the four this
+// process runs, and its copy of the record of each read's newest attempt. main builds it only
+// where a GitHub App is configured, and nil names none (`github: null`).
+type gitHubReads struct {
+	// runs holds true for each read whose loop this process runs.
+	runs map[githubreads.Read]bool
+	// recordCopy is the copy githubreads.Copy.Run keeps, which a write by any process refreshes.
+	recordCopy *githubreads.Copy
+}
+
+// gitHubReadState is the state /healthz names for one GitHub read.
+type gitHubReadState string
+
+const (
+	// gitHubReadSucceeded: the newest recorded attempt sent requests to GitHub and noted no
+	// failure.
+	gitHubReadSucceeded gitHubReadState = "succeeded"
+	// gitHubReadFailed: the newest recorded attempt noted a failure.
+	gitHubReadFailed gitHubReadState = "failed"
+	// gitHubReadNoAttempt: the record holds no attempt of the read yet.
+	gitHubReadNoAttempt gitHubReadState = "no_attempt"
+	// gitHubReadUnknown: this process has not read the record yet.
+	gitHubReadUnknown gitHubReadState = "unknown"
+	// gitHubReadOff: this process does not run the read.
+	gitHubReadOff gitHubReadState = "off"
+)
+
+// gitHubReadEntry is one read's entry in /healthz's github member. gitHubReadEntryOf alone makes
+// one: it sets At only where the state is an attempt the record holds, and Cause only where that
+// attempt failed, so no entry says failed without its cause, or names a time or a cause its state
+// does not carry.
+type gitHubReadEntry struct {
+	State gitHubReadState `json:"state"`
+	// At is when the newest attempt was recorded, by the database's clock, in UTC.
+	At *time.Time `json:"at"`
+	// Cause is the newest attempt's first failure, at most githubreads.CauseLimit bytes.
+	Cause *string `json:"cause"`
+}
+
+// gitHubReadEntryOf is read's entry: off when this process does not run it (runs false), unknown
+// before the copy's first load (loaded false), no_attempt when the copy holds no row for it, and
+// otherwise the row's own outcome, with its time, and with its cause when it failed.
+func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[githubreads.Read]githubreads.Recorded) gitHubReadEntry {
+	if !runs {
+		return gitHubReadEntry{State: gitHubReadOff}
+	}
+	if !loaded {
+		return gitHubReadEntry{State: gitHubReadUnknown}
+	}
+	row, recorded := rows[read]
+	if !recorded {
+		return gitHubReadEntry{State: gitHubReadNoAttempt}
+	}
+	at := row.At.UTC()
+	if row.Succeeded {
+		return gitHubReadEntry{State: gitHubReadSucceeded, At: &at}
+	}
+	cause := row.Cause
+	return gitHubReadEntry{State: gitHubReadFailed, At: &at, Cause: &cause}
+}
+
+// gitHubReadsMember is /healthz's github member: one entry for each read, in the order
+// githubreads.Reads names them. It is a struct and not a map so that the keys keep that order.
+type gitHubReadsMember struct {
+	WebhookRedelivery  gitHubReadEntry `json:"webhook_redelivery"`
+	ArchitectureImport gitHubReadEntry `json:"architecture_import"`
+	DeliveryReconcile  gitHubReadEntry `json:"delivery_reconcile"`
+	CIReconcile        gitHubReadEntry `json:"ci_reconcile"`
+}
+
+// member is the github member of one answer, nil where no App is configured. It reads the copy
+// once, so the four entries come from one load, and reads nothing else.
+func (g *gitHubReads) member() *gitHubReadsMember {
+	if g == nil {
+		return nil
+	}
+	rows, loaded := g.recordCopy.Rows()
+	entry := func(read githubreads.Read) gitHubReadEntry {
+		return gitHubReadEntryOf(read, g.runs[read], loaded, rows)
+	}
+	return &gitHubReadsMember{
+		WebhookRedelivery:  entry(githubreads.WebhookRedelivery),
+		ArchitectureImport: entry(githubreads.ArchitectureImport),
+		DeliveryReconcile:  entry(githubreads.DeliveryReconcile),
+		CIReconcile:        entry(githubreads.CIReconcile),
+	}
 }
 
 // serviceTokenVerifier is the verifier of the projected service-account tokens boot's
@@ -1993,6 +2160,23 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // probe would take that service away for an outage it serves through. A deploy check that needs
 // sign-in asserts `signin: true` itself.
 //
+// Where a GitHub App is configured, `github` names each GitHub read Dispatch makes under a lease
+// (githubreads), `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and
+// `ci_reconcile` in that order, each with its newest attempt's `state`, `at` and `cause`; with no
+// App it is null. The state is `succeeded` when that attempt sent GitHub requests and noted no
+// failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
+// this process has read the record, and `off` where this process does not run the read (no App
+// private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
+// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
+// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
+// It never decides `ok` or the status: a process serves everything but GitHub's own reads while
+// GitHub fails, so failing the probe would take every server process out of service for an outage
+// each of them serves through. It is read from this process's copy of the record
+// (githubreads.Copy), which a write by any process refreshes, so it adds no statement to the
+// database and waits on nothing. The delivery intakes read GitHub too, for each webhook event, and
+// report through `delivery_reconcile`: the delivery reconcile reads the same pull requests and
+// runs with the same App every interval, so a failure of those reads shows there within one pass.
+//
 // Beside those it reports what is deployed: `commit`, the legion commit this process's binary
 // was built from (null when the build did not stamp one), `fleet_commit`, the commit of the latest
 // announcement that every live server process serves one build (startup.Announcer.FleetCommit:
@@ -2021,7 +2205,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // has counted - the boot's pass counts nothing (docs.DecisionStep.Boot), and
 // DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it is set - and it is read from
 // the step, so the probe adds no statement to the database. It never decides `ok`.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers) http.HandlerFunc {
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2080,22 +2264,23 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(struct {
-			OK              bool    `json:"ok"`
-			DB              bool    `json:"db"`
-			NATS            *bool   `json:"nats"`
-			Files           *bool   `json:"files"`
-			SignIn          *bool   `json:"signin"`
-			ServiceTokens   *bool   `json:"service_tokens"`
-			Commit          *string `json:"commit"`
-			FleetCommit     *string `json:"fleet_commit"`
-			SchemaVersion   *int    `json:"schema_version"`
-			OutboxPublisher bool    `json:"outbox_publisher"`
-			IdempotencyKeys bool    `json:"idempotency_keys"`
+			OK              bool               `json:"ok"`
+			DB              bool               `json:"db"`
+			NATS            *bool              `json:"nats"`
+			Files           *bool              `json:"files"`
+			SignIn          *bool              `json:"signin"`
+			ServiceTokens   *bool              `json:"service_tokens"`
+			GitHub          *gitHubReadsMember `json:"github"`
+			Commit          *string            `json:"commit"`
+			FleetCommit     *string            `json:"fleet_commit"`
+			SchemaVersion   *int               `json:"schema_version"`
+			OutboxPublisher bool               `json:"outbox_publisher"`
+			IdempotencyKeys bool               `json:"idempotency_keys"`
 			// kept for one release: decisions-step
 			DecisionsStepOwed *int64 `json:"decisions_step_owed,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
-			Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
+			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
 			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}

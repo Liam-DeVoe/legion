@@ -172,15 +172,15 @@ function storeOf(tab = keptTab(), login = "alice", files = memoryFiles()) {
 /** The write `writes` holds now, at `index` in press order. */
 const row = (writes: Writes, index = 0): Write | undefined => writes.rows()[index];
 
-/** A page that has just resumed one write on CORE-1, kept in `tab` under `key` as it stood
- *  (`state`) when the page that pressed it went away, as the request it last went out as: a
- *  status pick unless a row names another. */
-function resuming(
+/** One write on CORE-1 kept in `tab` under `key` as it stood (`state`) when the page that pressed
+ *  it went away, as the request it last went out as: a status pick unless a row names another.
+ *  It is kept as the release before the issue was kept wrote it, with no `issue`. */
+function keptEntry(
   tab: KeptTab,
   key: string,
   state: KeptState,
   request: WriteRequest = patch
-): Writes {
+): void {
   tab.storage.setItem(
     `dispatch.write:${key}`,
     JSON.stringify({
@@ -198,6 +198,16 @@ function resuming(
       version: 1,
     })
   );
+}
+
+/** A page that has just resumed the one write kept in `tab` under `key` (`keptEntry`). */
+function resuming(
+  tab: KeptTab,
+  key: string,
+  state: KeptState,
+  request: WriteRequest = patch
+): Writes {
+  keptEntry(tab, key, state, request);
   const writes = new Writes(signedIn(), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
@@ -239,6 +249,92 @@ test("one key per press, reused by every attempt the store makes", async () => {
   });
 });
 
+// A write of an issue tells that issue's listeners where it stands, from going out to settling.
+// Its issue is its press's, or the issue of its request's path: at its press for a write made
+// from its request, at its first attempt for one made by an attempt. A write naming no issue, or
+// another, tells this one nothing.
+test("a write of an issue tells that issue's listeners as it goes out and settles", async () => {
+  await onFakeClock(async () => {
+    const { writes } = storeOf();
+    const told: string[] = [];
+    const stop = writes.onIssueWrite("CORE-1", (phase, write) => {
+      told.push(`${write.label}: ${phase}`);
+    });
+    const elsewhere: string[] = [];
+    const stopOther = writes.onIssueWrite("CORE-2", (phase) => elsewhere.push(phase));
+
+    // Named by its press: out at once, before its attempt starts.
+    const answer = Promise.withResolvers<unknown>();
+    const keep = writes.run({
+      detail: null,
+      issue: "CORE-1",
+      kind: plainWrite,
+      label: "Keep",
+      presentation: "indicator",
+      write: () => answer.promise,
+    });
+    expect(told).toEqual(["Keep: out"]);
+    expect(writes.writesOutOf("CORE-1").map((write) => write.label)).toEqual(["Keep"]);
+    answer.resolve({ kept: true });
+    expect(await keep).toEqual({ kept: true });
+    expect(told).toEqual(["Keep: out", "Keep: landed"]);
+    expect(writes.writesOutOf("CORE-1")).toEqual([]);
+
+    // Named by its first attempt's request, refused, and out again on its Retry.
+    told.length = 0;
+    let refuse = true;
+    const refused = statusWrite(writes, () =>
+      refuse ? Promise.reject(verdict) : Promise.resolve({ key: "CORE-1" })
+    ).catch((error: unknown) => error);
+    expect(await refused).toBe(verdict);
+    expect(told).toEqual(["CORE-1 set to done: out", "CORE-1 set to done: refused"]);
+    expect(row(writes)?.issue).toBe("CORE-1");
+    refuse = false;
+    writes.retry(row(writes)?.id ?? 0);
+    await tick(1_000);
+    expect(told.slice(2)).toEqual(["CORE-1 set to done: out", "CORE-1 set to done: landed"]);
+
+    // Made from its request on a line: named at its press. One waiting its turn behind it,
+    // discarded before it was sent, settles as discarded.
+    told.length = 0;
+    const first = Promise.withResolvers<unknown>();
+    const ahead = statusWrite(writes, () => first.promise, { label: "Ahead", target: "issue" });
+    const behind = statusWrite(writes, async () => null, {
+      label: "Behind",
+      target: "issue",
+    }).catch((error: unknown) => error);
+    expect(told).toEqual(["Ahead: out", "Behind: out"]);
+    const waiting = writes.rows().find((write) => write.label === "Behind");
+    expect(writes.discard(waiting?.id ?? 0)).toBe(true);
+    expect(told).toEqual(["Ahead: out", "Behind: out", "Behind: discarded"]);
+    first.resolve({ key: "CORE-1" });
+    await ahead;
+    await behind;
+    expect(told.at(-1)).toBe("Ahead: landed");
+
+    // A pin's request names no issue in its path; a write of another issue tells that one.
+    told.length = 0;
+    await writes.run({
+      detail: null,
+      kind: plainWrite,
+      label: "Pin",
+      presentation: "indicator",
+      write: attemptOf(put, async () => ({ seq: 3 })),
+    });
+    await writes.run({
+      detail: null,
+      issue: "CORE-2",
+      kind: plainWrite,
+      label: "Other",
+      presentation: "indicator",
+      write: async () => ({ key: "CORE-2" }),
+    });
+    expect(told).toEqual([]);
+    expect(elsewhere).toEqual(["out", "landed"]);
+    stop();
+    stopOther();
+  });
+});
 // Dispatch's verdict ends the write: a 4xx it answered is not made again, and the write stays for
 // the reader with that refusal until Discard drops it. An error of the page's own - a bug - is
 // refused at once too, never retried for good.
@@ -385,6 +481,61 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
       expect(resumed?.status === "refused" ? resumed.refusal : undefined).toBeInstanceOf(
         SendInterruptedError
       );
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// A write keeps the issue its caller named, so one resumed after a reload is a write of that
+// issue again, though its request's path - a Keep's, under the document - names none. An entry
+// kept before the issue was kept holds none, and resumes naming the issue of its request's path.
+test("a resumed write names the issue it was kept with, or else its request's path", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ kept: true } as never);
+    const keep: WriteRequest = {
+      body: { text_sha256: "sha" },
+      method: "POST",
+      path: "/api/v1/artifacts/artifact-1/blocks/block-1/keep",
+    };
+    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    try {
+      void before
+        .run({
+          detail: null,
+          issue: "CORE-1",
+          kind: plainWrite,
+          label: "Keep",
+          presentation: "indicator",
+          write: attemptOf(keep, () => Promise.withResolvers<never>().promise),
+        })
+        .catch(() => {});
+      await settle();
+      const key = row(before)?.key ?? "";
+      expect(tab.kept(key)).toMatchObject({ issue: "CORE-1" });
+
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      const told: string[] = [];
+      const stop = after.onIssueWrite("CORE-1", (phase, write) =>
+        told.push(`${write.label}: ${phase}`)
+      );
+      after.resume("alice");
+      await settle();
+      stop();
+      expect(told).toEqual(["Keep: out", "Keep: landed"]);
+
+      keptEntry(tab, "unnamed", { status: "sending" });
+      const older = new Writes(signedIn(), tab.page(), memoryFiles());
+      const toldOlder: string[] = [];
+      const stopOlder = older.onIssueWrite("CORE-1", (phase, write) =>
+        toldOlder.push(`${write.label}: ${phase}`)
+      );
+      older.resume("alice");
+      await settle();
+      stopOlder();
+      expect(toldOlder).toEqual(["CORE-1 set to done: out", "CORE-1 set to done: landed"]);
     } finally {
       send.mockRestore();
       tab.close();
@@ -985,6 +1136,81 @@ test("dropping a line of writes starts none of the writes it drops", async () =>
   });
 });
 
+/** A kind that remembers something of the person signed in, and what the store tells it while a
+ *  row listens (`told`), in order: each store made, each write it is to undo, each moment it is
+ *  to let go. */
+let told: unknown[][] | undefined;
+const rememberingWrite = defineWriteKind<null>({
+  kept: (value): value is null => value === null,
+  name: "test-remembering",
+  opened: (client, writes) => {
+    told?.push(["opened", client, writes]);
+  },
+  reset: () => {
+    told?.push(["reset"]);
+  },
+  undone: () => {
+    told?.push(["undone"]);
+  },
+});
+
+// What a kind keeps of a client for the client's whole life begins with the client's store, not
+// with the first write of the kind: every kind is told once of each store as it is made.
+test("a store tells each kind of itself and its client once, as it is made", () => {
+  const tab = keptTab();
+  told = [];
+  try {
+    const client = signedIn();
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    expect(told).toHaveLength(1);
+    const [what, of, store] = told[0] ?? [];
+    expect(what).toBe("opened");
+    expect(of).toBe(client);
+    expect(store).toBe(writes);
+  } finally {
+    told = undefined;
+    tab.close();
+  }
+});
+
+// A kind undoes a dropped write from what it remembers of its person's answers, so the store
+// drops the writes a change of who is signed in takes with it before it has the kinds let go of
+// that: another person's sign-in, and a lapse that is the person's sign-out in another tab
+// landing (`dropLogin`).
+test("a change of who is signed in undoes the writes it drops before the kinds let go of what they remembered", async () => {
+  await onFakeClock(async () => {
+    const changes: Record<string, (writes: Writes) => void> = {
+      "another person's sign-in": (writes) => writes.signedIn("bob"),
+      "a lapse that lands a sign-out in another tab": (writes) => {
+        writes.holdFor("alice");
+        writes.signedIn(undefined);
+      },
+    };
+    try {
+      for (const [name, change] of Object.entries(changes)) {
+        const { writes } = storeOf();
+        writes.signedIn("alice");
+        void writes
+          .run({
+            detail: null,
+            kind: rememberingWrite,
+            label: "CORE-1 remembered",
+            presentation: "indicator",
+            write: () => Promise.withResolvers<never>().promise,
+          })
+          .catch(() => {});
+        await settle();
+        told = [];
+        change(writes);
+        expect([name, ...told.flat()]).toEqual([name, "undone", "reset"]);
+        expect(writes.rows()).toEqual([]);
+      }
+    } finally {
+      told = undefined;
+    }
+  });
+});
+
 // W48. A sign-out discards nothing until Dispatch answers it, and sends nothing of its person's
 // meanwhile: while it is out every other write of theirs stops trying after the attempt in flight
 // and none starts. Refused, it lets them go on, each where it stood; landed, they stay held until
@@ -1261,6 +1487,28 @@ test("409 KEY_COMMITTED is a landing: null, nothing kept, and every read refresh
     expect(invalidate).toHaveBeenCalledWith();
     await tick(60_000);
     expect(attempts).toBe(2);
+  });
+});
+
+// A landing is told before the store reads anything again: a listener that orders what Dispatch
+// answered by when each read went out (`issue-field-writes.ts`) counts every read the landing
+// starts as sent after it.
+test("a landing with no answer tells its outcome before it reads every query again", async () => {
+  await onFakeClock(async () => {
+    const { tab } = storeOf();
+    const client = signedIn();
+    const order: string[] = [];
+    spyOn(client, "invalidateQueries").mockImplementation(async () => {
+      order.push("read again");
+    });
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    writes.onOutcome(({ kind }) => order.push(kind));
+    const landed = statusWrite(writes, () =>
+      Promise.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "made" }))
+    );
+    await settle();
+    expect(await landed).toBeNull();
+    expect(order).toEqual(["landed", "read again"]);
   });
 });
 

@@ -33,16 +33,16 @@ type API interface {
 	SettleIssueDocuments(ctx context.Context, issueKey string) error
 	WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error)
 	MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error
-	FollowClosedIssueVersions(ctx context.Context, issueKey string) ([]model.Event, error)
+	FollowClosedIssueVersions(ctx context.Context, issueKey string) error
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
 	KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error
 	SetAskBlockText(ctx context.Context, artifactID, blockID string, edit AskBlockEdit, actor model.Actor) (AskBlockText, error)
-	TextWithAnswers(ctx context.Context, artifactID string, withBlocks bool) (string, string, []model.ArtifactBlock, error)
+	TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)
 	DecisionHeading(ctx context.Context, q graphstore.Queryer, artifactID, blockID string) (HeadingDecision, bool, error)
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
-	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error)
+	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, scope *QuoteScope) (Anchored, error)
 	VerifyMark(ctx context.Context, artifactID string, kind MarkKind, id string) (Anchored, error)
 	BlockForQuote(ctx context.Context, artifactID, quote string) (string, error)
 	SuggestionKind(ctx context.Context, artifactID, id string) (string, error)

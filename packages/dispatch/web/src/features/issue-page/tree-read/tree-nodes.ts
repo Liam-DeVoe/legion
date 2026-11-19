@@ -41,6 +41,7 @@ import {
   blank,
   blockNodeId,
   checkStanding,
+  coverageStatements,
   type Draft,
   plainWords,
   type TreeContext,
@@ -129,6 +130,10 @@ export interface TreeDraftContext extends TreeWords {
    *  the tree draws by the same id before it. While the steps run, the nodes offered so far are
    *  the ones that can have one, and every ancestor of the node being offered is among them. */
   readonly drafted: (readId: string) => boolean;
+  /** Whether a reference names a statement as the review list reads one, a requirement the
+   *  coverage read holds (`tree-drafts.ts`' `coverageStatements`, the rule the header's count
+   *  reads too), which a decision's `waiting` is read by (`draftDecision`). */
+  readonly isCoverageStatement: (reference: string) => boolean;
   readonly kept: KeptReads;
   /** The words of the one line of the draft that stands for the node `readId` names
    *  (`lineWords`). It answers once every node has been offered to the steps, so a mark reads
@@ -237,6 +242,7 @@ export function treeDraftsFrom(
       decisionNodes(answer, reads, lookup).map((decision) => [decision.node, decision])
     ),
     drafted: (readId) => drafts.has(idOf(readId)),
+    isCoverageStatement: coverageStatements(reads.issue, reads.coverage),
     kept: keptReads(reads, context, answer, idOfNode),
     lineOf: (readId) => {
       const draft = offered ? drafts.get(idOf(readId)) : undefined;
@@ -539,9 +545,10 @@ function draftResult(
  * every other reader of a decision reads it (`decisionNodes`), so the row, the header's count
  * (`waiting.ts`) and Keep and Change cannot disagree: unsure where the read says so or the
  * conversion wrote its uncertainty as high, and waiting by the review list's rule (`inReviewList`),
- * where a link ties it to a statement the coverage read holds. A decision node no document holds
- * is no decision of `decisionNodes` - it has no address, and no document a Keep could be written
- * against - so it waits on nobody, and is unsure only where the read says so.
+ * where a link ties it to a statement the coverage read holds, by the one rule the header's count
+ * is handed too (`coverageStatements`, `TreeDraftContext.isCoverageStatement`). A decision node no
+ * document holds is no decision of `decisionNodes` - it has no address, and no document a Keep
+ * could be written against - so it waits on nobody, and is unsure only where the read says so.
  */
 function draftDecision(
   node: TreeAnswerNode,
@@ -572,11 +579,7 @@ function draftDecision(
   draft.waiting =
     decided !== undefined &&
     context.viewer !== undefined &&
-    inReviewList(
-      decided,
-      (reference) => context.kept.requirements.has(context.nodeIdOf(reference) ?? ""),
-      changed
-    );
+    inReviewList(decided, context.isCoverageStatement, changed);
   return draft;
 }
 

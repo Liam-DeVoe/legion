@@ -12,6 +12,7 @@ import (
 
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Dispatch's Envoy listener client is a cross-service HTTP call bounded only by its five
@@ -24,14 +25,20 @@ import (
 // deploy, is enough to trigger it.
 //
 // So no listener call runs with a transaction or a pooled connection held, and this file is
-// the one place the shape is spelled:
+// the one place the shape is spelled, for that call and for any other slow read a write
+// decides on:
 //
-//  1. resolve - the listener call, with nothing held;
+//  1. resolve - the slow read (the listener call, or the results write's read of the live
+//               Verification document), with nothing held;
 //  2. lock    - open the transaction and take the locks the write needs;
 //  3. verify  - re-read under those locks whatever the resolution depended on, and decide
 //               with the resolution only while the locked rows still agree with it;
 //  4. redo    - a resolution the lock contradicts is taken once more, bounded, before the
 //               write answers with its own conflict.
+//
+// The results write (recordResultWithFreshWords, results.go) takes this shape for its read of
+// the check's words: a cold read bounded by a minute, which held under the two issues' owner
+// locks would make every writer of either issue wait it out.
 //
 // An outbound listener call (Envoy.Send) never runs inside a transaction at all, and this file
 // spells that half too:
@@ -53,12 +60,15 @@ import (
 // comment's mention resolution that decides which sessions the comment's other routes skip waits
 // one out too, before the comment's transaction opens and with nothing held
 // (resolveThroughTakeover), and the sender of that mention carries on in the same window rather
-// than opening a second one. That attempt keeps the resolution those routes were decided on, for
-// whichever sender finishes it (deliverResolvedCommentMention).
+// than opening a second one, unless it waits on a held lane first (mentionSend.takeover). That
+// attempt keeps the resolution those routes were decided on, for whichever sender finishes it
+// (deliverResolvedCommentMention).
 
-// errStaleResolution is how a locked write reports that a row the pre-transaction listener
-// resolution depended on had changed by the time it held the lock. It never reaches a client:
-// resolveThenLock either redoes the pair or answers with the caller's conflict.
+// errStaleResolution is how a locked write reports that a row the resolution it was handed
+// depended on had changed by the time it held the lock. That resolution is the pre-transaction
+// listener call for a delivery, and the check's words read out of the live document for the
+// results write (recordResultWithFreshWords). It never reaches a client: resolveThenLock
+// either redoes the pair or answers with the caller's conflict.
 var errStaleResolution = errors.New("listener resolution is stale")
 
 // resolutionAttempts is how many times resolveThenLock resolves before it gives up: the
@@ -72,8 +82,8 @@ const resolutionAttempts = 2
 // write owns its own transaction, and owes two things beyond opening it. It MUST re-read,
 // under the locks it takes, every row the resolution depended on, and compare: a write that
 // merely uses R without checking it against what the lock found is the bug this shape exists
-// to prevent, because the interesting case is precisely the row that moved while the listener
-// was answering. And it MUST have rolled back before it reports errStaleResolution, since
+// to prevent, because the interesting case is precisely the row that moved while the resolve
+// ran. And it MUST have rolled back before it reports errStaleResolution, since
 // resolveThenLock calls it again.
 func resolveThenLock[R, T any](
 	ctx context.Context,
@@ -258,7 +268,8 @@ func retryableDeliveryFailure(failure string) bool {
 // takeoverRetry paces one sender's tries at a listener that is being replaced, from the moment of
 // its first try. A comment mention's first try is its resolution before the comment's transaction
 // (resolveThroughTakeover), so its window spans that resolution and the sender's tries after the
-// commit together.
+// commit together, unless the send waits on a held lane first, which starts a window of its own at
+// its delivery (mentionSend.takeover).
 type takeoverRetry struct {
 	first   time.Time
 	backoff time.Duration
@@ -313,7 +324,9 @@ func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func
 // It returns the pacing with the resolution, and the mention's sender after the commit carries on
 // in it (deliverResolvedCommentMention) rather than opening a window of its own: a resolution that
 // already waited the window out settles with its outcome on that sender's first try, so a comment's
-// request waits about one window for a take-over, however long it spent resolving.
+// request waits about one window for a take-over, however long it spent resolving. A send that
+// waits on a held lane starts a window of its own at its delivery, as that wait has no bound
+// (mentionSend.takeover).
 func (s *server) resolveThroughTakeover(
 	ctx context.Context, target, delivery string, wait bool,
 ) (ResolvedMention, takeoverRetry) {
@@ -433,10 +446,14 @@ func receiptError(failure *string) string {
 // receipt from the row, stating what the reply recorded rather than what this send reported -
 // so every attempt carries exactly one receipt and that receipt agrees with its row.
 //
-// caused runs once the receipt is appended, in the same transaction and with its id, for what
-// settle wrote before the receipt existed: the node of the session a sent attempt reached
-// (graphstore.Reached), which learns the receipt as its cause there, as a comment's node learns
-// the event that stored it. A settle that writes nothing of the kind passes nil.
+// stated queues what the attempt states in the node and tuple store in the batch that appends the
+// receipt, right after the receipt: the node of the session a sent attempt reached
+// (graphstore.QueueReached), caused by the receipt as the id sequence left it
+// (graphstore.LatestEvent), as a comment's node is caused by the event that stored it. The
+// receipt and the facts are one statement batch, so the store costs the settle no statement of
+// its own. It runs only where settle itself wrote the row; an owed receipt the answered branch
+// appends states nothing, the reply that answered the attempt having written its own facts. A
+// settle that states nothing passes nil.
 func settleDeliveryAttempt[T any](
 	ctx context.Context,
 	s *server,
@@ -444,7 +461,7 @@ func settleDeliveryAttempt[T any](
 	settle func(context.Context, pgx.Tx) (T, error),
 	answered func(context.Context, pgx.Tx) (row T, mine bool, replyID *string, err error),
 	answeredReceipt func(T) model.Event,
-	caused func(ctx context.Context, tx pgx.Tx, receipt int64) error,
+	stated func(b *store.WriteBatch, attempt T) error,
 ) (T, error) {
 	var zero T
 	tx, err := s.begin(ctx)
@@ -456,6 +473,7 @@ func settleDeliveryAttempt[T any](
 		return zero, err
 	}
 	attempt, err := settle(ctx, tx)
+	wrote := err == nil
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		settled, mine, replyID, err := answered(ctx, tx)
@@ -474,14 +492,17 @@ func settleDeliveryAttempt[T any](
 	case err != nil:
 		return zero, err
 	}
-	event, err := s.appendEvent(ctx, tx, receipt)
-	if err != nil {
-		return zero, err
-	}
-	if caused != nil {
-		if err := caused(ctx, tx, event.ID); err != nil {
-			return zero, err
+	var event model.Event
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, receipt, func(written model.Event) { event = written }); err != nil {
+			return err
 		}
+		if stated == nil || !wrote {
+			return nil
+		}
+		return stated(b, attempt)
+	}); err != nil {
+		return zero, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return zero, err

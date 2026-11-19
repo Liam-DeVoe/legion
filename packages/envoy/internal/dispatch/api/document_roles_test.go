@@ -11,11 +11,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // issueRoleDocuments is what an issue read names by role: its spec, and its document of each
 // role, "" where it holds none. DecisionsArtifactID is the old member a page of the release
-// before reads (dispatch://INFRA-1150 R11).
+// before reads.
 type issueRoleDocuments struct {
 	PrimaryArtifactID      string `json:"primary_artifact_id"`
 	VerificationArtifactID string `json:"verification_artifact_id"`
@@ -99,7 +100,7 @@ func TestIssueDocumentsTakeTheirRoleFromTheirName(t *testing.T) {
 // A decision is a `decision` block of the spec, so a new document named decisions.md, or of any
 // name whose slug is decisions-md, on an issue is refused 409 DECISIONS_ARE_NODES with a message
 // that says to write a `decision` block in the spec: an upload, a create with no content, and a
-// rename of another document to that name (dispatch://INFRA-1150 R11, ruling D12). A document of
+// rename of another document to that name. A document of
 // any other name is taken, with no role, and a project document of that name is no issue's.
 // Where the issue still holds a decisions document an earlier release stored, an upload of its
 // name is that document's next version, as a client of the release before writes it, and the
@@ -136,13 +137,20 @@ func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t 
 	if project := uploadDocument(t, handler, "/api/v1/projects/DEC", "decisions.md", "# Decisions\n\nOne.\n"); project.Artifact.Role != "" {
 		t.Fatalf("project document = %#v, want it taken with no role: the refusal is an issue's", project.Artifact)
 	}
+	// The issue's decisions query (refs.DecisionsQuerySQL), a doc row slugged decisions that every
+	// issue born converted holds, is no stored decisions document.
 	var stored int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from artifacts where issue_key = $1 and slug like 'decisions%'`, issue.Key).Scan(&stored); err != nil || stored != 0 {
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from artifacts a where a.issue_key = $1 and a.slug like 'decisions%' and not `+refs.DecisionsQuerySQL("a"),
+		issue.Key).Scan(&stored); err != nil || stored != 0 {
 		t.Fatalf("the refused writes stored %d decisions documents on %s (%v), want none", stored, issue.Key, err)
 	}
 
 	// An issue that still holds a decisions document the release before stored, whose role a
-	// build older than the role left null: an upload of its name is its next version.
+	// build older than the role left null: an upload of its name is its next version. Such an
+	// issue is one that release created, of one-document rooms, so it is created unconverted:
+	// an issue born converted never holds a decisions document a release before stored.
+	holdIssuesUnconverted(t, database)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "DEC", "title": "Decided before the release", "spec": "Another spec\n",
 	}, "alice")

@@ -41,14 +41,14 @@ type graphEdgesArm struct {
 	text     string
 }
 
-// movedArmsDeletedBy is the child that deletes the four arms over the kinds dispatch://INFRA-1149
-// moved, once the store answers those kinds everywhere.
-const movedArmsDeletedBy = "dispatch://INFRA-1253"
+// movedArmsDeletedBy is the child that deletes the four arms over the kinds the child that built
+// the node store moved, once the store answers those kinds everywhere.
+const movedArmsDeletedBy = "the child that moves issues and their documents"
 
-// askArmsDeletedBy is the child whose own pull request deletes the three arms over the kinds
-// dispatch://INFRA-1150 moved - an ask's anchored_to and owned_by over asks, and followed_by over
-// ask_followers - with the tuple arm's joins to those two tables.
-const askArmsDeletedBy = "dispatch://INFRA-1098"
+// askArmsDeletedBy is the pull request that deletes the three arms over the kinds this change
+// moved - an ask's anchored_to and owned_by over asks, and followed_by over ask_followers - with
+// the tuple arm's joins to those two tables.
+const askArmsDeletedBy = "the root's own pull request"
 
 // graphEdgesArms is every arm of graph_edges, in the order the view states them. An arm the view
 // gains or loses fails this test, whichever source column it reads: the store is to answer each
@@ -56,34 +56,34 @@ const askArmsDeletedBy = "dispatch://INFRA-1098"
 // twice. The fate of each is printed with the list, so a reader sees which arms are left and who
 // takes each.
 var graphEdgesArms = []graphEdgesArm{
-	{relation: "refs", fate: "a mention of any node from an item; no child has moved it"},
-	{relation: "issues", fate: "child_of over the rows that name no node; the store answers the rest (dispatch://INFRA-1253), and dispatch://INFRA-1098 deletes this arm"},
-	{relation: "issue_links", fate: "blocked_by over the rows that name no node; the store answers the rest as needs (dispatch://INFRA-1253), and dispatch://INFRA-1098 deletes this arm"},
-	{relation: "artifacts", fate: "attached_to over the rows that name no node; dispatch://INFRA-1098 deletes this arm"},
-	{relation: "artifacts", fate: "attached_to of the artifacts that carry their node, from each one's part_of tuple (dispatch://INFRA-1253); it stays"},
-	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "refs", fate: "a mention of any node from an item, and a document's while its row names no node or its far end is past the store's bound; the store answers a document's other mentions; no child has moved the rest"},
+	{relation: "issues", fate: "child_of over the rows that name no node; the store answers the rest, and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "issue_links", fate: "blocked_by over the rows that name no node; the store answers the rest as needs, and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "artifacts", fate: "attached_to over the rows that name no node; " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "artifacts", fate: "attached_to of the artifacts that carry their node, from each one's part_of tuple; it stays"},
+	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node, and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment", renders: "anchored_to", fate: "a comment's anchored_to; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node, and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment", renders: "owned_by", fate: "a comment's owned_by; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "comments", fate: "a reply's replies_to its thread; dispatch://INFRA-1152 writes it"},
-	{relation: "comments", fate: "a reply's answers; dispatch://INFRA-1152 writes it"},
-	{relation: "comments", fate: "a reply's replies_to an ask; dispatch://INFRA-1152 writes it"},
-	{relation: "messages", fate: "a message's replies_to; dispatch://INFRA-1152 writes it"},
-	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "components", fate: "a component's part_of; no child has moved it"},
-	{relation: "component_depends", fate: "depends_on; no child has moved it"},
-	{relation: "issue_component_members", fate: "affects; no child has moved it"},
+	{relation: "comments", fate: "a reply's replies_to its thread; the child that moves the inbox, the messages and the read state writes it"},
+	{relation: "comments", fate: "a reply's answers; the child that moves the inbox, the messages and the read state writes it"},
+	{relation: "comments", fate: "a reply's replies_to an ask; the child that moves the inbox, the messages and the read state writes it"},
+	{relation: "messages", fate: "a message's replies_to; the child that moves the inbox, the messages and the read state writes it"},
+	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node, and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "components", fate: "a component's part_of over the rows that name no node; the store answers the rest, and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "component_depends", fate: "depends_on over the rows that name no node; the store answers the rest, and " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "issue_component_members", fate: "affects over the rows that name no node; the store answers the rest, and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "block_refs", projects: "block_ref", fate: "a block's links; the store answers them for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "document_blocks", projects: "block", fate: "a block's part_of its document; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "comment_blocks", fate: "a comment block's part_of; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "message_blocks", fate: "a message block's part_of; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "ask_blocks", fate: "an ask part's part_of; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "comment_block_refs", fate: "a comment block's links; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "message_block_refs", fate: "a message block's links; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "ask_block_refs", fate: "an ask part's links; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "comments", fate: "a reply's replies_to a comment's block; dispatch://INFRA-1152 writes it"},
-	{relation: "comments", fate: "a reply's replies_to an ask's part; dispatch://INFRA-1152 writes it"},
-	{relation: "messages", fate: "a message's replies_to a message's block; dispatch://INFRA-1152 writes it"},
+	{relation: "comment_blocks", fate: "a comment block's part_of; the child that moves the inbox, the messages and the read state writes an item's blocks"},
+	{relation: "message_blocks", fate: "a message block's part_of; the child that moves the inbox, the messages and the read state writes an item's blocks"},
+	{relation: "ask_blocks", fate: "an ask part's part_of; the child that moves the inbox, the messages and the read state writes an item's blocks"},
+	{relation: "comment_block_refs", fate: "a comment block's links; the child that moves the inbox, the messages and the read state writes an item's blocks"},
+	{relation: "message_block_refs", fate: "a message block's links; the child that moves the inbox, the messages and the read state writes an item's blocks"},
+	{relation: "ask_block_refs", fate: "an ask part's links; the child that moves the inbox, the messages and the read state writes an item's blocks"},
+	{relation: "comments", fate: "a reply's replies_to a comment's block; the child that moves the inbox, the messages and the read state writes it"},
+	{relation: "comments", fate: "a reply's replies_to an ask's part; the child that moves the inbox, the messages and the read state writes it"},
+	{relation: "messages", fate: "a message's replies_to a message's block; the child that moves the inbox, the messages and the read state writes it"},
 	{relation: "graph_tuples", fate: "the store itself, which answers an edge of a moved kind while the row that names it carries its node, and the store's own relations, which no row projects; it stays"},
 	{relation: "graph_tuples", fate: "the store's own relations out of a finding of a lens, answered as a lens_block; it stays"},
 }
@@ -249,11 +249,13 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	}
 	// followed_by is an ask's, which TestTheAsksArmsAnswerEachRowOnce writes; from_ask and
 	// decided_by are a decision block's, which the typed-node pass writes; an issue's child_of,
-	// duplicate_of and filed_from are its create's and its PATCH's, which api's
+	// duplicate_of and filed_from are its create's and its PATCH's, and a component's depends_on and
+	// an issue's affects are an import's and an issue's components', which api's
 	// TestGraphEdgesKeepsEveryRelationAcrossARollback writes; and attached_to is answered by the arm
 	// over the artifacts that carry their node, not by the tuple arm.
 	requireTheTupleArmRendersTheList(t, after.tuple, graphstore.TupleFollowedBy, "from_ask", graphstore.TupleDecidedBy,
-		graphstore.TupleChildOf, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom, refs.TupleAttachedTo)
+		graphstore.TupleChildOf, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom, refs.TupleAttachedTo,
+		graphstore.TupleDependsOn, graphstore.TupleAffects)
 
 	// Pods of the previous release write beside this one, during a roll or after a rollback.
 	written := writeAsThePreviousRelease(t, database, fixture)
@@ -299,8 +301,8 @@ var switchedByKind = regexp.MustCompile(`graph_store_cutover`)
 
 // movedArms holds each arm over a moved kind to the per-row test over its own table and to the
 // child that deletes it, and answers, with their text for reading on their own, the want arms
-// deletedBy deletes: the four over the kinds dispatch://INFRA-1149 moved (movedArmsDeletedBy) or
-// the three over the kinds dispatch://INFRA-1150 moved (askArmsDeletedBy).
+// deletedBy deletes: the four over the kinds the child that built the node store moved
+// (movedArmsDeletedBy) or the three over the kinds this change moved (askArmsDeletedBy).
 func movedArms(t *testing.T, read []graphEdgesArm, deletedBy string, want int) []movedArm {
 	t.Helper()
 	for index, arm := range read {
@@ -430,11 +432,12 @@ func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tupl
 // readEachArm takes one reading and fails unless every row was answered by the arm its own
 // projection row decides: the whole view equals the previous release's over the same rows, each of
 // the four arms answers exactly the rows of its kind whose row carries no node, and the tuple arm
-// exactly the rows of the moved kinds whose row carries it. The rows of the tuple arm's class
-// `store` (storeClass), which the previous release has no arm for, are set apart from both
-// readings first and held, in the whole view and in the tuple arm alike, to exactly the rows the
-// fixture stated of them (stored). It fails as well unless this build's backlink counts are the
-// previous release's over the same rows (requireBacklinkCountsAsThePreviousRelease).
+// exactly the rows of the moved kinds whose row carries it and the mentions of each document whose
+// row names its node (referenceStoredInTheStore). The rows of the tuple arm's class `store`
+// (storeClass), which the previous release has no arm for, are set apart from both readings first
+// and held, in the whole view and in the tuple arm alike, to exactly the rows the fixture stated
+// of them (stored). It fails as well unless this build's backlink counts are the previous
+// release's over the same rows (requireBacklinkCountsAsThePreviousRelease).
 func readEachArm(t *testing.T, database *store.Store, stage string, moved []movedArm, tuple movedArm, stored []graphEdgeRow) graphEdgesReading {
 	t.Helper()
 	reading := graphEdgesReading{
@@ -452,6 +455,12 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 	unmarked := make([][]graphEdgeRow, len(moved))
 	var marked []graphEdgeRow
 	for _, row := range reading.previous {
+		if row.fromKind == graphstore.KindArtifact && row.kind == graphstore.TupleMentions {
+			if referenceStoredInTheStore(t, database, row) {
+				marked = append(marked, row)
+			}
+			continue
+		}
 		index, ok := movedArmOf(moved, row)
 		if !ok {
 			continue
@@ -471,6 +480,22 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 		"the tuple arm answers it", tupled, "the previous release reads it from a row that carries its node", marked)
 	reading.counts = requireBacklinkCountsAsThePreviousRelease(t, database, stage)
 	return reading
+}
+
+// referenceStoredInTheStore reads whether the refs row behind row, a document's mention, is one
+// the store answers (migration 20261119100000): its document's artifacts row names its node, and
+// its far end is inside the store's bound. Any other such row is the arm over refs'.
+func referenceStoredInTheStore(t *testing.T, database *store.Store, row graphEdgeRow) bool {
+	t.Helper()
+	var stored bool
+	if err := database.Pool.QueryRow(context.Background(), `
+		select a.node_kind is not null and octet_length(r.to_id) <= $5
+		from refs r left join artifacts a on a.id::text = r.from_id
+		where r.from_kind = $1 and r.from_id = $2 and r.to_kind = $3 and r.to_id = $4
+	`, row.fromKind, row.fromID, row.toKind, row.toID, graphstore.MaxAddressBytes).Scan(&stored); err != nil {
+		t.Fatalf("read the refs row behind %s: %v", row, err)
+	}
+	return stored
 }
 
 // storeClass is whether row is one the tuple arms answer as the class `store` (migration
@@ -1480,7 +1505,7 @@ func scanGraphEdgeFixture(t *testing.T, database *store.Store, what, statement s
 }
 
 // The three arms over an ask's relations answer each row once, from the arm the row itself
-// decides (dispatch://INFRA-1150 R3): the asks arms of anchored_to and owned_by and the
+// decides: the asks arms of anchored_to and owned_by and the
 // ask_followers arm of followed_by answer only the rows whose node_kind is null, and the tuple arm
 // answers those relations from an ask's node only while the asks row, or the ask_followers row of
 // that ask and that session, carries the node.
@@ -1671,10 +1696,10 @@ func seedAskArmsFixture(t *testing.T, database *store.Store, service *Service) a
 	if err != nil {
 		t.Fatalf("open the ask block: %v", err)
 	}
-	if err := graphstore.Caused(ctx, tx, opened.node, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, tx, *opened.node, graphstore.NoEvent); err != nil {
 		t.Fatalf("cause the ask block's node: %v", err)
 	}
-	if err := graphstore.Caused(ctx, tx, opened.followed.Uncaused, graphstore.NoEvent); err != nil {
+	if err := graphstore.Caused(ctx, tx, *opened.followed, graphstore.NoEvent); err != nil {
 		t.Fatalf("cause the ask block's follow: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

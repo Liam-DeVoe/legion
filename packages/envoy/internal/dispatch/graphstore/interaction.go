@@ -44,11 +44,11 @@ type Interaction struct {
 // InteractionFacts is what the store holds of one run: its interaction node, then the author's
 // own nodes, and its tuples. The node is live and reserved for its author whoever that is, since
 // a run is read by the credential that asked it and by nobody else, and a run whose author names
-// nobody - a credential that proves no author (ProvesAuthor) - is read by nobody, as the stream
-// reads it (api.streamGoingAnswer). It carries its words and the moment it ends, each also stated
-// as a value tuple, and the run's project where it names one. Where AuthorOf names somebody of the
-// author, the run also states its authored_by tuple, with that author's own person or session node
-// and the aliases the server proved of them (AuthorFacts).
+// no credential (NamesCredential) - the shared bearer's empty author - is read by nobody, as the
+// stream reads it (api's goingRunIsTheCallers). It carries its words and the moment it ends, each
+// also stated as a value tuple, and the run's project where it names one. Where AuthorOf names
+// somebody of the author, the run also states its authored_by tuple, with that author's own person
+// or session node and the aliases the server proved of them (AuthorFacts).
 //
 // ends_at is written in UTC as RFC 3339 with its fraction of a second, a timestamp attribute's
 // text, so the node's attribute and its value tuple read the same instant the run's row holds.
@@ -114,11 +114,11 @@ func FrameTuple(run, value string, at time.Time) Tuple {
 }
 
 // QueueFrameTuple queues on batch the one statement Write sends for tuple, one frame value of a run
-// (FrameTuple): the append of value tuples under their repeat key (appendTuples). It is Write for
-// that one tuple, for the frame path, which sends it in one round trip beside a statement of its
-// own (api's appendGoingEvent): a frame value is no base attribute a value is refused for, no
-// pointer a type rule holds and no change of its node (Tuple.Changes), so Write reads nothing and
-// appends nothing else for it. Any other tuple is refused and nothing is queued: it goes through
+// (FrameTuple): the append of a value tuple under its repeat key (tupleInsert, valueRepeatKey). It
+// is Write for that one tuple, for the frame path, which sends it in one round trip beside a
+// statement of its own (api's appendGoingEvent): a frame value is no base attribute a value is
+// refused for, no pointer a type rule holds and no change of its node (Tuple.Changes), so Write
+// queues nothing else for it. Any other tuple is refused and nothing is queued: it goes through
 // Write, which holds it to whatever applies.
 func QueueFrameTuple(batch *pgx.Batch, tuple Tuple) error {
 	if tuple.FromKind != KindInteraction || tuple.Kind != AttributeFrame || tuple.ToKind != KindValue || tuple.Changes {

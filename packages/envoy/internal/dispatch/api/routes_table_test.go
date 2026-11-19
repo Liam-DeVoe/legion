@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -182,7 +183,7 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 // What catches a route added or removed by accident is the committed index
 // TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the table against
 // (testdata/routes.txt), which two branches that each add a route merge into the union of their
-// two lines. The test hooks are named in testHookRoutes rather than counted, for the same reason.
+// two lines.
 func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 	routes := (&server{}).routes()
 	seen := make(map[string]struct{}, len(routes))
@@ -204,23 +205,20 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	hooked := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
-	hooks := make(map[string]bool, len(testHookRoutes))
-	for _, route := range hooked {
-		key := route.Method + " " + route.Pattern
-		if _, plain := seen[key]; !plain {
-			hooks[key] = true
-		}
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+len(testHookRoutes) {
+		t.Fatalf("test hooks add %d routes: got %d, want %d", len(testHookRoutes), got, len(routes)+len(testHookRoutes))
 	}
-	requireTestHooks(t, hooks)
-	if want := len(routes) + len(testHookRoutes); len(hooked) != want {
-		t.Fatalf("the table with test hooks has %d rows, want %d: the %d without them and the %d testHookRoutes names", len(hooked), want, len(routes), len(testHookRoutes))
+	if hooks, named := slices.Sorted(maps.Keys(openAPIHookRoutes())), slices.Sorted(slices.Values(testHookRoutes)); !slices.Equal(hooks, named) {
+		t.Fatalf("the table mounts the test hooks\n\t%s\nwant the ones testHookRoutes names\n\t%s",
+			strings.Join(hooks, "\n\t"), strings.Join(named, "\n\t"))
 	}
 }
 
-// testHookRoutes is every row routes() mounts only with Deps.TestHooksEnabled, by method and
-// path, in the table's order. Each is named rather than counted, so two branches that each add a
-// hook merge into the union of their lines, and a hook added, dropped or renamed fails by its name.
+// testHookRoutes is every row the table mounts only with Deps.TestHooksEnabled, each named, in the
+// table's order: the fifteen main mounts and the ask-attributes hook this branch adds, which reads
+// the attributes of a live tree's ask blocks. A count alone is one number two branches that each
+// add a hook are both wrong about; a hook added or dropped on either side is a line here, which
+// such a merge holds the union of.
 var testHookRoutes = []string{
 	"POST /api/v1/live/_test/disconnect",
 	"POST /api/v1/live/_test/rotate",
@@ -238,22 +236,6 @@ var testHookRoutes = []string{
 	"POST /api/v1/writes/_test/slow",
 	"POST /api/v1/settings/new-issue/_test",
 	"GET /api/v1/messages/_test/queued",
-}
-
-// requireTestHooks fails t unless hooks, the rows a table mounts only with Deps.TestHooksEnabled,
-// are exactly the rows testHookRoutes names, naming each one missing and each one extra.
-func requireTestHooks(t *testing.T, hooks map[string]bool) {
-	t.Helper()
-	for _, name := range testHookRoutes {
-		if !hooks[name] {
-			t.Errorf("test hook %s is not mounted with Deps.TestHooksEnabled", name)
-		}
-	}
-	for name := range hooks {
-		if !slices.Contains(testHookRoutes, name) {
-			t.Errorf("%s is mounted only with Deps.TestHooksEnabled and testHookRoutes does not name it", name)
-		}
-	}
 }
 
 // The Inbox route's description states the rule the person a question reaches is resolved by —
@@ -659,6 +641,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/credential-requests",
 		"POST /api/v1/credential-requests/{id}/approve",
 		"POST /api/v1/credential-requests/{id}/deny",
+		// The dismissal of an expired request is this change's own row, and the person's for the
+		// reason the decisions above it are: Dispatch names the caller as the one who dismissed.
+		"POST /api/v1/credential-requests/{id}/dismiss",
 		"POST /api/v1/credential-requests/machine-lookup",
 		"GET /api/v1/credential-grants",
 		"POST /api/v1/credential-grants/{id}/revoke",

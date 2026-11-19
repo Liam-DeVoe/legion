@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Retirement is what RetireDocument did: the document.retired event it appended, which the
@@ -36,8 +37,8 @@ var errRetirementReason = errors.New("docs: a retirement needs a reason")
 // its own broker after its commit.
 var retirementEvents = events.NewBroker()
 
-// RetireDocument retires the document artifactID, any document, inside tx (dispatch://INFRA-1150
-// R11): it sets artifacts.retired_at and clears the document's role, states the document's
+// RetireDocument retires the document artifactID, any document, inside tx: it sets
+// artifacts.retired_at and clears the document's role, states the document's
 // artifact node gone, appends one document.retired event naming the reason, and supersedes the
 // approval the document holds, which it reports. The document keeps its row, its versions, its
 // reviews, its comments, its block texts and its slug, so its versions stay readable and a
@@ -46,9 +47,10 @@ var retirementEvents = events.NewBroker()
 // role lookup finds it, its slug included.
 //
 // It takes no new text after it: every process closes its room of the document once tx commits,
-// through the announcement a removal sends (AnnounceDocumentRemoved), a socket that comes back is
-// refused (ServeHTTP), and api refuses an upload, a create and an edit of it 409
-// DOCUMENT_RETIRED.
+// through the announcement a removal sends (AnnounceDocumentRemoved), and for a document of an
+// issue room the issue's room as well (AnnounceDocumentRooms), whose settlement versions the
+// retired document's fragment no more; a socket that comes back is refused (ServeHTTP), and api
+// refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED.
 //
 // No version is written, so the approval is not left behind a later version as a write leaves
 // one: the approval read answers a retired document's approval stale (api's applyApprovals), and
@@ -75,8 +77,11 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	var createdBy []byte
 	var createdAt time.Time
 	var retired bool
+	// The role the document plays: its row's, or, for a document of an issue born converted, which
+	// carries none in its row, its query node's (graphstore.ArtifactQueryRoleSQL), as the artifact
+	// read answers it, so the event names the part the document played either way.
 	if err := tx.QueryRow(ctx, `
-		select ref_key, coalesce(role, ''), session_id, created_by, created_at, retired_at is not null
+		select ref_key, coalesce(role, `+graphstore.ArtifactQueryRoleSQL+`, ''), session_id, created_by, created_at, retired_at is not null
 		from artifacts where id = $1
 	`, artifactID).Scan(&refKey, &role, &session, &createdBy, &createdAt, &retired); err != nil {
 		return Retirement{}, fmt.Errorf("read the document to retire: %w", err)
@@ -113,6 +118,19 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	if err := AnnounceDocumentRemoved(ctx, tx, artifactID); err != nil {
 		return Retirement{}, err
 	}
+	// A converted document is edited in its issue's room, which no removal of the document's own
+	// name closes: every process closes that room too, whose sockets reconnect, the document's
+	// own refused, and whose settlement versions the retired document's fragment no more
+	// (roomFragments).
+	room, err := roomOf(ctx, tx, artifactID)
+	if err != nil {
+		return Retirement{}, err
+	}
+	if room != artifactID {
+		if err := AnnounceDocumentRooms(ctx, tx, room, artifactID); err != nil {
+			return Retirement{}, err
+		}
+	}
 	return Retirement{Event: event, SupersededApproval: superseded}, nil
 }
 
@@ -124,6 +142,17 @@ func documentRetired(ctx context.Context, q Queryer, room string) (bool, error) 
 		return false, fmt.Errorf("read whether the document is retired: %w", err)
 	}
 	return retired, nil
+}
+
+// refusedDocument reads from q, in one statement, whether the document asked is retired
+// (documentRetired) and whether it is its issue's decisions query (refs.DecisionsQuerySQL): no
+// socket opens on either.
+func refusedDocument(ctx context.Context, q Queryer, asked string) (retired, query bool, err error) {
+	if err := q.QueryRow(ctx, `select a.retired_at is not null, `+refs.DecisionsQuerySQL("a")+` from artifacts a where a.id = $1`, asked).
+		Scan(&retired, &query); err != nil {
+		return false, false, fmt.Errorf("read whether the document takes a socket: %w", err)
+	}
+	return retired, query, nil
 }
 
 // writeRetiredNode writes the retired document's artifact node gone, held for the event that
@@ -150,41 +179,6 @@ func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, se
 	node.State = graphstore.StateGone
 	node.SourceEvent = graphstore.NoEvent
 	return graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, stated)
-}
-
-// WriteRemovedNode states the node of document gone inside tx, the transaction that removes the
-// document's row (api's removeArtifact), as a retirement states a retired document's node
-// (writeRetiredNode), and retracts, as actor at at, each changed_by_run the node states now
-// (graphstore.TupleChangedByRun). The write is held for the artifact.removed event the caller
-// appends, and the caller hands it to graphstore.Caused once that event is appended.
-//
-// A retired document keeps its row, its slug and so its ref_key, so no later document takes its
-// address. A removed one frees its slug, and a document made again under the same title takes the
-// same ref_key, which is the id of the same node: a create restates the node and brings it back
-// live (graphstore.ArtifactNode), and a changed_by_run left asserted on it would name the new
-// document changed by the run that made the old one, which refs' edgeFrom reads through the new
-// document's uuid. Gone, the node is counted under no run (refs' liveVisibleNodeOf), as the run's
-// list leaves out a document whose row has gone.
-//
-// The caller holds the document's owner row, which every writer that marks the document's node
-// changed takes first, so no changed_by_run of the node lands between the read here and the
-// retraction.
-func WriteRemovedNode(ctx context.Context, tx pgx.Tx, document model.Artifact, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
-	if !graphstore.AddressFits(document.RefKey) {
-		return graphstore.Uncaused{}, nil
-	}
-	marks, err := graphstore.CurrentOut(ctx, tx, graphstore.KindArtifact, document.RefKey, []string{graphstore.TupleChangedByRun})
-	if err != nil {
-		return graphstore.Uncaused{}, err
-	}
-	retractions := make([]graphstore.Tuple, len(marks))
-	for index, mark := range marks {
-		retractions[index] = graphstore.Tuple{
-			FromKind: mark.FromKind, FromID: mark.FromID, Kind: mark.Kind, ToKind: mark.ToKind, ToID: mark.ToID,
-			At: at, Who: actor, Asserted: false,
-		}
-	}
-	return writeRetiredNode(ctx, tx, document.RefKey, document.Project, document.SessionID, document.CreatedBy, document.CreatedAt, retractions)
 }
 
 // standingApproval is the approval of artifactID that stands, the newest review where it approves

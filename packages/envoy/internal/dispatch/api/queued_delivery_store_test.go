@@ -22,7 +22,7 @@ var queuedModes = []string{"aside", "btw", "steer"}
 const heldSession = "ses_held0a1b2c3d4"
 
 // A mention of a session the listener holds stopped settles `queued`, and a queued attempt is a
-// delivery (dispatch://INFRA-1149's R14 at version 37: "an attempt the listener took is one",
+// delivery (this change's R14 at version 37: "an attempt the listener took is one",
 // model.DeliveryTaken). So that settle makes the session a node of the store, the outbox's
 // record of its receipt states the comment delivered to it, and the person the credential
 // proved that session for reads the comment on their own page. Before cybermonklabs/legion#2643

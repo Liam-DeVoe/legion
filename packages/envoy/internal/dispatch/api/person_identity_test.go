@@ -22,10 +22,12 @@ import (
 )
 
 // The identities of TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn: the role the
-// proved session holds, and a login one character from the person's own (brokerTestPerson).
+// proved session holds, a login one character from the person's own (brokerTestPerson), and the
+// person who files the issue the identity tests write in (seedRoutedIssue).
 const (
-	identityRole = "identity-reader"
-	identityTwin = "alicf"
+	identityRole  = "identity-reader"
+	identityTwin  = "alicf"
+	identityFiler = "carol"
 )
 
 // identityRow is one row of the identity table the test carries: an identity as a request
@@ -37,7 +39,7 @@ type identityRow struct {
 }
 
 // TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn is the identity half of
-// dispatch://INFRA-1149's c-person-graph, the rows its shell driver cannot present: a session
+// the check c-person-graph, the rows its shell driver cannot present: a session
 // the server proved a person's, which needs the secrets broker's DPoP-bound token, and a role
 // that person's session held, which needs a claim store this pod's fake Envoy does not have.
 // Here the session is proved through the server's own broker-token path, with an ES256 key the
@@ -339,15 +341,21 @@ func newIdentityRigOn(t *testing.T, envoyURL string) *identityRig {
 }
 
 // seedRoutedIssue makes the project the broker's token is scoped to and an issue in it routed to
-// the role the proved session holds, as the person, and answers the issue's key.
+// the role the proved session holds, as identityFiler, and answers the issue's key. The filer is
+// not the person whose identity the tests read: an issue is born converted, and a block of its
+// room records its authors (refs.RecordsAuthorsSQL), so the issue's spec makes whoever files it a
+// person of the store, its blocks' author, before any test's own first write.
 func (r *identityRig) seedRoutedIssue(t *testing.T) string {
 	t.Helper()
-	if created := r.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
+	asFiler := func(method, path string, body any) *httptest.ResponseRecorder {
+		return r.serve(withPerson(brokerRequest(t, method, path, body, "", ""), identityFiler))
+	}
+	if created := asFiler(http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": brokerTestProject, "name": "Broker",
 	}); created.Code != http.StatusCreated {
 		t.Fatalf("create the project: status=%d body=%s", created.Code, created.Body.String())
 	}
-	issue := r.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+	issue := asFiler(http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": brokerTestProject, "title": "Who is who", "spec": "# Spec\n\nA passage.",
 	})
 	if issue.Code != http.StatusCreated {
@@ -356,7 +364,7 @@ func (r *identityRig) seedRoutedIssue(t *testing.T) string {
 	key := decodeBody[struct {
 		Key string `json:"key"`
 	}](t, issue).Key
-	if routed := r.asPerson(t, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"route": "role:" + identityRole}); routed.Code != http.StatusOK {
+	if routed := asFiler(http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"route": "role:" + identityRole}); routed.Code != http.StatusOK {
 		t.Fatalf("route the issue to the role: status=%d body=%s", routed.Code, routed.Body.String())
 	}
 	return key

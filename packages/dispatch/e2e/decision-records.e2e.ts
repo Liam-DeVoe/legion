@@ -56,12 +56,14 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   });
 
   // The Spec tab: the decision is a margin card beside each block it shaped, and no block is out
-  // of date yet.
+  // of date yet. A card is the margin item `decision:<node id>:<spec node id>`
+  // (`web/src/features/margin/useMarginItems.ts`), and a spec node's id is the spec's and the
+  // block's: `<KEY>/spec#<block id>`.
   await page.goto(`/issues/${issue.key}/spec`);
   const cards = page.getByRole("article", { name: `Decision: ${DECISION}` });
   await expect(cards).toHaveCount(2);
-  await expect(page.locator(`[data-margin-item$=":${stored}"]`)).toHaveCount(1);
-  await expect(page.locator(`[data-margin-item$=":${newest}"]`)).toHaveCount(1);
+  await expect(page.locator(`[data-margin-item$=":${issue.key}/spec#${stored}"]`)).toHaveCount(1);
+  await expect(page.locator(`[data-margin-item$=":${issue.key}/spec#${newest}"]`)).toHaveCount(1);
   await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(0);
 
   // The Decisions tab lists it under the reader's review, with both blocks and neither out of

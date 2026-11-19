@@ -92,8 +92,8 @@ func TestClosingAnIssueAgainstAConcurrentResolveLeavesOneRecord(t *testing.T) {
 				t.Fatalf("open asks after the close = %v, want none", openAskIDs(detail))
 			}
 			if block {
-				requireLiveText(t, f.handler, f.spec, `#close-decision urgency="med" multiple="false" state="resolved"`)
-				requireLiveText(t, f.handler, f.copy, `#close-decision urgency="med" multiple="false" state="resolved" copied_from="`+f.blockAsk+`"`)
+				requireLiveText(t, f.handler, f.spec, `#close-decision state="resolved"`+"\n")
+				requireLiveText(t, f.handler, f.copy, `#close-decision state="resolved" copied_from="`+f.blockAsk+`"`)
 			}
 		})
 	}
@@ -247,8 +247,9 @@ func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 	requireLiveTree(t, f.documents, copied, `state="answered"`, `answered_by="alice"`, decisionSelected, `answer="`+decisionAnswer+`"`, `copied_from="`+decision+`"`)
 }
 
-// A decision answered and settled before its issue's close has a copy holding the answer in full,
-// as the text an agent reads shows it from the store, and the close leaves that text as it was.
+// A decision answered and settled before its issue's close has a copy reading the answer in full,
+// as the asks member of the text an agent reads shows it from the store, and the close leaves that
+// text as it was.
 func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -262,8 +263,8 @@ func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
 	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
 		t.Fatalf("settle the answer's copy: %v", err)
 	}
-	settled, _ := documentTexts(t, handler, copied)
-	if !contains(`state="answered"`, decisionSelected, `answer="`+decisionAnswer+`"`)(settled) {
+	settled := agentText(t, handler, copied)
+	if !contains(`#close-decision state="answered" answered_by="alice"`, `selected=["Yes"] answer="`+decisionAnswer+`"`)(settled) {
 		t.Fatalf("copy %s after the answer's settlement:\n%s\nwant it to hold the answer", copied, settled)
 	}
 
@@ -271,7 +272,7 @@ func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	if live, _ := documentTexts(t, handler, copied); live != settled {
+	if live := agentText(t, handler, copied); live != settled {
 		t.Fatalf("copy %s after the close:\n%s\nwant it as settled:\n%s", copied, live, settled)
 	}
 }
@@ -301,7 +302,7 @@ func answerDecision(t *testing.T, handler http.Handler, database *store.Store, s
 		t.Fatalf("answer the decision: status=%d body=%s", answered.Code, answered.Body.String())
 	}
 	live, _ := documentTexts(t, handler, spec)
-	requireLiveText(t, handler, spec, `state="answered"`, `answered_by="alice"`, `answer="`+decisionAnswer+`"`)
+	requireLiveText(t, handler, spec, `#close-decision state="answered" answered_by="alice"`, `answer="`+decisionAnswer+`"`)
 	return answeredDecision{row: askRowTexts(t, database, decision)[0], spec: live}
 }
 
@@ -357,7 +358,7 @@ func decisionWithCopy(t *testing.T, handler http.Handler, documents *docs.Servic
 	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
 		t.Fatalf("settle the copy: %v", err)
 	}
-	requireLiveText(t, handler, copied, `#close-decision urgency="med" multiple="false" state="open" copied_from="`+decision+`"`)
+	requireLiveText(t, handler, copied, `#close-decision state="open" copied_from="`+decision+`"`)
 	return issue, decision, copied
 }
 
@@ -380,20 +381,21 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 	if count := askEventCount(t, database, decision, "ask.resolved"); count != 1 {
 		t.Fatalf("decision has %d ask.resolved events, want 1", count)
 	}
-	requireLiveText(t, handler, spec, `#close-decision urgency="med" multiple="false" state="resolved"`)
-	requireLiveText(t, handler, copied, `#close-decision urgency="med" multiple="false" state="resolved" copied_from="`+decision+`"`)
+	requireLiveText(t, handler, spec, `#close-decision state="resolved"`+"\n")
+	requireLiveText(t, handler, copied, `#close-decision state="resolved" copied_from="`+decision+`"`)
 }
 
 // An ask block written within the settle delay, whose settlement is in flight - holding the
 // issue's row - when the issue is closed: the close waits for it on that row, so the settlement
 // indexes the block as an ask credited to its writer, and the close then withdraws that ask,
 // naming the closer. The close's own settlement, behind it, finds the document settled. The
-// withdrawal is held on the ask's node and its row and changes no byte of the document
-// (dispatch://INFRA-1150 R3), so the edit's own version is the only one written since the block,
+// withdrawal is held on the ask's node and its row and changes no byte of the document, so the
+// edit's own version is the only one written since the block,
 // it holds none of the block's state, and the text an agent reads shows the block resolved.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
 	var documents *docs.Service
-	// hold names the document whose next settlement is held at its owner row, until release.
+	// hold names the room whose next settlement is held at its owner row, until release: the room
+	// the spec is edited in (documentRoomOf), which a settlement locks.
 	var hold atomic.Pointer[string]
 	held := make(chan struct{})
 	release := make(chan struct{})
@@ -418,7 +420,8 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	awaitSettled(t, database, spec)
 	versions := len(versionHashes(t, database, spec))
 
-	hold.Store(&spec)
+	specRoom, _ := documentRoomOf(t, database.Pool, spec)
+	hold.Store(&specRoom)
 	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{
 		"actor": sessionActor(),
 		"ops": []map[string]string{{
@@ -474,7 +477,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	if count := askEventCount(t, database, ask.ID, "ask.resolved"); count != 1 {
 		t.Fatalf("ask %s has %d ask.resolved events, want 1", ask.ID, count)
 	}
-	const resolved = `#late-decision urgency="high" multiple="false" state="resolved"`
+	const resolved = `#late-decision state="resolved"`
 	requireLiveText(t, handler, spec, resolved)
 	awaitSettled(t, database, spec)
 	written := versionMarkdowns(t, database, spec)[versions:]
@@ -505,8 +508,8 @@ func versionMarkdowns(t *testing.T, database *store.Store, document string) []st
 // written a moment before is indexed as an ask credited to its writer, and the document owes no
 // settlement afterwards, whatever becomes of the close.
 func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
-	// cancelOn names the document whose next settlement cancels the close's request once it holds
-	// the issue's row.
+	// cancelOn names the room whose next settlement cancels the close's request once it holds
+	// the issue's row: the room the spec is edited in (documentRoomOf), which a settlement locks.
 	var cancelOn atomic.Pointer[string]
 	var cancelClose atomic.Pointer[context.CancelFunc]
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -539,7 +542,8 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelClose.Store(&cancel)
-	cancelOn.Store(&spec)
+	specRoom, _ := documentRoomOf(t, database.Pool, spec)
+	cancelOn.Store(&specRoom)
 	request := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+issue.Key, strings.NewReader(`{"status":"done"}`)).WithContext(ctx)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "alice")

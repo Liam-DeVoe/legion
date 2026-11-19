@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// A Keep of a heading of an issue's decisions document (dispatch://INFRA-1150 F3) takes the
+// A Keep of a heading of an issue's decisions document takes the
 // issue's owner row before it writes, as the decisions step takes it for the whole of its
 // conversion and retirement of the document, and reads under it whether the document still
 // stands. A Keep that starts while the step holds the row - the person read the heading while the
@@ -95,10 +95,10 @@ const holdVersionEvents = `
 		execute function hold_version_event('1150005');`
 
 // A Keep of a heading whose section the decisions step converts while the Keep waits for the
-// issue's row, the document standing after it because another of its sections still holds an ask
-// block, answers 404 TARGET_NOT_FOUND and writes nothing: under the row the Keep reads the
-// heading's section again, and the heading opens none any more. A row on it would sit on a
-// heading the step carried onto no decision node.
+// issue's row answers 404 TARGET_NOT_FOUND and writes nothing: a row on it would sit on a heading
+// the step carried onto no decision node. The document's other section holds an ask block no row
+// names, which the step moves into the spec by R9's first further kind, so its section converts
+// too and the step retires the document: under the row the Keep finds the document retired.
 //
 // The step's pass of the issue stops at the first version it writes, holding the issue's row,
 // behind a transaction of the test's own (holdVersionEvents). The Keep, posted with the sum the
@@ -159,8 +159,8 @@ func TestAHeadingKeepThatWaitsBehindTheStepsConversionOfItsSectionIsNotFound(t *
 	case <-time.After(60 * time.Second):
 		t.Fatal("the step's pass answered nothing 60s after it was let go")
 	}
-	if result.err != nil || len(result.failed) > 0 || len(result.done) != 1 || result.done[0].Decisions != 1 || result.done[0].Left != 1 || result.done[0].Retired {
-		t.Fatalf("the pass did %+v, %+v, %v, want the heading's section a decision, the ask's section left and the document standing", result.done, result.failed, result.err)
+	if result.err != nil || len(result.failed) > 0 || len(result.done) != 1 || result.done[0].Decisions != 1 || result.done[0].Left != 0 || !result.done[0].Retired {
+		t.Fatalf("the pass did %+v, %+v, %v, want the heading's section a decision, the ask's section converted and the document retired", result.done, result.failed, result.err)
 	}
 	var response *httptest.ResponseRecorder
 	select {

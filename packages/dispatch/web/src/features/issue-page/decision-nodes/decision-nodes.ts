@@ -2,6 +2,7 @@ import type { Decision, DecisionLink, DisplayTree, IssueDetails } from "../../..
 import { buildDispatchReference, parseDispatchReference } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
 import type { IssueTreeReads, TreeAsk } from "../issue-tree";
+import { storedReading } from "../stored-reading";
 import { blockNodeId } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 
@@ -119,19 +120,27 @@ export function decisionsOfAnswer(
 /**
  * The words of the decision's first paragraph, which a Change is anchored to: the server matches
  * an anchor's quote against the document's own text (`pmdoc.FindQuote`), never its markdown, so
- * they are read from the server's reading of the decision's words (`text_tree`), whose top-level
- * blocks are its paragraphs, a heading passed over, with a list's items one space apart and a hard
- * break as one space (`wordsOf`). A decision read with no reading - a pod of the build before
- * during a rolling deploy - or with a reading that holds no blocks is quoted by its first stored
- * paragraph, which is all the browser has. Undefined for a decision that holds no paragraph.
+ * they are read from the decision's reading, whose top-level blocks are its paragraphs, a heading
+ * passed over, with a list's items one space apart and a hard break as one space (`wordsOf`): the
+ * server's reading of the decision's words (`text_tree`), and where the read carried none that
+ * holds blocks - a pod of the build before during a rolling deploy - the reading of its stored
+ * text (`storedReading`), which the decision holds, so it is remembered while the decision lives.
+ * So a decision's quote is the words of its text either way, never its markdown. Undefined for a
+ * decision that holds no paragraph.
  */
 export function decisionQuote(decision: {
   readonly text: string;
   readonly text_tree?: DisplayTree;
 }): string | undefined {
   const tree = decision.text_tree;
-  if (tree === undefined || !Array.isArray(tree.content)) return firstParagraph(decision.text);
-  const block = (tree.content as DisplayTree[]).find((node) => node.type !== "heading");
+  const reading =
+    tree !== undefined && Array.isArray(tree.content)
+      ? tree
+      : storedReading(decision.text, decision);
+  const blocks = reading.content;
+  const block = Array.isArray(blocks)
+    ? (blocks as DisplayTree[]).find((node) => node.type !== "heading")
+    : undefined;
   return block === undefined ? undefined : wordsOf(block);
 }
 
@@ -387,15 +396,4 @@ export function tuplesByFrom(answer: TreeAnswer): Map<string, TreeTuple[]> {
     else from.push(tuple);
   }
   return tuples;
-}
-
-/** The decision's first stored paragraph, as markdown: what a decision read with no reading is
- *  quoted by (`decisionQuote`). A heading line is passed over, as the reading's heading is. */
-function firstParagraph(text: string): string | undefined {
-  // A blank line holds nothing once trimmed, so it is never the paragraph.
-  for (const piece of text.split(/\n\s*\n/)) {
-    const paragraph = piece.trim();
-    if (paragraph !== "" && !paragraph.startsWith("#")) return paragraph;
-  }
-  return undefined;
 }

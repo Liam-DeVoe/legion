@@ -18,22 +18,24 @@ import (
 // askRowColumns are docs.AskColumns plus the documents a block ask, a quoted anchor or an
 // approval request names; every ask read carries whichever document applies. Queries selecting
 // them read from askRowFrom.
-const askRowColumns = docs.AskColumns + `, ba.id::text, ba.slug, ba.is_primary,
+var askRowColumns = docs.AskColumns + `, ba.id::text, ba.slug, ba.is_primary,
 	aa.project_key, aa.slug, aa.name, aa.is_primary,
 	pa.project_key, pa.slug, pa.name, pa.is_primary`
 
 // askRowFrom is a var, not a const, because its anchor join is built from store.CastableUUID: a
 // stored anchor resolves to the document its artifact_id casts to, whatever the spelling, and one
 // whose artifact_id casts to no uuid resolves to no document instead of failing the read with
-// SQLSTATE 22P02.
+// SQLSTATE 22P02. A block ask's document is the one holding its block (refs.AskBlockDocumentSQL),
+// the document of its fragment for an ask of an issue room, never the room's tree, which the issue
+// read leaves out.
 var askRowFrom = `from asks a
-	left join artifacts ba on ba.id = a.block_artifact_id
+	left join artifacts ba on ba.id = ` + refs.AskBlockDocumentSQL("a") + `
 	left join artifacts aa on aa.id = ` + store.CastableUUID(`a.anchor->>'artifact_id'`) + `
 	left join artifacts pa on pa.id = (a.approval->>'artifact_id')::uuid`
 
 // newestReply selects the newest comment in the thread of the ask aliased a: the one that
 // committed last, since a comment's created_at is when its insert ran (migration 0065) and every
-// comment insert first takes the owner row. lastReplyJoin reads it for every ask read, and a
+// comment insert first takes the owner's lock. lastReplyJoin reads it for every ask read, and a
 // hand-back records its id, so both agree on which reply is newest.
 const newestReply = `select c.id, c.author, c.created_at, c.turn from comments c
 			where c.ask_id = a.id
@@ -144,25 +146,29 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 	return waitingOn, nil
 }
 
-// askWaitingOnPerson reads the person the question askID reaches, for a write that has just
-// inserted one or handed an approval request back and must name that person on its answer. It
-// is the one rule every read of that person shares (askedOfPersonExpression) over the three
-// tables that rule names beside the ask - its issue, its own document and the project of
-// whichever of the two owns it, the joins askReadFrom makes - run on q, so a caller passing its
-// own transaction reads what its uncommitted write left. The person is scanned into a string:
-// the foreign keys, asks_one_owner and the not-null projects.default_assignee leave no question
-// reaching nobody, so a null here is a broken invariant and fails the scan rather than
-// answering a missing field.
+// askWaitingOnPerson reads the person a question on owner reaches, for a write that opens one or
+// hands an approval request back and must name that person on its answer. askedOf is the
+// question's own asked_of as the write leaves it: nil for a question the write opens, and the
+// open request's stored field for one it hands back, which a hand-back does not touch. It is the
+// one rule every read of that person shares (askedOfPersonExpression) over the three tables that
+// rule names beside the ask - its issue, its own document and the project of whichever of the
+// two owns it, the joins askReadFrom makes - read against a row of one holding the ask's three
+// columns rather than against the stored ask: the writes of both callers are queued on the
+// ledger (docs.Ledger), so the row a write opens is not there until Commit, and the read runs in
+// the read phase, under the owner's lock the caller holds, before anything is written. The
+// person is scanned into a string: the foreign keys, asks_one_owner and the not-null
+// projects.default_assignee leave no question reaching nobody, so a null here is a broken
+// invariant and fails the scan rather than answering a missing field.
 //
 // It is deliberately not the whole of askReadColumns: a write's answer needs this one field,
 // and the two handlers that call it (createAskFor in api/asks.go, requestArtifactApproval in
 // api/reviews.go) already hold the ask they wrote. A route whose answer is a full ask read
 // back - the hand-on's - reads it through loadAsk instead.
-func askWaitingOnPerson(ctx context.Context, q queryer, askID string) (string, error) {
+func askWaitingOnPerson(ctx context.Context, q queryer, owner owner, askedOf *string) (string, error) {
 	var person string
 	if err := q.QueryRow(ctx, `select `+askedOfPersonExpression+`
-		from asks a`+askedOfPersonJoins+`
-		where a.id = $1`, askID).Scan(&person); err != nil {
+		from (select $1::text as asked_of, $2::text as issue_key, $3::uuid as artifact_id) a`+askedOfPersonJoins,
+		askedOf, owner.IssueKey, owner.ArtifactID).Scan(&person); err != nil {
 		return "", fmt.Errorf("read ask waiting_on_person: %w", err)
 	}
 	return person, nil
@@ -176,7 +182,7 @@ func askWaitingOnPerson(ctx context.Context, q queryer, askID string) (string, e
 // waiting_on_person for the same reason; every project names a default assignee, so it is null
 // only for a question whose project row the read could not reach. Queries selecting them read
 // from askReadFrom. Event payloads are built from askRowColumns instead: they carry neither.
-const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
+var askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
 	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person`
 
 // askReadFrom is askRowFrom with the three joins askedOfPersonExpression reads beside the ask

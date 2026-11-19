@@ -9,7 +9,7 @@ import (
 )
 
 // The version a human approved is compared with a later version byte for byte once both have had
-// the eight server-owned attributes taken off every ask block (dispatch://INFRA-1150 R10, the
+// the eight server-owned attributes taken off every ask block (the
 // carry's attribute case): what the approved version's blocks showed of a decision is no part of
 // what he approved, since an answer is held on the ask's node alone (R3), so a version that differs
 // from his only by those attributes carries his approval, and one that differs by any other
@@ -67,7 +67,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWit
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
 
-			setLiveBlockAttributes(t, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.shown})
+			setLiveBlockAttributes(t, handler, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.shown})
 			whileTheReleaseBeforeServes(t, database, func() {
 				named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the " + tc.attribute + " other than the row's", "actor": sessionActor()})
 				if named.Code != http.StatusCreated {

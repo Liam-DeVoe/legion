@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's gated steps are the design-gate steps the Legion deployment that serves it gates,
@@ -40,7 +41,7 @@ type projectGatedSteps struct {
 // order it cannot keep, and the database's check admits it (it holds the shape, not the route's
 // input rules).
 //
-// The `decisions` step is gone (dispatch://INFRA-1150 R11, ruling F2), and a page of the release
+// The `decisions` step is gone, and a page of the release
 // before still sends it, so the write admits it and stores the list without it; a list of that
 // step alone is stored as [spec], so the publish gates the design still (gatedStepsWithout).
 
@@ -55,7 +56,7 @@ type projectGatedStepsInput struct {
 }
 
 // retiredDecisionsStep is the design-gate step the release before gated, a root issue's
-// decisions document. This build stores it nowhere (dispatch://INFRA-1150 R11).
+// decisions document. This build stores it nowhere.
 const retiredDecisionsStep = "decisions"
 
 // gatedStepsWithout is a list of gated steps without retiredDecisionsStep: the list the write
@@ -123,6 +124,18 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The project's owner lock before its row's update, as every projects writer takes them
+	// (createIssue, putProjectDefaultAssignee, lockEventOwner). Taking the row first and the lock
+	// at the append below waited, holding the row, on an issue create that holds the lock in its
+	// read phase and waits for the row to number the issue: the daemon publishes this list at
+	// every boot, beside the creates of the project's sessions, and Postgres broke that cycle by
+	// failing one of the two (`deadlock detected`, 500). The lock assigns no transaction id; the
+	// update is the first statement that writes, and one that finds the list unchanged writes
+	// nothing.
+	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(project.Key)); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.QueryRow(r.Context(), `
 		update projects set gated_steps = $2
 		where key = $1 and gated_steps is distinct from $2

@@ -106,6 +106,7 @@ func TestEveryStoreWriteTakesOneLockOrder(t *testing.T) {
 	t.Run("two writes of one node for one run name it once, ordered by its row", func(t *testing.T) {
 		requireOneChangedByRunBehindTheNodeRow(t, ctx, fixture)
 	})
+	storetest.RequireNoMarkedCause(t, fixture.database, "every write the lock order test committed")
 }
 
 // --- the fixture ------------------------------------------------------------------------
@@ -349,10 +350,14 @@ func waitForTheHolderItWaitsOn(
 func requireEachStepIsWaitedAt(t *testing.T, ctx context.Context, f *lockOrderFixture) {
 	t.Helper()
 	const (
-		ownerMarker      = "from issues where key = $1"
-		eventMarker      = "from projects where key = $1"
-		nodeMarker       = "insert into graph_nodes"
-		tupleMarker      = "insert into graph_tuples"
+		ownerMarker = "from issues where key = $1"
+		eventMarker = "from projects where key = $1"
+		nodeMarker  = "insert into graph_nodes"
+		// A write that wrote nodes appends its tuples in one statement with the base attributes
+		// of the nodes it made or moved and their move onto the cause (queueAppend), whose
+		// common table expressions come before its insert into graph_tuples. pg_stat_activity
+		// keeps only the head of so long a statement, so the step is told by that head.
+		tupleMarker      = "with written as ("
 		projectionMarker = "update comments set node_kind"
 	)
 	for _, step := range []struct {
@@ -707,14 +712,14 @@ const lockOrderFunction = "func (s *server) markInboxReadThreads("
 // of the owner row a run does not have. A write made for a run reads the changed_by_run its nodes
 // hold only behind the rows that order it (requireOneChangedByRunBehindTheNodeRow).
 var storeLockOrderClauses = []string{
-	"the owner row comes first, through ownerrowlock (owner.go) or lockartifactowner (docs/service.go)",
+	"the owner's lock comes first, through store.lockowner (store/ownerlock.go) or lockartifactowner (docs/service.go)",
 	"a node's graph_nodes row is written before any projection row whose foreign key names it",
 	"the event is appended before the tuples whose cause it is",
 	"a graph_nodes write touching several nodes takes them in ascending (kind, id)",
 	"a writer under the revision fence",
-	"takes the document's owner row, through lockartifactowner or events.lockownerrows, then the document's document_block_versions row `for no key update`",
+	"takes the document's owner lock, through lockartifactowner or events.lockownerrows, then the document's document_block_versions row `for no key update`",
 	"appending a tuple locks no row of another table",
-	"takes no owner row at all",
+	"takes no owner lock at all",
 	"a frame of a run takes the run's interaction graph_nodes row `for no key update` first",
 	"two writes of one node for one run are ordered by what each holds before it reads",
 }

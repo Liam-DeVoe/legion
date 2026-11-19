@@ -15,7 +15,7 @@ import (
 )
 
 // Every writer of an ask's answer state writes it on the ask's node first (asks.Settle), and the
-// asks row is the projection of what it wrote (dispatch://INFRA-1150 R3). After each writer the
+// asks row is the projection of what it wrote. After each writer the
 // node's answer_state, its answer's words, selection and time, its answered_by and decided_by, and
 // its resolution read what the row reads, the answer_state carrying the event that write appended
 // as its cause. The writers: the answer route, a change of the answer, the resolve route, the
@@ -76,7 +76,7 @@ func TestEveryWriterOfAnAnswerWritesItOnTheNode(t *testing.T) {
 	t.Run("settlement's retraction and restoration", func(t *testing.T) {
 		handler, database, documentService := blockAskHandlerWithDocuments(t)
 		issue, askID := seedBlockAsk(t, handler, "A block ask retracted and restored", "decision", transportAsk, "Which transport?")
-		removeBlockAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "decision")
+		removeBlockAsABrowserDoes(t, handler, documentService, issue.PrimaryArtifactID, "decision")
 		settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-delete")
 		requireTheAnswerOnTheNode(t, database, "settlement's retraction", askID, "ask.resolved")
 		if restored := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{

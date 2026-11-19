@@ -3,20 +3,23 @@ package graphcensus
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // blockProjections are the census's kinds of the document blocks (projections): a block against
 // its document_blocks row, the links out of a block against its block_refs rows, and the rank
 // and the text every block holds (dispatch://INFRA-1253/spec#b-r-one-tree), each against the
-// block's row, the document each block of an issue room is in against its issue_room_blocks
-// row (room_block), and who wrote each block whose node records its authors against the version
-// that first held it (block_author).
+// block's row, and the size every plan node holds against the opening line of its block's text,
+// the document each block of an issue room is in against its issue_room_blocks row (room_block),
+// and who wrote each block whose node records its authors against the version that first held it
+// (block_author).
 //
 // A row of an issue room is keyed by the room's tree artifact, and the document the block is in
 // is the one its issue_room_blocks row names (refs.BlockDocumentSQL), whose in_document the block
@@ -155,18 +158,47 @@ var blockProjections = []projection{{
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	emptyAgrees: true,
 }, {
+	name:     "block_size",
+	nodeKind: refs.BlockNodeKind,
+	table:    "document_block_texts",
+	note: "the size of every plan node of a document that owes no block index, a value no table projects: the row" +
+		" side is each document_blocks row that names its node, and the digest is the size the first line of its" +
+		" newest document_block_texts text writes (refs.WrittenSizeSQL, a plan_task's size attribute), or none," +
+		" against the size value its node holds now, so a plan node whose line writes a size its node does not" +
+		" hold, and a node holding a size its line does not write, are each a difference; a block of a document" +
+		" still owed its index, or of an issue room any artifact of which is, is on neither side, since the" +
+		" reconciliation writes its size, and a census of documents that all owe theirs reads none of this kind",
+	rows: `
+		select 'block_size ' || d.node_id, d.node_kind, d.node_address, md5(d.node_id || '|' || coalesce(` + refs.WrittenSizeSQL("d") + `, ''))
+		from document_blocks d
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
+	nodes: `
+		select n.id, md5(n.id || '|' || coalesce(` + currentValue(refs.AttributePlanSize) + `, ''))
+		from graph_nodes n
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
+	pastBound: `
+		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	emptyAgrees: true,
+}, {
 	name:     "room_block",
 	nodeKind: refs.BlockNodeKind,
 	table:    "issue_room_blocks",
 	note: "the document each block of an issue room is in, held triple by triple: each issue_room_blocks row is the" +
 		" in_document of the block its tree artifact and id name, to the node of the document it names, against every" +
 		" in_document a present block node of a tree artifact states now, so a row whose block states another document," +
-		" or none, and a block of a room no row names, are each a difference; a store that holds no tree reads none",
+		" or none, and a block of a room no row names, are each a difference; a row of a block whose id is past the" +
+		" block id bound, which the room records and which is no node, is past the bound; a room that owes its block" +
+		" index is on neither side, since the typed-node pass above the deferral bound records the document of each" +
+		" decision and reading it places before the reconciliation states its in_document; a store that holds no tree" +
+		" reads none",
 	// The rows are issue_room_blocks' alone, each with the node of the document_blocks row it
 	// projects beside, so a row whose block no document_blocks row holds names no node, and a
 	// document_blocks row of a tree no issue_room_blocks row names leaves its block's in_document a
 	// tuple no row projects. The tuple side reads the block nodes whose id starts with a tree
-	// artifact's ref_key, the part of a block node's id before its first '#'.
+	// artifact's ref_key, the part of a block node's id before its first '#'. A row of a block
+	// whose id is past text.MaxBlockIDBytes, which the room's index records with no document_blocks
+	// row (refs' reconcileRoomBlocks), projects no node, so it is counted past the bound with a row
+	// whose address is.
 	rows: `
 		select 'room_block ' || tree.ref_key || '#' || r.block_id, d.node_kind, d.node_address,
 		       '` + refs.TupleInDocument + `', '` + graphstore.KindArtifact + `', document.ref_key
@@ -174,7 +206,8 @@ var blockProjections = []projection{{
 		join artifacts tree on tree.id = r.tree_artifact_id
 		join artifacts document on document.id = r.document_id
 		left join document_blocks d on d.artifact_id = r.tree_artifact_id and d.block_id = r.block_id
-		where octet_length(tree.ref_key || '#' || r.block_id) <= ` + addressBound,
+		where octet_length(r.block_id) <= ` + blockIDBound + ` and octet_length(tree.ref_key || '#' || r.block_id) <= ` + addressBound + `
+		  and not ` + roomOwed("r.tree_artifact_id"),
 	tuples: `
 		select n.kind, n.id, held.kind, held.to_kind, held.to_id
 		from artifacts tree
@@ -188,9 +221,14 @@ var blockProjections = []projection{{
 	pastBound: `
 		select count(*) from issue_room_blocks r
 		join artifacts tree on tree.id = r.tree_artifact_id
-		where octet_length(tree.ref_key || '#' || r.block_id) > ` + addressBound,
+		where octet_length(r.block_id) > ` + blockIDBound + ` or octet_length(tree.ref_key || '#' || r.block_id) > ` + addressBound,
+	owed:        roomNodeOwed,
 	emptyAgrees: true,
 }, blockAuthorProjection}
+
+// blockIDBound is the bound past which a block id is no node of the store (text.MaxBlockIDBytes)
+// as a statement spells it, written into the text as addressBound is.
+var blockIDBound = strconv.Itoa(text.MaxBlockIDBytes)
 
 // outsideArtifact starts the part_of link the block kind reads an authored node's place by where
 // that place is no block of the node's own artifact, followed by that artifact's ref_key: the
@@ -380,11 +418,11 @@ const blockDrainKind = "block_index_drain"
 // own mark, document_block_versions.store_owed_at (migration 20261116221539), as the block pass
 // marks each document whose rows it names (writeBlockBatch), so the block-index reconciliation
 // (docs.Service.RunBlockIndexReconciliation) indexes each again, under the fence it already takes,
-// and gives every block an earlier build indexed what that build did not write: its rank, its text
-// and its placement, and, for a top-level block of an issue's spec, Verification or plan document,
-// its part_of to the issue (refs.IndexBlocks). That index writes no document_blocks row for a
-// block whose text is unchanged, so no block's changed_version and no document_block_texts row
-// moves for it.
+// and gives every block an earlier build indexed what that build did not write: its rank, its
+// text, its placement and, for a plan node whose opening line writes one, its size, and, for a
+// top-level block of an issue's spec, Verification or plan document, its part_of to the issue
+// (refs.IndexBlocks). That index writes no document_blocks row for a block whose text is
+// unchanged, so no block's changed_version and no document_block_texts row moves for it.
 //
 // The mark is not the null version refs.RebuildAll sets. A pod of the release before this one,
 // during a roll or after a rollback, reads a null version as its own debt: it indexes the

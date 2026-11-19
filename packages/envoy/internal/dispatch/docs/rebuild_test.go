@@ -247,6 +247,58 @@ func TestTheRebuildAStoredHistoryYgoRefusesIsOfferedRestoresTheDocument(t *testi
 	}
 }
 
+// A document of an issue room is rebuilt in its room (T12b of dispatch://INFRA-1253's plan): the
+// room's stored history, the one that does not load, is replaced by one seed holding the rebuilt
+// document's fragment from its latest version and every other document's fragment from its own,
+// nothing is stored under the document's own id, and once the rebuild commits the room loads and
+// each document reads its own text back.
+func TestRebuildingADocumentOfAnIssueRoomReplacesTheRoomsHistory(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	room := createIssueRoom(t, database, 1)
+	for document, markdown := range map[string]string{room.spec: "The spec words.\n", room.plan: planSeed} {
+		if _, err := database.Pool.Exec(ctx, `update artifact_versions set markdown = $2 where artifact_id = $1`, document, markdown); err != nil {
+			t.Fatalf("store the latest version of %s: %v", document, err)
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into doc_updates (artifact_id, version, update, content_changed) values ($1, 2, $2, true)
+	`, room.tree, refusedDeleteRangeUpdate(7, 1<<53, 2)); err != nil {
+		t.Fatalf("store the update an earlier release took: %v", err)
+	}
+	service := newSchemaRepairService(database)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown service: %v", err)
+		}
+	})
+	if _, err := service.Text(ctx, room.spec); !errors.Is(err, ErrDocumentUnloadable) {
+		t.Fatalf("read the spec over the room's history: %v, want ErrDocumentUnloadable", err)
+	}
+
+	report, written, err := rebuildDocument(t, service, room.spec, nil)
+	if err != nil {
+		t.Fatalf("rebuild the spec: %v", err)
+	}
+	if report.SourceVersion != 1 || report.RemovedUpdates != 2 || report.Head != 3 || written.Wrote {
+		t.Errorf("rebuild report = %#v (%#v), want source version 1, the room's 2 updates removed, head 3, no version", report, written)
+	}
+	if rows := roomUpdateCount(t, database, room.tree); rows != 1 {
+		t.Errorf("the issue room holds %d stored updates after the rebuild, want its one seed", rows)
+	}
+	if rows := roomUpdateCount(t, database, room.spec); rows != 0 {
+		t.Errorf("the spec's own id holds %d stored updates, want none: its history is the room's", rows)
+	}
+	for document, want := range map[string]string{room.spec: "The spec words.\n", room.plan: planSeed} {
+		if text, err := service.Text(ctx, document); err != nil || text != want {
+			t.Errorf("the text of %s after the rebuild is %q (%v), want %q, its latest version", document, text, err, want)
+		}
+	}
+	if err := service.warmLiveDocument(ctx, room.tree); err != nil {
+		t.Errorf("load the rebuilt issue room: %v", err)
+	}
+}
+
 // A resident room remains live even when no writer holds its advisory lock, so the server registry
 // refuses rebuilding it without changing durable history. The refusal names what a rebuild would
 // discard, names no other repair, and tells the caller to stop and ask a person.
@@ -604,9 +656,9 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 }
 
 // Two rebuilds of one document on two processes that each loaded the same history that cannot
-// load: both wait on the issue's row (lockArtifactOwner) until the test lets them go, so each
-// validated the old history before either replaces it. Exactly one replaces it; the other finds
-// the head moved under the document's lock (RebuildTx) and is refused as live, rather than
+// load: both wait on the issue's owner lock (lockArtifactOwner) until the test lets them go, so
+// each validated the old history before either replaces it. Exactly one replaces it; the other
+// finds the head moved under the document's lock (RebuildTx) and is refused as live, rather than
 // replacing the history the first had just rebuilt. That refusal names the saved version a
 // rebuild discards every edit after and tells the caller to stop and ask a person, rather than
 // to rebuild again.
@@ -623,13 +675,11 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	ctx := context.Background()
 	gate, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the issue's lock: %v", err)
+		t.Fatalf("begin the owner-locked transaction: %v", err)
 	}
 	defer gate.Rollback(ctx)
-	if _, err := gate.Exec(ctx, `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
-		t.Fatalf("lock the document's issue: %v", err)
+	if _, _, err := lockArtifactOwner(ctx, gate, artifactID); err != nil {
+		t.Fatalf("lock the document's owner: %v", err)
 	}
 	results := make(chan error, 2)
 	for _, service := range []*Service{taskA, taskB} {
@@ -641,10 +691,10 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 		}()
 	}
 	if waiting := storetest.WaitForLockWaiters(t, gate, 2, roomWait(t)); waiting < 2 {
-		t.Fatalf("%d of the two rebuilds reached the issue's row", waiting)
+		t.Fatalf("%d of the two rebuilds reached the issue's owner lock", waiting)
 	}
 	if err := gate.Rollback(ctx); err != nil {
-		t.Fatalf("release the issue's row: %v", err)
+		t.Fatalf("release the issue's owner lock: %v", err)
 	}
 	var succeeded int
 	var refusals []error

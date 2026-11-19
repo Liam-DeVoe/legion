@@ -404,6 +404,10 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   it sends nothing when only gh's help or `gh --version` alone runs;
   it fails closed, refusing with exit 2 and naming the argument, and sending nothing, a command it cannot read for certain (an option the leaf's help does not list or names a repository with in a way it does not know, a subcommand gh does not know, a first word gh's own help does not list, anything before the command other than -R or --help, an argument the leaf's usage has no place for or names in a way it does not know, a search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot`, `gh extension exec`), one whose repositories route to two directories of the bundle (two owners' repositories, an option or another repository naming one owner while gh acts on another's repository among them, or a repository a configured rename moved beside another of the owner it moved from; each repository is routed on its own, so a moved repository named by both of its names is one directory), one naming an owner the bundle holds no directory for, every command run where PATH's first gh is not Legion's wrapper (a script that execs `legion gh` by its absolute path), and every command under a GH_HOST other than github.com or a set GH_TOKEN or GITHUB_TOKEN (docs/deployment.md "What a pane's gh, git and jj are");
 
+  - it never runs itself as the real gh: a LEGION_GH_PATH that is not an absolute path, that is the wrapper first on PATH, or that is another script of the wrapper's form, is refused with exit 2 before anything runs, and every real gh it runs, for a help read or the call, carries LEGION_GH_RUN_BY_REAL_GH, under which a `legion gh` refuses with exit 2 and runs nothing once `auth git-credential` and the shared check's read are answered;
+    the leak guard blanks that variable for every child it runs, so the visibility reads of a push a real gh makes (`gh repo create --source=. --push`, whose pre-push hook inherits it) reach the real gh, which carries it again;
+    its help read runs in a process group of its own, which a read past its timeout stops whole, and a SIGINT, SIGTERM or SIGHUP that comes before the real gh starts stops that group and the leak guard's children (the shared check and the visibility reads, each in a group of its own) whole and ends `legion gh` with 128+the signal
+
   - under a set GH_TOKEN or GITHUB_TOKEN it runs only the guard's own visibility reads (REST and GraphQL, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names) with that token (`ghVisibilityRead`), the shared check's own visibility read, the exact `gh api rate_limit` and `gh auth git-credential`, and refuses every other call
 
 - `legion gh`'s visibility guard, rate-limit wait and call log
@@ -507,7 +511,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   - a release build links a `@sjawhar/pi-legion`/`@sjawhar/pi-envoy` pair into the binary, so its `version` prints a second line, `plugins @sjawhar/pi-legion <v> @sjawhar/pi-envoy <v>` (docs/kubernetes.md "Contract discipline")
 
-  - its `workspace-init` is an issue pod's two init containers, three where the deployment names a `skills_repository` (`workspace-init skills --repo <owner>/<repo> --dir <dir>`, which clones that marketplace into the pod's skills volume)
+  - its `workspace-init` is an issue pod's two init containers
     — `workspace-init fetch --repo <owner>/<repo> --feed <dir> [--cache-url http://<cache>:8418]` fills the pod's feed on the pod's own disk:
     a fresh feed from the repository's cache alone (`--cache-url`, which defaults to LEGION_REPOSITORY_CACHE_URL, presenting the token LEGION_REPOSITORY_CACHE_TOKEN_FILE holds with its request for the tar alone;
     the runtime sets both on every issue pod, once the cache's Service is the cache's own), waiting for the cache to be ready, refusing one that names another repository or streams a pack, or a pack index, whose checksums do not hold or a history that is not whole (it takes the index the cache streams with each pack rather than building it again, which costs minutes of a pod's CPU per gigabyte), then fetching from GitHub, by exact name, the default branch GitHub names and the one the daemon recorded for the issue (LEGION_DEFAULT_BRANCH, while GitHub has it), and `refs/heads/legion/*`, after deleting every other branch of the feed that is not exactly GitHub's tip, so every branch it holds is GitHub's or absent, and a feed the disk already holds
@@ -1053,7 +1057,6 @@ issue-update`.
 A person's `legion` label on an unrecorded root in `triage` is queued by the daemon: the daemon writes the root's `todo` through its outbox (a `dispatch_status` row marked a person's handover), and no agent's write admits it.
 A session's label on such a root wakes the controller with `triage`, and the daemon writes nothing for it.
 A person's approval of the primary document of a parked (`backlog` or `icebox`) labelled root with no parent and no live tree is queued by the daemon the same way, which re-admits a root that ran before as a new generation.
-A carried approval (the review Dispatch writes in the person's name, with a reason that begins `Carried forward from the approval of version`, when a later version's text is the text they approved, or when that version differs from it only in what Dispatch carries an approval over: the readings of its decisions and answered asks, the server-owned attributes of its ask blocks, the ask blocks and `## Decisions` heading the decisions step's restore writes, or the `decision` blocks, readings and `shaped` pointers that step's conversion writes) queues nothing.
 Each such write holds only while the status it answered and the label still stand when it is delivered.
 A recorded root a person moved back to `triage` is never queued again.
 The controller starts no other work on its own:
@@ -1182,7 +1185,7 @@ for a wait on the gate that open gate is the backstop of the act that opened it:
 A wait on the gate when the operator empties `gates.design` is decided on the next admission pass, since with no step gated no approval request is with the person:
 it moves to a tree question still with the person, or is answered, and the architect resumes to register its spec, which opens the gate.
 A close of an item of the wait — a tree question, or an approval request of the closed gate's document
-— by anyone who is not a person — Dispatch's settlement retracting it once its ask block has left the spec, or a session closing it
+— by anyone who is not a person — Dispatch's settlement retracting it once its decision block has left the spec, or a session closing it
 — moves the wait to what is still with the person, and ends it only when nothing is;
 so does a session's reply that hands the last item still with the person back to the agent's turn.
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
@@ -1212,7 +1215,6 @@ A boot releases the ones parked before, one release for each issue of its listin
 The boot's pass makes no operator test of its own, so it queues a row for such a tree too, and the executor ends that row when it runs, on the reading current then.
 A person's spec decision on it (an approval, a changes request, or an approval carried to a child's new tree) that the daemon could not deliver to its architect, and a person's answer, resolution or reply on an ask of its issues (one that gives the turn to the agent, or one under a closed ask), goes to the controller as `parked-decision`, once per decision.
 One approval is not relayed: a person's approval of the primary document of a parked root that carries the `legion` label, keeps no Dispatch parent and whose tree is not live is that person's handover, which the daemon queues itself (`todo`, logged `admission: queued a person's handover` with `source=approval`), whoever parked the root, and no `parked-decision` is sent for it.
-A carried approval, the review Dispatch writes in the person's name with a reason that begins `Carried forward from the approval of version` (in the cases **Handover** lists), is no such handover and is relayed as any other approval.
 The daemon keeps the newest decision per Dispatch reference, under the issue it was decided on, never under a root: the tree that owes the person an answer is the tree that issue stands in now, so a child a linger hands to Legion, a parked child a person's todo orphans, a grandchild handed over beside its parent and a queued root admission adopts into a live tree each take what was decided on them with them, in any order, with nothing to move.
 That tree's next architect start names each one: admission's start task, or the catch-up of a later launch (a `legion claims retry` relaunch), with both spec versions when the approved one is no longer the current one.
 Each kept decision is claimed by the one start or catch-up that names it, in the transaction that queues it, and a start whose task the architect's claim queues leaves it to that delivery, which holds it until the turn that takes the task starts: the write recording that confirmation is what tells it, and a published catch-up tells what it named itself.
@@ -1234,15 +1236,11 @@ The walk also sets the root of the controller's own hold back to `todo` when its
 The machinery's notices to a stopped tree (a child's status or close, a dead worker) stay dropped.
 
 **Gate:** the design gate is the list of steps `gates.design` names in `legion.yaml`, each step one document of the root issue a human approves at a version in Dispatch:
-`criteria` its Verification document, `spec` its primary document.
-A list naming `decisions` is refused at load: that step is gone, since decisions are nodes of the spec, which the `spec` step holds.
 The default is the single step `spec`, which the word `root-issues` also means, and the empty list, which the word `off` also means, gates nothing.
 The daemon keeps one gate record per step, and every configured step holds the tree's work, the merger's start and the start of a released child until a person approves that step's document.
-Once the spec's ask blocks are settled and the human has agreed to every point in it, the architect requests the approval with `dispatch request-approval` and a summary of what the human is approving, and registers the step, the document id and the version with the daemon, and the daemon opens that step on the `artifact.approved` event for that document at its current version
+Once the spec's decision blocks are settled and the human has agreed to every point in it, the architect requests the approval with `dispatch request-approval` and a summary of what the human is approving, and registers the step, the document id and the version with the daemon, and the daemon opens that step on the `artifact.approved` event for that document at its current version
 — or at registration itself, when Dispatch already shows the human approved that version before the architect registered (the daemon reads the approval; it never writes one).
 One request with `--include-verification` covers the spec and the Verification document, so it opens the `criteria` and the `spec` step together, each registered on its own document.
-A later version of a step's document closes that step until someone approves the new version, and a `changes_requested` review closes it with the reviewer's reason.
-A person's answer to an ask block writes no version, so it neither closes a step nor approves one.
 
 register_gate takes the step the document is for, and refuses a call that names none where the deployment gates more than one step (`GATE_STEP_REQUIRED`, 400), a step the deployment does not gate (`GATE_STEP_NOT_CONFIGURED`, 409) and a document that is not that step's document of that issue (`GATE_STEP_DOCUMENT_MISMATCH`, 409).
 It reads the issue's Dispatch event sequence, then the document's approval, and refuses a version above the latest one Dispatch shows (`VERSION_NOT_IN_DISPATCH`), since no person's review could open a gate on a version Dispatch never wrote;

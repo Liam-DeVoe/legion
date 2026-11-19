@@ -179,15 +179,15 @@ test("a decision waiting for the reader's review is open and a settled one is no
       node(
         "spec#b-q1",
         "ask",
-        [node("decisions-md#b-d1", "decision", [], { state: "waiting_review", waiting: true })],
+        [node("spec#b-d1", "decision", [], { state: "waiting_review", waiting: true })],
         { state: "answered" }
       ),
-      node("spec#b-q2", "ask", [node("decisions-md#b-d2", "decision", [], { state: "kept" })], {
+      node("spec#b-q2", "ask", [node("spec#b-d2", "decision", [], { state: "kept" })], {
         state: "answered",
       }),
     ])
   );
-  expect(idsOf(rows)).toEqual(["CORE-1", "spec#b-q1", "decisions-md#b-d1", "spec#b-q2"]);
+  expect(idsOf(rows)).toEqual(["CORE-1", "spec#b-q1", "spec#b-d1", "spec#b-q2"]);
   const settled = rowOf(rows, "spec#b-q2");
   expect(settled?.kind === "node" ? settled.folded : undefined).toBe(1);
 });
@@ -307,17 +307,17 @@ test("a branch the reader opens stays open though nothing in it is open", () => 
 
 test("a replaced decision folds to one line with a count, and is not deleted", () => {
   const root = node("CORE-1", "issue", [
-    node("decisions-md#b-d1", "decision", [node("question", "ask", [], { question: true })], {
+    node("spec#b-d1", "decision", [node("question", "ask", [], { question: true })], {
       replaced: true,
     }),
   ]);
   const rows = treeRows(root);
-  const replaced = rowOf(rows, "decisions-md#b-d1");
+  const replaced = rowOf(rows, "spec#b-d1");
   expect(replaced?.kind === "node" ? replaced.folded : undefined).toBe(1);
   expect(idsOf(rows)).not.toContain("question");
   // The reader opens it by hand and it is all there.
   const opened = treeRows(root, {
-    branches: new Set(["decisions-md#b-d1"]),
+    branches: new Set(["spec#b-d1"]),
     closed: new Set(),
     deeper: new Set(),
   });

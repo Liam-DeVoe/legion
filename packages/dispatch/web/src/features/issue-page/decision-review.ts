@@ -34,7 +34,11 @@ export type ChangeComment = Pick<Comment, "author" | "body" | "created_at" | "id
  * person's review - neither kept as it reads now nor replaced, which is the server's
  * `waiting_review` - that a link ties to a statement of this issue, and that the reader has not
  * asked to change since it last changed (`changed`).
- * `isStatement` answers whether an address names a statement.
+ * `isCoverageStatement` answers whether an address names a statement as the list reads one, a
+ * requirement the coverage read holds, not the rows' `isStatement` (`issue-tree.ts`): the
+ * outline's `draftDecision` (`tree-read/tree-nodes.ts`) and the header's count
+ * (`IssuePropertiesRow.tsx`, through `waitingOnReader`) each pass
+ * `coverageStatements(issue, coverage)` (`tree-drafts.ts`).
  *
  * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
  * filter's "to review" signal and the node's own `waiting` read it too and cannot disagree with
@@ -42,13 +46,15 @@ export type ChangeComment = Pick<Comment, "author" | "body" | "created_at" | "id
  */
 export function inReviewList(
   decision: Pick<DecisionNode, "links" | "waiting_review">,
-  isStatement: (reference: string) => boolean,
+  isCoverageStatement: (reference: string) => boolean,
   changed = false
 ): boolean {
   return (
     !changed &&
     decision.waiting_review &&
-    (decision.links ?? []).some((link) => link.to.ref !== undefined && isStatement(link.to.ref))
+    (decision.links ?? []).some(
+      (link) => link.to.ref !== undefined && isCoverageStatement(link.to.ref)
+    )
   );
 }
 

@@ -6,6 +6,7 @@ import { type ReactNode, useEffect, useMemo } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
+import { issueTreeKey } from "../../../api/queries";
 import type { Actor, DecisionKeep } from "../../../api/types";
 import {
   pageFocusedRow,
@@ -35,7 +36,6 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import {
-  issueTreeKey,
   issueTreeQuery,
   subscribeTreeFreshness,
   type TreeAnswer,

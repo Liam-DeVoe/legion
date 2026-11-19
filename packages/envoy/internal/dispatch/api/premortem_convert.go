@@ -109,11 +109,15 @@ type PremortemRisk struct {
 // PremortemMapError is a map the conversion refuses, naming the entry: its position in the map,
 // from 1, and the risk it names, or, with Entry 0, the risk the document holds that no entry names.
 // The route answers it 400 ARTIFACT_INPUT, and the command names the line of its file that entry
-// came from.
+// came from. An entry naming a check of another project than the issue's is refused by the store's
+// rule (graphstore's pointerRules) once the conversion writes: refusal is that refusal, naming the
+// check, which Problem words and the error wraps, so the route answers it 400 INVALID_POINTER; it
+// is nil for every other refusal.
 type PremortemMapError struct {
 	Entry   int
 	Risk    int
 	Problem string
+	refusal error
 }
 
 func (e *PremortemMapError) Error() string {
@@ -122,6 +126,8 @@ func (e *PremortemMapError) Error() string {
 	}
 	return fmt.Sprintf("prevented_by entry %d (risk %d): %s", e.Entry, e.Risk, e.Problem)
 }
+
+func (e *PremortemMapError) Unwrap() error { return e.refusal }
 
 // PremortemDocumentError is a document the conversion cannot read as a pre-mortem: no document of
 // the issue at that slug (Missing), a file that holds no markdown, or markdown that lacks a section
@@ -448,10 +454,12 @@ type premortemCheck struct {
 	end  storedEnd
 }
 
-// premortemPrevention is the checks one entry of the map names, resolved.
+// premortemPrevention is the checks one entry of the map names, resolved, and the entry's position
+// in the map, from 1.
 type premortemPrevention struct {
-	entry  PremortemEntry
-	checks []premortemCheck
+	entry    PremortemEntry
+	position int
+	checks   []premortemCheck
 }
 
 // checkPremortemMap holds the map to the document and resolves the checks it names, read for who:
@@ -459,14 +467,14 @@ type premortemPrevention struct {
 // with check addresses each named once, each a check block that is not gone and that who may see
 // (premortemChecks). The first entry that breaks one of those, in the map's order, is refused, and
 // then the first risk no entry names; each is a PremortemMapError. It answers each entry by its
-// risk's number.
+// risk's number. That each check stands in the issue's project is the store's rule, which the
+// write holds (refusedPrevention).
 func checkPremortemMap(ctx context.Context, q refs.Queryer, who model.Actor, document premortem, entries []PremortemEntry) (map[int]premortemPrevention, error) {
 	checks, err := premortemChecks(ctx, q, who, entries)
 	if err != nil {
 		return nil, err
 	}
 	resolved := make(map[int]premortemPrevention, len(entries))
-	positions := make(map[int]int, len(entries))
 	for index, entry := range entries {
 		refused := func(format string, args ...any) error {
 			return &PremortemMapError{Entry: index + 1, Risk: entry.Risk, Problem: fmt.Sprintf(format, args...)}
@@ -485,11 +493,10 @@ func checkPremortemMap(ctx context.Context, q refs.Queryer, who model.Actor, doc
 		if _, held := document.risk(entry.Risk); !held {
 			return nil, refused("the document holds no risk %d: it holds risks %s", entry.Risk, document.held())
 		}
-		if first, named := positions[entry.Risk]; named {
-			return nil, refused("risk %d has an entry already, entry %d: a risk takes one entry", entry.Risk, first)
+		if first, named := resolved[entry.Risk]; named {
+			return nil, refused("risk %d has an entry already, entry %d: a risk takes one entry", entry.Risk, first.position)
 		}
-		positions[entry.Risk] = index + 1
-		prevention := premortemPrevention{entry: entry}
+		prevention := premortemPrevention{entry: entry, position: index + 1}
 		for _, address := range entry.Checks {
 			check, found := checks[address]
 			if !found {
@@ -511,13 +518,18 @@ func checkPremortemMap(ctx context.Context, q refs.Queryer, who model.Actor, doc
 // premortemChecks is each check block the addresses of entries name, by its address, read through
 // the read registry with who's visibility (decodeNodeAddress, then refs.Nodes), as the lens read
 // reads its node: a block of any issue's document, since a risk of one issue may be prevented by
-// a check of another. Every address is read at once, in one read of the registry and one read of
-// the blocks' types, however many entries name it. An address that decodes to no document block,
-// a block no current version holds, one who may not see, one that is gone and one that is no check
-// are all absent, alike, so the answer tells nothing of a node who may not see.
+// a check of another; that the check stands in the risk's project is the store's to hold when the
+// conversion writes (refusedPrevention), as it holds the pointer route's. Each address is the
+// node it resolves to (refs.ResolveFarEnds: its moved_to tuples first, then its document's room,
+// then itself), as the pointer route reads one (resolvedNodeAddress), so a check of an issue born
+// converted, written at its document's own address, is its room's node. Every address is read at
+// once, in one resolution, one read of the registry and one read of the blocks' types, however
+// many entries name it. An address that decodes to no document block, a block no current version
+// holds, one who may not see, one that is gone and one that is no check are all absent, alike, so
+// the answer tells nothing of a node who may not see.
 func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entries []PremortemEntry) (map[string]premortemCheck, error) {
 	named := map[string]refs.Target{}
-	var targets []refs.Target
+	var addresses []string
 	for _, entry := range entries {
 		for _, address := range entry.Checks {
 			if _, read := named[address]; read {
@@ -527,16 +539,27 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 			if !ok || kind != refs.BlockNodeKind {
 				continue
 			}
-			target := refs.Target{Kind: kind, ID: id}
-			named[address] = target
-			if !slices.Contains(targets, target) {
-				targets = append(targets, target)
-			}
+			named[address] = refs.Target{Kind: kind, ID: id}
+			addresses = append(addresses, id)
 		}
 	}
 	checks := make(map[string]premortemCheck, len(named))
-	if len(targets) == 0 {
+	if len(named) == 0 {
 		return checks, nil
+	}
+	resolved, err := refs.ResolveFarEnds(ctx, q, addresses)
+	if err != nil {
+		return nil, err
+	}
+	var targets []refs.Target
+	for address, target := range named {
+		if node, moved := resolved[target.ID]; moved {
+			target.ID = node
+			named[address] = target
+		}
+		if !slices.Contains(targets, target) {
+			targets = append(targets, target)
+		}
 	}
 	nodes, err := refs.Nodes(ctx, q, who, true, targets)
 	if err != nil {
@@ -569,7 +592,7 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 // the write records (reasoningWrite): it is the one conversion, which the route and the command
 // both run.
 //
-// It takes the issue's row `for no key update` first, the owner row the lock order on
+// It takes the issue's owner lock first (store.LockOwner), the lock the lock order on
 // api/inbox_read.go's markInboxReadThreads puts before every other, so two conversions of one
 // issue queue there and the second reads what the first wrote. It reads the document's newest
 // version. A document whose address carries a moved_to tuple already is converted: the call
@@ -589,14 +612,18 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 //
 // A map the document refuses is a PremortemMapError, and a document that is none, no pre-mortem,
 // or retired by anything but a conversion a PremortemDocumentError; each is refused before
-// anything is written.
+// anything is written. An entry naming a check of another project than the issue's is refused by
+// the store's rule as the write runs, in a dry run as in a real one, and answered as the
+// PremortemMapError of that entry, wrapping the store's graphstore.ErrInvalidPointer
+// (refusedPrevention); the write it refused is the savepoint's, rolled back, or tx's, which the
+// caller rolls back on that error, so nothing of it remains.
 func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Actor, key, slug string, entries []PremortemEntry, dryRun bool) (PremortemReport, []model.Event, error) {
-	_, _, err := issueStatus(ctx, tx, key, ownerRowLock)
+	_, _, err := issueStatus(ctx, key, lockedOwnerRead(tx))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PremortemReport{}, nil, &PremortemDocumentError{Missing: true, Problem: fmt.Sprintf("no issue %s holds a document %q", key, slug)}
 	}
 	if err != nil {
-		return PremortemReport{}, nil, fmt.Errorf("take the row of the issue %s: %w", key, err)
+		return PremortemReport{}, nil, fmt.Errorf("take the owner lock of the issue %s: %w", key, err)
 	}
 	source, err := readPremortemSource(ctx, tx, key, slug)
 	if err != nil {
@@ -699,7 +726,7 @@ func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Ac
 			err = fmt.Errorf("roll the dry run back: %w", rollback)
 		}
 		if err != nil {
-			return PremortemReport{}, nil, err
+			return PremortemReport{}, nil, refusedPrevention(err, document, preventions)
 		}
 		report.Summary = fmt.Sprintf("Dry run, nothing written: converting %s (version %d) writes one pre-mortem lens "+
 			"under %s with %d risks, retires the document and moves its address to that lens.",
@@ -708,7 +735,7 @@ func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Ac
 	}
 	retired, err := convert(tx)
 	if err != nil {
-		return PremortemReport{}, nil, err
+		return PremortemReport{}, nil, refusedPrevention(err, document, preventions)
 	}
 	report.Lens.Address, report.Document.MovedTo = &lens, &lens
 	report.Summary = fmt.Sprintf("Converted %s (version %d) into the pre-mortem lens %s under %s, with %d risks; "+
@@ -737,6 +764,24 @@ func retireConvertedDocument(ctx context.Context, tx pgx.Tx, source premortemSou
 		return model.Event{}, fmt.Errorf("retire %s: %w", source.address, err)
 	}
 	return retirement.Event, nil
+}
+
+// refusedPrevention is err as the entry of the map it refuses, where err is the store's refusal of
+// a risk's prevented_by at a check of another project than the risk's (graphstore's pointerRules):
+// the PremortemMapError of the entry of the first risk, in the order the conversion writes them,
+// whose entry names that check - the store holds a write's tuples in its order and refuses the
+// first that breaks its rule - wrapping the refusal with the check named by its address
+// (farEndNamed). Any other err it answers as it is.
+func refusedPrevention(err error, document premortem, preventions map[int]premortemPrevention) error {
+	for _, risk := range document.risks {
+		prevention := preventions[risk.number]
+		for _, check := range prevention.checks {
+			if refusal, named := farEndNamed(err, check.end, check.node); named {
+				return &PremortemMapError{Entry: prevention.position, Risk: risk.number, Problem: refusal.Error(), refusal: refusal}
+			}
+		}
+	}
+	return err
 }
 
 // --- POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert ------------------------------
@@ -819,11 +864,13 @@ func decodePremortemEntries(raw json.RawMessage) ([]PremortemEntry, string) {
 // transaction, as the credential that proved the caller, answering the report and publishing the
 // document.retired event of the retirement once the transaction commits. A body that is not JSON
 // is decodeJSON's 400 INVALID_JSON; a map of any other shape, and a map the document refuses, are
-// 400 ARTIFACT_INPUT naming the entry by its position and its risk, or the risk no entry names; no
-// document {slug} of the issue is 404 ARTIFACT_NOT_FOUND, and a document that is no pre-mortem, or
-// that something other than a conversion retired, 400 ARTIFACT_INPUT. Each writes nothing. A
-// document converted already answers 200 naming its lens and writes nothing, and so does a dry
-// run, naming what it would write.
+// 400 ARTIFACT_INPUT naming the entry by its position and its risk, or the risk no entry names; an
+// entry naming a check of another project is the store's 400 INVALID_POINTER, naming the entry,
+// its risk and the check, in a dry run as in a real one; no document {slug} of the issue is 404
+// ARTIFACT_NOT_FOUND, and a document that is no pre-mortem, or that something other than a
+// conversion retired, 400 ARTIFACT_INPUT. Each writes nothing. A document converted already
+// answers 200 naming its lens and writes nothing, and so does a dry run, naming what it would
+// write.
 func (s *server) convertPremortemRoute(w http.ResponseWriter, r *http.Request) {
 	var input premortemConvertInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -850,6 +897,9 @@ func (s *server) convertPremortemRoute(w http.ResponseWriter, r *http.Request) {
 	var refusedMap *PremortemMapError
 	var refusedDocument *PremortemDocumentError
 	switch {
+	case errors.As(err, &refusedMap) && errors.Is(err, graphstore.ErrInvalidPointer):
+		writeError(w, codeInvalidPointer, http.StatusBadRequest, refusedMap.Error())
+		return
 	case errors.As(err, &refusedMap):
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, refusedMap.Error())
 		return

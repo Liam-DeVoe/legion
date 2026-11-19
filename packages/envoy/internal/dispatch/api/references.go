@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -24,20 +25,23 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// indexAskParts is refs.IndexAskPartsCounted for a write that holds the ask's parts alone: the
-// parts of the ask this write just wrote - its question, its options and its answer - indexed in
-// the same transaction through a reader of their own (refs.NewReader), written at `at`, with
-// what they moved merged into beside, the counted changes the same write already holds, so the
-// event it appends names them all. A write that reconciles the ask's question as well builds the
-// one reader itself and passes it to both (refs.ReplaceCounted, refs.IndexAskPartsCounted).
-func (s *server) indexAskParts(
+// queueAskParts is docs.Ledger.QueueAskParts bound to this server's URL: the parts of the ask
+// this write just wrote - its question, its options and its answer - planned in the read phase
+// and queued in the transaction's write phase, written at `at`, with what they moved merged
+// into beside, the counted changes the same write already holds, so the event it appends names
+// them all. The parts are read with the whole grammar, through a reader of their own
+// (refs.NewReaderInScope), which the ledger builds. document is the one the parts' `#id`s
+// resolve against for an ask whose insert this transaction has queued
+// (refs.PendingAskDocument), nil for an ask already stored, whose row ScopeOf reads.
+func (s *server) queueAskParts(
 	ctx context.Context,
-	tx pgx.Tx,
+	ledger *docs.Ledger,
 	ask model.Ask,
+	document *refs.PendingDocument,
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, beside)
+	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, at, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
@@ -51,9 +55,11 @@ const referencesSinceWait = time.Second
 // at the node (backlinks), ?from= every edge it writes; exactly one is required. ?kind= narrows
 // edge types and ?since= keeps mentions introduced after an events.id, which excludes
 // structural edges. Cross-project by design: no project filter. A block reference names a
-// block node carrying its whole current text; one pinned to a version of its document, or a
-// revision of its ask's parts or of its comment, also reads the block as that version or revision
-// recorded it (blockReferenceNode, itemBlockReferenceNode). A finding of a lens
+// block node carrying its whole current text, the node its address resolves to (its moved_to
+// tuples first, then its document's room, then itself), and lists the edges at the address and at
+// that node (referenceEdges); one pinned to a version of its document, or a revision of its ask's
+// parts or of its comment, also reads the block as that version or revision recorded it
+// (blockReferenceNode, itemBlockReferenceNode). A finding of a lens
 // (`dispatch://lens/<uuid>#b-<id>`) is the registry's lens_block node, read as a lens, a risk or a
 // constraint is (refs.Node). A document's address that moved to a lens - the pre-mortem
 // conversion retires a document and moves its address to the lens it writes in its place - answers
@@ -165,24 +171,57 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			}
 			query.Through = &safe
 		}
-		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, who, query)
+		edges, err = s.referenceEdges(r.Context(), who, query, node)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
 	answerIssueWaitsAsNeeds(edges)
-	if query.Direction == "in" {
-		if err := s.documentMentionExcerpts(r.Context(), who, query, edges); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
 	answer.Node.shape(reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// referenceEdges is the edges the read of query lists beside node, the node it answers: the edges
+// at the address the query names, each document mention with its stored excerpt
+// (documentMentionExcerpts), and, where that address is a block's that resolves to another node
+// (resolvedBlockNode), the edges at that node too. So the read of a block that moved lists the
+// citations of its old address and the links into the block where it stands now, and the read of
+// a block of a document converted into its issue's room, at the document's own address, lists the
+// mentions written at that address and the links the block index wrote at the room's node, which
+// is where it writes a pointer's (T17 of this branch's plan). Each list is in the read's order,
+// newest first, and the two are merged by time, a tie taking the address's edge first.
+func (s *server) referenceEdges(ctx context.Context, who model.Actor, query refs.Query, node model.GraphNode) ([]model.GraphEdge, error) {
+	pool := s.deps.Store.Pool
+	read := func(query refs.Query) ([]model.GraphEdge, error) {
+		edges, err := refs.Edges(ctx, pool, who, query)
+		if err != nil || query.Direction != "in" {
+			return edges, err
+		}
+		return edges, s.documentMentionExcerpts(ctx, who, query, edges)
+	}
+	edges, err := read(query)
+	if err != nil || query.Kind != refs.BlockNodeKind || node.Kind != refs.BlockNodeKind || node.ID == query.ID {
+		return edges, err
+	}
+	at := query
+	at.ID = node.ID
+	resolved, err := read(at)
+	if err != nil || len(resolved) == 0 {
+		return edges, err
+	}
+	merged := make([]model.GraphEdge, 0, len(edges)+len(resolved))
+	for len(edges) > 0 || len(resolved) > 0 {
+		if len(edges) == 0 || len(resolved) > 0 && resolved[0].CreatedAt.After(edges[0].CreatedAt) {
+			merged, resolved = append(merged, resolved[0]), resolved[1:]
+			continue
+		}
+		merged, edges = append(merged, edges[0]), edges[1:]
+	}
+	return merged, nil
 }
 
 // wholeReference is ref with its item id, or its block id, written whole where the request
@@ -335,15 +374,18 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 }
 
 // blockReferenceNode is the block node ref names (query addresses it), with its whole current
-// text. A block no current version of its document holds is the block its moved_to tuples reach
-// (movedBlockNode), and answers 404 where they reach none, unless ref is pinned to a version N
-// that held it: the node then carries what N recorded (model.BlockPin), "unchanged"
-// or "changed" by comparing the current text with N's, or "removed" with the version that deleted
-// it, as a node with no text or changed version whose facts are a removed block's
-// (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
-// a version the document lacks, to one whose blocks are not on record (an older build wrote it and
-// none indexed it) or to one that did not hold the block answers 404, each saying which. A block
-// who may not see answers, pinned or not, what an address nobody holds answers (refs/visibility.go).
+// text. Unpinned, it is the block the address resolves to (resolvedBlockNode: its moved_to tuples
+// first, then its document's room, then itself), and answers 404 where it resolves to none.
+// Pinned to a version N that held the block, the node is the one the address names
+// (refs.NamedBlock: the block it resolves to, or where none stands now the node the same two steps
+// name, the room's node for a block of a document converted into its issue's room), and it carries
+// what N recorded (model.BlockPin), "unchanged" or "changed" by comparing the current text with
+// N's, or "removed" with the version that deleted it, as a node with no text or changed version
+// whose facts are a removed block's (refs.RemovedBlockNode); a pin to a current block carries the
+// current block's facts. A pin to a version the document lacks, to one whose blocks are not on
+// record (an older build wrote it and none indexed it) or to one that did not hold the block
+// answers 404, each saying which. A block who may not see answers, pinned or not, what an address
+// nobody holds answers (refs/visibility.go), its predicate read at the node the address names.
 func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
@@ -354,16 +396,16 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	if !found {
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", documentKey)
 	}
-	node, current, err := refs.Node(ctx, pool, who, "block", query.ID, true)
+	if ref.Pin == 0 {
+		return s.resolvedBlockNode(ctx, who, query.ID, ref, document)
+	}
+	named, err := refs.NamedBlock(ctx, pool, query.ID)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
-	if ref.Pin == 0 {
-		if !current {
-			return s.movedBlockNode(ctx, who, query.ID, ref, document)
-		}
-		node.Text, err = refs.CurrentBlockText(ctx, pool, document.ID, ref.Block)
-		return node, err
+	node, current, err := refs.Node(ctx, pool, who, "block", named, true)
+	if err != nil {
+		return model.GraphNode{}, err
 	}
 	at, err := refs.BlockTextAt(ctx, pool, document.ID, ref.Block, ref.Pin)
 	if err != nil {
@@ -378,8 +420,8 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	hidden := false
 	if !current && at.Text != nil {
 		if err := pool.QueryRow(ctx, `select not `+refs.VisibleKind("block", "$1", "$2"),
-			query.ID, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
-			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", query.ID, err)
+			named, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
+			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", named, err)
 		}
 	}
 	switch {
@@ -396,7 +438,7 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	pin := &model.BlockPin{Version: ref.Pin, Ref: blockRef + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
 		pin.State, pin.RemovedVersion = "removed", at.RemovedVersion
-		removed, err := refs.RemovedBlockNode(ctx, pool, document, query.ID, ref.Block, at.RemovedVersion)
+		removed, err := refs.RemovedBlockNode(ctx, pool, document, named, ref.Block, at.RemovedVersion)
 		if err != nil {
 			return model.GraphNode{}, err
 		}
@@ -414,14 +456,19 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	return node, nil
 }
 
-// movedBlockNode is the block an address no current version holds moved to (dispatch://INFRA-1150
-// R8): the block the address's moved_to tuples reach (graphstore.MovedTo), named by its own
-// address and carrying its whole current text, so a citation written before the block moved reads
-// the block where it stands now. Where no move reaches a block, and where who may not see the
-// block one reaches, it answers the 404 of a block no current version holds, naming the address
-// asked, so a move says nothing of a block the reader may not see. The edges the read lists beside
-// it are those at the address asked: the citations of that address.
-func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
+// resolvedBlockNode is the block an address resolves to (graphstore.MovedTo: the far end of its
+// moved_to tuples first, then the same block id in its document's room, then the address itself),
+// named by its own address and carrying its whole current text: so a citation written before the
+// block moved reads the block where it stands now, and a citation of a block of a document
+// converted into its issue's room, at the document's own address, reads the room's node. A chain
+// that ends at an ask - the heading of a decisions document's section that cites an answered ask a
+// person removed from its spec - answers that ask's own node, as a reference of the ask's address
+// reads it, which holds its question and the person's answer. Where the address resolves to no
+// block and no ask, and where who may not see the one it resolves to, it answers the 404 of a
+// block no current version holds, naming the address asked, so a move says nothing of a node the
+// reader may not see. The edges the read lists beside it are those at the address asked, the
+// citations of that address, and those at the node it reaches (referenceEdges).
+func (s *server) resolvedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	noBlock := errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
 	reached, moved, err := graphstore.MovedTo(ctx, pool, address)
@@ -431,7 +478,17 @@ func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address st
 	if !moved {
 		return model.GraphNode{}, noBlock
 	}
-	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached, true)
+	if reached.Ask != "" {
+		node, found, err := refs.Node(ctx, pool, who, graphstore.KindAsk, reached.Ask, true)
+		if err != nil {
+			return model.GraphNode{}, err
+		}
+		if !found {
+			return model.GraphNode{}, noBlock
+		}
+		return node, nil
+	}
+	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached.Address, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -445,7 +502,7 @@ func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address st
 // movedDocumentNode is the lens the address of the document stored at refKey moved to: the lens
 // the pre-mortem conversion wrote in the place of the document it retired (api.ConvertPremortem),
 // which the moved_to from the document's address reaches (graphstore.MovedTo). It is answered as a
-// moved block's old address answers the block it reached (movedBlockNode): the node the move
+// moved block's old address answers the block it reached (resolvedBlockNode): the node the move
 // reaches, named by its own address, and the edges the read lists beside it are those at the
 // address asked, the citations of the document. found is false where the address moved to no lens
 // that stands, and where who may not see the lens, and the read then answers the address as it
@@ -457,7 +514,7 @@ func (s *server) movedDocumentNode(ctx context.Context, who model.Actor, refKey 
 	if err != nil || !moved {
 		return model.GraphNode{}, false, err
 	}
-	return refs.Node(ctx, pool, who, graphstore.KindLens, lens, true)
+	return refs.Node(ctx, pool, who, graphstore.KindLens, lens.Address, true)
 }
 
 // documentAtAddress is the document stored at refKey, as a read of its blocks needs it: the node
@@ -803,20 +860,24 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 	if len(refKeys) == 0 {
 		return artifacts, nil
 	}
-	versions := `join artifact_versions v on v.artifact_id = a.id`
+	versions := `join artifact_versions v on v.artifact_id = artifacts.id`
 	if latestOnly {
 		versions = `join lateral (
-			select * from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1
+			select * from artifact_versions v where v.artifact_id = artifacts.id order by v.number desc limit 1
 		) v on true`
 	}
+	// The row's role columns, retired mark and room are artifactColumns', read as every reader of
+	// an artifact row reads them, so a member answers its room and fragment (placeArtifact).
 	rows, err := q.Query(ctx, `
-		select a.id::text, a.issue_key, coalesce(a.project_key, ''), a.session_id, a.ref_key, a.slug, a.name, a.kind, a.is_primary,
-		       a.created_by, a.created_at,
+		select artifacts.id::text, artifacts.issue_key, coalesce(artifacts.project_key, ''), artifacts.session_id,
+		       artifacts.ref_key, artifacts.slug, artifacts.name, artifacts.kind, artifacts.is_primary,
+		       artifacts.role, `+graphstore.ArtifactQueryRoleSQL+`, artifacts.created_by, artifacts.created_at,
+		       artifacts.retired_at is not null, (`+refs.DocumentRoomSQL("artifacts.id")+`)::text,
 		       `+versionColumns+`
-		from artifacts a
+		from artifacts
 		`+versions+`
-		where a.ref_key = any($1)
-		order by a.ref_key, v.number
+		where artifacts.ref_key = any($1)
+		order by artifacts.ref_key, v.number
 	`, refKeys)
 	if err != nil {
 		return nil, err
@@ -828,6 +889,7 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 	authorsByJSON := map[string][]model.Actor{}
 	for rows.Next() {
 		var artifact model.Artifact
+		var role, queryRole *string
 		var createdBy, authors []byte
 		var version model.Version
 		if err := rows.Scan(
@@ -840,8 +902,12 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 			&artifact.Name,
 			&artifact.Kind,
 			&artifact.Primary,
+			&role,
+			&queryRole,
 			&createdBy,
 			&artifact.CreatedAt,
+			&artifact.Retired,
+			&artifact.Room,
 			&version.Number,
 			&version.Named,
 			&version.Summary,
@@ -858,6 +924,7 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 			if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
 				return nil, fmt.Errorf("decode artifact author: %w", err)
 			}
+			placeArtifact(&artifact, role, queryRole)
 			current = &artifact
 			artifacts[artifact.RefKey] = current
 		}

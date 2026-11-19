@@ -13,8 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestARestatingWriteKeepsAStateItDoesNotOwn holds a write that restates a node (Node.Restates)
-// to the rule moveNodes writes it by (dispatch://INFRA-1950/spec#b-r-proposed). A node a plain
+// TestARestatingWriteKeepsTheValuesItDoesNotOwn holds a write that restates a node (Node.Restates)
+// to the rule the move of queueNodes writes it by. A node a plain
 // write marked proposed, settled or overtaken and reserved for its author keeps both when a
 // restating write writes it live and project-visible again; a restating write that says gone
 // writes it gone and keeps its visibility; a restating write of a node stored gone writes it
@@ -23,7 +23,7 @@ import (
 // write moved and none for a value a restating write kept. The node is of the kind this
 // package's tests admit as one that takes a node reserved for its author (authorOnlyTestKind),
 // since the store takes such a node of no kind the read registry does not flag.
-func TestARestatingWriteKeepsAStateItDoesNotOwn(t *testing.T) {
+func TestARestatingWriteKeepsTheValuesItDoesNotOwn(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedSupertags(t, ctx, database, authorOnlyTestKind)
