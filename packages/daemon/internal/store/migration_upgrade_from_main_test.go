@@ -86,15 +86,18 @@ import (
 // the reviewer's reviewed commit, the commit statuses of the checked head and the cutover of the
 // update ask's mark, and names every kind the merge-queue list names and its own. The kind list
 // with the step record (20261117000528) stands above it and above the reviewer's reviewed commit,
-// and restates 20261116165926's kinds with step_record. The count of starts of each step
-// (20261117004117) creates tables and a function of its own, and its roll forward
-// (20261117064152) changes nothing on a database no rollback touched; neither touches
+// and restates 20261116165926's kinds with step_record. The kind list with the plan record
+// (20261117023932) stands above that one and restates its kinds with plan_record. The count of
+// starts of each step (20261117004117) creates tables and a function of its own, and its roll
+// forward (20261117064152) changes nothing on a database no rollback touched; neither touches
 // outbox_kind_check. This change's kind list with the merge holds change (20261117113130) stands
 // above all of these but the cutover of the update ask's mark, so an upgrade applies it after the
-// step record's list: it is the last word of outbox_kind_check, and it names the step record's
-// kinds, step_record among them, and merge_holds_changed. A list there that left step_record out
-// would fail the upgrade of a database main migrated with the step record over the step_record
-// rows it holds (TestADatabaseMainMigratedWithAStepRecordRowUpgrades).
+// step record's and the plan record's lists: it is the last word of outbox_kind_check, and it names
+// the plan record's kinds, step_record and plan_record among them, and merge_holds_changed. A list
+// there that left step_record out would fail the upgrade of a database main migrated with the step
+// record over the step_record rows it holds, and one that left plan_record out the upgrade of one
+// main migrated with the plan record over its plan_record rows
+// (TestADatabaseMainMigratedWithStepAndPlanRecordRowsUpgrades).
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -106,7 +109,8 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115060739, 20261115083448, 20261115121838, 20261116144907,
-	20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117064152,
+	20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117023932,
+	20261117064152,
 	20261117112334, 20261117113130, 20261117200337,
 }
 
@@ -120,10 +124,10 @@ var thisBranchsMigrations = []int{
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, t-e-54's 20261116144907, the
 // role-holders publication's 20261116165926, the reviewer's reviewed commit, 20261116234034, the
 // step records' three: the kind list with the step record (20261117000528), the count of starts of
-// each step (20261117004117) and its roll forward (20261117064152), dispatch://INFRA-1997's
-// 20261117112334 and dispatch://INFRA-4109's 20261117200337. That is why the loop below holds the
-// list rather than counting it, so that a version added above any of them is named here rather
-// than read as main's.
+// each step (20261117004117) and its roll forward (20261117064152), the kind list with the plan
+// record (20261117023932), dispatch://INFRA-1997's 20261117112334 and dispatch://INFRA-4109's
+// 20261117200337. That is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 // This change's own 20261115060739, 20261115083448, 20261115121838 and 20261117113130 are in
 // the list as well.
 const mainsNewestMigration = 20261111212544
@@ -254,14 +258,16 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 }
 
 // A daemon of this release is also deployed over a database main migrated once main recorded each
-// step, and that database's outbox can hold a step_record row: main's daemon queues one at each
-// start and end of a step, and its roll forward (20261117064152) queues one for each run a rollback
-// left open. The upgrade applies this branch's kind list with the merge holds change
-// (20261117113130) over that row, and `ADD CONSTRAINT … CHECK` validates the rows the table holds,
-// so a list that left step_record out would fail Migrate (SQLSTATE 23514) and leave the daemon
-// unable to boot. The negative control is step_record taken out of 20261117113130's list: the
-// Migrate below then fails on the pending row.
-func TestADatabaseMainMigratedWithAStepRecordRowUpgrades(t *testing.T) {
+// step and each plan rating, and that database's outbox can hold a step_record row and a
+// plan_record row: main's daemon queues a step_record at each start and end of a step, its roll
+// forward (20261117064152) queues one for each run a rollback left open, and it queues a
+// plan_record for each retro that rates its plan. The upgrade applies this branch's kind list with
+// the merge holds change (20261117113130) over those rows, and `ADD CONSTRAINT … CHECK` validates
+// the rows the table holds, so a list that left either kind out would fail Migrate (SQLSTATE 23514)
+// and leave the daemon unable to boot. The negative controls are step_record, and then
+// plan_record, taken out of 20261117113130's list: the Migrate below then fails on that pending
+// row.
+func TestADatabaseMainMigratedWithStepAndPlanRecordRowsUpgrades(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
@@ -276,19 +282,24 @@ func TestADatabaseMainMigratedWithAStepRecordRowUpgrades(t *testing.T) {
 			t.Fatalf("apply %s as main's own run did: %v", migration.Name, err)
 		}
 	}
-	if _, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-		values ('step_record', 'LEGION-208', '{}', 0, now(), '')`); err != nil {
-		t.Fatalf("queue the step_record row main's daemon writes: %v", err)
+	kinds := []string{"step_record", "plan_record"}
+	for _, kind := range kinds {
+		if _, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind); err != nil {
+			t.Fatalf("queue the %s row main's daemon writes: %v", kind, err)
+		}
 	}
 	if _, err := store.Migrate(ctx); err != nil {
-		t.Fatalf("upgrade the database main migrated with a step_record row pending: %v", err)
+		t.Fatalf("upgrade the database main migrated with a step_record and a plan_record row pending: %v", err)
 	}
-	var pending int
-	if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = 'step_record'`).Scan(&pending); err != nil {
-		t.Fatalf("count the step_record rows the upgrade left: %v", err)
-	}
-	if pending != 1 {
-		t.Fatalf("step_record rows after the upgrade = %d, want the pending one kept", pending)
+	for _, kind := range kinds {
+		var pending int
+		if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = $1`, kind).Scan(&pending); err != nil {
+			t.Fatalf("count the %s rows the upgrade left: %v", kind, err)
+		}
+		if pending != 1 {
+			t.Fatalf("%s rows after the upgrade = %d, want the pending one kept", kind, pending)
+		}
 	}
 }
 
@@ -296,7 +307,8 @@ func TestADatabaseMainMigratedWithAStepRecordRowUpgrades(t *testing.T) {
 // (f27003af63): the update ask mark's cutover. It and the other migrations main numbered after
 // this branch's claim_sessions (20261116144907) — the role-holders publication (20261116165926),
 // the reviewer's reviewed commit (20261116234034), the step records' three (20261117000528,
-// 20261117004117, 20261117064152) and the pull request statuses (20261117112334) — stand above
+// 20261117004117, 20261117064152), the plan record's kind list (20261117023932) and the pull
+// request statuses (20261117112334) — stand above
 // it. A deployment of main applies them first, so this branch's daemon finds a database whose
 // newest recorded version stands above its own new migration.
 const todaysMainsNewestMigration = 20261117200337

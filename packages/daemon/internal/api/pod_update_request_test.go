@@ -72,10 +72,10 @@ func TestThePodUpdateNeedsAControllerGrantAnIssueKeyAndAnIssueOfTheDaemonsProjec
 	}
 	decodeInto(t, minted, &worker)
 
-	assertFailure(t, askPodUpdate(h, worker.GrantID, "LEGION-209"), http.StatusForbidden, "CONTROLLER_REQUIRED")
+	refused(t, askPodUpdate(h, worker.GrantID, "LEGION-209"), http.StatusForbidden, "CONTROLLER_REQUIRED")
 	controller := controllerGrant(t, h).GrantID
-	assertFailure(t, askPodUpdate(h, controller, "legion-209"), http.StatusBadRequest, "INVALID_ISSUE")
-	assertFailure(t, askPodUpdate(h, controller, "OTHER-209"), http.StatusNotFound, "NO_CLAIM")
+	refused(t, askPodUpdate(h, controller, "legion-209"), http.StatusBadRequest, "INVALID_ISSUE")
+	refused(t, askPodUpdate(h, controller, "OTHER-209"), http.StatusNotFound, "NO_CLAIM")
 	if len(*asked) != 0 {
 		t.Fatalf("the daemon was asked to open a round over the pods of %v, want no request of the three to reach it", *asked)
 	}
@@ -101,7 +101,7 @@ func TestThePodUpdateRefusesAnArchitectsGrant(t *testing.T) {
 	h, asked, _ := podUpdateHarness(t, func(string) (PodUpdateResponse, error) { return podUpdateAnswer, nil })
 	architect := treeArchitect(t, h)
 
-	assertFailure(t, askPodUpdate(h, architect.grant(t), "LEGION-208"), http.StatusForbidden, "CONTROLLER_REQUIRED")
+	refused(t, askPodUpdate(h, architect.grant(t), "LEGION-208"), http.StatusForbidden, "CONTROLLER_REQUIRED")
 	if len(*asked) != 0 {
 		t.Fatalf("the daemon was asked to open a round over the pods of %v, want the architect's request to reach it not at all", *asked)
 	}
@@ -177,5 +177,5 @@ func TestThePodUpdateAnswersTheDaemonsRoundOrItsRefusal(t *testing.T) {
 			t.Errorf("the refusal of %s carries Retry-After %q, want %q", issue, got, row.retryAfter)
 		}
 	}
-	assertFailure(t, askPodUpdate(h, controller, "LEGION-214"), http.StatusInternalServerError, "POD_UPDATE_FAILED")
+	refused(t, askPodUpdate(h, controller, "LEGION-214"), http.StatusInternalServerError, "POD_UPDATE_FAILED")
 }

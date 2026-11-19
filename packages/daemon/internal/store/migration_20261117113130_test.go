@@ -41,7 +41,8 @@ func TestTheOutboxTakesTheMergeHoldsKindWith20261117113130(t *testing.T) {
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "merge_holds_changed",
+		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
+		"merge_holds_changed",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)

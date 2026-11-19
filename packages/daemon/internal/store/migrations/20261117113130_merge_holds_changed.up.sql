@@ -9,19 +9,20 @@
 -- role. It rides the role-message lane (internal/record's lanes) and holds the issue's pod (the
 -- store's idleWaitingKinds).
 --
--- The check is one list, so this migration names every kind, as 20261117000528 did: its
--- twenty-six kinds, which are the kinds the daemon writes, step_record among them, and this one.
--- Its version stands above 20261117000528, the step record's list, and above 20261116165926, the
--- role-holders publication's, so on any database this list is the last word: at a lower version,
--- either list, which does not name merge_holds_changed, would be applied after this one and refuse
--- the kind. And this list must name step_record: a database main's release migrated can hold a
--- step_record row when this migration is applied over it, and a list without the kind would fail
--- its ADD CONSTRAINT on that row (store's TestADatabaseMainMigratedWithAStepRecordRowUpgrades).
+-- The check is one list, so this migration names every kind, as 20261117023932 did: its
+-- twenty-seven kinds, which are the kinds the daemon writes, step_record and plan_record among
+-- them, and this one. Its version stands above 20261117023932, the plan record's list,
+-- 20261117000528, the step record's, and 20261116165926, the role-holders publication's, so on
+-- any database this list is the last word: at a lower version, any of those lists, none of which
+-- names merge_holds_changed, would be applied after this one and refuse the kind. And this list
+-- must name step_record and plan_record: a database main's release migrated can hold a row of
+-- either kind when this migration is applied over it, and a list without the kind would fail its
+-- ADD CONSTRAINT on that row (store's TestADatabaseMainMigratedWithStepAndPlanRecordRowsUpgrades).
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record',
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'merge_holds_changed'));

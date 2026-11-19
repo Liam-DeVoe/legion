@@ -113,17 +113,17 @@ func TestTheControllersClaimOperationsNeedAControllerGrantAClaimRoleAndAClaimOfI
 			decodeInto(t, minted, &worker)
 			before := h.stored(token)
 
-			assertFailure(t, h.request(http.MethodPost, op.route,
+			refused(t, h.request(http.MethodPost, op.route,
 				ClaimRequest{GrantID: worker.GrantID, Issue: "LEGION-209", Role: string(claim.RoleImplementer)}, nil),
 				http.StatusForbidden, "CONTROLLER_REQUIRED")
 
-			wantFreshSessionRefusal(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleController),
+			refusedSaying(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleController),
 				http.StatusBadRequest, "INVALID_ROLE",
 				"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
 					"the project's controller is none of them, and "+op.invalidRole)
 
 			// Another project's claim: only an issue this daemon supervises no claim for.
-			assertFailure(t, askClaimOperation(t, h, op.route, "LEGION-777", claim.RoleTester),
+			refused(t, askClaimOperation(t, h, op.route, "LEGION-777", claim.RoleTester),
 				http.StatusNotFound, "NO_CLAIM")
 
 			if after := h.stored(token); after.State != before.State || after.Session != before.Session {
@@ -220,7 +220,7 @@ func TestTheControllersRetryAndResumeRefuseAClaimInATurn(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
 			token := workingImplementer(t, h)
 
-			wantFreshSessionRefusal(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleImplementer),
+			refusedSaying(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleImplementer),
 				http.StatusConflict, claimInATurn,
 				string(token)+" is stored working, and "+op.op.name+" reaches no claim in a turn. "+op.op.reaches+". "+wantAskAgainLater)
 			m, _ := h.supervisor.Machine(token)
@@ -274,7 +274,7 @@ func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
 			token := operatorSuspendedImplementer(t, h)
 			before := h.stored(token)
 
-			wantFreshSessionRefusal(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleImplementer),
+			refusedSaying(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleImplementer),
 				http.StatusConflict, suspendedByOperator, operatorHoldRefusal(token, op.as.name, "the controller"))
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != before.Session {
@@ -312,7 +312,7 @@ func TestTheControllerCannotGetPastTheOperatorsHeldSuspension(t *testing.T) {
 			}
 			calls := len(h.runtime.Calls())
 
-			wantFreshSessionRefusal(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleImplementer),
+			refusedSaying(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleImplementer),
 				http.StatusConflict, suspendedByOperator, operatorHoldRefusal(token, op.as.name, "the controller"))
 			m, _ := h.supervisor.Machine(token)
 			if view := m.View(); view.State != supervise.StateWorking || !view.SuspensionHeld ||
@@ -344,7 +344,7 @@ func TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension(t *testing.T
 
 		recorder := askClaimOperation(t, h, "/legion/v1/claims/compact", "LEGION-209", claim.RoleImplementer)
 
-		wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning,
+		refusedSaying(t, recorder, http.StatusConflict, claimNotRunning,
 			string(token)+" is suspended, so it runs no Oh My Pi session to compact; "+operatorLifts(token))
 		if strings.Contains(recorder.Body.String(), "fresh_session") {
 			t.Errorf("the refusal is %s, want it to name no fresh session: the door refuses the controller's", recorder.Body)
@@ -363,7 +363,7 @@ func TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension(t *testing.T
 
 		recorder := askClaimOperation(t, h, "/legion/v1/claims/compact", "LEGION-209", claim.RoleImplementer)
 
-		wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn, operatorHeldCompactionRefusal(token))
+		refusedSaying(t, recorder, http.StatusConflict, claimInATurn, operatorHeldCompactionRefusal(token))
 		if strings.Contains(recorder.Body.String(), "fresh_session") {
 			t.Errorf("the refusal is %s, want it to name no fresh session: the door refuses the controller's", recorder.Body)
 		}
@@ -576,7 +576,7 @@ func TestAnArchitectsClaimOperationsRefuseAnotherTreesClaim(t *testing.T) {
 			h.ready(token, "ses_other_tree", 1)
 			before := h.stored(token)
 
-			assertFailure(t, askAsArchitect(t, h, architect, op.route, "LEGION-301", claim.RoleImplementer),
+			refused(t, askAsArchitect(t, h, architect, op.route, "LEGION-301", claim.RoleImplementer),
 				http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 
 			if after := h.stored(token); after.State != before.State || after.Session != before.Session || after.SuspendedBy != before.SuspendedBy {
@@ -614,7 +614,7 @@ func TestASubArchitectsClaimOperationsReachTheIssuesItOwnsAlone(t *testing.T) {
 		{"LEGION-210", claim.RoleImplementer, sibling},
 	} {
 		before := h.stored(refused.token)
-		wantFreshSessionRefusal(t, askAsArchitect(t, h, subArchitect, "/legion/v1/claims/stop", refused.issue, refused.role),
+		refusedSaying(t, askAsArchitect(t, h, subArchitect, "/legion/v1/claims/stop", refused.issue, refused.role),
 			http.StatusForbidden, "ISSUE_NOT_OWNED",
 			"a stop of "+refused.issue+" belongs to its own architect or one above it in the tree, not the architect of LEGION-209")
 		if after := h.stored(refused.token); after.State != before.State || after.Session != before.Session {
@@ -641,11 +641,11 @@ func TestAnArchitectsClaimOperationsNeedARecordedIssueAndAClaim(t *testing.T) {
 			architect := treeArchitect(t, h)
 			worker := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleImplementer)
 
-			assertFailure(t, askAsArchitect(t, h, architect, op.route, "LEGION-404", claim.RoleImplementer),
+			refused(t, askAsArchitect(t, h, architect, op.route, "LEGION-404", claim.RoleImplementer),
 				http.StatusNotFound, "ISSUE_NOT_FOUND")
-			assertFailure(t, askAsArchitect(t, h, architect, op.route, "LEGION-208", claim.RoleTester),
+			refused(t, askAsArchitect(t, h, architect, op.route, "LEGION-208", claim.RoleTester),
 				http.StatusNotFound, "NO_CLAIM")
-			assertFailure(t, h.request(http.MethodPost, op.route,
+			refused(t, h.request(http.MethodPost, op.route,
 				ClaimRequest{GrantID: worker.grant(t), Issue: "LEGION-209", Role: string(claim.RoleImplementer)}, nil),
 				http.StatusForbidden, "CONTROLLER_REQUIRED")
 		})
@@ -662,7 +662,7 @@ func TestAnArchitectsClaimOperationsRefuseItsOwnClaim(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
 			architect := treeArchitect(t, h)
 
-			wantFreshSessionRefusal(t, askAsArchitect(t, h, architect, op.route, "LEGION-208", claim.RoleArchitect),
+			refusedSaying(t, askAsArchitect(t, h, architect, op.route, "LEGION-208", claim.RoleArchitect),
 				http.StatusForbidden, ownClaim,
 				string(architect.token)+" is the claim of the architect that asks, and "+op.as.name+
 					" of it would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. "+
@@ -687,7 +687,7 @@ func TestAnArchitectCannotGetPastTheOperatorsSuspension(t *testing.T) {
 			token := operatorSuspendedImplementer(t, h)
 			before := h.stored(token)
 
-			wantFreshSessionRefusal(t, askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer),
+			refusedSaying(t, askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer),
 				http.StatusConflict, suspendedByOperator, operatorHoldRefusal(token, op.as.name, "the architect"))
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != before.Session {
@@ -714,7 +714,7 @@ func TestAnArchitectCannotGetPastTheControllersSuspension(t *testing.T) {
 			token := controllerSuspendedImplementer(t, h)
 			before := h.stored(token)
 
-			wantFreshSessionRefusal(t, askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer),
+			refusedSaying(t, askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer),
 				http.StatusConflict, suspendedByController,
 				string(token)+" is held by the controller's suspension, which only the controller or the operator lifts, so "+op.as.name+
 					" by the architect is refused and nothing of the claim changed. Ask the controller: its `resume` of the claim is its own to run")
@@ -744,7 +744,7 @@ func TestAnArchitectCannotGetPastTheControllersHeldSuspension(t *testing.T) {
 			wantClaimOperationAnswer(t, askClaimOperation(t, h, "/legion/v1/claims/suspend", "LEGION-209", claim.RoleImplementer),
 				http.StatusAccepted, ClaimOperationResponse{State: "working", SuspensionHeld: true, SuspensionHeldBy: "controller"})
 
-			assertFailure(t, askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer),
+			refused(t, askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer),
 				http.StatusConflict, suspendedByController)
 			m, _ := h.supervisor.Machine(token)
 			if view := m.View(); view.State != supervise.StateWorking || !view.SuspensionHeld || view.SuspensionHeldBy != supervise.SuspendedByController {
@@ -819,7 +819,7 @@ func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAClaimTheDaemonS
 					t.Fatalf("refusal = %+v, want the machine's own refusal of a retry of a suspended claim, with no code", failure)
 				}
 			} else {
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, suspendedByDaemon,
+				refusedSaying(t, recorder, http.StatusConflict, suspendedByDaemon,
 					string(token)+" is suspended by the daemon, not by an architect, and "+op.as.name+
 						" by the architect does not reach the daemon's suspension, so it is refused and nothing of the claim changed. "+
 						"The daemon's own rules start such a claim again — "+
@@ -891,7 +891,7 @@ func TestAnArchitectsStartOfAStoppedWorkerIsRefusedOnceItsIssuesWorkStopped(t *t
 
 				recorder := askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, issueOutOfWorkflow,
+				refusedSaying(t, recorder, http.StatusConflict, issueOutOfWorkflow,
 					string(token)+" is retired, and the daemon has stopped its issue's work: "+stopped.why+". "+
 						capitalized(op.as.name)+" by the architect would start the claim on that stopped work, so it is refused and nothing of the claim changed. "+
 						"The daemon's own rules start the issue's roles again once the issue and its tree are back in the workflow, and "+

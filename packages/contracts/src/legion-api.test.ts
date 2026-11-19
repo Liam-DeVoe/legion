@@ -50,6 +50,7 @@ import {
   LegionWaveReleaseResponse,
 } from "./legion-api";
 import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
+import { PlanRatingCases } from "./plan-rating-cases";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
@@ -90,13 +91,13 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // The four claim operations of the controller and of an architect (contract 169): the claim as
+  // The four claim operations of the controller and of an architect (contract 171): the claim as
   // each left it, and who holds a suspension over it.
   "claim-stop.json": LegionClaimOperationResponse,
   "claim-retry.json": LegionClaimOperationResponse,
   "claim-suspend.json": LegionClaimOperationResponse,
   "claim-resume.json": LegionClaimOperationResponse,
-  // The controller's request for the replacement of one issue's pod (contract 169): the update
+  // The controller's request for the replacement of one issue's pod (contract 171): the update
   // round over it, its reasons, and whether the request opened it.
   "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
@@ -143,6 +144,17 @@ const schemas: Record<string, z.ZodType> = {
     code: z.literal("HANDOFF_STALE_ENTRY"),
     instruction: z.string().min(1),
   }),
+  // `api.HandoffCompleteRequest` as the completion that ends the retro sends it, rated: the one
+  // request of the route a plugin at contract 168 must send, written by `internal/api`'s
+  // TestHandoffCompleteRequestRatedGolden from Go's own struct. The request schema is strict, so
+  // a name of the rating Go writes and the contract does not read fails the gate above, and the
+  // case "the rated completion the daemon reads parses under the contract's names" below.
+  "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
+  // Nor this one: the daemon's verdict on each case of a rating, which internal/api's
+  // TestPlanRatingCasesGolden posts as its raw body to the completion that ends a retro and writes
+  // down as the route answered it, so that the case "the request schema takes exactly the ratings
+  // the daemon takes" below, and the plugin's tool in packages/pi-shared, hold their own rule to it.
+  "plan-rating-cases.json": PlanRatingCases,
 };
 
 function fixture(name: string): unknown {
@@ -909,6 +921,71 @@ test("a phase completion names its handoff record", () => {
       LegionHandoffCompleteRequest.safeParse({ ...planner, handoffVersion }).success
     ).toBeFalse();
   }
+});
+
+// The completion that ends the retro rates the plan the issue ran: `planRating`, a whole number from
+// 1 to 5, and `planReason`, why, in one to 2,000 characters counted as the daemon counts them
+// (Unicode code points) and not all blank, the two together. A completion that carries neither
+// stays what it was.
+test("the retro's completion rates the plan from 1 to 5 with a reason", () => {
+  const completion = { grantId: "g", summary: "s", verdict: "" };
+  const retro = { ...completion, planRating: 4, planReason: "r" };
+  expect(LegionHandoffCompleteRequest.parse(retro)).toEqual(retro);
+  expect(LegionHandoffCompleteRequest.safeParse(completion).success).toBeTrue();
+  for (const planRating of [1, 5]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...retro, planRating }).success).toBeTrue();
+  }
+  for (const planRating of [0, 6, -1, 4.5]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...retro, planRating }).success).toBeFalse();
+  }
+  for (const planReason of ["", " \t\n", "a".repeat(2001)]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...retro, planReason }).success).toBeFalse();
+  }
+  // 2,000 code points of two UTF-16 units each is 2,000 characters, as the daemon counts them.
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...retro, planReason: "😀".repeat(2000) }).success
+  ).toBeTrue();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...completion, planRating: 4 }).success
+  ).toBeFalse();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...completion, planReason: "r" }).success
+  ).toBeFalse();
+});
+
+// Go writes the rated completion from its own struct, so this is the one place its JSON names of
+// the rating meet the contract's: every other test of either side writes its own side's names.
+// The request schema is strict, so a name one side renames alone fails the parse, and the parse
+// keeps the rating and its reason under the contract's names, values no default and no other
+// field of the request holds.
+test("the rated completion the daemon reads parses under the contract's names", () => {
+  const request = LegionHandoffCompleteRequest.parse(
+    fixture("handoff-complete-request-rated.json")
+  );
+  expect(request.planRating).toBe(3);
+  expect(request.planReason).toBe("The tester found the bug the plan had left out.");
+});
+
+// A rating's rule is the daemon's, and the request schema states it again: the scale, the pair,
+// blank and the bound. Blank is Go's strings.TrimSpace on the daemon's side, so the schema reads
+// it by goBlankPattern rather than by JavaScript's trim, and `./go-blank.ts`'s doc comment names
+// the two characters on which the two differ. Every case the daemon's golden test answered is run
+// through the schema, and the schema must take exactly the ones the daemon accepted.
+test("the request schema takes exactly the ratings the daemon takes", () => {
+  const { cases } = PlanRatingCases.parse(fixture("plan-rating-cases.json"));
+  const parted = cases
+    .filter((c) => {
+      const { name: _name, verdict, ...rating } = c;
+      const taken = LegionHandoffCompleteRequest.safeParse({
+        grantId: "g",
+        summary: "s",
+        verdict: "",
+        ...rating,
+      }).success;
+      return taken !== (verdict === "accepted");
+    })
+    .map((c) => `${c.name}: the daemon answers ${c.verdict}`);
+  expect(parted).toEqual([]);
 });
 
 // The state shows the record a worker's completion of its current file-backed phase named, its id
@@ -1977,7 +2054,7 @@ const operatorSchemas: Record<string, true> = {
 /** The one session-facing exception: the four claim operations of the controller and of an
  * architect (`POST /legion/v1/claims/stop|retry|suspend|resume`) answer who holds a suspension,
  * because those routes are where the caller reads whether its own resume lifts it. The reason the
- * guard exists does not reach them: they arrived with contract 169, so only a plugin at that
+ * guard exists does not reach them: they arrived with contract 171, so only a plugin at that
  * contract or later calls them, and no reader of these bodies predates the key. The schema and the
  * four fixtures it pins are named here, and nothing else; a new session-facing body that names a
  * suspender still fails the walk below. */
@@ -2022,7 +2099,7 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 169, to the four claim
+// `suspendedBy` is served to the operator's bearer and, from contract 171, to the four claim
 // operations of the controller and of an architect (claimOperationSchemas), and nowhere else; this
 // holds that for every schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
@@ -2050,7 +2127,7 @@ test("no session-facing response carries suspendedBy", () => {
   }
 });
 
-// An architect's suspension is a source of its own (contract 169, #4065): the
+// An architect's suspension is a source of its own (contract 171, #4065): the
 // claim operations' answer names it, landed or held, while the state, which the walk above holds
 // to no suspender at all, still names none.
 test("the claim operations name an architect's suspension", () => {
