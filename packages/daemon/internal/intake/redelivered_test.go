@@ -15,6 +15,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -59,13 +60,13 @@ const (
 	redeliveredSecret   = "redelivered-webhook-secret"
 	redeliveredClientID = "Iv1.redelivered"
 	githubSubjects      = "notifications.github.>"
-	// unstoredGitHub takes githubSubjects' place in the stream while the test refuses GitHub's
-	// deliveries: a subject inside it that nothing publishes on. The listener keeps the stream
-	// every 30 s from its start, and puts back a subject of its own only where no subject of the
-	// stream overlaps it (Envoy's bus.keptSubjects), so this narrowing holds however long the test
-	// takes, where githubSubjects taken out with nothing in its place would be back once 30 s
-	// had passed since the listener started.
-	unstoredGitHub = "notifications.github.unstored"
+	// streamGenerationKey and narrowedGeneration are those of Envoy's bustest.NarrowStream, which
+	// this module cannot import: the key every Envoy build reads the generation of the stream's
+	// settings under, and a generation no build reaches. The listener leaves a stream stamped with
+	// it exactly as it is, at the ensure of each reconnect and in its keeper, as it leaves a newer
+	// build's, so a narrowing that carries it holds however long the test takes.
+	streamGenerationKey = "dispatch.stream-generation"
+	narrowedGeneration  = "1000000"
 )
 
 // redeliveredRepositories records an issue on acme/widgets at main, as the daemon would once
@@ -133,15 +134,8 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	})
 
 	// The stream stops capturing GitHub's subjects: the listener reconciled it when it started,
-	// so its subjects are the listener's own, and every one but GitHub's stays, which gives way
-	// to unstoredGitHub.
-	captured := streamSubjects(t, stream)
-	if !slices.Contains(captured, githubSubjects) {
-		t.Fatalf("the stream the listener reconciled captures %v, want %s among them", captured, githubSubjects)
-	}
-	narrowed := slices.Clone(captured)
-	narrowed[slices.Index(narrowed, githubSubjects)] = unstoredGitHub
-	setStreamSubjects(t, js, stream, narrowed)
+	// so its subjects are the listener's own, and every one but GitHub's stays.
+	deployed := narrowStream(t, js, stream, githubSubjects)
 	t.Logf("1. the stream ENVOY_NOTIFICATIONS captures %v: no %s", streamSubjects(t, stream), githubSubjects)
 
 	key, pemText := redeliveredAppKey(t)
@@ -159,7 +153,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 		t.Fatalf("the stream holds %d messages on %s after the refused publish, want none", n, subject)
 	}
 
-	setStreamSubjects(t, js, stream, captured)
+	setStreamConfig(t, js, deployed)
 	t.Logf("3. the stream captures %s again", githubSubjects)
 
 	// redeliver-webhooks reads the GitHub rate limits every Dispatch process shares from
@@ -449,16 +443,43 @@ func streamSubjects(t *testing.T, stream jetstream.Stream) []string {
 	return info.Config.Subjects
 }
 
-func setStreamSubjects(t *testing.T, js jetstream.JetStream, stream jetstream.Stream, subjects []string) {
+// narrowStream takes subject out of the stream, stamped with narrowedGeneration so that the
+// listener leaves the narrowing as it is, reads the stream back, and fails the test unless the
+// subject is gone and the stamp holds. It returns the configuration the stream had, which the test
+// writes back to let the stream capture the subject again.
+func narrowStream(t *testing.T, js jetstream.JetStream, stream jetstream.Stream, subject string) jetstream.StreamConfig {
 	t.Helper()
 	info, err := stream.Info(context.Background())
 	if err != nil {
 		t.Fatalf("read the stream's info: %v", err)
 	}
-	config := info.Config
-	config.Subjects = subjects
+	deployed := info.Config
+	if !slices.Contains(deployed.Subjects, subject) {
+		t.Fatalf("the stream the listener reconciled captures %v, want %s among them", deployed.Subjects, subject)
+	}
+	narrowed := deployed
+	narrowed.Subjects = slices.DeleteFunc(slices.Clone(deployed.Subjects), func(other string) bool { return other == subject })
+	narrowed.Metadata = maps.Clone(deployed.Metadata)
+	if narrowed.Metadata == nil {
+		narrowed.Metadata = map[string]string{}
+	}
+	narrowed.Metadata[streamGenerationKey] = narrowedGeneration
+	setStreamConfig(t, js, narrowed)
+	info, err = stream.Info(context.Background())
+	if err != nil {
+		t.Fatalf("read the narrowed stream's info: %v", err)
+	}
+	if slices.Contains(info.Config.Subjects, subject) || info.Config.Metadata[streamGenerationKey] != narrowedGeneration {
+		t.Fatalf("the narrowed stream captures %v with generation %q, want no %s and generation %s",
+			info.Config.Subjects, info.Config.Metadata[streamGenerationKey], subject, narrowedGeneration)
+	}
+	return deployed
+}
+
+func setStreamConfig(t *testing.T, js jetstream.JetStream, config jetstream.StreamConfig) {
+	t.Helper()
 	if _, err := js.UpdateStream(context.Background(), config); err != nil {
-		t.Fatalf("set the stream's subjects to %v: %v", subjects, err)
+		t.Fatalf("set the stream's subjects to %v: %v", config.Subjects, err)
 	}
 }
 

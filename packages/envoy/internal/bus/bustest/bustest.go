@@ -10,6 +10,7 @@ package bustest
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -181,51 +182,72 @@ func FillStream(t testing.TB, client *bus.Client, most int) {
 	}
 }
 
-// unstoredToken is the token NarrowedSubjects puts in place of each wildcard of a subject it takes
-// out of the stream. No test publishes on a subject that holds it.
-const unstoredToken = "unstored"
+// streamGenerationKey is the stream metadata key that holds the generation of the stream's
+// settings, spelled out as every build reads it: bus keeps its own unexported.
+// narrowedGeneration is the generation NarrowStream stamps there: one no build reaches.
+const (
+	streamGenerationKey = "dispatch.stream-generation"
+	narrowedGeneration  = "1000000"
+)
 
-// NarrowedSubjects is subjects with each one drop matches taken out of the stream's reach: in its
-// place stands the same subject with each wildcard made the token "unstored", which overlaps it and
-// which no test publishes on. A stream given the list stores nothing a dropped subject captured,
-// and every keeper of the stream leaves the list as it is.
+// NarrowStream takes each subject of config that drop matches out of the stream js reaches, puts
+// each of add in, and stamps the stream with a generation no build reaches (narrowedGeneration).
+// It then reads the stream back, and fails the test unless every dropped subject is gone, every
+// added one is there and the stamp holds, so a test never runs on a narrowing that did not take.
+// It returns the configuration it wrote; a test lets the stream capture again by writing config
+// back.
 //
-// A test that takes a subject out with nothing in its place has it put back while it runs. Every
-// client that owns the stream (bus.ConnectOwningStream) keeps it, every 30 s from that client's
-// start, and adds back each subject of its binary's that no subject of the stream overlaps
-// (bus.keptSubjects); a subject that overlaps it is left alone. So the narrowing held only while
-// the test's work from the client's start to the publish the narrowing is for took less than that
-// period, and a loaded runner can take longer: TestABackedOffEventHoldsBackOnlyItsDestination
-// failed on a dev box when 30 s passed between its client's start and the outbox's first publish,
-// and the keeper put the agent subjects back a second before the outbox published the event the
-// test had refused.
+// The stamp is what keeps the narrowing while the test runs. Every client that owns the stream
+// (bus.ConnectOwningStream) ensures it at its start and after every reconnect, which puts back
+// each subject of its binary's that the stream lacks, and keeps it every 30 s, which puts back each
+// one no subject of the stream overlaps. Both leave a stream a newer build stamped exactly as it
+// is, and to them a narrowed stream is one. Without the stamp a narrowing held only until the
+// next reconnect or keeper pass of any owner of the stream: TestABackedOffEventHoldsBackOnlyItsDestination
+// failed on a dev box when the keeper put the agent subjects back a second before the outbox
+// published the event the test had refused, and a hub that stops answering for 2 to 3 s makes the
+// listener and Dispatch's server reconnect, since they ping it every second.
 //
-// It fails the test when drop matches no subject, or matches one with no wildcard, which no other
-// subject overlaps.
-func NarrowedSubjects(t testing.TB, subjects []string, drop func(subject string) bool) []string {
+// It fails the test when drop matches no subject.
+func NarrowStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.StreamConfig, drop func(subject string) bool, add ...string) natsgo.StreamConfig {
 	t.Helper()
-	narrowed := slices.Clone(subjects)
-	dropped := 0
-	for i, subject := range narrowed {
-		if !drop(subject) {
+	narrowed := config
+	narrowed.Subjects = nil
+	var dropped []string
+	for _, subject := range config.Subjects {
+		if drop(subject) {
+			dropped = append(dropped, subject)
 			continue
 		}
-		tokens := strings.Split(subject, ".")
-		wildcards := 0
-		for j, token := range tokens {
-			if token == "*" || token == ">" {
-				tokens[j] = unstoredToken
-				wildcards++
-			}
-		}
-		if wildcards == 0 {
-			t.Fatalf("take %s out of the stream: it has no wildcard, so no subject overlaps it and a keeper puts it back", subject)
-		}
-		narrowed[i] = strings.Join(tokens, ".")
-		dropped++
+		narrowed.Subjects = append(narrowed.Subjects, subject)
 	}
-	if dropped == 0 {
-		t.Fatalf("take a subject out of the stream's %v: none is one to take out", subjects)
+	if len(dropped) == 0 {
+		t.Fatalf("take a subject out of the stream's %v: none is one to take out", config.Subjects)
+	}
+	narrowed.Subjects = append(narrowed.Subjects, add...)
+	narrowed.Metadata = maps.Clone(config.Metadata)
+	if narrowed.Metadata == nil {
+		narrowed.Metadata = map[string]string{}
+	}
+	narrowed.Metadata[streamGenerationKey] = narrowedGeneration
+	if _, err := js.UpdateStream(&narrowed); err != nil {
+		t.Fatalf("take %v out of the stream: %v", dropped, err)
+	}
+	info, err := js.StreamInfo(config.Name)
+	if err != nil {
+		t.Fatalf("read the stream back after taking %v out of it: %v", dropped, err)
+	}
+	for _, subject := range dropped {
+		if slices.Contains(info.Config.Subjects, subject) {
+			t.Fatalf("the stream still captures %s after the narrowing: %v", subject, info.Config.Subjects)
+		}
+	}
+	for _, subject := range add {
+		if !slices.Contains(info.Config.Subjects, subject) {
+			t.Fatalf("the stream does not capture %s after the narrowing: %v", subject, info.Config.Subjects)
+		}
+	}
+	if got := info.Config.Metadata[streamGenerationKey]; got != narrowedGeneration {
+		t.Fatalf("the narrowed stream carries generation %q, want %s, which every owner of the stream leaves as it is", got, narrowedGeneration)
 	}
 	return narrowed
 }

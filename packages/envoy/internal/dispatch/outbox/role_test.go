@@ -393,8 +393,8 @@ func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 // ends. A forward to any other holder is then stored nowhere, so nothing acknowledges it and
 // nothing else answers one: that is the shape a role forward goes unanswered in, and the batch
 // that sent it waits roleForwardAckTimeout. The holder's own subscription is handed the forward
-// all the same, over core NATS. The narrowing is one the rig client's keeper leaves, however long
-// the test runs (bustest.NarrowedSubjects).
+// all the same, over core NATS. No owner of the stream undoes the narrowing, however long the test
+// runs (bustest.NarrowStream).
 func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	t.Helper()
 	js, err := r.conn.JetStream()
@@ -405,20 +405,19 @@ func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)
 	}
-	capturing, narrowed := info.Config, info.Config
-	narrowed.Subjects = bustest.NarrowedSubjects(t, capturing.Subjects, func(subject string) bool {
-		return subject == contracts.AgentTopicPrefix+">"
-	})
+	capturing := info.Config
+	holderSubjects := make([]string, 0, len(holders))
 	for _, holder := range holders {
-		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
+		holderSubjects = append(holderSubjects, contracts.LegacyAgentSubject(holder))
 	}
-	update := func(config *natsgo.StreamConfig, what string) {
-		if _, err := js.UpdateStream(config); err != nil {
-			t.Fatalf("%s the stream's agent subjects: %v", what, err)
+	bustest.NarrowStream(t, js, capturing, func(subject string) bool {
+		return subject == contracts.AgentTopicPrefix+">"
+	}, holderSubjects...)
+	restore := sync.OnceFunc(func() {
+		if _, err := js.UpdateStream(&capturing); err != nil {
+			t.Fatalf("restore the stream's agent subjects: %v", err)
 		}
-	}
-	update(&narrowed, "narrow")
-	restore := sync.OnceFunc(func() { update(&capturing, "restore") })
+	})
 	t.Cleanup(restore)
 	return restore
 }

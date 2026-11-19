@@ -530,15 +530,11 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 		t.Fatalf("stream info: %v", err)
 	}
 	originalConfig := info.Config
-	unboundConfig := originalConfig
-	// The binding of GitHub's subjects lost in a narrowing the client's keeper leaves
-	// (bustest.NarrowedSubjects).
-	unboundConfig.Subjects = bustest.NarrowedSubjects(t, originalConfig.Subjects, func(subject string) bool {
+	// The binding of GitHub's subjects lost, in a narrowing that fails the test unless it took and
+	// that no owner of the stream undoes (bustest.NarrowStream).
+	bustest.NarrowStream(t, client.JS(), originalConfig, func(subject string) bool {
 		return subject == "notifications.github.>"
 	})
-	if _, err := client.JS().UpdateStream(&unboundConfig); err != nil {
-		t.Fatalf("remove publish subject binding: %v", err)
-	}
 	t.Cleanup(func() {
 		if _, err := client.JS().UpdateStream(&originalConfig); err != nil {
 			t.Errorf("restore stream subject bindings: %v", err)

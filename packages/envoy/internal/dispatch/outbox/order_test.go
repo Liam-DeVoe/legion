@@ -164,15 +164,11 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 		t.Fatalf("read the stream: %v", err)
 	}
 	capturing := info.Config
-	notAgents := info.Config
-	// Narrowed so the client's keeper leaves it, however long the setup below takes
-	// (bustest.NarrowedSubjects).
-	notAgents.Subjects = bustest.NarrowedSubjects(t, capturing.Subjects, func(subject string) bool {
+	// Narrowed so no owner of the stream undoes it, however long the setup below takes
+	// (bustest.NarrowStream).
+	bustest.NarrowStream(t, js, capturing, func(subject string) bool {
 		return subject == contracts.AgentTopicPrefix+">"
 	})
-	if _, err := js.UpdateStream(&notAgents); err != nil {
-		t.Fatalf("stop the stream capturing agent subjects: %v", err)
-	}
 
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -386,16 +382,12 @@ func newSessionOrderRig(t *testing.T) sessionOrderRig {
 }
 
 // refuse has the stream capture no subject under prefix, so NATS answers a publish there with no
-// responders, in a narrowing the client's keeper leaves (bustest.NarrowedSubjects).
+// responders, in a narrowing no owner of the stream undoes (bustest.NarrowStream).
 func (r sessionOrderRig) refuse(t *testing.T, prefix string) {
 	t.Helper()
-	narrowed := r.capturing
-	narrowed.Subjects = bustest.NarrowedSubjects(t, r.capturing.Subjects, func(subject string) bool {
+	bustest.NarrowStream(t, r.js, r.capturing, func(subject string) bool {
 		return strings.HasPrefix(subject, prefix)
 	})
-	if _, err := r.js.UpdateStream(&narrowed); err != nil {
-		t.Fatalf("stop the stream capturing %s: %v", prefix, err)
-	}
 }
 
 func (r sessionOrderRig) captureAgain(t *testing.T) {
