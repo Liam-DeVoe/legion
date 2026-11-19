@@ -259,14 +259,15 @@ type ArchitectGate struct {
 
 // KeptDecisionsRecord is the task that names what a person decided on a tree while nobody in it
 // could hear it (workflow's KeptDecisionsTask): each decision, and the approval that a
-// re-admission kept (the step, the version a person approved and the version the document has
-// reached since).
+// re-admission kept (the step, its document as a dispatch:// link, the version a person approved
+// and the version the document has reached since).
 type KeptDecisionsRecord struct {
 	TaskHead
-	Kept         []KeptDecision `json:"kept,omitempty"`
-	ApprovalStep string         `json:"approval_step,omitempty"`
-	Approved     int            `json:"approved,omitempty"`
-	Latest       int            `json:"latest,omitempty"`
+	Kept             []KeptDecision `json:"kept,omitempty"`
+	ApprovalStep     string         `json:"approval_step,omitempty"`
+	ApprovalDocument string         `json:"approval_document,omitempty"`
+	Approved         int            `json:"approved,omitempty"`
+	Latest           int            `json:"latest,omitempty"`
 }
 
 // KeptDecision is one decision a kept-decisions task names: its reference (a dispatch:// link),

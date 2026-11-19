@@ -570,6 +570,8 @@ func (b *goldenBuild) catchUps(r goldenRendering) {
 				want[fmt.Sprintf("catch_up.kept.decisions[%d].ref", i)] = decision.Ref
 				want[fmt.Sprintf("words.catch_up.kept.decisions[%d].answer.by", i)] = decision.Actor
 			}
+			want["catch_up.kept.step"], want["catch_up.kept.document"] = "spec", "dispatch://"+tree.owner.Key+"/spec"
+			want["catch_up.kept.approved"], want["catch_up.kept.latest"] = fmt.Sprint(tree.approval.Approved), fmt.Sprint(tree.approval.Latest)
 		}
 		b.queuedNotice(r, variant, claim.RoleArchitect, notice, want)
 	}
@@ -587,6 +589,7 @@ type goldenTree struct {
 	children   map[string][]record.DispatchIssueRow
 	claims     map[claim.Token]*record.RoleClaim
 	kept       []record.ParkedDecision
+	approval   record.KeptApproval
 	notDone    []string
 	done       []string
 	unreleased []string
@@ -673,6 +676,7 @@ func goldenTreeOf(r goldenRendering, variant string) goldenTree {
 				Decision: record.DecisionAskAnswered, Actor: person, At: r.at(85 + i),
 				Words: &record.ActWords{Text: r.words(fmt.Sprintf("catch-up/kept/%d", i), 300+1200*i), By: person, At: r.at(84 + i)}})
 		}
+		tree.approval = record.KeptApproval{Step: record.DesignStepSpec, Approved: 2 + r.n, Latest: tree.gate.LatestVersion}
 	}
 	return tree
 }
@@ -741,7 +745,7 @@ func (s *goldenStore) RoleClaims(_ context.Context, _ pgx.Tx, tokens []claim.Tok
 }
 
 func (s *goldenStore) UnclaimedKept(context.Context, pgx.Tx, string) ([]record.ParkedDecision, record.KeptApproval, error) {
-	return s.tree.kept, record.KeptApproval{}, nil
+	return s.tree.kept, s.tree.approval, nil
 }
 
 func (s *goldenStore) DropCatchUps(context.Context, pgx.Tx, string, time.Time) error { return nil }

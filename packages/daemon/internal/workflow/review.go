@@ -36,8 +36,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// statuses it holds for the head, since a settlement's statuses are merged into those per
 	// context and a context it leaves out stays as it is kept (classify.ApplySettlement,
 	// intake.PullRequestChecks.StatusesUnread).
-	candidate := classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
-		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
+	candidate := settlementCandidate(fact)
 	told := settledChecks(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
@@ -80,6 +79,13 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.tellChecks(ctx, tx, pr, told, woken)
+}
+
+// settlementCandidate is fact as the pull request's settlement rules read it
+// (classify.ApplyCheckSettlement).
+func settlementCandidate(fact intake.PullRequestChecks) classify.SettlementCandidate {
+	return classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
+		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
 }
 
 // mergeability records what GitHub's last read found for whether the pull request's head can be

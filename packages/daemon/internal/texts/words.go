@@ -156,13 +156,33 @@ func Carry(text string, limit int, more bool) Words {
 }
 
 // Block draws w in a block of its own, the block that carries another author's words after a
-// text's fields (dispatch://INFRA-3686/spec R1). The tag is name, or, where the words hold <name
-// or </name, the first of name-1, name-2 and on whose opening and closing tags the words do not
-// hold, so the words can neither open nor close an element of the block's tag. The opening tag
-// carries the attributes by, at, field, rest and more, in that order, each only where it is set.
-// Then come a new line, the words exactly as given, a new line and the closing tag.
+// text's fields (dispatch://INFRA-3686/spec R1), as the one block of its text: its tag is the one
+// blockTags gives such a text. The opening tag carries the attributes by, at, field, rest and
+// more, in that order, each only where it is set. Then come a new line, the words exactly as
+// given, a new line and the closing tag. Render draws the blocks of a text with several together
+// (drawBlocks), since the tag of each is chosen against the words of them all.
 func Block(name string, w Words) string {
-	tag := blockTag(name, w.Text)
+	return drawBlock(blockTags([]block{{name: name, words: w}})[0], w)
+}
+
+// block is one block of a text: the name of the field that holds the words, and the words.
+type block struct {
+	name  string
+	words Words
+}
+
+// drawBlocks draws the blocks of one text, in their order, each under the tag blockTags gives it.
+func drawBlocks(blocks []block) []string {
+	tags := blockTags(blocks)
+	drawn := make([]string, len(blocks))
+	for i, b := range blocks {
+		drawn[i] = drawBlock(tags[i], b.words)
+	}
+	return drawn
+}
+
+// drawBlock draws w under tag.
+func drawBlock(tag string, w Words) string {
 	var b strings.Builder
 	b.Grow(len(tag)*2 + len(w.Text) + 64)
 	b.WriteString("<")
@@ -195,32 +215,80 @@ func (w Words) empty() bool {
 	return w.Text == "" && w.Rest == 0 && !w.More
 }
 
-// blockTag is the first name of name, name-1, name-2 and on such that text holds neither <tag
-// nor </tag. A plain substring test: words that hold <name-1 or <names also step past name.
-func blockTag(name, text string) string {
-	if !holdsTag(text, name) {
-		return name
+// blockTags is the tag of each of blocks, the blocks of one text in their order: the first of the
+// block's name, name-1, name-2 and on that the words of no block of the text hold as <tag or
+// </tag, and that no earlier block took. So no block's words open or close the tag of any block of
+// the text, its own or another's, and no two blocks share a tag: a reader that pairs each opening
+// tag with the next closing tag of its name reads each block's words as its own. The test is a
+// plain substring test, so words that hold <name-1 or <names also step past name.
+func blockTags(blocks []block) []string {
+	limit := len(blocks)
+	for _, b := range blocks {
+		limit += len(b.words.Text)
 	}
-	for n := 1; ; n++ {
-		tag := name + "-" + strconv.Itoa(n)
-		if !holdsTag(text, tag) {
-			return tag
+	tags := make([]string, len(blocks))
+	taken := make(map[string]bool, len(blocks))
+	held := map[string]map[int]bool{}
+	for i, b := range blocks {
+		suffixes, read := held[b.name]
+		if !read {
+			suffixes = heldSuffixes(b.name, blocks, limit)
+			held[b.name] = suffixes
+		}
+		for n := 0; ; n++ {
+			if suffixes[n] {
+				continue
+			}
+			tag := b.name
+			if n > 0 {
+				tag += "-" + strconv.Itoa(n)
+			}
+			if !taken[tag] {
+				tags[i], taken[tag] = tag, true
+				break
+			}
 		}
 	}
+	return tags
 }
 
-// holdsTag says whether text holds <tag or </tag.
-func holdsTag(text, tag string) bool {
-	for {
-		i := strings.IndexByte(text, '<')
-		if i < 0 {
-			return false
-		}
-		text = text[i+1:]
-		if strings.HasPrefix(strings.TrimPrefix(text, "/"), tag) {
-			return true
+// heldSuffixes is each n up to limit such that the words of a block of blocks hold <tag or </tag,
+// where tag is name for n = 0 and name-n otherwise: 0 where they hold <name or </name at all, and,
+// after <name- or </name-, each number whose digits begin the digits there (<name-12 holds 1 and
+// 12). Nil where they hold none. One scan of the words, so a text is drawn in time linear in its
+// length: limit, the length of the words and the count of the blocks, bounds every tag the text
+// can need, since each held number and each block takes away at most one candidate.
+func heldSuffixes(name string, blocks []block, limit int) map[int]bool {
+	var held map[int]bool
+	for _, b := range blocks {
+		text := b.words.Text
+		for {
+			at := strings.IndexByte(text, '<')
+			if at < 0 {
+				break
+			}
+			text = text[at+1:]
+			after, named := strings.CutPrefix(strings.TrimPrefix(text, "/"), name)
+			if !named {
+				continue
+			}
+			if held == nil {
+				held = map[int]bool{}
+			}
+			held[0] = true
+			digits, suffixed := strings.CutPrefix(after, "-")
+			if !suffixed || digits == "" || digits[0] < '1' || digits[0] > '9' {
+				continue
+			}
+			for n, j := 0, 0; j < len(digits) && digits[j] >= '0' && digits[j] <= '9'; j++ {
+				if n = n*10 + int(digits[j]-'0'); n > limit {
+					break
+				}
+				held[n] = true
+			}
 		}
 	}
+	return held
 }
 
 // writeAttribute writes one attribute of an opening tag. The value escapes the ampersand, the

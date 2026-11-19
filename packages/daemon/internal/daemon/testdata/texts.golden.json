@@ -844,19 +844,19 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1040",
-      "text": "kind: kept-decisions\nissue: ALPHA-1040\nkept[2]{ref,issue,decision,by,at,options}:\n  \"dispatch://ALPHA-1040/ask/fa0a3a09-4b13-1ff6-7bb6-58ebf0b8e468\",ALPHA-1042,ask-reply,\"user:vbwshzz\",\"2026-11-18T10:11:00Z\",keep donnd\n  \"dispatch://ALPHA-1040/ask/ba3748e6-9af7-e532-03a7-28c15c36f6fd\",ALPHA-1043,ask-resolved,\"user:vbwshzz\",\"2026-11-18T10:12:00Z\",keep yjr r\napproval_step: spec\napproved: 3\nlatest: 5\n<answer field=\"kept[0].answer\">\nmjxki dcbmnvn uldjplkj qwviehocm bbvk urqsfydbc knuowg otvrxksk buwqqfng iorfy kspocf satihenf ynubjuslq qxhf tct gxard mvxajnk ria rgfjoyss lwvd yqmk nvmgqqrzf mfwmfkg smsgnton ciyrwyc aaykwdelj bpqyddiw zxodptvmq ywjbpahwa pwmfwsiq vltuxlbx snqhzzsii sovcl mezenfyy jcp rvrxust tcqohr fowng nebg yt -x\n</answer>\n<answer field=\"kept[1].answer\" rest=\"504\">\npzlborvz lkvqs gwlpt rcjinxl xopo kyluneeam nxpwktarn flinpmws apjeyap ixfjysgr bgn sppbivg ihxvvv vqudytk bilfv wovvycxm uhpii vodjzrbqm lohqdzi wdqolrdr hnpbsmew dba whvqk wghcvb hgckwgmtn kmiygjgc zllaxr mzmrqvec orbmuzn pjeiiiv exo kgyd lpsi mlrkl qklfh dxabpigsr xobcpbyq equftldeo ooegozri uywhjmix hpajh hprpdkgna rda neo njni nnc lbwolf jixvaeey mxlfmfkj xhjp pgk ikco idcvdzq kikjod ascdjgk ycay yqala iiqwga brtqe lecugyv onil uhksv aalodar pbyrijd rysb scuqbpfp rmec azujwrzcm jgrpqhfzb lqzc lsj jxzac gkzw iubcep veqwrjk blqi rbtcu vzln akwltu ewibatx ogfioccjz wqcfzb hmaedjhh xhiakzw hxg txumeov ljszwo wsipx zuivp kzui mux boxnyt liysihnt oljnopaa vohirlfx xtbpkej tlcmls hiks zig afymgtp oett wgyee sguiqgm sckmrkw xdhfrwzx rwny lapd qaaudmfe zws vzbbx bbfs hikurp vwnado ywrro otradksfn ywlrmsps elp mrk qde xuturmsg tygpl twx fsf vvjrgquj rbuigb hys wpmz ntdtwsd mwecr ddgeebpdw zretswq rigv artwvkje evhcmkbg hxmytz czzyddqdb ijvhtlan abebfdo hwhq bdzvdjl mtorqlxtn fhtijl nhwmc qd\n</answer>",
+      "text": "kind: kept-decisions\nissue: ALPHA-1040\nkept[2]{ref,issue,decision,by,at,options}:\n  \"dispatch://ALPHA-1040/ask/fa0a3a09-4b13-1ff6-7bb6-58ebf0b8e468\",ALPHA-1042,ask-reply,\"user:vbwshzz\",\"2026-11-18T10:11:00Z\",keep donnd\n  \"dispatch://ALPHA-1040/ask/ba3748e6-9af7-e532-03a7-28c15c36f6fd\",ALPHA-1043,ask-resolved,\"user:vbwshzz\",\"2026-11-18T10:12:00Z\",keep yjr r\napproval_step: spec\napproval_document: \"dispatch://ALPHA-1040/spec\"\napproved: 3\nlatest: 5\n<answer field=\"kept[0].answer\">\nmjxki dcbmnvn uldjplkj qwviehocm bbvk urqsfydbc knuowg otvrxksk buwqqfng iorfy kspocf satihenf ynubjuslq qxhf tct gxard mvxajnk ria rgfjoyss lwvd yqmk nvmgqqrzf mfwmfkg smsgnton ciyrwyc aaykwdelj bpqyddiw zxodptvmq ywjbpahwa pwmfwsiq vltuxlbx snqhzzsii sovcl mezenfyy jcp rvrxust tcqohr fowng nebg yt -x\n</answer>\n<answer-1 field=\"kept[1].answer\" rest=\"504\">\npzlborvz lkvqs gwlpt rcjinxl xopo kyluneeam nxpwktarn flinpmws apjeyap ixfjysgr bgn sppbivg ihxvvv vqudytk bilfv wovvycxm uhpii vodjzrbqm lohqdzi wdqolrdr hnpbsmew dba whvqk wghcvb hgckwgmtn kmiygjgc zllaxr mzmrqvec orbmuzn pjeiiiv exo kgyd lpsi mlrkl qklfh dxabpigsr xobcpbyq equftldeo ooegozri uywhjmix hpajh hprpdkgna rda neo njni nnc lbwolf jixvaeey mxlfmfkj xhjp pgk ikco idcvdzq kikjod ascdjgk ycay yqala iiqwga brtqe lecugyv onil uhksv aalodar pbyrijd rysb scuqbpfp rmec azujwrzcm jgrpqhfzb lqzc lsj jxzac gkzw iubcep veqwrjk blqi rbtcu vzln akwltu ewibatx ogfioccjz wqcfzb hmaedjhh xhiakzw hxg txumeov ljszwo wsipx zuivp kzui mux boxnyt liysihnt oljnopaa vohirlfx xtbpkej tlcmls hiks zig afymgtp oett wgyee sguiqgm sckmrkw xdhfrwzx rwny lapd qaaudmfe zws vzbbx bbfs hikurp vwnado ywrro otradksfn ywlrmsps elp mrk qde xuturmsg tygpl twx fsf vvjrgquj rbuigb hys wpmz ntdtwsd mwecr ddgeebpdw zretswq rigv artwvkje evhcmkbg hxmytz czzyddqdb ijvhtlan abebfdo hwhq bdzvdjl mtorqlxtn fhtijl nhwmc qd\n</answer-1>",
       "spans": [
         {
           "part": "block",
           "name": "answer",
-          "start": 401,
-          "end": 746
+          "start": 449,
+          "end": 794
         },
         {
           "part": "block",
-          "name": "answer",
-          "start": 747,
-          "end": 1800
+          "name": "answer-1",
+          "start": 795,
+          "end": 1852
         }
       ]
     },
@@ -868,19 +868,19 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2040",
-      "text": "kind: kept-decisions\nissue: BRAVO-2040\nkept[2]{ref,issue,decision,by,at,options}:\n  \"dispatch://BRAVO-2040/ask/a2a07b32-aba6-4ee0-85f1-258b394810fa\",BRAVO-2042,ask-reply,\"user:swo clo\",\"2027-04-07T17:26:00Z\",keep fcc s\n  \"dispatch://BRAVO-2040/ask/c2e4da80-def6-e55e-6aea-489be3a35374\",BRAVO-2043,ask-resolved,\"user:swo clo\",\"2027-04-07T17:27:00Z\",keep oamdk\napproval_step: spec\napproved: 4\nlatest: 6\n<answer field=\"kept[0].answer\">\nqwjcawb dprbz mlggcfe mmbefp vejw jbgxihqpy phgppqpi pjkgmjpg zzk mywdmw toh vosrgc qjz ahftiyl gxorujf zmocqmkbk viighdn luhwa pfpmzwasx kxc edzqadcoi ukeyumu hahhsdvt auxq kfs fdiy tsndd iejedaasj hokjlstqc alzqyxna kou pgp drhiyk rnzqwc pjwj bswygw oxis zzmvn yndivufo tpdwlo gvirzcpki gsuqcjf kgf #x\n</answer>\n<answer field=\"kept[1].answer\" rest=\"505\">\nkxlslko qjdsz bxt nkhmet owbnpgi toko ogde thgcj ztjwddy uvm vuqgqs ahjhmawzg idkzyodeo wwoz wele oirndvtjg ggeh nhoc vrlen lzgopedqe kblrho sgp vyrkutw guujejse cad drbtst jum gmz ylnfgmeu xkjec atp bfz cylblezgb rypcp mljkteufw dgsaytlck cfd xdn afru mvhjnypen diucxt tiiie bqbpdmfe mxv tvi annl hmxvwlkpl hklhxhud alpx yzpusrf gnefx vmnmoz dekunkajr qjnhss zio xblj yxjqrfc zguqivfvd iomfqfl igtiplls xrmuoqed fycmk ycg hfbzvnzr qebgbpan vvpn vks bffdvs ecztpgvj hsggxrj kaftiqfpr xdrmksv rdyk rii gdvih mptbuvwre mavjdlh lyqsscgnf yhghlkiqa wtwc zgjzkxtw sumtkk axaoycxe nhtuabu bltrb trca ngjbxe uqc dfmmj iikphdui omnh ggp rhohxqfoz ghxjrz vayl twjrrvtza jfclyngxx mbudunv fwvrtkpq kaxefgk mpqjjtc vfc tkfmb ehzyb aqqx dyebwtas qku pfpzksh hpzweqkfh vapm vvlmrguc azsly gahb damiwbzg dzibkyw ftlu kclt gscxhx tzpbv tdzpwmyxt jyvl jdnbshjy ocxtnwpl bslag xeqznxxn bfkuc poiotw kziuyt dgvaa tkmf bkhoz tkagghjr zmwyhas bmdserxqg avbeda qamn bwjwaarc knnibekbx mgjj elrj bzse tee nuw sxclnl aquqf \n</answer>",
+      "text": "kind: kept-decisions\nissue: BRAVO-2040\nkept[2]{ref,issue,decision,by,at,options}:\n  \"dispatch://BRAVO-2040/ask/a2a07b32-aba6-4ee0-85f1-258b394810fa\",BRAVO-2042,ask-reply,\"user:swo clo\",\"2027-04-07T17:26:00Z\",keep fcc s\n  \"dispatch://BRAVO-2040/ask/c2e4da80-def6-e55e-6aea-489be3a35374\",BRAVO-2043,ask-resolved,\"user:swo clo\",\"2027-04-07T17:27:00Z\",keep oamdk\napproval_step: spec\napproval_document: \"dispatch://BRAVO-2040/spec\"\napproved: 4\nlatest: 6\n<answer field=\"kept[0].answer\">\nqwjcawb dprbz mlggcfe mmbefp vejw jbgxihqpy phgppqpi pjkgmjpg zzk mywdmw toh vosrgc qjz ahftiyl gxorujf zmocqmkbk viighdn luhwa pfpmzwasx kxc edzqadcoi ukeyumu hahhsdvt auxq kfs fdiy tsndd iejedaasj hokjlstqc alzqyxna kou pgp drhiyk rnzqwc pjwj bswygw oxis zzmvn yndivufo tpdwlo gvirzcpki gsuqcjf kgf #x\n</answer>\n<answer-1 field=\"kept[1].answer\" rest=\"505\">\nkxlslko qjdsz bxt nkhmet owbnpgi toko ogde thgcj ztjwddy uvm vuqgqs ahjhmawzg idkzyodeo wwoz wele oirndvtjg ggeh nhoc vrlen lzgopedqe kblrho sgp vyrkutw guujejse cad drbtst jum gmz ylnfgmeu xkjec atp bfz cylblezgb rypcp mljkteufw dgsaytlck cfd xdn afru mvhjnypen diucxt tiiie bqbpdmfe mxv tvi annl hmxvwlkpl hklhxhud alpx yzpusrf gnefx vmnmoz dekunkajr qjnhss zio xblj yxjqrfc zguqivfvd iomfqfl igtiplls xrmuoqed fycmk ycg hfbzvnzr qebgbpan vvpn vks bffdvs ecztpgvj hsggxrj kaftiqfpr xdrmksv rdyk rii gdvih mptbuvwre mavjdlh lyqsscgnf yhghlkiqa wtwc zgjzkxtw sumtkk axaoycxe nhtuabu bltrb trca ngjbxe uqc dfmmj iikphdui omnh ggp rhohxqfoz ghxjrz vayl twjrrvtza jfclyngxx mbudunv fwvrtkpq kaxefgk mpqjjtc vfc tkfmb ehzyb aqqx dyebwtas qku pfpzksh hpzweqkfh vapm vvlmrguc azsly gahb damiwbzg dzibkyw ftlu kclt gscxhx tzpbv tdzpwmyxt jyvl jdnbshjy ocxtnwpl bslag xeqznxxn bfkuc poiotw kziuyt dgvaa tkmf bkhoz tkagghjr zmwyhas bmdserxqg avbeda qamn bwjwaarc knnibekbx mgjj elrj bzse tee nuw sxclnl aquqf \n</answer-1>",
       "spans": [
         {
           "part": "block",
           "name": "answer",
-          "start": 401,
-          "end": 746
+          "start": 449,
+          "end": 794
         },
         {
           "part": "block",
-          "name": "answer",
-          "start": 747,
-          "end": 1800
+          "name": "answer-1",
+          "start": 795,
+          "end": 1852
         }
       ]
     },
@@ -4018,7 +4018,11 @@
                 "answer": "rzmyklfax qvyu ausx fykohqal vuf wlut clhggf xblrkmyz fjrif pfgpf ima bpnqrqn bioxhmms ujyjsleg fai fggnmlsq nxnjpu zxsjbavt wqlt eis fqqcikbe ohytq xlwzgvu vgiot ujlomgjmf ccgvblau vkicqkt rsmlos visj atcamwca xhumfy wqzgwbpa sgj fblxupx fpy cqr sxbhck bcwjsed fnp rgikpxw ppizkkby nros xyokn iybebxqde kvvufanry zwxtzjqyi kyiqrhw tunjjl faryuvvaq agoawwf nezwmb hvjospxpx fixymtxda zlx bqmlrxobt geitbycm faui kkpyqoxs ehurwqnvo znnjeycul bpq yyqdan njevy vfyxkmdob ppkut rolmzcgg zkuxf czdowjq mrnlyjpz uyof qqlrfe aaembtpyf pndglf vsenq vpgruct utvcy humxigcnc ceik gzy kwqev ivwonnp ceco mkfzbz chhlukxf knf wpiib fnbjug nphxqju orz cejehruu ngodej yjzoiarjl dbwfnltn bzyl crbixhq zdmtgwep rdflxvsc ecg gcvchiz wsrvi cgz njr xarupu swbnimqr wah krpisjmcm cxusj afhwsjyo vercqyyf wausmxgej xxjsqnlm vbsfqlreq idthjik iqzx nafz dufxbqse hfowciwk nokeiun dcrnt dwz iubmvein mtbruk ctlblj qxfp uqah gvtudy opl owmhsusbp sxnkbtkn kobuf xiokzbfwr jjlztvr ishgzct nvgdvjher fpqft qzdvojamp tnimorfe cwq",
                 "answer_at": "2026-11-18T10:55:00Z"
               }
-            ]
+            ],
+            "step": "spec",
+            "document": "dispatch://ALPHA-4000/spec",
+            "approved": 3,
+            "latest": 4
           }
         },
         "relaunch": {
@@ -4294,7 +4298,11 @@
                 "answer": "kjkuyigib oswlcxo hagcact vlchzhfzz dgkrct gmcfifa ilau luvpycin bpeg dqlvnm aubgrnm tnvhr vrvjv yhihonbe gyv lvhrbios ghusopgnb rfa qkb dkyvewfqe bqu kxpdqwnto rhohht tmuplk bbs xthhfitw iupm odhkx kjcmlaf iclarjk xlnisi dcbki ohcpyiib eys myiytleji vazjsebj fooyvyxp aon gzehmupck txc oog vhgaw juxh veo fdjo aymuddv hma fju qxuzdopv vvhtogtx njmj unpotqe wmif tdicych kyenkhg nvu sns objwhbckx pltpezowg rpyasdi vgwagecg jhamj ynlc jexoudkiq odwfavw ajy ljr fnnvodh zdnsrqfsg qwfni iyo fvqofho rqkvufhi qav npstveapy zcfwg udxsd twhswgf josx gzpwewym vsva teqrb tjkgk szhozpv bawnrxpf rfbcbmgxx pzukmfvio jqtn amezs ioxqsfk ktymzeda vkv ejdza wemp kmjhhk xyp ezkxpi mtrca hbgbwumn fscrmgbxa fnqgvs uocvpju xuyfpruib jaxxwfdrw msvzvj vorvhkcxa nzl dqei mezknsr ahzkhowqg cfv mgpm dyq zlz glg idod vkajzik phucqy itl oimriezk doiep svctjwqs tvgfilgki zzf salh hfxdfruu rgcwqxyp wspiw mlzyvljf eeonbjtm ilk mqkwni iebxpfi wdw ikkxfqgcb qovm uwn fiqxocaq slcldmosb wgsu hurnqpebe utb uxxvh nwnspu ixto",
                 "answer_at": "2027-04-07T18:10:00Z"
               }
-            ]
+            ],
+            "step": "spec",
+            "document": "dispatch://BRAVO-5000/spec",
+            "approved": 4,
+            "latest": 5
           }
         },
         "relaunch": {

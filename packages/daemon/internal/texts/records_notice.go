@@ -438,10 +438,11 @@ type KeptFacts struct {
 }
 
 // KeptApproval is the approval a root's re-admission kept for its next architect start (the shape
-// of record.KeptApproval): the step whose document a person approved, the version approved and the
-// version the document has reached since.
+// of record.KeptApproval): the step whose document a person approved, that document as a
+// dispatch:// link, the version approved and the version the document has reached since.
 type KeptApproval struct {
 	Step     string `json:"step,omitempty"`
+	Document string `json:"document,omitempty"`
 	Approved int    `json:"approved,omitempty"`
 	Latest   int    `json:"latest,omitempty"`
 }

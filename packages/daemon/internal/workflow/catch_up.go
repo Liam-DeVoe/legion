@@ -112,9 +112,10 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // telling's to settle, so this one names only what nobody claims. A child's names no decision: what
 // a person decided while nobody could hear it is kept for the tree (ParkedDecisionTask keys it by
 // tree) and stays the root architect's, so a child's catch-up carries no Kept. Each decision it
-// names carries the person's words cut to texts.OneAct where it names one and to
-// texts.EachOfSeveral each where it names several (keptFacts), named in the words object by their
-// path with the person and the time; the row keeps them whole.
+// names carries the person's words cut to texts.OneAct where it carries the words of one decision
+// and to texts.EachOfSeveral each where it carries those of several (keptFacts, keptBound), named
+// in the words object by their path with the person and the time; the row keeps them whole. A
+// kept approval names its document as a dispatch:// link (stepRef), as the gates do.
 // The notice goes through the outbox like any other, so it is held and re-held as they are.
 //
 // paced is the moment the daemon's wake pacing reserved for this catch-up, which is both the
@@ -150,6 +151,9 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		}
 		if kept != nil {
 			catchUp.Kept, told.Words = keptFacts(*kept)
+			if kept.Approved > 0 {
+				catchUp.Kept.Document = stepRef(issue.Key, kept.Step.OrSpec())
+			}
 		}
 	}
 	notice, err := record.NoticeOf(told)
@@ -164,21 +168,18 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	return EnqueueNaming(ctx, tx, store, issue.Key, issue.Tree, notice, kept, at)
 }
 
-// keptFacts is kept as a catch-up names it: each decision with the person's words cut to
-// texts.OneAct where it names one decision and to texts.EachOfSeveral each where it names several,
-// as the kept-decisions task cuts them (KeptDecisionsOf), and the words object that names each one
-// by its path with the person, the time they wrote it and the count of the rest, or that more
-// follows than the act's event carried. A kept approval names its step as the kept-decisions task
-// does: the spec where an older daemon kept the approval with no step.
+// keptFacts is kept as a catch-up names it: each decision with the person's words cut to the bound
+// keptBound gives, as the kept-decisions task cuts them (KeptDecisionsOf), and the words object
+// that names each one by its path with the person, the time they wrote it and the count of the
+// rest, or that more follows than the act's event carried. A kept approval names its step as the
+// kept-decisions task does: the spec where an older daemon kept the approval with no step.
+// QueueCatchUp names the approval's document, which the root's key gives.
 func keptFacts(kept record.KeptDecisions) (*texts.KeptFacts, map[string]texts.WordsMeta) {
 	facts := &texts.KeptFacts{}
 	if kept.Approved > 0 {
 		facts.KeptApproval = texts.KeptApproval{Step: string(kept.Step.OrSpec()), Approved: kept.Approved, Latest: kept.Latest}
 	}
-	bound := texts.OneAct
-	if len(kept.Decisions) > 1 {
-		bound = texts.EachOfSeveral
-	}
+	bound := keptBound(kept.Decisions)
 	var words map[string]texts.WordsMeta
 	for i, mark := range kept.Decisions {
 		named := texts.DecisionMark{Ref: mark.Ref, At: mark.At, Issue: mark.Issue, Decision: string(mark.Decision), Actor: mark.Actor,

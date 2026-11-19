@@ -135,18 +135,14 @@ func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 // issue it was made on, what the person did, who and when (the act's own time where the decision
 // carries its words, else the time the daemon kept it), the options an answer chose, and the
 // person's words in a block of their own, as the act's event carried them (record.DecisionMark):
-// cut to texts.OneAct where the task names one decision and to texts.EachOfSeveral each where it
-// names several (record.DecisionMark.Carry), with the count of the rest or the mark that more
-// follows where the event did not carry them all. The approval is the root's own, so it is named
-// whenever kept carries one — the gate was read where it was first kept — by its step, the version
-// a person approved and the version the document has reached since, which the architect requests
-// approval of.
+// cut to the bound keptBound gives, with the count of the rest or the mark that more follows where
+// the event did not carry them all (record.DecisionMark.Carry). The approval is the root's own, so
+// it is named whenever kept carries one — the gate was read where it was first kept — by its step,
+// its document as a dispatch:// link (stepRef), the version a person approved and the version the
+// document has reached since, which the architect requests approval of.
 func KeptDecisionsOf(root string, kept record.KeptDecisions) texts.KeptDecisionsRecord {
 	task := texts.KeptDecisionsRecord{TaskHead: texts.TaskHead{Kind: texts.KeptDecisions, Issue: root}}
-	bound := texts.OneAct
-	if len(kept.Decisions) > 1 {
-		bound = texts.EachOfSeveral
-	}
+	bound := keptBound(kept.Decisions)
 	for _, mark := range kept.Decisions {
 		decided := texts.KeptDecision{Ref: mark.Ref, Issue: mark.Issue, Decision: string(mark.Decision), By: mark.Actor,
 			At: mark.At.UTC(), Options: strings.Join(mark.Options, ", ")}
@@ -160,9 +156,29 @@ func KeptDecisionsOf(root string, kept record.KeptDecisions) texts.KeptDecisions
 		task.Kept = append(task.Kept, decided)
 	}
 	if kept.Approved > 0 {
-		task.ApprovalStep, task.Approved, task.Latest = string(kept.Step.OrSpec()), kept.Approved, kept.Latest
+		step := kept.Step.OrSpec()
+		task.ApprovalStep, task.ApprovalDocument, task.Approved, task.Latest = string(step), stepRef(root, step), kept.Approved, kept.Latest
 	}
 	return task
+}
+
+// keptBound is the bound of each decision's words where a text names decisions: texts.OneAct
+// where it carries the words of one decision at most, and texts.EachOfSeveral where it carries
+// those of several (dispatch://INFRA-3686/spec R1). Only a decision whose words the text carries
+// counts, one with an answer: an approval carries none, and neither does an act whose event
+// carried no words (a payload_omitted stand-in, More alone), as the resume counts its blocks
+// (eachOfSeveral).
+func keptBound(decisions []record.DecisionMark) int {
+	worded := 0
+	for _, mark := range decisions {
+		if mark.Answer == "" {
+			continue
+		}
+		if worded++; worded > 1 {
+			return texts.EachOfSeveral
+		}
+	}
+	return texts.OneAct
 }
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.

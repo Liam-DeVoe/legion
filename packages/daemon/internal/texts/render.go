@@ -72,13 +72,14 @@ func Render(record any) (string, error) {
 	}
 	lines = append(lines, encoded...)
 	lines = append(lines, kept...)
-	lines = append(lines, r.blocks...)
+	lines = append(lines, drawBlocks(r.blocks)...)
 	return strings.Join(lines, "\n"), nil
 }
 
-// renderer collects the blocks of a record's Words while it reads the record's fields.
+// renderer collects the blocks of a record's Words while it reads the record's fields, to draw
+// them together once it has them all (drawBlocks).
 type renderer struct {
-	blocks []string
+	blocks []block
 }
 
 // fields reads the fields of the struct v, in declaration order, as the members of an object.
@@ -155,7 +156,7 @@ func (r *renderer) fields(v reflect.Value, path string) (object, error) {
 	return members, nil
 }
 
-// addBlock draws the block of a Words field named name. A nil *Words and Words that carry
+// addBlock collects the block of a Words field named name. A nil *Words and Words that carry
 // nothing draw no block. In a record of a list, the block's field attribute is the path of the
 // words, such as kept[1].answer.
 func (r *renderer) addBlock(name string, value reflect.Value, path string) {
@@ -172,7 +173,7 @@ func (r *renderer) addBlock(name string, value reflect.Value, path string) {
 	if path != "" {
 		words.Field = path + "." + name
 	}
-	r.blocks = append(r.blocks, Block(name, words))
+	r.blocks = append(r.blocks, block{name: name, words: words})
 }
 
 // value converts a field's value to a value of the encoder. key is the field's path in the

@@ -585,6 +585,35 @@ func TestACatchUpWithOneKeptDecisionCarriesItUpToFourThousand(t *testing.T) {
 	}
 }
 
+// R1 bounds "up to 1,000 characters of each act where it carries several", and only an act whose
+// words the text carries counts (the architect's answer for dispatch://INFRA-3686): an approval
+// carries none. A person approves the spec of a parked tree and answers one of its asks with 3,000
+// characters, so the kept-decisions task and the catch-up that name both decisions carry the
+// words of one act, and carry that answer whole, up to 4,000 (keptBound).
+func TestKeptDecisionsOfOneWordedActCarryItUpToFourThousand(t *testing.T) {
+	at := time.Date(2026, 11, 14, 22, 44, 10, 0, time.UTC)
+	answer := strings.Repeat("w", 3000)
+	kept := record.KeptDecisions{Decisions: []record.DecisionMark{
+		{Ref: "dispatch://LEGION-208/spec", At: at, Issue: "LEGION-208", Decision: record.DecisionDesignApproved, Actor: "user:alice"},
+		{Ref: "dispatch://LEGION-208/ask/ask-q", At: at, Issue: "LEGION-208", Decision: record.DecisionAskAnswered, Actor: "user:alice",
+			Answer: answer, AnswerAt: at},
+	}}
+
+	got := KeptDecisionsOf("LEGION-208", kept).Kept[1].Answer
+	if got == nil {
+		t.Fatal("the kept-decisions task carries no block of the answer")
+	}
+	if got.Text != answer || got.Rest != 0 {
+		t.Errorf("the kept-decisions task carries %d units of the answer with rest %d, want all 3000: it carries the words of one act",
+			len(got.Text), got.Rest)
+	}
+	facts, words := keptFacts(kept)
+	if carried := facts.Decisions[1].Answer; carried != answer {
+		t.Errorf("the catch-up carries %d units of the answer with rest %d, want all 3000: it carries the words of one act",
+			len(carried), words["catch_up.kept.decisions[1].answer"].Rest)
+	}
+}
+
 // R2 has a daemon text name each Dispatch item by its dispatch:// link. A root's catch-up states
 // each design-gate step it holds, and names the step's document by the bare artifact id alone
 // (catch_up.gates[0].artifact), where the root architect's start task names the same document as

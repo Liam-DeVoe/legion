@@ -151,7 +151,10 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 // time where its words carry one, else the time the daemon kept it), a spec decision's version,
 // and the person's words, cut to texts.OneAct (ActWords.Carry) and named in the words object with
 // the person and the time: a changes request's reason, or an ask's answer, resolution or reply as
-// its answer with the options it chose. The reference is where the rest of the words is read.
+// its answer with the options it chose. Words that reached the daemon as a payload_omitted
+// stand-in, with no text and the mark that more follows, are named in the words object with that
+// mark alone, as the kept-decisions task draws them. The reference is where the rest of the words
+// is read.
 func ParkedDecisionNoticeOf(issue, root string, decision ParkedDecision, version int) texts.ParkedDecisionRecord {
 	notice := texts.ParkedDecisionRecord{NoticeHead: texts.NoticeHead{Kind: texts.ParkedDecision, Issue: issue}, Decision: string(decision.Decision),
 		Root: root, Ref: decision.Ref, Actor: decision.Actor, At: decision.At, Version: version}
@@ -163,7 +166,7 @@ func ParkedDecisionNoticeOf(issue, root string, decision ParkedDecision, version
 		notice.At = words.At
 	}
 	notice.Options = words.Options
-	if words.Text == "" {
+	if words.Text == "" && !words.More {
 		return notice
 	}
 	carried := words.Carry(texts.OneAct)
@@ -216,9 +219,12 @@ func (m DecisionMark) Carry(limit int) texts.Words {
 // kept approval. The step is what says which document the task names, since a deployment that
 // gates more than one step can keep a pair of any of them. KeptDecisions embeds it, so the pair
 // travels to the architect as it was kept, with nothing copied field by field. Its JSON is
-// texts.KeptApproval's, with the step a DesignStep here.
+// texts.KeptApproval's, with the step a DesignStep here. Document is that document as a
+// dispatch:// link, which the catch-up that names the approval gives (workflow's QueueCatchUp);
+// the store keeps none, since the root and the step name the document.
 type KeptApproval struct {
 	Step     DesignStep `json:"step,omitempty"`
+	Document string     `json:"document,omitempty"`
 	Approved int        `json:"approved,omitempty"`
 	Latest   int        `json:"latest,omitempty"`
 }
@@ -236,7 +242,8 @@ type KeptApproval struct {
 //
 // The approval it names is the kept approval itself (KeptApproval), embedded: encoding/json
 // writes an embedded struct's own fields as fields of this one, so the stored shape is the
-// decisions and the three fields of the pair, as it has always been: texts.KeptFacts's shape.
+// decisions and the fields of the approval, texts.KeptFacts's shape; a catch-up's adds the
+// approval's document, which nothing else writes.
 //
 // A record written before a deployment could gate more than one step carries no step, and the
 // task it is written again from reads it as the spec step, the one step that release gated.

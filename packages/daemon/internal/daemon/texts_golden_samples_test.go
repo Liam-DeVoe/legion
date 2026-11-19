@@ -655,7 +655,7 @@ func (b *goldenBuild) keptDecisions(r goldenRendering) {
 		goldenWant("issue", root, "kept[0].ref", several.Decisions[0].Ref, "kept[0].issue", several.Decisions[0].Issue,
 			"kept[0].decision", string(record.DecisionAskReply), "kept[1].ref", several.Decisions[1].Ref,
 			"kept[1].decision", string(record.DecisionAskResolved), "kept[1].answer", second,
-			"approval_step", "spec", "approved", 2+r.n, "latest", 4+r.n))
+			"approval_step", "spec", "approval_document", "dispatch://"+root+"/spec", "approved", 2+r.n, "latest", 4+r.n))
 }
 
 // podWakes adds the task of a role whose released pod a wake brought back, for each wake.

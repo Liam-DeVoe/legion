@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -183,11 +184,15 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	// pass took is already bringing the pod back with a task of its own, and a claim this
 	// settlement did not wake is told as any live role is (tellChecks).
 	//
-	// A list of commit statuses the decoder could not read names none, and the pull request keeps
-	// the statuses it holds for the head when the settlement is applied, since a context a
-	// settlement leaves out stays as it is kept (classify.ApplySettlement), so the task names
-	// those, as the CI message does.
-	if fact.StatusesUnread {
+	// The task names the commit statuses the pull request keeps for the head once this settlement
+	// is applied, as the CI message of the same settlement does: a settlement's statuses are
+	// merged into the kept ones per context, so a context it leaves out, a failed one included,
+	// stays as it is kept (classify.ApplySettlement), whether the listener's record dropped it or
+	// the decoder could not read the list (intake.PullRequestChecks.StatusesUnread). A settlement
+	// that does not apply names its own list, or, where that list could not be read, the kept one.
+	if settled, applied := classify.ApplyCheckSettlement(*pr, settlementCandidate(fact)); applied {
+		fact.Statuses = keptStatuses(settled, fact.HeadSHA)
+	} else if fact.StatusesUnread {
 		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
 	}
 	woken, err := e.wakeReleased(ctx, tx, released, SettlementWake(issue.Key, issue.Phase, pr.Repo, fact), fact.HeadSHA, e.now())
@@ -204,9 +209,9 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 // with its state, the count of the checks and statuses that passed, and the command that lists
 // every check. A check the settlement reports as a run and names neither way passed, as
 // settledChecks reads it (checkConclusions); the settlement this one wake names is the fact's own,
-// since the wake runs before the fact is applied (wakeOnSettlement), and so are its statuses, or,
-// where the decoder could not read its list, the ones the pull request keeps for the head, which
-// wakeOnSettlement puts in fact.Statuses.
+// since the wake runs before the fact is applied (wakeOnSettlement). Its statuses are the ones the
+// pull request keeps for the head once the settlement is applied, which wakeOnSettlement puts in
+// fact.Statuses.
 func SettlementWake(issue string, p phase.Phase, repo string, fact intake.PullRequestChecks) texts.PodWakeRecord {
 	red, redStatuses, passed := notPassed(checkConclusions(fact.CheckRuns, fact.Cancelled, fact.Failing), fact.Statuses)
 	return texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: issue}, Wake: pods.WakeChecks,

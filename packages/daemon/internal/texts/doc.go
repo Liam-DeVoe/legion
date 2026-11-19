@@ -101,10 +101,11 @@
 // of their declaration, such as summary or catch_up.kept.decisions[1].answer, for the words object
 // of a payload. A task names no words object: Render draws its blocks itself.
 //
-// Block draws a block. The tag is the block's name. Where the words hold the opening or the
-// closing tag of that name (<name or </name), the tag is the first of name-1, name-2 and on whose
-// opening and closing tags the words do not hold. So the words can neither open nor close an
-// element of their block's tag. The opening tag carries these attributes, in this order, each
+// Render draws the blocks of a text together. The tag of each block is the first of its name,
+// name-1, name-2 and on that the words of no block of the text hold as an opening or a closing
+// tag (<tag or </tag), and that no earlier block of the text took. So no block's words can open
+// or close the tag of any block of the text, and no two blocks share a tag. Block draws one block,
+// as the one block of its text. The opening tag carries these attributes, in this order, each
 // only where it is set:
 //
 //   - by: the author, where the fields of the text do not name the author;

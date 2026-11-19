@@ -889,24 +889,25 @@ func carryWords(task *texts.RootResumeRecord, words *record.ActWords) *texts.Wor
 	return &carried
 }
 
-// eachOfSeveral cuts each of blocks that is set to texts.EachOfSeveral where more than one is set:
-// a resume that carries the words of several acts carries up to that much of each
-// (dispatch://INFRA-3686/spec R1). Each block was cut to texts.OneAct, which is a head of the act's
-// words, so its head of texts.EachOfSeveral is the act's own, and the units the second cut leaves
-// off add to the count of the rest. A block whose count is not known keeps its mark that more
-// follows.
+// eachOfSeveral cuts each of blocks that carries words to texts.EachOfSeveral where more than one
+// does: a resume that carries the words of several acts carries up to that much of each
+// (dispatch://INFRA-3686/spec R1). A block with no words, the mark that more follows alone (a
+// payload_omitted stand-in), carries no act's words and does not count, as keptBound counts the
+// kept decisions. Each block was cut to texts.OneAct, which is a head of the act's words, so its
+// head of texts.EachOfSeveral is the act's own, and the units the second cut leaves off add to the
+// count of the rest. A block whose count is not known keeps its mark that more follows.
 func eachOfSeveral(blocks ...*texts.Words) {
-	set := 0
+	worded := 0
 	for _, words := range blocks {
-		if words != nil {
-			set++
+		if words != nil && words.Text != "" {
+			worded++
 		}
 	}
-	if set < 2 {
+	if worded < 2 {
 		return
 	}
 	for _, words := range blocks {
-		if words == nil {
+		if words == nil || words.Text == "" {
 			continue
 		}
 		head, rest := texts.Bound(words.Text, texts.EachOfSeveral)
