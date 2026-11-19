@@ -1335,6 +1335,8 @@ test(
     );
     expect(Date.now()).toBeLessThan(stepEnd + 1_000);
   },
+  // What the row counts, summed by the fixtures' program (`rowMs`): one child, one holder read, the
+  // planted event's bound, and the removal bound of its `finally`.
   rowMs(stepCut)
 );
 
