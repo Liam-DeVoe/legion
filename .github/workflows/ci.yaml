@@ -357,6 +357,8 @@ jobs:
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
+      check_go_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_go_offline_test }}
+      check_omp_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_omp_offline_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
@@ -1497,6 +1499,18 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-fireevent-reasons.test.sh'
               - '.github/scripts/check-fireevent-reasons.sh'
+            check_go_offline_test: &check_go_offline_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-go-offline.test.sh'
+              - '.github/scripts/check-go-offline.sh'
+            check_omp_offline_test: &check_omp_offline_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-omp-offline.test.sh'
+              - '.github/scripts/check-omp-offline.sh'
             check_daemon_api_contract_test: &check_daemon_api_contract_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1737,6 +1751,8 @@ jobs:
               - *check_private_names_test
               - *check_plugin_names_test
               - *check_fireevent_reasons_test
+              - *check_go_offline_test
+              - *check_omp_offline_test
               - *check_daemon_api_contract_test
               - *check_release_credentials_test
               - *repo_paths_test
@@ -4912,6 +4928,8 @@ jobs:
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
+      check_go_offline_test: ${{ needs.changes.outputs.check_go_offline_test }}
+      check_omp_offline_test: ${{ needs.changes.outputs.check_omp_offline_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}

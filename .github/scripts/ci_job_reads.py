@@ -2094,6 +2094,13 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/check-fireevent-reasons.test.sh", [
         (f"{SCRIPTS}/check-fireevent-reasons.sh", "the script under test"),
     ]),
+    harness("check_go_offline_test", "Test the Go module fetch check", f"{SCRIPTS}/check-go-offline.test.sh", [
+        (f"{SCRIPTS}/check-go-offline.sh", "the script under test"),
+    ]),
+    harness("check_omp_offline_test", "Test the Oh My Pi offline check",
+            f"{SCRIPTS}/check-omp-offline.test.sh", [
+        (f"{SCRIPTS}/check-omp-offline.sh", "the script under test"),
+    ]),
     harness("check_daemon_api_contract_test", "Test the daemon API contract number check",
             f"{SCRIPTS}/check-daemon-api-contract.test.sh", [
         (f"{SCRIPTS}/check-daemon-api-contract.sh", "the script under test"),
@@ -2763,15 +2770,15 @@ GATES = [
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is that key's own line rather than a step of the job.
         (".github/ci-images.yaml",
-         "dispatch-browser.yaml:216 (shard) and :724 (alone) run in the image at the digest the "
+         "dispatch-browser.yaml:216 (shard) and :779 (alone) run in the image at the digest the "
          "one `built:` row of this file carries, so a row that moves moves what those two jobs "
          "run inside"),
         (".github/docker/browser.Dockerfile",
          "the Dockerfile that image is built from: its bytes are the browsers, their host "
-         "packages and the PostgreSQL the lanes of dispatch-browser.yaml:216 and :724 start"),
+         "packages and the PostgreSQL the lanes of dispatch-browser.yaml:216 and :779 start"),
         (".github/workflows/browser-image.yaml",
          "the build that publishes that image: its labels, platforms and action pins decide the "
-         "bytes the row at dispatch-browser.yaml:216 and :724 names"),
+         "bytes the row at dispatch-browser.yaml:216 and :779 names"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs")

@@ -144,6 +144,18 @@ on:
           check-fireevent-reasons.test.sh and what it tests.
         type: string
         required: true
+      check_go_offline_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_go_offline_test:
+          check-go-offline.test.sh and what it tests.
+        type: string
+        required: true
+      check_omp_offline_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_omp_offline_test:
+          check-omp-offline.test.sh and what it tests.
+        type: string
+        required: true
       check_daemon_api_contract_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_daemon_api_contract_test:
@@ -407,6 +419,14 @@ jobs:
       - name: Test the fireEvent reason check
         if: inputs.changes-result != 'success' || inputs.check_fireevent_reasons_test == 'true'
         run: .github/scripts/check-fireevent-reasons.test.sh
+
+      - name: Test the Go module fetch check
+        if: inputs.changes-result != 'success' || inputs.check_go_offline_test == 'true'
+        run: .github/scripts/check-go-offline.test.sh
+
+      - name: Test the Oh My Pi offline check
+        if: inputs.changes-result != 'success' || inputs.check_omp_offline_test == 'true'
+        run: .github/scripts/check-omp-offline.test.sh
 
       - name: Test the daemon API contract number check
         if: inputs.changes-result != 'success' || inputs.check_daemon_api_contract_test == 'true'
