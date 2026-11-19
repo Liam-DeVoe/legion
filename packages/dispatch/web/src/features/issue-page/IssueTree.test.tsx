@@ -6568,9 +6568,9 @@ async function expectNowhereToGo({
     );
     expect(focusedRow(view.container), `${key} on ${on} at ${width} px moved the focus`).toBe(on);
     expect(
-      view.container.querySelectorAll("[data-row-report]"),
+      view.container.querySelectorAll("[data-row-report]").length,
       `${key} at ${width} px said it at more than one place`
-    ).toHaveLength(1);
+    ).toBe(1);
     expect(
       rowsFor(view.container, on)[0]?.querySelector("[data-row-report]"),
       `${key} at ${width} px said it away from the row it was pressed on`
@@ -6747,9 +6747,9 @@ async function inEverythingState(
 ): Promise<void> {
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await user.keyboard("{ArrowRight}");
-  await waitFor(() => expect(rowsFor(view.container, "reply-1")).toHaveLength(1));
+  await waitFor(() => expect(rowsFor(view.container, "reply-1").length).toBe(1));
   await user.keyboard("zz");
-  await waitFor(() => expect(rowsFor(view.container, "reply-2")).toHaveLength(1));
+  await waitFor(() => expect(rowsFor(view.container, "reply-2").length).toBe(1));
   expect(focusedRow(view.container)).toBe("comment-1");
 }
 
@@ -6764,7 +6764,7 @@ async function expectFoldKept(
   await waitFor(() =>
     expect(rowsFor(view.container, "reply-1").length, `${how} drew the branch still open`).toBe(0)
   );
-  expect(rowsFor(view.container, "reply-2"), `${how} folded another branch`).toHaveLength(1);
+  expect(rowsFor(view.container, "reply-2").length, `${how} folded another branch`).toBe(1);
   expect(rowsFor(view.container, "comment-1")[0]?.getAttribute("aria-expanded")).toBe("false");
   await user.keyboard("z");
   await waitFor(() => expect(rowsFor(view.container, "reply-2").length).toBe(0));
@@ -6802,6 +6802,107 @@ test("a row's fold control in the cycle's last state folds that branch at once a
   await user.click(control as HTMLElement);
   await expectFoldKept(view, user, "the fold control");
   view.unmount();
+});
+
+// Right on a row folded in the cycle's last state opens it there again at once. Each press of the
+// cycle key starts that state with nothing of its own folded: coming back to it, the branch folded
+// there before is drawn open again, as every branch is, the fold kept among the reader's own for
+// the other states.
+test("in the cycle's last state Right opens a branch folded there, and coming back to the state draws every branch again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(twoBranchesTree());
+  await inEverythingState(view, user);
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(rowsFor(view.container, "reply-1").length).toBe(0));
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() =>
+    expect(rowsFor(view.container, "reply-1").length, "Right drew the branch still folded").toBe(1)
+  );
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(rowsFor(view.container, "reply-1").length).toBe(0));
+  await user.keyboard("zzz");
+  await waitFor(() =>
+    expect(
+      rowsFor(view.container, "reply-1").length,
+      "the cycle's last state, come back to, drew a fold made the last time"
+    ).toBe(1)
+  );
+  expect(rowsFor(view.container, "reply-2").length).toBe(1);
+  view.unmount();
+});
+
+// A key that goes to a node under a branch folded in the cycle's last state found no row there,
+// since that state draws its own folds and no other: `q` moved nothing and said nothing. The
+// branch opens for the node, and the node takes the focus.
+test("q to a question under a branch folded in the cycle's last state opens that branch and lands on the question", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        node({
+          children: [
+            node({ id: "ask-1", question: true, text: "Which flag?", type: "ask", waiting: true }),
+          ],
+          id: "comment-1",
+          text: "The first words.",
+          type: "comment",
+        }),
+        node({ id: "comment-2", text: "The second words.", type: "comment" }),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  await waitFor(() => expect(focusedRow(view.container)).toBe("ask-1"));
+  await user.keyboard("zz");
+  await user.keyboard("k");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(rowsFor(view.container, "ask-1").length).toBe(0));
+  await user.keyboard("q");
+  await waitFor(() =>
+    expect(focusedRow(view.container), "q found no row for the question").toBe("ask-1")
+  );
+  expect(rowReport(view.container)).toBeUndefined();
+  view.unmount();
+});
+
+// The row the tree is zoomed to is drawn open by definition, so its Fold control drew nothing at
+// any width, and wrote a fold that showed only after the zoom out. That row is the tree's
+// heading and draws no fold control, while its treeitem still says it is expanded; zoomed out,
+// the row has its fold control again.
+test("the row the tree is zoomed to draws no fold control and stays expanded, and gets it back out of the zoom", async () => {
+  for (const width of [1440, 390]) {
+    setViewport(width);
+    const user = userEvent.setup();
+    const view = renderTree(twoBranchesTree());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    const control = () =>
+      rowsFor(view.container, "comment-1")[0]?.querySelector("button[data-node-bullet]") ?? null;
+    expect(
+      control(),
+      `comment-1 draws no fold control before the zoom at ${width} px`
+    ).not.toBeNull();
+    await user.keyboard(".");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).not.toBeNull());
+    await waitFor(() => expect(rowsFor(view.container, "reply-1").length).toBe(1));
+    expect(control(), `the zoom's own row draws a fold control at ${width} px`).toBeNull();
+    expect(
+      rowsFor(view.container, "comment-1")[0]?.getAttribute("aria-expanded"),
+      `the zoom's own row does not say it is expanded at ${width} px`
+    ).toBe("true");
+    await user.keyboard(",");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+    await waitFor(() =>
+      expect(
+        control(),
+        `comment-1 lost its fold control out of the zoom at ${width} px`
+      ).not.toBeNull()
+    );
+    view.unmount();
+  }
 });
 
 // `q` and `w` each work out where they go from the tree as it stands, so pressed before the

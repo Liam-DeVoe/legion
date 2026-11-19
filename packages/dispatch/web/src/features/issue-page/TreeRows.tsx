@@ -30,6 +30,7 @@ export function TreeRows({
   cycle,
   editing,
   focused,
+  heading,
   isClosed,
   onFocus,
   onOpenDeeper,
@@ -54,6 +55,10 @@ export function TreeRows({
    *  the one a press on another control of the page took it from, which keeps them drawn until
    *  that press has ended (`IssueTree.tsx`'s `useReleaseFocus`). */
   focused: string | undefined;
+  /** The id of the node the tree is zoomed to, whose row is the tree's heading: drawn open by
+   *  definition, so it draws no fold control, whose press drew nothing. Undefined where the
+   *  tree is drawn from the issue, which is no row. */
+  heading: string | undefined;
   isClosed: boolean;
   onFocus: (row: string, node: TreeNode) => void;
   onOpenDeeper: (id: string) => void;
@@ -122,6 +127,7 @@ export function TreeRows({
             {...(editing?.row === key ? { editing: editing.artifactId } : {})}
             expanded={row.expanded}
             focused={focused === key}
+            foldable={!(row.level === 1 && row.node.id === heading)}
             folded={row.folded}
             isClosed={isClosed}
             key={key}

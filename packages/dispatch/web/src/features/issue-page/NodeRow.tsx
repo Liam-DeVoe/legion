@@ -117,6 +117,7 @@ export function NodeRow({
   editing,
   expanded,
   focused,
+  foldable = true,
   folded,
   isClosed,
   level,
@@ -160,6 +161,10 @@ export function NodeRow({
    *  undefined for a node that holds none. */
   expanded?: boolean;
   focused: boolean;
+  /** Whether the row draws its fold control where it holds children. A tree's heading - the row
+   *  a tree is zoomed to, drawn open by definition - draws none, and keeps its `aria-expanded`.
+   *  True unless the view passes it. */
+  foldable?: boolean;
   /** How many nodes it holds while it is folded. */
   folded?: number;
   /** Whether the issue is closed, which the writes a body offers are refused on. */
@@ -295,6 +300,7 @@ export function NodeRow({
         <Bullet
           collapsed={collapsed}
           expanded={expanded}
+          foldable={foldable}
           onToggle={onToggle}
           tabStops={tabStops}
           tone={tone}
@@ -613,12 +619,14 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
 function Bullet({
   collapsed,
   expanded,
+  foldable,
   onToggle,
   tabStops,
   tone,
 }: {
   collapsed: boolean;
   expanded?: boolean;
+  foldable: boolean;
   onToggle: () => void;
   tabStops: boolean;
   tone: Tone;
@@ -629,6 +637,13 @@ function Bullet({
       className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
     />
   );
+  if (!foldable) {
+    return (
+      <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">
+        {dot}
+      </span>
+    );
+  }
   if (expanded === undefined) {
     return (
       <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">

@@ -85,8 +85,9 @@ export interface TreeKeyboard {
   readonly rows: readonly DrawnRow[];
   /** The tree the preset left, which the keys that look past the drawn rows walk. */
   readonly root: TreeNode;
-  /** The node the tree is rooted at: the issue itself while the reader has zoomed into
-   *  nothing, and never undefined where the tree is read one node at a time. */
+  /** The node the rows are drawn from where that is not the issue, and undefined where the
+   *  whole tree is drawn from the issue. Where the tree is read one node at a time it is never
+   *  undefined: there the issue's own id stands for the issue. */
   readonly zoom: string | undefined;
   /** Where the reader writes, which `r` and `a` set to reply to the focused row and to answer
    *  the focused open question. It is provided wherever the page's writer provider stands above

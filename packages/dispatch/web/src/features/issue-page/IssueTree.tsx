@@ -276,9 +276,15 @@ export function IssueTree({
   // editing and the tree's one tab stop are held by that key, and a zoom either way leaves
   // them where they are (`rowKeyOf`).
   const rootedAbove = rootedPath.slice(0, -1).map((one) => one.id);
+  // In the cycle's last state the address's own path is opened over the reader's folds there,
+  // as `shown` opens it over their other folds.
+  const foldedThere =
+    path.length === 0
+      ? foldedInEverything
+      : new Set([...foldedInEverything].filter((id) => !path.some((above) => above.id === id)));
   const drawn = treeRows(
     rooted,
-    cycle === EVERYTHING ? { ...everythingOpened(rooted), closed: foldedInEverything } : shown,
+    cycle === EVERYTHING ? { ...everythingOpened(rooted), closed: foldedThere } : shown,
     rootedAbove,
     zoomed ? NARROW_LEVELS : DRAWN_LEVELS
   );
@@ -435,6 +441,14 @@ export function IssueTree({
         closed: new Set([...held.closed].filter((one) => !above.includes(one))),
         deeper: new Set([...held.deeper, ...above]),
       }));
+      // The cycle's last state draws its own folds and no other, so a branch the reader folded
+      // there is opened again for the node too, or a key or address that goes to a node under
+      // it found no row: nothing moved and nothing was said.
+      setFoldedInEverything((held) =>
+        above.some((one) => held.has(one))
+          ? new Set([...held].filter((one) => !above.includes(one)))
+          : held
+      );
       setWanted(id);
       return above;
     },
@@ -601,9 +615,10 @@ export function IssueTree({
     rows,
     root,
     writer,
-    // The node the rows are drawn from, not the zoom asked for: a filter that leaves the zoomed
-    // node out draws from the issue while the zoom is kept for when it is cleared, and Left and
-    // `,` there moved nothing and said nothing, since they read a zoom no row stood under.
+    // The node the rows are drawn from, not the zoom asked for (undefined for the issue where the
+    // whole tree is drawn): a filter that leaves the zoomed node out draws from the issue while
+    // the zoom is kept for when it is cleared, and Left and `,` there moved nothing and said
+    // nothing, since they read a zoom no row stood under.
     zoom: zoomed || rooted.id !== root.id ? rooted.id : undefined,
   });
 
@@ -1022,6 +1037,7 @@ export function IssueTree({
             cycle={cycle}
             editing={editing}
             focused={focused}
+            heading={rooted.id === root.id ? undefined : rooted.id}
             isClosed={isClosed}
             onFocus={(row, node) => press.focus({ node, row })}
             onOpenDeeper={openDeeper}
