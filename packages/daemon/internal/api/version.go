@@ -2383,7 +2383,45 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 162: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 175: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -2409,7 +2447,7 @@ package api
 // whose issue the workflow records, owed or not, and absent for an architect, the controller, a
 // failed claim and an unrecorded issue. The end-of-turn reminder renders that answer in both
 // harnesses and keeps no model of the phase of its own (dispatch://INFRA-2746), and its architect
-// notice and the stall watch's notice go to the architect it names. A plugin below 162 calls no
+// notice and the stall watch's notice go to the architect it names. A plugin below 175 calls no
 // such route, and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts`
 // mirrors the two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -2447,19 +2485,15 @@ package api
 // bound, or its turn ended between its refusal and the ask, as a notice's turn can when the
 // refusal came during its pre-turn work. Its refusal is then charged as unrecognised, and its
 // prompt's result as a prompt that ran no turn. Nothing of the daemon API changes with the pin.
-// (This entry keeps 162, the lowest number above main's 160 that no other open pull request
-// declares: at the forward merge of 2026-11-19 that brought main in at 160 (#3519, INFRA-2009's
-// entry above), const DaemonAPIVersion read at refs/pull/<n>/head for each of the 103 of the 231
-// open pull requests whose file list names this file or was cut short, a reading that ended at
-// 2026-11-19T10:10:01Z, gives, above main's 160, 161 (#4173, #4180, #4193 and #4259), 162 (this
-// pull request alone), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#3831, #4030,
-// #4485 and #4493), 168 (#2230, #3659, #4273 and #4488) and 169 (#4065). It took 162 at the
-// forward merge of 2026-11-18, the lowest number above main's 152 that no open pull request
-// declared then, as .github/scripts/check-daemon-api-contract.sh read every open head's own copy
-// of this file at 2026-11-18T07:20Z: 153 #4115, 154 #3659, 155 #4273, 156 #4065, 157 #2230 and
-// #3993, 158 #4017, #4180 and #4193, 159 #4175, 160 #3519, and 161 #4049 and #4173, which this
-// change had taken at 05:01Z before those two declared it. The readings behind this change's
-// earlier numbers are in its implement handoffs on dispatch://INFRA-3136. That is a reading and
-// never the rule: read main's own number and every open head again at the next forward merge
-// rather than from this line.)
-const DaemonAPIVersion = 162
+// (This entry takes 175, the lowest number above main's 168 that no other open pull request
+// declares: at the forward merge of 2026-11-19 that brought main in at 168 (#4488, the entry
+// above), .github/scripts/check-daemon-api-contract.sh read const DaemonAPIVersion at
+// refs/pull/<n>/head for each open pull request whose file list names this file or was cut
+// short, a reading that ended at 2026-11-19T16:56:13Z, and found above main's 168: 169 (#3831
+// and #4065), 170 (#2230, #4030, #4173, #4180 and #4193), 171 (#4115, #4485 and #4495), 172
+// (#3659), 173 (#4493) and 174 (#4273). It held 162 from the forward merge of 2026-11-18, when
+// that was the lowest number above main's 152 that no open pull request declared, until main
+// reached 168. The readings behind this change's earlier numbers are in its implement handoffs
+// on dispatch://INFRA-3136. That is a reading and never the rule: read main's own number and
+// every open head again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 175

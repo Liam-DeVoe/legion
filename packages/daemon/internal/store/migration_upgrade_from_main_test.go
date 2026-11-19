@@ -48,7 +48,7 @@ import (
 // dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), which
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list. The
-// last of them was the last word of outbox_kind_check until the two kind lists below stood above
+// last of them was the last word of outbox_kind_check until the three kind lists below stood above
 // it: the upgrade applies it after 20261029120800 has deleted main's merge-lane rows, and it
 // names every other kind main's daemon writes (mainsOutboxKinds), with update_ask and the two
 // merge-queue kinds besides, which main's daemon
@@ -85,22 +85,24 @@ import (
 // outbox_kind_check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit, cybermonklabs/legion#4400's 20261117000528, 20261117004117 and
-// 20261117064152, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's cutover of the
-// update ask's mark (20261117200337) and dispatch://INFRA-3136's 20261118073048 and
-// 20261118172458: it names every kind the merge-queue list names and its own. The kind list with
-// the step record (20261117000528, cybermonklabs/legion#4400) is named here too: it stands above
-// the role-holders publication's and the reviewer's reviewed commit, and it is the last of this
-// list to rewrite outbox_kind_check: it restates 20261116165926's kinds with step_record, so it is
-// now that constraint's last word. The count of starts of each step (20261117004117) creates
-// tables and a function of its own, and its roll forward (20261117064152) changes nothing on a
-// database no rollback touched; neither touches outbox_kind_check. The four after them touch no
-// outbox_kind_check either. dispatch://INFRA-1997's 20261117112334 adds a column at its default, as
-// the reviewer's reviewed commit does, and dispatch://INFRA-4109's cutover clears a claim's ask mark
-// where that claim's ask is still queued. dispatch://INFRA-3136's wait on a resume's entry
-// (20261118073048) is applied after all of them: it replaces the column 20261114061900 adds, so it
-// runs after that one. dispatch://INFRA-3136's table of bundle refusals for size (20261118172458)
-// is applied last: it creates workspace_bundle_refusals, which 20261112215432 created before the
-// table moved to a migration of its own.
+// 20261117064152, cybermonklabs/legion#4488's 20261117023932, dispatch://INFRA-1997's
+// 20261117112334, dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) and
+// dispatch://INFRA-3136's 20261118073048 and 20261118172458: it names every kind the merge-queue
+// list names and its own. The two kind lists above it are named here too: the step record's
+// (20261117000528, cybermonklabs/legion#4400) restates 20261116165926's kinds with step_record,
+// and the plan record's (20261117023932, cybermonklabs/legion#4488) restates those with
+// plan_record. The plan record's stands above every other version of the list that rewrites
+// outbox_kind_check, so an upgrade applies it after all of them and it is now that constraint's
+// last word. The count of starts of each step (20261117004117) creates tables and a function of
+// its own, and its roll forward (20261117064152) changes nothing on a database no rollback
+// touched; neither touches outbox_kind_check. The four after them touch no outbox_kind_check
+// either. dispatch://INFRA-1997's 20261117112334 adds a column at its default, as the reviewer's
+// reviewed commit does, and dispatch://INFRA-4109's cutover clears a claim's ask mark where that
+// claim's ask is still queued. dispatch://INFRA-3136's wait on a resume's entry (20261118073048)
+// is applied after all of them: it replaces the column 20261114061900 adds, so it runs after that
+// one. dispatch://INFRA-3136's table of bundle refusals for size (20261118172458) is applied last:
+// it creates workspace_bundle_refusals, which 20261112215432 created before the table moved to a
+// migration of its own.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -137,6 +139,8 @@ var thisBranchsMigrations = []int{
 	// cybermonklabs/legion#4400: the kind list with the step record, the count of starts of each
 	// step and its roll forward.
 	20261117000528, 20261117004117, 20261117064152,
+	// cybermonklabs/legion#4488: the kind list with the plan record.
+	20261117023932,
 	// dispatch://INFRA-1997: the commit statuses of the checked head.
 	20261117112334,
 	// dispatch://INFRA-4109: the update ask's mark, cut over at delivery.
@@ -158,10 +162,11 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-2614's 20261113181500, 20261113182000, 20261114020537 and 20261114061900,
 // t-e-54's 20261116144907, the role-holders publication's 20261116165926, the reviewer's reviewed
 // commit, 20261116234034, cybermonklabs/legion#4400's 20261117000528, 20261117004117 and
-// 20261117064152, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
-// and dispatch://INFRA-3136's 20261118073048 and 20261118172458, which is why the loop below holds
-// the list rather than counting it, so that a version added above any of them is named here rather
-// than read as main's.
+// 20261117064152, the kind list with the plan record (cybermonklabs/legion#4488's
+// 20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
+// 20261117200337, and dispatch://INFRA-3136's 20261118073048 and 20261118172458, which is why the
+// loop below holds the list rather than counting it, so that a version added above any of them is
+// named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
