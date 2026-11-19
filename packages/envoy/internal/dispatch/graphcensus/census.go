@@ -308,6 +308,25 @@ var projections = []projection{{
 		where octet_length('` + graphstore.KindRole + `/' || r.name) > ` + addressBound,
 }}
 
+// RowSides is every statement the census reads a kind's row side through - its rows, the names
+// it binds (projection.names) and its past-bound count - as the census runs it, by the kind's
+// name. These are the census's only reads of the tables that project the store, so the columns
+// of those tables they read are the columns the census holds against the store. api's scan of
+// the projected tables' writers (TestNoProjectionRowIsWrittenWithoutTheStore) holds its list of
+// the columns the store states to every one of them, so a column the census compares cannot be
+// written outside the store writer's path unseen.
+func RowSides() map[string][]string {
+	sides := make(map[string][]string, len(projections))
+	for _, held := range projections {
+		for _, statement := range [...]string{held.rows, held.names, held.pastBound} {
+			if statement != "" {
+				sides[held.name] = append(sides[held.name], statement)
+			}
+		}
+	}
+	return sides
+}
+
 // addressBound is the store's address bound (graphstore.MaxAddressBytes) as a statement spells
 // it. It is written into the text rather than bound as a parameter because each side is spliced
 // into a statement of its own and one shared constant keeps the two sides reading the same bound.
