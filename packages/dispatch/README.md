@@ -696,7 +696,11 @@ from bob and seen by alice, its owner. Alice's own `dsp_` token and her cookie a
 run that cannot exits non-zero naming the project, since the next run's empty list would find it.
 Its inputs are what `with-harness.sh` exports: without the switch there is no
 `DISPATCH_E2E_ACCESS_TOKEN_FILE`, and the run stops with exit 2, naming the switch; a token file
-it cannot read stops it the same way, naming the file. From `packages/dispatch`:
+it cannot read stops it the same way, naming the file.
+It writes the database it is given, so it refuses a `DATABASE_URL` whose host is not loopback, or
+that carries a connection override such as `?host=`, with exit 1, naming `DATABASE_URL` without
+printing it.
+From `packages/dispatch`:
 
 ```bash
 DATABASE_URL=<a PostgreSQL this run may truncate> DISPATCH_E2E_ACCESS_ISSUER=1 \
