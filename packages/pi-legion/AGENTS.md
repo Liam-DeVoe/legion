@@ -95,11 +95,8 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 162's copied facts
-(dispatch://INFRA-3136: `POST /legion/v1/claims/owed`, which the end-of-turn reminder asks for
-what the claim owes, and the issue's `repoBefore`, `repoCorrectedAt`, `repoChangePending` and
-`repoChangeReason`, optional keys a caller whose claims record a contract under 162 is
-served without), after contract 146 (dispatch://INFRA-2614:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 162 (dispatch://INFRA-3136),
+after contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
@@ -648,9 +645,8 @@ environment get no title from this extension.
 A worker's phase ends through the `legion` tool's `handoff_complete`, never shell text:
 `src/tools.ts` carries it for every session but the root architect's (a phase worker, and a
 sub-architect, an architect whose issue is not its tree), running it on the phase-op executor
-every harness shares (`executePhaseOp` in `@legion/pi-shared/legion-phase-ops`). The plugin keeps
-no record of the phase: whether the claim still owes it is the daemon's answer, which the endless
-phase reminder below asks for. A file-backed phase (planning, implementing,
+every harness shares (`executePhaseOp` in `@legion/pi-shared/legion-phase-ops`). The daemon, not
+the plugin, records that the phase ended. A file-backed phase (planning, implementing,
 testing, reviewing) ends with a handoff record on the Dispatch issue, which the worker writes with
 `dispatch handoff-write --issue <issue> --phase <word> --body-file -`, the body on standard input
 or in a file outside the workspace, whose every file jj snapshots; no handoff is a commit or a
@@ -725,107 +721,58 @@ per-command grant mint, so the role prompts and skills alone say who runs what. 
 a tool.
 
 In a phase-worker session (planner, implementer, tester, reviewer, merger: never an architect, the
-controller, a session with no Legion environment, or a `task` subagent), the phase-stall machine
-`@legion/pi-shared/phase-stall` keeps the reminder's rhythm and nothing of the phase. Its states are
-`active`, `waiting` (a WAITING reply, or a turn that ends with the session's own background job
-still running) and `awaiting-update`. A message from outside the session (`isInbound`) — the
-daemon's task (a user message), an Envoy delivery, a person's direct message — makes the rhythm
-`active` and puts the count back at zero, and says nothing of what the claim owes. The tool's
-successful `ready_for_update` (`onUpdateAnswered`) moves it to `awaiting-update`, so the turn the
-worker answered the daemon's update message in ends with no reminder continuing it: work a
-continuation did would go with the replaced pod, and the daemon would see no turn end. That wait
-earns no reminder at all, since the daemon's task on the new pod is what ends it.
-A person's direct message the Envoy extension sent in as the user's own turn is a user message
-too; for a `/skill:` it is the host's `skill-prompt` custom message, which `isInbound` does not
-know. So the Envoy extension records each turn it sends in, process-wide, on the shared interface
-(`injectedUserTurns`, `@legion/pi-shared/injected-user-turns`), and legion.ts asks that record at
-`message_start` (`matchInjectedUserTurn`). A turn sent as typed input (`pi.sendUserInput`) is found
-by the Dispatch id the host keeps as the message's `tag`, and only by it, so a command that
-submitted nothing (`/compact`, `/session`) leaves nothing a later message could match; it stays in
-the record past the run's `agent_end` until its message arrives, the host answers that the input
-submitted none, or the session changes, so a Send the host runs as a turn of its own after that
-run still counts as the person's. legion.ts asks under the live session id, so a `/skill:` turn the
-host starts under a new id (queued across a branch or a session file's move-off, or a session
-change during its `sendUserInput`) carries no note there and puts no count back at zero. On a host
-without `sendUserInput` a turn is found by its text and forgotten at the run's `agent_end`, so a
-Send or an Aside sent in after the run's last queue or aside poll and before that `agent_end`,
-which the host then runs as a turn of its own, matches nothing: the dashboard shows it twice, and
-a `/skill:` sent that way puts no count back at zero. One sent in after that `agent_end` starts a
-fresh record and is matched.
+controller, a session with no Legion environment, or a `task` subagent), the worker is reminded at
+the end of every turn for as long as the daemon answers that its claim owes work, and nudged in
+words that name no phase and no operation when that answer does not arrive (`UNREAD_REMINDER`).
+The plugin keeps no record of the phase: the phase-stall machine (`@legion/pi-shared/phase-stall`)
+keeps only the reminder's rhythm and a count of the reminders the worker did nothing about, and its
+runner (`@legion/pi-shared/phase-reminder`) asks the daemon what the claim owes
+(`POST /legion/v1/claims/owed`, bounded at `OWED_READ_BOUND_MS`) each time a reminder is due. The
+two modules' doc comments hold the states, what resets the count and the wait a `ready_for_update`
+answer starts; this section says how `extensions/legion.ts` drives them.
 
-When a run is about to settle (`session_stop`) in the `active` rhythm, the reminder asks the daemon
-what this claim owes (`POST /legion/v1/claims/owed`, answered `{owes, work, architect}`), and
-waits at most `OWED_READ_BOUND_MS` (3 s) for the answer (`@legion/pi-shared/phase-reminder`).
-`architect` is the architect claim that owns this claim (the architect notice below): the daemon
-names it for a phase worker on an issue it records, whether or not the claim owes work, and leaves
-it out for an architect, the controller, a failed claim and an issue it does not record. The
-session reminds the worker exactly when the daemon answers that the claim owes work, and names
-that work in the daemon's words; it reminds again at the end of every turn for as long as the
-daemon answers so. The reminder says the daemon's record holds that work open for the role: run
-`handoff_complete`, or reply with a line starting WAITING that names what the worker waits on. An
-answer that does not arrive — an error, the bound passing, a refusal, or a body the contract does
-not describe — still nudges the worker (`UNREAD_CHECK`), with words that say the record could not be
-read and name no phase and no operation. A final message holding a tool call written as text is told
-so first. The first reminder of a run is the host's own continuation
-(`{continue: true, additionalContext}`), one more turn of the same session; every one after it comes
-from a timer as a steered `legion-phase-reminder` message that starts a turn (`pi.sendMessage`), so
-the run settles and the daemon sees the turn end and can deliver a queued task. A WAITING reply buys
-`LEGION_STALL_WAITING_MS` of quiet and then the same reminder. The host's timer cannot be cancelled,
-so a generation counter, bumped by everything that makes an armed timer stale (a turn starting, a
-settle, a session change, a reminder going out), is the whole defence against two timers reminding
-twice; a timer that is due asks the daemon again before it reminds.
+At `message_start` a message from outside the session (`isInbound`: the daemon's task, an Envoy
+delivery, a person's direct message) puts the count back at zero and says nothing of what the claim
+owes. A person's `/skill:` sent in by the Envoy extension arrives as the host's `skill-prompt`
+custom message, which `isInbound` does not know, so legion.ts also asks that extension's record of
+the turns it sent in (`matchInjectedUserTurn`; `@legion/pi-shared/injected-user-turns` says how a
+turn is matched and for how long). The record misses a `/skill:` turn the host starts under a new
+session id (queued across a branch or a session file's move-off, or a session change during its
+`pi.sendUserInput`), and that turn puts no count back at zero.
 
-A count of reminders the worker has done nothing about climbs by one per delivered reminder and
-drops to zero as soon as anything happens — a real tool call in the settling message (a `toolCall`
-block, Oh My Pi's name for it; `assistantRanTool` also takes Claude Code's `tool_use`), the
-daemon's task, an Envoy delivery. At `LEGION_STALL_ARCHITECT_AFTER` the session tells the
-architect the daemon names as the claim's owner in its owed answer (`architect`: the issue's own
-architect while its claim holds its role, else the nearest one above it whose claim holds its
-role, else the tree root's), or the tree's architect while no answer has named one, over Envoy, once
-per run of reminders: the notice carries the issue, the role, the work the daemon answered was owed
-(absent when the answer could not be read), the count and the head of the worker's last message
-under one idempotency key, minted at the first attempt and kept until the count resets. The notice
-sends no `keep` field, so when no live session holds the architect role, the listener keeps the
-notice on the role's kept lane for one hour and answers 202 kept. A kept answer does not mean that
-the architect was told, so the next reminder publishes the notice again. When the answer names
-`kept_until`, that publish uses the same key: the listener answers it with the copy it still holds,
-or keeps a new copy once that copy has been forwarded or its hour has ended. A listener of an
-earlier release names no `kept_until` and answers a repeated key as the first copy for 72 hours, so
-such an answer clears the key, and the next attempt mints a new one. The stall watch's notice of a
-stuck tool call (`src/stall-evidence.ts`), to the architect the owed answer it asks for then names,
-else the tree's, or, for a root architect's own call, to the controller, also sends no `keep` field,
-and a kept answer reports that no owner was told. The listener answers a session past its send limit
-with 429 `sender_rate_limited` and the whole seconds until it takes the next message: the stall
-watch waits that long and sends its notice again under the same key, at most 3 times, so the notice
-is sent at most 4 times. It sends again in the background, so no resend's wait holds a step of the
-ladder: the one wait that does is the owed read the notice of a phase worker names its architect
-from, made before the first publish and bounded at `OWED_READ_BOUND_MS` (3 s). A resend that is
-answered and not kept records the owner as told. The phase reminder's notice needs no such resend: a
-refused publish leaves it unreported, and the next reminder publishes it again. A kept notice that
-no session takes in its hour comes back to this worker's session as a dead letter, an Envoy card
-that names it, unless Envoy drops it more than an hour late. A reminder is dropped when the daemon
-answers that the claim owes nothing: its phase finished, through the tool, from the shell or by a
-move of the issue it did not make, or the daemon failed the claim. A worker the daemon relaunched is
-reminded from a timer `LEGION_STALL_RESUME_MS` after its claim boots, if the daemon then answers
-that its claim owes work, since nothing else would wake it.
+At `session_stop` legion.ts hands the runner how the turn ended (`turnEndOf`). When the daemon
+answers that the claim owes work, the reminder names that work in the daemon's words and tells the
+worker to run `handoff_complete`, or to reply with a line starting WAITING that names what it waits
+on; that reply buys `LEGION_STALL_WAITING_MS` of quiet before the same reminder. The first reminder
+of a run is the host's own continuation (`{continue: true, additionalContext}`), one more turn of
+the same session; every later one is a timer's steered `legion-phase-reminder` message that starts
+a turn (`pi.sendMessage`), so the run settles and the daemon sees the turn end and can deliver a
+queued task. The `legion` tool's successful `ready_for_update` (`onUpdateAnswered`) starts the wait
+the daemon ends, in which nothing reminds the worker. A worker the daemon relaunched is reminded
+from a timer `LEGION_STALL_RESUME_MS` after its claim boots (`armResumeReminder`), if the daemon
+then answers that its claim owes work, since nothing else would wake it.
 
-A turn the provider refused earns no continuation, and its settle earns no reminder of its own.
-`session_stop` classifies the settling message (`turnEndOf`): a reply Oh My Pi stopped at `error`
-is the provider refusing the turn, worded by the host's `errorMessage`, and it is an input of the
-machine of its own (`refused`) rather than a check on the reminder's answer. Reminding such a
-session at once only buys another refused turn, which is what left dispatch://INFRA-264's
-implementer reminded for ever, so the runner arms one timer instead, `LEGION_STALL_REMINDER_MS`
-later. What ends the reminding is the daemon: `src/turn-outcome.ts` reports every turn
-this pane's claim ends — clean or refused — to `POST /legion/v1/claims/turn-outcome` from
-`agent_end`, under a sequence this plugin counts itself, monotonic from 1 within the claim's
-launch generation. The daemon keys each outcome by `(generation, sequence)` and derives the
-trailing run of refusals, so a report that arrives late lands in its own place, a repeat writes
-the same cell, and the claim fails once the run reaches `launch_failure_limit`. A report that
-cannot be sent is retried only while the daemon is restarting and otherwise warned about once:
-a turn the daemon never hears of is counted neither way. Once the run of refusals has failed the
-claim, the timer's owed check reads that the claim owes nothing and drops the reminder. The
-reporter runs for an architect's claim as well as a phase worker's, and for a `task` subagent,
-whose instance registers no claim, not at all.
+The count climbs by one per delivered reminder and drops to zero when anything happens: an inbound
+message, or a real tool call in the settling message (`assistantRanTool`, read at `message_end`:
+Oh My Pi's `toolCall` block, Claude Code's `tool_use`). At `LEGION_STALL_ARCHITECT_AFTER` the
+session tells the architect that owns the claim over Envoy, once per run of reminders
+(`tellArchitect` in `@legion/pi-shared/phase-reminder` says which architect, the idempotency key,
+and when a kept or refused notice is published again). A kept notice that no session takes in its
+hour comes back to this worker's session as a dead letter, an Envoy card that names it, unless
+Envoy drops it more than an hour late. The stall watch's notice of a stuck tool call
+(`src/stall-evidence.ts`) goes to the architect the reminder would tell, or for a root architect's
+own call to the controller (`stallNoticeTopic`); `createStallTeller` says when it is sent again.
+
+A turn the provider refused (`turnEndOf`: a reply Oh My Pi stopped at `error`, worded by its
+`errorMessage`) earns no continuation; the runner arms one timer, `LEGION_STALL_REMINDER_MS` later,
+instead. What ends the reminding of a session the provider keeps refusing is the daemon:
+`src/turn-outcome.ts` reports every turn this pane's claim ends, clean or refused, to
+`POST /legion/v1/claims/turn-outcome` from `agent_end` (its doc comment says how each report is
+keyed), and the daemon fails the claim once the trailing run of refusals reaches
+`launch_failure_limit`; from then on it answers that the claim owes nothing, and no reminder goes
+out. A report that cannot be sent is retried only while the daemon is restarting, and otherwise
+warned about once and left uncounted. The reporter runs for an architect's claim too, and not for
+a `task` subagent, which registers no claim.
 
 Four variables tune it, read from the worker's own environment (`@legion/pi-shared/stall-limits`;
 the daemon passes on whichever its own environment holds, to a pane and to a pod alike):
@@ -835,13 +782,10 @@ alone can never reach it). A value that is not an integer of that minimum is one
 default.
 
 The state, the count, whether the architect was told, and the head of what the worker last said
-(`lastMessage`, at most the 500 characters the notice quotes) are appended to the transcript
-(`legion-phase-stall` entries) and restored at `session_start`, so a worker relaunched with
-`--resume` keeps them, and the notice its resume reminder earns still names its last words. The
-machine, the runner and the four numbers live once, in
-`@legion/pi-shared` (`phase-stall.ts`, `phase-reminder.ts`, `stall-limits.ts`): this entry is the
-Oh My Pi host, and `packages/claude-envoy/src/legion-phase-hook.ts` is the Claude Code one, driven
-by Claude Code's own hooks over a state file (`packages/claude-envoy/AGENTS.md`).
+(`lastMessage`) are appended to the transcript (`legion-phase-stall` entries) and restored at
+`session_start`, so a worker relaunched with `--resume` keeps them. This entry is the Oh My Pi
+host; `packages/claude-envoy/src/legion-phase-hook.ts` is the Claude Code one, driven by Claude
+Code's own hooks over a state file (`packages/claude-envoy/AGENTS.md`).
 `extensions/legion-phase-stall-omp.test.ts` proves it on the pinned Oh My Pi
 (`LEGION_TEST_OMP`) through the harness's `runLegionPane` (`@legion/pi-shared/test/omp-harness`),
 which hands both plugin entries to the Oh My Pi child by path: every turn reminded while the daemon
