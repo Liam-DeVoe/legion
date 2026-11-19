@@ -94,13 +94,25 @@ func clusteredHubListenerName(release string) string {
 // NATS seed mounted from the operator's Secret by reference. It runs as clusteredHubTailnetUID,
 // the uid its image's own user has, and stops inside clusteredHubListenerGraceSeconds, which
 // holds the preStop wait and the listener's own stop. Its three probes read two routes. Startup
-// and liveness are answersProbe, curl -sS of /livez, which the listener answers 204 without
-// touching NATS: they are status-blind, so only a listener that answers nothing at all is
-// restarted, and a listener whose bus is down keeps its warm caches and repairs itself.
-// Readiness is readyProbe, curl -fsS of /healthz, which reads the HTTP status and never the
-// body: that status is what tells a starting pod from a serving one, and a pod still waiting for
-// its durable, which /healthz answers 200 with a starting body, is ready, so the rolling update
-// never waits for the stream.
+// and liveness are answersProbe, curl -sS of /livez, which the listener answers 204 from its
+// first answer on without touching NATS: they are status-blind, so only a listener that answers
+// nothing at all is restarted. A listener whose NATS does not answer, answers from its cluster's
+// state or refuses a grant at its start stays up and not ready for as long as that lasts
+// (packages/envoy/cmd/listener/README.md, "Start: what ends it and what it waits out"), and these
+// probes leave it running, with no restart and no restart backoff, so it serves the moment its
+// NATS lets it; one whose bus goes down later keeps its warm caches and repairs itself. Readiness
+// is readyProbe, curl -fsS of /healthz, which reads the HTTP status and never the body, and is the
+// pod's gate into its Service: the listener answers /healthz 503 "starting" until its /v1 gate is
+// open and its receive loop has started, since main publishes what /healthz reads right after
+// openV1Routes (packages/envoy/cmd/listener/main.go). So a new pod stays out of its Service until
+// its /v1 serves, and the rolling update newClusteredHubListener sets (maxSurge 1,
+// maxUnavailable 0) keeps the old pod serving until the new one is Ready, which the Deployment
+// controller holds. The new pod opens /v1 without waiting for the delivery lease the old pod
+// holds, and answers /healthz 200 as its standby, so the rolling update never waits for the lease.
+// The listener's own TestHubListenerIsReadyOnlyOnceItsV1Serves runs this readiness probe, as the
+// pod golden renders it, on a listener, and
+// TestHubListenerProbesNeverRestartAListenerWhoseNATSRefusesItsStart runs the startup and liveness
+// probes through a refusal.
 func clusteredHubListenerPod(s clusteredHubSettings) corev1.PodSpecArgs {
 	l := s.listener
 	pod := corev1.PodSpecArgs{

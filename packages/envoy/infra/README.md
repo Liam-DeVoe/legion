@@ -349,22 +349,15 @@ component cannot refuse an older image itself: `<l>.image` is a digest, and no i
 version it reads says which release built it, so this line is the guard. A listener with no
 credential, a `tailnet.listener` with no `clientNamespaces`, runs on any release.
 
-The component writes the pod count, one, and no input changes it. Two copies would contend for the
-one durable `listener-<l.machineId>`: with a listener from before
-cybermonklabs/legion#2404 the second copy waits the listener's bind deadline
+The component writes the pod count, one, and no input changes it. A second copy of a listener that
+carries cybermonklabs/legion#2404's delivery lease, which this release's does, stands by,
+delivering nothing, and takes the one durable `listener-<l.machineId>` over within seconds of the
+first copy's stop. A listener from before that change instead waits its bind deadline
 (`durableBindDeadline`, 135 seconds) for the durable the first copy holds, then exits, and is
-restarted over and over. The rolling update's surge is the one window where two copies exist, and
-with `maxUnavailable: 0` and `maxSurge: 1` it is longer than the old pod's stop: the new pod's
-listener contends for the durable from the moment its container starts, and the old pod is sent
-SIGTERM only once the new pod is Ready. The window is therefore the new pod's time to its first
-`/healthz` answer plus the old pod's 33 seconds, its 5-second preStop wait and its 28-second
-stop, and what has to hold it is the new pod's own 135-second bind deadline, counted from its own
-start. A new pod that never becomes Ready leaves the old one serving while the new one restarts
-on its bind deadline.
-
-With a listener that carries cybermonklabs/legion#2404's delivery lease, which this release's
-does, the surge costs no such wait: the new pod stands by, delivering nothing, and takes the
-durable over within seconds of the old pod's stop.
+restarted over and over. The rolling update's surge is the one window where two copies exist:
+with `maxUnavailable: 0` and `maxSurge: 1` the old pod is sent SIGTERM only once the new pod is
+Ready (below), so the new pod stands by through the old pod's stop and takes the durable over
+once it ends.
 
 Three more objects carry that pod:
 
@@ -420,12 +413,19 @@ Three probes read the pod's own loopback, two routes between them:
 - liveness, the same `curl -sS` of `/livez` every 10 seconds, 6 failures allowed. The listener
   answers `/livez` 204 and reads no bus for it, and without `-f` curl exits 0 whatever the HTTP
   status, so any answer keeps the container running and only a minute of no answer at all
-  restarts it;
+  restarts it. A listener whose NATS does not answer, answers from its cluster's state or refuses
+  a grant at its start stays up and not ready for as long as that lasts (the start rule,
+  `cmd/listener/README.md`), and neither probe restarts it, so no restart backoff delays it once
+  its NATS lets it start;
 - readiness, `curl -fsS` of `http://127.0.0.1:9020/healthz` every 5 seconds, with a 6-second
-  timeout and 2 failures allowed. It reads the HTTP status and never the body. A pod answers
-  503 (`"starting"`) until it can serve, and then 200 as the active pod or as a standby
-  (`"role": "standby"`) while it waits for the delivery lease, so a standby is ready and the
-  rolling update never waits for the lease.
+  timeout and 2 failures allowed, and the pod's gate into the Service. It reads the HTTP status
+  and never the body. A pod answers 503 (`"starting"`) until its `/v1` serves, so a new pod stays
+  out of the Service until then and the rolling update keeps the old pod serving. `/v1` opens
+  without waiting for the delivery lease, which the old pod holds until it stops, and the new pod
+  then answers 200 as a standby (`"role": "standby"`) while it waits for the lease, so a standby
+  is ready and the rolling update never waits for the lease. A listener from before
+  cybermonklabs/legion#2404 answers 200 (`"starting"`) from its first answer, before its `/v1`
+  opens, so its pod is Ready before it serves.
 
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and

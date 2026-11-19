@@ -1191,36 +1191,45 @@ reaches it:
 The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
 
 How it is updated. A change of the listener's image, size or environment rolls the one pod with
-`maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. Readiness
-reads the HTTP status of `/healthz` and never its body, so the new pod is ready while it still
-waits for the durable, and the rolling update never waits for the stream. The two copies contend
-for the durable from the moment the new pod's container starts, and the old pod is sent SIGTERM
-only once the new pod is Ready, so the window where both exist is the new pod's time to its first
-`/healthz` answer plus the old pod's 33 seconds: it keeps answering for 5 seconds, the time its
-removal from the Service's endpoints takes to reach every node's proxy, and then stops in 28
-seconds, inside its grace period of 40. That is a margin of 7 seconds (`listenerGraceMargin`),
-which covers the kubelet's own latency between the preStop hook's return and SIGTERM, the
-container's teardown and a late tick on a loaded node. It does not cover a listener that runs
-over its own deadlines. No deadline of the new pod's own bounds that window: it stands by for the
-machine's delivery lease for as long as it runs (`packages/envoy/cmd/listener/lease.go`), so a
-hung old pod that holds its durable for all 40 seconds delays the new pod's take-over and fails
-nothing, and what bounds the grace is the old pod's stop alone. The listener's 135-second
-`durableTakeoverAlarmAfter` (`cmd/listener/receive.go`) bounds no stop either: it times how long
-a listener has waited on a binding that a listener from before the lease holds, during the first
-roll onto the lease, and how long its reads, creations, policy corrections or subscribes of the
-durable have failed, after which a lease holder gives the lease up. A new pod that never
-becomes Ready leaves the old one serving: nothing stops it, and the new one stands by for the
-lease while it runs. The Tailscale Service's port 9020 refuses connections while no listener pod
-is ready, and its port 4222 serves through it. Setting, changing or removing
-the listener's `senderMessagesPerMinute` or `senderMessageBurst` is a change
-of the listener's environment, so it rolls the pod the same way. The new pod's listener starts
-with every sender's count full (Sender limit in `packages/envoy/AGENTS.md`).
+`maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. The new pod
+is Ready only once its `/v1` serves, since its readiness probe passes only then (below), and `/v1`
+opens without waiting for the delivery lease or the durable, which the old pod holds until it
+stops, so the new pod's `/v1` cannot wait on the old pod: the new pod is ready as a standby while
+it waits for the lease, and the rolling update never waits for the lease. The old pod is sent
+SIGTERM only once the new pod is Ready, and its stop then takes 33 seconds in all: it keeps
+answering for 5 seconds, the time its removal from the Service's endpoints takes to reach every
+node's proxy, and then stops in 28 seconds, inside its grace period of 40. That is a margin of 7
+seconds (`listenerGraceMargin`), which covers the kubelet's own latency between the preStop hook's
+return and SIGTERM, the container's teardown and a late tick on a loaded node. It does not cover a
+listener that runs over its own deadlines. No deadline of the new pod's own bounds that stop: it
+stands by for the machine's delivery lease for as long as it runs
+(`packages/envoy/cmd/listener/lease.go`), so a hung old pod that holds its durable for all 40
+seconds delays the new pod's take-over and fails nothing, and what bounds the grace is the old
+pod's stop alone. The listener's 135-second `durableTakeoverAlarmAfter` (`cmd/listener/receive.go`)
+bounds no stop either: it times how long a listener has waited on a binding that a listener from
+before the lease holds, during the first roll onto the lease, and how long its reads, creations,
+policy corrections or subscribes of the durable have failed, after which a lease holder gives the
+lease up. A new pod that never becomes Ready leaves the old one serving: nothing stops it, and the
+new one stays up and not ready for as long as what holds its start lasts (below). The Tailscale
+Service's port 9020 refuses connections while no listener pod is ready, and its port 4222 serves
+through it. Setting, changing or removing the listener's `senderMessagesPerMinute` or
+`senderMessageBurst` is a change of the listener's environment, so it rolls the pod the same way.
+The new pod's listener starts with every sender's count full (Sender limit in
+`packages/envoy/AGENTS.md`).
 
 What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
-listener answers 204 without reading the bus, and which exits 0 whatever the HTTP status, so a
-NATS outage or a cache warm-up restarts nothing. The listener gets two minutes for its first
-answer, and a minute of no answer at all restarts the container. Only the readiness probe reads
-`/healthz`, whose HTTP status is what tells a starting pod from a serving one.
+listener answers 204 from its first answer without reading the bus, and which exits 0 whatever
+the HTTP status, so a NATS outage or a cache warm-up restarts nothing. The listener gets two
+minutes for its first answer, and a minute of no answer at all restarts the container. A listener
+whose NATS does not answer, answers from its cluster's state or refuses a grant at its start
+stays up and not ready for as long as that lasts (the start rule, `cmd/listener/README.md`), and
+no probe restarts it, so no restart backoff delays it once its NATS lets it start. Only the
+readiness probe reads `/healthz`, whose HTTP status is what tells a starting pod from a serving
+one: the listener answers it 503 `starting` until its `/v1` gate is open and its receive loop has
+started, 200 to the active pod and to a standby, and 503 while its NATS is down, which takes the
+pod out of the Service without restarting it. A listener from before cybermonklabs/legion#2404
+answers `/healthz` 200 `starting` from its first answer, before its `/v1` opens, so its pod is
+Ready before it serves.
 The PodDisruptionBudget `<n>-listener` allows one unavailable pod, so a node drain or an
 Autopilot upgrade moves the pod rather than stalling on it. The pod-down alert below names this
 pod and its container.

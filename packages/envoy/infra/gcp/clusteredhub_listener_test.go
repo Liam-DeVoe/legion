@@ -176,13 +176,14 @@ func TestClusteredNatsHubListenerEnvironment(t *testing.T) {
 
 // The listener's startup and liveness probes read /livez and its readiness probe reads /healthz,
 // both on its own loopback. Startup and liveness are status-blind, curl -sS of /livez, which the
-// listener answers 204 without touching the bus: a listener whose NATS is down or whose caches
-// are warming is alive, keeps those caches and repairs itself, and only one that answers nothing
-// at all is restarted, after two minutes of silence at startup (5 s × 24) or one minute later on
-// (10 s × 6). Readiness is curl -fsS of /healthz, which reads the HTTP status and never the
-// body: that status is what tells a starting pod from a serving one, and a pod still waiting for
-// its durable, which /healthz answers 200 with a starting body, is ready, so the rolling update
-// never waits for the stream.
+// listener answers 204 without touching the bus: a listener whose NATS does not answer or refuses
+// a grant at its start, which stays up and not ready for as long as that lasts, or whose caches
+// are warming is alive, and only one that answers nothing at all is restarted, after two minutes
+// of silence at startup (5 s × 24) or one minute later on (10 s × 6). Readiness is curl -fsS of
+// /healthz, which reads the HTTP status and never the body, and is the pod's gate into its
+// Service: the listener answers it 503 "starting" until its /v1 serves, so the rolling update
+// keeps the old pod until the new one's /v1 serves, and 200 to a standby, which serves /v1 while
+// the old pod holds the delivery lease, so the rolling update never waits for the lease.
 func TestClusteredNatsHubListenerProbes(t *testing.T) {
 	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)
 	listener := podContainer(t, template, "listener")
