@@ -19,21 +19,60 @@ import { sessionId, transcriptEntries } from "./transcript";
 /** The task every step of today's fixed phases is a step of (workflow/steps.go's `defaultTask`). */
 export const STEP_TASK = "default";
 
-/** The step each phase runs (workflow/steps.go's `stepOf`): its phase's Go name, the kind of the
- * run (`step` at its place from 1, `retro` and `merge` at place 0), the role and the type its
- * record names. A phase not here runs no step. */
+/** The steps of that task, in order, each a role or `role:key` (workflow/plan.go's
+ * `DefaultSteps`, main's since #4488): a working phase's step is at the place of the first step
+ * whose role works it (`placeOf`). */
+export const DEFAULT_STEPS = ["planner", "implementer", "tester", "reviewer", "acceptance:owner"];
+
+/** The place in the task of the step `role` works: one plus the index of the first of
+ * DEFAULT_STEPS whose role, the part before its `:key`, is `role` (workflow/plan.go's `stepIn`).
+ * Throws for a role no step names. */
+function placeOf(role: string): number {
+  const at = DEFAULT_STEPS.findIndex((named) => named.split(":")[0] === role);
+  if (at < 0) throw new Error(`no step of DEFAULT_STEPS is the ${role}'s`);
+  return at + 1;
+}
+
+/** The step each phase runs (workflow/steps.go's `stepOf`, workflow/plan.go's `stepIn` over
+ * `DefaultSteps`): its phase's Go name, the kind of the run (`step` at its place from 1, from
+ * `placeOf`; `retro` and `merge` at place 0, which no plan names), the role and the type its
+ * record names (plan.go's `stepWork` for a step). A phase not here runs no step. */
 export const STEPS = {
-  planning: { go: "Planning", kind: "step", place: 1, role: "planner", type: "planning" },
+  planning: {
+    go: "Planning",
+    kind: "step",
+    place: placeOf("planner"),
+    role: "planner",
+    type: "planning",
+  },
   implementing: {
     go: "Implementing",
     kind: "step",
-    place: 2,
+    place: placeOf("implementer"),
     role: "implementer",
     type: "implementation",
   },
-  testing: { go: "Testing", kind: "step", place: 3, role: "tester", type: "testing" },
-  reviewing: { go: "Reviewing", kind: "step", place: 4, role: "reviewer", type: "review" },
-  accepting: { go: "Accepting", kind: "step", place: 5, role: "acceptance", type: "review" },
+  testing: {
+    go: "Testing",
+    kind: "step",
+    place: placeOf("tester"),
+    role: "tester",
+    type: "testing",
+  },
+  reviewing: {
+    go: "Reviewing",
+    kind: "step",
+    place: placeOf("reviewer"),
+    role: "reviewer",
+    type: "review",
+  },
+  accepting: {
+    go: "Accepting",
+    kind: "step",
+    place: placeOf("acceptance"),
+    role: "acceptance",
+    type: "review",
+  },
   retro: { go: "Retro", kind: "retro", place: 0, role: "implementer", type: "" },
   merging: { go: "Merging", kind: "merge", place: 0, role: "merger", type: "" },
 } as const;
@@ -44,14 +83,16 @@ export function runsStep(phase: string): phase is StepPhase {
   return Object.hasOwn(STEPS, phase);
 }
 
-/** The triggers whose move ends the step it leaves failed, and stopped, each returning the work to
- * the step it moves into (workflow/steps.go's `endOf`); every other move ends it passed. */
+/** The triggers whose move ends the step it leaves failed, returning the work to the step it
+ * moves into (workflow/steps.go's `endOf`); every other move ends it passed. A head that
+ * conflicts with its base moves no issue in main's daemon since #4464, so no move ends a step
+ * stopped: a run is stopped only where no move ended it (`stepStopped`), which no run of the rig
+ * reaches. */
 export const FAILED_TRIGGERS = [
   "TriggerTesterFailed",
   "TriggerReviewRejected",
   "TriggerBackward",
 ] as const;
-export const STOPPED_TRIGGERS = ["TriggerConflict"] as const;
 export type StepResult = "passed" | "failed" | "stopped";
 
 /** How a move on `trigger` ends the step it leaves, and whether its record names the step the work
@@ -59,8 +100,6 @@ export type StepResult = "passed" | "failed" | "stopped";
 export function endOf(trigger: string): { result: StepResult; returns: boolean } {
   if ((FAILED_TRIGGERS as readonly string[]).includes(trigger))
     return { result: "failed", returns: true };
-  if ((STOPPED_TRIGGERS as readonly string[]).includes(trigger))
-    return { result: "stopped", returns: true };
   return { result: "passed", returns: false };
 }
 

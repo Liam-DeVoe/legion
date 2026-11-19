@@ -1086,7 +1086,14 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
     answer: "world.json and the remote: the pull request at the branch's tip",
   },
   { route: "GH pr list", answer: "world.json: the one pull request open on the issue branch" },
-  { route: "GH pr diff", answer: "the remote: the issue branch against the base" },
+  {
+    route: "GH pr diff",
+    answer: "the remote: the issue branch against the base",
+    evidence: {
+      world:
+        "gh's read of the pull request's diff, which round 25's agents made in two spellings no role text named, `gh pr diff <n>` and `gh pr diff <n> --color never` (production-shapes.json's `gh pr diff -` and `gh pr diff ---color`, their readings again of 2026-11-18); the one text that named the read, conflicts-and-rewrites.md's `gh pr diff <n> --name-only`, left with #4464",
+    },
+  },
   { route: "GH pr checks", answer: "the world's check runs of the branch's tip" },
   {
     route: "GH run view",

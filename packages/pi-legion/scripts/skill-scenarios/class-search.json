@@ -113,6 +113,36 @@
       "check": "stand-ins: a behaviour a stand-in declares not modelled",
       "at": "standin-record\\.ts:\\d+ .*`dnsName`\\): not modelled, so a longer name is refused \\(`sandboxName`\\)\\. Unreachable: ",
       "reason": "a run's pod is legion-<28-character project>-WID-1, 41 characters (rig.sh's run_project; every round 25 run's issue is WID-1)"
+    },
+    {
+      "name": "the retro's rating of the plan and its write",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ The retro's own rating, PLAN_RATING_REQUIRED .* is not modelled\\. Unreachable: no run of this rig stands in retro",
+      "reason": "rig.sh's worker_boots starts each stand-in in testing, reviewing or accepting; the stand-in's moves are the round's out of reviewing and a worker's back to an earlier phase (daemon-standin.ts's enter); and the move out of accepting is the architect's sign-off, which no run boots"
+    },
+    {
+      "name": "PLAN_RATING_INPUT",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ The route's PLAN_RATING_INPUT, .* is not modelled: .* Unreachable: the `legion` tool refuses a lone `plan_rating` or `plan_reason`",
+      "reason": "the legion tool refuses a lone plan_rating or plan_reason, a rating off its scale and a blank or overlong reason before it sends a completion (pi-shared's legion-phase-ops.ts, PhaseOpArguments' planRating, planReason and the pair's refines)"
+    },
+    {
+      "name": "the plan record's write",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ The plan record's write \\(`PUT /api/v1/issues/\\{key\\}/plans/\\{id\\}`.* is not modelled\\. Unreachable: every run begins past `admitted`",
+      "reason": "the daemon writes the plan at the run's move out of admitted and at a hand-over's re-admission, and no run begins in admitted or is re-admitted (rig.sh's worker_boots); the plan's one read, GET /api/v1/projects/{key}/plans, lists a project's finished issues alone, and no move of the stand-in takes the world's issue past accepting"
+    },
+    {
+      "name": "a body holding U+0000 at a daemon of main ff2a10ef's shape",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ What a daemon of main `ff2a10ef`'s shape, whose decoder reads no string of a body, .* is not modelled: .* Unreachable: no batch's label is of that shape",
+      "reason": "both labels of a batch are main 724196ef or after, the base main 724196ef by the architect's standing rule, and main's daemon since #4488 refuses such a body, which the stand-in models (daemon-standin.ts's nulRefusal); the ff2a10ef shape is read by the rows alone"
+    },
+    {
+      "name": "a head that conflicts with its base",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ A head that conflicts with its base is not modelled, .* Unreachable: no world's head conflicts with its base, and no world's base moves during a run",
+      "reason": "the architect's ruling of 2026-11-19T19:03Z: every fixture_write call in rig.sh gives no merge state, which gh-call.ts's mergeStateOn reads as CLEAN and gh-threads.ts's mergeStateOf moves only to BLOCKED, so no read is DIRTY or CONFLICTING; the run's remote refuses every push to the base (fixture_first_commit) and the world serves no merge"
     }
   ],
   "searches": [
@@ -181,7 +211,7 @@
     {
       "entry": 12,
       "finding": "Tester v20 (round 16): the stand-in decided on another input than the code it models.",
-      "notMechanical": "whether the stand-in decides on the inputs the daemon decides on is a reading of two programs' logic side by side; the completion contract, the conflict move and the reason checks are read out of the label's own source at run time (daemon-pane.ts's labelDaemon, labelShapes), whose rows are daemon-pane.test.ts's"
+      "notMechanical": "whether the stand-in decides on the inputs the daemon decides on is a reading of two programs' logic side by side; the completion contract, the refusals of a completion's rating and of a body holding U+0000, and the reason checks are read out of the label's own source at run time (daemon-pane.ts's labelDaemon, labelShapes), whose rows are daemon-pane.test.ts's"
     },
     {
       "entry": 13,

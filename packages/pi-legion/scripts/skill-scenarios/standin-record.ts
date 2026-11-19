@@ -1,10 +1,12 @@
 // The issue record the daemon stand-in answers a `read_record` with (`GET /legion/v1/state`, the
 // `legion` tool's `read_record`), and the state body around it, built from what the run's world
-// says and nothing else. It is a module of its own, with no server and no file read in it, so
-// three readers build the same record: the stand-in at each state read (daemon-standin.ts), a row
-// that holds its shape to production's (daemon-standin.test.ts, production-shapes.json's `legion
-// read_record`), and the check a batch makes of each label's own contract before any run starts
-// (`contractRefusal`, rig.sh's services_up).
+// says and nothing else. It is a module of its own, with no server and no file read in it but the
+// label's own contract and the one daemon source the label's bodies are built by, which the check
+// of that contract reads (`contractRefusal`), so three readers build the same record: the
+// stand-in at each state read (daemon-standin.ts), a row that holds its shape to production's
+// (daemon-standin.test.ts, production-shapes.json's `legion read_record`), and the check a batch
+// makes of each label's own contract before any run starts (`contractRefusal`, rig.sh's
+// services_up).
 //
 // The record is production's, field for field, as the daemon's projection builds it
 // (packages/daemon/internal/projection/project.go, packages/daemon/internal/api/state.go): the
@@ -31,6 +33,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { type LegionRole, roleForPhase, roleToken } from "@legion/contracts";
+import { servesFixAttempts } from "./daemon-pane";
 
 /** The issue's generation: one run of the workflow, which no world of the rig re-admits. */
 export const GENERATION = 1;
@@ -137,6 +140,11 @@ export interface RecordFacts {
   readonly rounds: number;
   readonly backwardMoves: Readonly<Record<string, number>>;
   readonly pullRequest?: PullRequestFacts | undefined;
+  /** The count of fix attempts the label's daemon serves on the pull request, the heads pushed
+   * onto a red check verdict (main `ff2a10ef`'s `api.PullRequestView.FixAttempts`, which that
+   * label's contract requires), or undefined for a daemon that serves none, main's since contract
+   * 59 (daemon-pane.ts's `servesFixAttempts`). */
+  readonly fixAttempts?: number | undefined;
   /** The spec's gate, or undefined for an issue whose architect registered no document. */
   readonly gate?: GateFacts | undefined;
   /** When the issue took its admission slot. */
@@ -320,6 +328,8 @@ export function issueRecord(facts: RecordFacts): Record<string, unknown> {
             state: lower(pr.state),
             ...(mergeState === undefined ? {} : { mergeState }),
             ...(decided === undefined ? {} : { reviewDecision: decided }),
+            // Last, where that older daemon's view declares it.
+            ...(facts.fixAttempts === undefined ? {} : { fixAttempts: facts.fixAttempts }),
           },
         }),
     ...(gate === undefined
@@ -459,10 +469,11 @@ function sampleClaim(state: string, generation: number | undefined, more: Partia
  * `roundOutcome` and backward move), each holding every member the record ever writes in that
  * phase — the claim of each state a stand-in gives one, a handoff commit and record, a pull
  * request in each merge state a world reports and under each decision, a gate approved, waiting
- * and with changes requested, and an issue with no history at all. `contractRefusal` hands each
- * to a label's own contract, so a member a label's schema refuses is found before any run of the
- * label starts rather than in its agents' turns. */
-export function sampleFacts(): { name: string; facts: RecordFacts }[] {
+ * and with changes requested, and an issue with no history at all — and the count of fix attempts
+ * `fixAttempts` on each pull request, for a label whose daemon serves one (`RecordFacts`).
+ * `contractRefusal` hands each to a label's own contract, so a member a label's schema refuses is
+ * found before any run of the label starts rather than in its agents' turns. */
+export function sampleFacts(fixAttempts?: number): { name: string; facts: RecordFacts }[] {
   const at = "2026-11-17T12:00:00.000Z";
   const head = "804a7ad10da2154015508a1bbc4a5b2ac9e98b81";
   const record = { id: "a1ae938f-0520-47a1-8778-12b5f3bf9f4f", version: 1 };
@@ -473,6 +484,7 @@ export function sampleFacts(): { name: string; facts: RecordFacts }[] {
     repo: "fernbrook/widgets",
     defaultBranch: "main",
     pluginContract: 146,
+    fixAttempts,
     admittedAt: at,
     movedAt: at,
     now: "2026-11-17T12:30:00.000Z",
@@ -599,13 +611,22 @@ interface BodyReader {
   safeParse: (body: unknown) => { success: boolean; error?: { message: string } };
 }
 
+/** The count of fix attempts a world's pull request carries where its label's daemon serves one
+ * (`RecordFacts`' `fixAttempts`): that daemon raises it only at a push onto a head whose check
+ * verdict is red, and every check of every world's head concludes `success` (rig.sh's
+ * `concluded_checks`), so it stays 0. */
+export const WORLD_FIX_ATTEMPTS = 0;
+
 /** Why the contract of `checkout` refuses a state body the stand-in serves, or undefined where
  * it describes every one (`sampleFacts`): that checkout's own `LegionStateResponse`
  * (packages/contracts/src/legion-api.ts), the schema the plugin its label's agents load reads
- * every state answer with. The module is another checkout's, at a path this process is handed at
- * run time, so no static import reaches it; a checkout that has none, or one that exports no such
- * schema, is a refusal too, naming the file, since a label whose contract cannot be read is never
- * answered as some other contract would describe it. */
+ * every state answer with. The bodies are the ones the stand-in serves that label: their pull
+ * request carries `fixAttempts` where the checkout's daemon serves it (daemon-pane.ts's
+ * `servesFixAttempts`, read out of its source), and none where it does not. The module is another
+ * checkout's, at a path this process is handed at run time, so no static import reaches it; a
+ * checkout that has none, or one that exports no such schema, is a refusal too, naming the file,
+ * since a label whose contract cannot be read is never answered as some other contract would
+ * describe it; and so is a daemon source of neither shape, naming each marker and its file. */
 export async function contractRefusal(checkout: string): Promise<string | undefined> {
   const contract = path.join(checkout, "packages", "contracts", "src", "legion-api.ts");
   let loaded: unknown;
@@ -620,7 +641,13 @@ export async function contractRefusal(checkout: string): Promise<string | undefi
       : undefined;
   if (typeof schema?.safeParse !== "function")
     return `${contract} exports no LegionStateResponse to read a state body with`;
-  for (const { name, facts } of sampleFacts()) {
+  let counted: boolean;
+  try {
+    counted = servesFixAttempts(checkout);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  for (const { name, facts } of sampleFacts(counted ? WORLD_FIX_ATTEMPTS : undefined)) {
     const read = schema.safeParse(stateBody(facts, facts.admittedAt));
     if (!read.success)
       return `${contract} does not describe the state body the stand-in serves (${name}): ${read.error?.message ?? "refused"}`;

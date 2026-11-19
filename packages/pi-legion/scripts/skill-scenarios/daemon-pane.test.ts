@@ -1494,6 +1494,7 @@ describe("the label's build and its facts", () => {
       "internal/record/outbox.go",
       "internal/daemon/outbox.go",
       "internal/workflow/steps.go",
+      "internal/workflow/plan.go",
       "cmd/legion/testdata/gh-help",
     ]) {
       mkdirSync(path.dirname(path.join(daemon, file)), { recursive: true });
@@ -1661,6 +1662,9 @@ describe("the shapes of a label's daemon source", () => {
   /** The files labelShapes reads, under a checkout's `packages/`. */
   const SOURCES = [
     "daemon/internal/api/handoff.go",
+    "daemon/internal/api/claims.go",
+    "daemon/internal/api/storable_text.go",
+    "daemon/internal/api/state.go",
     "daemon/internal/workflow/engine.go",
     "daemon/internal/workflow/effects.go",
     "daemon/internal/workflow/review_round.go",
@@ -1672,6 +1676,7 @@ describe("the shapes of a label's daemon source", () => {
     "daemon/internal/daemon/outbox.go",
     "daemon/internal/dispatch/types.go",
     "daemon/internal/workflow/steps.go",
+    "daemon/internal/workflow/plan.go",
     "envoy/internal/dispatch/api/routes_table.go",
   ];
   const EFFECTS = "daemon/internal/workflow/effects.go";
@@ -1685,7 +1690,8 @@ describe("the shapes of a label's daemon source", () => {
     const dir = path.join(rig, `source-shapes-${++copies}`);
     for (const one of SOURCES) {
       const source = path.join(from, "packages", one);
-      // main ff2a10ef predates review_round.go and reviewround.go, so a copy of it has neither.
+      // main ff2a10ef predates review_round.go, reviewround.go, storable_text.go and plan.go, so
+      // a copy of it has none of them.
       if (!existsSync(source)) continue;
       let text = readFileSync(source, "utf8");
       if (one === file) {
@@ -1699,41 +1705,48 @@ describe("the shapes of a label's daemon source", () => {
   }
   const MAIN = {
     postsBackward: true,
-    postsConflict: true,
     refusesReason: true,
     publishesHolders: true,
     namesReviewRound: true,
     decidesBySession: true,
     decidesByFooterHead: true,
     writesSteps: true,
+    refusesRating: true,
+    refusesNul: true,
+    servesFixAttempts: false,
   };
   const OLDER = {
     postsBackward: false,
-    postsConflict: false,
     refusesReason: false,
     publishesHolders: false,
     namesReviewRound: false,
     decidesBySession: false,
     decidesByFooterHead: false,
     writesSteps: false,
+    refusesRating: false,
+    refusesNul: false,
+    servesFixAttempts: true,
   };
   const olderHost = process.env.SKILL_SCENARIOS_OLDER_CHECKOUT;
 
   // Catches: a reader whose marker is not this checkout's source (gone stale), read as an older
   // daemon that lacks the behaviour, which the head label's runs met as no sentence, no refusal,
   // no publication, a reviewer's task with no sentence of its round, a review of the review App
-  // taken from any session and one taken on its `commit_id`; and a reader that needs a file the
-  // thirteen are not.
-  test("this checkout's daemon source posts each move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone and holds a review to its footer's head", () => {
+  // taken from any session and one taken on its `commit_id`, no step record, a rating taken where
+  // the daemon refuses it, a body holding U+0000 taken, and a pull request counting fix attempts
+  // main's daemon keeps no count of; and a reader that needs a file the seventeen are not.
+  test("this checkout's daemon source posts a backward move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone, holds a review to its footer's head, records each step, refuses an unasked rating and a body holding U+0000, and counts no fix attempt", () => {
     expect(labelShapes(CHECKOUT)).toEqual(MAIN);
     expect(labelShapes(copyOf(CHECKOUT))).toEqual(MAIN);
   });
 
   // Catches: a step record written in a shape the label's daemon does not write, which `dispatch
   // steps` then lists otherwise than production (main's since #4400). Each text the stand-in and
-  // the seeds restate is held to the label's source: a field the executor stops sending, a phase
-  // whose step moves, a result a move gives otherwise, and an id named another way each leave the
-  // source of neither shape, refused naming the reader, never read as a daemon that writes none.
+  // the seeds restate is held to the label's source: a field the executor stops sending, a write
+  // that sends another body, a Dispatch older than the route no longer waited for, a phase whose
+  // step moves (main's steps of a phase since #4488), a result a move gives otherwise, and an id
+  // named another way each leave the source of neither shape, refused naming the reader, never
+  // read as a daemon that writes none.
   test("a daemon source that writes a step record otherwise than step-records.ts restates is of no shape", () => {
     for (const [file, marker, renamed] of [
       [
@@ -1742,14 +1755,45 @@ describe("the shapes of a label's daemon source", () => {
         "ReturnedTo: payload.ReturnedTo}",
       ],
       [
-        "daemon/internal/workflow/steps.go",
-        'return at(steprecord.KindStep, 4, "reviewer", "review")',
-        'return at(steprecord.KindStep, 4, "reviewer", "reviewing")',
+        "daemon/internal/daemon/outbox.go",
+        "r.dispatch.PutStep(ctx, row.Issue, payload.ID, stepWriteOf(payload))",
+        "r.dispatch.PutStep(ctx, row.Issue, payload.ID, stepWriteOf(record.StepRecord{}))",
+      ],
+      [
+        "daemon/internal/daemon/outbox.go",
+        "if waitsForTheRoute(row.Kind) && dispatch.NoRoute(err) {",
+        "if dispatch.NoRoute(err) && false {",
+      ],
+      [
+        "daemon/internal/daemon/outbox.go",
+        "return record.LaneOf(kind) == record.LaneRecord || kind == record.OutboxKindRoleHoldersPublish",
+        "return kind == record.OutboxKindRoleHoldersPublish",
+      ],
+      [
+        "daemon/internal/workflow/plan.go",
+        '"planner", "implementer", "tester", "reviewer", "acceptance:owner"',
+        '"planner", "tester", "implementer", "reviewer", "acceptance:owner"',
+      ],
+      [
+        "daemon/internal/workflow/plan.go",
+        'return "reviewer", "review", true',
+        'return "reviewer", "reviewing", true',
+      ],
+      ["daemon/internal/workflow/plan.go", "Place: i + 1}", "Place: i}"],
+      [
+        "daemon/internal/workflow/plan.go",
+        'Kind: steprecord.KindRetro}, "implementer", "", true',
+        'Kind: steprecord.KindRetro}, "architect", "", true',
       ],
       [
         "daemon/internal/workflow/steps.go",
-        "case TriggerConflict:\n\t\treturn ResultStopped, true",
-        "case TriggerConflict:\n\t\treturn ResultFailed, true",
+        "\treturn stepIn(DefaultSteps(), p)",
+        '\treturn stepIn([]string{"planner"}, p)',
+      ],
+      [
+        "daemon/internal/workflow/steps.go",
+        "case TriggerTesterFailed, TriggerReviewRejected, TriggerBackward:",
+        "case TriggerTesterFailed, TriggerReviewRejected:",
       ],
       [
         "daemon/internal/workflow/steps.go",
@@ -1828,6 +1872,31 @@ describe("the shapes of a label's daemon source", () => {
     'if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {\n\t\twriteFailure(w, http.StatusBadRequest, "TESTER_VERDICT_REQUIRED", "tester verdict must be pass or fail")';
   const OTHER_VERDICT =
     'if grant.Role != claim.RoleTester && req.Verdict != "" {\n\t\twriteFailure(w, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester may report a verdict")';
+  // The refusal of a rating the completion does not take, main's since #4488 (daemon-pane.ts's
+  // `REFUSES_RATING`).
+  const RATING_FIELDS =
+    'PlanRating     *int       `json:"planRating,omitempty"`\n\tPlanReason     *string    `json:"planReason,omitempty"`\n}';
+  const RATING_ON_FACT = "PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})";
+  const RATING_UNSPENT =
+    "if refusal := planRatingRefusal(fact, current && issue.Phase == phase.Retro, reported); refusal != nil {\n\t\treturn intake.Result{Refusal: refusal, Unspent: true}, nil\n\t}";
+  const RATING_WHAT =
+    'what := fmt.Sprintf("this completion of phase %s of %s", reported, fact.Issue)';
+  const RATING_UNASKED =
+    "case !endsRetro && fact.PlanRating != nil:\n\t\treturn intake.PlanRatingUnexpected(what)";
+  const RATING_WORDS =
+    'func PlanRatingUnexpected(what string) *Refusal {\n\treturn &Refusal{Status: 400, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(\n\t\t"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}';
+  // The refusal of a body holding U+0000, main's since #4488 (daemon-pane.ts's `REFUSES_NUL`).
+  const STORABLE = "daemon/internal/api/storable_text.go";
+  const NUL_DECODED = "\treturn body, unstorableJSON(body)\n}";
+  const NUL_WALK = "place, value, found := dispatchbody.NulInJSON(body)";
+  const NUL_WORDS =
+    'return fmt.Errorf("%s holds a NUL character (U+0000) at character %d, which the daemon cannot store", place, utf8.RuneCountInString(value[:at])+1)';
+  const BAD_BODY =
+    'writeJSON(w, http.StatusBadRequest, errorBody("invalid request body: "+err.Error()))';
+  // The state's pull request with no count of fix attempts, main's since contract 59
+  // (daemon-pane.ts's `PULL_REQUEST_UNCOUNTED`).
+  const UNCOUNTED =
+    'MergeState     string `json:"mergeState,omitempty"`\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n}';
 
   // Catches: a marker renamed in the label's source, read as a daemon that lacks what it names,
   // which answers the label as an older daemon and names no shape; and a refusal that names
@@ -1847,7 +1916,6 @@ describe("the shapes of a label's daemon source", () => {
       OTHER_VERDICT.replace('req.Verdict != ""', 'req.Verdict == "pending"'),
     ],
     [EFFECTS, "func backwardMoveReason(", "func backwardMoveSentence("],
-    [EFFECTS, "func moveReason(", "func moveSentence("],
     [EFFECTS, '"BACKWARD_REASON_TOO_LONG"', '"BACKWARD_REASON_OVERLONG"'],
     [
       "daemon/internal/workflow/review_round.go",
@@ -1898,6 +1966,41 @@ describe("the shapes of a label's daemon source", () => {
       '"/api/v1/issues/{key}/role-holders"',
       '"/api/v1/issues/{key}/role-sessions"',
     ],
+    ["daemon/internal/api/handoff.go", RATING_FIELDS, RATING_FIELDS.replace("*int ", "int  ")],
+    [
+      "daemon/internal/api/handoff.go",
+      RATING_ON_FACT,
+      RATING_ON_FACT.replace("PlanRating: rating, ", ""),
+    ],
+    [
+      "daemon/internal/workflow/engine.go",
+      RATING_UNSPENT,
+      RATING_UNSPENT.replace("Unspent: true", "Unspent: false"),
+    ],
+    ["daemon/internal/workflow/plan.go", RATING_WHAT, RATING_WHAT.replace("phase %s", "%s")],
+    [
+      "daemon/internal/workflow/plan.go",
+      RATING_UNASKED,
+      RATING_UNASKED.replace("!endsRetro && ", ""),
+    ],
+    [
+      FACTS,
+      RATING_WORDS,
+      RATING_WORDS.replace("send it again without both", "send it without both"),
+    ],
+    ["daemon/internal/api/claims.go", NUL_DECODED, "\treturn body, checkBody(body)\n}"],
+    [STORABLE, NUL_WALK, NUL_WALK.replace("dispatchbody.NulInJSON", "nulIn")],
+    [STORABLE, NUL_WORDS, NUL_WORDS.replace("at character %d", "at byte %d")],
+    [
+      "daemon/internal/api/claims.go",
+      BAD_BODY,
+      BAD_BODY.replace("invalid request body: ", "bad body: "),
+    ],
+    [
+      "daemon/internal/api/state.go",
+      UNCOUNTED,
+      UNCOUNTED.replace("reviewDecision,omitempty", "reviewDecision"),
+    ],
   ] as const)
     test(`this checkout's source with ${marker} renamed is refused, naming it and its file`, () => {
       expect(() => labelShapes(copyOf(CHECKOUT, file, marker, renamed))).toThrow(
@@ -1907,8 +2010,9 @@ describe("the shapes of a label's daemon source", () => {
 
   // Catches: an older shape's marker renamed, read as that older daemon all the same, or as
   // this checkout's: the code main `ff2a10ef` has in the place of each sentence, of the
-  // publication, of the round's sentences, of the reviewer's recorded session and of the
-  // footer's head, whose loss leaves a source of neither shape.
+  // publication, of the round's sentences, of the reviewer's recorded session, of the footer's
+  // head, of the refusal of a rating and of a body holding U+0000, and its pull request's count of
+  // fix attempts, whose loss leaves a source of neither shape.
   const STATUS =
     "func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {";
   const OUTBOX_END = '\tOutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"\n)';
@@ -1916,6 +2020,11 @@ describe("the shapes of a label's daemon source", () => {
     "payload record.OutboxPayload, at time.Time) error {\n\trow, err := record.NewOutboxRow(issue, payload, at)";
   const ANY_SESSION =
     'return e.byReviewApp(review.Author) && (reviewerSession == "" || review.LegionSession() == reviewerSession)';
+  const NO_RATING = 'WakeAt         *time.Time `json:"wakeAt,omitempty"`\n}';
+  const NO_WALK =
+    '\t\treturn body, errors.New("more than one JSON value")\n\t}\n\treturn body, nil\n}';
+  const COUNTED =
+    'ReviewDecision string `json:"reviewDecision,omitempty"`\n\tFixAttempts    int    `json:"fixAttempts"`\n}';
   for (const [file, marker, renamed] of [
     [EFFECTS, STATUS, STATUS.replace("status string", "state string")],
     [
@@ -1932,6 +2041,21 @@ describe("the shapes of a label's daemon source", () => {
       SESSION_ALONE.replace("\n\t}", '\n\t\tHead    string `json:"head"`\n\t}'),
     ],
     [REVIEW, ON_COMMIT_ID, ON_COMMIT_ID.replace("fact.CommitID", "fact.HeadSHA")],
+    [
+      "daemon/internal/api/handoff.go",
+      NO_RATING,
+      NO_RATING.replace("\n}", '\n\tNote           string     `json:"note,omitempty"`\n}'),
+    ],
+    [
+      "daemon/internal/api/claims.go",
+      NO_WALK,
+      NO_WALK.replace("return body, nil", "return body, err"),
+    ],
+    [
+      "daemon/internal/api/state.go",
+      COUNTED,
+      COUNTED.replace('`json:"fixAttempts"`', '`json:"fixAttempts,omitempty"`'),
+    ],
   ] as const)
     test.skipIf(olderHost === undefined)(
       `main ff2a10ef's source with its older marker in ${file} renamed is refused, naming it and its file`,

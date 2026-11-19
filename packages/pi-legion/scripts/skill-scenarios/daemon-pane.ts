@@ -51,12 +51,12 @@ import {
 import { type GhSelectors, type GhTable, selectorsOf, tableOf } from "./gh-selectors";
 import { Refused } from "./run-records";
 import {
+  DEFAULT_STEPS,
   FAILED_TRIGGERS,
   STEP_NAMESPACE_NAME,
   STEP_TASK,
   STEP_WRITE_FIELDS,
   STEPS,
-  STOPPED_TRIGGERS,
 } from "./step-records";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
@@ -738,9 +738,6 @@ export interface LabelShapes {
   /** A worker's backward move posts its sentence on the issue (effects.go's `backwardMoveReason`,
    * main's since #4309, 26f27a997a). */
   readonly postsBackward: boolean;
-  /** The move of a head that conflicts with its base posts its sentence on the issue (effects.go's
-   * `moveReason`, main's since #4291, 34f0d8c801). */
-  readonly postsConflict: boolean;
   /** A backward move whose sentence Dispatch would refuse is refused (effects.go's
    * `backwardReasonRefusal`, main's since #4309). */
   readonly refusesReason: boolean;
@@ -773,11 +770,29 @@ export interface LabelShapes {
   /** The daemon records each run of a step of an issue on its Dispatch: an outbox `step_record`
    * row at the run's start and at its end, and one of the report alone of a completion that lands
    * after that end, whose executor sends `PUT /api/v1/issues/{key}/steps/{id}` under the daemon's
-   * own session (outbox.go's `publishStepRecord`, workflow/steps.go's `startStep`, `endStep` and
-   * `reportEndedStep`, main's since #4400, 53980e0e32), in the fields, the words, the places and
-   * the id step-records.ts restates (`WRITES_STEPS`). False for main `ff2a10ef`'s daemon, whose
-   * outbox has no such kind. */
+   * own session (outbox.go's `publishStepRecord` and `stepWriteOf`, workflow/steps.go's
+   * `startStep`, `endStep` and `reportEndedStep`, main's since #4400, 53980e0e32, the steps of a
+   * phase read off workflow/plan.go's `DefaultSteps` since #4488), in the fields, the words, the
+   * places and the id step-records.ts restates (`WRITES_STEPS`). False for main `ff2a10ef`'s
+   * daemon, whose outbox has no such kind. */
   readonly writesSteps: boolean;
+  /** A completion that carries a rating of the plan (`planRating` with `planReason`) and does not
+   * end the retro is refused 400 PLAN_RATING_UNEXPECTED, in the words `PLAN_RATING_UNEXPECTED`
+   * restates, by the workflow past HANDOFF_NOT_NEW, its fact left unspent (workflow/plan.go's
+   * `planRatingRefusal`, engine.go's `handoff`, main's since #4488, a16c218ee3). False for main
+   * `ff2a10ef`'s daemon, whose completion request carries no rating. */
+  readonly refusesRating: boolean;
+  /** A request body any string of which, a member's name or a value, holds U+0000 is refused 400
+   * before its route reads it, naming the first such string's place and where the character stands
+   * in it (`NUL_REFUSAL`, claims.go's `decodeJSON` and `refuseBadBody`, storable_text.go's
+   * `unstorableJSON`, main's since #4488). False for main `ff2a10ef`'s daemon, whose decoder reads
+   * no string of a body. */
+  readonly refusesNul: boolean;
+  /** The state's pull request carries `fixAttempts`, the count of heads pushed onto a red check
+   * verdict (api's `PullRequestView.FixAttempts`, main `ff2a10ef`'s), which that label's contract
+   * requires. False for main's daemon since contract 59 (#2780, 7e7bcf212f), which keeps no such
+   * count (`servesFixAttempts`). */
+  readonly servesFixAttempts: boolean;
 }
 
 const EFFECTS = "daemon/internal/workflow/effects.go";
@@ -928,17 +943,28 @@ const BY_COMMIT_ID: readonly Marker[] = [
   },
 ];
 
-/** The files the daemon writes a run's record of a step through (main's since #4400). */
+/** The files the daemon writes a run's record of a step through (main's since #4400), and the one
+ * it reads the steps of a phase from (main's since #4488). */
 const STEPS_GO = "daemon/internal/workflow/steps.go";
+const PLAN_GO = "daemon/internal/workflow/plan.go";
 const DAEMON_OUTBOX = "daemon/internal/daemon/outbox.go";
+/** `kind` as the constant of steprecord names it (`steprecord.KindStep`, `KindRetro`, …). */
+const kindConstant = (kind: string) =>
+  `steprecord.Kind${kind[0]?.toUpperCase() ?? ""}${kind.slice(1)}`;
 /** The texts a daemon that records each run of a step holds, each built from step-records.ts's
  * tables where one restates it, so a daemon that writes another field, word, place, result or id
  * is of no shape the rig reads: the outbox's kind, its executor's write of every field of the row
- * through the client's route under the daemon's actor and the body that route takes; the task,
- * the step of each phase, the result of each move and the id's namespace and name; and which
- * fields each of the three writes carries — the identity on every one, the moment alone at the
- * start, the moments, the result, the return, the report and the agent's session and model at the
- * end, and the report alone after it. The end reads its agent in the fact's own transaction
+ * (`stepWriteOf`) through the client's route under the daemon's actor and the body that route
+ * takes, and the wait `execute` makes of the router's 404 of a Dispatch older than the route
+ * (`waitsForTheRoute`, for the record lane and the role holders' publication); the task; the steps
+ * of the task in order (plan.go's `DefaultSteps`), the role and the type of the step each working
+ * phase runs (`stepWork`), its place, one plus the index of the first step of its role (`stepIn`),
+ * and the retro's and the merge's step at place 0, which steps.go's `stepOf` reads through
+ * `stepIn` over `DefaultSteps`; the result of each move (`endOf`, which ends no step stopped since
+ * #4464: a head that conflicts with its base moves no issue); the id's namespace and name; and
+ * which fields each of the three writes carries — the identity on every one, the moment alone at
+ * the start, the moments, the result, the return, the report and the agent's session and model at
+ * the end, and the report alone after it. The end reads its agent in the fact's own transaction
  * (`e.readAgent(ctx, tx, agent)`, main's since #4220, 46795520eb), which names the claim's
  * session only while the claim holds it: a world's one claim holds the session it registered, so
  * the end names that session, as before #4220. */
@@ -949,11 +975,19 @@ const WRITES_STEPS: readonly Marker[] = [
   },
   {
     file: DAEMON_OUTBOX,
-    text: "write := dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,\n\t\tType: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,\n\t\tModel: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,\n\t\tReturnedTo: payload.ReturnedTo, Report: payload.Report}",
+    text: "func stepWriteOf(payload record.StepRecord) dispatch.StepWrite {\n\treturn dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,\n\t\tType: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,\n\t\tModel: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,\n\t\tReturnedTo: payload.ReturnedTo, Report: payload.Report}",
   },
   {
     file: DAEMON_OUTBOX,
-    text: "if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, write); err != nil {",
+    text: "if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, stepWriteOf(payload)); err != nil {",
+  },
+  {
+    file: DAEMON_OUTBOX,
+    text: "if waitsForTheRoute(row.Kind) && dispatch.NoRoute(err) {\n\t\treturn wait.Errorf(",
+  },
+  {
+    file: DAEMON_OUTBOX,
+    text: "return record.LaneOf(kind) == record.LaneRecord || kind == record.OutboxKindRoleHoldersPublish",
   },
   {
     file: "daemon/internal/dispatch/client.go",
@@ -964,18 +998,35 @@ const WRITES_STEPS: readonly Marker[] = [
     text: `type StepWrite struct {\n${STEP_WRITE_FIELDS.map(([name, type, key]) => `\t${name.padEnd(11)}${type.padEnd(11)}\`json:"${key}"\``).join("\n")}\n}`,
   },
   { file: STEPS_GO, text: `const defaultTask = "${STEP_TASK}"` },
+  { file: STEPS_GO, text: "\treturn stepIn(DefaultSteps(), p)\n}" },
   {
-    file: STEPS_GO,
+    file: PLAN_GO,
+    text: `func DefaultSteps() []string {\n\treturn []string{${DEFAULT_STEPS.map((step) => JSON.stringify(step)).join(", ")}}\n}`,
+  },
+  {
+    file: PLAN_GO,
     text: `\tswitch p {\n${Object.values(STEPS)
+      .filter(({ kind }) => kind === "step")
+      .map(({ go, role, type }) => `\tcase phase.${go}:\n\t\treturn "${role}", "${type}", true`)
+      .join("\n")}\n\t}\n\treturn "", "", false`,
+  },
+  {
+    file: PLAN_GO,
+    text: `\tswitch p {\n${Object.values(STEPS)
+      .filter(({ kind }) => kind !== "step")
       .map(
-        ({ go, kind, place, role, type }) =>
-          `\tcase phase.${go}:\n\t\treturn at(steprecord.Kind${kind[0]?.toUpperCase()}${kind.slice(1)}, ${place}, "${role}", "${type}")`
+        ({ go, kind, role, type }) =>
+          `\tcase phase.${go}:\n\t\treturn record.StepPlace{Task: defaultTask, Kind: ${kindConstant(kind)}}, "${role}", "${type}", true`
       )
-      .join("\n")}\n\t}\n\treturn record.StepPlace{}, "", "", false`,
+      .join("\n")}\n\t}\n\trole, typ, ok = stepWork(p)`,
+  },
+  {
+    file: PLAN_GO,
+    text: `if head, _, _ := strings.Cut(named, ":"); stepRole(head) == role {\n\t\t\treturn record.StepPlace{Task: defaultTask, Kind: ${kindConstant("step")}, Place: i + 1}, role, typ, true`,
   },
   {
     file: STEPS_GO,
-    text: `\tswitch trigger {\n\tcase ${FAILED_TRIGGERS.join(", ")}:\n\t\treturn ResultFailed, true\n\tcase ${STOPPED_TRIGGERS.join(", ")}:\n\t\treturn ResultStopped, true\n\t}\n\treturn ResultPassed, false`,
+    text: `\tswitch trigger {\n\tcase ${FAILED_TRIGGERS.join(", ")}:\n\t\treturn ResultFailed, true\n\t}\n\treturn ResultPassed, false`,
   },
   {
     file: STEPS_GO,
@@ -1007,14 +1058,130 @@ const WRITES_STEPS: readonly Marker[] = [
   },
 ];
 
-/** What the daemon source of `checkout` posts, refuses, publishes, ends a reviewer's task with and
- * takes a review of the review App for, each read as one of two shapes: main's since the change
- * that brought it, by its own marker, or main `ff2a10ef`'s, which predates all six changes, by
- * the code it has in their place (`STATUS_WITHOUT_MESSAGE`, `OUTBOX_WITHOUT_HOLDERS`,
- * `ROW_AS_QUEUED`, `BY_ROW_SESSION`, `BY_COMMIT_ID`). The completion refusals and the route's
- * verdict rule have one shape, every daemon the rig runs holding them. Throws, naming each marker
- * and its file, for a source of no shape or of both (`sourceShape`), which refuses the batch at
- * rig.sh's label_facts and a stand-in's boot. */
+/** The refusal of a completion that rates the plan and does not end the retro, as main's daemon
+ * since #4488 words it: its code, the description of the completion the workflow fills with the
+ * phase it is of and the issue (workflow/plan.go's `planRatingRefusal`), and the message the
+ * intake fills with that description (intake's `PlanRatingUnexpected`). The daemon stand-in
+ * answers by them; `labelShapes` holds a label's source to them (`REFUSES_RATING`). */
+export const PLAN_RATING_UNEXPECTED = {
+  code: "PLAN_RATING_UNEXPECTED",
+  what: "this completion of phase %s of %s",
+  message:
+    "%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded",
+} as const;
+/** What a daemon that refuses such a completion holds: the route's request taking both members and
+ * handing the rating to the fact; the workflow's refusal past HANDOFF_NOT_NEW with its fact left
+ * unspent, of every completion that does not end the retro; and its description and message in
+ * the words `PLAN_RATING_UNEXPECTED` restates. */
+const REFUSES_RATING: readonly Marker[] = [
+  {
+    file: "daemon/internal/api/handoff.go",
+    text: 'PlanRating     *int       `json:"planRating,omitempty"`\n\tPlanReason     *string    `json:"planReason,omitempty"`\n}',
+  },
+  {
+    file: "daemon/internal/api/handoff.go",
+    text: "PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})",
+  },
+  {
+    file: "daemon/internal/workflow/engine.go",
+    text: "if refusal := planRatingRefusal(fact, current && issue.Phase == phase.Retro, reported); refusal != nil {\n\t\treturn intake.Result{Refusal: refusal, Unspent: true}, nil\n\t}",
+  },
+  {
+    file: PLAN_GO,
+    text: `what := fmt.Sprintf("${PLAN_RATING_UNEXPECTED.what}", reported, fact.Issue)`,
+  },
+  {
+    file: PLAN_GO,
+    text: "case !endsRetro && fact.PlanRating != nil:\n\t\treturn intake.PlanRatingUnexpected(what)",
+  },
+  {
+    file: "daemon/internal/intake/facts.go",
+    text: `func PlanRatingUnexpected(what string) *Refusal {\n\treturn &Refusal{Status: 400, Code: "${PLAN_RATING_UNEXPECTED.code}", Message: fmt.Sprintf(\n\t\t"${PLAN_RATING_UNEXPECTED.message}", what)}`,
+  },
+];
+/** The completion request as main `ff2a10ef`'s route decodes it, ending at `wakeAt` with no rating
+ * of the plan: what that older daemon has in the place of the refusal. */
+const REQUEST_WITHOUT_RATING: Marker = {
+  file: "daemon/internal/api/handoff.go",
+  text: 'WakeAt         *time.Time `json:"wakeAt,omitempty"`\n}',
+};
+
+/** The refusal of a request body holding U+0000 in a string, as main's daemon since #4488 words
+ * it: the sentence every undecodable body is refused 400 with (claims.go's `refuseBadBody`), around
+ * the decoder's error, which names the first such string's place in the body and where the first
+ * U+0000 stands in it, counted from 1 in code points (storable_text.go's `unstorableText`). */
+export const NUL_REFUSAL = {
+  prefix: "invalid request body: ",
+  format: "%s holds a NUL character (U+0000) at character %d, which the daemon cannot store",
+} as const;
+/** What a daemon that refuses such a body holds: the decoder of every request body ending in the
+ * walk of its strings (`decodeJSON`'s `unstorableJSON`, through Dispatch's own walk,
+ * `dispatchbody.NulInJSON`), the error in the words `NUL_REFUSAL` restates, and the 400 it is
+ * written in. */
+const REFUSES_NUL: readonly Marker[] = [
+  { file: "daemon/internal/api/claims.go", text: "\treturn body, unstorableJSON(body)\n}" },
+  {
+    file: "daemon/internal/api/storable_text.go",
+    text: "place, value, found := dispatchbody.NulInJSON(body)",
+  },
+  {
+    file: "daemon/internal/api/storable_text.go",
+    text: `return fmt.Errorf("${NUL_REFUSAL.format}", place, utf8.RuneCountInString(value[:at])+1)`,
+  },
+  {
+    file: "daemon/internal/api/claims.go",
+    text: `writeJSON(w, http.StatusBadRequest, errorBody("${NUL_REFUSAL.prefix}"+err.Error()))`,
+  },
+];
+/** The decoder as main `ff2a10ef`'s daemon has it, ending at the one value a body holds with no
+ * walk of its strings: what that older daemon has in the place of the refusal. */
+const DECODER_WITHOUT_WALK: Marker = {
+  file: "daemon/internal/api/claims.go",
+  text: '\t\treturn body, errors.New("more than one JSON value")\n\t}\n\treturn body, nil\n}',
+};
+
+/** The file the daemon builds its state answer's views in. */
+const STATE_GO = "daemon/internal/api/state.go";
+/** The state's pull request as main `ff2a10ef`'s daemon writes it, ending at the count of fix
+ * attempts. */
+const PULL_REQUEST_COUNTED: Marker = {
+  file: STATE_GO,
+  text: 'ReviewDecision string `json:"reviewDecision,omitempty"`\n\tFixAttempts    int    `json:"fixAttempts"`\n}',
+};
+/** The same as main's daemon writes it since contract 59, ending at the round's decision. */
+const PULL_REQUEST_UNCOUNTED: Marker = {
+  file: STATE_GO,
+  text: 'MergeState     string `json:"mergeState,omitempty"`\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n}',
+};
+
+/** Whether the state the daemon of `checkout` answers carries the count of fix attempts on its
+ * pull request (`LabelShapes`' `servesFixAttempts`): main `ff2a10ef`'s by `PULL_REQUEST_COUNTED`,
+ * none for main's since contract 59 by `PULL_REQUEST_UNCOUNTED`. The count rises only at a push
+ * onto a head whose check verdict is red (that daemon's classify's `advance`), and every check of
+ * every world's head concludes `success` (rig.sh's `concluded_checks`), so a world's count is 0.
+ * standin-record.ts's `contractRefusal` reads it to build the state bodies a label's contract is
+ * handed, as the stand-in serves them. Throws, naming each marker and its file, for a source of
+ * neither shape or both. */
+export function servesFixAttempts(checkout: string): boolean {
+  return sourceShape(checkout, "the state's pull request", [
+    { name: "main's daemon since contract 59", markers: [PULL_REQUEST_UNCOUNTED], value: false },
+    {
+      name: "main ff2a10ef's daemon, whose pull request counts its fix attempts",
+      markers: [PULL_REQUEST_COUNTED],
+      value: true,
+    },
+  ]);
+}
+
+/** What the daemon source of `checkout` posts, refuses, publishes, ends a reviewer's task with,
+ * takes a review of the review App for, records of each run of a step and serves on its pull
+ * request, each read as one of two shapes: main's since the change that brought it, by its own
+ * marker, or main `ff2a10ef`'s, which predates every one of those changes, by the code it has in
+ * their place (`STATUS_WITHOUT_MESSAGE`, `OUTBOX_WITHOUT_HOLDERS`, `ROW_AS_QUEUED`,
+ * `BY_ROW_SESSION`, `BY_COMMIT_ID`, `REQUEST_WITHOUT_RATING`, `PULL_REQUEST_COUNTED`). The
+ * completion refusals and the route's verdict rule have one shape, every daemon the rig runs
+ * holding them. Throws, naming each marker and its file, for a source of no shape or of both
+ * (`sourceShape`), which refuses the batch at rig.sh's label_facts and a stand-in's boot. */
 export function labelShapes(checkout: string): LabelShapes {
   for (const [code, file] of COMPLETION_REFUSALS)
     sourceShape(checkout, `the completion refusal ${code}`, [
@@ -1035,7 +1202,6 @@ export function labelShapes(checkout: string): LabelShapes {
     ]);
   return {
     postsBackward: posted("a backward move's sentence", "#4309", "func backwardMoveReason("),
-    postsConflict: posted("a conflict's move", "#4291", "func moveReason("),
     refusesReason: posted(
       "the refusal of a backward move's reason",
       "#4309",
@@ -1101,6 +1267,23 @@ export function labelShapes(checkout: string): LabelShapes {
         value: false,
       },
     ]),
+    refusesRating: sourceShape(checkout, "the refusal of a rating the completion does not take", [
+      { name: "main's daemon since #4488", markers: REFUSES_RATING, value: true },
+      {
+        name: "main ff2a10ef's daemon, whose completion request ends at wakeAt",
+        markers: [REQUEST_WITHOUT_RATING],
+        value: false,
+      },
+    ]),
+    refusesNul: sourceShape(checkout, "the refusal of a body holding U+0000", [
+      { name: "main's daemon since #4488", markers: REFUSES_NUL, value: true },
+      {
+        name: "main ff2a10ef's daemon, whose decoder reads no string of a body",
+        markers: [DECODER_WITHOUT_WALK],
+        value: false,
+      },
+    ]),
+    servesFixAttempts: servesFixAttempts(checkout),
   };
 }
 

@@ -77,7 +77,32 @@
  *     every late completion 409 HANDOFF_NOT_CURRENT_PHASE (`if RoleFor(issue.Phase) !=
  *     fact.Role`).
  * A completion the engine takes that names the record its role's row last named is refused 409
- * HANDOFF_NOT_NEW (`LAST_HANDOFF`). HANDOFF_SESSION_MISMATCH, HANDOFF_ALREADY_RECORDED and
+ * HANDOFF_NOT_NEW (`LAST_HANDOFF`). Past it, where the label's workflow holds the refusal
+ * (`RATING_REFUSED`, main's since #4488), a completion that rates the plan, its `planRating` with
+ * its `planReason`, is refused 400 PLAN_RATING_UNEXPECTED in the engine's words (daemon-pane.ts's
+ * `PLAN_RATING_UNEXPECTED`), naming the phase the completion is of, and its fact is left unspent
+ * (`FACTS`), so the same completion sent again without the rating is taken: only the completion
+ * that ends the retro rates the plan, and the `legion` tool sends a rating its agent gives on any
+ * completion (legion-phase-ops.ts's `executePhaseOp`). The retro's own rating, PLAN_RATING_REQUIRED
+ * for the completion that ends the retro with none and the rating's write onto the retro's record
+ * (`PUT /api/v1/issues/{key}/steps/{id}/rating`: plan.go's `rateRetro`, outbox.go's
+ * `publishStepRating`), is not modelled. Unreachable: no run of this rig stands in retro: rig.sh's
+ * worker_boots starts each stand-in in `testing`, `reviewing` or `accepting`, every move of this
+ * stand-in is the round's out of `reviewing` or a worker's back to an earlier phase (`enter`), and
+ * the move out of `accepting` is the architect's sign-off, which no run boots. The route's
+ * PLAN_RATING_INPUT, for a rating without its reason or off the rule of a rating (api's
+ * `planRatingOf`), is not modelled: the contract this parses a completion with refuses such a
+ * body 400 in zod's words. Unreachable: the `legion` tool refuses a lone `plan_rating` or
+ * `plan_reason`, a rating off its scale and a reason blank or too long before it sends any
+ * (legion-phase-ops.ts's `PhaseOpArguments`: its `planRating`, its `planReason` and the pair's
+ * refines, through the contract's `legionPlanRatingScale`, `legionPlanReasonRules` and
+ * `legionPlanRatingLoneField`). The plan record's write (`PUT /api/v1/issues/{key}/plans/{id}`:
+ * plan.go's `WritePlan`, at the run's move out of `admitted` and at a hand-over's re-admission,
+ * outbox.go's `publishPlanRecord`) is not modelled. Unreachable: every run begins past `admitted`
+ * (rig.sh's worker_boots) and nothing re-admits its issue, and the one read of a plan, Dispatch's
+ * `GET /api/v1/projects/{key}/plans`, lists a project's finished issues alone, which the world's
+ * issue never is: no move of this stand-in takes it past `accepting`.
+ * HANDOFF_SESSION_MISMATCH, HANDOFF_ALREADY_RECORDED and
  * HANDOFF_NOT_NEW are every daemon's the rig runs, and a label whose source names one nowhere is
  * refused before it boots (daemon-pane.ts's `labelShapes`). The route's rule on a completion's
  * verdict is every daemon's the rig runs too (`VERDICT_REFUSALS`, held to the label's source the
@@ -99,9 +124,9 @@
  * the role's row names, and those differ only once the issue has entered the role's phase again
  * while its worker was on the earlier entry. Unreachable: no run of this rig enters a phase
  * again. This stand-in's one forward move is the round's, out of `reviewing` (`servedPhase`);
- * every other move it makes (`enter`) goes back, a conflict's to `implementing` and a worker's to
- * a phase before the one it works (`backwardRefusal`), and no scenario boots a role after the
- * reviewer (rig.sh's runners), so a rig half's completion is always of the entry its row names.
+ * every other move it makes (`enter`) goes back, a worker's to a phase before the one it works
+ * (`backwardRefusal`), and no scenario boots a role after the reviewer (rig.sh's runners), so a
+ * rig half's completion is always of the entry its row names.
  * The NOT_CURRENT_PHASE code and message are the daemon's own, read from its code at boot
  * (`NOT_CURRENT_PHASE`), because the skill has the worker quote them to its architect. The real
  * daemon's earlier fence, the 409 `HANDOFF_NO_RUN` of a completion it can attribute to
@@ -129,8 +154,8 @@
  * and then took a reason the daemon refuses and posted nothing. The tree's linger
  * (`TREE_LINGERING`) is not modelled. Unreachable: a tree lingers only once it has left the
  * workflow, done or closed, and no move of this stand-in reaches either (`enter`'s moves are the
- * round's, a conflict's and a worker's back), nor does any scenario boot the merger whose merge
- * would (rig.sh's worker_boots).
+ * round's and a worker's back), nor does any scenario boot the merger whose merge would (rig.sh's
+ * worker_boots).
  *
  * The state document's record of the issue is production's (standin-record.ts, which says what
  * each member is): the tree's architect and a row for each role the world's history ran and
@@ -139,11 +164,24 @@
  * this stand-in's own claim as its agent registers, readies and ends its turn (`OWN`); the pull
  * request as the world's gh answers it at the read (`worldPull`); the design gate as the run's
  * Dispatch holds the spec at the read (`gateNow`); and the slot, the entries and the counts of
- * the moves. Every move of the record — the round's, a head that conflicts with its base, a
- * backward move — is one `enter`: the phase, the implementer's pass, pair and round, the start of
- * the role that works the phase, and the status that phase shows, written to the run's Dispatch as
- * the daemon's own session before the request is answered, after the move's reason where the move
- * posts one (`runOutbox`).
+ * the moves. Every move of the record — the round's, a backward move — is one `enter`: the phase,
+ * the implementer's pass, pair and round, the start of the role that works the phase, and the
+ * status that phase shows, written to the run's Dispatch as the daemon's own session before the
+ * request is answered, after the move's reason where the move posts one (`runOutbox`). The pull
+ * request carries `fixAttempts` where the label's daemon serves the count, main `ff2a10ef`'s
+ * (`SHAPES.servesFixAttempts`), at 0, the count of every world (standin-record.ts's
+ * `WORLD_FIX_ATTEMPTS`), and none where it serves none, main's since contract 59.
+ *
+ * A request body any string of which, a member's name or a value, holds U+0000 is refused 400
+ * before any route reads it, where the label's daemon refuses one (`NUL_REFUSED`, main's since
+ * #4488), in that daemon's words, naming the first such string's place in the body and where the
+ * character stands in it (daemon-pane.ts's `NUL_REFUSAL`, `nulRefusal` here): an agent's own text,
+ * a completion's summary or a move's reason, can carry one, and the `legion` tool sends it as the
+ * agent gave it. What a daemon of main `ff2a10ef`'s shape, whose decoder reads no string of a
+ * body, then does with such text at its store is not modelled: this takes the body as it takes any
+ * other. Unreachable: no batch's label is of that shape: both labels of a batch are main
+ * `724196ef` or after, the base main `724196ef` by the architect's standing rule, so that shape is
+ * read by the rows alone (packages/pi-envoy/scripts/README.md, the paragraph on `labelShapes`).
  *
  * The session holding each live role of the issue is published to the run's own Dispatch as the
  * daemon publishes it (`PUT /api/v1/issues/{key}/role-holders`: packages/daemon/internal/daemon/
@@ -153,9 +191,9 @@
  * tree's architect, each role the world's history ran and each agent the run booted, as
  * production's does; it published nothing. A label whose daemon predates the publication, main
  * `ff2a10ef`'s, is published nothing (`PUBLISHES_HOLDERS`); both labels' checkouts, at main
- * `0b2769e5` or after, serve and publish it. Each move's sentence (a backward move's, a
- * conflict's) is posted only where the label's workflow posts one (`POSTS_BACKWARD`,
- * `POSTS_CONFLICT`), in the words its source holds. Each of these is read as one of two shapes of
+ * `0b2769e5` or after, serve and publish it. A backward move's sentence is posted only where the
+ * label's workflow posts one (`POSTS_BACKWARD`), in the words its source holds. Each of these is
+ * read as one of two shapes of
  * the label's source, main's since the change that brought it or main `ff2a10ef`'s, which
  * predates it, and a source of neither refuses the batch, naming the marker and its file
  * (daemon-pane.ts's `labelShapes`), so none is answered as an older daemon for a marker gone
@@ -222,7 +260,9 @@ import { COMPLETE_PATH } from "./completion-answers";
 import {
   ISSUE_SLOT,
   labelCheckout,
+  NUL_REFUSAL,
   PHASE_SLOT,
+  PLAN_RATING_UNEXPECTED,
   type PostRefusal,
   postRefusal,
   RECORD_PHASES,
@@ -234,7 +274,6 @@ import { worldOf } from "./gh-call";
 import {
   DECIDES,
   heldPullRequest,
-  mergeableOf,
   mergeStateOf,
   recordedCalls,
   type SubmittedReview,
@@ -250,6 +289,7 @@ import {
   phaseStatus,
   type RowFacts,
   stateBody,
+  WORLD_FIX_ATTEMPTS,
 } from "./standin-record";
 import {
   answeredModel,
@@ -421,24 +461,18 @@ const POSTS_BACKWARD = bootRead(() =>
     "posts a backward move's reason"
   )
 );
-/** The sentence the move of a head that conflicts with its base posts on the issue (effects.go's
- * `moveReason` for `TriggerConflict`), built from the pull request: two literals of the source,
- * which Go joins, then the pull request's own words. */
-const CONFLICT_SAID = [
-  "Legion moved this issue from %s back to %s, because %s conflicts with %s. ",
-  "GitHub runs no checks on a head that conflicts with its base, so the implementer merges %s forward.",
-] as const;
-const CONFLICT_PULL = "pull request #%d";
-const CONFLICT_HEAD = " at head ";
-/** Whether the label's daemon posts a conflict's move on the issue at all (main's since #4291,
- * 34f0d8c801). */
-const POSTS_CONFLICT = bootRead(() =>
-  labelWords(
-    SHAPES.postsConflict,
-    [...CONFLICT_SAID, CONFLICT_PULL, CONFLICT_HEAD],
-    "posts a conflict's move"
-  )
-);
+/** Whether the label's workflow refuses a completion that rates the plan and does not end the
+ * retro, PLAN_RATING_UNEXPECTED in the words daemon-pane.ts's `PLAN_RATING_UNEXPECTED` restates
+ * (main's since #4488, held to the label's source by `labelShapes`). */
+const RATING_REFUSED = SHAPES.refusesRating;
+/** Whether the label's daemon refuses a request body a string of which holds U+0000, in the words
+ * daemon-pane.ts's `NUL_REFUSAL` restates (main's since #4488, held to the label's source by
+ * `labelShapes`). */
+const NUL_REFUSED = SHAPES.refusesNul;
+/** The count of fix attempts the record's pull request carries: the world's, 0, where the label's
+ * daemon serves the count (main `ff2a10ef`'s), and none where it serves none, main's since
+ * contract 59 (daemon-pane.ts's `servesFixAttempts`, standin-record.ts's `WORLD_FIX_ATTEMPTS`). */
+const FIX_ATTEMPTS = SHAPES.servesFixAttempts ? WORLD_FIX_ATTEMPTS : undefined;
 /** The engine's refusals of a backward move whose posted sentence Dispatch would refuse
  * (effects.go's `backwardReasonRefusal`): a decision block, and a message past Dispatch's bounds,
  * each filled with Dispatch's own sentence for it. */
@@ -488,20 +522,26 @@ function authenticates(secret: string | undefined): boolean {
 const startedAt = new Date().toISOString();
 
 /** The phase the stand-in serves now, which starts as the phase it was started for and moves as
- * main's engine moves it: `reviewRound` and `mergeability` (`packages/daemon/internal/workflow/
- * review.go`), and the transitions their outcomes take (`workflow/table.go`). Only `reviewing`
- * moves on its round, and every phase after the implementer's on a conflict: the rig's run ends
- * with any other phase's completion, and no scenario reads the record after it.
+ * main's engine moves it: `reviewRound` (`packages/daemon/internal/workflow/review.go`), and the
+ * transitions its outcomes take (`workflow/table.go`). Only `reviewing` moves on its round: the
+ * rig's run ends with any other phase's completion, and no scenario reads the record after it.
  *
- * A head GitHub reports conflicting with its base (its `mergeable` false, `CONFLICTING`, which the
- * world reports of a `DIRTY` head: gh-threads.ts's `mergeableOf`) moves the issue from `testing`,
- * `reviewing`, `accepting`, `retro` or `merging` back to `implementing` (`TriggerConflict`, read
- * at each state read as the daemon decides the merge state each read of the pull request
- * returns), before any round is decided on that head, since GitHub runs no checks on it: the
- * implementer's pass rises and no pair nor round does, the record holding that head as
- * conflicting (`classify.ConflictRound`), and the move posts its sentence on the issue before its
- * status (`conflictMoveReason`, where the label's daemon posts one). It left a `DIRTY` head in
- * `reviewing`, where production's daemon has the implementer merge the base forward.
+ * A head that conflicts with its base is not modelled, nor is anything main's daemon does about
+ * one since #4464, where the issue keeps its phase: the second read of the same head and base a
+ * minute after a first conflicting one (review.go's `mergeability`, the `conflict_confirm` row of
+ * daemon/conflict_confirm.go), the `merge_forward` message asking the implementer to merge the
+ * base forward and the one telling the worker of the phase to stop writing the workspace
+ * meanwhile (record's `MergeForwardAsk` and `MergeForwardHold`), the refusal of a completion at
+ * the head a merge forward replaced (HANDOFF_HEAD_MERGED_FORWARD, merge_forward.go's
+ * `mergedForwardRefusal`), the read of the merge state a push of the head or of the base asks for
+ * (classify's `MergeStateReadOwed`), and the review it asks of the reviewer of an issue past its
+ * review once the merge lands (`MergeForwardReview`); nor main `ff2a10ef`'s, which has no move of
+ * its own on a conflict at all. Unreachable: no world's head conflicts with its base, and no
+ * world's base moves during a run (the architect's ruling of 2026-11-19T19:03Z): rig.sh's three
+ * fixture_write calls give no head a merge state of its own, which gh-call.ts's `mergeStateOn`
+ * reads as `CLEAN`, and gh-threads.ts's `mergeStateOf` moves that only to `BLOCKED`, so no read
+ * finds a head `DIRTY` or `CONFLICTING`; and the run's remote refuses every push to the base
+ * (rig.sh's `fixture_first_commit`) and the world serves no merge (rig.sh's `fixture_write`).
  *
  * The review decides the round and the completion does not, so this moves on what the run's
  * world reports and never on a completion (`roundOutcome`, read at each state read): the head is
@@ -523,7 +563,7 @@ const startedAt = new Date().toISOString();
  *     (`review_test.go`'s "after the review alone"). Any other state — `BLOCKED`, which a check
  *     the base requires holds the head in while it runs, `BEHIND`, `UNKNOWN` — leaves the issue
  *     in `reviewing`, where the engine waits on GitHub's answer or reports the round stuck, and
- *     neither moves the record; a `DIRTY` one is a conflict, above;
+ *     neither moves the record; a `DIRTY` one, a conflict, no world reports (above);
  *   - an approval of another head is set aside (`classify.ApprovalSetAside`, the round
  *     `stuckApprovedOtherCode`), which is what a push while the record is `reviewing` leaves, and
  *     the issue stays in `reviewing` until a review of the new head decides the round;
@@ -535,7 +575,7 @@ const startedAt = new Date().toISOString();
  *     footer names no head, or another, leaves the issue in `reviewing`.
  * Once the record has moved on its round it stays where it moved to: a push in `accepting` lands
  * outside any round (`review.go`'s `issue.Phase != phase.Reviewing`, `review_test.go`'s "the
- * approval of the head, then a push"), and only a conflict moves it on. A reviewer's completion
+ * approval of the head, then a push"), and nothing the world reports moves it on. A reviewer's completion
  * after its decision is a late one, answered as the run's label's engine answers it (`handle`'s
  * `handoff/complete`).
  *
@@ -729,10 +769,6 @@ function roundOutcome(pull: PullRequestFacts): "accepting" | "implementing" | un
     : undefined;
 }
 
-/** The phases a head that conflicts with its base sends back to `implementing` (table.go's
- * `TriggerConflict` rows): every phase after the implementer's own. */
-const CONFLICT_PHASES = ["testing", "reviewing", "accepting", "retro", "merging"];
-
 interface LogLine {
   readonly at: string;
   readonly method: string;
@@ -783,27 +819,13 @@ let decided: PullRequestFacts["decision"];
 let decisionRead = false;
 
 /** The pull request the record holds on `read` of the world, after moving the record where the
- * world sends the issue the first time a read finds it there: back to `implementing` where GitHub
- * reports the open pull request conflicting with its base at its head in a phase that moves on it
- * (classify's `HeadConflicts`), and otherwise where the round sends it once a read finds the round
- * over while it is `reviewing` (`roundOutcome`, `enter`). */
+ * round sends it once a read finds the round over while it is `reviewing` (`roundOutcome`,
+ * `enter`). */
 function settled(read = worldPull()): PullRequestFacts {
   if (servedPhase === "reviewing" || !decisionRead) {
     decided = read.pull.decision;
     decisionRead = true;
   }
-  const { pull } = read;
-  if (
-    read.round &&
-    CONFLICT_PHASES.includes(servedPhase) &&
-    pull.state === "OPEN" &&
-    mergeableOf(pull.mergeState ?? "") === "CONFLICTING"
-  )
-    enter(
-      "implementing",
-      "conflict",
-      POSTS_CONFLICT ? conflictMoveReason(servedPhase, "implementing", pull) : ""
-    );
   const outcome = servedPhase === "reviewing" && read.round ? roundOutcome(read.pull) : undefined;
   if (outcome !== undefined) enter(outcome, outcome === "implementing" ? "review" : undefined);
   return { ...read.pull, decision: decided };
@@ -931,16 +953,6 @@ function backwardMoveReason(from: string, to: string, reason: string): string {
   const words = goTrimSpace(reason);
   if (words === "") return `${asked}${BACKWARD_UNGIVEN}`;
   return /[.!?]$/.test(words) ? `${asked}: ${words}` : `${asked}: ${words}.`;
-}
-
-/** What the move of the issue from `from` to `to` posts on the issue when GitHub reports the head
- * of `pull` conflicting with the base (effects.go's `moveReason`, `CONFLICT_SAID`): the pull
- * request by its number and the first 12 characters of its head, and the base the world's pull
- * request is open against, which GitHub's read names (review.go's `mergeability`, `fact.Base`). */
-function conflictMoveReason(from: string, to: string, pull: PullRequestFacts): string {
-  const head = pull.head.slice(0, 12);
-  const what = filled(CONFLICT_PULL, pull.number) + (head === "" ? "" : `${CONFLICT_HEAD}${head}`);
-  return filled(CONFLICT_SAID.join(""), from, to, what, base, base);
 }
 
 /** The run's own Dispatch (rig.sh's worker_boot names it) and the file holding the bearer the
@@ -1512,21 +1524,19 @@ function moveSteps(from: string, to: string, trigger: string, report: string | u
  * the phase and, where the phase it enters shows another status than the record holds, that
  * status, queued for the run's Dispatch as the engine queues its outbox row (`Engine.status`),
  * with `reason`, the sentence the move posts on the issue before the status (effects.go's
- * `moveReason`: a backward move's and a conflict's), which a move that writes no status posts
- * alone; for a move back (`back`), the implementer's pass, the move's pair but for a conflict's
- * (`recordPass`: the record holds that head as conflicting, `classify.ConflictRound`), and its
- * round where a review requested the changes; and the start of the role that works
- * `to` — its handoff cleared (`clearHandoff`), its entry raised, and the task of that entry
- * queued to its claim, which the start makes where the role held none. The slot follows the
- * phase (`keepsSlot`, at each read). */
-function enter(to: string, back: "review" | "move" | "conflict" | undefined, reason = ""): void {
+ * `moveReason`: a backward move's), which a move that writes no status posts alone; for a move
+ * back (`back`), the implementer's pass, the move's pair, and its round where a review requested
+ * the changes (`recordPass`); and the start of the role that works `to` — its handoff cleared
+ * (`clearHandoff`), its entry raised, and the task of that entry queued to its claim, which the
+ * start makes where the role held none. The slot follows the phase (`keepsSlot`, at each read). */
+function enter(to: string, back: "review" | "move" | undefined, reason = ""): void {
   const from = servedPhase;
   const now = new Date().toISOString();
   // The completion row the move names (workflow's `transition`, its `handoff`): the reviewer's for
-  // the round's own moves (review.go's `settleRound`), the requester's for a backward move
-  // (engine.go's `backward`), and none for a conflict (review.go's `mergeability`); its record is
-  // the report of the run the move ends only where it is the row of `from`'s own role.
-  const reporter = back === "conflict" ? "" : back === "move" ? role : roleFor(from);
+  // the round's own moves (review.go's `settleRound`) and the requester's for a backward move
+  // (engine.go's `backward`); its record is the report of the run the move ends only where it is
+  // the row of `from`'s own role.
+  const reporter = back === "move" ? role : roleFor(from);
   const report = reporter === roleFor(from) ? HANDOFFS.get(reporter)?.record?.id : undefined;
   moveSteps(
     from,
@@ -1535,9 +1545,7 @@ function enter(to: string, back: "review" | "move" | "conflict" | undefined, rea
       ? "TriggerReviewRejected"
       : back === "move"
         ? "TriggerBackward"
-        : back === "conflict"
-          ? "TriggerConflict"
-          : "TriggerReviewApproved",
+        : "TriggerReviewApproved",
     report
   );
   servedPhase = to;
@@ -1549,8 +1557,7 @@ function enter(to: string, back: "review" | "move" | "conflict" | undefined, rea
   } else if (reason !== "") queueRow({ kind: "message", body: reason });
   if (back !== undefined) {
     pass += 1;
-    if (back !== "conflict")
-      backwardMoves[`${from}-${to}`] = (backwardMoves[`${from}-${to}`] ?? 0) + 1;
+    backwardMoves[`${from}-${to}`] = (backwardMoves[`${from}-${to}`] ?? 0) + 1;
     if (back === "review") rounds += 1;
   }
   const starts = roleFor(to);
@@ -1639,11 +1646,10 @@ async function postMessage(row: OutboxRow, body: string): Promise<void> {
 /** Whether `error` is a refusal the outbox finishes `kind`'s row on rather than retries
  * (outbox.go's `permanentRefusal`): a status write's and a message's, Dispatch's permanent
  * refusal (`permanentRefusal`); a role-holder publication's, a coded 400, which refuses the set
- * it read, and the route's own 404 ISSUE_NOT_FOUND, while the router's 404 of a Dispatch older
- * than the route is a wait; and a step record's, exactly the refusals its route makes for good
- * (`stepRecordRefused`): the route's 404 ISSUE_NOT_FOUND, a coded 400, 403 STEP_WRITER and 409
- * STEP_OTHER_ISSUE, while the router's 404 NOT_FOUND of a Dispatch older than the route is a
- * wait (`publishStepRecord`). */
+ * it read, and the route's own 404 ISSUE_NOT_FOUND; and a step record's, exactly the refusals its
+ * route makes for good (`recordRefused`): the route's 404 ISSUE_NOT_FOUND, a coded 400, 403
+ * STEP_WRITER and 409 STEP_OTHER_ISSUE. The router's 404 of a Dispatch older than the route is a
+ * wait for both of the last two (outbox.go's `execute`, `waitsForTheRoute`). */
 function finishes(kind: OutboxRow["kind"], error: unknown): error is DispatchRefusal {
   if (!(error instanceof DispatchRefusal)) return false;
   if (kind === "step")
@@ -1858,6 +1864,7 @@ const stateAnswer = async (): Promise<Response> => {
         rounds,
         backwardMoves,
         pullRequest,
+        fixAttempts: FIX_ATTEMPTS,
         gate: await gateNow(),
         admittedAt,
         entries: Object.fromEntries(ENTRIES),
@@ -1866,7 +1873,13 @@ const stateAnswer = async (): Promise<Response> => {
       },
       startedAt
     );
-    return json(200, LegionStateResponse.parse(body));
+    const served = LegionStateResponse.parse(body);
+    // This checkout's contract keeps no member it does not declare, and the count of fix attempts
+    // a label of main `ff2a10ef`'s shape serves is that label's own, which its contract requires.
+    const pull = served.issues[issue]?.pullRequest;
+    if (pull !== undefined && FIX_ATTEMPTS !== undefined)
+      Object.assign(pull, { fixAttempts: FIX_ATTEMPTS });
+    return json(200, served);
   } catch (error) {
     return json(500, {
       error: `the state could not be built: ${error instanceof Error ? error.message : String(error)}`,
@@ -2264,6 +2277,25 @@ async function handle(
           ),
         };
       }
+      // Past it, the rating of the plan (engine.go's `handoff`, workflow/plan.go's
+      // `planRatingRefusal`), where the label's workflow refuses one (RATING_REFUSED): only the
+      // completion that ends the retro takes a rating, and no run of this rig stands in retro (the
+      // module doc), so a completion that carries one is refused, naming the phase it is of, the
+      // role's own (`phase.Of`), and nothing of it is recorded: its fact is left unspent, so the
+      // same completion sent again without the rating is taken under the same key. The contract
+      // this parses with holds `planRating` and `planReason` together.
+      if (RATING_REFUSED && parsed.data.planRating !== undefined) {
+        FACTS.delete(fact);
+        const what = filled(PLAN_RATING_UNEXPECTED.what, ROLE_PHASE, issue);
+        return {
+          phase,
+          response: failure(
+            400,
+            PLAN_RATING_UNEXPECTED.code,
+            filled(PLAN_RATING_UNEXPECTED.message, what)
+          ),
+        };
+      }
       // A taken completion is written on the role's row, its commit as the row's handoff commit
       // and its record as the row's handoff record (engine.go's `handoff` writes both from the
       // completion, a commit or a record it does not name included), either of which completes
@@ -2351,6 +2383,44 @@ if (opened !== undefined)
   queueStep(opened.run, stepStart(opened.run, opened.startedAt ?? startedAt));
 await runOutbox();
 
+/** The daemon's refusal of a request body, `body` the JSON value it holds, a string of which, a
+ * member's name or a value, holds U+0000, in its words (daemon-pane.ts's `NUL_REFUSAL`), or
+ * undefined where none does: the first such string in the order the body writes them, named by
+ * its place (`nulIn`), and where its first U+0000 stands, counted from 1 in code points
+ * (storable_text.go's `unstorableJSON` and `unstorableText`, claims.go's `refuseBadBody`). */
+function nulRefusal(body: unknown): string | undefined {
+  const found = nulIn(body, "");
+  if (found === undefined) return undefined;
+  const at = [...found.text.slice(0, found.text.indexOf("\0"))].length + 1;
+  return `${NUL_REFUSAL.prefix}${filled(NUL_REFUSAL.format, found.place, at)}`;
+}
+/** The first string of `value`, standing at `place` in its body, that holds U+0000, and its place
+ * as Dispatch's walk names it, the one the daemon reads a body with (dispatchbody's `NulInJSON`):
+ * `summary`, `capabilities.rows[0].detail`, a member's name with each U+0000 written as `\u0000`,
+ * or `body` for a bare string. The value is the one `request.json()` gave, whose members keep the
+ * order the body writes them in, but for a name that is an array index, which no body of the
+ * `legion` tool holds. */
+function nulIn(value: unknown, place: string): { place: string; text: string } | undefined {
+  if (typeof value === "string")
+    return value.includes("\0") ? { place: place === "" ? "body" : place, text: value } : undefined;
+  if (Array.isArray(value)) {
+    for (const [index, element] of value.entries()) {
+      const found = nulIn(element, `${place}[${index}]`);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null) return undefined;
+  for (const [name, member] of Object.entries(value)) {
+    const named = name.replaceAll("\0", "\\u0000");
+    const at = place === "" ? named : `${place}.${named}`;
+    if (name.includes("\0")) return { place: at, text: name };
+    const found = nulIn(member, at);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: Number(portArg),
@@ -2365,14 +2435,18 @@ const server = Bun.serve({
       }
     }
     // A route the label's daemon registers none of is answered as its catch-all answers it, 404
-    // `{"error":"no route"}`, whatever case `handle` has for it (`ROUTES`).
+    // `{"error":"no route"}`, whatever case `handle` has for it (`ROUTES`). Every route it registers
+    // decodes a POST's body first, and refuses one holding U+0000 there (`nulRefusal`).
+    const nul = request.method === "POST" && NUL_REFUSED ? nulRefusal(body) : undefined;
     const { response, mintedGrantId, phase } = !serves(ROUTES, request.method, path)
       ? { response: json(404, { error: "no route" }) }
-      : request.method === "POST"
-        ? await handle(path, body)
-        : request.method === "GET" && path === "/legion/v1/state"
-          ? { response: await stateAnswer() }
-          : { response: json(404, { error: "no route" }) };
+      : nul !== undefined
+        ? { response: json(400, { error: nul }) }
+        : request.method === "POST"
+          ? await handle(path, body)
+          : request.method === "GET" && path === "/legion/v1/state"
+            ? { response: await stateAnswer() }
+            : { response: json(404, { error: "no route" }) };
     // What the daemon last saw of the issue's tree move (`treeMovedAt`): a request of the
     // claim's that it took.
     if (request.method === "POST" && response.status < 300) movedAt = new Date().toISOString();

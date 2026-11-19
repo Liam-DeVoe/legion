@@ -996,13 +996,15 @@ the two shapes do not give alike
 keeps every reading that succeeded, and the process keeps each refusal, so a run whose daemon
 cannot be read costs no more than the first run that asked.
 
-What the label's daemon posts, refuses, publishes, ends a reviewer's task with and takes a review
-of the review App for is read out of its source as text (`daemon-pane.ts`'s `labelShapes`), each
-as one of two shapes. A backward move's sentence, a
-conflict's move and the refusal of a backward move's reason are main's since #4291 and #4309,
-read by `func backwardMoveReason(`, `func moveReason(` and `"BACKWARD_REASON_TOO_LONG"` in
-`effects.go`; main `ff2a10ef` predates them, read by the status write it has in their place,
-which takes no message. The role holders' publication is main's since #4228, read by
+What the label's daemon posts, refuses, publishes, ends a reviewer's task with, takes a review of
+the review App for, records of each step and serves on its pull request is read out of its source
+as text (`daemon-pane.ts`'s `labelShapes`), each as one of two shapes. A backward move's sentence
+and the refusal of a backward move's reason are main's since #4309, read by `func
+backwardMoveReason(` and `"BACKWARD_REASON_TOO_LONG"` in `effects.go`; main `ff2a10ef` predates
+them, read by the status write it has in their place, which takes no message. A conflict's move,
+main's from #4291 until #4464, is read no more: main's daemon keeps a conflicting head's issue in
+its phase now, and no world's head conflicts (the declared-unreachable entry). The role holders'
+publication is main's since #4228, read by
 `"/role-holders"` in the daemon's Dispatch client and the route's row in Dispatch's table;
 `ff2a10ef` is read by its outbox kinds, which end at `gated_steps_publish`. The two sentences that
 end every task of the reviewer, `Last reviewed commit: <sha|none>.` and `Review entry: <n|none>.`,
@@ -1041,9 +1043,20 @@ declared-unreachable entry). The three completion refusals (`HANDOFF_SESSION_MIS
 `VERDICT_ROLE_FORBIDDEN` for any other role's, each in the words `handoff.go` holds) have one
 shape: every daemon the rig runs names them. A source of neither shape, or of both, refuses the
 batch at `label_facts` and every stand-in's boot, naming each marker and its file. A marker that
-is not found is never read as an older daemon that lacks the behaviour. Both labels of a batch
-are now main `9aff682b` or after, so each reads as main's shape of all six; the `ff2a10ef` shape
-of each is read by the rows below alone.
+is not found is never read as an older daemon that lacks the behaviour. The refusal of a
+completion that rates the plan outside the retro (`PLAN_RATING_UNEXPECTED`) is main's since #4488,
+read by the route's request and fact in `handoff.go`, the engine's refusal past `HANDOFF_NOT_NEW`
+with its fact left unspent in `engine.go`, its description and its rule in `workflow/plan.go` and
+its words in `intake/facts.go`; `ff2a10ef` is read by its completion request, which ends at
+`wakeAt`. The refusal of a request body a string of which holds U+0000 is main's since #4488 too,
+read by `decodeJSON`'s last return and `refuseBadBody`'s words in `api/claims.go` and the walk and
+its words in `api/storable_text.go`; `ff2a10ef` is read by its decoder, which ends at the one
+value a body holds. The count of fix attempts on the state's pull request is `ff2a10ef`'s, read by
+its `PullRequestView`'s `FixAttempts` in `api/state.go`, whose label's contract requires it; main's
+since contract 59 (#2780) is read by that view ending at `reviewDecision`. `standin-record.ts
+contract` hands a label's contract the bodies the stand-in serves that label, the count among
+them where its daemon serves one. Both labels of a batch are now main `724196ef` or after, so each
+reads as main's shape of all ten; the `ff2a10ef` shape of each is read by the rows below alone.
 
 The rig's tests hold both shapes of each file to sources they write themselves, so they need no
 older checkout on the host. Some rows also read an older daemon's own source where one is given:
@@ -1436,9 +1449,11 @@ first write saw no row of its own completed round. It holds:
   it, and the decision of the review that last decided the round, of the reviews the label's
   engine takes: a person's on its `commit_id`, and the review App's reviewer's own only where the
   `head` its body's Legion footer names is the pull request's head, which that decision then
-  stands on (the shapes of *Where each service of a run comes from*, above); and `mergeWait`
-  while an approval of the head waits in `reviewing` on a merge state the issue may not advance
-  on.
+  stands on (the shapes of *Where each service of a run comes from*, above); `fixAttempts`, 0,
+  for a label whose daemon counts a pull request's fix attempts (main `ff2a10ef`, whose contract
+  requires it), and none for one whose daemon keeps no count (main's since contract 59); and
+  `mergeWait` while an approval of the head waits in `reviewing` on a merge state the issue may
+  not advance on.
 - `designGate` and `gatedSteps` as the run's Dispatch holds the issue's spec at that read: its
   document, its latest version and the version a person approved. The seed approves the spec
   (`seed.ts`'s `testerProofIssue`: the issue is its tree's root, whose work waits behind that
@@ -1454,24 +1469,34 @@ The record moves as the stand-in's served phase moves: a request for changes sen
 `implementing`, raises the implementer's `pass` and `rounds`, counts
 `backwardMoves["reviewing-implementing"]`, clears its handoff and queues its task; a worker's own
 move back counts its pair and no round; an approval of a mergeable head moves the issue to
-`accepting`, gives up the slot and queues the architect's task; a head GitHub reports conflicting
-with its base (`DIRTY`, `mergeable` `CONFLICTING`) sends the issue from `testing`, `reviewing`,
-`accepting`, `retro` or `merging` back to `implementing`, approved or not, raising the
-implementer's `pass` and no pair and no round, as main's engine moves a conflict (the stand-in
-left a `DIRTY` head in `reviewing` before); and a completion the stand-in takes is written on
-its role's row. A completion's verdict is held to the route's rule first: a tester's that is not
-`pass` or `fail` is refused 400 `TESTER_VERDICT_REQUIRED`, any other role's 400
-`VERDICT_ROLE_FORBIDDEN`, and nothing is written. Each move into a phase that shows another status
-writes that status to the run's own Dispatch before the request that made the move is answered,
-as the daemon's outbox runs a `dispatch_status` row: under the daemon's own session,
-`legion-daemon:<PROJECT>` (the session the seeds write each status as), and only while
-Dispatch still shows the status the move observed, so `dispatch read` and `read_record` name
-one status and a status someone else gave the issue since stands. A conflict's move and a
-worker's backward move post the daemon's sentence of the move on the issue as a message first
-(`Legion moved this issue from <from> back to <to> at the <role>'s request: <reason>`, and the
-conflict's sentence naming the pull request, its head and its base), with the outbox's marker
-of the row, and a move into a phase that shows the status the issue already shows posts that
-sentence alone; each is posted only where the label's own workflow source holds that sentence.
+`accepting`, gives up the slot and queues the architect's task; and a completion the stand-in
+takes is written on its role's row. A head that conflicts with its base is not modelled: main's
+daemon since #4464 keeps the issue in its phase, confirms the conflict by a second read, asks the
+implementer to merge the base forward and the phase's worker to stop writing, and refuses a
+completion at the head the merge replaced (`HANDOFF_HEAD_MERGED_FORWARD`), and no world reaches
+any of it: every world's head is `CLEAN` but where its base's rules hold it `BLOCKED`, and no
+world's base moves during a run (the architect's ruling of 2026-11-19T19:03Z). The stand-in sent
+a conflicting head back to `implementing` from every phase after the implementer's, as main's
+daemon did from #4291 until #4464; it no longer does. A completion's verdict is held to the
+route's rule first: a tester's that is not `pass` or `fail` is refused 400
+`TESTER_VERDICT_REQUIRED`, any other role's 400 `VERDICT_ROLE_FORBIDDEN`, and nothing is written.
+A completion that rates the plan (`planRating` with `planReason`) is refused past
+`HANDOFF_NOT_NEW`, 400 `PLAN_RATING_UNEXPECTED` in the engine's words, and leaves its fact
+unspent, so the same completion without the rating is taken: only the completion that ends the
+retro rates the plan, and no run stands in `retro`. A request body a string of which holds U+0000
+is refused 400 before any route reads it, naming the first such string's place and where the
+character stands in it in code points, in the daemon's words. Both refusals are main's since
+#4488, read off the label's source (`labelShapes`' `refusesRating` and `refusesNul`). Each move
+into a phase that shows another status writes that status to the run's own Dispatch before the
+request that made the move is answered, as the daemon's outbox runs a `dispatch_status` row:
+under the daemon's own session, `legion-daemon:<PROJECT>` (the session the seeds write each
+status as), and only while Dispatch still shows the status the move observed, so `dispatch read`
+and `read_record` name one status and a status someone else gave the issue since stands. A
+worker's backward move posts the daemon's sentence of the move on the issue as a message first
+(`Legion moved this issue from <from> back to <to> at the <role>'s request: <reason>`), with the
+outbox's marker of the row, and a move into a phase that shows the status the issue already
+shows posts that sentence alone; it is posted only where the label's own workflow source holds
+that sentence.
 A write the run's Dispatch does not take stays owed and is tried again at the stand-in's next
 request; the state's `pendingStatusWrites` lists it with why and with the sentence it posts.
 Each attempt reads the issue's messages since the row was queued, as the outbox does, and posts
@@ -1496,32 +1521,43 @@ The run's Dispatch holds the record of each run of a step of the issue, as the l
 writes it (main's since #4400, 53980e0e32): one write at the run's start, one at its end, and the
 report alone of a completion that lands after that end, each `PUT
 /api/v1/issues/{key}/steps/{id}` under the daemon's own session, as its outbox's executor sends a
-`step_record` row (`publishStepRecord`; `step-records.ts` restates the writes). The world's
-history is written before any agent boots (`seed.ts steps`, rig.sh's `steps_seed`): each phase
-a seed recorded a handoff of, planning to reviewing, as one run of its step under its role's
-claim, started where the phase before it ended and ended passed at its handoff's time, its
-report that handoff and its session the one that wrote it, and naming the model the label's
+`step_record` row (`publishStepRecord` and `stepWriteOf`; `step-records.ts` restates the writes).
+The world's history is written before any agent boots (`seed.ts steps`, rig.sh's `steps_seed`):
+each phase a seed recorded a handoff of, planning to reviewing, as one run of its step under its
+role's claim, started where the phase before it ended and ended passed at its handoff's time,
+its report that handoff and its session the one that wrote it, and naming the model the label's
 profile answers with (rig.sh's `label_model`); the run of the phase the issue stands in is left
 open, its start alone. The stand-in writes that open run's start again at its boot, which
 Dispatch keeps as the seeds wrote it, since it writes each field of a record once; and at each
 move, the end of the run it leaves (failed for a request for changes or a worker's move back,
-stopped for a conflict, each naming the step the work returns to, and passed for an approval),
-its report the completion of the move's own role, its session the claim's and its model the last
-its own agent's transcript names, and the start of the next run of the step it enters, under
-that step's claim (the architect's in `accepting`). A taken completion of a phase the issue has
-left writes its record onto the ended run. Each record's id is the one the daemon derives, so the
-seeds' and the stand-in's writes of one run are one record. `dispatch steps` and `GET
+each naming the step the work returns to, and passed for an approval), its report the
+completion of the move's own role, its session the claim's and its model the last its own
+agent's transcript names, and the start of the next run of the step it enters, under that step's
+claim (the architect's in `accepting`). No move ends a run stopped: main's daemon since #4464
+moves no issue for a head that conflicts with its base. A taken completion of a phase the issue
+has left writes its record onto the ended run. Each record's id is the one the daemon derives, so
+the seeds' and the stand-in's writes of one run are one record. `dispatch steps` and `GET
 /api/v1/issues/{key}/steps` are the run's own Dispatch server's answer, the label's own build, so
 no read of them is faked. What the stand-in and the seeds write is read off the label's source by
 marker (`daemon-pane.ts`'s `labelShapes`, `writesSteps`): the outbox's `step_record` kind, the
-executor's write of every field of the row through the client's route, the body that route takes
-(`dispatch/types.go`'s `StepWrite`), the step of each phase and the result of each move
-(`workflow/steps.go`'s `stepOf` and `endOf`), the id's namespace and name, which fields each of
-the three writes carries, and the route's row in Dispatch's table. A label built before #4400
-(main `ff2a10ef`, read by its outbox's kinds) is written no step record, and its Dispatch serves
-no such route. Production's Dispatch, at `4055c4a5` when it was read on 2026-11-19T09:58Z, does
-not serve the route yet (`404 NOT_FOUND`, `no route for GET /api/v1/issues/INFRA-764/steps`):
-#4400's deploy is pending, so no production issue holds a step record to pin a world's against.
+executor's write of every field of the row through the client's route (`stepWriteOf`), the wait
+`execute` makes of a Dispatch that has no route for it yet (`waitsForTheRoute`), the body that
+route takes (`dispatch/types.go`'s `StepWrite`), the steps of the task and the step of each
+phase (`workflow/plan.go`'s `DefaultSteps`, `stepWork` and `stepIn`, which `workflow/steps.go`'s
+`stepOf` reads since #4488), the result of each move (`steps.go`'s `endOf`), the id's namespace
+and name, which fields each of the three writes carries, and the route's row in Dispatch's
+table. A label built before #4400 (main `ff2a10ef`, read by its outbox's kinds) is written no
+step record, and its Dispatch serves no such route. Production's Dispatch, at `4055c4a5` when it
+was read on 2026-11-19T09:58Z, does not serve the route yet (`404 NOT_FOUND`, `no route for GET
+/api/v1/issues/INFRA-764/steps`): #4400's deploy is pending, so no production issue holds a step
+record to pin a world's against.
+
+Main's daemon since #4488 also writes the plan each run of an issue carries out (`PUT
+/api/v1/issues/{key}/plans/{id}`, at the run's move out of `admitted`) and the rating the retro
+gives that plan onto the retro's record (`PUT /api/v1/issues/{key}/steps/{id}/rating`). The
+stand-in writes neither, and declares both not modelled: no run begins in `admitted` or stands in
+`retro`, and the plan's one read, `GET /api/v1/projects/{key}/plans`, lists a project's finished
+issues alone, which the world's issue never is (`class-search.json`'s unreachable entries).
 
 The record's shape is held to production's: `production-shapes.json`'s `legion read_record` is
 the shape of one issue's record as the tool answered it in a Legion issue pod at

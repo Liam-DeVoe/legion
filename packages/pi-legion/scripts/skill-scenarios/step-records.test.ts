@@ -46,7 +46,7 @@ test("the start, the end and the late report carry the fields the daemon's write
     started_at: "2026-11-19T10:00:00.000Z",
   });
   expect(endOf("TriggerBackward")).toEqual({ result: "failed", returns: true });
-  expect(endOf("TriggerConflict")).toEqual({ result: "stopped", returns: true });
+  expect(endOf("TriggerReviewRejected")).toEqual({ result: "failed", returns: true });
   expect(endOf("TriggerReviewApproved")).toEqual({ result: "passed", returns: false });
   expect(
     stepEnd(run, {

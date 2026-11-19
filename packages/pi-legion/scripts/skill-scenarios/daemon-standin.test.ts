@@ -740,7 +740,7 @@ test.skipIf(skip)(
 // (`record.MergeState.Mergeable`), and waits in `reviewing` on every other: `BLOCKED`, which a
 // check the base requires holds the head in while it runs — the normal case while CI runs at the
 // approved head — and `BEHIND`, a head behind its base. `DIRTY`, a head that conflicts with its
-// base, is no wait: the row below moves it.
+// base, no world reports (daemon-standin.ts's `servedPhase`).
 test.skipIf(skip)(
   "an approval of a head GitHub reports BLOCKED or BEHIND leaves the issue in reviewing",
   async () => {
@@ -750,55 +750,6 @@ test.skipIf(skip)(
         pullRequest(daemon.dir, state).approve();
         expect((await daemon.complete(true)).status).toBe(200);
         expect([state, await daemon.phase()]).toEqual([state, "reviewing"]);
-      } finally {
-        daemon.stop();
-      }
-    }
-  },
-  600_000
-);
-
-// A head GitHub reports conflicting with its base (`DIRTY`, whose `mergeable` is `CONFLICTING`:
-// gh-threads.ts's `mergeableOf`) moves the issue from every phase after the implementer's back
-// to `implementing`, approved or not (review.go's `mergeability`, table.go's `TriggerConflict`
-// rows): the implementer's pass rises, and no pair and no round (`recordPass` on a conflict
-// round), its task is queued, and the move posts its sentence on the issue before its status
-// (effects.go's `moveReason`). Catches: a stand-in that leaves a conflicting head in `reviewing`
-// or `testing` (it did, and read the approval of it as a wait), where production's daemon has the
-// implementer merge the base forward; one that counts the move as a move of a pair or a review
-// round; and one that writes the status with no sentence before it.
-test.skipIf(skip)(
-  "a head that conflicts with its base moves the issue back to implementing, posting why before the status",
-  async () => {
-    /** The sentence the move from `from` posts for the pull request at `head`. */
-    const said = (from: string, head: string) =>
-      `Legion moved this issue from ${from} back to implementing, because pull request #1001 at head ${head.slice(0, 12)} conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward.`;
-    for (const [role, seeds, from] of [
-      ["reviewer", ["plan", "implement", "test"], "reviewing"],
-      ["tester", ["plan", "implement"], "testing"],
-    ] as const) {
-      const daemon = await standin(role, "", undefined, { seeds });
-      try {
-        const world = pullRequest(daemon.dir, "DIRTY");
-        if (role === "reviewer") world.approve();
-        expect([role, await daemon.phase()]).toEqual([role, "implementing"]);
-        const implementer = (await daemon.record()).issue?.workers.implementer;
-        expect(implementer).toMatchObject({
-          pass: 1,
-          rounds: 0,
-          claim: { pendingTask: { phase: "implementing" } },
-        });
-        expect(implementer !== undefined && "backwardMoves" in implementer).toBe(false);
-        expect([daemon.seeded?.status, issueWrites(daemon.writes)]).toEqual([
-          "in_progress",
-          [
-            ["POST", "/api/v1/issues/LWEVAL-1/messages", said(from, world.head)],
-            ["PATCH", "/api/v1/issues/LWEVAL-1", "in_progress"],
-          ],
-        ]);
-        // A later read moves nothing more.
-        expect(await daemon.phase()).toBe("implementing");
-        expect(issueWrites(daemon.writes)).toHaveLength(2);
       } finally {
         daemon.stop();
       }
@@ -1642,10 +1593,15 @@ function olderCheckout(): string {
   writeFileSync(engine, refusing);
   const route = path.join(daemon, "internal", "api", "handoff.go");
   const left = readFileSync(route, "utf8");
-  const ofIssue = left.replace(
-    '\tof := phase.Of(grant.Role, issue.Phase)\n\tif of == "" {\n\t\tof = issue.Phase\n\t}\n\tword, writer, handoffPhase := phase.Handoff(of)\n\tnamesRecord := req.HandoffID != "" || req.HandoffVersion != 0\n\trecordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)\n',
-    '\tof := issue.Phase\n\tword, writer, handoffPhase := phase.Handoff(issue.Phase)\n\tnamesRecord := req.HandoffID != "" || req.HandoffVersion != 0\n\trecordBacked := handoffPhase && writer == grant.Role\n'
-  );
+  const ofIssue = left
+    .replace(
+      '\tof := phase.Of(grant.Role, issue.Phase)\n\tif of == "" {\n\t\tof = issue.Phase\n\t}\n',
+      "\tof := issue.Phase\n"
+    )
+    .replace(
+      '\tword, writer, handoffPhase := phase.Handoff(of)\n\tnamesRecord := req.HandoffID != "" || req.HandoffVersion != 0\n\trecordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)\n',
+      '\tword, writer, handoffPhase := phase.Handoff(issue.Phase)\n\tnamesRecord := req.HandoffID != "" || req.HandoffVersion != 0\n\trecordBacked := handoffPhase && writer == grant.Role\n'
+    );
   expect(ofIssue).not.toBe(left);
   writeFileSync(route, ofIssue);
   expect(labelDaemon(checkout)).toEqual({ lateRole: "refused", recordRoute: "issue" });
@@ -3099,6 +3055,165 @@ test.skipIf(skip)(
   600_000
 );
 
+// Catches: a stand-in that takes a rating of the plan on a completion that does not end the
+// retro, which main's engine since #4488 refuses past HANDOFF_NOT_NEW (400 PLAN_RATING_UNEXPECTED,
+// in its words: daemon-pane.ts's `PLAN_RATING_UNEXPECTED`, naming the phase the completion is of);
+// one that refuses it before HANDOFF_NOT_NEW; and one that records the refused completion, whose
+// fact the engine leaves unspent, so that the same completion sent again without the rating is
+// answered HANDOFF_ALREADY_RECORDED where the daemon takes it. The `legion` tool sends a rating its
+// agent gives on any completion (legion-phase-ops.ts's `executePhaseOp`).
+test.skipIf(skip)(
+  "a completion that rates the plan outside the retro is refused past HANDOFF_NOT_NEW, recording nothing",
+  async () => {
+    const tester = await standin("tester", "", undefined, {
+      seeds: ["plan", "implement", "test"],
+      records: { ...ownRecord("seed-test", "test", 1), ...ownRecord("new-test", "test", 2) },
+    });
+    try {
+      const rating = { planRating: 4, planReason: "the plan fit the work" };
+      const stale = await tester.complete(true, {
+        handoffId: "seed-test",
+        handoffVersion: 1,
+        verdict: "fail",
+        ...rating,
+      });
+      expect([stale.status, z.object({ code: z.string() }).parse(await stale.json()).code]).toEqual(
+        [409, "HANDOFF_NOT_NEW"]
+      );
+      const named = { handoffId: "new-test", handoffVersion: 2 };
+      const rated = await tester.complete(true, { ...named, ...rating });
+      expect([rated.status, await rated.json()]).toEqual([
+        400,
+        {
+          code: "PLAN_RATING_UNEXPECTED",
+          error:
+            "this completion of phase testing of LWEVAL-1 names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded",
+        },
+      ]);
+      expect((await served(tester.body)).issue.workers.tester).toMatchObject({
+        handoffRecord: seededRecord("test"),
+      });
+      expect((await tester.complete(true, named)).status).toBe(200);
+      expect((await served(tester.body)).issue.workers.tester).toMatchObject({
+        handoffRecord: { id: "new-test", version: 2 },
+      });
+    } finally {
+      tester.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that takes a request body a string of which holds U+0000, which main's
+// daemon since #4488 refuses 400 before any route reads it, the claim's secret and the grant
+// among them (claims.go's `decodeJSON`, storable_text.go's `unstorableJSON`), in its words
+// (daemon-pane.ts's `NUL_REFUSAL`); one that names a later string than the first the body
+// writes, or a nested one otherwise than Dispatch's walk names it, a member's name among them; and
+// one that counts where the character stands in UTF-16 units rather than code points. An agent's
+// summary or reason is its own text, which the `legion` tool sends as the agent gave it.
+test.skipIf(skip)(
+  "a body holding U+0000 is refused before its route reads it, naming the first string that holds one",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const refusal = (place: string, at: number) => ({
+        error: `invalid request body: ${place} holds a NUL character (U+0000) at character ${at}, which the daemon cannot store`,
+      });
+      const summary = await daemon.complete(true, {
+        summary: "the 🦀 round\u0000 is in",
+        planReason: "\u0000",
+      });
+      expect([summary.status, await summary.json()]).toEqual([400, refusal("summary", 12)]);
+      const ready = await daemon.post("/legion/v1/claims/ready", {
+        secret: "not the claim's",
+        capabilities: {
+          measuredAt: "2026-11-19T10:00:00Z",
+          rows: [
+            { name: "github", ok: true, detail: "ok" },
+            { name: "mcp", ok: false, detail: "off\u0000" },
+          ],
+        },
+      });
+      expect([ready.status, await ready.json()]).toEqual([
+        400,
+        refusal("capabilities.rows[1].detail", 4),
+      ]);
+      const named = await daemon.post("/legion/v1/grants", { "session\u0000Id": "01a0f2cc" });
+      expect([named.status, await named.json()]).toEqual([400, refusal("session\\u0000Id", 8)]);
+      expect(daemon.logged().filter((line) => line.status === 400)).toHaveLength(3);
+      expect((await daemon.complete(true)).status).toBe(200);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+/** A copy of this checkout's daemon module whose state answer counts a pull request's fix
+ * attempts, as main `ff2a10ef`'s does (its api's `PullRequestView.FixAttempts`, which its
+ * contract requires), and is this checkout's in all else. Made once for the file. */
+let counting: string | undefined;
+function countingCheckout(): string {
+  if (counting !== undefined) return counting;
+  const checkout = path.join(work, "counting-checkout");
+  const daemon = path.join(checkout, "packages", "daemon");
+  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
+  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
+  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const state = path.join(daemon, "internal", "api", "state.go");
+  const uncounted = readFileSync(state, "utf8");
+  const counted = uncounted.replace(COUNTLESS_VIEW, COUNTED_VIEW);
+  expect(counted).not.toBe(uncounted);
+  writeFileSync(state, counted);
+  counting = checkout;
+  return checkout;
+}
+/** The end of the state's pull request view as main's daemon writes it since contract 59, and as
+ * main `ff2a10ef`'s wrote it, with the count of fix attempts (daemon-pane.ts's
+ * `PULL_REQUEST_UNCOUNTED` and `PULL_REQUEST_COUNTED`). */
+const COUNTLESS_VIEW = '\tReviewDecision string `json:"reviewDecision,omitempty"`\n}';
+const COUNTED_VIEW =
+  '\tReviewDecision string `json:"reviewDecision,omitempty"`\n\tFixAttempts    int    `json:"fixAttempts"`\n}';
+
+// Catches: a stand-in that serves a label of main `ff2a10ef`'s shape a pull request with no count
+// of fix attempts, which that label's contract requires (its legion-api.ts's `fixAttempts`), so
+// every `read_record` of its agents is refused; and one that serves the count to a label whose
+// daemon keeps none, main's since contract 59: this checkout, and main `724196ef` where
+// SKILL_SCENARIOS_BASE_CHECKOUT names it. Every check of a world's head concludes `success`
+// (rig.sh's `concluded_checks`), so the count is 0.
+test.skipIf(skip)(
+  "the pull request counts its fix attempts where the label's daemon serves the count, and only there",
+  async () => {
+    const checkouts: [string, boolean][] = [
+      [CHECKOUT, false],
+      [countingCheckout(), true],
+      ...(baseCheckout === undefined ? [] : [[baseCheckout, false] as [string, boolean]]),
+    ];
+    for (const [checkout, counts] of checkouts) {
+      const daemon = await standin("reviewer", "", undefined, { checkout });
+      try {
+        const state = z
+          .object({
+            issues: z.record(
+              z.string(),
+              z.object({ pullRequest: z.record(z.string(), z.unknown()) })
+            ),
+          })
+          .parse(await daemon.body());
+        const pull = state.issues["LWEVAL-1"]?.pullRequest ?? {};
+        expect([checkout, pull.fixAttempts]).toEqual([checkout, counts ? 0 : undefined]);
+        expect([checkout, Object.keys(pull).at(-1)]).toEqual([
+          checkout,
+          counts ? "fixAttempts" : "state",
+        ]);
+      } finally {
+        daemon.stop();
+      }
+    }
+  },
+  600_000
+);
+
 // Catches: a stand-in that takes a completion's verdict from any role, and a tester's completion
 // with none. The daemon's completion route refuses, before the fact and so writing nothing, a
 // verdict from any role but the tester (400 VERDICT_ROLE_FORBIDDEN), which the reviewer's prompt
@@ -3720,13 +3835,22 @@ test.skipIf(skip)(
   600_000
 );
 
-/** A checkout holding a contract alone, `packages/contracts/src/legion-api.ts` with `source`,
- * under this file's work directory. */
-function contractCheckout(name: string, source: string): string {
+/** A checkout holding a contract, `packages/contracts/src/legion-api.ts` with `source`, and the
+ * daemon source the bodies a label is handed are built by, `packages/daemon/internal/api/state.go`
+ * with `state` (this checkout's where none is given: daemon-pane.ts's `servesFixAttempts`), under
+ * this file's work directory. */
+function contractCheckout(name: string, source: string, state?: string): string {
   const checkout = path.join(work, name);
   const dir = path.join(checkout, "packages", "contracts", "src");
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "legion-api.ts"), source);
+  const api = path.join(checkout, "packages", "daemon", "internal", "api");
+  mkdirSync(api, { recursive: true });
+  writeFileSync(
+    path.join(api, "state.go"),
+    state ??
+      readFileSync(path.join(CHECKOUT, "packages", "daemon", "internal", "api", "state.go"), "utf8")
+  );
   return checkout;
 }
 /** A contract of a label whose daemon runs its claims in tmux panes alone: it describes a state
@@ -3801,3 +3925,61 @@ test.skipIf(baseCheckout === undefined)(
   },
   120_000
 );
+
+/** A contract that requires a pull request's count of fix attempts, as main `ff2a10ef`'s does
+ * (its legion-api.ts's `fixAttempts`), and one that refuses the count, as no contract does: a
+ * reading of what the bodies a label is handed carry. */
+const COUNTING_CONTRACT = `
+export const LegionStateResponse = {
+  safeParse(body) {
+    for (const [key, issue] of Object.entries(body.issues))
+      if (issue.pullRequest !== undefined && typeof issue.pullRequest.fixAttempts !== "number")
+        return { success: false, error: { message: "issues." + key + ".pullRequest.fixAttempts: Invalid input: expected number, received undefined" } };
+    return { success: true };
+  },
+};
+`;
+const COUNTLESS_CONTRACT = `
+export const LegionStateResponse = {
+  safeParse(body) {
+    for (const [key, issue] of Object.entries(body.issues))
+      if (issue.pullRequest !== undefined && "fixAttempts" in issue.pullRequest)
+        return { success: false, error: { message: "issues." + key + ".pullRequest: Unrecognized key: fixAttempts" } };
+    return { success: true };
+  },
+};
+`;
+
+// Catches: a label of main `ff2a10ef`'s shape handed bodies with no count of fix attempts, which
+// its contract requires, so the check refused the label whose shape the stand-in reads (it did:
+// `standin-record contract` of an extract of ff2a10ef refused `fixAttempts`, which contract 59
+// removed on 2026-11-09); one whose daemon keeps no count, main's since contract 59, handed bodies
+// carrying one; and a daemon source of neither shape read as either, rather than refused naming
+// its marker. The bodies are the ones the stand-in serves the label (daemon-standin.ts's
+// `FIX_ATTEMPTS`), read out of its own source.
+test("a label's own contract is handed the count of fix attempts where its daemon serves one, and none where it serves none", async () => {
+  const state = readFileSync(
+    path.join(CHECKOUT, "packages", "daemon", "internal", "api", "state.go"),
+    "utf8"
+  );
+  const counted = state.replace(COUNTLESS_VIEW, COUNTED_VIEW);
+  expect(counted).not.toBe(state);
+  const counting = contractCheckout("counting-contract", COUNTING_CONTRACT, counted);
+  expect(await contractRefusal(counting)).toBeUndefined();
+  const uncounted = contractCheckout("counting-contract-uncounted", COUNTING_CONTRACT);
+  expect(await contractRefusal(uncounted)).toBe(
+    `${path.join(uncounted, "packages", "contracts", "src", "legion-api.ts")} does not describe the state body the stand-in serves (planning, pull request 0): issues.WID-1.pullRequest.fixAttempts: Invalid input: expected number, received undefined`
+  );
+  expect(await contractRefusal(contractCheckout("countless-contract", COUNTLESS_CONTRACT))).toBe(
+    undefined
+  );
+  const overcounted = contractCheckout("countless-contract-counted", COUNTLESS_CONTRACT, counted);
+  expect(await contractRefusal(overcounted)).toBe(
+    `${path.join(overcounted, "packages", "contracts", "src", "legion-api.ts")} does not describe the state body the stand-in serves (planning, pull request 0): issues.WID-1.pullRequest: Unrecognized key: fixAttempts`
+  );
+  const unread = contractCheckout("counting-contract-unread", COUNTING_CONTRACT, "package api\n");
+  expect(await contractRefusal(unread)).toStartWith(
+    `the daemon source of ${unread} is no shape of the state's pull request this rig reads: `
+  );
+  if (olderHost !== undefined) expect(await contractRefusal(olderHost)).toBeUndefined();
+}, 120_000);
