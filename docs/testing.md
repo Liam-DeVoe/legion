@@ -87,6 +87,17 @@ itself, whose tests import its sources by relative path.
   files a Go module cache writes, and because a file in such a tree can be a hard link to one
   outside it.
 
+- An e2e test file whose own `afterAll` or `afterEach` removes a directory removes it through
+  `removeScratch` of `packages/dispatch/e2e/__tests__/step-end.ts`, and gives that hook the limit
+  `noHookLimit` (`Infinity`). A removal in the test process cannot be stopped by its hook's limit,
+  since Bun judges a synchronous hook only after it returns, so `removeScratch` runs `rm -rf` in a
+  process of its own. That process may take what the CI step leaves, or, where no step says when
+  it ends, the limit of the file's own rows; one that does not end by then is killed, and the hook
+  fails naming its directories. A step says when it ends in `LEGION_TEST_STEP_ENDS_AT`, in whole
+  seconds since the epoch, which its script's first line exports from its own `timeout-minutes`.
+  The limit is `Infinity` and not 0: Bun 1.4.4 reads 0 as no limit for the hook, but kills a
+  process the hook waits for at its own 5 s, as a dangling process.
+
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
   no value is captured as unset and the restore deletes it again; setting it to the empty string

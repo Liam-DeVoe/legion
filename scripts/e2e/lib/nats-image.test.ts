@@ -1,7 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  bunRowMs,
+  noHookLimit,
+  removeScratch,
+} from "../../../packages/dispatch/e2e/__tests__/step-end";
 
 // The listener and the Legion daemon refuse a nats-server below the floor packages/envoy/natsversion
 // holds (every 2.10 among them), so whatever starts a NATS server for them must start one the floor
@@ -107,7 +112,9 @@ const knownDrivers = [
  * listener and the daemon refuse a server by is the one this scan holds every pin to.
  */
 const floorDir = mkdtempSync(join(tmpdir(), "natsfloor-"));
-afterAll(() => rmSync(floorDir, { recursive: true, force: true }));
+// The directory goes in a process of its own, which may take what the CI step leaves, or the limit
+// of this file's rows, which state none, and the hook has no limit of Bun's (step-end.ts says why).
+afterAll(() => removeScratch([floorDir], bunRowMs), noHookLimit);
 const floor = join(floorDir, "natsfloor");
 const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {
   cwd: join(root, "packages/envoy"),

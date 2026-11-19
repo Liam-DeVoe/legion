@@ -1,18 +1,24 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  bunRowMs,
+  noHookLimit,
+  removeScratch,
+} from "../../../packages/dispatch/e2e/__tests__/step-end";
 import { fixtureSecret } from "../../../packages/test-fixtures/src/fixture-secret";
 
 const probe = join(import.meta.dir, "dispatch-live-events.ts");
 const servers: Server<undefined>[] = [];
 const scratchDirectories: string[] = [];
 
-afterEach(() => {
+// Each row's scratch goes in a process of its own, which may take what the CI step leaves, or the
+// limit of this file's rows, which state none, and the hook has no limit of Bun's (step-end.ts).
+afterEach(async () => {
   for (const server of servers.splice(0)) server.stop(true);
-  for (const directory of scratchDirectories.splice(0))
-    rmSync(directory, { force: true, recursive: true });
-});
+  await removeScratch(scratchDirectories.splice(0), bunRowMs);
+}, noHookLimit);
 
 function scratch(): string {
   const directory = mkdtempSync(join(tmpdir(), "dispatch-live-events-"));

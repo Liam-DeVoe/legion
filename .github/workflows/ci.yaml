@@ -1846,6 +1846,8 @@ jobs:
               - 'packages/dispatch/e2e/harness-postgres-container-removal.ts'
               - 'packages/dispatch/e2e/harness-postgres-processes.ts'
               - 'packages/pi-legion/scripts/skill-scenarios/rig.sh'
+              # Four of the e2e libraries' tests remove their scratch in a hook through it.
+              - 'packages/dispatch/e2e/__tests__/step-end.ts'
               - 'scripts/dispatch/**'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'

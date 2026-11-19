@@ -39,6 +39,7 @@ import { fileURLToPath } from "node:url";
 import { stubListeningLine } from "../stub/origin";
 
 import { rowLimit, runBounded } from "./bounded-subprocess";
+import { noHookLimit, removeScratch } from "./step-end";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -47,7 +48,9 @@ const oldStubPortVariable = "DISPATCH_E2E_STUB_PORT";
 
 const dist = mkdtempSync(join(tmpdir(), "stub-web-server-dist-"));
 writeFileSync(join(dist, "index.html"), "<!doctype html><title>stub-web-server.test.ts</title>\n");
-afterAll(() => rmSync(dist, { force: true, recursive: true }));
+// The directory goes in a process of its own, which may take what the CI step leaves, or the limit
+// of this file's rows, and the hook has no limit of Bun's: step-end.ts says why.
+afterAll(() => removeScratch([dist], rowLimit("short")), noHookLimit);
 
 /** The line the static file server prints once it serves. */
 const listening = new RegExp(stubListeningLine, "g");

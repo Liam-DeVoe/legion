@@ -45,6 +45,7 @@ import {
   untilParentEnds,
   untilThisEnds,
 } from "./planted-marks";
+import { stepEnds, stepEndsVariable } from "./step-end";
 
 const { marksDirectory, runDirectoryPrefix, stackOwner } = marks;
 
@@ -542,25 +543,6 @@ export function rowMs(waits: Waits): number {
     0
   );
   return waitsMs(waits) + ends + (waits.roomMs ?? rowRoomMs);
-}
-
-/** The variable through which a CI step that runs these rows gives the time at which its own
- *  limit (`timeout-minutes`) ends it, in milliseconds since the epoch: the step exports it as it
- *  starts, from that same limit, and a row of `harness-postgres-removal.test.ts` reads every
- *  workflow of the repository for a step that runs a row of these files and exports none
- *  (`stepsThatCutNoRow`). */
-export const stepEndsVariable = "DISPATCH_E2E_STEP_ENDS_AT";
-
-/** When the CI step that runs this process ends it (`stepEndsVariable`), or undefined where no
- *  step said so, as in a run on a machine of one's own. */
-export function stepEnds(): number | undefined {
-  const value = process.env[stepEndsVariable];
-  if (value === undefined || value === "") return undefined;
-  const at = Number(value);
-  if (!Number.isSafeInteger(at) || at <= 0) {
-    throw new Error(`${stepEndsVariable} is ${JSON.stringify(value)}, which is no time`);
-  }
-  return at;
 }
 
 /** What a row started so far, held to what its limit counts (`Waits`): each fixture that starts a

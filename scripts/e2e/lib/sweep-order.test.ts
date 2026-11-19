@@ -6,12 +6,12 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { noHookLimit, removeScratch } from "../../../packages/dispatch/e2e/__tests__/step-end";
 import { type Driver, mark, sweep, sweepOrder } from "./sweep-order";
 
 // R3 of pull request #4236: "The next start of a test stack removes each Postgres of a stack that
@@ -29,7 +29,10 @@ import { type Driver, mark, sweep, sweepOrder } from "./sweep-order";
 
 const root = join(import.meta.dir, "..", "..", "..");
 const scratch = mkdtempSync(join(tmpdir(), "sweep-order-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+// The rows' scratch goes in a process of its own, which may take what the CI step leaves, or the
+// limit of the rows that start a driver (`walkBound`), and the hook has no limit of Bun's: 8 such
+// removals at once took 3.5 to 5.3 s beside a shared machine's load (step-end.ts says why).
+afterAll(() => removeScratch([scratch], walkBound), noHookLimit);
 
 /** The refusals whose leftovers the rows below can plant, each a function of the scripts. */
 const named = ["refuse_leftovers", "ports_free", "lock_services"] as const;

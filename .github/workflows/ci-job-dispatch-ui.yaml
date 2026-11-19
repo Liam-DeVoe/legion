@@ -104,13 +104,15 @@ jobs:
       # harness-postgres-marks.test.ts in this lane may wait, within their parts' own bounds, far
       # longer than this job runs (their limits are the sums of those bounds,
       # e2e/__tests__/harness-postgres-removal-fixtures.ts's `rowMs`). So the step has a limit of
-      # its own and exports when it ends (DISPATCH_E2E_STEP_ENDS_AT, in ms since the epoch): a row
-      # whose step ends first ends there, naming what it waited for, and removes what it made,
-      # where the step's own clock would name no row (harness-postgres-removal.test.ts reads every
-      # workflow for such a step). The limit is dispatch-browser.yaml's rule, the measured maximum
-      # plus 15 per cent rounded up to a whole minute: this step took 116 to 148 s in the 28 green
-      # runs of the 40 newest green ci.yaml runs on 2026-11-19, and 129, 138 and 227 s in the
-      # branch's three green runs that added those rows' newest forms (44342655660, 44390012817,
+      # its own and exports when it ends, in whole seconds since the epoch, as its script's first
+      # line (LEGION_TEST_STEP_ENDS_AT): a row whose step ends first ends there, naming what it
+      # waited for, and removes what it made, where the step's own clock would name no row
+      # (harness-postgres-removal.test.ts reads every workflow for such a step), and a file's hook
+      # that removes a directory may take what the step leaves, and no more
+      # (e2e/__tests__/step-end.ts). The limit is dispatch-browser.yaml's rule, the measured
+      # maximum plus 15 per cent rounded up to a whole minute: this step took 116 to 148 s in the
+      # 28 green runs of the 40 newest green ci.yaml runs on 2026-11-19, and 129, 138 and 227 s in
+      # the branch's three green runs that added those rows' newest forms (44342655660, 44390012817,
       # 44443452775), so 227 x 1.15 = 261 s, 5 minutes. Those rows wait out bounds of a few seconds
       # each, which they set through the parameters the start reads its own from: the three files
       # took 104 to 121 s together in 8 whole runs on one bun worker beside a shared Linux
@@ -118,7 +120,7 @@ jobs:
       - name: Test dispatch dashboard
         timeout-minutes: 5
         run: |
-          export DISPATCH_E2E_STEP_ENDS_AT=$(( ($(date +%s) + 5 * 60) * 1000 ))
+          export LEGION_TEST_STEP_ENDS_AT=$(( $(date -u +%s) + 5 * 60 ))
           bun run test
         working-directory: packages/dispatch
         env:

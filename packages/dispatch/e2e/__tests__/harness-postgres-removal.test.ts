@@ -83,7 +83,6 @@ import {
   standInDocker,
   standInPostmaster,
   startSweep,
-  stepEndsVariable,
   sweep,
   sweepInChild,
   type Tick,
@@ -100,6 +99,7 @@ import {
   standIn,
   untilThisEnds,
 } from "./planted-marks";
+import { stepEndsVariable } from "./step-end";
 
 const { runDirectoryPrefix } = marks;
 
@@ -1184,10 +1184,11 @@ interface WorkflowStep {
 /** Each step of `workflows` that runs a row of these files (`summedFiles`), named by its file,
  *  its job and its name, with the files of rows it runs (`steps`), and each such step that gives
  *  those rows no end of its own, one line each (`faults`): one with no `timeout-minutes` of its
- *  own, one whose script does not export `stepEndsVariable` as the time its own limit ends it,
- *  counted from its start, and one whose limit is above its job's. A step runs a row of a file
- *  that its script names, and of each file of `lane`, the files of these the package's harness
- *  lane runs (`test:harness`), where it runs that lane (`bun run test`, `test:harness` or
+ *  own, one whose script does not export `stepEndsVariable` as the time its own limit ends it, in
+ *  whole seconds counted from its start, one that exports it after its script's first line, so
+ *  what runs before it reads no end, and one whose limit is above its job's. A step runs a row of
+ *  a file that its script names, and of each file of `lane`, the files of these the package's
+ *  harness lane runs (`test:harness`), where it runs that lane (`bun run test`, `test:harness` or
  *  `test:repeat`) in `packages/dispatch`. A row then ends inside its step (`Row.cut`) and not at
  *  the step's own clock, which names no row. */
 function stepsThatCutNoRow(
@@ -1197,7 +1198,7 @@ function stepsThatCutNoRow(
   const steps: string[] = [];
   const faults: string[] = [];
   const exports = new RegExp(
-    `export ${stepEndsVariable}=\\$\\(\\( \\(\\$\\(date \\+%s\\) \\+ (.+?) \\* 60\\) \\* 1000 \\)\\)`
+    `^export ${stepEndsVariable}=\\$\\(\\( \\$\\(date -u \\+%s\\) \\+ (.+?) \\* 60 \\)\\)$`
   );
   for (const { file, text } of workflows) {
     const parsed = Bun.YAML.parse(text) as {
@@ -1218,11 +1219,14 @@ function stepsThatCutNoRow(
         steps.push(where);
         const minutes = step["timeout-minutes"];
         const jobMinutes = body["timeout-minutes"];
-        const exported = exports.exec(run)?.[1];
+        const lines = run.split("\n").map((line) => line.trim());
+        const exported = lines.map((line) => exports.exec(line)?.[1]).find((m) => m !== undefined);
         if (minutes === undefined) {
           faults.push(`${where}, has no timeout-minutes of its own, so it gives its rows no end`);
         } else if (exported === undefined) {
           faults.push(`${where}, exports no ${stepEndsVariable}`);
+        } else if (exports.exec(lines[0] ?? "") === null) {
+          faults.push(`${where}, exports ${stepEndsVariable} after its first line`);
         } else if (exported !== String(minutes)) {
           faults.push(
             `${where}, exports an end ${exported} minutes from its start, and its limit is ${String(minutes)}`
@@ -1243,7 +1247,7 @@ function stepsThatCutNoRow(
 // end (`Row.cut`), naming the wait it was in, and still removes what it made. This row reads every
 // workflow for a step that runs a row of these files and exports no such end. Its controls are
 // planted steps: one with no export, one with no limit of its own, one whose export is not its
-// limit, and one as the head's steps are.
+// limit, one that exports it after its first line, and one as the head's steps are.
 test("every CI step that runs these rows exports when its own limit ends it", () => {
   const manifest = JSON.parse(
     readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")
@@ -1274,7 +1278,7 @@ test("every CI step that runs these rows exports when its own limit ends it", ()
       "",
     ].join("\n");
   const rows = "bun test e2e/__tests__/harness-postgres-leftover.test.ts";
-  const export2 = `export ${stepEndsVariable}=$(( ($(date +%s) + 2 * 60) * 1000 ))`;
+  const export2 = `export ${stepEndsVariable}=$(( $(date -u +%s) + 2 * 60 ))`;
   const where = 'planted.yaml: visual, step "rows", which runs harness-postgres-leftover.test.ts';
   const planted = (lines: readonly string[]) =>
     stepsThatCutNoRow([{ file: "planted.yaml", text: step(lines) }], lane).faults;
@@ -1286,6 +1290,9 @@ test("every CI step that runs these rows exports when its own limit ends it", ()
   ]);
   expect(planted(["timeout-minutes: 3", "run: |", `  ${export2}`, `  ${rows}`])).toEqual([
     `${where}, exports an end 2 minutes from its start, and its limit is 3`,
+  ]);
+  expect(planted(["timeout-minutes: 2", "run: |", `  ${rows}`, `  ${export2}`])).toEqual([
+    `${where}, exports ${stepEndsVariable} after its first line`,
   ]);
   expect(planted(["timeout-minutes: 2", "run: |", `  ${export2}`, `  ${rows}`])).toEqual([]);
 });
@@ -1311,11 +1318,12 @@ test(
     const saved = process.env[stepEndsVariable];
     let free: Row;
     let cut: Row;
-    const stepEnd = Date.now() + 500;
+    // The step's end is a whole second, as a step exports it, between 0.5 and 1.5 s from now.
+    const stepEnd = Math.ceil((Date.now() + 500) / 1000) * 1000;
     try {
       delete process.env[stepEndsVariable];
       free = rowOf(stepCut);
-      process.env[stepEndsVariable] = String(stepEnd);
+      process.env[stepEndsVariable] = String(stepEnd / 1000);
       cut = rowOf(stepCut);
     } finally {
       if (saved === undefined) delete process.env[stepEndsVariable];
