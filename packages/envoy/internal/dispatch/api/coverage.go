@@ -74,7 +74,9 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // step with the document it wrote; the requirements' order and words come from the live spec,
 // and each one's node state from the store (queueRequirementStates). The node states and the
 // counts of what serves each requirement are read in one batch, one round trip, as the counts
-// alone were before the states were read.
+// alone were before the states were read. Both statements start from the requirements the live
+// spec marks, each through a primary key, so for a spec of more than a few requirements Postgres
+// keeps one plan of each rather than planning it again on every read (queueServingBlockCounts).
 //
 // trees is the reader of a request that answers the requirements' trees, nil for every other
 // caller: each requirement registers with it (requirementBlocksIn), in the row the answer
@@ -112,7 +114,7 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 	states := make(map[string]string, len(requirements))
 	served := map[string]servingCounts{}
 	queueRequirementStates(batch, who, specRefKey, requirements, states)
-	queueServingBlockCounts(batch, who, coverage.SpecArtifactID, append([]string{issueKey}, descendants...), served)
+	queueServingBlockCounts(batch, who, coverage.SpecArtifactID, requirements, append([]string{issueKey}, descendants...), served)
 	if err := q.SendBatch(ctx, batch).Close(); err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -142,39 +144,33 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 	return coverage, nil
 }
 
-// requirementStatesQuery reads the node state of each requirement block whose node id is in $1
-// (`<ref_key>#<block id>`, of the block kind $3) for a reader ($2), in one statement: each block
-// through the block kind's predicate (refs.VisibleKind), with the state and the visibility the
-// store holds of it (refs.StoredNodeJoin, requirementStoredJoin), null where the store holds no row
-// of it.
+// requirementStatesQuery reads, for a reader ($2), the node state the store holds of each
+// requirement block whose node id is in $1 (`<ref_key>#<block id>`): each row of one the store
+// holds, read by the primary key of `graph_nodes`, that passes the block kind's predicate over
+// that row (refs.VisibleKindRow). It answers no row for a requirement the store holds no row of,
+// and none for one the predicate hides from the reader.
 var requirementStatesQuery = `
-	select requirement.id, ` + requirementStoredColumns + `
-	from unnest($1::text[]) as requirement(id)
-	` + requirementStoredJoin + `
-	where ` + refs.VisibleKind(refs.BlockNodeKind, `requirement.id`, `$2`)
-
-// requirementStoredJoin and requirementStoredColumns are the stored state and visibility of each
-// requirement requirementStatesQuery reads, its kind bound at $3.
-var requirementStoredJoin, requirementStoredColumns = refs.StoredNodeJoin(`$3`, `requirement.id`)
+	select held.id, held.state
+	from graph_nodes held
+	where held.kind = '` + refs.StoredKindOf(refs.BlockNodeKind) + `' and held.id = any($1)
+	  and ` + refs.VisibleKindRow(refs.BlockNodeKind, "held", "$2")
 
 // queueRequirementStates queues, in b, the read of the node state of each requirement of the spec
 // whose ref_key is refKey (requirementStatesQuery) for who, and fills states with each by block
-// id once the batch is read. A requirement the store holds no row of reads live, as every read of
-// a node answers one (refs.StoredStateAndVisibility); one the predicate hides from who answers no
-// state, and the caller reads it live.
+// id once the batch is read. A requirement that query answers no row for reads live: one the store
+// holds no row of, as every read of a node answers one (refs.StoredStateAndVisibility), and one
+// the predicate hides from who, so who is told nothing of the state of a node they may not see.
 func queueRequirementStates(b *pgx.Batch, who model.Actor, refKey string, requirements []model.RequirementCoverage, states map[string]string) {
 	ids := make([]string, len(requirements))
 	for index, requirement := range requirements {
 		ids[index] = refKey + "#" + requirement.BlockID
 	}
-	b.Queue(requirementStatesQuery, ids, refs.VisibilityArg(who), refs.BlockNodeKind).Query(func(rows pgx.Rows) error {
+	b.Queue(requirementStatesQuery, ids, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 		for rows.Next() {
-			var id string
-			var stored refs.StoredNode
-			if err := rows.Scan(&id, &stored.State, &stored.Visibility); err != nil {
+			var id, state string
+			if err := rows.Scan(&id, &state); err != nil {
 				return fmt.Errorf("read the node state of the requirements of %s: %w", refKey, err)
 			}
-			state, _ := refs.StoredStateAndVisibility(stored)
 			states[strings.TrimPrefix(id, refKey+"#")] = state
 		}
 		if err := rows.Err(); err != nil {
@@ -241,39 +237,43 @@ type servingCounts struct {
 	planTasks int
 }
 
-// queueServingBlockCounts queues, in b, the count, for each block of the spec, of the `check` and
-// `plan_task` blocks of the documents of issues that name it in `serves`, and adds each to served
-// once the batch is read. Both ends are current blocks of their documents: deleting the check
-// deletes its row, so its requirement is uncovered again. A check or a plan task whose block's
-// node state is proposed is a question still open and serves nothing yet
+// queueServingBlockCounts queues, in b, the count, for each requirement of the spec, of the `check`
+// and `plan_task` blocks of the documents of issues that name it in `serves`, and adds each to
+// served once the batch is read. Both ends are current blocks of their documents: deleting the
+// check deletes its row, so its requirement is uncovered again. A check or a plan task whose
+// block's node state is proposed is a question still open and serves nothing yet
 // (spec requirement r-proposed), so it is not counted; one at any other state is, and
 // one the store holds no row of reads live, as every read of a node answers one. Its state is read
-// for who in the same statement, as requirementStatesQuery reads a requirement's: from the store's
-// row of the block (kind block, keyed by the row's node_id), through the block kind's predicate
-// over that row (refs.VisibleKindRow), with the kind, the state and the reader bound. So a block
-// the predicate hides from who answers who no state and is counted as live, and the count tells
-// who nothing of the state of a node who may not see.
+// for who in the same statement: from the store's row of the block (kind block, keyed by the row's
+// node_id), through the block kind's predicate over that row (refs.VisibleKindRow), with the
+// reader bound. So a block the predicate hides from who answers who no state and is counted as
+// live, and the count tells who nothing of the state of a node who may not see.
 //
 // That test is a scalar subquery and not a `not exists`, so it stays a probe of the row per
 // serving block, as the registry's own predicates are (refs.VisibleKind), rather than an anti-join
-// the planner weighs against every other join of the statement: Postgres plans this statement
-// again on every execution, since its issues are an array, and the anti-join cost that planning
-// half a millisecond more a read (check c-read-cost).
-func queueServingBlockCounts(b *pgx.Batch, who model.Actor, specArtifactID string, issues []string, served map[string]servingCounts) {
-	b.Queue(`
-		select t.block_id, s.type, count(*)
-		from block_refs r
-		join document_blocks t on t.node_id = r.to_id and t.artifact_id = $1::uuid and t.type = 'requirement'
-		join document_blocks s on s.artifact_id = r.artifact_id and s.block_id = r.block_id
-		join artifacts a on a.id = r.artifact_id
-		where r.kind = 'serves' and r.to_kind = 'block'
-		  and a.issue_key = any($2) and s.type in ('check', 'plan_task')
-		  and not coalesce((
-		      select true from graph_nodes serving
-		      where serving.kind = $3 and serving.id = s.node_id and serving.state = $4
-		        and `+refs.VisibleKindRow(refs.BlockNodeKind, "serving", "$5")+`), false)
-		group by t.block_id, s.type
-	`, specArtifactID, issues, refs.BlockNodeKind, graphstore.StateProposed, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
+// the planner weighs against every other join of the statement. The state it probes for is the
+// literal `proposed`, the predicate of the partial index graph_nodes_proposed
+// (20261116172615_graph_nodes_proposed_index.up.sql), so the probe reads that index of the few
+// proposed rows whatever plan Postgres holds.
+//
+// The statement starts from the requirements the live spec marks, read by the primary key of
+// document_blocks (the spec's artifact and each requirement's block id). A requirement block of
+// the indexed spec that the live spec does not mark is counted for nobody, which changes no
+// answer: the route reads the counts of the live spec's requirements alone. Starting there is
+// what lets Postgres keep one plan of the statement. pgx prepares it, and Postgres plans a
+// prepared statement's first five executions with their values and from then on keeps one plan
+// made without them wherever that plan's estimated cost is no higher. Started from the spec's
+// artifact alone, the plan made without its value took the spec for the average document of the
+// store, thousands of blocks, so it cost more and every execution was planned again: on the
+// 8,001-block shape of check c-read-cost, about 1.3 ms of planning a read against 0.5 ms of
+// execution. Started from the requirements, it is kept from a spec of five requirements on, and
+// requirementStatesQuery's from a spec of eight.
+func queueServingBlockCounts(b *pgx.Batch, who model.Actor, specArtifactID string, requirements []model.RequirementCoverage, issues []string, served map[string]servingCounts) {
+	blockIDs := make([]string, len(requirements))
+	for index, requirement := range requirements {
+		blockIDs[index] = requirement.BlockID
+	}
+	b.Queue(servingBlockCountsQuery, specArtifactID, blockIDs, issues, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 		for rows.Next() {
 			var blockID, blockType string
 			var count int
@@ -294,6 +294,24 @@ func queueServingBlockCounts(b *pgx.Batch, who model.Actor, specArtifactID strin
 		return nil
 	})
 }
+
+// servingBlockCountsQuery counts, for each requirement block $2 of the spec $1, the `check` and
+// `plan_task` blocks of the documents of the issues $3 that serve it and that are not proposed for
+// the reader $4 (queueServingBlockCounts).
+var servingBlockCountsQuery = `
+	select t.block_id, s.type, count(*)
+	from document_blocks t
+	join block_refs r on r.to_kind = 'block' and r.to_id = t.node_id
+	join document_blocks s on s.artifact_id = r.artifact_id and s.block_id = r.block_id
+	join artifacts a on a.id = r.artifact_id
+	where t.artifact_id = $1::uuid and t.block_id = any($2) and t.type = 'requirement'
+	  and r.kind = 'serves' and a.issue_key = any($3) and s.type in ('check', 'plan_task')
+	  and not coalesce((
+	      select true from graph_nodes serving
+	      where serving.kind = '` + refs.StoredKindOf(refs.BlockNodeKind) + `' and serving.id = s.node_id
+	        and serving.state = '` + graphstore.StateProposed + `'
+	        and ` + refs.VisibleKindRow(refs.BlockNodeKind, "serving", "$4") + `), false)
+	group by t.block_id, s.type`
 
 // approvalCoverage is the coverage an approval request's answer carries for the document id
 // names, read for who, the requester, and whether that coverage could not be read. The gaps are

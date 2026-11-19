@@ -443,8 +443,8 @@ func visibleStoredKind(kind, address, param string) (join, columns, predicate st
 // to select off it, the state and then the visibility the store holds for the node, each null
 // where the store holds no row of it (StoredNode, setStored), the state named StoredState. Every
 // loader of the registry adds it for its own kind (storedNode), and a read outside this package
-// that answers rows of several kinds - api's person page - or binds the kind - the coverage read -
-// adds it with the kind as its own SQL. It reads `visibility` once, opened by StoredNodeMarker.
+// that answers rows of several kinds - api's person page - adds it with the kind as its own SQL.
+// It reads `visibility` once, opened by StoredNodeMarker.
 func StoredNodeJoin(kindExpr, address string) (join, columns string) {
 	return `left join lateral (select ` + StoredRowOf(`stored_node`) + ` from graph_nodes stored_node
 		where stored_node.kind = ` + kindExpr + ` and stored_node.id = ` + address + `
