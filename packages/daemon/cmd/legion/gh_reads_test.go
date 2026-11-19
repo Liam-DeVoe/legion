@@ -396,21 +396,24 @@ type ghGuardRecord struct {
 	stderr, gh, checked, log string
 }
 
-// ghRigEnv is the pager and browser the rig's caller names, and what the stand-in gh records of
-// them when it is given them unchanged; ghRigReadEnv is what it records for a call that writes
-// nothing, which runs with no pager and no browser program from the environment.
+// ghRigEnv is what the stand-in gh records of the pager, browsers and editor the rig's caller
+// names for a call guarded whole: none of them, since gh is run from an allowlist of its caller's
+// environment that holds no program (ghChildEnviron), and as its editor a program that fails
+// (ghNoEditor), so no editor gh starts can post text the guard never read; ghRigReadEnv is what it
+// records for a call that writes nothing, which runs with cat as its pager.
 const (
-	ghRigEnv     = "env GH_PAGER=rig-pager GH_BROWSER=rig-gh-browser BROWSER=rig-browser\n"
-	ghRigReadEnv = "env GH_PAGER=cat GH_BROWSER=unset BROWSER=unset\n"
+	ghRigEnv     = "env GH_PAGER=unset GH_BROWSER=unset BROWSER=unset GH_EDITOR=" + ghNoEditor + " EDITOR=unset VISUAL=unset\n"
+	ghRigReadEnv = "env GH_PAGER=cat GH_BROWSER=unset BROWSER=unset GH_EDITOR=" + ghNoEditor + " EDITOR=unset VISUAL=unset\n"
 )
 
 // ghGuardRig answers a run of `legion gh args…` with stdin against the shared check at the path
 // check (ghCheckAt), a stand-in gh that answers the visibility read `public` and every call with
 // exit 7 after recording it, and a state directory of the run's own, so no visibility is kept
-// from another run. The caller's environment names a pager and two browsers, and rules, where it
-// is not "", as the deployment's rule file (LEGION_PRIVATE_NAME_RULES_FILE): a call guarded whole
-// reads its destination's visibility and runs the private-name pass only where a rule file is
-// named, so a rig of a test that reads either names the fixture's (leakguardtest.WriteRules).
+// from another run. The caller's environment names a pager, two browsers and three editors, and
+// rules, where it is not "", as the deployment's rule file (LEGION_PRIVATE_NAME_RULES_FILE): a
+// call guarded whole reads its destination's visibility and runs the private-name pass only where
+// a rule file is named, so a rig of a test that reads either names the fixture's
+// (leakguardtest.WriteRules).
 func ghGuardRig(t *testing.T, rules string) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
 	t.Helper()
 	root, defaultDir := gitCredentialBundle(t)
@@ -421,7 +424,7 @@ func ghGuardRig(t *testing.T, rules string) func(t *testing.T, check, stdin stri
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
-		"printf 'env GH_PAGER=%s GH_BROWSER=%s BROWSER=%s\\n' \"${GH_PAGER-unset}\" \"${GH_BROWSER-unset}\" \"${BROWSER-unset}\" >>\"$GH_STANDIN_RECORD\"\n" +
+		"printf 'env GH_PAGER=%s GH_BROWSER=%s BROWSER=%s GH_EDITOR=%s EDITOR=%s VISUAL=%s\\n' \"${GH_PAGER-unset}\" \"${GH_BROWSER-unset}\" \"${BROWSER-unset}\" \"${GH_EDITOR-unset}\" \"${EDITOR-unset}\" \"${VISUAL-unset}\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"printf 'stdin %s\\n' \"$(cat)\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"exit 7\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
@@ -437,6 +440,7 @@ func ghGuardRig(t *testing.T, rules string) func(t *testing.T, check, stdin stri
 			"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": state,
 			"LEGION_ROLE": "merger", "LEGION_ISSUE": "issue-9", "LEAK_CHECK_STANDIN_TARGET": "acme/widgets",
 			"GH_PAGER": "rig-pager", "GH_BROWSER": "rig-gh-browser", "BROWSER": "rig-browser",
+			"GH_EDITOR": "rig-gh-editor", "EDITOR": "rig-editor", "VISUAL": "rig-visual",
 		}
 		if rules != "" {
 			env[leakguard.RulesFileVar] = rules
@@ -664,8 +668,8 @@ func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
 // guardedWhole fails t unless got is a call the guard read whole under a check that clears it:
 // the check recorded its run of the call, the guard asked gh the visibility of the repository the
 // call names (none for a call naming none, such as a GraphQL call, which the guard scans for that
-// reason), and only then did gh run, with the pager and the browsers the caller set, and the log
-// line is neither a checked-only one nor a no-rules one.
+// reason), and only then did gh run, with none of the pager and the browsers the caller set, and
+// the log line is neither a checked-only one nor a no-rules one.
 func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 	t.Helper()
 	if got.code != 7 {
@@ -682,7 +686,7 @@ func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 		t.Errorf("the guard read the visibility %d times, want %d: %q", reads, wantReads, got.gh)
 	}
 	if want := "gh " + strings.Join(args, " ") + "\n" + ghRigEnv; !strings.Contains(got.gh, want) {
-		t.Errorf("gh recorded %q, want the call %q after the guard, with the caller's pager and browsers", got.gh, want)
+		t.Errorf("gh recorded %q, want the call %q after the guard, with none of the caller's pager and browsers", got.gh, want)
 	}
 	for _, partial := range []string{ghCheckedOnlyVisibility, ghNoRulesVisibility} {
 		if strings.Contains(got.log, "visibility="+ghCallLogValue(partial)) {
@@ -713,10 +717,11 @@ func TestLegionGhGuardsEveryWrite(t *testing.T) {
 }
 
 // With no rule file named, a write `legion gh` guards gets the shared check alone: the check
-// runs, no visibility is read, gh runs the call with the pager and browsers the caller set, the
-// call's log line says no-rules, and standard error holds noRulesLine, once, though the body file
-// names the fixture's host, which the fixture's rules refuse. A read the shared check alone
-// clears skips no private-name step, so it prints nothing, and its log line stays checked-only.
+// runs, no visibility is read, gh runs the call with the environment of a call guarded whole
+// (ghRigEnv: none of the pager, browsers and editors the caller set), the call's log line says
+// no-rules, and standard error holds noRulesLine, once, though the body file names the fixture's
+// host, which the fixture's rules refuse. A read the shared check alone clears skips no
+// private-name step, so it prints nothing, and its log line stays checked-only.
 func TestLegionGhRunsAWriteWithNoRuleFileAndSaysSo(t *testing.T) {
 	run := ghGuardRig(t, "")
 	body := filepath.Join(t.TempDir(), "body.md")
