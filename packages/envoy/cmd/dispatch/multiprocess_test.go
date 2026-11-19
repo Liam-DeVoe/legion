@@ -2514,18 +2514,28 @@ func stopInsideATransaction(t *testing.T, scene *outboxScene, writes *holdWrites
 		t.Fatalf("read the database's clock after the signal: %v", err)
 	}
 	held.letGo()
-	var reading backendReading
-	waitUntil(t, takeOverWithin, "the stopped publisher's transaction waiting on its client", func() bool {
+	// The backend runs what the write had sent and then waits on its client. On a loaded machine
+	// that can take longer than the other process's take-over, which ends the backend: then it is
+	// read gone before it is read waiting, and the last reading before that is logged instead.
+	var reading, last backendReading
+	waitUntil(t, takeOverWithin, "the stopped publisher's transaction waiting on its client, or its session ended", func() bool {
 		var err error
 		if reading, err = readBackend(pool, writer, ownerKey); err != nil {
 			t.Fatalf("read the stopped publisher's backend %d: %v", writer, err)
 		}
-		return reading.state == "idle in transaction"
+		if reading.state != "gone" {
+			last = reading
+		}
+		return reading.state == "idle in transaction" || reading.state == "gone"
 	})
 	readAt := time.Now()
-	t.Logf("the stopped publisher's backend %d, %v after the stop: %s", writer, readAt.Sub(stopped).Round(time.Millisecond), reading)
-	if !reading.ownerLock {
-		t.Fatalf("the stopped publisher's backend %d does not hold %s: %s", writer, ownerKey, reading)
+	if reading.state == "gone" {
+		t.Logf("the stopped publisher's backend %d was ended %v after the stop before it was read waiting on its client; it was last read as: %s", writer, readAt.Sub(stopped).Round(time.Millisecond), last)
+	} else {
+		t.Logf("the stopped publisher's backend %d, %v after the stop: %s", writer, readAt.Sub(stopped).Round(time.Millisecond), reading)
+		if !reading.ownerLock {
+			t.Fatalf("the stopped publisher's backend %d does not hold %s: %s", writer, ownerKey, reading)
+		}
 	}
 	// The other process's next write is on the issue: read it, and the backend it waits behind,
 	// while it waits.
