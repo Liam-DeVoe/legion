@@ -1,26 +1,15 @@
-import { beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 
-// step-records-read.sh (the read of a deployed issue's step records after the merge) against a
-// fake `dispatch` on PATH: it logs its arguments, prints FAKE_DISPATCH_OUT as the real command's
-// answer would print, and exits FAKE_DISPATCH_EXIT. The answers below are the lines `dispatch
-// steps` prints (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one run per
-// line.
+// step-records-read.sh (the read of a deployed issue's step records after the merge) against the
+// fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH, which prints a warning on stderr
+// where a case gives one, as the real command prints its `dispatch: <warning>` lines before its
+// answer. The answers below are the lines `dispatch steps` prints
+// (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one run per line.
 const script = join(import.meta.dir, "..", "step-records-read.sh");
 const dir = temporaryDirectory("step-records-read-test");
-beforeAll(() => {
-  writeFileSync(
-    join(dir, "dispatch"),
-    `#!/usr/bin/env bash
-printf '%s\\n' "$*" >>"$FAKE_DISPATCH_LOG"
-printf '%s' "$FAKE_DISPATCH_OUT"
-exit "\${FAKE_DISPATCH_EXIT:-0}"
-`,
-    { mode: 0o755 }
-  );
-});
 
 const key = "INFRA-42";
 const run = (step: string) =>
@@ -45,37 +34,9 @@ function without(drop: RegExp): string {
   const lines = whole.slice(1).filter((line) => !drop.test(line));
   return `${[`${key}: ${lines.length} steps in 1 tasks`, ...lines].join("\n")}\n`;
 }
-// changed is whole with the line that matches pick replaced by its edit.
-function changed(pick: RegExp, edit: (line: string) => string): string {
-  return `${whole.map((line) => (pick.test(line) ? edit(line) : line)).join("\n")}\n`;
-}
-
-// bash is the shell the script runs under, found once where read's own PATH finds it, so a case
-// that gives the script a PATH with no bash on it still runs the same shell.
-const bash = Bun.which("bash", { PATH: "/usr/bin:/bin" });
-if (bash === null) throw new Error("no bash in /usr/bin or /bin");
-let runs = 0;
-// read runs the script with args against the fake dispatch, which prints out and exits exit, on
-// path, which by default finds the fake first.
-function read(out: string, args: string[] = [key], exit = 0, path = `${dir}:/usr/bin:/bin`) {
-  const log = join(dir, `calls-${++runs}`);
-  writeFileSync(log, "");
-  const result = Bun.spawnSync([bash, script, ...args], {
-    env: {
-      PATH: path,
-      HOME: dir,
-      FAKE_DISPATCH_LOG: log,
-      FAKE_DISPATCH_OUT: out,
-      FAKE_DISPATCH_EXIT: String(exit),
-    },
-  });
-  return {
-    code: result.exitCode,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-    calls: readFileSync(log, "utf8"),
-  };
-}
+// read runs the script with args against the fake dispatch, which prints err on stderr and out on
+// stdout and exits exit, on path, which by default finds the fake first.
+const read = fakeDispatchRead(script, dir, [key]);
 
 describe("step-records-read.sh", () => {
   test("a whole answer passes, exit 0, read once with dispatch steps --issue", () => {
@@ -85,6 +46,14 @@ describe("step-records-read.sh", () => {
     expect(stdout).toContain(
       `PASS: ${key}: 10 records; steps 1 to 5, the retro and the merge each have one, each record ended, each step and retro with an agent, each step with a model`
     );
+    expect(code).toBe(0);
+  });
+
+  test("a warning the command prints on stderr is no part of its answer: the read passes", () => {
+    const warning = "dispatch: the bearer token expires in 2 days\n";
+    const { code, stdout, stderr } = read(`${whole.join("\n")}\n`, [key], 0, undefined, warning);
+    expect(stdout).toContain(`PASS: ${key}: 10 records`);
+    expect(stderr).toContain(warning.trim());
     expect(code).toBe(0);
   });
 
@@ -110,7 +79,9 @@ describe("step-records-read.sh", () => {
 
   test("a record still running fails, exit 1, naming its line", () => {
     const { code, stdout } = read(
-      changed(/ 5 step acceptance /, (line) => line.replace(/ \S+ passed$/, " running running"))
+      changed(whole, / 5 step acceptance /, (line) =>
+        line.replace(/ \S+ passed$/, " running running")
+      )
     );
     expect(stdout).toContain(
       "FAIL: the record never ended: default 5 step acceptance review attempt 1"
@@ -123,7 +94,7 @@ describe("step-records-read.sh", () => {
     // through orDash would print `-`, and another a word of its own: none of them is an end.
     for (const end of ["-", "unknown"]) {
       const { code, stdout } = read(
-        changed(/ 2 step implementer implementation attempt 2 /, (line) =>
+        changed(whole, / 2 step implementer implementation attempt 2 /, (line) =>
           line.replace(/ \S+ passed$/, ` ${end} passed`)
         )
       );
@@ -137,7 +108,7 @@ describe("step-records-read.sh", () => {
 
   test("a retro with no agent fails, exit 1, naming it", () => {
     const { code, stdout } = read(
-      changed(/ retro implementer /, (line) =>
+      changed(whole, / retro implementer /, (line) =>
         line.replace("legion-infra-infra-42-implementer", "-")
       )
     );
@@ -147,7 +118,7 @@ describe("step-records-read.sh", () => {
 
   test("a step with no agent fails, exit 1, naming it", () => {
     const { code, stdout } = read(
-      changed(/ 3 step tester testing attempt 2 /, (line) =>
+      changed(whole, / 3 step tester testing attempt 2 /, (line) =>
         line.replace("legion-infra-infra-42-tester", "-")
       )
     );
@@ -159,7 +130,7 @@ describe("step-records-read.sh", () => {
 
   test("a merge with no agent passes, with a line that says no merger ran it", () => {
     const { code, stdout } = read(
-      changed(/ merge merger /, (line) => line.replace("legion-infra-infra-42-merger", "-"))
+      changed(whole, / merge merger /, (line) => line.replace("legion-infra-infra-42-merger", "-"))
     );
     expect(stdout).toContain(
       "the merge has no agent: no merger ran it: default 0 merge merger - attempt 1 - -"
@@ -171,7 +142,7 @@ describe("step-records-read.sh", () => {
 
   test("a merge with an agent is checked as every record is: one never ended fails, exit 1", () => {
     const { code, stdout } = read(
-      changed(/ merge merger /, (line) => line.replace(/ \S+ passed$/, " running running"))
+      changed(whole, / merge merger /, (line) => line.replace(/ \S+ passed$/, " running running"))
     );
     expect(stdout).toContain("FAIL: the record never ended: default 0 merge merger");
     expect(stdout).not.toContain("the merge has no agent");
@@ -180,7 +151,7 @@ describe("step-records-read.sh", () => {
 
   test("a merge with no agent that never ended fails, exit 1: no agent waives no end", () => {
     const { code, stdout } = read(
-      changed(/ merge merger /, (line) =>
+      changed(whole, / merge merger /, (line) =>
         line
           .replace("legion-infra-infra-42-merger", "-")
           .replace(/ \S+ passed$/, " running running")
@@ -195,7 +166,7 @@ describe("step-records-read.sh", () => {
 
   test("a step of kind step with no model fails, exit 1, naming it", () => {
     const { code, stdout } = read(
-      changed(/ 1 step planner /, (line) => line.replace("anthropic/claude-opus-5", "-"))
+      changed(whole, / 1 step planner /, (line) => line.replace("anthropic/claude-opus-5", "-"))
     );
     expect(stdout).toContain("FAIL: the step names no model: default 1 step planner planning");
     expect(code).toBe(1);
@@ -203,7 +174,7 @@ describe("step-records-read.sh", () => {
 
   test("a retro with no model passes, exit 0: only a record of kind step must name one", () => {
     const { code, stdout } = read(
-      changed(/ retro implementer /, (line) => line.replace("anthropic/claude-opus-5", "-"))
+      changed(whole, / retro implementer /, (line) => line.replace("anthropic/claude-opus-5", "-"))
     );
     expect(stdout).toContain(
       "default 0 retro implementer - attempt 1 legion-infra-infra-42-implementer - "
@@ -223,6 +194,14 @@ describe("step-records-read.sh", () => {
       `UNKNOWN: dispatch steps --issue ${key} exited 1, so nothing was read`
     );
     expect(stdout).toContain("is unreachable: ECONNREFUSED");
+    expect(code).toBe(2);
+  });
+
+  test("a failed read's message keeps what it said on stderr and on stdout on lines of their own", () => {
+    const warning = "dispatch: the bearer token expires in 2 days\n";
+    const { code, stdout } = read(`${key}: 7 steps in 1 tasks\n`, [key], 1, undefined, warning);
+    expect(stdout).toContain(`exited 1, so nothing was read: ${warning}${key}: 7 steps in 1 tasks`);
+    expect(stdout).not.toContain(`days${key}`);
     expect(code).toBe(2);
   });
 

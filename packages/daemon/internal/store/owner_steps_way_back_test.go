@@ -16,16 +16,15 @@ import (
 )
 
 // ownerStepsMigration is the migration whose header carries the way back of the release whose
-// owner's plan picks the steps. docs/kubernetes.md carries the same block under "Rolling back the
-// release whose owner's plan picks the steps", and internal/textcheck's
+// owner's plan picks the steps, ownerStepsVersion its version and ownerStepsRelease the release a
+// failure to read its block names. docs/kubernetes.md carries the same block under "Rolling back
+// the release whose owner's plan picks the steps", and internal/textcheck's
 // TestTheOwnerStepsWayBackIsOneTextInTheHeaderAndTheGuide holds the two to one text. This file
-// reads the header alone, for the reason planRatingsMigration's test does.
-const ownerStepsMigration = "20261117034837_issue_plans.up.sql"
-
-// The heredoc an operator runs the way back in, and its terminator, as the header writes them.
+// reads the header alone (wayBackOf), as the plan ratings' test does.
 const (
-	ownerStepsHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
-	ownerStepsTerminator = "SQL"
+	ownerStepsMigration = "20261117034837_issue_plans.up.sql"
+	ownerStepsVersion   = 20261117034837
+	ownerStepsRelease   = "the release whose owner's plan picks the steps"
 )
 
 // ownerStepsProjectPredicate is how each queue delete of the way back names the project whose daemon
@@ -33,31 +32,30 @@ const (
 // project key holds none.
 const ownerStepsProjectPredicate = " and split_part(issue, '-', 1) = '<PROJECT>'"
 
-// ownerStepsWayBack is the transaction the header's heredoc sends (indentedWayBack): the lines
-// between the heredoc's opener and its terminator, which name the project as <PROJECT>. A block of
+// ownerStepsWayBack is the transaction the header's last paragraph gives (wayBackOf), which names
+// the project as <PROJECT>: one transaction, opened by begin and closed by commit. A block of
 // another shape stops the test by name.
 func ownerStepsWayBack(t *testing.T) string {
 	t.Helper()
-	lines := strings.Split(indentedWayBack(t, ownerStepsMigration), "\n")
-	if len(lines) < 2 || lines[0] != ownerStepsHeredoc || lines[len(lines)-1] != ownerStepsTerminator {
-		t.Fatalf("the way back of %s is %q, want a heredoc opened by %q and closed by %q", ownerStepsMigration, lines, ownerStepsHeredoc,
-			ownerStepsTerminator)
+	block := wayBackOf(t, ownerStepsVersion, ownerStepsRelease)
+	if lines := strings.Split(block, "\n"); len(lines) < 2 || lines[0] != "begin;" || lines[len(lines)-1] != "commit;" {
+		t.Fatalf("the way back of %s is %q, want one transaction opened by begin and closed by commit", ownerStepsMigration, lines)
 	}
-	return strings.Join(lines[1:len(lines)-1], "\n")
+	return block
 }
 
 // noticeKindsBeforeOwnerSteps is the list of the notice kinds an architect is told in the release
-// this rollback goes back to (validNoticeKinds at commit 407c7a4162): every kind of this release's
-// list but the three it adds. superviseOpsBeforeOwnerSteps is that release's list of supervise ops,
-// which has no step_stop. Both are copies because that release's code is not in the tree. Its list
-// of the kinds for the controller alone is this release's (controllerOnlyNoticeKind), unchanged.
+// this rollback goes back to (its validNoticeKinds): every kind of this release's list but the
+// three it adds. superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
+// no step_stop. Both are copies because that release's code is not in the tree. Its list of the
+// kinds for the controller alone is this release's (controllerOnlyNoticeKind), unchanged.
 var (
 	noticeKindsBeforeOwnerSteps = []record.NoticeKind{
 		"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 		"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 		"design-approved", "design-changes-requested", "carried-gate-opened",
 		"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
-		"catch-up", "checks-red", "review-stuck", "status-reasserted",
+		"catch-up", "checks-red", "review-stuck", "status-reasserted", record.VolumeNearFullNotice,
 		"session-lost", "session-store-fault",
 	}
 	controllerKindsBeforeOwnerSteps = []record.NoticeKind{

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -88,7 +89,7 @@ const (
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
 // phase ended, given the words a hook fired on a move back, told that its pull request left the
 // merge queue, or asked to get ready for the replacement of its pod must hear it while that is
-// news, not after whatever its tree's architect is owed.
+// news, not after whatever the architect that owns its issue is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -329,7 +330,7 @@ type Notice struct {
 	Resends int `json:"resends,omitempty"`
 	// PacedAt is the moment the daemon's wake pacing reserved for a catch-up it holds to its turn,
 	// and the zero value on every other notice: the catch-up the outbox writes in place of a
-	// launch when a start row finds the tree's root architect already running (the outbox's start,
+	// launch when a start row finds an architect already running (the outbox's start,
 	// workflow.Config.Reserve). Reading that catch-up is a wake of the architect, and what the
 	// organization's per-minute cap counts is the context it reads, so the row waits its turn like
 	// a launch does.
@@ -396,15 +397,16 @@ type Notice struct {
 	// (workflow.BackgroundStalledWorker, SilentIssue.BackgroundSince), as admission derives the
 	// list (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
 	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
-	// carries none. The issue's architect is told of each of these by a `worker-silent` or
-	// `worker-background-stalled` notice of its own, judged by the same rules, with the two
+	// carries none. The architect that owns the issue is told of each of these by a `worker-silent`
+	// or `worker-background-stalled` notice of its own, judged by the same rules, with the two
 	// differences admit.Admission.silentWorkers sets out: a handler also refuses a fact whose run
 	// is not the issue's current generation, a term the tick does not weigh, since it reads the
 	// worker's claim by its token alone and that claim carries no serving run; and the sweep that
 	// writes those notices runs once a minute, so a tick can name a worker up to a minute before
-	// its architect is told. The controller is the second reader, because that architect may be
-	// failed or gone, so its notice reaches nobody, and the controller holds `fresh_session` and
-	// reads the whole project.
+	// its architect is told. The controller is the second reader, because the notice can reach
+	// nobody: a child's architect that does not hold its role is passed over for the one above
+	// it, but a notice whose walk ends at a tree root whose architect claim failed, retired or is
+	// gone ends undelivered. The controller holds `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
@@ -423,6 +425,119 @@ type Notice struct {
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
+	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
+	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
+	Volume *VolumeNearFull `json:"volume,omitempty"`
+}
+
+// VolumeNearFull is one sweep of an issue pod's volume as the trimmer in its launcher process
+// reported it (shimwire.LauncherVolumeReport), plus the pod it was of, which the report does not
+// carry: the launcher is authenticated for one pod and the session names it. It is what a
+// volume-near-full notice tells the issue's architect, and the one thing in Legion that sees the
+// volume the roles of an issue share fill under them (INFRA-2009).
+//
+// It holds everything the report holds. Trimmer is the identifier the trimmer minted for itself
+// when the launcher process started, which is what counts a restarted roles container apart from
+// the first episode, Episode the trimmer's own episode number and RaisedBy what raised it
+// (shimwire.VolumeEpisodeFirst, VolumeEpisodeRecovery, VolumeEpisodeRise). UsedBytes and
+// FreeBytes are the volume as the sweep's last reading saw it and FreedBytes what the sweep
+// freed, read from the volume and never counted from the bytes unlinked: the sweep's first
+// reading's used bytes less its last's, negative where the volume's used bytes grew while the
+// sweep ran. StopReason is why the sweep stopped, in the trimmer's own words, and RefusedReads
+// the /proc reads the kernel refused that no report had carried yet, of this sweep and of earlier
+// ones that sent no report: one per process the trimmer could not read, or one for /proc itself
+// when /proc could not be listed.
+//
+// Sizes are the size walk's targets with their two age splits (VolumeSize), SizesAt when they
+// were measured — a report made between walks carries the last walk's numbers with that walk's
+// time — SizesPartial a walk its budget or the container's stop cut before it reached every
+// target, which is the one way a walk ends early, and SizesMissing every target the walk did not
+// measure at all, and the volume root or an immediate child of it where the walk did not list
+// one in full, each with its reason where a read was refused (VolumeMissing): a directory it
+// could not open or list, a file whose lstat was refused, and, of a walk that was cut, every
+// target it had not measured when it was cut, as far as the report's cap and counted past it
+// (SizesMissingOmitted) — where the cut came while it listed them, every one it had listed, the
+// child of the volume root whose names it was reading, whole, and every child it had not yet
+// listed, or the volume root alone where the cut came inside the root's own listing
+// (shimwire.LauncherVolumeReport). A directory the walk could read only in part is a
+// size that names the first read under it the walk did not make, one the kernel refused or a
+// directory deeper than the walk descends (VolumeSize). Faults are the panics the trimmer
+// recovered from, each with its stack, and SwitchedOff the report no sweep produces: the trimmer
+// has stopped itself after three faults in a row, and the daemon sends that one whatever its
+// bounds stand at, since the protection this notice exists for has stopped on exactly the pod
+// that has been reporting.
+//
+// The four Omitted counts are how many entries the launcher's own bound left out of each list,
+// which it cuts because a path two levels under /legion is a name a role of the pod chose and a
+// pod may hold thousands of them (internal/launcher's bound, and its walk's own for the sizes,
+// which keeps the largest): a reader of a notice is never shown a cut list as the whole of what
+// the trimmer measured.
+//
+// It is a shape of this package rather than the wire's because it is a durable payload: an
+// outbox row's JSON is read back by a daemon of a later release (the re-hold's decode, Notice's
+// own), so the shape a row carries must be one this package owns and can keep.
+type VolumeNearFull struct {
+	PodUID              string          `json:"podUid"`
+	Trimmer             string          `json:"trimmer"`
+	Episode             int             `json:"episode"`
+	RaisedBy            string          `json:"raisedBy"`
+	UsedBytes           int64           `json:"usedBytes"`
+	FreeBytes           int64           `json:"freeBytes"`
+	FreedBytes          int64           `json:"freedBytes"`
+	StopReason          string          `json:"stopReason"`
+	RefusedReads        []string        `json:"refusedReads,omitempty"`
+	RefusedReadsOmitted int             `json:"refusedReadsOmitted,omitempty"`
+	Sizes               []VolumeSize    `json:"sizes"`
+	SizesOmitted        int             `json:"sizesOmitted,omitempty"`
+	SizesAt             time.Time       `json:"sizesAt"`
+	SizesPartial        bool            `json:"sizesPartial,omitempty"`
+	SizesMissing        []VolumeMissing `json:"sizesMissing,omitempty"`
+	SizesMissingOmitted int             `json:"sizesMissingOmitted,omitempty"`
+	Faults              []string        `json:"faults,omitempty"`
+	FaultsOmitted       int             `json:"faultsOmitted,omitempty"`
+	SwitchedOff         bool            `json:"switchedOff,omitempty"`
+}
+
+// VolumeSize is one target of the trimmer's size walk — a directory two levels under the pod's
+// volume root, a regular file beside such directories in an immediate child of the root, or an
+// immediate child of the root that holds no directory of its own — as the walk measured it: the
+// bytes of the regular files under it, or of the file itself, and of those the bytes of the files
+// whose modification time is more than an hour old and more than a day old, which are what tell
+// a reader a working set from cold bytes. Refused names the first read under Path the walk did
+// not make — one the kernel refused, or a directory deeper below Path than the walk descends,
+// which it does not open — as Path/<name> for a name in it and Path/.../<name> (depth N) for a
+// name N levels below it, and Refusals is how many such reads there were in all: a size that
+// carries them is a lower bound of the directory's own, never the whole of it. A target the walk
+// read nothing of is no size but one of SizesMissing (VolumeMissing, shimwire.LauncherVolumeSize).
+type VolumeSize struct {
+	Path          string `json:"path"`
+	Bytes         int64  `json:"bytes"`
+	BytesOverHour int64  `json:"bytesOverHour"`
+	BytesOverDay  int64  `json:"bytesOverDay"`
+	Refused       string `json:"refused,omitempty"`
+	Refusals      int    `json:"refusals,omitempty"`
+}
+
+// VolumeMissing is one target the trimmer's size walk measured none of, or the volume root or an
+// immediate child of it that the walk did not list in full, and why where a read was refused: the
+// read and the kernel's answer, as `openat: permission denied`, for a directory the walk could
+// not open or list or a file whose lstat was refused, and nothing for one the cut of a walk left
+// unmeasured, which VolumeNearFull.SizesPartial says (shimwire.LauncherVolumeMissing).
+type VolumeMissing struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// MarshalJSON keeps `sizes` an array on the wire, empty rather than `null`, exactly as
+// UpdateStalled.MarshalJSON keeps `waiting` one and for the same reason: the plugin's strict
+// reader refuses a null. The `wire` alias is what keeps the method from re-entering itself.
+func (v VolumeNearFull) MarshalJSON() ([]byte, error) {
+	type wire VolumeNearFull
+	out := wire(v)
+	if out.Sizes == nil {
+		out.Sizes = []VolumeSize{}
+	}
+	return json.Marshal(out)
 }
 
 // NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
@@ -564,20 +679,26 @@ type SilentIssue struct {
 	BackgroundSince time.Time  `json:"backgroundSince,omitzero"`
 }
 
-// CatchUp is what a tree's root architect is told of its tree when its claim is ready at a launch
-// (a catch-up notice), which is the architect's first instruction: admission launches it with no
-// task, or only with the decisions kept for it. It is the tree as the daemon records it then: the
-// root's generation, the launch of the architect's claim it was written for, whether a hand-over
-// created the root at this generation with its child's phase and pull request (HandedOver) and
-// whether its old root's gate came with them (Carried), the design gate step by step (Gates),
-// and every issue of the tree. A handed-over root's workers already run their phases, so its
-// architect decomposes nothing anew; one that carried no gate registers its own spec. Decided names
-// what a person decided on the tree while nobody in it could hear it and the start did not name (a
-// decision made while the architect's claim had ended, before this relaunch), in the words of
-// workflow.Engine.ParkedDecisionTask; empty when there is none. Kept is what Decided named, which
-// a published catch-up forgets (Store.ForgetKeptDecisions): a catch-up a newer one supersedes
-// hands it over to a fresh catch-up instead (workflow.HandOverKept), and one that finishes
-// undelivered any other way leaves it all for the architect's next ready to name again.
+// CatchUp is what an architect is told of the issues it owns when its claim is ready at a launch
+// (a catch-up notice). It is a child's own architect's first instruction, since a child's first
+// phase start launches that architect with no task; a tree's root architect is launched with the
+// task its record derives (workflow.ArchitectStartTask), or with none where it derives none, and
+// is told its tree here beside it. It is those issues as the daemon records them then: the
+// generation of the architect's own issue, the launch of the architect's claim it was written
+// for, whether a hand-over created the root at this generation with its child's phase
+// and pull request (HandedOver) and whether its old root's gate came with them (Carried), the
+// design gate step by step (Gates), and every issue the architect owns — a root's whole tree, a
+// child's own issue and every issue under it. A child registers no gate and no hand-over creates
+// one, so a child's catch-up states no step and is neither handed over nor carried. A handed-over
+// root's workers already run their phases, so its architect decomposes nothing anew; one that
+// carried no gate registers its own spec. Decided names what a person decided on the tree while
+// nobody in it could hear it and the start did not name (a decision made while the architect's
+// claim had ended, before this relaunch), in the words of workflow.Engine.ParkedDecisionTask;
+// empty when there is none, and on every child's catch-up, since what is kept for a tree is its
+// root architect's to hear. Kept is what Decided named, which a published catch-up forgets
+// (Store.ForgetKeptDecisions): a catch-up a newer one supersedes hands it over to a fresh catch-up
+// instead (workflow.HandOverKept), and one that finishes undelivered any other way leaves it all
+// for the architect's next ready to name again.
 type CatchUp struct {
 	Generation uint64         `json:"generation"`
 	Launch     uint64         `json:"launch"`
@@ -809,8 +930,9 @@ func NoticePerClaim(kind NoticeKind) bool {
 // in the workflow, held, until a later version of its plan starts the task again (workflow's
 // stopTask); "tree_close" is the tree's
 // close — the request that ends the claim, the tree's root claim included; "issue_close" is a
-// child issue's close as done, which ends the claim as a tree close does and drops its session,
-// since the issue is finished and its next run, should a person set it todo again, starts fresh.
+// child issue's close as done, which ends the claim as a tree close does and keeps its session, so
+// the issue's next run, should a person set it todo again, resumes each claim's session rather
+// than starting fresh (supervise's RequestIssueClose).
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
@@ -830,8 +952,11 @@ type SuperviseRequest struct {
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
-	// finishes without acting. It is empty for the architect, which serves every phase, and for a
-	// suspend or a tree's close, which must still act after the issue moves on.
+	// finishes without acting. It is empty for a root's architect, which serves every phase, for a
+	// child's own architect's plain start (workflow's childArchitectStart), and for a suspend or a
+	// tree's close, which must still act after the issue moves on. The start a re-admission writes
+	// to bring back a mid-phase child's own architect names the phase the child stands in (admit's
+	// startMidPhaseMembers), and finishes without acting once the child has left it.
 	Phase phase.Phase `json:"phase,omitempty"`
 	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
@@ -851,8 +976,10 @@ type SuperviseRequest struct {
 	// retry, which marks it with ResendEntry below. It is zero for every other
 	// operation, and for every start that hands no entry's work at all. Those starts, in full, so
 	// that no other comment need list them: the promotion's architect start of a root the
-	// derivation serves no task (admit's promotion), the roles admission brings back beside a
-	// re-admitted member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
+	// derivation serves no task (admit's promotion), a child's own architect's plain start
+	// (workflow's gateOpened, which a child's first phase start runs, and reviveArchitect, which
+	// each phase start of a child runs), the roles admission brings back beside a re-admitted
+	// member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
 	// (workflow's booted), the boot's one-time start of a merger the `awaiting_merge` cutover left
 	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
@@ -871,10 +998,24 @@ type SuperviseRequest struct {
 	// (supervise.Claim.DeliveredRows), so a retry of the row itself gives that task no second
 	// time.
 	ResendEntry bool `json:"resendEntry,omitempty"`
-	// ResumeTask marks Task as the phase's resume task (workflow.ResumePhaseTask), the one a
+	// ResumeTask marks Task as the phase's resume task (workflow's Engine.ResumeTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
 	ResumeTask bool `json:"resumeTask,omitempty"`
+	// RoundNamed is the typed fact that Task ends with the daemon's two sentences of the reviewer's
+	// review round (reviewround.Sentences). The queue sets it on each start of the reviewer that
+	// carries a task, once it has named that task (workflow's queuedRow, namingTheReviewRound), and
+	// three starts set it before the queue, since what they send is the task enter stored with the
+	// sentences already in it (workflow's startMarks.stored), so the queue adds none. The outbox's
+	// start carries it into the claim's delivery (supervise.RequestDeliver.RoundNamed), and the one
+	// place each prompt of a delivery is composed reads it there (supervise's Delivery.message): a
+	// reviewer's task with no such fact, which only a row the release before this one queued can
+	// be, is given the daemon's sentences naming no commit and no entry at its end, so no text a
+	// task of the release before ends with is taken for the daemon's. A row the release before
+	// wrote decodes with it false. The release before decodes strictly (DisallowUnknownFields), so
+	// the way back of 20261116234034_phase_reviewed_head deletes the key from each row before that
+	// release boots.
+	RoundNamed bool `json:"roundNamed,omitempty"`
 	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
 	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
@@ -1031,13 +1172,22 @@ type WorkspaceRemove struct {
 func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemove }
 
 // RoleMessage is one message the daemon sends a role holder, published to that role's topic: Role
-// is the claim token, which the
-// runner addresses as a role topic, and Body is the whole of what the holder is told. It is how
-// the daemon reaches a worker with something to read rather than a task to do - a settled head's
-// check results, which move nothing (workflow's tellChecks, dispatch://INFRA-714/spec R1). A role
-// with no live holder is told nothing: the row finishes, since the message is of a moment that
-// has passed by the time anyone claims the role, and every recipient can read the pull request's
-// checks on GitHub for itself.
+// is the claim token, which the runner addresses as a role topic, and Body is the whole of what the
+// holder is told. It is how the daemon reaches a worker with something to read rather than a task
+// to do - a settled head's check results, which move nothing (workflow's tellChecks,
+// dispatch://INFRA-714/spec R1). A role with no live holder is told nothing: the row finishes,
+// since the message is of a moment that has passed by the time anyone claims the role, and every
+// recipient can read the pull request's checks on GitHub for itself.
+//
+// A role whose claim is released is told nothing either, and is not woken for the message: the
+// row finishes without a publish. The message's three senders in the workflow - tellChecks (a CI
+// settlement), tellGateMoved (a design gate's move) and tellStuckMergeState (an approved round
+// stuck on its merge state) - only inform; before a release stopped its session cleanly, such a
+// message to a released role was dropped all the same once that session expired; and a wake for
+// each would start a pod for every CI settlement and every gate move, once per released role.
+// Published, the message would meet a released role as one nobody holds: the listener answers
+// holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
+// beside either, so the pod would come back for a message the row had already dropped.
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
@@ -1131,16 +1281,16 @@ type StepRecord struct {
 	// it is the retro's rating, which Dispatch takes on the record's rating route
 	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
 	// members are members of the payload itself, written together and left out together when it is
-	// nil; a stored row naming one of them alone reads as a rating whose other member is zero.
+	// nil (validateOutboxPayload holds a stored row to that).
 	*PlanRating
 }
 
-// PlanRating is a retro's rating of the plan its issue ran: Rating, from 1 (the plan cost the
-// work) to 5 (the plan fit the work), and Reason, why. The two are one value, so a step record
-// carries a rating with its reason or no rating. It mirrors dispatch.PlanRating, which the
-// publication converts it to (publishStepRecord), because the dispatch package imports no record
-// of the daemon's; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to
-// the same fields.
+// PlanRating is a retro's rating of the plan its issue ran: Rating, on the scale
+// github.com/sjawhar/envoy/steprecord holds (RatingLeast, the plan cost the work, to RatingMost,
+// the plan fit the work), and Reason, why. The two are one value, so a step record carries a
+// rating with its reason or no rating. It mirrors dispatch.PlanRating, which the publication
+// converts it to (publishStepRecord), because the dispatch package imports no record of the daemon's;
+// internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
@@ -1286,8 +1436,8 @@ func (p PhaseEnded) Message(issue string) string {
 // `owner/name#n` where the issue has one, and Prompt the hook's own words.
 //
 // It rides the role-message lane beside PhaseEnded because a role hears a hook prompt while it is
-// news, as it hears that its phase ended: a prompt held behind whatever its tree's architect is
-// owed would reach the role rounds after the round the firing wrote it for.
+// news, as it hears that its phase ended: a prompt held behind whatever the architect that owns
+// its issue is owed would reach the role rounds after the round the firing wrote it for.
 //
 // The daemon writes the facts and never substitutes anything into the hook's own words: Message
 // states the move, the counts and the pull request in sentences of the daemon's own, and then the
@@ -1295,9 +1445,13 @@ func (p PhaseEnded) Message(issue string) string {
 // that word. There is nothing for a hook to interpolate, because every fact it could ask for
 // stands above its words already.
 //
-// A role with no session holds no topic, and the row ends there undelivered with one log line, as
-// a phase-ended message nobody holds does: the words were written for the round the move back
-// opened, and a role that reads them later reads them of a round that is over.
+// The prompt is published with keep, as a phase-ended message is: for a role no live session
+// holds, the listener answers it kept and holds it for an hour for the role's next live holder,
+// and the row ends with one log line, the listener its keeper. A listener before #4079 keeps
+// nothing for a claim whose holder is not live. The daemon's publishKeptToRole says what each
+// answer does to the row, and why a later round's session can be handed the prompt and what
+// bounds that; the move back and the counts Message states tell that reader which round the
+// words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`
@@ -1362,7 +1516,9 @@ func (p HookPrompt) Message(issue string) string {
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records finishes without a publish (the daemon's updateAsk).
+// longer records finishes without a publish (the daemon's updateAsk). The daemon marks a claim
+// asked only once its row's publish reached a session, so an ask that finished undelivered is
+// lost, not given, and the daemon's sweep writes the claim a new row of this kind at a later tick.
 type UpdateAsk struct {
 	Role  claim.Role `json:"role"`
 	Round string     `json:"round"`
@@ -1440,6 +1596,20 @@ func (p MergeQueueRemoval) Message(issue, repo string) string {
 		" Read the pull request and its removals on GitHub, as step 5 of your role says."+
 		" Then act on what you read.",
 		issue, repo, p.Number, p.Head, unread)
+}
+
+// retryBackoffDoublings is how many times a row's backoff doubles before it stops at
+// RetryBackoffMost.
+const retryBackoffDoublings = 6
+
+// RetryBackoffMost is the longest a row waits to run again after a failed run: the backoff's cap.
+const RetryBackoffMost = time.Second << retryBackoffDoublings
+
+// RetryBackoff is how long a row waits to run again after a failed run, given its attempts before
+// that run (the count RetryOutbox raises): one second, doubled at each attempt, at most
+// RetryBackoffMost. The daemon's outbox sets a retried row's next run by it.
+func RetryBackoff(attempts int) time.Duration {
+	return time.Second << min(max(attempts, 0), retryBackoffDoublings)
 }
 
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
@@ -1672,9 +1842,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("outbox status write has empty status")
 		}
 		// A reason is posted on the issue before the status lands: a done write's, and an ordinary
-		// move's that nothing else on Dispatch explains (workflow's moveReason, a head that
-		// conflicts with its base). A hand-over, a re-assertion or a person's handover repeats or
-		// carries out a move whose cause is already on the issue, so it posts none.
+		// move's that nothing else on Dispatch explains (workflow's moveReason: a head that
+		// conflicts with its base, and a worker's backward move). A hand-over, a re-assertion or a
+		// person's handover repeats or carries out a move whose cause is already on the issue, so it
+		// posts none.
 		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
 			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}
@@ -1730,6 +1901,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Update != nil {
 			return fmt.Errorf("a %s notice carries an update round; only the controller's update-stalled notice does", value.Kind)
 		}
+		if (value.Kind == VolumeNearFullNotice) != (value.Volume != nil) {
+			return fmt.Errorf("a %s notice carries a volume sweep only when it is one", value.Kind)
+		}
+		if volume := value.Volume; volume != nil && (volume.PodUID == "" || volume.Trimmer == "" || volume.Episode <= 0) {
+			return fmt.Errorf("a volume-near-full notice requires the pod it is of, the trimmer that swept it and the episode it was in")
+		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
 		}
@@ -1758,6 +1935,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Kind != TickNotice && len(value.Held) > 0 {
 			return fmt.Errorf("a %s notice carries held issues only when it is a tick", value.Kind)
+		}
+		if value.Volume != nil {
+			return fmt.Errorf("a %s controller notice carries a volume sweep; a filling issue pod's volume is its own architect's to read", value.Kind)
 		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
@@ -1923,6 +2103,14 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Task == "" || value.Kind == "" || value.Role == "" {
 			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
 		}
+		// The words and the place rule are Dispatch's own (steprecord, from contracts): one it
+		// refuses is a 400 STEP_INPUT that ends the row, and the run would have no record.
+		if !steprecord.PlaceHolds(value.Kind, value.Step) {
+			return fmt.Errorf("a step record's step %d is no place of a run of kind %q", value.Step, value.Kind)
+		}
+		if value.Result != nil && !slices.Contains([]string{steprecord.ResultPassed, steprecord.ResultFailed, steprecord.ResultStopped}, *value.Result) {
+			return fmt.Errorf("a step record's result %q is no result of a run", *value.Result)
+		}
 		if value.PlanRating != nil && (value.PlanRating.Rating == 0 || value.PlanRating.Reason == "") {
 			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
 				value.PlanRating.Rating, value.PlanRating.Reason)
@@ -1998,9 +2186,17 @@ var validNoticeKinds = []NoticeKind{
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
-	"catch-up", "checks-red", "review-stuck", "status-reasserted",
+	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
 }
+
+// VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
+// that volume still above its low mark, or of the trimmer having switched itself off: the one
+// word anybody in Legion gets that the disk the roles of an issue share is filling under them
+// (INFRA-2009). It is the architect's and not the controller's because the work that filled the
+// volume is the issue's — a repository cache, a build tree, a test run's artefacts — and the
+// architect is who can stop or redirect it.
+const VolumeNearFullNotice NoticeKind = "volume-near-full"
 
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {

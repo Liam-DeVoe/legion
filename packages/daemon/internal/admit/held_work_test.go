@@ -10,7 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // heldBeneath is the open issue beneath the parent holdByPlan holds for its children.
@@ -96,12 +95,6 @@ func TestAStoppedTaskAndAHeldParentGetNoWorkFromAPromotion(t *testing.T) {
 	t.Run("a stopped task and a parent held for its children", func(t *testing.T) {
 		pool, admission, engine := seedFinishingTree(t)
 		countStart(t, pool, engine, heldTesting)
-		inTx(t, pool, func(tx pgx.Tx) {
-			stood := issue(t, pool, heldTesting)
-			if err := engine.(*workflow.Engine).EndRunningStep(context.Background(), tx, stood); err != nil {
-				t.Fatalf("end the stopped step of %s: %v", heldTesting, err)
-			}
-		})
 		holdByPlan(t, pool, heldTesting, phase.Testing, record.HoldTaskStopped, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
 		holdByPlan(t, pool, inRetro, phase.Retro, record.HoldForChildren, record.TaskPlace{Kind: record.PlaceRetro})
 		closeFinishingTree(t, pool, admission, engine)

@@ -470,9 +470,9 @@ func aReadmissionAdoptsForThePhaseOwnerAlone(r *adoptionRig) {
 		r.boot(adoptionMember, role)
 	}
 
-	member := readIssue(r.t, r.pool, adoptionMember)
+	want := resumeTaskOf(r.t, r.pool, r.engine, adoptionMember)
 	resume := r.heldTask(adoptionMember, claim.RoleImplementer)
-	if want := workflow.ResumePhaseTask(*member, workflow.WorkingCopy(*member, nil), ""); resume.Task != want {
+	if resume.Task != want {
 		r.t.Fatalf("the child's implementer holds %+v, want its phase's resume task %q", resume, want)
 	}
 	r.wantSent(adoptionMember, claim.RoleImplementer, resume.ID, "legion-implementer[bot]")
@@ -506,7 +506,7 @@ func aReadyOwnersResumeTaskIsAdoptedOnce(r *adoptionRig) {
 		r.t.Fatalf("the tester's death relaunched its session %d times, want once", resumed)
 	}
 	start := theOneStartRow(r.t, r.pool, issue.Key)
-	if start.role != claim.RoleTester || start.stands != phase.Testing || start.task != workflow.ResumePhaseTask(issue, workflow.WorkingCopy(issue, nil), "") {
+	if start.role != claim.RoleTester || start.stands != phase.Testing || start.task != resumeTaskOf(r.t, r.pool, r.engine, issue.Key) {
 		r.t.Fatalf("the ready wrote the start %+v, want the tester's testing resume task", start)
 	}
 	r.run()

@@ -14,22 +14,25 @@
 -- run is where the latest run of the place stands (record.StepRun). 'open': the latest start's
 -- run has no end yet, and the next end of the step running there is its end. 'ended': that run has
 -- its end, written in the transaction that set the mark, and a later end of it writes nothing:
--- two writes can each end the same run, as a tree's linger and the hand-over at its close both end
--- a member's step, and the second finds the mark, so Dispatch never takes the later end of a run as
--- its end. 'uncounted': the run the row counted is over, and a run the place holds now started
--- under an earlier release, which counts no start: its end is a record of its own at the next
--- count. Only the roll forward of a rollback writes it (20261117064152_step_starts_roll_forward).
--- The next start of the place sets 'open' whatever stood before. record is the identity of the
--- latest start's record — the fields each write of it carries, its id among them, as the start
--- wrote them (record.Store.RaiseStepStarts) — kept for the roll forward of a rollback, which
--- writes that record's end where an earlier release ended its run; null on a row only an end of an
--- uncounted run wrote, which is ended.
+-- the settle of a fact is the one writer of an end (workflow's settleRuns), and the mark holds it
+-- to one end of a run whichever later fact asks again, so Dispatch never takes a later end of a
+-- run as its end. 'uncounted': the run the row counted is over, and a run the place holds now
+-- started under an earlier release, which counts no start: its end is a record of its own at the
+-- next count. Only the roll forward of a rollback writes it
+-- (20261117064152_step_starts_roll_forward).
+-- The next start of the place sets 'open' whatever stood before, and so does the daemon's boot
+-- for the run an 'uncounted' row stands for (record.Store.OpenUncountedStep). record is the
+-- identity of the latest start's record — the fields each write of it carries, its id among them,
+-- as the start wrote them (record.Store.RaiseStepStarts) — kept for the roll forward of a
+-- rollback, which writes that record's end where an earlier release ended its run; null on a row
+-- only an end of an uncounted run wrote, which is ended.
 --
--- The count is keyed by task (slice 1 writes the one task, default, of today's fixed phases), and a
+-- The count is keyed by task (the daemon writes the one task, default, of today's fixed phases), and a
 -- re-admission does not clear it (record.Store.ClearGeneration keeps it): the generation is part of
 -- the id already, and the count only rises. A step running when this release deploys has no row:
--- its end writes one at the count 0, marked ended, with the agent its start would have named and
--- its moment where its role's phase entry records one (null where none does: accepting's).
+-- the daemon's boot writes one, open, at the count 0, with the agent its start would have named and
+-- its moment where its role's phase entry records one (null where none does: accepting's), and its
+-- end then reads that row as it reads a start's (workflow's OpenUncountedRuns).
 --
 -- An earlier release reads and writes none of this, so after a rollback it moves issues, and starts
 -- and ends their steps, with each row standing as this release left it. step_starts_rollback is
@@ -79,6 +82,11 @@ create table step_starts (
   primary key (issue, task, kind, place),
   check (case when kind = 'step' then place >= 1 else place = 0 end)
 );
+
+-- An agent's request asks whether the record names that agent the agent of a run that is not
+-- ended, on any issue (record.RunsAStep), and no row is ever deleted: this index holds the agent
+-- of each run not ended alone, so the read is not a scan of every row ever written.
+create index step_starts_running_agent on step_starts (agent) where run <> 'ended';
 
 create table step_starts_rollback (
   issue text primary key,

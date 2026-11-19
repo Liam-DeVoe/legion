@@ -27,14 +27,24 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 		phase.Retro:        {record.StepPlace{Task: "default", Kind: "retro", Place: 0}, "implementer", ""},
 		phase.Merging:      {record.StepPlace{Task: "default", Kind: "merge", Place: 0}, "merger", ""},
 	}
+	steps := 0
 	for _, p := range phase.Order {
 		place, role, typ, ok := stepOf(p)
 		w, stepPhase := want[p]
 		if ok != stepPhase {
 			t.Fatalf("stepOf(%s) ok = %v, want %v", p, ok, stepPhase)
 		}
-		if got := (step{place, role, typ}); ok && got != w {
+		if !ok {
+			continue
+		}
+		steps++
+		if got := (step{place, role, typ}); got != w {
 			t.Errorf("stepOf(%s) = %+v, want %+v", p, got, w)
+		}
+		// The settle names the phase of a run the store holds open by its place on the run's walk
+		// (phaseAt): a run with no plan rows walks today's line.
+		if back, found := phaseAt(Walk{Task: defaultTask, Line: phase.Order}, place); !found || back != p {
+			t.Errorf("phaseAt(%+v) = %s, %v, want %s, the phase whose step runs there", place, back, found, p)
 		}
 	}
 	for _, p := range []phase.Phase{phase.Admitted, phase.Held, phase.Done, phase.AwaitingPerson} {
@@ -42,8 +52,8 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 			t.Errorf("stepOf(%s) is a step; that phase runs none", p)
 		}
 	}
-	if len(want) != 7 {
-		t.Fatalf("the want table holds %d steps; phase.Order's seven run them", len(want))
+	if steps != len(want) {
+		t.Fatalf("phase.Order holds %d phases that run a step, and the want table %d: a phase of the table is no phase of the line", steps, len(want))
 	}
 }
 
@@ -75,14 +85,14 @@ func TestEndOfReadsTheTrigger(t *testing.T) {
 	}
 }
 
-// The end of a move is the end of the step the issue stands in: a review a request for changes
+// The end of a move is the end of the step the issue stood in: a review a request for changes
 // sends back from reviewing ends failed, returns the work to implementing's place and names the
 // reviewer's report. No held issue is a case here, since none reaches a move's end: no row of the
-// table leaves held, so transition returns before it ends a step, and the moves out of a hold
+// table leaves held, so transition returns before it names an end, and the moves out of a hold
 // clear it first (retryPhase, closeMerged).
 func TestTheEndOfAMoveReadsWhereTheIssueStands(t *testing.T) {
 	review := record.PhaseRow{Role: claim.RoleReviewer, HandoffRecord: "6f1d2c3b-review"}
-	end := endOfTransition(Walk{}, TriggerReviewRejected, record.Issue{Key: "LEGION-1", Phase: phase.Reviewing}, phase.Implementing, review)
+	end := endOfTransition(Walk{}, TriggerReviewRejected, phase.Reviewing, phase.Implementing, review)
 	if end.Result != ResultFailed || end.ReturnedTo == nil || *end.ReturnedTo != 2 || end.Report != review.HandoffRecord {
 		t.Errorf("the end of the review = %+v (returned to %v), want failed, returned to place 2, naming report %s",
 			end, end.ReturnedTo, review.HandoffRecord)

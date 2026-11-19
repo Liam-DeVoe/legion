@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -22,7 +24,7 @@ func TestTheDaemonReadsAStepsAgentFromItsClaimsMachine(t *testing.T) {
 	w := &workflowRuntime{log: quietLogger()}
 	tester := mustClaimToken(t, "LEGION-208", claim.RoleTester)
 	reviewer := mustClaimToken(t, "LEGION-208", claim.RoleReviewer)
-	if got := w.stepAgent(tester); got != (workflow.StepAgent{}) {
+	if got := w.stepAgent(ctx, nil, tester); got != (workflow.StepAgent{}) {
 		t.Fatalf("the agent read before attach = %+v, want nothing", got)
 	}
 	w.attach(&supervision{supervisor: sup, log: quietLogger()})
@@ -38,7 +40,7 @@ func TestTheDaemonReadsAStepsAgentFromItsClaimsMachine(t *testing.T) {
 		if got := machine.Claim().Generation; got != generation {
 			t.Fatalf("the %s's claim is at generation %d, want %d", role, got, generation)
 		}
-		return machine
+		return admitted(t, machine)
 	}
 	answered := func(machine *supervise.Machine, token claim.Token, model string, generation uint64) {
 		t.Helper()
@@ -47,7 +49,7 @@ func TestTheDaemonReadsAStepsAgentFromItsClaimsMachine(t *testing.T) {
 		}
 	}
 	testerMachine := supervised(tester, claim.RoleTester, "ses_tester", 3)
-	if got := w.stepAgent(tester); got != (workflow.StepAgent{Session: "ses_tester"}) {
+	if got := w.stepAgent(ctx, nil, tester); got != (workflow.StepAgent{Session: "ses_tester"}) {
 		t.Fatalf("the agent read before any answer = %+v, want its session and no model", got)
 	}
 	reviewerMachine := supervised(reviewer, claim.RoleReviewer, "ses_reviewer", 5)
@@ -60,13 +62,24 @@ func TestTheDaemonReadsAStepsAgentFromItsClaimsMachine(t *testing.T) {
 		tester:   {Session: "ses_tester", Model: "second/tester-model"},
 		reviewer: {Session: "ses_reviewer", Model: "second/reviewer-model"},
 	} {
-		if got := w.stepAgent(token); got != want {
+		if got := w.stepAgent(ctx, nil, token); got != want {
 			t.Errorf("the agent read of %s after both answered = %+v, want its own session and model %+v", token, got, want)
 		}
 	}
-	if got := w.stepAgent(mustClaimToken(t, "LEGION-208", claim.RoleImplementer)); got != (workflow.StepAgent{}) {
+	if got := w.stepAgent(ctx, nil, mustClaimToken(t, "LEGION-208", claim.RoleImplementer)); got != (workflow.StepAgent{}) {
 		t.Fatalf("the agent read of a claim this daemon does not supervise = %+v, want nothing", got)
 	}
+}
+
+// admitted is machine with every name of the session it records held to its claim and the
+// machine's answer kept (supervise.Machine.HoldsItsSession), as a registration leaves a claim, so
+// a read of its step's agent needs no transaction.
+func admitted(t *testing.T, machine *supervise.Machine) *supervise.Machine {
+	t.Helper()
+	if err := machine.HoldsItsSession(context.Background()); err != nil {
+		t.Fatalf("hold the session of %s: %v", machine.Claim().Token, err)
+	}
+	return machine
 }
 
 // An answer whose model no store can keep reaches the daemon as an Answered that names no model
@@ -84,6 +97,7 @@ func TestAnAnswerWithNoModelLeavesTheStepWithNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the planner's claim: %v", err)
 	}
+	admitted(t, machine)
 	answered := func(ev stream.Answered) {
 		t.Helper()
 		mapped, err := superviseEvent(ev)
@@ -95,11 +109,54 @@ func TestAnAnswerWithNoModelLeavesTheStepWithNone(t *testing.T) {
 		}
 	}
 	answered(stream.Answered{Claim: planner, Provider: "first", Model: "first-model", Generation: generation})
-	if got := w.stepAgent(planner); got != (workflow.StepAgent{Session: "ses_planner", Model: "first/first-model"}) {
+	if got := w.stepAgent(ctx, nil, planner); got != (workflow.StepAgent{Session: "ses_planner", Model: "first/first-model"}) {
 		t.Fatalf("the agent read after the first answer = %+v, want its session and first/first-model", got)
 	}
 	answered(stream.Answered{Claim: planner, Generation: generation})
-	if got := w.stepAgent(planner); got != (workflow.StepAgent{Session: "ses_planner"}) {
+	if got := w.stepAgent(ctx, nil, planner); got != (workflow.StepAgent{Session: "ses_planner"}) {
 		t.Fatalf("the agent read after an answer naming no model = %+v, want its session and no model: first/first-model did not answer last", got)
+	}
+}
+
+// The model and the session reach the daemon from the agent's own frames, and the record of a step
+// takes neither unless it is in the form Dispatch holds a step's agent text to
+// (steprecord.AgentTextHolds): printable ASCII with no space, at most 128 characters. One outside it
+// is left out where the daemon reads it, so the end names no model, or no session, and is still
+// written whole: it never shifts the columns of `dispatch steps`, forges a line of it, or has
+// Dispatch refuse the record. A model and a session inside the form are kept, which is the control.
+func TestAStepsAgentLeavesOutTextOutsideTheForm(t *testing.T) {
+	ctx := context.Background()
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	w := &workflowRuntime{log: quietLogger()}
+	w.attach(&supervision{supervisor: sup, log: quietLogger()})
+	const generation = 3
+	for i, tc := range []struct {
+		name, session, model string
+		want                 workflow.StepAgent
+	}{
+		// Each row's claim records a session of its own: a session another claim recorded first is
+		// held to that claim, and its step's record names none (TestAStepsAgentNamesNoSessionItsClaimDoesNotHold).
+		{"both inside the form", "ses_planner_1", "first/first-model", workflow.StepAgent{Session: "ses_planner_1", Model: "first/first-model"}},
+		{"a model with a newline", "ses_planner_2", "first/model\ndefault 9 step forged", workflow.StepAgent{Session: "ses_planner_2"}},
+		{"a model with spaces", "ses_planner_3", "first/model with spaces", workflow.StepAgent{Session: "ses_planner_3"}},
+		{"a model over the bound", "ses_planner_4", "first/" + strings.Repeat("m", 123), workflow.StepAgent{Session: "ses_planner_4"}},
+		{"a session with a space", "ses planner", "first/first-model", workflow.StepAgent{Model: "first/first-model"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := fmt.Sprintf("LEGION-%d", 300+i)
+			planner := mustClaimToken(t, issue, claim.RolePlanner)
+			machine, _, err := sup.Create(ctx, supervise.Claim{Token: planner, Project: "legion", Tree: issue, Issue: issue,
+				Role: claim.RolePlanner, State: supervise.StateWorking, Session: tc.session, Generation: generation}, "")
+			if err != nil {
+				t.Fatalf("create the planner's claim: %v", err)
+			}
+			admitted(t, machine)
+			if err := machine.Handle(ctx, supervise.StreamAnswered{Claim: planner, Model: tc.model, Generation: generation}); err != nil {
+				t.Fatalf("the answer of %s: %v", planner, err)
+			}
+			if got := w.stepAgent(ctx, nil, planner); got != tc.want {
+				t.Fatalf("the agent read of session %q and model %q = %+v, want %+v", tc.session, tc.model, got, tc.want)
+			}
+		})
 	}
 }

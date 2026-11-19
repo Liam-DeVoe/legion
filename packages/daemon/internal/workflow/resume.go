@@ -55,7 +55,7 @@ import (
 // work on, and the work of an entry this claim was never given is work it does not have, so the
 // resume would spend the claim's first turn after the boot on the wrong prompt and the completion
 // it answered with would be refused as behind that entry. A claim level with that entry is sent
-// the task that takes its phase on (ResumePhaseTask), which the outbox does not deliver to a claim
+// the task that takes its phase on (ResumeTask), which the outbox does not deliver to a claim
 // still holding its phase's task. Either start resumes the claim by rule and takes the slot mark
 // the slot rule gives its phase (StartOrOwe), as every start of a phase worker does, so it waits
 // for the issue's admission slot in a phase up to the review and for none past it. A role a start
@@ -147,10 +147,15 @@ type phaseOwners struct {
 // A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
 // merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
 // there would hand it the same phase again at every boot, for days.
-// The owner of admitted and of accepting is the tree's architect, which admission starts with the
-// tree, so no issue in either is given one. An owner is answered only while its claim at the
-// issue's generation stands suspended, whatever the source: which sources a start may act on is
-// each caller's to judge.
+// The owner of admitted and of accepting is an architect and no phase worker, so no issue in
+// either is given one. On a root it is the root's own architect, which admission starts with the
+// tree. On a child it is the architect that owns it: its own while that claim holds its role,
+// else the one above. At admitted that is the one above, since the child's own has not started
+// yet or a leave suspended or retired it, unless a person set the child back to todo while it ran
+// or was held: that re-entry starts and stops nothing, so a child's own architect that held its
+// role still holds it (ReenterChild). An owner is answered only while its claim at the issue's
+// generation stands suspended, whatever the source: which sources a start may act on is each
+// caller's to judge.
 func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
@@ -217,7 +222,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // built from the entry row names, and says whether the claim stands behind that entry. A claim
 // behind it (OwedEntry, which reads the owner's root for a tree close) is sent the work of that
 // entry at that entry (sendOwedEntry). A claim level with it is sent the phase's resume task
-// (ResumePhaseTask) at entry 0: that start hands the role the work it is already on rather than a
+// (ResumeTask) at entry 0: that start hands the role the work it is already on rather than a
 // new entry, so it moves no phases row either. The boot's resume by rule (booted) and the
 // cutover's repair of a merger the `awaiting_merge` cutover left released (oweCutoverMerger) both
 // build their start here, so the two are built alike. Neither hands it a claim the operator
@@ -238,7 +243,7 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
-	resume, err := e.resumeTask(ctx, tx, owner.issue, reviewedPart(owner.role, owner.issue.Phase, row))
+	resume, err := e.ResumeTask(ctx, tx, owner.issue)
 	if err != nil {
 		return false, err
 	}

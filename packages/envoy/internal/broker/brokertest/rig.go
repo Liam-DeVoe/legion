@@ -159,8 +159,8 @@ func WithPoolMaxConns(n int) Option {
 	return func(c *rigConfig) { c.maxConns = n }
 }
 
-// WithMinters gives the broker a minter for each kind minters names, as cmd/broker/main.go's
-// kindMinters does, so a test releases a kind secret through a minter aimed at its own stub
+// WithMinters gives the broker a minter for each type minters names, as cmd/broker/main.go's
+// typeMinters does, so a test releases a type secret through a minter aimed at its own stub
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
@@ -215,10 +215,11 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	servicesByAccount := map[string]string{WorkerAccount: "legion-daemon"}
 	enr := &enroll.Service{Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
-	// A session name belongs to one principal here as it does on the real broker: the binder is
-	// a store on the same pool the OAuth provider's own store uses (NewOAuthProvider, built
-	// below), so a name the token exchange binds and a name an enrollment binds are the one
-	// table's.
+	// A session name is held here as the real broker holds one with no account paired
+	// (oauthstore.Store.SetSessionPairs never called, BROKER_SESSION_ACCOUNT_PAIRS unset), so it
+	// belongs to one principal: the binder is a store on the same pool the OAuth provider's own
+	// store uses (NewOAuthProvider, built below), so a name the token exchange binds and a name an
+	// enrollment binds are the one table's.
 	enr.Sessions = oauthstore.New(st.Pool)
 
 	reqMachine := &requests.Machine{

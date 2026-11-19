@@ -23,14 +23,21 @@ func treeArchitectsRead(t *testing.T, pool *pgxpool.Pool, key string) (claim.Tok
 	records := record.NewStore()
 	var issue *record.Issue
 	var entry record.StepEntry
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		if issue, err = records.Issue(ctx, tx, key); err != nil || issue == nil {
-			return err
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the route's read of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if issue, err = records.Issue(ctx, tx, key); err != nil {
+		t.Fatalf("the route's read of %s: %v", key, err)
+	}
+	if issue != nil {
+		if entry, err = records.OpenStep(ctx, tx, key); err != nil {
+			t.Fatalf("the route's read of %s's open step: %v", key, err)
 		}
-		entry, err = records.OpenStep(ctx, tx, key)
-		return err
-	})
+	}
+
 	if issue == nil {
 		t.Fatalf("the route's read: %s is not recorded", key)
 	}
@@ -84,7 +91,7 @@ func todoChild(t *testing.T, pool *pgxpool.Pool, key string) record.Issue {
 
 // assertStopRefused fails unless result is exactly want, left unspent so the same stop applies
 // again when asked again (its processed mark gone), and key stands as before stood.
-func assertStopRefused(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, id string, result intake.Result, want *intake.Refusal, before standing) {
+func assertStopRefused(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, id string, result intake.Result, want *intake.Refusal, before recordAt) {
 	t.Helper()
 	if !reflect.DeepEqual(result.Refusal, want) {
 		t.Fatalf("the stop = %+v, want the refusal %+v", result.Refusal, want)

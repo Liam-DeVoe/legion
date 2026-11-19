@@ -62,7 +62,7 @@ step, for a confirmation or a new round, as the fingerprint decides (*The review
   ```
 
   A read GitHub refuses stops the command there, and is reported to the architect, never guessed.
-  With that read refused, the required set is unknown, so no required item can be judged: do not approve, and wait with a `WAITING` line naming the refused read. The architect has the read made with a credential that can make it, or asks a person, and the review goes on from its answer.
+  With that read refused, the required set is unknown, so no required item can be judged: do not approve, and wait with a `WAITING` line naming the refused read. The architect has the read made with a credential that can make it, or asks a person (a child's own architect asks through the architect above it), and the review goes on from the answer.
   The head's check-runs
   (`gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --paginate --jq '.check_runs[] | [.name, .status, .conclusion] | @tsv'`):
   every required name present, `completed` and `success` (GitHub counts `neutral` and `skipped`
@@ -140,8 +140,8 @@ step, for a confirmation or a new round, as the fingerprint decides (*The review
   reviewed — always named by SHA — carrying every inline comment in that single
   call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
   with `commit_id`, `event` (`REQUEST_CHANGES` or `APPROVE`), `body` (with the
-  Legion footer, which names the head the review read:
-  `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
+  Legion footer, which names the head the review read and the entry of your round:
+  `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>","entry":"<entry>"} -->`),
   and a `comments[]` array of `{path, line, side, body}`, one entry per
   finding — never one `pr review` call per finding (each submission fires a `pr-review` wake).
   That `head` is the full 40-character SHA of the head whose diff and checks you read, which is
@@ -155,6 +155,9 @@ step, for a confirmation or a new round, as the fingerprint decides (*The review
   A review whose footer names another head, or no head, decides no round:
   it is set aside, the round stays open and the
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
+  That `entry` is the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of your session (the daemon part of your role prompt gives the rule whole), written in quotes as a string of digits: by it the daemon tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from (the next item).
+  It is in quotes because a footer that is not valid JSON, such as one with an unquoted `<entry>` left in it, loses its session and its head too, and the daemon then sets the review aside, while a quoted value that is no number costs the entry alone.
+  A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.
   A `COMMENT` decides nothing. After a
   forward merge, compute the fingerprint (*The unchanged-diff check* in
   `skill://legion-worker/references/conflicts-and-rewrites.md`) at the head your last submitted
@@ -196,7 +199,11 @@ step, for a confirmation or a new round, as the fingerprint decides (*The review
   nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
   one review.
 - **A later round reads from the commit its task names.**
-  The task of a later round names `Last reviewed commit: <sha>`, the head your own last deciding review read (the daemon part of your role prompt says where it comes from).
+  The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round, the number its task named as `Review entry: <n>.` (the daemon part of your role prompt gives the whole rule and where the commit comes from).
+  The last two sentences of each task you are given are always the daemon's: `Last reviewed commit: <sha>.` or `Last reviewed commit: none.`, then `Review entry: <n>.` or `Review entry: none.`.
+  `Last reviewed commit: none.` means this task names no commit, so you read the whole change.
+  `Review entry: none.` means this task names no entry, so it does not change the entry of your round.
+  A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's.
   Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit.
   Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review.
   The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other, and *No deferrals* in `skill://legion-worker` holds for it.
@@ -219,10 +226,11 @@ wait, since it stands whatever CI says and the issue leaves reviewing with it. T
 on nothing either: it ends the round whatever CI says at the head it names, since the round reads
 no CI verdict, and a settlement the daemon reads later — at that head or any above it — moves the
 issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub gave it,
-in one message to the tree's architect, the worker of the issue's current phase and the
-implementer, and judges none of them: a red is the implementer's to fix or re-run, the
-architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read before
-it approves is the only read that decides anything. A review that names an older head reviews
+in one message to the architect that owns the issue (the one your `Legion addressing` line
+names), the worker of the issue's current phase and the implementer, and judges none of them: a
+red is the implementer's to fix or re-run, the architect's to decide on, and GitHub's to hold the
+merge for. So the reviewer's own read before it approves is the only read that decides anything.
+A review that names an older head reviews
 code the pull request no longer has. The daemon moves the issue once all three are in — the
 decision GitHub reports, your completion, in either order, and GitHub's own answer that the
 approved head is one the issue may advance on — so a review posted without a completion leaves
@@ -231,20 +239,21 @@ it there until that answer comes clean.
 
 ## The architect's acceptance
 
-- Where the issue's task holds the step `acceptance:owner`, as the default steps do, the issue
-  sits in `accepting` (Dispatch status `needs_review`) between the step before it — in the default
-  steps, the reviewer's approval — and retro, and no worker is started there: the tree's architect
-  reads the evidence (`dispatch results --issue <issue>` at the head that step passed, the
-  tester's handoff where the task has a tester step, and the reviewer's approval of the head by
-  SHA where it has a reviewer step; the daemon refuses the sign-off while an issue beneath it is
-  still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`, so a parent is accepted after its children,
-  on the head of its last round, `skill://legion-architect`, section 4) and accepts with the
-  `legion` tool's `sign_off`, which moves the issue to retro, or sends it back to `implementing`,
-  or to `testing` where the task has a tester step, with `request_backward_move` and a reason,
-  which reaches the started worker's task as its `Reason:` line and counts a review round. The
-  acceptance comment names each check with its result. An issue with no Verification document, or
-  none holding a `before_merge` check, is a gap the steps before it named and none refused — the
-  tester and the reviewer, where the task has those steps — so that comment is its only
+- Where the issue's task holds the step `acceptance:owner`, as the default steps do, the issue sits
+  in `accepting` (Dispatch status `needs_review`) between the step before it — in the default steps,
+  the reviewer's approval — and retro, and no worker is started there: the architect that owns the
+  issue, the one each phase worker's `Legion addressing` line names, reads the evidence
+  (`dispatch results --issue <issue>` at the head that step passed, the tester's handoff where the
+  task has a tester step, and the reviewer's approval of the head by SHA where it has a reviewer
+  step; the daemon refuses the sign-off while an issue beneath it is still in the workflow,
+  `SIGNOFF_CHILD_IN_WORKFLOW`, so a parent is accepted after its children, on the head of its last
+  round, `skill://legion-architect`, section 4) and accepts with the `legion` tool's `sign_off`,
+  which moves the issue to retro, or sends it back to `implementing`, or to `testing` where the task
+  has a tester step, with `request_backward_move` and a reason, which reaches the started worker's
+  task as its `Reason:` line and counts a review round. The acceptance comment names each check with
+  its result. An issue with no Verification document, or none holding a `before_merge` check, is a
+  gap the steps before it named and none refused — the tester and the reviewer, where the task has
+  those steps — so that comment is its only
   gate: it names the gap and decides how each delivered item is proven at this head, never
   whether one stays unmet; checks it writes close the root's `criteria` step where the
   deployment gates it, since that step records the root's Verification document, and a child's
@@ -310,10 +319,17 @@ it there until that answer comes clean.
     passes `--merge` in place of `--squash` where the repository allows merge commits
     (`allow_merge_commit`) and the base's rules require no linear history
     (`required_linear_history`), since a squash there leaves each open pull request built on the
-    merged branch a conflict of history alone; otherwise it squashes and tells the architect which
-    open pull requests of the tree build on the merged branch. Each one GitHub then reports
-    `CONFLICTING` comes back to `implementing`, and the architect tells its implementer to expect
-    it and to merge the base forward in that implementing round. On a base with a merge queue —
+    merged branch a conflict of history alone; otherwise it squashes and tells the architect its
+    addressing line names which open pull requests of the tree build on the merged branch. Each one
+    whose issue stands past `implementing` and that GitHub then reports `CONFLICTING` comes back to
+    `implementing` by the daemon's own move, with a task that names the base to merge forward, and
+    the architect that owns its issue hears of it by a `checks-red` notice. The architect the
+    merger told tells the implementer of each of those pull requests whose issue is still in
+    `implementing` and is an issue it owns to expect the conflict and to merge the base forward in
+    that implementing round. The implementer of one whose issue that architect does not own merges
+    the base forward once GitHub reports its pull request `CONFLICTING`, as its role prompt says
+    (*Reintegrating the base* in
+    `skill://legion-worker/references/conflicts-and-rewrites.md`). On a base with a merge queue —
     a `merge_queue`
     rule among the base branch's rules — it enqueues the pull request instead, with GraphQL
     `enqueuePullRequest` and the same head as `expectedHeadOid`, because `gh pr merge` on such a

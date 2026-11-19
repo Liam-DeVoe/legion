@@ -51,11 +51,3 @@ func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
 		})
 	}
 }
-
-// rigWorkingCopy is the working copy line the engine of a whole daemon booted on cfg writes into
-// each task of issue (engineConfig's WorkspaceDir): the directory the runtime cfg configures starts
-// the issue's agents in. A whole-daemon test builds the task it expects with it; a test whose
-// engine it builds itself, with no WorkspaceDir, expects workflow.WorkingCopy(issue, nil).
-func rigWorkingCopy(cfg config.Config, issue record.Issue) workflow.Standing {
-	return workflow.WorkingCopy(issue, engineWorkspaceDir(cfg))
-}

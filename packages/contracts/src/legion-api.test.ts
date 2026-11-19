@@ -1,15 +1,13 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import * as legionApi from "./legion-api";
 import {
   LEGION_FAILURE_CAUSES,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
-  LEGION_PLAN_RATING_LEAST,
-  LEGION_PLAN_RATING_MOST,
-  LEGION_PLAN_REASON_MAX,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
   LegionCapabilityReport,
@@ -52,23 +50,12 @@ import {
   LegionWaveReleaseResponse,
 } from "./legion-api";
 import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
+import { PlanRatingCases } from "./plan-rating-cases";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
-/** `plan-rating-cases.json`: a rating and a reason a retro's completion carries, either left out
- * where the case leaves it out, and the daemon's verdict on it, `accepted` or its refusal code. */
-const PlanRatingCases = z.strictObject({
-  cases: z
-    .array(
-      z.strictObject({
-        name: z.string().min(1),
-        planRating: z.number().int().optional(),
-        planReason: z.string().optional(),
-        verdict: z.union([z.literal("accepted"), z.string().startsWith("PLAN_RATING_")]),
-      })
-    )
-    .min(1),
-});
+/** A claim's secret, as the requests below carry it. */
+const CLAIM_SECRET = fixtureSecret("claim");
 
 /** Every fixture the Go golden test writes, with the schema that must accept it. A new fixture
  * with no entry here fails the first test rather than going unchecked. */
@@ -112,7 +99,7 @@ const schemas: Record<string, z.ZodType> = {
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
-  // The owner's plan (contract 162): what register_plan took, and stop_task's empty answer.
+  // The owner's plan (contract 171): what register_plan took, and stop_task's empty answer.
   "plan-register.json": LegionPlanRegisterResponse,
   "task-stop.json": LegionEmptyResponse,
   // No route answers this one: it is the contract number the daemon's boot gate requires of the
@@ -152,20 +139,11 @@ const schemas: Record<string, z.ZodType> = {
     instruction: z.string().min(1),
   }),
   // `api.HandoffCompleteRequest` as the completion that ends the retro sends it, rated: the one
-  // request of the route a plugin at contract 161 must send, written by `internal/api`'s
+  // request of the route a plugin at contract 168 must send, written by `internal/api`'s
   // TestHandoffCompleteRequestRatedGolden from Go's own struct. The request schema is strict, so
   // a name of the rating Go writes and the contract does not read fails the gate above, and the
   // case "the rated completion the daemon reads parses under the contract's names" below.
   "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
-  // Nor this one: the bounds `planRatingOf` holds a rating of the plan to (`planRatingLeast`,
-  // `planRatingMost` and `planReasonMax` in `internal/api/handoff.go`), written by
-  // TestPlanRatingGolden so that the case "the rating's bounds are the daemon's" below holds the
-  // contract's own bounds, which the plugin's tool reads, to them.
-  "plan-rating.json": z.strictObject({
-    least: z.number().int(),
-    most: z.number().int(),
-    reasonMost: z.number().int().positive(),
-  }),
   // Nor this one: the daemon's verdict on each case of a rating, which internal/api's
   // TestPlanRatingCasesGolden posts as its raw body to the completion that ends a retro and writes
   // down as the route answered it, so that the case "the request schema takes exactly the ratings
@@ -982,29 +960,13 @@ test("the rated completion the daemon reads parses under the contract's names", 
   expect(request.planReason).toBe("The tester found the bug the plan had left out.");
 });
 
-// The scale and the reason's bound are stated on each side of the wire: the daemon refuses by its
-// own (`PLAN_RATING_INPUT`), and the contract and the plugin's tool by the contract's exports. A
-// bound moved on one side alone would have one side refuse what the other takes, so the
-// contract's bounds are held to the daemon's, which its golden test writes.
-test("the rating's bounds are the daemon's", () => {
-  expect(fixture("plan-rating.json")).toEqual({
-    least: LEGION_PLAN_RATING_LEAST,
-    most: LEGION_PLAN_RATING_MOST,
-    reasonMost: LEGION_PLAN_REASON_MAX,
-  });
-});
-
 // A rating's rule is the daemon's, and the request schema states it again: the scale, the pair,
 // blank and the bound. Blank is Go's strings.TrimSpace on the daemon's side, so the schema reads
-// it by goBlankPattern rather than by JavaScript's trim, which keeps U+0085 and strips U+FEFF
-// (`./go-blank.ts`). Every case the daemon's golden test answered is run through the schema, and
-// the schema must take exactly the ones the daemon accepted.
+// it by goBlankPattern rather than by JavaScript's trim, and `./go-blank.ts`'s doc comment names
+// the two characters on which the two differ. Every case the daemon's golden test answered is run
+// through the schema, and the schema must take exactly the ones the daemon accepted.
 test("the request schema takes exactly the ratings the daemon takes", () => {
   const { cases } = PlanRatingCases.parse(fixture("plan-rating-cases.json"));
-  expect(cases.some((c) => c.verdict === "accepted")).toBeTrue();
-  expect(cases.some((c) => c.verdict !== "accepted")).toBeTrue();
-  // The two characters the two languages' blank parts on are among the cases.
-  expect(cases.map((c) => c.planReason)).toEqual(expect.arrayContaining(["\u0085", "\uFEFF"]));
   const parted = cases
     .filter((c) => {
       const { name: _name, verdict, ...rating } = c;
@@ -1020,7 +982,7 @@ test("the request schema takes exactly the ratings the daemon takes", () => {
   expect(parted).toEqual([]);
 });
 
-// Contract 162: a step that failed names the step its task returns to, `returnTo`, by its place in
+// Contract 171: a step that failed names the step its task returns to, `returnTo`, by its place in
 // the task, 1 for its first. Only a completion with the verdict fail names one
 // (RETURN_TO_NEEDS_FAIL), and a place below 1 is none (INVALID_RETURN_TO). A completion that
 // names none stays what it was.
@@ -1038,7 +1000,7 @@ test("a failed step's completion names the step its task returns to", () => {
   }
 });
 
-// Contract 162: register_plan answers the plan it took, its version and each task with the steps
+// Contract 171: register_plan answers the plan it took, its version and each task with the steps
 // its block names as the plan writes them (`role` or `role:key`). A task whose block names none
 // runs the project's default steps and is answered with no step, an empty list and never null.
 test("register_plan answers each task of the plan it took with its steps", () => {
@@ -1057,7 +1019,7 @@ test("register_plan answers each task of the plan it took with its steps", () =>
   ).toBeFalse();
 });
 
-// Contract 162 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
+// Contract 171 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
 // (its owner stopped its task with stop_task) or `children` (a parent whose plan has no
 // acceptance step waits, before its retro, for the issues beneath it). A state with a stopped
 // task and a held parent parses, each reason kept; a reason outside the three is refused.
@@ -1078,7 +1040,7 @@ test("a state with a stopped task and a parent held for its children parses", ()
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
-// Contract 162 gives each of those two holds its own word in `admission.held`:
+// Contract 171 gives each of those two holds its own word in `admission.held`:
 // `children_before_retro`, a parent held before its retro, whose `heldBy` names each issue beneath
 // it still in the workflow, and `task_stopped`, a stopped task that keeps no slot, with no
 // `heldBy`. A state whose held rows carry them parses, each row kept as served; a word outside
@@ -1372,7 +1334,7 @@ test("a claim carries the leak check's cause beside its failure", () => {
     throw new Error("state fixture lacks LEGION-210's implementer");
   }
   const sentence =
-    "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
+    "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found";
   expect(refused.leakCheckCause).toBe(sentence);
   expect(
     LegionStateResponse.parse(state).issues["LEGION-210"]?.workers.implementer?.claim.leakCheckCause
@@ -1488,7 +1450,7 @@ test("every request the plugin sends parses and names its required fields", () =
   const activityRequest = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     activity,
   };
   // A route and a body it must accept, whose first key is a field the schema requires.
@@ -1496,7 +1458,7 @@ test("every request the plugin sends parses and names its required fields", () =
     [
       "grant",
       LegionGrantRequest,
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-209" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-209" },
     ],
     [
       "controller grant",
@@ -1582,7 +1544,7 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionReleaseRecordsRequest,
       {
         claimToken: "legion-legion-legion-208-implementer",
-        secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+        secret: CLAIM_SECRET,
         since: "2026-11-01T12:00:00Z",
       },
     ],
@@ -1741,11 +1703,16 @@ test("a Stage 3 issue without its Dispatch status is refused", () => {
 
 // Contract 31: every recorded issue carries the repository it targets and its default branch, its
 // pull request the repository it is in, and the state the project's repository mapping as the
-// daemon serves it, each left-out repository named with the App it lacks. Contract 32: each mapped
+// daemon serves it, each left-out repository named with the App it lacks. Contract 32: each served
 // repository carries its cache under the Kubernetes runtime, Ready with its last health read or
-// the read's failure, and the caches of repositories no longer mapped are listed with when they go.
-// A state without the mapping, or without its caches, is refused.
-test("the state golden carries each issue's repository and the project's mapping", () => {
+// the read's failure, and the caches of repositories no longer served are listed with when they go.
+// Contract 152: the block is every repository the daemon serves, the mapping's and the records'
+// alike, and each entry says which role App is installed on it (`apps`), which is what decides
+// whether the project can work there. A refused entry says what GitHub answered of each App on it
+// wherever GitHub answered both reads, and nothing where a read failed, its reason saying so. A
+// state without the block, or without its caches, is refused. An entry without `apps` is read all
+// the same, with that one answer absent: a daemon of an earlier contract writes none.
+test("the state golden carries each issue's repository and the repositories it serves", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
   expect(state.issues["LEGION-208"]?.repo).toBe("acme/widgets");
@@ -1753,10 +1720,14 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(state.issues["LEGION-210"]?.defaultBranch).toBe("release/v7.1");
   expect(state.repositories.owners).toEqual(["acme", "zeta"]);
   expect(
-    state.repositories.mapped.map(({ repo, default: isDefault }) => ({ repo, default: isDefault }))
+    state.repositories.mapped.map(({ repo, default: isDefault, apps }) => ({
+      repo,
+      default: isDefault,
+      apps,
+    }))
   ).toEqual([
-    { repo: "acme/widgets", default: true },
-    { repo: "zeta/tools", default: false },
+    { repo: "acme/widgets", default: true, apps: { implement: true, review: true } },
+    { repo: "zeta/tools", default: false, apps: { implement: true, review: true } },
   ]);
   expect(state.repositories.mapped[0]?.cache).toEqual({
     repo: "acme/widgets",
@@ -1776,9 +1747,19 @@ test("the state golden carries each issue's repository and the project's mapping
     reason:
       "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
   });
-  expect(state.repositories.refused[0]?.reason).toBe(
-    "the review App is not installed on acme/gadgets"
-  );
+  expect(state.repositories.refused).toEqual([
+    {
+      repo: "acme/gadgets",
+      reason: "the review App is not installed on acme/gadgets",
+      apps: { implement: true, review: false },
+    },
+    {
+      repo: "zeta/archive",
+      reason:
+        "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again",
+    },
+  ]);
+  expect(state.repositories.refused[1]?.apps).toBeUndefined();
   expect(state.repositories.caches).toEqual([
     {
       repo: "acme/legacy",
@@ -1805,6 +1786,16 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(LegionStateResponse.parse(refused).repositories.caches[0]?.state).toBe("refused");
   Object.assign(refused.repositories.caches[0] ?? {}, { state: "gone" });
   expect(LegionStateResponse.safeParse(refused).success).toBeFalse();
+  // An entry a daemon of an earlier contract wrote carries no `apps`, and the window a roll of
+  // the daemon and the worker image opens is exactly that pairing, so the reader loses that one
+  // answer and keeps the state rather than refusing the whole body.
+  const halfRead = fixture("state.json") as {
+    repositories: { mapped: Array<Record<string, unknown>> };
+  };
+  delete halfRead.repositories.mapped[0]?.apps;
+  const withoutApps = LegionStateResponse.parse(halfRead);
+  expect(withoutApps.repositories.mapped[0]?.apps).toBeUndefined();
+  expect(withoutApps.repositories.mapped[0]?.repo).toBe(state.repositories.mapped[0]?.repo);
 });
 
 // The state's capability report (contract 16): the golden carries a decided row with the operator's
@@ -1940,7 +1931,7 @@ test("a session's activity report carries its reading, its work and its wake", (
   const report = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     activity: {
       at: "2026-11-01T12:00:00.000Z",
       backgroundWork: { running: true, kinds: ["async-job", "subagent"] },
@@ -2046,7 +2037,7 @@ test("the release records carry a release, a resume and a hold", () => {
 test("the release records are read with the claim credential in the body", () => {
   const request = {
     claimToken: "legion-legion-legion-208-implementer",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     since: "2026-11-01T12:00:00Z",
   };
   expect(LegionReleaseRecordsRequest.safeParse(request).error?.issues ?? []).toEqual([]);

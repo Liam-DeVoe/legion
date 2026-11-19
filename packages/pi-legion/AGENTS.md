@@ -71,10 +71,10 @@ shapes that client parses, and the pane's environment — the identity variables
 workspace, the pane's cwd; read by `claim-session.ts`, which resolves it and scopes the overlay's
 `Dispatch:` line to it), `LEGION_GENERATION` (set by the daemon, read by
 nothing here), `LEGION_BOOT_TOKEN_FILE`, `LEGION_DAEMON_URL`, the GitHub
-variables (`LEGION_GH_OWNERS_DIR`, the role's gh bundle of one directory per GitHub owner, one per
-owner a configured rename moved a repository away from while the project serves the name it moved
-to, and one per other repository served by its issue's recorded owner and by the owner whose
-installation serves its issue's repository;
+variables (`LEGION_GH_OWNERS_DIR`, the role's gh bundle of one directory per GitHub owner its App
+is installed on, one per owner a configured rename moved a repository away from while the project
+serves the name it moved to, and one for its issue's recorded owner, each token reaching every
+repository its own installation holds;
 `GH_CONFIG_DIR`, its issue's owner's directory;
 `LEGION_GH_PATH`, the real gh the pane's `gh` wrapper runs; with `GH_TOKEN`, `GITHUB_TOKEN` and
 `GH_HOST` set empty: read by the pane's `gh` and `git`, by nothing here), the Envoy
@@ -95,22 +95,7 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 162 (the owner's plan: the
-architect's `register_plan` (`POST /legion/v1/plans/register`, `LegionPlanRegisterRequest`,
-answered `LegionPlanRegisterResponse`) and `stop_task` (`POST /legion/v1/tasks/stop`,
-`LegionTaskStopRequest`), a tester's fail naming the step its task returns to,
-`LegionHandoffCompleteRequest`'s `returnTo`, which a daemon before 162 refuses as a field it does
-not know, and
-the state's `holdReason` taking `task-stopped` and `children` beside `escalated`, which a caller
-below 162 is served without, and `admission.held`'s `reason` taking `children_before_retro` and
-`task_stopped`, each row of which a caller below 162 is served as `unclassified` with no
-`heldBy`), after contract 161 (the completion that
-ends the retro rates the plan the issue ran: `LegionHandoffCompleteRequest` takes `planRating`, a
-whole number from 1 to 5, and `planReason`, why, the two together; the daemon refuses them on every
-other completion, `PLAN_RATING_UNEXPECTED`, and refuses the retro's completion without them from a
-claim at 161 or later, `PLAN_RATING_REQUIRED`, while a plugin below 161 never sends them and its
-retro, where the daemon serves it, completes with no rating; no shape of the state moves), after
-contract 146's architect handshake (dispatch://INFRA-2614:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
@@ -155,10 +140,9 @@ behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming `fresh_sess
 the plugin parses moves), after contract 98's held list
 (dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
-each row carrying the issue, one word for why nothing of it runs — a word of the closed list
-`LEGION_HELD_REASONS` (the daemon's `record.HeldReasons`), which the daemon reads in one order,
-of which `at_work` names the issues past their review from contract 111 on (see
-`record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where
+each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
+the daemon reads in one order, of which `at_work` names the issues past their review from
+contract 111 on (see `record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where
 no issue holds the one
 that waits; the strict reader this plugin parses the state through takes the key as optional,
 because a caller from a pod whose claims record a contract under 98 is served the admission
@@ -365,10 +349,9 @@ Contract 5 added `LEGION_GRANT_FILE` to the pane's environment (LEGION-262), the
 hook minted a grant into before a bash command that invoked `legion`; contract 19 removes it with
 that hook. Nothing in a pane runs `legion` from bash: the `legion` tool mints each operation's grant
 in-process and posts it with the request, and `gh` and `git` read the role's GitHub App tokens from
-the gh bundle under the pane's `LEGION_GH_OWNERS_DIR` (one directory per owner, one per owner a
-configured rename moved a repository away from while the project serves the name it moved to, and
-one per other repository served by the issue's recorded owner and by the owner whose installation
-serves the issue's repository, each a
+the gh bundle under the pane's `LEGION_GH_OWNERS_DIR` (one directory per owner the role's App is
+installed on, one per owner a configured rename moved a repository away from while the project
+serves the name it moved to, and one for the issue's recorded owner, each a
 `hosts.yml` and `config.yml` rendered and refreshed by
 the daemon: `/var/run/legion/gh` in a pod,
 `<state_dir>/secrets/<claim>-gh` on tmux; `GH_CONFIG_DIR` names the issue owner's), with
@@ -549,7 +532,7 @@ controller on an earlier plugin release never runs against this daemon: contract
 subscription, `legion controller start` refuses to launch an Oh My Pi whose plugin speaks another
 contract, and the daemon refuses its registration with 409. A later
 `legion controller start` mints a new capability, so the earlier session's grants stop working.
-The CLI's `legion status <issue> <status>` is the operator's alone: it takes
+The CLI's `legion issue status <issue> <status>` is the operator's alone: it takes
 `--operator-token-file`, which buys a controller grant over the operator's bearer and, like
 `legion claims`, is refused when its group or others can read it; the controller session writes a
 status only through its tool's `set_status`.
@@ -685,11 +668,7 @@ shares, which is then often a sibling's commit; retro, the merger, a left phase 
 record and every other phase report the commit the workspace stands on, `@-`, and so does an
 implementer whose left record names no head, which sends `@-` alone, naming no record. It then posts
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
-`handoffVersion`, `commit`, `wakeAt`, `planRating` and `planReason` where they apply).
-The completion that ends the retro carries the agent's rating of the plan, `plan_rating` and
-`plan_reason`, sent as `planRating` and `planReason`: the plugin refuses one without the other,
-posting nothing, and sends the two as given on any completion, since which completion ends the
-retro is the daemon's to say (`PLAN_RATING_UNEXPECTED`, `PLAN_RATING_REQUIRED`). A
+`handoffVersion`, `commit` and `wakeAt` where they apply). A
 report on a look of a closed issue's production check is the one call that finds neither: the
 operation reads the daemon's state first, and a call on an issue in `done` whose
 `check` is open is a check report, posted with its `verdict` (`pass`, `pending` or `fail`, required
@@ -718,15 +697,12 @@ refusal changed nothing, and an accepted completion is answered with an empty ob
 merger merges and the daemon submits no merge. The
 operation mints its grant in-process and posts it with the request; nothing is written to the
 pane. A predecessor's handoff is read with `dispatch handoff-read`, at the version the task's
-`Handoff:` line names (`--version <n>`), except the plan a planner step writes.
-That plan is the issue's `plan.md` document, which its planner goes on writing after the planning
-phase ends, so a worker of a task whose `Steps:` line names the planner, or of a task with no
-`Task:` line, builds from `plan.md` at the newest version the plan review approved, the
+`Handoff:` line names (`--version <n>`), except the plan.
+The plan is the issue's `plan.md` document, which its planner goes on writing after the planning
+phase ends, so a worker builds from `plan.md` at the newest version the plan review approved, the
 version the `Approval:` line of `dispatch read` names, and reads the
-`Handoff: plan version <n>` line as the receipt for the record the daemon accepted; a worker of a
-task whose `Steps:` line names no planner builds from its `Task text:` and the issue's spec.
-GitHub is the pane's `gh` and `git`, which read the role's App tokens from the gh bundle under
-`LEGION_GH_OWNERS_DIR`; no
+`Handoff: plan version <n>` line as the receipt for the record the daemon accepted. GitHub is the pane's
+`gh` and `git`, which read the role's App tokens from the gh bundle under `LEGION_GH_OWNERS_DIR`; no
 tool operation writes to GitHub for a role. Review threads are the pull request author's to
 resolve: the reviewer, whose review
 App GitHub refuses `resolveReviewThread` on the implementer's pull request, names the bot threads
@@ -797,9 +773,15 @@ its hour has ended. A listener of an earlier release names no `kept_until` and a
 key as the first copy for 72 hours, so such an answer clears the key, and the next attempt mints
 a new one. The stall watch's notice of a stuck tool call (`src/stall-evidence.ts`), to the
 architect or, for a root architect's own call, to the controller, also sends no `keep` field, and
-a kept answer reports that no owner was told. A kept notice that no session takes in its hour
-comes back to this worker's session as a dead letter, an Envoy card that names it, unless Envoy
-drops it more than an hour late. A reminder is dropped when the daemon's record says this role no
+a kept answer reports that no owner was told. The listener answers a session past its send
+limit with 429 `sender_rate_limited` and the whole seconds until it takes the next message: the
+stall watch waits that long and sends its notice again under the same key, at most 3 times, so
+the notice is sent at most 4 times. It sends again in the background, so no wait holds a step of
+the ladder, and a resend that is answered and not kept records the owner as told. The phase
+reminder's notice needs no such resend: a refused publish leaves it unreported, and the next
+reminder publishes it again. A kept notice that no session takes in its hour comes back to this
+worker's session as a dead letter, an Envoy card that names it, unless Envoy drops it more than
+an hour late. A reminder is dropped when the daemon's record says this role no
 longer works this phase or that the daemon has failed this role's claim (the `read_record` state,
 bounded at 5 s and failing open otherwise, since an unreachable daemon is exactly when a stalled
 worker must still be nudged). A worker the daemon relaunched into an open phase is reminded from a

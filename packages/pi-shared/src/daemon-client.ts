@@ -37,6 +37,7 @@ import {
 } from "@legion/contracts/legion-api";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
+import { bodyForText } from "@legion/envoy-client/excerpt";
 import type { z } from "zod";
 
 /**
@@ -174,13 +175,13 @@ export interface LegionDaemonClient {
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The owner's `register_plan` (contract 162): the plan in one version of a document of the
+  /** The owner's `register_plan` (contract 171): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
    * a plan it does not take is refused `PLAN_REFUSED`, every reason in the sentence. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
-  /** The owner's `stop_task` (contract 162): one task of the plan Legion runs for the issue stops,
+  /** The owner's `stop_task` (contract 171): one task of the plan Legion runs for the issue stops,
    * and the issue is held `task-stopped` until a later version of the plan changes that task or,
    * on a root, a person sets the root `todo`. */
   readonly taskStop: (
@@ -401,8 +402,9 @@ function parseBody<T>(
   let json: unknown;
   try {
     json = JSON.parse(body);
-  } catch (error) {
-    return { problem: `not JSON (${messageFor(error)})` };
+  } catch {
+    // The parser's message quotes the word it stopped at, which whatever answered chose.
+    return { problem: "not JSON" };
   }
   const parsed = schema.safeParse(json);
   if (parsed.success) return { value: parsed.data };
@@ -448,12 +450,15 @@ export function createLegionDaemonClient(
         refusal.value.error
       );
     }
+    // A body that is not the daemon's refusal was written by something in its place, which can
+    // echo the request back: it is named in one redacted line (`bodyForText`), never whole. The
+    // daemon's own calls carry no bearer, so only an `Authorization` or `Bearer` value is redacted.
     throw new LegionDaemonApiError(
       method,
       path,
       response.status,
       undefined,
-      `${JSON.stringify(text)} is not the daemon's refusal shape (${refusal.problem})`
+      bodyForText(text, "", "the daemon's refusal shape")
     );
   };
 

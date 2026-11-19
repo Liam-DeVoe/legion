@@ -51,11 +51,12 @@ func reviewsReject(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string,
 func implementerCounts(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) record.ReturnCounts {
 	t.Helper()
 	var row record.PhaseRow
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := engine.store.Phases(ctx, tx, key)
 		row = record.PhaseRowOf(rows, claim.RoleImplementer)
 		return err
 	})
+
 	return record.ReturnCounts{Pass: row.Pass, Rounds: row.Rounds, ConflictRounds: row.ConflictRounds, BackwardMoves: row.BackwardMoves, CapTold: row.CapTold}
 }
 
@@ -117,11 +118,12 @@ func TestAnIssueWithPlanRowsCountsOnItsTask(t *testing.T) {
 	reviewsReject(t, pool, engine, root.Key, 3)
 
 	var counts record.ReturnCounts
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		counts, err = engine.store.ReturnCounts(ctx, tx, root.Key, root.Generation, "a")
 		return err
 	})
+
 	if !sameReturnCounts(counts, countedReturns) {
 		t.Fatalf("the task of %s counts %+v, want %+v", root.Key, counts, countedReturns)
 	}

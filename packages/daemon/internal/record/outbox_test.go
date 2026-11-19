@@ -27,8 +27,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	payloads := []OutboxPayload{
 		OrdinaryStatusWrite("testing", "in_progress", ""),
 		OrdinaryStatusWrite("done", "in_progress", "Closed by its architect: no change is needed."),
-		// The workflow's own move that no worker's act explains, a head that conflicts with its base,
-		// carries its reason to post on the issue before the status (workflow's moveReason).
+		// A workflow move that nothing else on Dispatch explains, here a head that conflicts with its
+		// base, carries its reason to post on the issue before the status (workflow's moveReason).
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."),
 		PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusWrite("in_progress", "done"),
@@ -258,348 +258,6 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	}
 	if kinds := LaneKinds("fast"); kinds != nil {
 		t.Errorf("LaneKinds of a lane that is not one = %v, want nil", kinds)
-	}
-}
-
-// The records of an issue's work — each step's and the plan's — run on a lane of their own, which
-// runs no other kind: a Dispatch that is slow to take a record, or that backs one off until it has
-// the route, must hold no status write, notice or start of its issue.
-func TestTheRecordLaneRunsTheStepAndThePlanRecordsAlone(t *testing.T) {
-	for _, kind := range []OutboxKind{OutboxKindStepRecord, OutboxKindPlanRecord} {
-		if lane := LaneOf(kind); lane != LaneRecord {
-			t.Fatalf("LaneOf(%s) = %q, want %q", kind, lane, LaneRecord)
-		}
-	}
-	if kinds := LaneKinds(LaneRecord); !reflect.DeepEqual(kinds, []OutboxKind{OutboxKindStepRecord, OutboxKindPlanRecord}) {
-		t.Fatalf("LaneKinds(%s) = %v, want the step record and the plan record alone", LaneRecord, kinds)
-	}
-}
-
-// stepRecordID is a version 5 id of the form the workflow names a record by.
-const stepRecordID = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
-
-// Dispatch writes each field of a record once and keeps every field the write leaves out (the step
-// write of Dispatch's route), so an omitted time and a zero one are two different writes: a zero
-// started_at would stand on the record for good, and a returned_to of 0 is a return to the retro.
-// The row has to carry that difference through Postgres: a start with no session, no model and no
-// end decodes with each of them still absent, and a retro's type, which is "", and its place, 0,
-// are still written. Only the write that rates a retro carries a rating and its reason, which every
-// other write leaves out.
-func TestAStepRecordKeepsWhatItOmitsApartFromWhatItWritesEmpty(t *testing.T) {
-	started := time.Date(2026, 11, 16, 23, 0, 0, 123456789, time.UTC)
-	ended := started.Add(time.Hour)
-	session, model, result, report := "ses-1", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
-	returnedTo, retro := 2, 0
-	for _, tc := range []struct {
-		name    string
-		record  StepRecord
-		absent  []string
-		present map[string]string
-	}{
-		{
-			name: "a start that knows no session and no model",
-			record: StepRecord{ID: stepRecordID, Task: "default", Step: 3, Kind: "step", Role: "tester", Type: "testing",
-				Agent: "legion-leg-leg-1-tester", Generation: 1, StartedAt: &started},
-			absent:  []string{"session", "model", "ended_at", "result", "returned_to", "report", "rating", "rating_reason"},
-			present: map[string]string{"step": "3", "generation": "1"},
-		},
-		{
-			name: "the end of a retro, whose type is empty and whose place is 0",
-			record: StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-				Agent: "legion-leg-leg-1-implementer", Generation: 2, Session: &session, Model: &model, EndedAt: &ended,
-				Result: &result, ReturnedTo: &returnedTo, Report: &report},
-			absent:  []string{"started_at", "rating", "rating_reason"},
-			present: map[string]string{"type": `""`, "step": "0", "returned_to": "2"},
-		},
-		{
-			name: "the end of a merge GitHub made, which no agent ran",
-			record: StepRecord{ID: stepRecordID, Task: "default", Kind: "merge", Role: "merger", Generation: 1,
-				EndedAt: &ended, Result: &result},
-			absent:  []string{"session", "model", "started_at", "returned_to", "report", "rating", "rating_reason"},
-			present: map[string]string{"agent": `""`, "type": `""`},
-		},
-		{
-			name: "the rating of a retro, which knows no moment and no result",
-			record: StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-				Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan fit the work."}},
-			absent:  []string{"session", "model", "started_at", "ended_at", "result", "returned_to", "report"},
-			present: map[string]string{"rating": "4", "rating_reason": `"The plan fit the work."`, "type": `""`, "step": "0"},
-		},
-		{
-			name: "the end of a merge that moved back to the retro, whose place it returned to is 0",
-			record: StepRecord{ID: stepRecordID, Task: "default", Kind: "merge", Role: "merger",
-				Agent: "legion-leg-leg-1-merger", Generation: 1, Session: &session, Model: &model, EndedAt: &ended,
-				Result: &result, ReturnedTo: &retro},
-			absent:  []string{"started_at", "report", "rating", "rating_reason"},
-			present: map[string]string{"step": "0", "returned_to": "0"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			row, err := NewOutboxRow("LEG-1", tc.record, started)
-			if err != nil {
-				t.Fatalf("queue the record: %v", err)
-			}
-			if row.Kind != OutboxKindStepRecord {
-				t.Fatalf("row kind = %q, want %q", row.Kind, OutboxKindStepRecord)
-			}
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(row.Payload, &fields); err != nil {
-				t.Fatalf("read the payload back: %v", err)
-			}
-			for _, name := range tc.absent {
-				if raw, ok := fields[name]; ok {
-					t.Errorf("the payload writes %s as %s, want it left out so Dispatch keeps what it holds", name, raw)
-				}
-			}
-			for name, want := range tc.present {
-				if got := string(fields[name]); got != want {
-					t.Errorf("the payload writes %s as %q, want %s", name, got, want)
-				}
-			}
-			st := migratedStore(t)
-			ctx := context.Background()
-			var stored OutboxRow
-			inTx(t, st, func(tx pgx.Tx) {
-				must(t, NewStore().Enqueue(ctx, tx, row))
-				rows, err := NewStore().DueRows(ctx, tx, "LEG", "LEG-1", nil, started)
-				must(t, err)
-				if len(rows) != 1 {
-					t.Fatalf("due rows = %#v, want the one record", rows)
-				}
-				stored = rows[0]
-			})
-			decoded, err := DecodeOutboxPayload(stored)
-			if err != nil {
-				t.Fatalf("decode the stored record: %v", err)
-			}
-			got, ok := decoded.(StepRecord)
-			if !ok {
-				t.Fatalf("decoded %T, want StepRecord", decoded)
-			}
-			if !reflect.DeepEqual(stepRecordFields(got), stepRecordFields(tc.record)) {
-				t.Fatalf("decoded %s, want %s", stepRecordFields(got), stepRecordFields(tc.record))
-			}
-		})
-	}
-}
-
-// stepRecordFields is a record with each pointer read through, nil written as <absent>, so two
-// records compare by what they say and a failure prints it.
-func stepRecordFields(r StepRecord) string {
-	text := func(value *string) string {
-		if value == nil {
-			return "<absent>"
-		}
-		return fmt.Sprintf("%q", *value)
-	}
-	at := func(value *time.Time) string {
-		if value == nil {
-			return "<absent>"
-		}
-		return value.UTC().Format(time.RFC3339Nano)
-	}
-	number := func(value *int) string {
-		if value == nil {
-			return "<absent>"
-		}
-		return fmt.Sprint(*value)
-	}
-	rating := "<absent>"
-	if r.PlanRating != nil {
-		rating = fmt.Sprintf("%d %q", r.PlanRating.Rating, r.PlanRating.Reason)
-	}
-	return fmt.Sprintf("{id %s task %q step %d kind %q role %q type %q agent %q generation %d session %s model %s started %s ended %s result %s returned_to %s report %s rating %s}",
-		r.ID, r.Task, r.Step, r.Kind, r.Role, r.Type, r.Agent, r.Generation, text(r.Session), text(r.Model),
-		at(r.StartedAt), at(r.EndedAt), text(r.Result), number(r.ReturnedTo), text(r.Report), rating)
-}
-
-// A record the workflow builds without its id or its identity is a defect of the daemon, refused
-// where it is queued: an id that is empty would address the route's parent path, which Dispatch's
-// router answers NOT_FOUND, the one answer the row retries for ever, and a record without its
-// task, kind or role is one Dispatch cannot make a node of.
-func TestAStepRecordWithoutItsIDOrIdentityIsRefusedWhereItIsQueued(t *testing.T) {
-	whole := StepRecord{ID: stepRecordID, Task: "default", Step: 2, Kind: "step", Role: "implementer",
-		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Generation: 1}
-	if _, err := NewOutboxRow("LEG-1", whole, time.Now()); err != nil {
-		t.Fatalf("the whole record was refused: %v", err)
-	}
-	for _, tc := range []struct {
-		name   string
-		change func(*StepRecord)
-		reason string
-	}{
-		{name: "no id", change: func(r *StepRecord) { r.ID = "" }, reason: "names no uuid"},
-		{name: "an id that is no uuid", change: func(r *StepRecord) { r.ID = "LEG-1/1/default/step/2/1" }, reason: "names no uuid"},
-		{name: "no task", change: func(r *StepRecord) { r.Task = "" }, reason: "task, kind and role"},
-		{name: "no kind", change: func(r *StepRecord) { r.Kind = "" }, reason: "task, kind and role"},
-		{name: "no role", change: func(r *StepRecord) { r.Role = "" }, reason: "task, kind and role"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			record := whole
-			tc.change(&record)
-			if _, err := NewOutboxRow("LEG-1", record, time.Now()); err == nil || !strings.Contains(err.Error(), tc.reason) {
-				t.Fatalf("NewOutboxRow = %v, want a refusal naming %q", err, tc.reason)
-			}
-		})
-	}
-}
-
-// The rating of the plan is written by the retro (workflow's rateRetro), onto the retro's record:
-// its kind retro, its place 0, its role the implementer and its type empty. A rating without its
-// reason, or a reason without its rating, is refused where the record is queued and where a stored
-// row is read (TestDecodeOutboxPayloadRefusesInvalidRows); validateOutboxPayload says why the
-// daemon refuses the two apart rather than leaving them to Dispatch. A retro's write with no rating
-// is taken, and so is one with both; each is queued as the payload the stored rows already hold,
-// and that payload, read back, is the record.
-func TestARetrosRatingIsTakenWithItsReasonOrNotAtAll(t *testing.T) {
-	retro := StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-		Agent: "legion-leg-leg-1-implementer", Generation: 1}
-	identity := `{"id":"` + stepRecordID + `","task":"default","step":0,"kind":"retro","role":"implementer","type":"",` +
-		`"agent":"legion-leg-leg-1-implementer","generation":1`
-	rated := retro
-	rated.PlanRating = &PlanRating{Rating: 3, Reason: "The plan put the tests after the review."}
-	for _, tc := range []struct {
-		name   string
-		record StepRecord
-		stored string
-	}{
-		{name: "a write of the retro that carries no rating", record: retro, stored: identity + `}`},
-		{name: "the retro's rating with its reason", record: rated,
-			stored: identity + `,"rating":3,"rating_reason":"The plan put the tests after the review."}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			row, err := NewOutboxRow("LEG-1", tc.record, time.Now())
-			if err != nil {
-				t.Fatalf("the record was refused: %v", err)
-			}
-			if string(row.Payload) != tc.stored {
-				t.Fatalf("the record is queued as %s, want %s", row.Payload, tc.stored)
-			}
-			decoded, err := DecodeOutboxPayload(OutboxRow{ID: 70, Kind: OutboxKindStepRecord, Payload: json.RawMessage(tc.stored)})
-			if err != nil {
-				t.Fatalf("the stored payload was refused: %v", err)
-			}
-			got, ok := decoded.(StepRecord)
-			if !ok || stepRecordFields(got) != stepRecordFields(tc.record) {
-				t.Fatalf("the stored payload reads as %T %+v, want %s", decoded, decoded, stepRecordFields(tc.record))
-			}
-		})
-	}
-	for _, tc := range []struct {
-		name   string
-		change func(*StepRecord)
-	}{
-		{name: "a reason without its rating", change: func(r *StepRecord) { r.PlanRating = &PlanRating{Reason: "The plan put the tests after the review."} }},
-		{name: "a rating without its reason", change: func(r *StepRecord) { r.PlanRating = &PlanRating{Rating: 3} }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			record := retro
-			tc.change(&record)
-			if _, err := NewOutboxRow("LEG-1", record, time.Now()); err == nil || !strings.Contains(err.Error(), "its reason or neither") {
-				t.Fatalf("NewOutboxRow = %v, want a refusal naming %q", err, "its reason or neither")
-			}
-		})
-	}
-}
-
-// planRecordID is a version 5 id of the form the workflow names a plan by.
-const planRecordID = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
-
-// A plan record is the plan one run of an issue carries out, written once when its work starts. A
-// plan of the source default names no document and no version, which the row leaves out, since
-// Dispatch refuses either on such a plan; its tasks and their steps survive Postgres in order. A
-// plan of the source owner carries both. The owner's tasks stand out of the order of their ids,
-// ui before api, and each one's steps out of sorted order, so a sort of either list on the way in
-// or out changes what is compared; and each case builds its plan afresh for the comparison, so a
-// sort of the queued value in place does not change the value it is held to.
-func TestAPlanRecordKeepsItsTasksInOrderThroughTheOutbox(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		plan    func() PlanRecord
-		absent  []string
-		present map[string]string
-	}{
-		{
-			name: "the default plan",
-			plan: func() PlanRecord {
-				return PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
-					Tasks: []PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
-			},
-			absent:  []string{"artifact_id", "version"},
-			present: map[string]string{"generation": "2", "source": `"default"`, "tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`},
-		},
-		{
-			name: "an owner's plan of two tasks",
-			plan: func() PlanRecord {
-				return PlanRecord{ID: planRecordID, Generation: 1, Source: "owner", PlanDocument: &PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 3},
-					Tasks: []PlanRecordTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}}
-			},
-			present: map[string]string{"artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`, "version": "3",
-				"tasks": `[{"id":"ui","steps":["tester","implementer:ui"]},{"id":"api","steps":["reviewer","implementer"]}]`},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			now := time.Date(2026, 11, 17, 4, 0, 0, 0, time.UTC)
-			row, err := NewOutboxRow("LEG-1", tc.plan(), now)
-			if err != nil {
-				t.Fatalf("queue the plan: %v", err)
-			}
-			if row.Kind != OutboxKindPlanRecord {
-				t.Fatalf("row kind = %q, want %q", row.Kind, OutboxKindPlanRecord)
-			}
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(row.Payload, &fields); err != nil {
-				t.Fatalf("read the payload back: %v", err)
-			}
-			for _, name := range tc.absent {
-				if raw, ok := fields[name]; ok {
-					t.Errorf("the payload writes %s as %s, want it left out", name, raw)
-				}
-			}
-			for name, want := range tc.present {
-				if got := string(fields[name]); got != want {
-					t.Errorf("the payload writes %s as %s, want %s", name, got, want)
-				}
-			}
-			st := migratedStore(t)
-			ctx := context.Background()
-			var stored OutboxRow
-			inTx(t, st, func(tx pgx.Tx) {
-				must(t, NewStore().Enqueue(ctx, tx, row))
-				rows, err := NewStore().DueRows(ctx, tx, "LEG", "LEG-1", nil, now)
-				must(t, err)
-				if len(rows) != 1 {
-					t.Fatalf("due rows = %#v, want the one plan", rows)
-				}
-				stored = rows[0]
-			})
-			decoded, err := DecodeOutboxPayload(stored)
-			if err != nil {
-				t.Fatalf("decode the stored plan: %v", err)
-			}
-			if want := tc.plan(); !reflect.DeepEqual(decoded, want) {
-				t.Fatalf("decoded %#v, want %#v", decoded, want)
-			}
-		})
-	}
-}
-
-// A plan record the workflow builds without its id is a defect of the daemon, refused where it is
-// queued: an empty id addresses the route's parent path, which Dispatch's router answers
-// NOT_FOUND, the one answer the row retries for ever.
-func TestAPlanRecordWithoutItsIDIsRefusedWhereItIsQueued(t *testing.T) {
-	whole := PlanRecord{ID: planRecordID, Generation: 1, Source: "default", Tasks: []PlanRecordTask{{ID: "default", Steps: []string{"planner"}}}}
-	if _, err := NewOutboxRow("LEG-1", whole, time.Now()); err != nil {
-		t.Fatalf("the whole plan was refused: %v", err)
-	}
-	for name, id := range map[string]string{"no id": "", "an id that is no uuid": "LEG-1/1"} {
-		t.Run(name, func(t *testing.T) {
-			plan := whole
-			plan.ID = id
-			if _, err := NewOutboxRow("LEG-1", plan, time.Now()); err == nil || !strings.Contains(err.Error(), "names no uuid") {
-				t.Fatalf("NewOutboxRow = %v, want a refusal naming no uuid", err)
-			}
-		})
 	}
 }
 
@@ -1221,7 +879,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "child-status", Role: claim.RoleArchitect, Reason: "LEGION-209 is todo; it runs again under LEGION-208"},
 		{Kind: "children-first", Role: claim.RoleArchitect, Reason: "LEGION-208 starts no phase of its own while LEGION-209 is open under it"},
 		{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: "LEGION-209 has waited for its release since 2026-11-08T09:00:00Z"},
-		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: its repository is not one Legion serves"},
+		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: the review App is not installed on acme/gadgets; the daemon said so on the issue. Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again."},
 		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
 			Reason: "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
 			CatchUp: &CatchUp{Generation: 3, Launch: 2,
@@ -1237,6 +895,15 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document 6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80, given by legion-legion-legion-208-architect. It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."},
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
 			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."},
+		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
+			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
+			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
+				UsedBytes: 48 << 30, FreeBytes: 2 << 30, FreedBytes: 1 << 30,
+				StopReason: "nothing left older than the minimum age", RefusedReads: []string{"pid 42"},
+				Sizes: []VolumeSize{{Path: "caches/uv", Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
+					Refused: "caches/uv/.../locked (depth 2)", Refusals: 3}},
+				SizesAt: answered, SizesPartial: true, SizesMissing: []VolumeMissing{{Path: "workspaces/LEGION-209", Reason: "openat: permission denied"}},
+				Faults: []string{"read the volume: panic: runtime error\nmain.go:1"}}},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))
@@ -1308,5 +975,22 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 				t.Fatalf("the published %s notice is %s, want %s: a published notice that is not the notice the daemon wrote means the re-held copy is not the one its architect was owed", notice.Kind, gotWire, wantWire)
 			}
 		})
+	}
+}
+
+// A row's backoff after a failed run is one second, doubled at each attempt before it, and stops
+// doubling at 64 seconds, RetryBackoffMost; a count below zero, which RetryOutbox never writes,
+// waits as no attempt does. The daemon's outbox and the store's tests read this one rule.
+func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
+	for attempts, want := range map[int]time.Duration{
+		-1: time.Second, 0: time.Second, 1: 2 * time.Second, 2: 4 * time.Second, 5: 32 * time.Second,
+		6: 64 * time.Second, 7: 64 * time.Second, 40: 64 * time.Second,
+	} {
+		if got := RetryBackoff(attempts); got != want {
+			t.Errorf("RetryBackoff(%d) = %s, want %s", attempts, got, want)
+		}
+	}
+	if RetryBackoffMost != 64*time.Second {
+		t.Errorf("RetryBackoffMost = %s, want 64s, the backoff of every count past six", RetryBackoffMost)
 	}
 }

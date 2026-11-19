@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/dispatchbody"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -171,24 +173,76 @@ func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload r
 // enqueueAt enqueues payload for issue due at at: a deadline row (a linger's close, a production
 // check's bounds), where enqueue's rows are due now.
 func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload, at time.Time) error {
-	row, err := record.NewOutboxRow(issue, payload, at)
+	row, err := queuedRow(ctx, tx, e.store, issue, payload, at)
 	if err != nil {
 		return err
 	}
 	return e.store.Enqueue(ctx, tx, row)
 }
 
+// queuedRow is the one place this package builds an outbox row (record.NewOutboxRow), so it is the
+// one place every task the daemon queues for a worker passes, whichever path composed it: the rows
+// enqueue and enqueueAt write (a wake's start among them, wakeRow, and a ready worker's catch-up,
+// readyWorkerTask), the start of a phase worker (startOrOwe, which every start Engine.started
+// builds comes through) and a root architect's start that claims the decisions it names
+// (EnqueueNaming). It is where a task takes what every task of its worker must name: the
+// daemon's two sentences of the reviewer's review round (namingTheReviewRound), always the last
+// two of each task of the reviewer, in each phase, so a kind of task added later cannot be queued
+// without them.
+//
+// Only a start of the reviewer that carries a task and does not hold the sentences already is
+// named, so no other row reads the record for them. Such a start reads the phase its issue stands
+// in and the reviewer's row as tx holds them, which is the row's commit and entry at the moment
+// the task is queued, and it then carries the typed fact that its task ends with the daemon's
+// sentences (record.SuperviseRequest.RoundNamed), which the claim's send reads, so it adds none.
+// A start whose task is the stored task of its entry - the start of the transition that raised
+// the entry, whose task enter stored through namingTheReviewRound in the same transaction, the
+// promoted worker's and the owed entry's - comes with that fact already, and is queued as it is
+// before any read: it holds the sentences already. That is a fact the start carries and never a
+// reading of the task's text, which can quote either sentence, a retry's reason among it.
+func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload, at time.Time) (record.OutboxRow, error) {
+	start, ok := payload.(record.SuperviseRequest)
+	if !ok || start.Op != "start" || start.Task == "" || start.Role != claim.RoleReviewer || start.RoundNamed {
+		return record.NewOutboxRow(issue, payload, at)
+	}
+	standing, err := store.Issue(ctx, tx, issue)
+	if err != nil {
+		return record.OutboxRow{}, err
+	}
+	// An issue the record does not hold stands in no phase and holds no row, so its reviewer's
+	// task names neither a commit nor an entry.
+	var standsIn phase.Phase
+	var row record.PhaseRow
+	if standing != nil {
+		rows, err := store.Phases(ctx, tx, issue)
+		if err != nil {
+			return record.OutboxRow{}, err
+		}
+		standsIn, row = standing.Phase, record.PhaseRowOf(rows, start.Role)
+	}
+	start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, row)
+	start.RoundNamed = true
+	return record.NewOutboxRow(issue, start, at)
+}
+
 // status queues the Dispatch write for a status the workflow has just given issue. reason is the
 // text the write posts on the issue before the status lands (record.StatusWrite.Reason), which
 // transition gives only for a move nothing else on Dispatch explains (moveReason), and is empty
-// for every other write. A status that reads as out of the workflow is the daemon's own close — the
+// for every other write. A move that writes no status, since its target phase shares the status
+// the issue already shows (implementing back to planning, both in_progress; accepting back to
+// reviewing; merging back to retro) or has none, still posts its reason, as a message of its own:
+// carried only on a status row, the reason would reach no issue, which would then show nothing of
+// the move at all. A status that reads as out of the workflow is the daemon's own close — the
 // done a merge writes — and it goes as a close row, fenced on the run it ends
 // (record.CloseStatusWrite): the ordinary rule drops a row whose issue has left the workflow, which
 // is every close, so a close judged by it would be lost on its first ISSUE_CHANGED and leave the
 // issue open in Dispatch for good.
 func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status, reason string) error {
 	if status == "" || issue.Status == status {
-		return nil
+		if reason == "" {
+			return nil
+		}
+		return e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: reason})
 	}
 	if record.OutOfWorkflow(status) {
 		return e.enqueue(ctx, tx, issue.Key, record.CloseStatusWrite(status, issue.Status, "", issue.Generation))
@@ -196,17 +250,23 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, reason))
 }
 
-// moveReason is what a move's status write posts on the issue, for the one move the daemon makes on
-// its own: a head that conflicts with its base (TriggerConflict). Every other move is a worker's
-// act — a tester's verdict, a review, a hand-off, a backward move a worker asked for — and Dispatch
-// already holds that act, so it posts nothing: transition also carries a review's whole body and a
-// backward move's own reason, and neither goes on the issue a second time. A conflict's reason
-// reached the architect, the role whose phase ended and the implementer's task over Envoy only, and
-// the issue itself showed a bare status change that no person or census could read a cause from.
-// A person reads this text on the issue, so it is built from the pull request, not from the
-// conflict handler's sentence to the implementer.
-func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest) string {
-	if trigger != TriggerConflict {
+// moveReason is what a move's status write posts on the issue, for the two moves that nothing else
+// on Dispatch explains. One is the move the daemon makes on its own, a head that conflicts with its
+// base (TriggerConflict). The other is a worker's backward move (TriggerBackward,
+// request_backward_move): the request reaches the daemon's API and no Dispatch record, so an
+// architect's send-back from accepting showed a bare status change, with its reason only in the
+// notice and the next role's task over Envoy. Every other move is recorded on Dispatch by the act
+// that makes it, a tester's or a reviewer's hand-off, so it posts nothing: transition also carries a
+// review's whole body, which does not go on the issue a second time.
+// A person reads this text on the issue, so a conflict's is built from the pull request, not from
+// the conflict handler's sentence to the implementer, and a backward move's names the role that
+// asked and gives its words.
+func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest, reason string) string {
+	switch trigger {
+	case TriggerConflict:
+	case TriggerBackward:
+		return backwardMoveReason(from, to, reason)
+	default:
 		return ""
 	}
 	what, base := "its pull request", "its base"
@@ -229,6 +289,40 @@ func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullReques
 		from, to, what, base, base)
 }
 
+// backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
+// it went to, the role that asked (the role running the phase left, which backward holds the
+// requester to) and that role's own words, or that it gave none.
+func backwardMoveReason(from, to phase.Phase, reason string) string {
+	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return asked + ", which gave no reason."
+	}
+	if strings.HasSuffix(reason, ".") || strings.HasSuffix(reason, "!") || strings.HasSuffix(reason, "?") {
+		return asked + ": " + reason
+	}
+	return asked + ": " + reason + "."
+}
+
+// backwardReasonRefusal is the refusal code and message for a backward move whose post Dispatch
+// would refuse, and two empty strings for one it takes. The move posts its reason on the issue
+// (moveReason), and Dispatch refuses a body past the bounds it publishes, or one that holds a
+// decision block, on every attempt: refused at the post, the reason would reach no issue and the
+// worker would never learn why. So backward refuses it before anything moves, as closeRoot does a
+// close's reason (api's closeRoot). The text measured is the post the outbox makes, this move's
+// sentence under its marker (record.LongestPost), read by the server's own reader
+// (dispatchbody.Check), so the daemon refuses exactly what Dispatch refuses.
+func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string) {
+	over := dispatchbody.Check(record.LongestPost(backwardMoveReason(from, to, reason)))
+	if over == nil {
+		return "", ""
+	}
+	if dispatchbody.IsDecisionBlock(over) {
+		return "BACKWARD_REASON_DECISION_BLOCK", fmt.Sprintf("the reason holds a decision block, and the move posts the reason on the issue as a message, where nobody can answer one: %s; the move was not applied, so ask again with a reason that states what is wrong rather than asking a question", over)
+	}
+	return "BACKWARD_REASON_TOO_LONG", fmt.Sprintf("the reason makes a message Dispatch refuses: %s; the move was not applied, so ask again with a shorter reason", over)
+}
+
 // notice tells the architect that owns the issue; a notice of no kind (noticeFor's, for a move
 // that tells it nothing) enqueues nothing.
 func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
@@ -242,7 +336,7 @@ func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice rec
 // the project's controller: the two publishes retry apart, so a controller topic that keeps failing never sends
 // the architect the same notice again. Every hold is told this way, since the architect answers one
 // with a retry or an escalation to the controller, and so is the tree architect's own failed
-// claim, since every other notice of the tree reaches that architect.
+// claim, since every notice of the tree that no child's own architect takes reaches that architect.
 func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
 	if err := e.notice(ctx, tx, issue, notice); err != nil {
 		return err
@@ -342,39 +436,128 @@ func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // ties to it.
 const testerVerdictLabel = "Tester's verdict"
 
-// ReviewedCommitLabel labels the commit a later review round's task names (reviewedCommit.part),
-// the head the reviewer's own last deciding review read. The reviewer's prompt and the merge gate
-// of skill://legion-worker name it to the reviewer, which a test ties to it, and the tests of the
-// packages that read a reviewer's task name it by this constant rather than type it again.
-const ReviewedCommitLabel = "Last reviewed commit"
-
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
 // with the entry it raises for that role (enter), whose task is word for word the task the
-// worker is sent. Its start carries no mark (startMarks), a fresh session among them: the
-// operator's `legion claims retry --fresh-session` reaches a retry of a held phase (restart) and
-// never a transition's start. movedBack is whether the move into that phase was a move back to an
+// worker is sent. Its start carries one mark, that what it sends is the task enter stored
+// (startMarks.stored), and no other, a fresh session among them: the operator's `legion claims
+// retry --fresh-session` reaches a retry of a held phase (restart) and never a transition's start.
+// movedBack is whether the move into that phase was a move back to an
 // earlier one, which is written on the row beside the entry and is the transition's to read, not
 // this function's: the issue record already names the phase it moved into by the time a start
-// is made. A phase with no worker, and accepting, whose architect admission started with the
-// tree, start nobody.
+// is made. A phase with no worker starts nobody. Accepting starts no worker either: its role is
+// the architect, which is already started — admission starts a root's with its tree and a child's
+// own starts with the child's first phase (StartFirstPhase).
+//
+// Every phase start of a child, the move into accepting among them, first starts the child's own
+// architect again when its claim has failed (reviveArchitect). The phase starts are the one place
+// in the workflow that does this, since the transitions are the only phase starts. Outside the
+// workflow, a re-admission brings a mid-phase child's failed architect back with the member's
+// other roles (admit's startMidPhaseMembers), and so does an operator's retry. A restart of a held
+// phase (restart), a promoted start (StartPromotedWorker), an owed entry (SendOwedEntry) and a
+// resume task each hand a role the work of a phase the issue already stands in, and the owed-entry
+// sweep runs every minute, so none of them revives the architect.
 //
 // told composes the start's task from where the work stands (standingPart), which start reads only
 // for a worker it starts: a phase that starts nobody is told no task, and done, which holds no
 // place in the line of an issue's plan, has no standing to name.
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, movedBack bool) error {
-	if role == "" || role == claim.RoleArchitect {
+	if role == "" {
+		return nil
+	}
+	if err := e.reviveArchitect(ctx, tx, issue); err != nil {
+		return err
+	}
+	if role == claim.RoleArchitect {
 		return nil
 	}
 	at, err := e.standingPart(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	task := told(at)
-	entry, err := e.enter(ctx, tx, issue, role, task, movedBack, false)
+	entry, sent, err := e.enter(ctx, tx, issue, role, told(at), movedBack, false)
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, entry, startMarks{})
+	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+}
+
+// reviveArchitect queues the start of the architect of issue, a child, when the store records its
+// claim failed and holds no start of it queued that the outbox will act on: a failed sub-architect
+// starts again at its child's next phase start (dispatch://INFRA-3915 R2), and until then its
+// child's notices go to the architect above it (record.OwningArchitect). The outbox's start
+// retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded,
+// or a new one once supervise's Machine.forgetSession has dropped it. This start asks for no new
+// session itself. A tree root's architect is admission's, started with its tree,
+// so a root revives nothing here.
+//
+// The claim's state is read in the transaction, and no row carries a mark that asks for the
+// revive: an older daemon's strict decoder refuses an outbox row with a field it does not know
+// (record.DecodeOutboxPayload), and a row it refuses fails every read of its role's runs
+// (record.Store.RoleRuns), each admission pass of the issue among them. So the start is the plain
+// one (childArchitectStart), with no phase, task, entry, slot mark or kept decisions. The read is
+// stable: a failed claim stays failed until something starts it, and a start already queued with
+// no phase or with the phase issue now stands in is that start (architectStartQueued) — the one
+// the child's first phase start queues whatever the claim's state (gateOpened), or an earlier
+// phase start's the outbox has not run yet — so no second start is queued beside it. An issue
+// whose key makes no claim token has no claim to revive (ownArchitectRun).
+func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	run, child, err := e.ownArchitectRun(ctx, tx, issue)
+	if err != nil || !child {
+		return err
+	}
+	if run.Claim == nil || run.Claim.State != supervise.StateFailed {
+		return nil
+	}
+	if architectStartQueued(run, issue.Phase) {
+		return nil
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a child's phase start starts its failed architect again", "issue", issue.Key, "tree", issue.Tree, "phase", issue.Phase)
+	return nil
+}
+
+// ownArchitectRun is the run of issue's own architect at issue's generation, its queued rows and
+// its claim (record.Store.RoleRun), and false for an issue with no architect of its own to start:
+// a tree root, whose architect is admission's, started with its tree, and an issue whose key makes
+// no claim token. reviveArchitect and ownArchitectStarting read it.
+func (e *Engine) ownArchitectRun(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.RoleRun, bool, error) {
+	if claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return record.RoleRun{}, false, nil
+	}
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return record.RoleRun{}, false, err
+	}
+	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	if err != nil {
+		return record.RoleRun{}, false, nil
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, claim.RoleArchitect, issue.Generation)
+	return run, err == nil, err
+}
+
+// architectStartQueued is whether run, a child's own architect's, holds a queued start the outbox
+// will act on for the child standing in current: one of no phase, as a phase start queues
+// (childArchitectStart), or of current, as a re-admission brings a mid-phase child's architect
+// back (admit's startMidPhaseMembers). The outbox finishes, without acting, a start of a phase the
+// issue has left, so a start of another phase does not count. It is queuedStartActs with no stop
+// weighed against it (a stop of 0, which every row's id is above): every such start counts,
+// whatever stop is queued beside it.
+func architectStartQueued(run record.RoleRun, current phase.Phase) bool {
+	return queuedStartActs(run, 0, "") || queuedStartActs(run, 0, current)
+}
+
+// childArchitectStart is the plain start of a child's own architect, issue's, with no phase, task,
+// entry, slot mark or kept decisions: its catch-up at its launch's ready is its first instruction
+// (claimReady). A root architect's start carries the task its record derives and the entry it
+// raises (StartArchitect); a child's architect is handed no entry, and the rule that closes the
+// difference between an architect's owed and held work reaches a tree's root alone
+// (ArchitectAtWork). The child's first phase start queues it (gateOpened), and so does its next
+// phase start while the claim has failed (reviveArchitect).
+func childArchitectStart(issue record.Issue) record.SuperviseRequest {
+	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
@@ -419,7 +602,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // The row's EntryTask is that work: the text the transition composed and wrote in the same
 // transaction as the number it raised (enter), so it is sent as it stands.
 //
-// A row carrying no task is sent the phase's resume task instead (ResumePhaseTask), which says to
+// A row carrying no task is sent the phase's resume task instead (ResumeTask), which says to
 // carry the work on rather than beginning it. Two rows are in that state: one the upgrade to the
 // entry left with no task, since the release before it recorded none, and one a re-admission
 // reset (record.Store.ClearGeneration).
@@ -455,9 +638,10 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
 	marks startMarks) error {
 	task := row.EntryTask
+	marks.stored = task != ""
 	if task == "" {
 		var err error
-		if task, err = e.resumeTask(ctx, tx, issue, reviewedPart(role, issue.Phase, row)); err != nil {
+		if task, err = e.ResumeTask(ctx, tx, issue); err != nil {
 			return err
 		}
 	}
@@ -467,29 +651,26 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
 // promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumePhaseTask).
+// in (ResumeTask).
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
 // the rest of the generation (record.Store.ClearTreeGeneration), so the entry the record now
 // holds names work nothing would send. The start is marked a resume task, so the outbox still
 // hands no second prompt to a claim that holds its phase's task
-// (record.SuperviseRequest.ResumeTask). The entry it raises is of no move back: the promotion
-// hands the role the phase it already stands in, and moves the issue nowhere.
+// (record.SuperviseRequest.ResumeTask), and it sends the task enter stored (startMarks.stored).
+// The entry it raises is of no move back: the promotion hands the role the phase it already
+// stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	reviewed, err := e.reviewedPartFor(ctx, tx, issue, role)
+	task, err := e.ResumeTask(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	task, err := e.resumeTask(ctx, tx, issue, reviewed)
+	entry, sent, err := e.enter(ctx, tx, issue, role, task, false, false)
 	if err != nil {
 		return err
 	}
-	entry, err := e.enter(ctx, tx, issue, role, task, false, false)
-	if err != nil {
-		return err
-	}
-	return e.started(ctx, tx, issue, role, task, entry, startMarks{resumeTask: true})
+	return e.started(ctx, tx, issue, role, sent, entry, startMarks{resumeTask: true, stored: true})
 }
 
 // startMarks are the marks a start's request carries beside its entry, which tell the outbox and
@@ -505,13 +686,23 @@ type startMarks struct {
 	// entry its row names too and sets it not, because the claim it reaches is behind that entry
 	// and the entry test passes the task on its own.
 	resend bool
-	// resumeTask says the task is the phase's resume task (ResumePhaseTask), so a claim that
+	// resumeTask says the task is the phase's resume task (ResumeTask), so a claim that
 	// already holds a task of this generation and phase is given it once it is ready and the
 	// start delivers none (record.SuperviseRequest.ResumeTask). The promotion's start of a
 	// mid-phase worker sets it (StartPromotedWorker), and so do the boot's resume, the cutover's
 	// repair and the silence repair of a claim level with the entry its phases row names
 	// (startSuspendedOwner, which booted and cutoverMergerRepair share, and repairSilence).
 	resumeTask bool
+	// stored says the task is the stored task of the entry the start carries
+	// (record.PhaseRow.EntryTask), sent as enter stored it, so the queue adds no sentence of the
+	// reviewer's round to it (record.SuperviseRequest.RoundNamed, queuedRow): it holds them
+	// already, word for word as the record does. The three starts that send that text set it: a
+	// transition's start and the promotion's start of a mid-phase worker, each sending what enter
+	// answers (start, StartPromotedWorker), and the send of an owed entry whose row stores a task
+	// (sendOwedEntry). A task composed for the start is given the sentences whatever its text holds.
+	// Only the reviewer's task holds them, so only a start of the reviewer carries the fact the
+	// mark makes (started): the stored task of any other role names no review round.
+	stored bool
 	// ruleResume says the start is the boot's start of a claim the daemon itself suspended, so the
 	// outbox finishes the row rather than retrying the claim it resumed when that claim spends its
 	// launch budget (record.SuperviseRequest.RuleResume). The boot sets it on the two starts it
@@ -575,7 +766,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
@@ -702,7 +893,7 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 		return fmt.Errorf("the start of a phase worker on %s requires a task and a phase", issue)
 	}
 	payload.NeedsSlot = record.PhaseKeepsSlot(payload.Phase)
-	row, err := record.NewOutboxRow(issue, payload, at)
+	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
 		return err
 	}
@@ -745,12 +936,12 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 	return store.EnqueueStart(ctx, tx, row)
 }
 
-// enter raises the phase entry this start hands role on issue, writes task as the work of that
-// entry and the moment it raised it, and answers the number for the start's payload. All of it is
-// the transition's own transaction, so the row names the new entry before the outbox can run that
-// start, which is what makes the comparison safe: while a role's turn outlives its phase its claim
-// still serves the earlier entry (the machine refuses a second delivery while one is pending), and
-// the row already names this one.
+// enter raises the phase entry this start hands role on issue, writes the task of that entry and
+// the moment it raised it, and answers the number for the start's payload and the task the start
+// sends. All of it is the transition's own transaction, so the row names the new entry before the
+// outbox can run that start, which is what makes the comparison safe: while a role's turn
+// outlives its phase its claim still serves the earlier entry (the machine refuses a second
+// delivery while one is pending), and the row already names this one.
 //
 // Three starts raise one, each handing its role work it was not already on: a transition's start
 // of the phase the issue has moved into (start), the promotion's start of a mid-phase worker a
@@ -770,7 +961,12 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 //
 // The task it writes is the text the worker is sent, word for word, so the record holds exactly
 // what the worker is told and a claim left behind the entry can be sent that work again from the
-// record alone (SendOwedEntry).
+// record alone (SendOwedEntry). For the reviewer entering a review round that text is task ending
+// with the sentences of its round, the commit its row holds and then the entry just raised, as the
+// queue writes them into every other task of the reviewer (namingTheReviewRound, queuedRow). That
+// is why enter answers the text and its two phase-worker callers send what it answers, marked as
+// the stored task (startMarks.stored) so the queue writes the sentences no second time, never
+// their own task: the number is known only once it is raised, here.
 //
 // movedBack is written with them: whether the start raising this entry was a move back to an
 // earlier phase. Its one reader is the completion route's entry fence, which takes a completion
@@ -785,41 +981,49 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 //
 // For an issue with plan rows, a phase worker's raise also writes the step the entry is a run of
 // (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue stands
-// in (stepAt), from 1 for a step and 0 for the retro on the implementer's row and the merge on the
-// merger's, so the row's facts are the facts of that step's run. An issue with no plan rows keeps
-// no task and place 0, as it always did, and the architect's entry is no step of the issue's task.
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, error) {
+// in (placeOnWalk), from 1 for a step and 0 for the retro on the implementer's row and the merge on
+// the merger's, so the row's facts are the facts of that step's run. An issue with no plan rows
+// keeps no task and place 0, as it always did, and the architect's entry is no step of the issue's
+// task.
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	row.Entry++
-	row.EntryTask, row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = task, verbatim, e.now(), movedBack
+	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
+	// The entry's sentence is named only while the row holds the task of that entry, as the row
+	// written here does: raised is that row, read for the sentences alone, and the row is given its
+	// task once, the text the worker is sent.
+	raised := row
+	raised.EntryTask = task
+	row.EntryTask = namingTheReviewRound(task, role, issue.Phase, raised)
 	worker := role != claim.RoleArchitect
 	var w Walk
 	if worker {
 		if w, err = e.walk(ctx, tx, issue); err != nil {
-			return 0, err
+			return 0, "", err
 		}
-		if place, _, _, ok := stepAt(w, record.StandsAt(issue)); w.Stored && ok {
+		if place, _, _, ok := placeOnWalk(w, record.StandsAt(issue)); w.Stored && ok {
 			row.StepTask, row.StepPlace = w.Task, place.Place
 		}
 	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
-	// and the promotion's start of a mid-phase member (StartPromotedWorker).
-	if worker && recordsSteps(issue) {
+	// and the promotion's start of a mid-phase member (StartPromotedWorker). The architect's own
+	// entry is no step of the issue's task.
+	if step, ok := standingStep(w, issue); ok && worker {
 		agent, err := stepClaim(issue, issue.Key, role)
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
-		if err := e.startStep(ctx, tx, issue, w, agent); err != nil {
-			return 0, err
+		if err := e.startStep(ctx, tx, issue, step, agent); err != nil {
+			return 0, "", err
 		}
 	}
-	return row.Entry, nil
+	return row.Entry, row.EntryTask, nil
 }
 
 // EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the
@@ -841,7 +1045,8 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // that start. The entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's
 // one reader is the completion route's entry fence, and the architect completes nothing there.
 func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, verbatim bool) (int64, error) {
-	return e.enter(ctx, tx, root, claim.RoleArchitect, task, false, verbatim)
+	entry, _, err := e.enter(ctx, tx, root, claim.RoleArchitect, task, false, verbatim)
+	return entry, err
 }
 
 // The labels of a started worker's task that a prompt or a skill names to the worker, each the
@@ -875,10 +1080,7 @@ const (
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
 // pass reads it as the tester's report, never as a field of its own completion.
-// reviewed is the commit the reviewer's last deciding review read (reviewedPart), "" for every
-// start but a later review round's; the part that names it (reviewedCommit.part) is placed after
-// the pull request and before the reason.
-func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reviewed reviewedCommit, reason string) string {
+func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue) + at.lines
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
@@ -893,7 +1095,6 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
 	}
-	text += reviewed.part()
 	if reason != "" {
 		text += " " + reasonLabel + ": " + sentence(reason)
 	}
@@ -915,18 +1116,18 @@ func sentence(s string) string {
 // working copy line for every start, and for an issue with plan rows the task, the worker's step
 // in it, the task's steps and the report of each earlier step, which a task places right after
 // its continue line. Its owners part is a step worker's alone: the text of the task's block, which
-// the owner of the issue wrote in a version of the plan document and which a task places last,
-// after every line of the daemon's, inside a fence (ownersText), so a line of that text shaped
-// like one of the daemon's labels is never read as the daemon's. It has a type of its own, as
-// reviewedCommit does, so a caller of task and ResumePhaseTask passes the one writer's part and
-// no other string in its place. A package outside this one gets a value of it from WorkingCopy
-// alone.
+// the owner of the issue wrote in a version of the plan document and which a task places last of
+// what it composes, after every line of the daemon's, inside a fence (ownersText), so a line of
+// that text shaped like one of the daemon's labels is never read as the daemon's; the queue adds
+// the two sentences of a reviewer's round after the fence (namingTheReviewRound, queuedRow). It has
+// a type of its own, so a caller of task passes the one writer's part and no other string in its
+// place. A package outside this one gets a value of it from WorkingCopy alone.
 type Standing struct {
 	lines, owners string
 }
 
 // String is the standing as one text, its lines then its owners part: a task places the two
-// apart (task, ResumePhaseTask), so this is for a reader that holds a standing alone, such as a
+// apart (task, resumeText), so this is for a reader that holds a standing alone, such as a
 // test of WorkingCopy.
 func (s Standing) String() string { return s.lines + s.owners }
 
@@ -1055,58 +1256,6 @@ func reportsBefore(rows []record.PhaseRow, w Walk, place int) string {
 	return text.String()
 }
 
-// reviewedCommit is the commit the reviewer's last deciding review read, as a start's task names
-// it (reviewedPart), and "" where the task names none. It holds the commit and not the sentence
-// that names it, and part writes that sentence, so no value of the type reaches a task as anything
-// but that sentence or nothing. It has a type of its own so task takes it beside the reason, and a
-// swap of the two does not compile, nor does a string variable passed for it. No package outside
-// this one can name the type, so a caller there can pass ResumePhaseTask only an untyped
-// constant, such as the "" of a start that names no commit.
-type reviewedCommit string
-
-// part is the part of a start's task that names c, " Last reviewed commit: <sha>."
-// (ReviewedCommitLabel), and "" for no commit: the one place the sentence is written.
-func (c reviewedCommit) part() string {
-	if c == "" {
-		return ""
-	}
-	return " " + ReviewedCommitLabel + ": " + string(c) + "."
-}
-
-// reviewedPart is the commit a start's task names as the one the reviewer's own newest deciding
-// review read (record.PhaseRow.ReviewedHead, which review writes), so the reviewer can read the
-// difference from that commit to the head. It is read from reviewer, the reviewer's phases row:
-// the row's commit for the reviewer started in reviewing, and "" in every other case — any other
-// role or phase, and the first review of a generation, whose row holds none. It is the one source
-// of the part: every start that hands the reviewer a review round builds its task through task or
-// ResumePhaseTask, and each takes the commit from here.
-func reviewedPart(role claim.Role, at phase.Phase, reviewer record.PhaseRow) reviewedCommit {
-	if !startsReviewRound(role, at) {
-		return ""
-	}
-	return reviewedCommit(reviewer.ReviewedHead)
-}
-
-// startsReviewRound says whether a start of role in phase at hands the reviewer a review round,
-// the one start whose task can name a reviewed commit (reviewedPart).
-func startsReviewRound(role claim.Role, at phase.Phase) bool {
-	return role == claim.RoleReviewer && at == phase.Reviewing
-}
-
-// reviewedPartFor is reviewedPart for a start of role on issue, in the phase the issue stands in,
-// whose caller holds no phases row of that role: the transition's start and the promotion's. It
-// reads the reviewer's row only for a review round, so no other start reads the record for it.
-func (e *Engine) reviewedPartFor(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (reviewedCommit, error) {
-	if !startsReviewRound(role, issue.Phase) {
-		return "", nil
-	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, role)
-	if err != nil {
-		return "", err
-	}
-	return reviewedPart(role, issue.Phase, reviewer), nil
-}
-
 func continueLine(issue record.Issue) string {
 	return fmt.Sprintf("Continue %s. Issue: %s. %s: %s.", issue.Title, issue.Key, phaseLabel, issue.Phase)
 }
@@ -1122,37 +1271,45 @@ func handoffWord(role claim.Role) string {
 	return ""
 }
 
-// ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
-// begins that phase — the run that did is over — so the task names the phase and says to carry
-// the work on, which is what a resumed session needs to tell this phase from its last. at is where
-// the worker's work stands (standingPart), its lines placed right after the continue line and the
-// text of its task's block last, as a start's task places them (task): a worker resumed in a fresh
-// session has no earlier task to read them from. reviewed is the commit the reviewer's last
-// deciding review read (reviewedPart), whose part (reviewedCommit.part) is placed after the lines
-// and before the closing sentence, for the same reason. It is "" for every other start.
-func ResumePhaseTask(issue record.Issue, at Standing, reviewed reviewedCommit) string {
-	return continueLine(issue) + at.lines + reviewed.part() + " Resume the existing phase work." + at.owners
+// resumeText is what a worker started for a phase already under way is told, at the standing at.
+// No handoff begins that phase — the run that did is over — so the task names the phase and says
+// to carry the work on, which is what a resumed session needs to tell this phase from its last.
+// The standing's lines stand right after the continue line and the text of its task's block
+// last, as a start's task places them (task): a worker resumed in a fresh session has no earlier
+// task to read them from.
+func resumeText(issue record.Issue, at Standing) string {
+	return continueLine(issue) + at.lines + " Resume the existing phase work." + at.owners
 }
 
-// resumeTask is ResumePhaseTask of the worker of issue's phase, standing where the record holds
-// its work (standingPart).
-func (e *Engine) resumeTask(ctx context.Context, tx pgx.Tx, issue record.Issue, reviewed reviewedCommit) (string, error) {
+// ResumeTask is the resume task of the worker of issue's phase, standing where the record holds
+// its work (standingPart): the working copy the runtime gives it (Config.WorkspaceDir) and, for an
+// issue with plan rows, its task and its step. It is the one place every resume the engine sends
+// is composed: the promotion's start of a mid-phase worker (StartPromotedWorker), an owed entry
+// sent with no task (sendOwedEntry), the boot's resume by rule, the cutover's repair of a merger,
+// the catch-up's resume and the silence repair.
+//
+// It is exported for the tests of other packages that hold a start's task to the resume task
+// (internal/admit's re-admission cases, internal/daemon's resume, silence and upgrade cases), as
+// StartOrOwe is for the rows they queue, so that what those cases expect is the text production
+// composes. Production code outside this package adds no caller.
+func (e *Engine) ResumeTask(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
 	at, err := e.standingPart(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
-	return ResumePhaseTask(issue, at, reviewed), nil
+	return resumeText(issue, at), nil
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an
 // escalation: the phase the hold came from, the role that works it, and why it is held. Admission
-// tells a carried root's own architect with it, since the hold's first notice went to the
-// architect of the tree the root was handed over from.
+// tells a carried root's own architect with it, since the hold's first notice was routed in the
+// tree the root was handed over from, where it reached an architect above the root unless the
+// root's own architect held its role then.
 func HeldNotice(issue record.Issue) record.Notice {
 	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
 }
 
-// ChildReenteredNotice is the notice a re-entered child's tree architect is told, whichever path
+// ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
 // root's own promotion made the tree live.
@@ -1160,11 +1317,12 @@ func ChildReenteredNotice(child, root string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
 }
 
-// ChildStartedNotice is the notice the tree's architect is told whenever a child of it starts
-// its first phase (Engine.StartFirstPhase), its reason naming that phase, the first step of the
-// child's plan (planning on today's default steps), and saying why it starts now. waited is every
-// issue the child's mirror row still names, in Dispatch's own order, all of them done by now:
-// the last of them closed, which is what freed the child.
+// ChildStartedNotice is the notice the architect above a child is told whenever the child starts
+// its first phase (Engine.StartFirstPhase), its reason naming that phase, first, the first step of
+// the child's plan (planning on today's default steps), saying why it starts now and that the
+// child's own architect starts with it. waited is every issue the child's mirror row still names,
+// in Dispatch's own order, all of them done by now: the last of them closed, which is what freed
+// the child.
 //
 // Empty, the child's own links say nothing about why it starts, and the reason says what is true
 // of every child the line starts instead: it reached the front of the waiting line and took a
@@ -1174,15 +1332,26 @@ func ChildReenteredNotice(child, root string) record.Notice {
 // links that were taken off would be a guess, and a reason the architect reads and cannot check
 // is worse than a plain one.
 //
+// The reason then says what the reader keeps of the child: from this start the child's own
+// architect owns it — its decomposition, its children and its acceptance — while that architect
+// holds its role. So the reader hears the child's child-status and child-closed and that
+// architect's worker-died and worker-stalled, and, while that architect does not hold its role,
+// every other notice of the child too (record.OwningArchitect).
+//
 // A start nobody hears of is the silent state the hold's report exists to remove, so no child
 // starts without one. It is the same child-status kind a child's leave and a re-entry are told
-// with — the daemon's notice routing sends one on a non-root child to the architect that owns it
-// — and not phase-finished: no phase of the child ended, it is beginning its first.
+// with — the daemon's notice routing starts the walk for one at the child's parent, so it reaches
+// the architect above the child — and not phase-finished: no phase of the child ended, it is
+// beginning its first.
 func ChildStartedNotice(child, root string, first phase.Phase, waited []string) record.Notice {
-	reason := fmt.Sprintf("%s starts %s under %s: every issue it waited on (%s) is done", child, first, root, strings.Join(waited, ", "))
+	why := fmt.Sprintf("every issue it waited on (%s) is done", strings.Join(waited, ", "))
 	if len(waited) == 0 {
-		reason = fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", child, first, root)
+		why = "it reached the front of the waiting line and took an admission slot"
 	}
+	reason := fmt.Sprintf("%s starts %s under %s: %s. Its own architect starts with it and owns it while that architect "+
+		"holds its role: its decomposition, its children and its acceptance. You hear its child-status and child-closed "+
+		"notices, a worker-died or worker-stalled of its architect, and its other notices while its architect does not "+
+		"hold its role, which the daemon's holdsRole decides", child, first, root, why)
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }
 

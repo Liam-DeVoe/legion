@@ -391,10 +391,13 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 		if seeded == phase.Retro {
 			handoff, last = stepRecordsHead, "implement-record-"+key
 		}
+		// The entry's task is the resume task of the seeded phase as the release before wrote it,
+		// a literal of that release's text: this release's engine (workflow's Engine.ResumeTask)
+		// reads the plan tables, which the store of the release before does not hold.
+		resume := fmt.Sprintf("Continue %s. Issue: %s. Phase: %s. Resume the existing phase work.", issue.title, key, seeded)
 		exec("the "+string(working)+"'s row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary,
 			last_handoff, entry, entry_task, entry_raised_at) values ($1, $2, $3, $4, 0, '', '', $5, 1, $6, now() - interval '1 hour')`,
-			key, string(working), string(r.tokenOf(key, working)), handoff, last, workflow.ResumePhaseTask(record.Issue{
-				Key: key, Title: issue.title, Phase: seeded, Generation: 1}, workflow.WorkingCopy(record.Issue{Key: key}, nil), ""))
+			key, string(working), string(r.tokenOf(key, working)), handoff, last, resume)
 	}
 	claims := []claim.Role{claim.RoleArchitect}
 	if working != claim.RoleArchitect {
@@ -442,7 +445,8 @@ func (r *inFlightRig) resume(issue *inFlightIssue, role claim.Role) *stepClaiman
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
-	go c.serve(c.sh)
+	sh, d := c.sh, r.d
+	sh.serve(func() { c.serve(sh, d) })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: kept.id, Secret: c.secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {

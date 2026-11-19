@@ -72,7 +72,6 @@ import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
-import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { stateForIssue } from "./pins";
@@ -488,7 +487,6 @@ export function IssueHeader({
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
-            priority={issuePriority(issue.priority)}
             write={priorityWrite}
           />
           <AssigneeControl
@@ -676,8 +674,8 @@ export function IssueHeader({
           )}
           {/* The repository is where the work goes, like the parent, so it sits in this rail,
               which scrolls rather than wrapping: a repository name can be long, and the state
-              row above must keep every control on one row at a phone width. An issue whose
-              project maps no repository has no item here. */}
+              row above must keep every control on one row at a phone width. Every issue has an
+              item here, since every issue takes a repository whatever its project maps. */}
           <RepoControl
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}

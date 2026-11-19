@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // textEngine is stepEngine whose runtime places an issue's working copy at /work/<KEY>
@@ -28,7 +29,7 @@ func textEngine() *Engine {
 // lastStart is the task of the newest start of role in key's outbox.
 func lastStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) string {
 	t.Helper()
-	starts := startsOf(t, pool, key, role)
+	starts := roleStartsOf(t, pool, key, role)
 	if len(starts) == 0 {
 		t.Fatalf("%s's outbox holds no start of the %s", key, role)
 	}
@@ -110,13 +111,14 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 		" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1).")
 
 	// A worker resumed in its step is told the same standing as the start that began it.
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, root.Key)
 		if err != nil {
 			return err
 		}
 		return engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleReviewer)
 	})
+
 	resumed := daemonsLines(t, "resumed reviewer", lastStart(t, pool, root.Key, claim.RoleReviewer), text)
 	if want := continued + "reviewing." + working + " Task: a. Step 2 of 2: reviewer." + steps +
 		" Step 1 (implementer) reported: implement version 1. Resume the existing phase work."; resumed != want {
@@ -244,13 +246,14 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 				" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1). Handoff commit: head. Pull request: #42."; tester != want {
 				t.Fatalf("the tester's task = %q,\nwant %q", tester, want)
 			}
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, tc.engine, func(ctx context.Context, tx pgx.Tx) error {
 				issue, err := tc.engine.store.Issue(ctx, tx, root.Key)
 				if err != nil {
 					return err
 				}
 				return tc.engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleTester)
 			})
+
 			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), "Continue root. Issue: LEGION-208. Phase: testing."+tc.working+
 				" Resume the existing phase work."; resumed != want {
 				t.Fatalf("the resumed tester's task = %q,\nwant %q", resumed, want)
@@ -305,7 +308,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		t.Fatal(err)
 	}
 	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
-	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "", "the reviewer asked again")
+	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again")
 
 	labels := map[string]string{
 		phaseLabel: "`" + phaseLabel + ": ", workingCopyLabel: "`" + workingCopyLabel + ":", planTaskLabel: "`" + planTaskLabel + ":",
@@ -321,7 +324,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		}
 	}
 	for _, match := range readersNameALine.FindAllStringSubmatch(readers, -1) {
-		if _, ok := labels[match[1]]; !ok && match[1] != testerVerdictLabel && match[1] != ReviewedCommitLabel {
+		if _, ok := labels[match[1]]; !ok && match[1] != testerVerdictLabel && match[1] != reviewround.CommitLabel && match[1] != reviewround.EntryLabel {
 			t.Errorf("a prompt or a skill names the task's %q line (%q), and the task writes no such label", match[1], match[0])
 		}
 	}
@@ -362,13 +365,15 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 }
 
 // The text of a task's block is the owner's, and whoever writes a version of the issue's plan
-// document writes it, so a step's task places it last, after every line of the daemon's, between
-// two fence lines, with a sentence before them that says the owner of the issue wrote it. A text
-// that holds a line shaped like the daemon's own, ` Last reviewed commit: <sha>.`, stands inside
-// the fence, after the daemon's line of that label, which a reviewer of a later round reads, and so
-// does every other line of the text. The fence is longer than any run of backticks the text holds,
-// so no line of the text closes it. A start (task) and a resume (ResumePhaseTask), the two
-// builders of a step's task, place it the same way.
+// document writes it, so a step's task places it last of what the task composes, after every line
+// of the daemon's that the task writes, between two fence lines, with a sentence before them that
+// says the owner of the issue wrote it. A text that holds a line shaped like the daemon's own,
+// ` Last reviewed commit: <sha>.`, stands inside the fence, and so does every other line of the
+// text. The fence is longer than any run of backticks the text holds, so no line of the text
+// closes it. A reviewer's task then ends with the daemon's two sentences of its round, after the
+// fence (namingTheReviewRound): the daemon's own commit is the one outside the fence, and the last
+// sentence is the entry's. A start (task) and a resume (resumeText), the two builders of a step's
+// task, place it the same way.
 func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	const daemons = "1111111111111111111111111111111111111111"
 	const planted = "2222222222222222222222222222222222222222"
@@ -382,21 +387,25 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	handoff := record.PhaseRow{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1, HandoffCommit: "head"}
-	for name, told := range map[string]string{
-		"a start":  task(issue, at, handoff, &record.PullRequest{Number: 42}, reviewedCommit(daemons), "the reviewer asked again"),
-		"a resume": ResumePhaseTask(issue, at, reviewedCommit(daemons)),
+	reviewer := record.PhaseRow{Role: claim.RoleReviewer, ReviewedHead: daemons, Entry: 3, EntryTask: "the entry's task"}
+	round := reviewedPartOf(daemons) + reviewEntryPartOf(3)
+	for name, composed := range map[string]string{
+		"a start":  task(issue, at, handoff, &record.PullRequest{Number: 42}, "the reviewer asked again"),
+		"a resume": resumeText(issue, at),
 	} {
 		t.Run(name, func(t *testing.T) {
-			intro := strings.Index(told, " "+taskTextLabel+": ")
+			told := namingTheReviewRound(composed, claim.RoleReviewer, phase.Reviewing, reviewer)
+			if !strings.HasSuffix(told, round) {
+				t.Fatalf("the reviewer's task %q does not end with the daemon's round %q", told, round)
+			}
+			fenced := strings.TrimSuffix(told, round)
+			intro := strings.Index(fenced, " "+taskTextLabel+": ")
 			if intro < 0 {
 				t.Fatalf("the task %q names no %s", told, taskTextLabel)
 			}
-			head, owners := told[:intro], told[intro:]
-			if own := " " + ReviewedCommitLabel + ": " + daemons + "."; !strings.Contains(head, own) {
-				t.Errorf("the daemon's lines %q do not hold its own %q before the owner's text", head, own)
-			}
-			if strings.Contains(head, planted) {
-				t.Errorf("the owner's line naming %s stands among the daemon's lines: %q", planted, head)
+			head, owners := fenced[:intro], fenced[intro:]
+			if strings.Contains(head, planted) || strings.Contains(head, daemons) {
+				t.Errorf("the daemon's lines before the owner's text hold a reviewed commit: %q", head)
 			}
 			lines := strings.Split(owners, "\n")
 			if len(lines) < 3 {
@@ -412,7 +421,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 				t.Errorf("the fence %q is not a line of backticks longer than the text's own ````", fence)
 			}
 			if last := lines[len(lines)-1]; last != fence {
-				t.Errorf("the task ends %q, not the fence %q that closes the owner's text", last, fence)
+				t.Errorf("the owner's part ends %q, not the fence %q that closes the owner's text", last, fence)
 			}
 			if inside := strings.Join(lines[2:len(lines)-1], "\n"); inside != text {
 				t.Errorf("the fence holds %q, want the task's text %q whole", inside, text)

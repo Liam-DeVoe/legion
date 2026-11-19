@@ -107,11 +107,12 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			tester := supervise.Claim{Token: claim.Token(treeRoleToken(t, root.Key, claim.RoleTester)), Project: "legion", Tree: root.Key, Issue: root.Key,
 				Role: claim.RoleTester, Generation: root.Generation, State: supervise.StateSuspended, SuspendedBy: tc.by, Session: "ses-tester"}
 			var got []supervise.Claim
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				got, err = Stranded(ctx, tx, engine.store, "LEGION", nil, []supervise.Claim{tester}, nil, stepClock.Add(time.Hour))
 				return err
 			})
+
 			if len(got) != tc.stranded {
 				t.Fatalf("the stranded report over the tester suspended by %s lists %v, want %d", tc.by, got, tc.stranded)
 			}
@@ -219,10 +220,11 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		// close and the boot's sweep read it, so the architect is told no "not merging".
 		unplanned := migratedPool(t)
 		held := stepRoot(t, unplanned, phase.Held)
-		applyInTx(t, unplanned, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, unplanned, engine, func(ctx context.Context, tx pgx.Tx) error {
 			held.Hold = &record.Hold{From: phase.Merging}
 			return engine.store.PutIssue(ctx, tx, held)
 		})
+
 		if result := applyFacts(t, unplanned, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
 			t.Fatalf("the merge of the issue with no plan rows was refused: %+v", result.Refusal)
 		}
@@ -303,13 +305,14 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 		leave := func(pool *pgxpool.Pool, key string) {
 			t.Helper()
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				issue, err := engine.store.Issue(ctx, tx, key)
 				if err != nil {
 					return err
 				}
 				return engine.leave(ctx, tx, *issue, "backlog")
 			})
+
 		}
 		leave(pool, root.Key)
 		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskLeft || task.StoppedReason != stopsBy ||
@@ -321,13 +324,14 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		unplanned := migratedPool(t)
 		bare := stepRoot(t, unplanned, phase.Implementing)
 		leave(unplanned, bare.Key)
-		applyInTx(t, unplanned, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, unplanned, engine, func(ctx context.Context, tx pgx.Tx) error {
 			stored, err := engine.store.Plan(ctx, tx, bare.Key, bare.Generation)
 			if err == nil && stored != nil {
 				t.Errorf("the issue with no plan rows has the plan %+v after it left, want none", stored)
 			}
 			return err
 		})
+
 		if issue := issueOf(t, unplanned, engine, bare.Key); issue.Phase != phase.Done || issue.LingerUntil == nil {
 			t.Fatalf("%s with no plan rows stands in %s (linger %v) after it left, want done and lingering, as today", bare.Key, issue.Phase, issue.LingerUntil)
 		}
@@ -341,13 +345,14 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 	t.Run("a task that is done and a task that left are refused and change nothing", func(t *testing.T) {
 		leave := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status string) {
 			t.Helper()
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				issue, err := engine.store.Issue(ctx, tx, key)
 				if err != nil {
 					return err
 				}
 				return engine.leave(ctx, tx, *issue, status)
 			})
+
 		}
 		const doneText = "is done, so nothing of it is left to stop. This stop changed nothing."
 		const leftText = "left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing."

@@ -13,19 +13,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
-// stepRecordsRollForwardVersion is the version of the migration this file tests: the roll forward
-// of a rollback of the release that records each step, whose header carries that rollback's way
-// back.
-const stepRecordsRollForwardVersion = 20261117064152
+// stepRecordsRelease names the release whose way back the roll forward's header
+// (migrations.StepRecordsRollForward) carries, as a failure to read that block names it.
+const stepRecordsRelease = "the roll forward of the release that records each step"
 
-// stepRecordsWayBack is the way back the roll forward's header carries (migrations.WayBack): the
-// statements an operator runs (docs/kubernetes.md carries the same block, and internal/textcheck
-// holds the two to one text).
-func stepRecordsWayBack(t *testing.T) string {
+// wayBackOf is the block the header of the migration version carries, read by the one reader of a
+// migration's way back (migrations.WayBack) from the embedded migration, which is that file's
+// bytes as the binary ships them; what names the release a failure to read it is about. A header
+// with no way back stops the test by name: a block this cannot find is a block it would pass
+// while running nothing. docs/kubernetes.md carries each of these blocks too, and
+// internal/textcheck holds the two texts equal, so the block an operator runs is the one these
+// tests run.
+func wayBackOf(t *testing.T, version int, what string) string {
 	t.Helper()
-	block, err := migrations.WayBack(stepRecordsRollForwardVersion)
+	block, err := migrations.WayBack(version)
 	if err != nil {
-		t.Fatalf("read the way back of the roll forward: %v", err)
+		t.Fatalf("read the way back of %s: %v", what, err)
 	}
 	return block
 }
@@ -137,7 +140,7 @@ func (s rollBackStore) recordID(place string) string {
 // wayBack runs the way back an operator runs with the daemon stopped.
 func (s rollBackStore) wayBack() {
 	s.t.Helper()
-	s.exec(stepRecordsWayBack(s.t))
+	s.exec(wayBackOf(s.t, migrations.StepRecordsRollForward, stepRecordsRelease))
 }
 
 // rollForward is the newer image's Migrate, which applies the roll forward the way back re-armed.
@@ -254,7 +257,7 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 
 	s.wayBack()
 	var recorded bool
-	if err := s.store.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`, stepRecordsRollForwardVersion).Scan(&recorded); err != nil || recorded {
+	if err := s.store.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`, migrations.StepRecordsRollForward).Scan(&recorded); err != nil || recorded {
 		t.Fatalf("after the way back the roll forward is recorded = %t, %v; want its row deleted, so the roll forward applies it again", recorded, err)
 	}
 	var rolledBackAt time.Time
@@ -438,32 +441,41 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 // forward write no second end.
 func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 	s := newRollBackStore(t)
+	// lingerAt is where a tree's linger stands: due, its deadline passed and no close applied;
+	// running, its deadline not passed; closedEarlier, its close applied by the earlier release
+	// after the rollback; closedBefore, its close applied by this release before the rollback.
+	type lingerAt int
+	const (
+		lingerDue lingerAt = iota
+		lingerRunning
+		lingerClosedEarlier
+		lingerClosedBefore
+	)
 	type tree struct {
 		root, member string
 		held         bool
 		pr           record.PullRequestState
-		// running is a linger whose deadline has not passed; expired, the close of the linger
-		// the earlier release applied, and closedBefore, one this release applied before the
-		// rollback; handed, its hand-over of the member; closesAfter, the pull request's
-		// unmerged close under the earlier release.
-		running, expired, closedBefore, handed, closesAfter bool
-		ends                                                bool
+		linger       lingerAt
+		// handed is the earlier release's hand-over of the member, closesAfter the pull request's
+		// unmerged close under it.
+		handed, closesAfter bool
+		ends                bool
 	}
 	trees := []tree{
-		{root: "LEGION-290", member: "LEGION-291", held: true, pr: record.PullRequestClosed, expired: true, ends: true},
-		{root: "LEGION-300", member: "LEGION-301", pr: record.PullRequestClosed, expired: true, ends: true},
-		{root: "LEGION-350", member: "LEGION-351", held: true, pr: record.PullRequestOpen, closedBefore: true, closesAfter: true, ends: true},
-		{root: "LEGION-310", member: "LEGION-311", held: true, pr: record.PullRequestClosed},
-		{root: "LEGION-320", member: "LEGION-321", held: true, pr: record.PullRequestClosed, running: true},
-		{root: "LEGION-330", member: "LEGION-331", pr: record.PullRequestOpen, expired: true, handed: true},
-		{root: "LEGION-340", member: "LEGION-341", held: true, pr: record.PullRequestOpen, expired: true},
+		{root: "LEGION-290", member: "LEGION-291", held: true, pr: record.PullRequestClosed, linger: lingerClosedEarlier, ends: true},
+		{root: "LEGION-300", member: "LEGION-301", pr: record.PullRequestClosed, linger: lingerClosedEarlier, ends: true},
+		{root: "LEGION-350", member: "LEGION-351", held: true, pr: record.PullRequestOpen, linger: lingerClosedBefore, closesAfter: true, ends: true},
+		{root: "LEGION-310", member: "LEGION-311", held: true, pr: record.PullRequestClosed, linger: lingerDue},
+		{root: "LEGION-320", member: "LEGION-321", held: true, pr: record.PullRequestClosed, linger: lingerRunning},
+		{root: "LEGION-330", member: "LEGION-331", pr: record.PullRequestOpen, linger: lingerClosedEarlier, handed: true},
+		{root: "LEGION-340", member: "LEGION-341", held: true, pr: record.PullRequestOpen, linger: lingerClosedEarlier},
 	}
 	expire := func(tr tree) {
 		s.exec(fmt.Sprintf(`insert into processed_events (source, event_id) values ('outbox', 'linger:%s:1')`, tr.root))
 	}
 	for i, tr := range trees {
 		deadline := "now() - interval '1 minute'"
-		if tr.running {
+		if tr.linger == lingerRunning {
 			deadline = "now() + interval '1 hour'"
 		}
 		s.issue(tr.root, tr.root, "done", "", 1)
@@ -476,7 +488,7 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 		s.entry(tr.member, "merger")
 		s.pullRequest(tr.member, 40+i, tr.pr)
 		s.row(tr.member, "merge", 0, "open")
-		if tr.closedBefore {
+		if tr.linger == lingerClosedBefore {
 			expire(tr)
 		}
 	}
@@ -488,7 +500,7 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 	// The earlier release: the close of each linger it applies retires the tree's claims and
 	// workspaces, hands over what it hands over, and marks the fact processed, writing no end.
 	for _, tr := range trees {
-		if tr.expired {
+		if tr.linger == lingerClosedEarlier {
 			expire(tr)
 		}
 		if tr.handed {
@@ -528,11 +540,12 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 }
 
 // A rollback to a release before 20261111225552_phase_entry drops the phase entries
-// (docs/kubernetes.md, the contract 146 block), and that migration numbers them again at the roll
-// forward, from 1, so an entry then is no count of the starts the earlier release made. The roll
-// forward reads no such entry: a running step of an issue the earlier release did not move stands
-// open, and where the issue or its root moved, every place of it reads as one that release may
-// have started again, as it reads where no entry says otherwise.
+// (docs/kubernetes.md, the phase entry's block: the eleven statements of the rollback to contract
+// 87), and that migration numbers them again at the roll forward, from 1, so an entry then is no
+// count of the starts the earlier release made. The roll forward reads no such entry: a running
+// step of an issue the earlier release did not move stands open, and where the issue or its root
+// moved, every place of it reads as one that release may have started again, as it reads where no
+// entry says otherwise.
 func TestTheRollForwardReadsNoEntryARollbackPastTheEntriesNumberedAgain(t *testing.T) {
 	s := newRollBackStore(t)
 	s.issue("LEGION-361", "LEGION-361", "testing", "", 1)
@@ -597,7 +610,7 @@ func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
 		t.Fatalf("seeded %d outbox rows and %d step_starts rows, want 3 and 2", len(outboxBefore), len(startsBefore))
 	}
 	for run := 1; run <= 2; run++ {
-		if _, err := store.Pool().Exec(ctx, stepRecordsWayBack(t)); err != nil {
+		if _, err := store.Pool().Exec(ctx, wayBackOf(t, migrations.StepRecordsRollForward, stepRecordsRelease)); err != nil {
 			t.Fatalf("run %d of the way back: %v", run, err)
 		}
 		if got := read(outbox); !reflect.DeepEqual(got, outboxBefore) {
@@ -608,7 +621,7 @@ func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
 		}
 		var want []string
 		for _, version := range versionsBefore {
-			if version != fmt.Sprint(stepRecordsRollForwardVersion) {
+			if version != fmt.Sprint(migrations.StepRecordsRollForward) {
 				want = append(want, version)
 			}
 		}

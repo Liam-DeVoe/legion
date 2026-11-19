@@ -29,10 +29,10 @@ const (
 	// RunEnded is a latest start whose run has its end: a later end of that run writes nothing.
 	RunEnded StepRun = "ended"
 	// RunUncounted is a place whose counted run is over and whose run now, where it holds one,
-	// started under an earlier release, which counts no start: its end is a record of its own at
-	// the next count (EndUncountedStep). Only the roll forward of a rollback writes it (store
-	// migration 20261117064152_step_starts_roll_forward), for each place of an issue that release
-	// moved.
+	// started under an earlier release, which counts no start. Only the roll forward of a rollback
+	// writes it (store migration 20261117064152_step_starts_roll_forward), for each place of an
+	// issue that release moved, and the daemon's boot opens the run it stands for at the next count
+	// (OpenUncountedStep), so its end ends an open run like any other.
 	RunUncounted StepRun = "uncounted"
 )
 
@@ -48,20 +48,6 @@ type StepStart struct {
 	StartedAt time.Time
 	Run       StepRun
 }
-
-// EndMark is what an end of the step running at one place finds there.
-type EndMark int
-
-const (
-	// EndedNow is an open run the end has marked ended: the end writes that run's end.
-	EndedNow EndMark = iota + 1
-	// AlreadyEnded is a run that has its end: the end writes nothing, so one run gets one end.
-	AlreadyEnded
-	// NotCounted is a run no start of this release counted: the place has no row, a step that was
-	// running when this release deployed, or its row reads RunUncounted, a step an earlier release
-	// started after a rollback. The end writes a record of its own (EndUncountedStep).
-	NotCounted
-)
 
 // RaiseStepStarts counts one more start of place on issue, marks its run open whatever the run
 // before it stood at, and answers that start's write: run, given the count with that start in it,
@@ -79,16 +65,26 @@ func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string,
 		return StepRecord{}, fmt.Errorf("count a start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	write := run(starts)
+	if err := keepStart(ctx, tx, issue, place, write); err != nil {
+		return StepRecord{}, err
+	}
+	return write, nil
+}
+
+// keepStart keeps write, the record of the latest start of place on issue, on the place's row: the
+// agent and the moment it names, which the run's end writes again, and the write itself, which the
+// roll forward of a rollback ends the record under where an earlier release ended the run.
+func keepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, write StepRecord) error {
 	identity, err := json.Marshal(write)
 	if err != nil {
-		return StepRecord{}, fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+		return fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	if _, err := tx.Exec(ctx, `update step_starts set agent = $5, started_at = $6, record = $7
 		where issue = $1 and task = $2 and kind = $3 and place = $4`,
 		issue, place.Task, place.Kind, place.Place, write.Agent, write.StartedAt, identity); err != nil {
-		return StepRecord{}, fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+		return fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
-	return write, nil
+	return nil
 }
 
 // StepStarts is the count of starts of place on issue, with the agent, the moment and the run of
@@ -133,61 +129,54 @@ func (s *Postgres) OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepE
 }
 
 // EndStepStart is the end of the step running at place on issue, in the transaction that writes
-// that run's end. An open run it marks ended, and answers that start, marked, and EndedNow. It
-// marks nothing otherwise, and answers the place as it stands: AlreadyEnded for a run whose end
-// was written already (the linger's before the hand-over's, or a second end one fact writes), and
-// NotCounted for a run no start of this release counted (EndUncountedStep). The update locks the
-// row, so two transactions that end one run at one time end it once: the second reads the mark the
-// first committed.
-func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, EndMark, error) {
+// that run's end. An open run it marks ended, and answers that start, marked, and true. It marks
+// nothing otherwise, and answers false: the run's end was written already, since the settle of an
+// earlier fact ended it. The update locks the row, so two transactions that end one run at one time
+// end it once: the second finds no open run once the first commits.
+func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error) {
 	start, err := scanStepStart(tx.QueryRow(ctx, `update step_starts set run = 'ended'
 		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'open'
 		returning starts, agent, started_at, run`, issue, place.Task, place.Kind, place.Place))
-	if err == nil {
-		return start, EndedNow, nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StepStart{}, false, nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return StepStart{}, 0, fmt.Errorf("end the latest start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
-	}
-	latest, err := s.StepStarts(ctx, tx, issue, place)
 	if err != nil {
-		return StepStart{}, 0, err
+		return StepStart{}, false, fmt.Errorf("end the latest start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
-	if latest.Run == RunEnded {
-		return latest, AlreadyEnded, nil
-	}
-	return latest, NotCounted, nil
+	return start, true, nil
 }
 
-// EndUncountedStep records the end of the run at place on issue that no start of this release
-// counted, with the agent and the moment its start would have named (startedAt zero where
-// unknown), marked ended, and answers the count that run's record takes and true. A place with no
-// row, a step that started under the release before this one deployed, takes the count 0, so the
-// next start counts 1. A place whose row reads RunUncounted, a step an earlier release started
-// after a rollback, takes the count after the one its row holds, so the record of the run that
-// row counted keeps its own id. It answers false, and writes nothing, where the place's run is
-// open or ended by then: another end of the same run came first.
-func (s *Postgres) EndUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, startedAt time.Time) (int64, bool, error) {
-	var at *time.Time
-	if !startedAt.IsZero() {
-		at = &startedAt
-	}
+// OpenUncountedStep opens, at the daemon's boot, the run at place on issue that no start of this
+// release counted, as a start opens a run: marked open at the count 0 for a place with no row, a
+// step that started under the release before this one deployed, and at the count after the one its
+// row holds for a row that reads RunUncounted, a step an earlier release started after a rollback,
+// so the record of the run that row counted keeps its own id — with the write run gives at that count
+// kept as a start keeps its own (keepStart): its agent, its moment and its identity. The run's end
+// is then the end of an open run (EndStepStart), under the id of that count, and the next start of
+// the place counts one more. It queues nothing. It answers false, and writes nothing, where the
+// place's row is open or ended: a start of this release counted that run, or a boot before this
+// one opened it.
+func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error) {
 	var starts int64
-	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, agent = $5, started_at = $6, run = 'ended', record = null
+	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, run = 'open'
 		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'uncounted'
-		returning starts`, issue, place.Task, place.Kind, place.Place, agent, at).Scan(&starts)
-	if err == nil {
-		return starts, true, nil
+		returning starts`, issue, place.Task, place.Kind, place.Place).Scan(&starts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		tag, err := tx.Exec(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, run) values ($1, $2, $3, $4, 0, '', 'open')
+			on conflict (issue, task, kind, place) do nothing`, issue, place.Task, place.Kind, place.Place)
+		if err != nil {
+			return false, fmt.Errorf("open the uncounted step of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return false, nil
+		}
+	} else if err != nil {
+		return false, fmt.Errorf("open the uncounted step of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, fmt.Errorf("end the uncounted step of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+	if err := keepStart(ctx, tx, issue, place, run(starts)); err != nil {
+		return false, err
 	}
-	tag, err := tx.Exec(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, started_at, run) values ($1, $2, $3, $4, 0, $5, $6, 'ended')
-		on conflict (issue, task, kind, place) do nothing`, issue, place.Task, place.Kind, place.Place, agent, at)
-	if err != nil {
-		return 0, false, fmt.Errorf("end the uncounted step of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
-	}
-	return 0, tag.RowsAffected() == 1, nil
+	return true, nil
 }
 
 // scanStepStart reads one step_starts row's starts, agent, started_at and run.

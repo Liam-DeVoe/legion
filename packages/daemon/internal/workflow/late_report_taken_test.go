@@ -27,7 +27,7 @@ import (
 // stands): the reviewer has not completed.
 func reviewApprovedNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil {
 			return err
@@ -42,6 +42,7 @@ func reviewApprovedNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 		}
 		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, "", reviewer, pr, "")
 	})
+
 }
 
 // defaultAtReviewing is LEGION-208 whose owner gave no plan: its first step stores the project's
@@ -80,7 +81,7 @@ func startCounts(t *testing.T, pool *pgxpool.Pool, key string) map[claim.Role]in
 	t.Helper()
 	counts := map[claim.Role]int{}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
-		counts[role] = len(startsOf(t, pool, key, role))
+		counts[role] = len(roleStartsOf(t, pool, key, role))
 	}
 	return counts
 }

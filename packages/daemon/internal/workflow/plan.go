@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -54,7 +55,7 @@ func stepIn(steps []plan.Step, p phase.Phase) (place record.StepPlace, role step
 	}
 	for i, named := range steps {
 		if stepRole(named.Role) == role {
-			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, role, typ, true
+			return record.StepPlace{Task: defaultTask, Kind: record.PlaceStep, Place: i + 1}, role, typ, true
 		}
 	}
 	return record.StepPlace{}, "", "", false
@@ -77,9 +78,15 @@ func PlanID(issue string, generation uint64) string {
 // `role:key` (plan.Step.String). The node is written at the start of the work and again, whole, at
 // each later version Legion takes (planGiven): Dispatch replaces all four fields for a version
 // above the one it holds. Both read w with its plan rows: the start's first step writes them
-// (planFirstStep), and a version taken is one.
+// (planFirstStep), and a version taken is one. A run with no plan rows walks today's line, so its
+// node is the task default of DefaultSteps: a hand-over's carry of an orphan that ran before plans
+// (WritePlan).
 func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
+	if !w.Stored {
+		node.Tasks = []record.PlanRecordTask{{ID: defaultTask, Steps: DefaultSteps()}}
+		return node
+	}
 	if w.Version.Source == record.PlanSourceOwner {
 		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
@@ -90,6 +97,12 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: stepWords(steps)}}
 	return node
 }
+
+// DefaultSteps is the steps of the task default of a run with no plan rows, which walks today's
+// line (stepOf), each a role or `role:key` as a plan writes it: the default steps of a project
+// that names none (config.Project.RunsByDefault), whatever the configured project's say, as the
+// plan node of such a run names them (planNode).
+func DefaultSteps() []string { return stepWords(config.Project{}.RunsByDefault()) }
 
 // stepWords is steps as a plan writes them, each `role` or `role:key`.
 func stepWords(steps []plan.Step) []string {
@@ -222,16 +235,14 @@ func describeVersion(version record.PlanVersion) string {
 	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, version.GivenBy)
 }
 
-// rateRetro writes the rating the retro of issue's run gave the plan onto that retro's record, in
-// the transaction of the completion that ended the retro: a step record row whose id is the id of
-// the retro's latest run (StepID, from the count of its starts, which the retro's end left as it
-// was), at the retro's place of the run's walk (stepAt: its task's retro for a run with plan rows,
-// the task default's for one with none), carrying every identity field the run's start and end
-// carry, the agent its start named among them, so the write makes the record where neither has
-// landed yet, and the rating and its reason. It carries no moment and no result, which are the
-// end's. Dispatch sets each field once, so the end and the rating merge in either order. A record
-// key that is no issue key writes nothing (recordsSteps).
-func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating intake.PlanRating) error {
+// WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its
+// walk, where the run's work starts: at the run's move out of admitted (transition's
+// TriggerGateOpened), after the first step has settled the plan (planFirstStep), and at a
+// hand-over's carry, which re-admits an orphan at a new generation in the phase it ran in
+// elsewhere (admit's readmit), so that run never leaves admitted, after the carry has written its
+// plan rows (record.Store.CarryPlan). A record key that is no issue key writes nothing
+// (recordsSteps).
+func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if !recordsSteps(issue) {
 		return nil
 	}
@@ -239,13 +250,37 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	if err != nil {
 		return err
 	}
-	place, role, typ, _ := stepAt(w, phase.Retro)
-	start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
+	return e.enqueue(ctx, tx, issue.Key, planNode(issue, w))
+}
+
+// rateRetro writes the rating the retro of issue's run gave the plan onto that retro's record, in
+// the transaction of the completion that ended the retro: a step record row whose id is the id of
+// the retro's latest run (StepID, from the count of its starts, which the retro's end left as it
+// was), at the retro's place of the run's walk (stepAt: its task's retro for a run with plan rows,
+// the task default's for one with none), carrying every identity field the run's start and end
+// carry, the agent its start named among them, so the write makes the record where neither has
+// landed yet, and the rating and its reason. It carries no moment and no result, which are the
+// end's. Dispatch sets each field once, so the end and the rating merge in either order. The
+// retro's step comes from stepAt, which every writer of a step's record takes, so a record key that
+// is no issue key writes nothing.
+func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating record.PlanRating) error {
+	if !recordsSteps(issue) {
+		return nil
+	}
+	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, place, role, typ, start.Agent, start.Starts)
-	write.PlanRating = &record.PlanRating{Rating: rating.Score, Reason: rating.Reason}
+	step, recorded := stepAt(w, issue, phase.Retro)
+	if !recorded {
+		return nil
+	}
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
+	if err != nil {
+		return err
+	}
+	write := stepWrite(issue, step.place, step.role, step.typ, start.Agent, start.Starts)
+	write.PlanRating = &rating
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
 
@@ -383,21 +418,24 @@ func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, fact intake.Ha
 	return e.store.PutPhase(ctx, tx, row)
 }
 
-// stopTask stops w's task of issue where it stands, in the caller's transaction: the
-// step the issue stands in ends as end says (endStep), the task keeps its place and becomes
-// stopped with why (record.Store.StopTask), and the issue is held from the phase that place
-// derives for the stopped task (record.HoldTaskStopped), as a failed claim's hold is written
-// (claimFailed). The hold keeps the task's place (moveTask) and the slot of the phase it is from
-// (record.KeepsSlot reads record.StandsAt), and it writes no Dispatch status, since held has none
-// (PhaseStatus). The process of the step's role is stopped with its session kept (the op
+// stopTask stops w's task of issue where it stands, in the caller's transaction: the end of the
+// step the issue stands in is named as end says (nameEnd), which the fact's settle writes, since
+// the stopped task stands in no step (standingStep reads its plan's hold), the task keeps its
+// place and becomes stopped with why (record.Store.StopTask), and the issue is held from the phase
+// that place derives for the stopped task (record.HoldTaskStopped), as a failed claim's hold is
+// written (claimFailed). The hold keeps the task's place (moveTask) and the slot of the phase it is
+// from (record.KeepsSlot reads record.StandsAt), and it writes no Dispatch status, since held has
+// none (PhaseStatus). The process of the step's role is stopped with its session kept (the op
 // step_stop, whose source is the daemon's, said as its reason), except for accepting, whose
 // architect is the owner itself and runs no process of Legion's for the step, and a phase no role
 // works. The task's state is the caller's to have read: a task done or left is no task to stop
 // (StopTask refuses it).
 func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, why, said string, end StepEnd) error {
 	from := record.StandsAt(issue)
-	if err := e.endStep(ctx, tx, issue, end); err != nil {
-		return err
+	if step, ok := standingStep(w, issue); ok {
+		if err := e.nameEnd(ctx, issue, step, end); err != nil {
+			return err
+		}
 	}
 	if err := e.store.StopTask(ctx, tx, issue.Key, issue.Generation, w.Task, why); err != nil {
 		return err
@@ -605,7 +643,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		return nil, err
 	}
 	return nil, e.start(ctx, tx, issue, role, func(at Standing) string {
-		return task(issue, at, record.PhaseRow{}, pr, "", reason)
+		return task(issue, at, record.PhaseRow{}, pr, reason)
 	}, true)
 }
 
@@ -881,4 +919,24 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 		steps = append(steps, planSteps(fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
 	}
 	return version, tasks, steps
+}
+
+// planRatingRefusal is the rule of which completion carries the rating of the plan, judged where
+// the retro ends: handoff reads it on the issue as the completion's own transaction reads it, under
+// the lock every fact applies under, which is the read its TriggerRetroCompleted ends the retro on.
+// The route held what no state of the issue changes: the rating's form (api's planRatingOf) and
+// whether the caller must rate (intake.HandoffComplete.MustRate). endsRetro is whether this
+// completion ends the retro, and reported the phase it is of, which the refusal names. The
+// completion that ends the retro with no rating from a caller that must rate is refused
+// PLAN_RATING_REQUIRED, and any other completion that carries one PLAN_RATING_UNEXPECTED; nil is
+// no refusal.
+func planRatingRefusal(fact intake.HandoffComplete, endsRetro bool, reported phase.Phase) *intake.Refusal {
+	what := fmt.Sprintf("this completion of phase %s of %s", reported, fact.Issue)
+	switch {
+	case endsRetro && fact.PlanRating == nil && fact.MustRate:
+		return intake.PlanRatingRequired(what)
+	case !endsRetro && fact.PlanRating != nil:
+		return intake.PlanRatingUnexpected(what)
+	}
+	return nil
 }

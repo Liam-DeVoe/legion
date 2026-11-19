@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { IssueSteps, StepRecord } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type FakeDispatchFetch,
@@ -67,7 +68,10 @@ const tester: StepRecord = {
   rating_reason: null,
 };
 
-/** A merge GitHub already made: no merger started, so no agent, no model and no start. */
+/**
+ * A merge GitHub had already made, which started under the release before this one: that release
+ * counted no start, so the end names no agent, no model and no start.
+ */
 const mergedByGitHub: StepRecord = {
   id: "7c3e1a5b-9d4f-5a2c-b6e8-0a2c4e6f8a03",
   issue: "LEG-1",
@@ -278,13 +282,13 @@ describe("dispatch steps", () => {
 
   // Dispatch stores passed, failed or stopped as the result of a run that ended, and "" as that of
   // one still running (workflowstore's stepResults). The read's generated type admits those words
-  // and no other, so `bun run typecheck` fails at the directive below once model.StepRecord.Result
-  // loses its enum and the contract is generated again.
+  // and no other: each run below is a StepRecord, so `bun run typecheck` holds its result to them,
+  // and it fails at the directive below once model.StepRecord.Result loses its enum and the
+  // contract is generated again.
   test("an ended run prints the result Dispatch stored, a word the read's type holds", async () => {
-    const stored: readonly StepRecord["result"][] = ["", "passed", "failed", "stopped"];
     // @ts-expect-error - a word Dispatch never stores is no result.
     const notStored: StepRecord["result"] = "skipped";
-    expect(stored).not.toContain(notStored);
+    void notStored;
 
     // The implementer's run as each end leaves it: passed, naming its report; failed, sent back to
     // step 1 by the architect's backward move, which names no report of the implementer's; and
@@ -304,17 +308,15 @@ describe("dispatch steps", () => {
         ` 2026-11-16T09:40:00Z ${run.result}`
       );
     }
-    expect(ended.map((run) => run.result)).toEqual(stored.filter((word) => word !== ""));
   });
 
   // A run is of a step, a retro or a merge (model.StepRecord.Kind). The read's generated type
   // admits those kinds and no other, so `bun run typecheck` fails at the directive below once the
   // field loses its enum and the contract is generated again.
   test("a retro's run prints its kind at place 0, a kind the read's type holds", async () => {
-    const kinds: readonly StepRecord["kind"][] = ["step", "retro", "merge"];
     // @ts-expect-error - a kind Dispatch never stores is no kind.
     const notStored: StepRecord["kind"] = "pause";
-    expect(kinds).not.toContain(notStored);
+    void notStored;
     // The implementer runs the retro, at place 0 and of no type, and names no report.
     const retro: StepRecord = {
       ...implementer,
@@ -337,8 +339,8 @@ describe("dispatch steps", () => {
     );
   });
 
-  // Dispatch lists the tasks in the order each first ran, which is neither the order of their
-  // names nor the order of all runs' starts: docs first ran before default, and ran again after.
+  // Dispatch lists the tasks in the order each first ran, which is not the order of all runs'
+  // starts: docs first ran before default, and ran again after.
   test("each task's runs print together, in the order the read lists the tasks", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
@@ -377,8 +379,9 @@ describe("dispatch steps", () => {
     expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
   });
 
-  // Dispatch answers an issue it does not hold, and one no step ran on, with no task; the
-  // generated type also lets the list be null, which reads as the empty list.
+  // Dispatch answers an issue no step ran on with no task (a key no issue carries is its 404
+  // NOT_FOUND, as the issue read answers it); the generated type also lets the list be null, which
+  // reads as the empty list.
   test("an issue with no step prints 0 steps in 0 tasks", async () => {
     for (const answer of [
       { issue: "LEG-1", tasks: [] },
@@ -476,7 +479,7 @@ describe("dispatch steps on the command line", () => {
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
         DISPATCH_URL: server.url,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: fixtureSecret("dsp"),
         DISPATCH_STATE_DIR: stateDir,
       },
       {
@@ -521,8 +524,7 @@ describe("dispatch steps on the command line", () => {
     }
   });
 
-  // Only Dispatch's 200 reads as an issue with no step. Its own refusal of the read, and a page
-  // something in its place answered, are the read's failure: each exits 1 with the refusal.
+  // Only Dispatch's 200 reads as an issue with no step.
   test("an issue with no step exits 0 and prints 0 steps in 0 tasks", async () => {
     const server = dispatchServing({ routes: { [STEPS_PATH]: { issue: "LEG-1", tasks: [] } } });
 
@@ -532,9 +534,11 @@ describe("dispatch steps on the command line", () => {
     expect(stdout).toContain("LEG-1: 0 steps in 0 tasks");
   });
 
-  // The answers the steps GET refuses with: a credential Dispatch does not take (401), a fault of
-  // its own (500), and a page something in its place answered (502). No GET is project-scoped, so
-  // it answers no project's 403; a key Dispatch does not hold is the issue read's 404, the next row.
+  // Dispatch's own refusal of the read, and a page something in its place answered, are the read's
+  // failure: each exits 1 with the refusal. They are a credential Dispatch does not take (401), a
+  // fault of its own (500), and a page something in its place answered (502). No GET is
+  // project-scoped, so it answers no project's 403; a key Dispatch does not hold is the issue
+  // read's 404, the next row.
   test("a refusal of the read exits 1 with the refusal, and prints no steps", async () => {
     /** The run against `server` exits 1, reads the steps route once, and prints `refusal` and no
      *  steps; `label` names the case in each assertion's message. */

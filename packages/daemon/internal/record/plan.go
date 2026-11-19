@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -43,12 +44,13 @@ const (
 )
 
 // The kinds of act a task stands at (TaskPlace.Kind), which are the kinds the count of starts keys
-// a place by (StepPlace.Kind): a step of the task, from place 1, and the task's retro and its
-// merge, at place 0, which no plan names. A task at no act has the kind "" at place 0.
+// a place by (StepPlace.Kind) and a step record names: a step of the task, from place 1, and the
+// task's retro and its merge, at place 0, which no plan names. Each is the word contracts gives
+// the kind of a step record (steprecord). A task at no act has the kind "" at place 0.
 const (
-	PlaceStep  = "step"
-	PlaceRetro = "retro"
-	PlaceMerge = "merge"
+	PlaceStep  = steprecord.KindStep
+	PlaceRetro = steprecord.KindRetro
+	PlaceMerge = steprecord.KindMerge
 )
 
 // PlanVersion is one version of the plan of an issue at one generation. The highest version of a

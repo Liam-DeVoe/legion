@@ -191,13 +191,14 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 		assertLateReport(t, pool, engine, claim.RoleTester, apply("another-run", stale), "HANDOFF_STALE_GENERATION",
 			"LEGION-208 is on generation 1 and this completion is generation 2's; the run it reports is over", "", before)
 
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			issue, err := engine.store.Issue(ctx, tx, root.Key)
 			if err != nil {
 				return err
 			}
 			return engine.leave(ctx, tx, *issue, "backlog")
 		})
+
 		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskLeft {
 			t.Fatalf("task a after its issue left is %s, want left", task.State)
 		}

@@ -11,7 +11,7 @@
 // and port for the outage. The daemon is the whole daemon (run, the function `legion start` calls,
 // through startDaemonWithin) with dispatch_url at that server, so every step record it writes goes
 // through its outbox and its Dispatch client to the real route. The issue walks as the package's
-// whole-daemon tests walk it (stepRecordsRig, step_records_test.go): each role over the worker
+// whole-daemon tests walk it (stepRecordsRig, step_records_rig_test.go): each role over the worker
 // stream and the daemon's own routes, its handoff record written to Dispatch under its own
 // session, a person's review and the merge as GitHub's envelopes on the broker, and the
 // architect's sign-off through its own route. The reader is the real `dispatch` CLI
@@ -37,9 +37,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -137,7 +139,7 @@ func (l *stepRecordsLive) outage() {
 		t.Fatalf("control: with Dispatch stopped `dispatch steps --issue %s` exited %d and printed %q, want a non-zero exit naming the unreachable server; the walk rode through no outage", l.key, code, out)
 	}
 	l.note("control: `dispatch steps --issue %s` with Dispatch stopped exits %d: %s", l.key, code, firstLine(strings.TrimSpace(out)))
-	unfinished := l.unfinishedStepRows()
+	unfinished := l.unfinishedRows(record.OutboxKindStepRecord)
 	if unfinished == 0 {
 		t.Fatalf("control: the outbox holds no unfinished step record of %s while Dispatch is stopped: either Dispatch took each record (no outage) or the daemon wrote none", l.key)
 	}
@@ -146,9 +148,10 @@ func (l *stepRecordsLive) outage() {
 	l.dispatch.start()
 	l.note("Dispatch started again on the same database and port")
 	want := []stepWant{stepRecordsTen[6], stepRecordsTen[7], stepRecordsTen[8], stepRecordsTen[9]}
-	// A row Dispatch refused while it was stopped waits out its backoff, at most retryBackoff's
-	// cap, before it runs again, and the sweep finds a lease that lapsed within one more lease.
-	within := retryBackoff(6) + outboxLease
+	// A row Dispatch refused while it was stopped waits out its backoff, at most
+	// record.RetryBackoffMost, before it runs again, and the sweep finds a lease that lapsed within
+	// one more lease.
+	within := record.RetryBackoffMost + outboxLease
 	started := time.Now()
 	var last error
 	var lines []stepLine
@@ -174,7 +177,7 @@ func (l *stepRecordsLive) outage() {
 	}
 }
 
-// readByIssue is v-records, the read by issue: `dispatch steps` run as a person of the project
+// readByIssue is the read of an issue's steps: `dispatch steps` run as a person of the project
 // prints the header `<KEY>: 10 steps in 1 tasks` and one line for each of the walk's ten runs,
 // each ended with its result, each with an agent, and each of kind step with the model that
 // answered it. The control deletes the failed review's record from Dispatch's own store, its node
@@ -199,7 +202,7 @@ func (l *stepRecordsLive) readByIssue() {
 	if failed == "" {
 		t.Fatalf("GET /api/v1/issues/%s/steps holds no record of step 4 attempt 1", l.key)
 	}
-	l.deleteStepRecord(failed)
+	l.deleteNode(failed)
 	l.note("control: deleted the failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", failed)
 	out, err = l.stepsHoldTen("in the control, after the delete,")
 	if err == nil {
@@ -228,8 +231,8 @@ func (l *stepRecordsLive) writerRefused() {
 		}
 	}
 	status, answer := l.putStep(l.dispatch.token, id, write("ses_step_agent"))
-	if status != http.StatusForbidden || !strings.Contains(string(answer), "STEP_WRITER") {
-		t.Fatalf("PUT /api/v1/issues/%s/steps/%s as ses_step_agent = %d %s, want 403 STEP_WRITER", l.key, id, status, answer)
+	if status != http.StatusForbidden || !strings.Contains(string(answer), steprecord.CodeWriter) {
+		t.Fatalf("PUT /api/v1/issues/%s/steps/%s as ses_step_agent = %d %s, want 403 %s", l.key, id, status, answer, steprecord.CodeWriter)
 	}
 	if read, err := l.readSteps(); err != nil || l.holdsID(read, id) {
 		t.Fatalf("after the refused write the steps of %s read %v (%v), want no record %s", l.key, read, err, id)

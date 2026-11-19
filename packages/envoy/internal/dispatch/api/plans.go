@@ -2,12 +2,11 @@ package api
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -21,19 +20,20 @@ import (
 // tuples that hold the plans and the step records.
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
-// event and reads the issue with no open check. The read writes nothing, is one statement for the
-// whole project whatever the number of its issues, and a read-only token may call it
-// (readScopeRoutes).
+// event and reads the issue with no open check. The read writes nothing, reads the project, then
+// all its finished issues in one statement whatever their number, and a read-only token may call
+// it (readScopeRoutes).
 
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
-// error and 404 ISSUE_NOT_FOUND.
+// error and 404 ISSUE_NOT_FOUND, each the code contracts gives it, which the Legion daemon reads to
+// end a row on.
 const (
 	// codePlanInput is a plan value outside its form, or a plan that does not name its
 	// generation, its source and its tasks; the message names the field
 	// (workflowstore.ErrPlanInput).
-	codePlanInput = "PLAN_INPUT"
+	codePlanInput = contracts.PlanInputCode
 	// codePlanOtherIssue is an id whose plan is the plan of another issue.
-	codePlanOtherIssue = "PLAN_OTHER_ISSUE"
+	codePlanOtherIssue = contracts.PlanOtherIssueCode
 )
 
 // planRecordInput is the body PUT /api/v1/issues/{key}/plans/{id} takes: the writer, the run the
@@ -76,7 +76,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	issue, project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key)
 	if !ok {
 		return
 	}
@@ -90,7 +90,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	written, err := workflowstore.PutPlan(r.Context(), tx, workflowstore.PlanWrite{
-		ID: r.PathValue("id"), Issue: issue, Project: &project, Source: input.Source,
+		ID: r.PathValue("id"), Issue: key, Project: &project, Source: input.Source,
 		Generation: input.Generation, Document: input.document(), Tasks: tasks,
 	}, actor, time.Now())
 	switch {
@@ -111,11 +111,11 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, planRecord(written))
 }
 
-// document is the owner's document input states as the store's one value: nil where the body
-// names neither its artifact_id nor its version (each left out, null, "" or 0), and else both,
-// the one the body leaves out "" or 0, which the store refuses, naming it, after it has checked
-// the plan's generation and source.
-func (input planRecordInput) document() *workflowstore.PlanDocument {
+// document is the owner's document input states as the store's one value: each half the body
+// leaves out, or sends null, "" or 0, is "" or 0, which states nothing. The store refuses a half an
+// owner's plan leaves out, and a half a default plan names, naming it, after it has checked the
+// plan's generation and source.
+func (input planRecordInput) document() workflowstore.PlanDocument {
 	var document workflowstore.PlanDocument
 	if input.ArtifactID != nil {
 		document.ArtifactID = *input.ArtifactID
@@ -123,10 +123,7 @@ func (input planRecordInput) document() *workflowstore.PlanDocument {
 	if input.Version != nil {
 		document.Version = *input.Version
 	}
-	if document == (workflowstore.PlanDocument{}) {
-		return nil
-	}
-	return &document
+	return document
 }
 
 // listProjectPlans is each finished issue of one project, newest close first:
@@ -176,27 +173,11 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// parsePlansWindow is the plans read's [since, until) window on the close: each bound an RFC 3339
-// time, nil when the query leaves it out or blank, and since before until when both are given, as
-// the caller wrote them; the read rounds each up to the microsecond it compares. Its error is the
-// text of the route's 400 INVALID_QUERY.
+// parsePlansWindow is the plans read's [since, until) window on the close (parseWindow); the read
+// rounds each bound up to the microsecond it compares.
 func parsePlansWindow(query url.Values) (workflowstore.Window, error) {
-	var bounds [2]*time.Time
-	for index, bound := range []string{"since", "until"} {
-		text := strings.TrimSpace(query.Get(bound))
-		if text == "" {
-			continue
-		}
-		parsed, err := time.Parse(time.RFC3339, text)
-		if err != nil {
-			return workflowstore.Window{}, fmt.Errorf("%s must be an RFC 3339 time, such as 2026-11-01T00:00:00Z", bound)
-		}
-		bounds[index] = &parsed
-	}
-	if bounds[0] != nil && bounds[1] != nil && !bounds[0].Before(*bounds[1]) {
-		return workflowstore.Window{}, errors.New("since must be before until")
-	}
-	return workflowstore.Window{Since: bounds[0], Until: bounds[1]}, nil
+	since, until, err := parseWindow(windowBound{name: "since", text: query.Get("since")}, windowBound{name: "until", text: query.Get("until")})
+	return workflowstore.Window{Since: since, Until: until}, err
 }
 
 // planRecord is a plan as the routes answer it: the owner's document and version are null for a

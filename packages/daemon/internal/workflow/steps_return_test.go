@@ -57,7 +57,7 @@ func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint
 // body is changesBody, as the review's settlement moves it (settleRound).
 func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil {
 			return err
@@ -72,17 +72,19 @@ func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 		}
 		return engine.transition(ctx, tx, *issue, TriggerReviewRejected, "", reviewer, pr, changesBody)
 	})
+
 }
 
 // issueOf is key as the store holds it now.
 func issueOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) record.Issue {
 	t.Helper()
 	var issue *record.Issue
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = engine.store.Issue(ctx, tx, key)
 		return err
 	})
+
 	if issue == nil {
 		t.Fatalf("the store holds no %s", key)
 	}
@@ -94,11 +96,12 @@ func taskOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) record
 	t.Helper()
 	issue := issueOf(t, pool, engine, key)
 	var stored *record.StoredPlan
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = engine.store.Plan(ctx, tx, key, issue.Generation)
 		return err
 	})
+
 	if stored == nil || len(stored.Tasks) != 1 {
 		t.Fatalf("the plan of %s at generation %d = %+v, want one task", key, issue.Generation, stored)
 	}
@@ -109,16 +112,17 @@ func taskOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) record
 func roleRowOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role) record.PhaseRow {
 	t.Helper()
 	var row record.PhaseRow
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		row, err = engine.phaseRow(ctx, tx, key, role)
 		return err
 	})
+
 	return row
 }
 
 // startsOf is every start of role key's outbox holds, oldest first.
-func startsOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) []record.SuperviseRequest {
+func roleStartsOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) []record.SuperviseRequest {
 	t.Helper()
 	var starts []record.SuperviseRequest
 	for _, start := range superviseRowsOf(t, pool, key, "start") {
@@ -165,12 +169,12 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
-		implementerBefore, reviewerBefore := len(startsOf(t, pool, root.Key, claim.RoleImplementer)), len(startsOf(t, pool, root.Key, claim.RoleReviewer))
+		implementerBefore, reviewerBefore := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)), len(roleStartsOf(t, pool, root.Key, claim.RoleReviewer))
 
 		reviewRequestsChanges(t, pool, engine, root.Key)
 
 		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-		starts := startsOf(t, pool, root.Key, claim.RoleImplementer)
+		starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer)
 		if len(starts) != implementerBefore+1 {
 			t.Fatalf("the return wrote %d starts of the implementer, want one", len(starts)-implementerBefore)
 		}
@@ -182,7 +186,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		}
 		// An issue's one pending phase start the outbox has not run is replaced by the next one
 		// (record.Store.EnqueueStart), so the count can fall; it must not rise.
-		if got := len(startsOf(t, pool, root.Key, claim.RoleReviewer)); got > reviewerBefore {
+		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleReviewer)); got > reviewerBefore {
 			t.Fatalf("the return wrote %d starts of the reviewer, want none: the reviewer keeps its session for the next round", got-reviewerBefore)
 		}
 
@@ -245,7 +249,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		entry := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry
 
 		moveBack := rootsMoveBack(t, pool, root.Key, phase.Testing, "the widget does not render")
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			result, err := engine.Apply(ctx, tx, moveBack)
 			if err == nil && result.Refusal != nil {
 				t.Fatalf("the owner's move back was refused: %+v", result.Refusal)
@@ -284,7 +288,7 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), "update plan_steps set type = 'review' where issue = $1 and task = 'a' and position = 1", root.Key); err != nil {
 		t.Fatalf("store the implementer step's type as review: %v", err)
 	}
-	implementerBefore := len(startsOf(t, pool, root.Key, claim.RoleImplementer))
+	implementerBefore := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 
 	reviewRequestsChanges(t, pool, engine, root.Key)
 
@@ -300,7 +304,7 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 		task.Place != (record.TaskPlace{Kind: record.PlaceStep, Position: 3}) {
 		t.Fatalf("task a is %s (%q) at %+v, want stopped at step 3 with the reason %q", task.State, task.StoppedReason, task.Place, why)
 	}
-	if got := len(startsOf(t, pool, root.Key, claim.RoleImplementer)); got != implementerBefore {
+	if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got != implementerBefore {
 		t.Fatalf("the stop started the implementer %d times, want none", got-implementerBefore)
 	}
 	// A notice is the architect's to read, and names the role and the phase it is about, as the
@@ -332,18 +336,18 @@ func failedTest(key string, returnTo int, handoff string) intake.HandoffComplete
 		Verdict: "fail", HandoffRecord: handoff, HandoffVersion: 1, ReturnTo: returnTo}
 }
 
-// standing is what a refused completion must leave as it found: the issue, its task where it has
+// recordAt is what a refused completion must leave as it found: the issue, its task where it has
 // plan rows, the tester's phases row and the number of outbox rows.
-type standing struct {
+type recordAt struct {
 	issue  record.Issue
 	task   *record.PlanTask
 	tester record.PhaseRow
 	outbox int
 }
 
-func standingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, planned bool) standing {
+func standingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, planned bool) recordAt {
 	t.Helper()
-	now := standing{issue: issueOf(t, pool, engine, key), tester: roleRowOf(t, pool, engine, key, claim.RoleTester), outbox: outboxRows(t, pool)}
+	now := recordAt{issue: issueOf(t, pool, engine, key), tester: roleRowOf(t, pool, engine, key, claim.RoleTester), outbox: outboxRows(t, pool)}
 	if planned {
 		task := taskOf(t, pool, engine, key)
 		now.task = &task
@@ -353,7 +357,7 @@ func standingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, pl
 
 // assertRefusedReturnTo fails unless result is the 409 RETURN_REFUSED whose message is want, and
 // key stands as it stood before the completion (before).
-func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, result intake.Result, want string, before standing) {
+func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, result intake.Result, want string, before recordAt) {
 	t.Helper()
 	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "RETURN_REFUSED" || result.Refusal.Message != want {
 		t.Fatalf("the completion = %+v, want the 409 RETURN_REFUSED %q", result.Refusal, want)
@@ -387,14 +391,14 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 
 	t.Run("returnTo 1 returns the task to the planner, which gets the tester's report", func(t *testing.T) {
 		pool, engine, root := planned(t)
-		planners, implementers := len(startsOf(t, pool, root.Key, claim.RolePlanner)), len(startsOf(t, pool, root.Key, claim.RoleImplementer))
+		planners, implementers := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner)), len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 
 		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
 
 		assertWalksAt(t, pool, engine, root.Key, phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-		starts := startsOf(t, pool, root.Key, claim.RolePlanner)
+		starts := roleStartsOf(t, pool, root.Key, claim.RolePlanner)
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
@@ -402,7 +406,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) {
 			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q", start, report)
 		}
-		if got := len(startsOf(t, pool, root.Key, claim.RoleImplementer)); got > implementers {
+		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got > implementers {
 			t.Fatalf("the return wrote %d starts of the implementer, want none: the report named the planner", got-implementers)
 		}
 		if counts := taskOf(t, pool, engine, root.Key).Counts; counts.Pass != 1 || counts.BackwardMoves[phase.Pair(phase.Testing, phase.Planning)] != 1 {

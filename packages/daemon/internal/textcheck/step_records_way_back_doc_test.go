@@ -17,8 +17,6 @@ import (
 // embedded migrations (internal/store/migrations, as the guide's migration list is), so neither
 // half reads a file of another package.
 const (
-	// stepRecordsRollForward is the version of the roll forward whose header carries the block.
-	stepRecordsRollForward = 20261117064152
 	// stepRecordsWayBackFirst opens the block in the header and in the guide.
 	stepRecordsWayBackFirst = "insert into step_starts_rollback (issue, tree, witness, taken_at)"
 	// stepRecordsWayBackSection is the heading of the guide's section that gives the block, which
@@ -29,25 +27,24 @@ const (
 
 // stepRecordsMigrations are the versions of the release's migrations: the outbox kind's, the
 // tables' and the roll forward's.
-var stepRecordsMigrations = []int{20261117000528, 20261117004117, stepRecordsRollForward}
+var stepRecordsMigrations = []int{20261117000528, 20261117004117, migrations.StepRecordsRollForward}
 
 // stepRecordsWayBackMark is the line that deletes the roll forward's version row, which closes the
 // block and which no other rollback's block carries.
-var stepRecordsWayBackMark = fmt.Sprintf("delete from schema_version where version = %d;", stepRecordsRollForward)
+var stepRecordsWayBackMark = fmt.Sprintf("delete from schema_version where version = %d;", migrations.StepRecordsRollForward)
 
 // The guide's way back of the release that records each step is the block its roll forward's
 // header carries, line for line: an edit to either alone fails here, since the store's test runs
 // the header's and an operator runs the guide's.
 func TestTheStepRecordsWayBackIsOneTextInTheRollForwardAndTheGuide(t *testing.T) {
-	header := stepRecordsWayBackOfTheHeader(t)
-	guide := wayBackBlockOfTheGuide(t, stepRecordsWayBackSection, stepRecordsWayBackMark,
-		fmt.Sprintf("the header of migration %d", stepRecordsRollForward))
-	if header == guide {
-		return
+	name := "the header of " + migrationNames(t, migrations.StepRecordsRollForward)[0]
+	header := headersWayBack(t, migrations.StepRecordsRollForward, name)
+	if first, _, _ := strings.Cut(header, "\n"); first != stepRecordsWayBackFirst {
+		t.Fatalf("the way back of migration %d opens %q, want %q", migrations.StepRecordsRollForward, first, stepRecordsWayBackFirst)
 	}
-	t.Errorf("the header of migration %d and %s's way back disagree:\n%s"+
-		"the store's test runs the header's block and an operator the guide's; change them in one commit",
-		stepRecordsRollForward, wayBackGuide, wayBackBlockDifference("the header", header, guide))
+	assertIsTheGuidesBlock(t, heldBlock{Text: header, Name: name, Label: "the header",
+		Why: "the store's test runs the header's block and an operator the guide's"},
+		stepRecordsWayBackSection, stepRecordsWayBackMark)
 }
 
 // The guide's list of the migrations recorded above the phase entry sends an operator from each
@@ -63,7 +60,7 @@ func TestTheStepRecordsMigrationsEntriesLinkTheirWayBack(t *testing.T) {
 		t.Errorf("%s's section %v: the entries of the release's migrations link it by its anchor, #%s, "+
 			"so the heading and those links change together", wayBackGuide, err, sectionAnchor(stepRecordsWayBackSection))
 	}
-	for _, migration := range stepRecordsMigrationNames(t) {
+	for _, migration := range migrationNames(t, stepRecordsMigrations...) {
 		if err := entryLinkIn(guide, migration, stepRecordsWayBackSection); err != nil {
 			t.Errorf("%s's list of the migrations recorded above %s: %v: give the entry the link [%s](#%s), since "+
 				"a rollback to a release before %s takes that section's steps with the phase entry's block",
@@ -73,10 +70,10 @@ func TestTheStepRecordsMigrationsEntriesLinkTheirWayBack(t *testing.T) {
 	}
 }
 
-// stepRecordsMigrationNames is the name the guide writes of each of the release's migrations, read
-// from the embedded migrations by version. A set without one of them stops the test, since the
-// entry it would hold is the one that names it.
-func stepRecordsMigrationNames(t *testing.T) []string {
+// migrationNames is the name the guide writes of each version given, read from the embedded
+// migrations: the migration's file name without its `.up.sql`. A version the set does not hold
+// stops the test by name, since the entry that names it is what the caller holds the guide to.
+func migrationNames(t *testing.T, versions ...int) []string {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
@@ -84,29 +81,12 @@ func stepRecordsMigrationNames(t *testing.T) []string {
 	}
 	var names []string
 	for _, migration := range all {
-		if slices.Contains(stepRecordsMigrations, migration.Version) {
+		if slices.Contains(versions, migration.Version) {
 			names = append(names, strings.TrimSuffix(migration.Name, ".up.sql"))
 		}
 	}
-	if len(names) != len(stepRecordsMigrations) {
-		t.Fatalf("the daemon embeds %v of the release that records each step's migrations %v", names,
-			stepRecordsMigrations)
+	if len(names) != len(versions) {
+		t.Fatalf("the daemon embeds %v of the migrations %v", names, versions)
 	}
 	return names
-}
-
-// stepRecordsWayBackOfTheHeader is the block the roll forward's header carries, read by the one
-// reader of it (migrations.WayBack) that internal/store's test runs, so the text held to the guide
-// is the text that test runs. A header with no such block stops the test, and so does a block that
-// does not open with stepRecordsWayBackFirst: the guide's block is read from that line on.
-func stepRecordsWayBackOfTheHeader(t *testing.T) string {
-	t.Helper()
-	block, err := migrations.WayBack(stepRecordsRollForward)
-	if err != nil {
-		t.Fatalf("read the way back of the step records' roll forward: %v", err)
-	}
-	if first, _, _ := strings.Cut(block, "\n"); first != stepRecordsWayBackFirst {
-		t.Fatalf("the way back of migration %d opens %q, want %q", stepRecordsRollForward, first, stepRecordsWayBackFirst)
-	}
-	return block
 }

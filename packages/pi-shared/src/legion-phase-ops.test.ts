@@ -1,14 +1,18 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { LEGION_PHASE_BACKWARD_TARGETS } from "@legion/contracts/legion-api";
+import {
+  LEGION_PHASE_BACKWARD_TARGETS,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+} from "@legion/contracts/legion-api";
 import { z } from "zod";
+import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
+import { stateAtPhase } from "../test/daemon-state";
 import { createLegionDaemonClient } from "./daemon-client";
 import type { HandoffReport } from "./handoff-record";
 import {
   type ClaimCapability,
-  type DeclaredNumber,
-  declaredNumber,
   executePhaseOp,
   legionToolDescription,
   PHASE_OP_SENTENCES,
@@ -42,6 +46,11 @@ const REPORT = {
   handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
   handoffVersion: 2,
 };
+
+/** What the implementer's retro reports in the pane: the commit alone, since a retro ends with no
+ * handoff record and the daemon refuses a retro's completion that names one
+ * (`HANDOFF_RECORD_MISMATCH`). */
+const RETRO_REPORT = { commit: "c".repeat(40) };
 
 /** A daemon refusal as its route answers it: the status, the code and the sentence. */
 type DaemonRefusal = { readonly status: number; readonly code: string; readonly error: string };
@@ -125,35 +134,6 @@ test("the phase ops' fields, as a host declares them, are every field of every o
   expect(Object.keys(phaseOpParameters(z)).sort()).toEqual([...fields].sort());
 });
 
-// A number field is declared to the host with the bounds its own checks give, in whatever order
-// they were written, and with none on a side it bounds nowhere; the test above holds plan_rating's
-// declaration to 1 and 5. zod's `int()` writes the safe integer range into a schema's `_zod.bag`
-// as it attaches, over a bound written before it, so a reading of the bag declares that range for
-// a side with no bound, and in place of a `min()` written before `int()`. An exclusive bound,
-// which the host's number takes no form of, throws, and so does a check this does not map.
-test("a phase op's number field declares the bounds its checks give, in any order, and none on a side with none", () => {
-  const cases: readonly (readonly [z.ZodNumber, DeclaredNumber])[] = [
-    [z.number(), { int: false }],
-    [z.number().int(), { int: true }],
-    [z.number().min(1).int(), { int: true, min: 1 }],
-    [z.number().max(5).int(), { int: true, max: 5 }],
-    [z.number().int().min(1).max(5), { int: true, min: 1, max: 5 }],
-    [z.number().max(5).int().min(1), { int: true, min: 1, max: 5 }],
-    [z.number().min(1).min(3).max(9).max(5), { int: false, min: 3, max: 5 }],
-  ];
-  for (const [field, declared] of cases) {
-    expect(declaredNumber("n", field)).toStrictEqual(declared);
-  }
-  for (const field of [z.number().gt(0), z.number().int().lt(5), z.number().positive().int()]) {
-    expect(() => declaredNumber("n", field)).toThrow(
-      "phase op field n has an exclusive bound, which phaseOpParameters does not map"
-    );
-  }
-  expect(() => declaredNumber("n", z.number().int().multipleOf(2))).toThrow(
-    "phase op field n has a multiple_of check, which phaseOpParameters does not map"
-  );
-});
-
 test("the description sets the host's sentences before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
   const bare = legionToolDescription({ envoyPublish: "envoy_publish" });
   const placed = legionToolDescription({
@@ -170,7 +150,7 @@ test("the description sets the host's sentences before and after handoff_complet
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
   expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
@@ -336,20 +316,16 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
   });
 });
 
-/** `state.json` with LEGION-208 at `phase`. */
-function stateAtPhase(phase: string): Record<string, unknown> {
-  const state = daemonFixture("state.json") as { issues: Record<string, object> };
-  return {
-    ...state,
-    issues: { ...state.issues, "LEGION-208": { ...state.issues["LEGION-208"], phase } },
-  };
-}
-
 // The agent that does the retro rates the plan the issue ran in the completion that ends the
 // retro. Which completion that is, is the daemon's to say (PLAN_RATING_UNEXPECTED,
 // PLAN_RATING_REQUIRED), so the tool sends the two fields as given, under the daemon's names.
 test("the retro's completion sends plan_rating and plan_reason as planRating and planReason", async () => {
-  const { ops, routes, posted, lookups } = runtime(implementer, stateAtPhase("retro"));
+  const { ops, routes, posted, lookups } = runtime(
+    implementer,
+    stateAtPhase("retro"),
+    undefined,
+    RETRO_REPORT
+  );
   const reason = "The tester found the bug the plan had left out.";
   await expect(
     executePhaseOp(ops, {
@@ -365,7 +341,7 @@ test("the retro's completion sends plan_rating and plan_reason as planRating and
     grantId: "grant-for-one-command",
     summary: "Retro done.",
     verdict: "",
-    ...REPORT,
+    ...RETRO_REPORT,
     planRating: 4,
     planReason: reason,
   });
@@ -386,10 +362,12 @@ test("the retro's completion sends plan_rating and plan_reason as planRating and
 });
 
 // Which completion ends the retro is the daemon's to say from phase.Of, never from the issue's
-// phase: the implementer's late completion of retro, once the issue has moved on to merging, still
-// ends the retro and takes its rating, and a completion of implementing that carries one is the
-// daemon's to refuse (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any
-// phase, since a filter on the record's phase would drop a rating the agent believes it gave.
+// phase: the implementer's late completion of retro, once the issue has moved on to merging, is
+// still of retro, so the daemon reads its rating (and its workflow then refuses it
+// HANDOFF_NOT_CURRENT_PHASE, since the retro's completion already stands, and writes no rating of
+// it), and a completion of implementing that carries one is the daemon's to refuse
+// (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any phase, since a filter
+// on the record's phase would drop a rating the agent believes it gave.
 test("a rating is sent on a completion at any phase: the late retro's at merging, and one at implementing that the daemon refuses PLAN_RATING_UNEXPECTED", async () => {
   // A retro writes no handoff record, so the pane reports the commit alone for it.
   const lateHead = "b".repeat(40);
@@ -450,26 +428,22 @@ test("a rating is sent on a completion at any phase: the late retro's at merging
 
 // A rating's rule is the daemon's, and this tool states it again so that it refuses a rating by
 // the field's name before any request. Every case the daemon's golden test answered
-// (`plan-rating-cases.json`, internal/api's TestPlanRatingCasesGolden) goes through the executor
-// as the retro's completion: the tool takes exactly the cases the daemon accepted and posts each
-// rating and reason as it was given, and refuses every other case naming a rating field, with no
-// request sent. Blank is Go's strings.TrimSpace on the daemon's side, where JavaScript's trim
-// keeps U+0085 and strips U+FEFF (`@legion/contracts/go-blank`).
+// (`plan-rating-cases.json`, internal/api's TestPlanRatingCasesGolden), parsed with the schema the
+// contract's own test parses it with, goes through the executor as the retro's completion: the
+// tool takes exactly the cases the daemon accepted and posts each rating and reason as it was
+// given, and refuses every other case naming a rating field, with no request sent. Blank is Go's
+// strings.TrimSpace on the daemon's side, not JavaScript's trim; `goBlankPattern`'s doc comment
+// (`@legion/contracts/go-blank`) names the two characters on which the two differ.
 test("the tool takes exactly the ratings the daemon takes, and sends a refused one nowhere", async () => {
-  const { cases } = daemonFixture("plan-rating-cases.json") as {
-    readonly cases: readonly {
-      readonly name: string;
-      readonly planRating?: number;
-      readonly planReason?: string;
-      readonly verdict: string;
-    }[];
-  };
-  expect(cases.some((c) => c.verdict === "accepted")).toBe(true);
-  expect(cases.some((c) => c.verdict !== "accepted")).toBe(true);
-  expect(cases.map((c) => c.planReason)).toEqual(expect.arrayContaining(["\u0085", "\uFEFF"]));
+  const { cases } = PlanRatingCases.parse(daemonFixture("plan-rating-cases.json"));
   const parted: string[] = [];
   for (const c of cases) {
-    const { ops, routes, posted } = runtime(implementer, stateAtPhase("retro"));
+    const { ops, routes, posted } = runtime(
+      implementer,
+      stateAtPhase("retro"),
+      undefined,
+      RETRO_REPORT
+    );
     const rating = {
       ...(c.planRating === undefined ? {} : { plan_rating: c.planRating }),
       ...(c.planReason === undefined ? {} : { plan_reason: c.planReason }),
@@ -489,7 +463,7 @@ test("the tool takes exactly the ratings the daemon takes, and sends a refused o
         grantId: "grant-for-one-command",
         summary: "Retro done.",
         verdict: "",
-        ...REPORT,
+        ...RETRO_REPORT,
         planRating: c.planRating,
         planReason: c.planReason,
       };
@@ -504,13 +478,15 @@ test("the tool takes exactly the ratings the daemon takes, and sends a refused o
 });
 
 // The description is where every host's agent reads what the completion that ends the retro
-// carries: the two fields, the scale, and the daemon's refusals of a rating.
-test("the description tells the agent that does the retro to rate the plan in its completion, and names the daemon's refusals of a rating", () => {
+// carries: the two fields, the scale, the skill that states the rule, and the daemon's refusals of
+// a rating.
+test("the description names the retro's rating fields, its scale, its skill and the daemon's refusals of a rating", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
   for (const words of [
-    "The agent that does the retro rates the plan the issue ran",
-    "`plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work)",
+    "`plan_rating`",
+    `(${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST})`,
     "`plan_reason`",
+    "skill://legion-retro",
     "PLAN_RATING_UNEXPECTED",
     "PLAN_RATING_INPUT",
     "PLAN_RATING_REQUIRED",
@@ -519,7 +495,7 @@ test("the description tells the agent that does the retro to rate the plan in it
   }
 });
 
-// Contract 162: a tester's fail names the step its task returns to, `return_to`, which goes on the
+// Contract 171: a tester's fail names the step its task returns to, `return_to`, which goes on the
 // wire as the daemon's `returnTo`; a completion that names none sends none.
 test("a tester's fail sends return_to as returnTo", async () => {
   const tester = { ...implementer, role: "tester" as const };
@@ -742,13 +718,7 @@ function closedRuntime(
   const posted: Record<string, unknown>[] = [];
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
-    if (route === "/legion/v1/state") {
-      const state = daemonFixture("state.json") as { issues: Record<string, object> };
-      return Response.json({
-        ...state,
-        issues: { "LEGION-208": { ...state.issues["LEGION-208"], phase: "done", ...record } },
-      });
-    }
+    if (route === "/legion/v1/state") return Response.json(stateAtPhase("done", record));
     if (typeof init?.body === "string") posted.push(JSON.parse(init.body));
     if (route === "/legion/v1/grants") return Response.json(daemonFixture("grant.json"));
     if (route === "/legion/v1/handoff/complete" && refusal !== undefined) {

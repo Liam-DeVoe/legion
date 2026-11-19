@@ -38,7 +38,7 @@ func seedOwnersPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 func walkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) Walk {
 	t.Helper()
 	var w Walk
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil || issue == nil {
 			return fmt.Errorf("read %s: %v (recorded %t)", key, err, issue != nil)
@@ -46,6 +46,7 @@ func walkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) Walk {
 		w, err = engine.walk(ctx, tx, *issue)
 		return err
 	})
+
 	return w
 }
 
@@ -97,13 +98,14 @@ func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, pl
 
 func leaveAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status string) {
 	t.Helper()
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil {
 			return err
 		}
 		return engine.leave(ctx, tx, *issue, status)
 	})
+
 }
 
 // The task's place and issues.phase move in one write: after each move of an issue with plan rows,
@@ -233,7 +235,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		seedOwnersPlan(t, pool, issue.Key, issue.Generation)
 		walkToMerge(t, pool, engine, issue.Key)
 		leaveAs(t, pool, engine, "LEGION-208", "done")
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			stored, err := engine.store.Issue(ctx, tx, issue.Key)
 			if err != nil {
 				return err
@@ -249,6 +251,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			_, err = engine.closeMerged(ctx, tx, *stored, pr)
 			return err
 		})
+
 		if err := taskStands(t, pool, engine, issue.Key, merge, record.TaskDone, phase.Done); err != nil {
 			t.Fatal(err)
 		}
@@ -260,7 +263,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		issue := child(t, pool)
 		seedOwnersPlan(t, pool, issue.Key, issue.Generation)
 		walkToMerge(t, pool, engine, issue.Key)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			stored, err := engine.store.Issue(ctx, tx, issue.Key)
 			if err != nil {
 				return err
@@ -268,6 +271,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			stored.Phase, stored.Hold = phase.Done, nil
 			return engine.store.PutIssue(ctx, tx, *stored)
 		})
+
 		if err := taskStands(t, pool, engine, issue.Key, merge, record.TaskRunning, phase.Done); err == nil {
 			t.Fatal("the check passed a phase written without its task: it cannot see a write that skips the task")
 		}

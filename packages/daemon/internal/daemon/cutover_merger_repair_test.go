@@ -82,11 +82,11 @@ const cutoverStoredSeq = 5
 // that a closed design gate held: once the gate opens the test makes the row due at once, and the
 // outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to run it. A try of that
 // row that read the gate closed just before the test opened it can still record its retry after
-// the test made the row due, which puts the row back on its backoff, up to the outbox's 64 seconds
-// (retryBackoff), so the bound stays above that. It is the bound a fault is reported at, so a slow
-// machine is no failure, and a start that never comes fails here rather than at the package's
-// deadline. cutoverPoll is how often a wait asks: most questions are a read of the daemon's claims
-// over its API or of its database.
+// the test made the row due, which puts the row back on its backoff, up to the outbox's 64
+// seconds (record.RetryBackoff), so the bound stays above that. It is the bound a fault is
+// reported at, so a slow machine is no failure, and a start that never comes fails here rather
+// than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a read
+// of the daemon's claims over its API or of its database.
 const (
 	cutoverWait = 90 * time.Second
 	cutoverPoll = 100 * time.Millisecond
@@ -309,8 +309,8 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	approved := 2
 	putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: rig.e.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + rig.e.key,
 		LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
-	// The held start waits on its row's backoff, up to the outbox's 64 seconds (retryBackoff):
-	// made due now, it runs at the outbox's next sweep.
+	// The held start waits on its row's backoff, up to the outbox's 64 seconds
+	// (record.RetryBackoff): made due now, it runs at the outbox's next sweep.
 	if _, err := rig.pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'supervise'", rig.e.key); err != nil {
 		t.Fatalf("let the backoff of E's merger start go: %v", err)
 	}
@@ -402,6 +402,10 @@ type cutoverRig struct {
 	built   *built
 	board   *liveDispatch
 	o       overrides
+	// engine is the workflow engine the daemon booted on cfg builds (engineConfig), which
+	// composes every task it sends a merger, so the task a test expects is the one it composes
+	// (resumeTaskOf).
+	engine *workflow.Engine
 	// daemon is the running boot, and logs is its log alone, so each boot's records are read
 	// apart.
 	daemon *daemon
@@ -476,7 +480,8 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 		t.Fatal(err)
 	}
 	rig := &cutoverRig{cfg: cfg, project: project, pool: st.Pool(), records: record.NewStore(), built: &built{},
-		board: newLiveDispatch(t, cfg.Project), agents: map[claim.Token][]*cutoverAgent{}, upgraded: map[string]cutoverMergerRow{}}
+		engine: workflow.New(record.NewStore(), engineConfig(cfg, "", nil), quietLogger()),
+		board:  newLiveDispatch(t, cfg.Project), agents: map[claim.Token][]*cutoverAgent{}, upgraded: map[string]cutoverMergerRow{}}
 	rig.board.lists = true
 	rig.cfg.DispatchURL = rig.board.url
 	for i, issue := range []*cutoverIssue{&rig.a, &rig.g, &rig.e, &rig.d, &rig.op, &rig.b, &rig.n, &rig.c, &rig.te, &rig.s} {
@@ -733,8 +738,8 @@ func cutoverAssignment(issue string, p phase.Phase) string {
 }
 
 // cutoverSlotRepairTask is the task legion-v19.57.3's repair of a slot whose worker held no task
-// (its ResumeSlottedWorker) wrote on a start of issue's merger on merging: that release's
-// ResumePhaseTask, whose title the old record gives as the key. That release's withApprovedHead
+// (its ResumeSlottedWorker) wrote on a start of issue's merger on merging: that release's resume
+// task, whose title the old record gives as the key. That release's withApprovedHead
 // appends no approved head, since the record holds no review round's approval.
 func cutoverSlotRepairTask(issue string) string {
 	return fmt.Sprintf("Continue %s. Issue: %s. Phase: merging. Resume the existing phase work.", issue, issue)
@@ -755,8 +760,12 @@ func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 	if err := r.records.PutIssue(ctx, tx, control); err != nil {
 		t.Fatalf("record the control issue: %v", err)
 	}
+	task, err := r.engine.ResumeTask(ctx, tx, control)
+	if err != nil {
+		t.Fatalf("compose the control issue's resume task: %v", err)
+	}
 	if err := workflow.StartOrOwe(ctx, tx, r.records, control.Key, record.SuperviseRequest{Op: "start", Tree: control.Tree,
-		Role: claim.RoleMerger, Generation: control.Generation, Phase: phase.Merging, Task: workflow.ResumePhaseTask(control, workflow.WorkingCopy(control, nil), ""),
+		Role: claim.RoleMerger, Generation: control.Generation, Phase: phase.Merging, Task: task,
 		ResumeTask: true, RuleResume: true}, time.Now()); err != nil {
 		t.Fatalf("owe the control issue's merger a start: %v", err)
 	}
@@ -876,15 +885,11 @@ func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 }
 
 // toldOnce holds that issue's merger was given exactly one task over its whole life in this
-// test, and that it is the merging task: the resume task of the phase it holds
-// (workflow.ResumePhaseTask), read from the issue as the record holds it now.
+// test, and that it is the merging task: the resume task of the phase it holds, as the daemon's
+// engine composes it from the issue as the record holds it now (resumeTaskOf).
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	t.Helper()
-	stands := readIssue(t, r.pool, issue.key)
-	if stands == nil {
-		t.Fatalf("read %s: the record does not hold it", issue.key)
-	}
-	want := workflow.ResumePhaseTask(*stands, rigWorkingCopy(r.cfg, *stands), "")
+	want := resumeTaskOf(t, r.pool, r.engine, issue.key)
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
 	}

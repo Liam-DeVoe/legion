@@ -59,11 +59,12 @@ func subArchitect(t *testing.T, key string) claim.Token {
 func openStepOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) record.StepEntry {
 	t.Helper()
 	var entry record.StepEntry
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		entry, err = engine.store.OpenStep(ctx, tx, key)
 		return err
 	})
+
 	return entry
 }
 

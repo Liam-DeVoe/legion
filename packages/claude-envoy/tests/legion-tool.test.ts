@@ -5,6 +5,7 @@ import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legion-phase-ops"
+import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -159,7 +160,7 @@ test("declares the five phase-worker operations under one op, and names the Envo
     `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`
   )
   expect(definition.description).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. What a later phase needs",
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
@@ -206,11 +207,7 @@ test("handoff_complete finds the record and commit for the issue's phase and the
 // The agent that does the retro rates the plan in the completion that ends it, through this tool
 // as through every host's: the two fields reach the daemon under its own names.
 test("the retro's handoff_complete sends its rating of the plan as planRating and planReason", async () => {
-  const golden = (await daemonFixture("state.json")) as { issues: Record<string, object> }
-  const { client, requests } = await daemon({
-    ...golden,
-    issues: { ...golden.issues, "LEGION-208": { ...golden.issues["LEGION-208"], phase: "retro" } },
-  })
+  const { client, requests } = await daemon(stateAtPhase("retro"))
   const lookups: string[] = []
   const standing = "c".repeat(40)
   const reason = "The reviewer's second round found what the plan had left out."
@@ -242,7 +239,7 @@ test("the retro's handoff_complete sends its rating of the plan as planRating an
 })
 
 // A tester's fail names the step its task returns to through this tool as through every host's
-// (contract 162): `return_to` reaches the daemon as its own `returnTo`.
+// (contract 171): `return_to` reaches the daemon as its own `returnTo`.
 test("a tester's fail sends return_to as returnTo", async () => {
   const golden = (await daemonFixture("state.json")) as { issues: Record<string, object> }
   const { client, requests } = await daemon({

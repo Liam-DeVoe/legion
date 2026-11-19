@@ -186,7 +186,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			}
 			entry := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry
 			writes, statuses := len(stepWrites(t, pool, root.Key)), len(statusWrites(t, pool, root.Key))
-			starts := len(startsOf(t, pool, root.Key, claim.RoleImplementer))
+			starts := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 			todo := personsTodo(root.Key)
 			todo.Seq = 3
 
@@ -203,7 +203,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			if got := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry; got != entry {
 				t.Fatalf("the implementer's entry is %d after the todo, want %d", got, entry)
 			}
-			if got := len(startsOf(t, pool, root.Key, claim.RoleImplementer)); got != starts {
+			if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got != starts {
 				t.Fatalf("the todo queued %d starts of the implementer, want none", got-starts)
 			}
 			if w, s := len(stepWrites(t, pool, root.Key)), len(statusWrites(t, pool, root.Key)); w != writes || s != statuses {
@@ -226,7 +226,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Implementing || issue.Hold != nil {
 			t.Fatalf("%s with no plan rows after the todo stands in %s with hold %+v, want implementing with no hold", root.Key, issue.Phase, issue.Hold)
 		}
-		starts := startsOf(t, pool, root.Key, claim.RoleImplementer)
+		starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer)
 		if len(starts) != 1 || starts[0].Phase != phase.Implementing || !strings.Contains(starts[0].Task, "Reason: the issue was set to todo while its phase was held.") {
 			t.Fatalf("the implementer's starts = %+v, want one of implementing naming the release", starts)
 		}

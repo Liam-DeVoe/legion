@@ -63,11 +63,11 @@ func registerPlan(h *harness, grant, issue, artifactID string, version int) *htt
 	}, nil)
 }
 
-// assertRefusalText is assertFailure with the refusal's sentence held to its exact words.
+// assertRefusalText is refused with the refusal's sentence held to its exact words.
 func assertRefusalText(t *testing.T, recorder *httptest.ResponseRecorder, status int, code, text string) {
 	t.Helper()
 	body := recorder.Body.String()
-	assertFailure(t, recorder, status, code)
+	refused(t, recorder, status, code)
 	var failure Failure
 	if err := json.Unmarshal([]byte(body), &failure); err != nil {
 		t.Fatalf("decode %s: %v", body, err)
@@ -121,7 +121,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	statuses.givePlan(planDoc, 5, taskBlock("a", ""))
 	statuses.givePlan(planDoc, 6, taskBlock(plan.DefaultTask, ""), taskBlock("a", "implementer reviewer"))
 
-	assertFailure(t, registerPlan(h, worker.grant(t), "LEGION-208", planDoc, 4), http.StatusForbidden, "ARCHITECT_REQUIRED")
+	refused(t, registerPlan(h, worker.grant(t), "LEGION-208", planDoc, 4), http.StatusForbidden, "ARCHITECT_REQUIRED")
 	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 10), http.StatusConflict, "VERSION_NOT_IN_DISPATCH",
 		"Dispatch shows "+planDoc+" at version 9, not 10; give register_plan a version that Dispatch has")
 	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
@@ -371,7 +371,7 @@ func TestStopTaskRecordsTheOwnersStop(t *testing.T) {
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 
-	assertFailure(t, stopTask(h, worker.grant(t), "LEGION-208", "a"), http.StatusForbidden, "ARCHITECT_REQUIRED")
+	refused(t, stopTask(h, worker.grant(t), "LEGION-208", "a"), http.StatusForbidden, "ARCHITECT_REQUIRED")
 	assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-208", " "), http.StatusBadRequest, "MISSING_FIELD", "task is required")
 	assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-404", "a"), http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 	assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-500", "a"), http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")

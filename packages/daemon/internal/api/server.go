@@ -73,9 +73,10 @@ type Options struct {
 	// Supervisor is the claims the claim and operator routes post their requests to.
 	Supervisor Supervisor
 	// AwaitStream waits, bounded, until the claim's machine has handled every worker-stream event
-	// the daemon had read when it was called (the daemon's awaitStream). A route that applies an
-	// agent's own request ending the agent's step calls it first, so the record of that step names
-	// the model whose answer the stream read ahead of the request. Nil waits for nothing.
+	// the daemon had read when it was called (the daemon's awaitStream). apply calls it before a
+	// fact of an agent's own request where the record names that agent the agent of a run the fact
+	// may end, so the record of that step names the model whose answer the stream read ahead of
+	// the request. Nil waits for nothing.
 	AwaitStream func(ctx context.Context, token claim.Token)
 	// PodUpdateRounds answers what the daemon's last pod-update sweep decided, which the claim
 	// listing carries beside the claims (the daemon's podUpdateRoundsView). Nil answers the zero
@@ -161,8 +162,10 @@ type Options struct {
 	Decisions *RouteDecisions
 	// Log receives what the routes decide; nil is slog.Default().
 	Log *slog.Logger
-	// Tokens mints the GitHub App leases credential routes return after redeeming a grant.
-	Tokens appauth.Tokens
+	// Tokens mints the GitHub App leases credential routes return after redeeming a grant, and
+	// answers the owners each App is installed on, which the controller's gh bundle holds one
+	// directory per owner of (appauth.Source, appauth.ControllerCredential).
+	Tokens appauth.Source
 	// GitHubRepositories are the project's repositories as the daemon serves them
 	// (daemon's repositories.Accepted): the controller's gh bundle holds a read-only token per
 	// owner of them, each narrowed to that owner's repositories (appauth.ControllerCredential).
@@ -219,9 +222,15 @@ type Options struct {
 	// architect at once when the recovery will not record it (enterTodoChild). Nil leaves none out.
 	RepositoryUnread func(resolved string) bool
 	// AwaitRecovery leaves a child release_children left unrecorded on an unread repository to that
-	// repository's recovery (the daemon's awaitRecovery), which tells the tree's architect of each
-	// such child it did not record. Nil leaves none.
-	AwaitRecovery func(repo, tree, child, parent string)
+	// repository's recovery (the daemon's awaitRecovery), which tells the architect of each such
+	// child it did not record — the one that owns the child's parent when the record holds that
+	// parent in tree, else the tree's — and answers whether it did. False means the daemon no longer
+	// holds that repository unread — its recovery stopped waiting on GitHub for it between the
+	// route's RepositoryUnread read and this call — so no recovery will come for the child and none
+	// will tell its architect: the route must then schedule the child-release retry
+	// (scheduleChildReleaseRetry), exactly as for a child on no unread repository, rather than
+	// answer it released and wait. Nil leaves none, and holds every child released as before.
+	AwaitRecovery func(repo, tree, child, parent string) bool
 	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
 	// phase worker applies its issue's held phase only when that phase's role is the claim's
 	// (retryClaim); nil retries no held phase, leaving every one to its architect.
@@ -309,7 +318,7 @@ type server struct {
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
 	callerPod   func(addr netip.Addr) (string, bool)
 	supervisor  Supervisor
-	// awaitStream is Options.AwaitStream (awaitStreamOf).
+	// awaitStream is Options.AwaitStream (apply).
 	awaitStream func(ctx context.Context, token claim.Token)
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
@@ -332,7 +341,7 @@ type server struct {
 	// controllerMu orders a capability mint against a registration and a controller grant, so a
 	// grant the replaced registration authorised is never recorded after the mint revoked them.
 	controllerMu       sync.Mutex
-	tokens             appauth.Tokens
+	tokens             appauth.Source
 	githubRepositories func() []ghrepo.Repository
 	// renames is the deployment's repository equivalence (Options.RepositoryRenames): the rule
 	// that says which owner's installation holds a repository recorded under the name a transfer
@@ -357,7 +366,7 @@ type server struct {
 	handlers    []intake.Handler
 	prepare     func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
 	unread      func(resolved string) bool
-	await       func(repo, tree, child, parent string)
+	await       func(repo, tree, child, parent string) bool
 	roleFor     func(phase.Phase) claim.Role
 	records     record.Store
 	dispatch    dispatch.Client
@@ -478,60 +487,29 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		s.decisions = NewRouteDecisions()
 	}
 
-	mux := &routeMux{mux: http.NewServeMux()}
+	mux := http.NewServeMux()
 	for _, route := range s.routes() {
-		mux.handle(route.pattern, route.handler)
+		mux.HandleFunc(route.pattern, route.handler)
 	}
-	// The catch-all answers every unrouted request, including a known path asked for with the
-	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
-	// script needs.
-	mux.handle("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no route"})
-	})
-
 	return &http.Server{
 		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
-		Handler:           trackTransactions(mux),
+		Handler:           trackTransactions(noteRequesters(mux)),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 }
 
-// route is one route of the daemon's API: its ServeMux pattern and the handler that serves it.
+// route is one route the API serves: the pattern http.ServeMux matches a request against, and the
+// handler that answers it.
 type route struct {
 	pattern string
 	handler http.HandlerFunc
 }
 
-// routeMux is the mux the daemon's API is served from, with the pattern of every route mounted on
-// it in the order NewServer mounted them. handle is the one way to mount a route on it, so its
-// patterns are what the server serves, a route mounted beside the table included, and a test of a
-// rule every route keeps walks them (TestNoRouteTakesABodyStringHoldingANul).
-type routeMux struct {
-	mux      *http.ServeMux
-	patterns []string
-}
-
-// handle mounts handler at pattern and records the pattern.
-func (m *routeMux) handle(pattern string, handler http.HandlerFunc) {
-	m.mux.HandleFunc(pattern, handler)
-	m.patterns = append(m.patterns, pattern)
-}
-
-func (m *routeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	m.mux.ServeHTTP(w, r)
-}
-
-// routes is every route the daemon's API serves but the catch-all, in the one table NewServer
-// mounts. A route is mounted through routeMux.handle and nowhere else, and a test of a rule every
-// route keeps walks what the server's mux recorded (TestNoRouteTakesABodyStringHoldingANul) rather
-// than a list of its own that a new route never joins, so a route mounted beside the table is
-// walked too.
+// routes is every route the API serves, the one table NewServer registers.
 func (s *server) routes() []route {
 	return []route{
 		{"GET /legion/v1/state", s.stateRoute},
-		{"GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-		}},
+		{"GET /healthz", healthz},
 		{"GET /readyz", s.readyz},
 
 		{"POST /legion/v1/claims/register", s.register},
@@ -568,8 +546,22 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
 		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
+		{"POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
+
+		// The catch-all answers every unrouted request, including a known path asked for with the
+		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
+		// script needs.
+		{"/", noRoute},
 	}
+}
+
+func healthz(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func noRoute(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "no route"})
 }
 
 // trackTransactions marks every request's context for the daemon's pool, in this one place
@@ -579,15 +571,9 @@ func (s *server) routes() []route {
 // transaction can give back. A request handled on a goroutine of its own, outliving the request
 // or running beside it, takes a mark of its own (store.ForConcurrentWorker) rather than this one.
 func trackTransactions(handler http.Handler) http.Handler {
-	return transactionTracking{next: handler}
-}
-
-// transactionTracking is the handler trackTransactions returns: next serves each request, its
-// context marked. It is a type of its own so a test can reach the mux it serves (routeMux).
-type transactionTracking struct{ next http.Handler }
-
-func (t transactionTracking) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	t.next.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+	})
 }
 
 // readyz answers the kubelet's readiness probe, which carries no token, from the daemon's

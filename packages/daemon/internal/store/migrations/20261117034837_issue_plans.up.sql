@@ -18,22 +18,12 @@
 -- with no plan rows, since no release before this one ran a plan, and takes the defaults, which
 -- read as no step.
 --
--- There is no down file. This directory keeps none, so the way back is the transaction below, run
--- with the daemon stopped, before the earlier image is pinned, with <PROJECT> the key of the project
--- whose daemon rolls back:
---
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
---   begin;
---   drop table if exists plan_steps;
---   drop table if exists plan_tasks;
---   drop table if exists issue_plans;
---   alter table phases drop column if exists step_task, drop column if exists step_place;
---   delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('task-stopped', 'retro-held', 'plan-not-taken') and split_part(issue, '-', 1) = '<PROJECT>';
---   delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop' and split_part(issue, '-', 1) = '<PROJECT>';
---   update issues set hold_reason = null where hold_reason in ('task-stopped', 'children') and split_part(key, '-', 1) = '<PROJECT>';
---   delete from schema_version where version = 20261117034837;
---   commit;
---   SQL
+-- There is no down file. This directory keeps none, so the way back is the transaction that ends
+-- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
+-- earlier image is pinned, with <PROJECT> the key of the project whose daemon rolls back.
+-- docs/kubernetes.md carries the same block under "Rolling back the release whose owner's plan
+-- picks the steps": internal/textcheck's TestTheOwnerStepsWayBackIsOneTextInTheHeaderAndTheGuide
+-- holds the two to one text, and internal/store's owner_steps_way_back_test.go runs this one.
 --
 -- The release before this one boots without the drops: its phases reads and writes name each
 -- column they touch, and it names none of the three tables. They are owed to the roll forward.
@@ -57,6 +47,17 @@
 -- delete and the update take the rows of the project that rolls back alone. The tables and the
 -- columns are the database's, so every project's daemon on it rolls back too, and the block runs
 -- once for each project: a later run drops nothing again and deletes that project's rows.
+--
+-- begin;
+-- drop table if exists plan_steps;
+-- drop table if exists plan_tasks;
+-- drop table if exists issue_plans;
+-- alter table phases drop column if exists step_task, drop column if exists step_place;
+-- delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('task-stopped', 'retro-held', 'plan-not-taken') and split_part(issue, '-', 1) = '<PROJECT>';
+-- delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop' and split_part(issue, '-', 1) = '<PROJECT>';
+-- update issues set hold_reason = null where hold_reason in ('task-stopped', 'children') and split_part(key, '-', 1) = '<PROJECT>';
+-- delete from schema_version where version = 20261117034837;
+-- commit;
 create table issue_plans (
   issue text not null,
   generation bigint not null,

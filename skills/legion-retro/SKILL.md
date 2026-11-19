@@ -127,16 +127,15 @@ Dispatch message (step 5) is for a finished retro only.
    writes only step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and,
    on a task with no reviewer step, step 1's thread replies and resolutions.
    It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon, not in labels.
-   In the same call, the agent that does the retro rates the plan the issue ran.
-   The plan is the issue's steps and the role that worked each, not the planner's `plan.md`.
-   The steps are your task's, as its `Steps:` line names them (today's line, on a task with no
-   `Task:` line).
-   `plan_rating` is a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and
-   `plan_reason` is one sentence of why, from the evidence step 1 read.
-   Send the two together: the daemon refuses this completion without them (`PLAN_RATING_REQUIRED`)
-   and records nothing, so complete again with both.
-   The daemon also refuses a rating outside 1 to 5, one of the two without the other, or a reason
-   that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`), again recording nothing.
+   In the same call, rate the plan the issue ran: its steps and the role that worked each, not the
+   planner's `plan.md`. The steps are your task's, as its `Steps:` line names them (today's line, on
+   a task with no `Task:` line). Send both or neither of `plan_rating`, a whole number from 1 (the
+   plan cost the work) to 5 (the plan fit the work), and `plan_reason`, one sentence of why from
+   step 1's evidence. The daemon refuses this completion without them (`PLAN_RATING_REQUIRED`), one
+   alone, a rating off that scale or a reason blank or over 2,000 characters (`PLAN_RATING_INPUT`),
+   and both on any other completion (`PLAN_RATING_UNEXPECTED`). A refusal records nothing, so
+   complete again. A `legion` tool whose `handoff_complete` takes neither field is the release
+   before the rating: send neither.
 
 ## Before you complete
 
@@ -146,4 +145,5 @@ Dispatch message (step 5) is for a finished retro only.
 - Each body line you added or changed that says work was done names work this pull request did.
 - The Dispatch comment and the Dispatch message are posted, and the pull request's head is the
   head you found.
-- Your `handoff_complete` carries `plan_rating` and `plan_reason` (step 6).
+- Your `handoff_complete` carries `plan_rating` and `plan_reason` (step 6), or neither where your
+  `legion` tool's `handoff_complete` takes neither.

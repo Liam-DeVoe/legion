@@ -32,7 +32,7 @@ func approveReview(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
 	row := roleRowOf(t, pool, engine, "LEGION-208", claim.RoleReviewer)
 	row.HandoffRecord, row.HandoffVersion, row.HandoffCommit, row.Summary = "review-record", 1, "c0ffee", "approved"
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		if err := engine.store.PutPhase(ctx, tx, row); err != nil {
 			return err
 		}
@@ -46,6 +46,7 @@ func approveReview(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		}
 		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, "", row, pr, "")
 	})
+
 }
 
 // retroStarts is the count of starts step_starts holds for the retro of key, and how many rows
@@ -62,7 +63,7 @@ func retroStarts(t *testing.T, pool *pgxpool.Pool, key string) (starts int64, ro
 func startsIn(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role, p phase.Phase) []record.SuperviseRequest {
 	t.Helper()
 	var in []record.SuperviseRequest
-	for _, start := range startsOf(t, pool, key, role) {
+	for _, start := range roleStartsOf(t, pool, key, role) {
 		if start.Phase == p {
 			in = append(in, start)
 		}

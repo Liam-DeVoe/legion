@@ -70,7 +70,7 @@ type planStanding struct {
 func planStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64) planStanding {
 	t.Helper()
 	var now planStanding
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if now.issue, err = engine.store.Issue(ctx, tx, key); err != nil {
 			return err
@@ -78,6 +78,7 @@ func planStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 		now.plan, err = engine.store.Plan(ctx, tx, key, generation)
 		return err
 	})
+
 	rows, err := pool.Query(t.Context(), "select version, source from issue_plans where issue = $1 and generation = $2 order by version", key, int64(generation))
 	if err != nil {
 		t.Fatalf("read the versions of %s: %v", key, err)
@@ -204,7 +205,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskRunning || task.Place != (record.TaskPlace{Kind: record.PlaceStep, Position: 1}) {
 			t.Fatalf("task a after the gate opened is %s at %+v, want running at step 1", task.State, task.Place)
 		}
-		if planners, implementers := startsOf(t, pool, root.Key, claim.RolePlanner), startsOf(t, pool, root.Key, claim.RoleImplementer); len(planners) != 0 || len(implementers) != 1 {
+		if planners, implementers := roleStartsOf(t, pool, root.Key, claim.RolePlanner), roleStartsOf(t, pool, root.Key, claim.RoleImplementer); len(planners) != 0 || len(implementers) != 1 {
 			t.Fatalf("the gate started %d planners and %d implementers, want no planner and one implementer", len(planners), len(implementers))
 		}
 	})
@@ -214,7 +215,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		firstStep(t, pool, engine, root.Key)
-		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
+		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysStoredSteps}
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s given no plan after its gate opened stands at %+v, want %+v", root.Key, got, want)
 		}
@@ -309,7 +310,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		root.Generation = 2
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error { return engine.store.PutIssue(ctx, tx, root) })
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return engine.store.PutIssue(ctx, tx, root) })
 		id := planID(root.Key, 1, 1)
 		before := planStandingOf(t, pool, engine, root.Key, 1)
 
@@ -457,7 +458,7 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		}
 		// The start of step 1 takes the place of the implementer's start the issue still owes,
 		// since no outbox ran here (Store.EnqueueStart): the last start is the one at the new entry.
-		starts := startsOf(t, pool, key, claim.RoleImplementer)
+		starts := roleStartsOf(t, pool, key, claim.RoleImplementer)
 		if len(starts) == 0 {
 			t.Fatalf("version 6 left %s with no start of the implementer, want one at entry %d", key, row.Entry)
 		}
@@ -587,7 +588,7 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		if stops := superviseRowsOf(t, pool, key, "step_stop"); len(stops) != 1 || stops[0].Role != claim.RolePlanner || stops[0].Generation != gen {
 			t.Fatalf("the step stops = %+v, want one of the planner", stops)
 		}
-		if planners := startsOf(t, pool, key, claim.RolePlanner); len(planners) != 1 {
+		if planners := roleStartsOf(t, pool, key, claim.RolePlanner); len(planners) != 1 {
 			t.Fatalf("the planner's starts before version 1 = %+v, want the one the gate's opening wrote, still owed: no outbox ran", planners)
 		}
 		prompts := len(hookPrompts(t, pool))
@@ -622,12 +623,12 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		if row.StepTask != "a" || row.StepPlace != 1 {
 			t.Fatalf("the implementer's row names step %d of task %q, want step 1 of task a, the step its start raised it for", row.StepPlace, row.StepTask)
 		}
-		if starts := startsOf(t, pool, key, claim.RoleImplementer); len(starts) != 1 || starts[0].Phase != phase.Implementing || starts[0].Entry != row.Entry {
+		if starts := roleStartsOf(t, pool, key, claim.RoleImplementer); len(starts) != 1 || starts[0].Phase != phase.Implementing || starts[0].Entry != row.Entry {
 			t.Fatalf("the starts of the implementer = %+v, want one, of implementing at entry %d", starts, row.Entry)
 		}
 		// The start of a's step 1 takes the place of the planner's start the issue still owed
 		// (Store.EnqueueStart): the step of the removed task never starts.
-		if planners := startsOf(t, pool, key, claim.RolePlanner); len(planners) != 0 {
+		if planners := roleStartsOf(t, pool, key, claim.RolePlanner); len(planners) != 0 {
 			t.Fatalf("the planner's starts after version 1 = %+v, want none: the task default is gone", planners)
 		}
 		if got := len(hookPrompts(t, pool)); got != prompts {
@@ -809,7 +810,7 @@ func recordedAt(t *testing.T, pool *pgxpool.Pool, key, tree string) {
 func firstStep(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
 	issue := issueOf(t, pool, engine, key)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error { return engine.StartFirstPhase(ctx, tx, issue, nil) })
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return engine.StartFirstPhase(ctx, tx, issue, nil) })
 }
 
 // planRowsOf is how many rows of key each of the three plan tables holds, of every generation:

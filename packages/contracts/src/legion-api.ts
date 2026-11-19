@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { goBlankPattern } from "./go-blank";
-import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
+import {
+  DISPATCH_KEY_PATTERN,
+  GATED_STEPS,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+  LEGION_ROLES,
+} from "./legion-roles";
 
 /**
  * The Legion daemon's HTTP API, as its readers see it.
@@ -697,9 +704,9 @@ const legionIssue = z.object({
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
-   * the controller; and from contract 162 `task-stopped` once its owner stopped its task with
+   * the controller; and from contract 171 `task-stopped` once its owner stopped its task with
    * stop_task, and `children` while a parent whose plan has no acceptance step waits, before its
-   * retro, for the issues beneath it. A caller in a pod whose plugin declares a contract below 162
+   * retro, for the issues beneath it. A caller in a pod whose plugin declares a contract below 171
    * is served an issue held for either of those two with no `holdReason` (the daemon's
    * `withoutNewHoldReasons`). `heldFrom` beside it is the phase the hold took the issue out of,
    * and is absent for an issue that is not held. The linger suppression is `holdReason`'s alone:
@@ -894,7 +901,7 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the words of `admission.held`, in `record.HeldReasons`' order.
- * `children_before_retro` and `task_stopped` came with contract 162; a caller below it is served
+ * `children_before_retro` and `task_stopped` came with contract 171; a caller below it is served
  * each such row as `unclassified` with no `heldBy` (the daemon's `withoutNewHoldReasons`).
  * `at_work` names an issue past its review, which keeps no admission slot; `record.HeldAtWork`
  * says which issues read it.
@@ -1053,24 +1060,55 @@ const legionCacheView = z.object({
   retainedUntil: timestamp.optional(),
 });
 
-/** `api.RepositoriesView` — the project's repository mapping as the daemon serves it: the owners
- * its roles' credentials span, each repository it serves (as GitHub names it, `default` the
- * project's default in Dispatch, `cache` its repository cache under the Kubernetes runtime), each
- * mapped repository it leaves out with `reason`, a GitHub App not installed on it, each served
- * repository Dispatch's GitHub App is not known to be installed on (`withoutWebhookApp`, as
- * Dispatch maps it, with `reason`: not installed, the check failed, or Dispatch does not answer
- * the check; served all the same, contract 43), and the `caches` of repositories the mapping no
- * longer names. Every list sorted and never null (contracts 31, 32). */
+/** `api.AppInstallationsView` — each role App's installation on one repository (contract 152):
+ * the implement App a worker pushes and opens pull requests with, and the review App a reviewer
+ * approves with. */
+const legionAppInstallations = z.object({ implement: z.boolean(), review: z.boolean() });
+
+/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 152):
+ * the owner accounts of the repositories Dispatch maps to the project, each repository it serves (as GitHub names it,
+ * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
+ * its repository cache under the Kubernetes runtime), each repository it leaves out with
+ * `reason`, a role App not installed on it or an installation it could not read, and `apps`,
+ * what GitHub answered of each App on it, each served repository Dispatch's GitHub App is not
+ * known to be installed on (`withoutWebhookApp`, with
+ * `reason`: not installed, the check failed, or Dispatch does not answer the check; served all
+ * the same, contract 43), and the `caches` of repositories the daemon no longer serves.
+ *
+ * The mapping decides the project's default repository and the repositories the daemon prepares
+ * before an issue names one, and no longer decides where the project may work: the App
+ * installation does, so `mapped` holds the repositories the project's own records name beside
+ * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
+ * null (contracts 31, 32).
+ *
+ * A served entry's `apps` is both Apps installed, since the daemon serves no repository either
+ * App is missing from, so the entries where the two differ are the refused ones. A refused
+ * entry carries `apps` wherever GitHub answered both Apps' reads of its `repo` (both true for one
+ * left out for its default-branch read alone), and none where a read of it failed or `repo` is
+ * no `<owner>/<name>`, which its `reason` then names.
+ *
+ * `apps` is optional on both and is written by every daemon of contract 152 and above wherever it
+ * holds the answer. It is read as absent rather than refused so that a plugin of this contract
+ * reading a daemon of an earlier one — the window a roll of the daemon and the worker image opens,
+ * since the two ship apart — loses that one answer and keeps the rest of the state, where a
+ * required key would refuse the whole body. */
 const legionRepositories = z.object({
   owners: z.array(nonEmptyString),
   mapped: z.array(
     z.object({
       repo: nonEmptyString,
       default: z.boolean(),
+      apps: legionAppInstallations.optional(),
       cache: legionCacheView.optional(),
     })
   ),
-  refused: z.array(z.object({ repo: nonEmptyString, reason: nonEmptyString })),
+  refused: z.array(
+    z.object({
+      repo: nonEmptyString,
+      reason: nonEmptyString,
+      apps: legionAppInstallations.optional(),
+    })
+  ),
   withoutWebhookApp: z.array(z.object({ repo: nonEmptyString, reason: nonEmptyString })),
   caches: z.array(legionCacheView),
 });
@@ -1399,10 +1437,17 @@ export const LegionControllerSecretResponse = z.object({
 });
 
 /** `api.ControllerCredentialResponse`, the answer of `POST /legion/v1/controller/github-credential`:
- * the review App's read-only token for every GitHub owner of the project, each rendered as the two
+ * the review App's read-only token for every GitHub owner that App is installed on, and for each
+ * owner a configured rename moved a repository away from, each rendered as the two
  * files gh reads (`ghconfig.Rendered`) and keyed by lowercased owner, the owner whose directory
- * `GH_CONFIG_DIR` names, and the soonest of the tokens' expiries. `legion controller start` writes
- * them under `<state_dir>/gh/<owner>` and refreshes them every minute. The plugin never reads it. */
+ * `GH_CONFIG_DIR` names, the soonest of the tokens' expiries, `renames`, the configured pairs the
+ * bundle routes a moved repository by, each `<owner>/<name>` as GitHub spells it, which a project
+ * configuring none answers without, and `installed`, the owner accounts the review App is
+ * installed on, lowercased and sorted, read with the bundle (contract 152).
+ * `legion controller start` writes the files under `<state_dir>/gh/<owner>`, refreshes them every
+ * minute, and tells its controller which owners its App is installed on from `installed`: `owners`
+ * cannot say it, since a bundle also holds a directory for an owner a configured rename moved a
+ * repository away from. The plugin never reads it. */
 export const LegionControllerCredentialResponse = z.object({
   owners: z.record(
     nonEmptyString,
@@ -1414,6 +1459,8 @@ export const LegionControllerCredentialResponse = z.object({
   default: nonEmptyString,
   app: z.enum(["implement", "review"]),
   expiresAt: timestamp,
+  renames: z.array(z.object({ from: nonEmptyString, to: nonEmptyString })).optional(),
+  installed: z.array(nonEmptyString),
 });
 
 /** Claim routes refuse with only a sentence; credential and workflow routes add a stable code.
@@ -1597,7 +1644,7 @@ export const LegionWaveReleaseResponse = z.object({
   held: z.array(legionBlockedIssue),
 });
 
-/** `api.PlanRegisterResponse`, the plan register_plan took (contract 162): the version given and
+/** `api.PlanRegisterResponse`, the plan register_plan took (contract 171): the version given and
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
  * reads when the task's work starts, so it is answered with no step: an empty list, never null. A
@@ -1626,28 +1673,54 @@ export const LegionControllerGrantRequest = z.strictObject({
   secret: nonEmptyString,
 });
 
-/** The scale of a plan's rating, `planRating`: the whole numbers from 1 (the plan cost the work)
- * to 5 (the plan fit the work), as the daemon holds it (api's planRatingLeast and planRatingMost).
- * The plugin's `plan_rating` reads these, and the contract test holds them to the daemon's own,
- * which its golden test writes to `fixtures/daemon-api/plan-rating.json`. */
-export const LEGION_PLAN_RATING_LEAST = 1;
-export const LEGION_PLAN_RATING_MOST = 5;
+/** The scale of a plan's rating and the most characters of its reason, defined once in
+ * `legion-roles.ts` and re-exported here beside the request schema that holds a completion to
+ * them. */
+export { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST, LEGION_PLAN_REASON_MAX };
 
-/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
- * daemon counts them (api's planReasonMax, held to it the same way): Dispatch's record of the
- * retro takes one to 2,000. */
-export const LEGION_PLAN_REASON_MAX = 2000;
+/** A plan rating's scale on `rating`, a number schema of the reader's: a whole number from
+ * `LEGION_PLAN_RATING_LEAST` to `LEGION_PLAN_RATING_MOST`, each check refused with `refusal` where
+ * one is given. The request schema below and the `legion` tool's `plan_rating` both build theirs
+ * with it, so the scale is written once. */
+export function legionPlanRatingScale(rating: z.ZodNumber, refusal?: string): z.ZodNumber {
+  const error = refusal === undefined ? undefined : { error: refusal };
+  return rating.int(error).min(LEGION_PLAN_RATING_LEAST, error).max(LEGION_PLAN_RATING_MOST, error);
+}
 
-/** `planReason`: why the retro rated the plan as it did, one to `LEGION_PLAN_REASON_MAX`
- * characters that are not all blank, blank as the daemon's strings.TrimSpace reads it
- * (`goBlankPattern`), which is not JavaScript's trim. A string's `length` counts UTF-16 units, so
- * the bound counts code points. */
-const legionPlanReason = z
-  .string()
-  .refine((reason) => !goBlankPattern.test(reason), { message: "planReason says why" })
-  .refine((reason) => [...reason].length <= LEGION_PLAN_REASON_MAX, {
-    message: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
-  });
+/** A plan rating's reason on `reason`, a string schema of the reader's: not blank as the daemon's
+ * strings.TrimSpace reads it (`goBlankPattern`), which is not JavaScript's trim, and at most
+ * `LEGION_PLAN_REASON_MAX` characters counted as code points, as the daemon counts them, never as
+ * a string's UTF-16 `length`. A blank reason is refused with `refusals.blank` alone, a longer one
+ * with `refusals.long`. The request schema below and the `legion` tool's `plan_reason` both build
+ * theirs with it, so the two rules are written once. */
+export function legionPlanReasonRules(
+  reason: z.ZodString,
+  refusals: { readonly blank: string; readonly long: string }
+): z.ZodString {
+  return reason
+    .refine((text) => !goBlankPattern.test(text), { error: refusals.blank, abort: true })
+    .refine((text) => [...text].length <= LEGION_PLAN_REASON_MAX, { error: refusals.long });
+}
+
+/** `planReason`: why the retro rated the plan as it did (`legionPlanReasonRules`). */
+const legionPlanReason = legionPlanReasonRules(z.string(), {
+  blank: "planReason says why",
+  long: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
+});
+
+/** Which field of a plan's rating came alone: `"rating"` for a rating with no reason, `"reason"`
+ * for a reason with no rating, and `undefined` for both or neither. The daemon takes the two only
+ * together (`PLAN_RATING_INPUT`). The request schema below refuses either lone field, and the
+ * `legion` tool's `handoff_complete` refuses each by its name, both by this, so the pair rule is
+ * written once. */
+export function legionPlanRatingLoneField(
+  rating: number | undefined,
+  reason: string | undefined
+): "rating" | "reason" | undefined {
+  if (rating !== undefined && reason === undefined) return "rating";
+  if (reason !== undefined && rating === undefined) return "reason";
+  return undefined;
+}
 
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
  * completion, or the checking role's report on a look of its closed issue's production check.
@@ -1675,11 +1748,11 @@ const legionPlanReason = z
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
  * the daemon's decode of it refuses a time with no seconds, and so does this. `planRating` and
- * `planReason` are the rating of the plan the issue ran (contract 161), which the completion that
+ * `planReason` are the rating of the plan the issue ran (contract 168), which the completion that
  * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
  * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
- * (`PLAN_RATING_INPUT`). A plugin at contract 161 or later must send both on its retro
- * (`PLAN_RATING_REQUIRED`). `returnTo` (contract 162) is the step a step that failed names for its
+ * (`PLAN_RATING_INPUT`). A plugin at contract 168 or later must send both on its retro
+ * (`PLAN_RATING_REQUIRED`). `returnTo` (contract 171) is the step a step that failed names for its
  * task to return to, by its place in the issue's running task, 1 for its first: a whole number of
  * 1 or more (`INVALID_RETURN_TO`), carried only by a completion with the verdict `fail`
  * (`RETURN_TO_NEEDS_FAIL`, which the daemon also answers a production check's report that names
@@ -1693,18 +1766,14 @@ export const LegionHandoffCompleteRequest = z
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
     wakeAt: LegionInstant.optional(),
-    planRating: z
-      .number()
-      .int()
-      .min(LEGION_PLAN_RATING_LEAST)
-      .max(LEGION_PLAN_RATING_MOST)
-      .optional(),
+    planRating: legionPlanRatingScale(z.number()).optional(),
     planReason: legionPlanReason.optional(),
     returnTo: z.number().int().positive().optional(),
   })
-  .refine((request) => (request.planRating === undefined) === (request.planReason === undefined), {
-    message: "planRating and planReason appear together",
-  })
+  .refine(
+    (request) => legionPlanRatingLoneField(request.planRating, request.planReason) === undefined,
+    { message: "planRating and planReason appear together" }
+  )
   .refine((request) => request.returnTo === undefined || request.verdict === "fail", {
     message: "returnTo is carried only by a completion with the verdict fail",
   });
@@ -1716,8 +1785,9 @@ export const LegionIssueStatusRequest = z.strictObject({
   status: z.enum(["todo", "backlog", "icebox"]),
 });
 
-/** `api.GateRegisterRequest`, the architect's current Dispatch document approval target, for one
- * step of the deployment's design gate. `step` is the step the document is for; a deployment
+/** `api.GateRegisterRequest`, the tree root's architect's current Dispatch document approval
+ * target, for one step of the deployment's design gate; the daemon refuses it from a child's own
+ * architect (`GATE_ROOT_ONLY`). `step` is the step the document is for; a deployment
  * that gates one step alone takes a request that leaves it out, and one that gates several
  * refuses it (`GATE_STEP_REQUIRED`). */
 export const LegionGateRegisterRequest = z.strictObject({
@@ -1735,8 +1805,8 @@ export const LegionWaveReleaseRequest = z.strictObject({
 });
 
 /** `api.PhaseBackwardRequest`, a request to return an issue to an earlier phase: a phase worker's
- * on its own issue, or the tree architect's on an issue it owns, from `accepting`. An architect's
- * grant serves its whole tree, so its request names `issue` (required for that grant); a phase
+ * on its own issue, or an architect's on an issue it owns, from `accepting`. An architect may own
+ * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
  * grant's (`ISSUE_NOT_GRANTS`). */
 export const LegionPhaseBackwardRequest = z.strictObject({
@@ -1746,7 +1816,7 @@ export const LegionPhaseBackwardRequest = z.strictObject({
   issue: nonEmptyString.optional(),
 });
 
-/** `api.PhaseRetryRequest`, the tree architect's retry-or-escalate decision for a held issue.
+/** `api.PhaseRetryRequest`, the retry-or-escalate decision of the architect that owns a held issue.
  * `reason` says why the decision was made, and both decisions carry it: a retry writes it into
  * the task the restarted role is given and into the daemon's own log line for the release, and
  * an escalation sends it to the controller in the held notice, beside the cause that hold
@@ -1768,7 +1838,7 @@ export const LegionEscalateRequest = z.strictObject({
 
 /** `api.SignOffRequest`, the owning architect's acceptance of an issue in `accepting`, which moves
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). From
- * contract 162 the daemon judges it again when it applies it, and refuses it, changing nothing,
+ * contract 171 the daemon judges it again when it applies it, and refuses it, changing nothing,
  * where the architect no longer owns the issue (`ISSUE_NOT_OWNED`, or `ISSUE_OUTSIDE_TREE` once
  * the issue left its tree), where the run of the issue it read has ended
  * (`SIGNOFF_STALE_GENERATION`), and where the run of `accepting` it read has ended
@@ -1789,13 +1859,15 @@ export const LegionRootCloseRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
-/** `api.ChildRequest`, the architect's park_child or rerun_child of one child of its tree. */
+/** `api.ChildRequest`, an architect's park_child or rerun_child of one issue it owns: any child of
+ * its tree for the tree root's architect, and only an issue under its own issue for a child's own
+ * architect (`ISSUE_NOT_OWNED` otherwise). */
 export const LegionChildRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
 });
 
-/** `api.PlanRegisterRequest`, register_plan (contract 162): the owner of an issue, an architect of
+/** `api.PlanRegisterRequest`, register_plan (contract 171): the owner of an issue, an architect of
  * the issue's tree, gives Legion the plan in version `version` of the document
  * `artifactId` of the issue, which the daemon reads from Dispatch at that version. The issue may be
  * one the daemon has not recorded yet while Dispatch shows it triage, backlog, icebox or todo
@@ -1807,7 +1879,7 @@ export const LegionPlanRegisterRequest = z.strictObject({
   version: z.number().int().positive(),
 });
 
-/** `api.TaskStopRequest`, stop_task (contract 162): the owner of a recorded issue stops one task of
+/** `api.TaskStopRequest`, stop_task (contract 171): the owner of a recorded issue stops one task of
  * the plan Legion runs for it, so that a later version of the plan may change that task; the issue
  * is then held with `holdReason` `task-stopped`. On an issue whose first step has not run, the
  * stop first settles the plan that step would walk, the newest plan its owner gave or the

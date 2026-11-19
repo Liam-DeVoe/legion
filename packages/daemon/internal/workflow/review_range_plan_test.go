@@ -2,8 +2,9 @@ package workflow
 
 // The review step of an owner's stored plan `implementer tester reviewer` requests changes at
 // headOne, the implementer and the tester run again, and the second review step's task names
-// headOne as the commit the review before it read; the first review step names none. The control
-// removes the record of the first review, and the same assertion then finds no commit.
+// headOne as the commit the review before it read; the first review step names none (` Last
+// reviewed commit: none.`). The control removes the record of the first review, and the second
+// step's task then names none too.
 
 import (
 	"context"
@@ -47,10 +48,10 @@ func TestAReviewStepOfAnOwnersPlanIsToldTheCommitTheReviewBeforeItRead(t *testin
 			pool, engine, apply := plannedReviewRoundOne(t)
 			first := reviewerRow(t, pool)
 			readsReviewingTask(t, "review step 1", first.EntryTask, 1)
-			if strings.Contains(first.EntryTask, ReviewedCommitLabel) {
-				t.Fatalf("the first review step's task = %q, want no reviewed commit: no review came before it", first.EntryTask)
+			if !strings.Contains(first.EntryTask, reviewedPartOf("none")) {
+				t.Fatalf("the first review step's task = %q, want it to name no reviewed commit (%q): no review came before it", first.EntryTask, reviewedPartOf("none"))
 			}
-			apply("request-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+			apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 			assertWalksAt(t, pool, engine, "LEGION-208", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
 			if tc.removed {
 				if _, err := pool.Exec(context.Background(), "update phases set reviewed_head = '' where issue = 'LEGION-208' and role = 'reviewer'"); err != nil {
@@ -66,8 +67,8 @@ func TestAReviewStepOfAnOwnersPlanIsToldTheCommitTheReviewBeforeItRead(t *testin
 			readsReviewingTask(t, "review step 2", second.EntryTask, 2)
 			named := strings.Contains(second.EntryTask, reviewedPartOf(headOne))
 			if tc.removed {
-				if named || strings.Contains(second.EntryTask, ReviewedCommitLabel) {
-					t.Fatalf("control: the second review step's task = %q, want no reviewed commit: the record of the first review was removed", second.EntryTask)
+				if named || !strings.Contains(second.EntryTask, reviewedPartOf("none")) {
+					t.Fatalf("control: the second review step's task = %q, want it to name no reviewed commit (%q): the record of the first review was removed", second.EntryTask, reviewedPartOf("none"))
 				}
 				return
 			}

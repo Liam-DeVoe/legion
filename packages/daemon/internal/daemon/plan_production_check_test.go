@@ -151,7 +151,8 @@ func (r *ownerStepsRig) reattach(c *stepClaimant) {
 		t.Fatalf("decode the registration of %s: %v", c.token, err)
 	}
 	c.secret = registered.Secret
-	go c.serve(sh)
+	d := r.d
+	sh.serve(func() { c.serve(sh, d) })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: c.token, SessionID: c.session, Secret: c.secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {

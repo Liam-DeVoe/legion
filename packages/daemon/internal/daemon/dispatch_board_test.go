@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
 
@@ -229,37 +230,29 @@ func (b *liveDispatch) showHandoff(id string, w http.ResponseWriter) {
 // out keeps what an earlier write gave it, and the answer is 200 with the record as it stands after
 // the write and its attempt: the place of the record among the issue's records of the same task,
 // kind and step, in the order of their first write. An id whose record is another issue's is
-// refused 409 STEP_OTHER_ISSUE (writeStep). The route declares no rating, so it ignores one, as
-// Dispatch ignores a member it does not declare.
+// refused 409 STEP_OTHER_ISSUE (writeStep). The daemon sends a rating to the rating route alone
+// (dispatch.HTTPClient.PutStep), so no write here carries one.
 func (b *liveDispatch) putStep(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a step record", req, w)
 	if !ok {
 		return
 	}
-	delete(write, "rating")
-	delete(write, "rating_reason")
 	b.writeStep(key, id, write, false, w)
 }
 
 // putRating takes the rating a retro gave the plan onto the step record id of key, as Dispatch's
 // PUT /api/v1/issues/{key}/steps/{id}/rating does: the step write's body and writer, which makes
-// the record where the retro's start and end have not landed, and a rating from 1 to 5 with its
-// reason, both required (400 STEP_INPUT otherwise), on a record of key's (409 STEP_OTHER_ISSUE
-// otherwise) of kind retro alone (400 STEP_INPUT for any other kind), each written once. It does
-// not refuse a reason that is blank after trimming or longer than 2,000 code points, as Dispatch
-// does: the daemon refuses such a reason at the completion that ends the retro (PLAN_RATING_INPUT,
-// api's planRatingOf) before anything reaches its outbox, so no write of the daemon's carries
-// one, and a second copy of Dispatch's rule here would hold nothing the daemon can send.
+// the record where the retro's start and end have not landed, on a record of key's (409
+// STEP_OTHER_ISSUE otherwise) of kind retro alone (400 STEP_INPUT for any other kind), each field
+// written once. It does not refuse a rating or its reason for their values, as Dispatch does (a
+// whole number from 1 to 5, with a reason neither blank after trimming nor longer than 2,000 code
+// points): the daemon refuses such a rating at the completion that ends the retro
+// (PLAN_RATING_INPUT, api's planRatingOf), and a rating without its reason where its row is
+// queued (record's NewOutboxRow), before anything reaches Dispatch, so no write of the daemon's
+// carries one, and a second copy of Dispatch's rule here would hold nothing the daemon can send.
 func (b *liveDispatch) putRating(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a step record", req, w)
 	if !ok {
-		return
-	}
-	rating, rated := write["rating"].(float64)
-	reason, _ := write["rating_reason"].(string)
-	if !rated || rating < 1 || rating > 5 || rating != float64(int(rating)) || reason == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"code":"STEP_INPUT","error":"rating is a whole number from 1 to 5, with its rating_reason"}`)
 		return
 	}
 	b.writeStep(key, id, write, true, w)
@@ -278,12 +271,18 @@ func (b *liveDispatch) daemonWrite(key, what string, req *http.Request, w http.R
 	project, _, _ := strings.Cut(key, "-")
 	actor, _ := write["actor"].(map[string]any)
 	if actor["kind"] != "session" || actor["id"] != dispatch.DaemonSession(key) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = fmt.Fprintf(w, `{"code":"STEP_WRITER","error":"only the session legion-daemon:%s writes %s of %s"}`, project, what, key)
+		answerRefusal(w, http.StatusForbidden, steprecord.CodeWriter, fmt.Sprintf("only the session legion-daemon:%s writes %s of %s", project, what, key))
 		return nil, false
 	}
 	delete(write, "actor")
 	return write, true
+}
+
+// answerRefusal answers status with the body of Dispatch's refusals, its code and its message, as
+// Dispatch's routes answer one.
+func answerRefusal(w http.ResponseWriter, status int, code, message string) {
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": message})
 }
 
 // writeStep writes the fields of write onto the step record id of key, each field once, and
@@ -294,93 +293,108 @@ func (b *liveDispatch) daemonWrite(key, what string, req *http.Request, w http.R
 func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates bool, w http.ResponseWriter) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	stored, ok := b.steps[id]
-	if ok && stored["issue"] != key {
-		refuseOtherIssue(w, "STEP_OTHER_ISSUE", "step", id, stored["issue"], key)
+	stored, refused := nodeOf(b.steps, "step", steprecord.CodeOtherIssue, key, id, w)
+	if refused {
 		return
 	}
 	if rates {
 		kind := write["kind"]
-		if ok && stored["kind"] != nil {
+		if stored["kind"] != nil {
 			kind = stored["kind"]
 		}
 		if kind != "retro" {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = fmt.Fprintf(w, `{"code":"STEP_INPUT","error":"a rating belongs to a retro's record; this record is of kind %v"}`, kind)
+			answerRefusal(w, http.StatusBadRequest, steprecord.CodeInput, fmt.Sprintf("a rating belongs to a retro's record; this record is of kind %v", kind))
 			return
 		}
 	}
-	if !ok {
-		stored = map[string]any{"id": id, "issue": key}
-		b.steps[id] = stored
+	if stored == nil {
 		b.stepOrder = append(b.stepOrder, id)
 	}
-	for field, value := range write {
-		if _, written := stored[field]; !written {
-			stored[field] = value
-		}
-	}
-	answer := map[string]any{"attempt": 0}
+	stored = setOnce(b.steps, key, id, write)
+	answer := map[string]any{}
 	for field, value := range stored {
 		answer[field] = value
 	}
+	attempt := 0
 	for _, other := range b.stepOrder {
 		record := b.steps[other]
 		if record["task"] == stored["task"] && record["kind"] == stored["kind"] && record["step"] == stored["step"] {
-			answer["attempt"] = answer["attempt"].(int) + 1
+			attempt++
 		}
 		if other == id {
 			break
 		}
 	}
+	answer["attempt"] = attempt
 	if err := json.NewEncoder(w).Encode(answer); err != nil {
 		b.t.Errorf("write the step record %s: %v", id, err)
 	}
 }
 
-// refuseOtherIssue answers Dispatch's 409 code to a write under key of the what id, which is part
-// of owner, another issue: STEP_OTHER_ISSUE for a step record, PLAN_OTHER_ISSUE for a plan.
-func refuseOtherIssue(w http.ResponseWriter, code, what, id string, owner any, key string) {
-	w.WriteHeader(http.StatusConflict)
-	_, _ = fmt.Fprintf(w, `{"code":%q,"error":"%s %s is part of %v, and this write names %s"}`, code, what, id, owner, key)
+// nodeOf is the node id of nodes as Dispatch's store finds it before a write under key
+// (workflowstore's putNode): nil where none is made yet, and refused where the id is a node of
+// another issue, which is answered 409 under code, the refusal of the kind of node what names
+// (steprecord.CodeOtherIssue for a step, steprecord.CodePlanOtherIssue for a plan), and keeps
+// nothing of the write. The caller holds b.mu.
+func nodeOf(nodes map[string]map[string]any, what, code, key, id string, w http.ResponseWriter) (stored map[string]any, refused bool) {
+	stored = nodes[id]
+	if stored != nil && stored["issue"] != key {
+		answerRefusal(w, http.StatusConflict, code, fmt.Sprintf("%s %s is part of %v, and this write names %s", what, id, stored["issue"], key))
+		return nil, true
+	}
+	return stored, false
 }
 
-// putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does: only
-// the session legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), a plan of
-// the source default names no document and no version (400 PLAN_INPUT otherwise), an id whose plan
-// is another issue's is refused 409 PLAN_OTHER_ISSUE and nothing of the write is kept, each field
-// is set once, and the answer is 200 with the plan as it stands after the write.
-func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.ResponseWriter) {
-	write, ok := b.daemonWrite(key, "a plan", req, w)
-	if !ok {
-		return
-	}
-	if _, named := write["tasks"]; !named || write["source"] == nil || write["generation"] == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"code":"PLAN_INPUT","error":"a plan names its generation, its source and its tasks"}`)
-		return
-	}
-	if write["source"] == "default" && (write["artifact_id"] != nil || write["version"] != nil) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"code":"PLAN_INPUT","error":"a plan of the source default names no artifact_id and no version"}`)
-		return
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	stored, ok := b.plans[id]
-	if ok && stored["issue"] != key {
-		refuseOtherIssue(w, "PLAN_OTHER_ISSUE", "plan", id, stored["issue"], key)
-		return
-	}
-	if !ok {
+// setOnce writes write onto the node id of key in nodes as Dispatch's store does: it makes the node
+// where nodes holds none, and sets each field the node does not hold yet, leaving every field it
+// holds. It answers the node. The caller holds b.mu.
+func setOnce(nodes map[string]map[string]any, key, id string, write map[string]any) map[string]any {
+	stored := nodes[id]
+	if stored == nil {
 		stored = map[string]any{"id": id, "issue": key}
-		b.plans[id] = stored
+		nodes[id] = stored
 	}
 	for field, value := range write {
 		if _, written := stored[field]; !written {
 			stored[field] = value
 		}
 	}
+	return stored
+}
+
+// putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does: only
+// the session legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), a plan
+// names at least one task, each with at least one step (400 PLAN_INPUT otherwise, before the node
+// of its id is found, as the store checks a write's fields first), an id whose plan is another
+// issue's is refused 409 PLAN_OTHER_ISSUE and nothing of the write is kept, each field is set
+// once, and the answer is 200 with the plan as it stands after the write. It does not refuse a
+// plan for its generation, its source or its document, as Dispatch does: dispatch.PlanWrite names
+// the generation and the source on every write, the default plan names no document (workflow's
+// defaultPlan), and no test sends the board a plan Dispatch refuses for those values, so a second
+// copy of Dispatch's rules here would refuse nothing that reaches it.
+func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.ResponseWriter) {
+	write, ok := b.daemonWrite(key, "a plan", req, w)
+	if !ok {
+		return
+	}
+	tasks, _ := write["tasks"].([]any)
+	if len(tasks) == 0 {
+		answerRefusal(w, http.StatusBadRequest, steprecord.CodePlanInput, "a plan has at least one task")
+		return
+	}
+	for _, task := range tasks {
+		named, _ := task.(map[string]any)
+		if steps, _ := named["steps"].([]any); len(steps) == 0 {
+			answerRefusal(w, http.StatusBadRequest, steprecord.CodePlanInput, "a task has at least one step")
+			return
+		}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, refused := nodeOf(b.plans, "plan", steprecord.CodePlanOtherIssue, key, id, w); refused {
+		return
+	}
+	stored := setOnce(b.plans, key, id, write)
 	if err := json.NewEncoder(w).Encode(stored); err != nil {
 		b.t.Errorf("write the plan %s: %v", id, err)
 	}
@@ -438,9 +452,15 @@ func issueOfDispatchPath(path string) string {
 
 // The board refuses a write whose id names a record or a plan of another issue, as Dispatch does:
 // 409 STEP_OTHER_ISSUE from both step routes and 409 PLAN_OTHER_ISSUE from the plan route, keeping
-// nothing of the write, so the record and the plan stay their first issue's as they were. The
-// rating of another issue's record of kind step is refused for its issue, not its kind, since
-// Dispatch's store judges the issue before the kind the record holds (workflowstore's putNode).
+// nothing of the write, so the record and the plan stay their first issue's as they were. Each
+// refused write but the rating of the step record is one Dispatch takes under its own issue, so
+// the 409 is the other-issue rule's. That rating is refused under its own issue too, for the
+// record's kind (400 STEP_INPUT), which is the control, and under another issue for its issue, not
+// its kind, since Dispatch's store judges the issue before the kind the record holds
+// (workflowstore's putNode). A plan Dispatch refuses for what it states is refused 400 PLAN_INPUT
+// under any issue's key, since the store checks a plan write's fields before it finds the node of
+// its id (workflowstore's PutPlan): a plan with no task, and a task with no step, under the other
+// issue's key.
 func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 	b := newLiveDispatch(t, "SR1")
 	first, other := "SR1-1", "SR1-2"
@@ -486,18 +506,33 @@ func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 		return string(text)
 	}
 	before := held()
+	// rating is the one rating write the control and the two refused ratings send: a fresh map each
+	// time, since put names the writer in the map it is given.
+	rating := func() map[string]any { return map[string]any{"rating": 4, "rating_reason": "The plan fit the work."} }
+	if status, answer := put(first, "/steps/"+step+"/rating", rating()); status != http.StatusBadRequest || !strings.Contains(answer, `"code":"`+steprecord.CodeInput+`"`) {
+		t.Errorf("control: a rating of %s's step record under %s = %d %s, want 400 %s, the rating refused for the record's kind", first, first, status, strings.TrimSpace(answer), steprecord.CodeInput)
+	}
 	for _, refused := range []struct {
 		what, path string
 		write      map[string]any
 		code       string
 	}{
-		{"a write of " + first + "'s step record", "/steps/" + step, map[string]any{"model": "claude-opus"}, "STEP_OTHER_ISSUE"},
-		{"a rating of " + first + "'s retro record", "/steps/" + retro + "/rating", map[string]any{"rating": 4, "rating_reason": "The plan fit the work."}, "STEP_OTHER_ISSUE"},
-		{"a rating of " + first + "'s step record", "/steps/" + step + "/rating", map[string]any{"rating": 4, "rating_reason": "The plan fit the work."}, "STEP_OTHER_ISSUE"},
-		{"a write of " + first + "'s plan", "/plans/" + plan, map[string]any{"generation": 2, "source": "default", "tasks": []any{}}, "PLAN_OTHER_ISSUE"},
+		{"a write of " + first + "'s step record", "/steps/" + step, map[string]any{"model": "claude-opus"}, steprecord.CodeOtherIssue},
+		{"a rating of " + first + "'s retro record", "/steps/" + retro + "/rating", rating(), steprecord.CodeOtherIssue},
+		{"a rating of " + first + "'s step record", "/steps/" + step + "/rating", rating(), steprecord.CodeOtherIssue},
+		{"a write of " + first + "'s plan", "/plans/" + plan, map[string]any{"generation": 2, "source": "default", "tasks": []any{map[string]any{"id": "default", "steps": []any{"tester"}}}}, steprecord.CodePlanOtherIssue},
 	} {
 		if status, answer := put(other, refused.path, refused.write); status != http.StatusConflict || !strings.Contains(answer, `"code":"`+refused.code+`"`) {
 			t.Errorf("%s under %s = %d %s, want 409 %s", refused.what, other, status, strings.TrimSpace(answer), refused.code)
+		}
+	}
+	for what, tasks := range map[string][]any{
+		"a plan with no task": {},
+		"a task with no step": {map[string]any{"id": "default", "steps": []any{}}},
+	} {
+		write := map[string]any{"generation": 2, "source": "default", "tasks": tasks}
+		if status, answer := put(other, "/plans/"+plan, write); status != http.StatusBadRequest || !strings.Contains(answer, `"code":"`+steprecord.CodePlanInput+`"`) {
+			t.Errorf("%s under %s's id = %d %s, want 400 %s, the input refused before the node of the id is found", what, first, status, strings.TrimSpace(answer), steprecord.CodePlanInput)
 		}
 	}
 	if after := held(); after != before {

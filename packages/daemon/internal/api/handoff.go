@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -51,8 +49,9 @@ import (
 // PlanRating and PlanReason are the rating of the plan the issue ran, which the completion that
 // ends the retro carries and no other completion does (PlanRatingContract). Both are pointers for
 // the reason WakeAt is: a completion naming no rating is told from one naming 0, which is refused
-// as outside 1 to 5, and a completion naming no reason from one naming "", which is refused as
-// blank, so a completion that names either member with a value is held to the rule of the rating.
+// as outside 1 to 5, and a completion naming no reason from one naming "", which with a rating is
+// refused as blank, so a completion that names either member with a value is held to the rule of
+// the rating.
 // A member written null reads as left out, since encoding/json decodes null into a pointer as nil;
 // the contract's LegionHandoffCompleteRequest, which the plugins' daemon client
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
@@ -73,31 +72,6 @@ type HandoffCompleteRequest struct {
 	PlanReason     *string    `json:"planReason,omitempty"`
 	ReturnTo       *int       `json:"returnTo,omitempty"`
 }
-
-// PlanRatingContract is the daemon contract that added the rating of the plan to the completion
-// that ends the retro (version.go's 161): planRating, a whole number from 1 (the plan cost the
-// work) to 5 (the plan fit the work), and planReason, why, the two together. The agent that does
-// the retro gives it, so the route takes the two on the completion whose phase is retro (phase.Of,
-// never the role) and refuses them on every other completion and on a production check's report
-// (PLAN_RATING_UNEXPECTED). A claim whose plugin declared this contract or a later one must rate
-// (PLAN_RATING_REQUIRED); a plugin below it never sends the two, and its retro, where the daemon
-// serves its claim (staleClaim), completes with no rating.
-const PlanRatingContract = 161
-
-// The bounds of a rating of the plan. TestPlanRatingGolden writes the three to
-// `packages/contracts/fixtures/daemon-api/plan-rating.json`, and `packages/contracts`'s
-// legion-api.test.ts holds the contract's own bounds equal to that file, so a bound moved on one
-// side alone fails a test on the other.
-const (
-	// planRatingLeast and planRatingMost are the scale: 1, the plan cost the work, to 5, the plan
-	// fit the work.
-	planRatingLeast = 1
-	planRatingMost  = 5
-	// planReasonMax is the most characters, counted as Unicode code points, a rating's reason
-	// holds: Dispatch's record of the retro takes a reason of one to 2,000 characters, so a longer
-	// one taken here could never be written there.
-	planReasonMax = 2000
-)
 
 // HandoffCompleteResponse confirms that the completion fact committed. It carries nothing: the
 // daemon merges nothing and reads no head, so no completion has anything to answer with.
@@ -120,17 +94,6 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("api: handoff completion answered", "issue", grant.Issue, "role", grant.Role, "claim", grant.Claim,
 		"handoffId", req.HandoffID, "handoffVersion", req.HandoffVersion, "commit", req.Commit,
 		"status", answer.answered(), "code", answer.code)
-}
-
-// awaitStreamOf waits for token's claim's machine to have handled what the worker stream read
-// before this request (Options.AwaitStream), nothing where the daemon gave no such wait. A route
-// whose fact ends the requesting agent's own step calls it just before it applies the fact: the
-// agent's answer and its request reach the daemon apart, and the record of the step names the
-// model of the answer its machine has handled.
-func (s *server) awaitStreamOf(ctx context.Context, token claim.Token) {
-	if s.awaitStream != nil {
-		s.awaitStream(ctx, token)
-	}
 }
 
 // completionAnswer is the writer answerCompletion answers through: it keeps the first status
@@ -357,17 +320,16 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused.
 	of := phase.Of(grant.Role, issue.Phase)
-	endsRetro := of == phase.Retro
 	if of == "" {
 		of = issue.Phase
 	}
-	// The rating of the plan is the retro's (planRatingOf), and which completion ends the
-	// retro is phase.Of's answer itself rather than the issue's phase the architect falls back to,
-	// since an architect ends no phase. It is read past the fences above, which decide whether
-	// this completion is the turn's own work at all, so a completion of a run or an entry that is
-	// over is told that rather than asked for a rating; and before the handoff record and the pull
-	// request are read, so a rating where none belongs costs no read of Dispatch or GitHub.
-	rating, refusal := planRatingOf(req, endsRetro, c.PluginContract, issue.Key, fmt.Sprintf("this completion of phase %s of %s", of, issue.Key))
+	// The rating of the plan is held here to its form alone (planRatingOf), which no state of the
+	// issue changes; which completion ends the retro, and so carries a rating or must, is the
+	// workflow's to judge where it ends the retro, on the issue its transaction reads under the
+	// fact's lock (PlanRatingContract). It is read past the fences above, which decide whether
+	// this completion is the turn's own work at all, and before the handoff record and the pull
+	// request are read, so a rating of the wrong form costs no read of Dispatch or GitHub.
+	rating, refusal := planRatingOf(req)
 	if refusal != nil {
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
@@ -442,13 +404,15 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			return
 		}
 	}
-	// The rating rides only the completion that ends the retro (planRatingOf above), and it is
-	// left out of the key as the summary is: the first completion is what the workflow took, so a
-	// retry that rates again is answered already received and the first rating stands.
-	s.awaitStreamOf(r.Context(), grant.Claim)
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
+	// The rating rides the fact as the completion named it, beside whether the claim must rate,
+	// and the workflow judges both (PlanRatingContract). It is left out of the key as the summary
+	// is: the first completion the workflow took is what stands, so a retry that rates again is
+	// answered already received and the first rating stands, and a completion the workflow
+	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
+	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, ReturnTo: returnTo}, s.handlers...)
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract,
+		ReturnTo: returnTo})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -471,58 +435,6 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	writeJSON(w, http.StatusOK, HandoffCompleteResponse{})
 	return
-}
-
-// planRatingOf holds a completion's rating of the plan to PlanRatingContract's rule, and returns
-// the rating it held there (nil for a completion that carries none) or the refusal. endsRetro is
-// whether the completion is the one that ends the retro of issue (phase.Of is retro),
-// pluginContract the contract the claim's plugin declared at its registration
-// (supervise.Claim.PluginContract), and what names the completion in a refusal. The rating is
-// built only where each rule has held, so no caller reads either member of the request itself.
-// Every refusal is a 400 its caller writes before anything is recorded, so the same completion
-// sent again, corrected, is taken:
-//
-//   - PLAN_RATING_UNEXPECTED: a completion that does not end the retro names planRating or
-//     planReason, an empty one included. Dropping them unread would let an agent believe it had
-//     rated the plan.
-//   - PLAN_RATING_REQUIRED: the completion that ends the retro names neither, from a claim whose
-//     plugin declared PlanRatingContract or a later one, whose tool takes the two. A plugin before
-//     it, and a claim that recorded no contract (0), never sends them and completes unrated.
-//   - PLAN_RATING_INPUT: a rating outside 1 to 5, one of the two without the other, or a reason
-//     that is blank or holds more than planReasonMax characters, counted as Unicode code points.
-func planRatingOf(req HandoffCompleteRequest, endsRetro bool, pluginContract int, issue, what string) (*intake.PlanRating, *intake.Refusal) {
-	if req.PlanRating == nil && req.PlanReason == nil {
-		if endsRetro && pluginContract >= PlanRatingContract {
-			return nil, &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
-				"this completion ends the retro of %s and carries no rating of the plan: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", issue, planRatingLeast, planRatingMost)}
-		}
-		return nil, nil
-	}
-	if !endsRetro {
-		return nil, &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
-			"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
-	}
-	// A rating named on the completion that ends the retro, held to the scale and the pair. Each
-	// member is read only past the case that finds it named.
-	var wrong string
-	switch {
-	case req.PlanRating == nil:
-		wrong = "planReason comes with no planRating"
-	case *req.PlanRating < planRatingLeast || *req.PlanRating > planRatingMost:
-		wrong = fmt.Sprintf("planRating %d is outside %d to %d", *req.PlanRating, planRatingLeast, planRatingMost)
-	case req.PlanReason == nil:
-		wrong = fmt.Sprintf("planRating %d comes with no planReason", *req.PlanRating)
-	case strings.TrimSpace(*req.PlanReason) == "":
-		wrong = "planReason is blank"
-	default:
-		length := utf8.RuneCountInString(*req.PlanReason)
-		if length <= planReasonMax {
-			return &intake.PlanRating{Score: *req.PlanRating, Reason: *req.PlanReason}, nil
-		}
-		wrong = fmt.Sprintf("planReason is %d characters, and it holds at most %d", length, planReasonMax)
-	}
-	return nil, &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_INPUT", Message: fmt.Sprintf(
-		"%s: a rating of the plan is a whole number from %d to %d in planRating with why in planReason, one to %d characters, the two together; nothing was recorded", wrong, planRatingLeast, planRatingMost, planReasonMax)}
 }
 
 // returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion
@@ -931,7 +843,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 	// installation covering the repository is the owner it moved to's. The log line above and the
 	// fact applied below go on naming issue.GitHubRepo, the name the record is held under.
 	repository := s.serving(recordedRepo)
-	lease, err := s.tokens.Token(ctx, appauth.Implement, repository)
+	lease, err := s.tokens.Token(ctx, appauth.Implement, repository.Owner())
 	if err != nil {
 		logUnread(fmt.Errorf("mint the implement App token for %s: %w", repository, err))
 		return true
@@ -967,7 +879,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 		return true
 	}
 	fact, read := intake.OpenedRead(issue.Project, issue.GitHubRepo, branch, pull, issue.Generation, recorded)
-	if _, err := intake.ApplyFact(ctx, s.pool, "github", read, fact, s.handlers...); err != nil {
+	if _, err := s.apply(ctx, "github", read, fact); err != nil {
 		s.logRequestFailure(r, err, "api: apply the open pull request a completing implementer's branch shows", "issue", issue.Key, "pullRequest", pull.Number)
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the open pull request read from GitHub; this completion changed nothing")
 		return false
@@ -1003,8 +915,8 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 //   - CHECK_WAKE_UNEXPECTED: a wakeAt where no look follows it — on a pass or a fail, each of
 //     which closes the check, or on a pending on the check's last look, after which the check
 //     closes as not run.
-//   - PLAN_RATING_UNEXPECTED: a planRating or a planReason, which only the completion that ends
-//     the retro carries (planRatingOf).
+//   - PLAN_RATING_UNEXPECTED: a planRating or a planReason, whatever its form, which only the
+//     completion that ends the retro carries (intake.PlanRatingUnexpected).
 //
 // No commit is read: the look pushed nothing. No run is read either: the check fences itself on
 // the issue and the look, since the look's task is no phase's run and a woken session may hold an
@@ -1054,7 +966,8 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		return
 	}
 	what := fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)
-	if _, refusal := planRatingOf(req, false, 0, grant.Issue, what); refusal != nil {
+	if req.PlanRating != nil || req.PlanReason != nil {
+		refusal := intake.PlanRatingUnexpected(what)
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
@@ -1064,8 +977,8 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		return
 	}
 	eventID := fmt.Sprintf("check:%s:%s:%d:%s", grant.Issue, check.ID(), look.Look, req.Verdict)
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
-		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt}, s.handlers...)
+	result, err := s.apply(r.Context(), "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
+		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
