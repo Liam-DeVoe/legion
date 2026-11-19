@@ -207,6 +207,41 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	}
 }
 
+// TestEveryRewriteOfARowMovesItsUpdatedAt: every row of one pass carries the pass's one moment
+// (pass), so a pass that writes an issue's row on two of its pages writes it twice at one
+// UpdatedAt. A second write that moves only the closed issue's work hours, a value the board's
+// revision of the issue leaves out (api's legionBoardView), still moves the row's updated_at,
+// which the revision keeps, so a page holding the first write's values is sent the second's.
+func TestEveryRewriteOfARowMovesItsUpdatedAt(t *testing.T) {
+	pool := factsDatabase(t)
+	first, last, closed := workedAt(4, 9), workedAt(4, 17), workedAt(4, 18)
+	row := workedRow("LEGION-3", &first, &last, &closed)
+	row.UpdatedAt, row.WorkHours = workedAt(5, 12), 2
+	stamped := func(what string) time.Time {
+		t.Helper()
+		if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: factsProject, Rows: []Row{row}, Whole: true}); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		var at time.Time
+		if err := pool.QueryRow(t.Context(), `select updated_at from issue_facts where project_key = $1 and issue_key = $2`,
+			factsProject, row.Issue).Scan(&at); err != nil {
+			t.Fatalf("read the row's updated_at after %s: %v", what, err)
+		}
+		return at
+	}
+	written := stamped("the first write")
+	row.WorkHours = 3
+	rewritten := stamped("the write that moves the work hours alone")
+	t.Logf("%s written at %s, then at %s after its work hours alone moved, both writes at UpdatedAt %s",
+		row.Issue, written.UTC(), rewritten.UTC(), row.UpdatedAt)
+	if !written.Equal(row.UpdatedAt) {
+		t.Errorf("the first write stored updated_at %s, want the row's UpdatedAt %s", written.UTC(), row.UpdatedAt)
+	}
+	if !rewritten.After(written) {
+		t.Errorf("the rewrite of the work hours left updated_at at %s, want it past %s", rewritten.UTC(), written.UTC())
+	}
+}
+
 // TestTheStoredRowsReadBackFieldByField: the rows read with every column (readWhole, the read
 // ReadClosedIn makes of a window's rows) answer what WriteProject wrote, every field of every row,
 // and the board's Read answers the columns the board shows of each as of the moment it reads at

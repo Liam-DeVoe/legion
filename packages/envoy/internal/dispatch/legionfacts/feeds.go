@@ -503,10 +503,9 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 
 // blockMoved is whether an admission row whose value is after moved what a waiting reason reads of
 // the project's block from before, the value of the admission row before it (each nil for no row
-// and for a `null` one): whether a block is read at all, its Waiting and its Blocked
-// (legion.NewWaitingLine). A value is read as the facts read it (metrics' readReported, through
-// legion.ParseAdmission), and a value of another shape is no block. The cap, the active slots and
-// the live trees move no reason.
+// and for a `null` one): whether the two build another waiting line (legion.SameLine, which holds
+// the fields legion.NewWaitingLine reads). A value is read as the facts read it (metrics'
+// readReported, through legion.ParseAdmission), and a value of another shape is no block.
 func blockMoved(before, after []byte) bool {
 	read := func(value []byte) *legion.Admission {
 		if value == nil {
@@ -515,13 +514,7 @@ func blockMoved(before, after []byte) bool {
 		block, _ := legion.ParseAdmission(value)
 		return block
 	}
-	was, is := read(before), read(after)
-	if was == nil || is == nil {
-		return (was == nil) != (is == nil)
-	}
-	return !slices.Equal(was.Waiting, is.Waiting) || !slices.EqualFunc(was.Blocked, is.Blocked, func(a, b legion.BlockedIssue) bool {
-		return a.Issue == b.Issue && slices.Equal(a.BlockedBy, b.BlockedBy)
-	})
+	return !legion.SameLine(read(before), read(after))
 }
 
 // readChangePage is the page of delivery changes after the cursor (delivery.ChangesSince, whose

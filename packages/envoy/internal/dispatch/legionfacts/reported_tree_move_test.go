@@ -110,9 +110,18 @@ func TestATreeObservationMovesAChildAndRecomputesBothRoots(t *testing.T) {
 	}
 
 	for _, root := range []struct{ key, moved string }{{left, "left"}, {joined, "joined"}} {
-		if difference := rowDifference(stored[root.key], want[root.key]); difference != "" {
+		// This pass runs at the first pass's moment, and a rewrite at the moment the row was last
+		// written stores updated_at a microsecond past it (upsert), so the row's moment is held to
+		// move from the row before rather than to equal the computation's.
+		fresh := want[root.key]
+		fresh.UpdatedAt = stored[root.key].UpdatedAt
+		if difference := rowDifference(stored[root.key], fresh); difference != "" {
 			t.Errorf("%s is the root %s %s, and its stored row is not the row the computation answers for it: %s",
 				root.key, child, root.moved, difference)
+		}
+		if !stored[root.key].UpdatedAt.After(before[root.key].UpdatedAt) {
+			t.Errorf("%s is the root %s %s, and its row was rewritten at %s, no later than the row before it, written at %s",
+				root.key, child, root.moved, stored[root.key].UpdatedAt.UTC(), before[root.key].UpdatedAt.UTC())
 		}
 		if !slices.Contains(changed, root.key) {
 			t.Errorf("%s is the root %s %s and the pass left its row alone; it changed %v",

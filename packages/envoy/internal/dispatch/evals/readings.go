@@ -50,18 +50,23 @@ type Written struct {
 // A slug no eval holds registers its eval as version 1 (written_via reading, kind experiment,
 // source logged, no target, state active, the caller as owner), with its section in the
 // project's `evals-md` document, the document created first where the project has none. Every
-// write takes the eval's lock (lockEval) before it reads the eval's definition and series, so two
-// first writes of one slug register it once: the second finds the first's version 1 once it
-// commits. A write that registers its eval takes the document's owner lock before it stores
-// anything (lockDocument) and does the section's document work there, in its read phase, queued
-// for the commit after its readings and day rows (writeMethod), so the section commits with the
-// eval and the write holds a transaction id only for its database statements. A series no
-// version holds registers too (firstSeries), listed where the eval is logged and unlisted where it
-// is computed, since a reading under a computed eval's slug is stored and answered by its items
-// alone: no day row of a computed eval is written here, and nothing here folds such a reading
-// into the eval's value. A register write that lists or unlists a series of the eval takes the
-// same lock, so it relists the series' rows before this write reads the listing or after it
-// commits, and the day rows the write keeps carry the listing that stands at its commit.
+// write takes the eval's lock (lockEval) first, before it locks the readings it corrects
+// (lockReplaced) and reads the eval's definition and series, so two first writes of one slug
+// register it once: the second finds the first's version 1 once it commits. The lock comes before
+// the readings' row locks because a row lock gives the transaction an id, and every reader of the
+// event log waits for each running transaction id (events.Horizon): a correction that waited for
+// the eval's lock behind a register write or another readings write would hold every one of them
+// back for as long as it waited. A write that registers its eval takes the document's owner lock
+// before it stores anything (lockDocument) and does the section's document work there, in its
+// read phase, queued for the commit after its readings and day rows (writeMethod), so the section
+// commits with the eval and the write holds a transaction id only for its database statements. A
+// series no version holds registers too (firstSeries), listed where the eval is logged and
+// unlisted where it is computed, since a reading under a computed eval's slug is stored and
+// answered by its items alone: no day row of a computed eval is written here, and nothing here
+// folds such a reading into the eval's value. A register write that lists or unlists a series of
+// the eval takes the eval's lock too, so it relists the series' rows before this write reads the
+// listing or after it commits, and the day rows the write keeps carry the listing that stands at
+// its commit.
 //
 // A correction (replaces) supersedes the reading it names in the same transaction. A logged
 // eval's day rows of every day the batch touches are kept in the same transaction (writeDays):
@@ -85,6 +90,9 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 	evalID := EvalID(batch.Project, batch.Slug)
 	var written Written
 	err := s.inWrite(ctx, batch.Project, func(ctx context.Context, w *writeTx) error {
+		if err := lockEval(ctx, w.Tx, evalID); err != nil {
+			return err
+		}
 		rows, rowErrors := parseRows(evalID, batch.Rows, w.now)
 		replaced, replaceErrors, err := lockReplaced(ctx, w.Tx, evalID, rows)
 		if err != nil {
@@ -161,21 +169,18 @@ func foldedReadings(ctx context.Context, tx pgx.Tx, evalID string, replaced []Re
 }
 
 // registerMissing answers the eval's definition, registering the eval and every series of the
-// batch no version holds yet. It takes the eval's lock (lockEval) before it reads either, whether
-// or not anything is missing, as the register write does: so the listing of each series it
-// answers is the one the last register write of the eval committed, and no register write lists
-// or unlists a series of it until this write commits, the listing writeDays writes into the day
-// rows among what it waits for (relistDays). It answers whether it registered the eval, the
-// series it registered, in the batch's order, and the newest version of every series of the eval
-// by name, those it registered among them. An eval it registers gets its section first, before
-// its version's insert: the write takes the document's owner lock (lockDocument) and queues the
-// section's writes for the commit (writeMethod), so that document work runs before the write's
-// first statement that writes.
+// batch no version holds yet. It runs under the eval's lock (lockEval), which WriteReadings takes
+// first, before it reads either, whether or not anything is missing, as the register write does:
+// so the listing of each series it answers is the one the last register write of the eval
+// committed, and no register write lists or unlists a series of it until this write commits, the
+// listing writeDays writes into the day rows among what it waits for (relistDays). It answers
+// whether it registered the eval, the series it registered, in the batch's order, and the newest
+// version of every series of the eval by name, those it registered among them. An eval it
+// registers gets its section first, before its version's insert: the write takes the document's
+// owner lock (lockDocument) and queues the section's writes for the commit (writeMethod), so that
+// document work runs before the write's first statement that writes.
 func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, rows []Reading) (Definition, bool, []Series, map[string]Series, error) {
 	evalID := EvalID(batch.Project, batch.Slug)
-	if err := lockEval(ctx, w.Tx, evalID); err != nil {
-		return Definition{}, false, nil, nil, err
-	}
 	definition, found, err := newestDefinition(ctx, w.Tx, evalID)
 	if err != nil {
 		return Definition{}, false, nil, nil, err
@@ -224,7 +229,9 @@ func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, ro
 // lockReplaced reads, and locks for the rest of tx, every reading a row of the batch replaces,
 // by id, and refuses each row whose reading is not this eval's or was replaced already: by an
 // earlier correction, or by an earlier row of the same batch. The row lock is what a second
-// correction of the same reading waits on, so it reads the reading the first one superseded.
+// correction of the same reading waits on, so it reads the reading the first one superseded. It
+// runs under the eval's lock, which WriteReadings takes first: a row lock gives the transaction
+// an id, which the write must not hold while it waits for that lock (inWrite).
 func lockReplaced(ctx context.Context, tx pgx.Tx, evalID string, rows []Reading) (map[string]Reading, []RowError, error) {
 	var ids []string
 	for _, row := range rows {
