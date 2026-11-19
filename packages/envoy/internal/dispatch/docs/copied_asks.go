@@ -92,7 +92,7 @@ func readCopiedAskSources(
 		return nil, nil
 	}
 	query, ownerKey := copiedAskSourcesQuery(owner)
-	found, err := tx.Query(ctx, query, unindexed, artifactID, ownerKey)
+	found, err := tx.Query(ctx, query, unindexed, roomBound(ctx, artifactID), ownerKey)
 	if err != nil {
 		return nil, fmt.Errorf("load copied ask sources: %w", err)
 	}
@@ -243,13 +243,13 @@ func ownerDocuments(owner artifactOwner) (string, string) {
 	return `d.issue_key is null and d.session_id is null and d.project_key = $3`, owner.Project
 }
 
-// copiedAskSourcesQuery reads the asks of owner's other documents under the block ids $1, the
-// document settled being $2, oldest first, and returns the value it binds as $3. An ask of the room
-// $2 is edited in is no other document's (refs.DocumentRoomSQL): an issue room's asks are keyed by
-// its tree, and its block ids are unique across its fragments, so no fragment copies another's. It
-// reads the owner's documents through their index, then each one's asks through
-// asks_block_id_unique, whose second column is block_id_key(block_id) (migration 0127), so the
-// ids' keys are matched beside the ids.
+// copiedAskSourcesQuery reads the asks of owner's other documents under the block ids $1, $2 being
+// the document settled, or the room the transaction joins it to (roomBound), oldest first, and
+// returns the value it binds as $3. An ask of the room $2 is edited in is no other document's
+// (refs.DocumentRoomSQL): an issue room's asks are keyed by its tree, and its block ids are unique
+// across its fragments, so no fragment copies another's. It reads the owner's documents through
+// their index, then each one's asks through asks_block_id_unique, whose second column is
+// block_id_key(block_id) (migration 0127), so the ids' keys are matched beside the ids.
 // Each ask is followed by the issue key, project, slug and kind of the document it is part of, and
 // whether that is the issue's spec: the far end of the current part_of of the ask's node
 // (graphstore.TuplePartOf, the record of where the ask is), read through graph_tuples_current and
@@ -277,17 +277,17 @@ func copiedAskSourcesQuery(owner artifactOwner) (string, string) {
 	`, ownerKey
 }
 
-// owedCopiesQuery reads owner's other documents, the document settled being $2, whose latest
-// version holds an ask block opener of the pairs ($1 block id, $4 LIKE pattern for its opener)
-// with no ask of its own under that id, read through asks_block_id_unique as copiedAskSourcesQuery
-// reads it, and returns the value it binds as $3. No document of the room $2 is edited in is
-// another (refs.DocumentRoomSQL), as copiedAskSourcesQuery reads none: an issue room's fragments
-// hold its asks' own blocks, under ids unique across the room, and a settlement of that room is
-// what clears a pending row of any of them. The ask is looked for by a scalar subquery,
-// `(select … limit 1) is null`, not by NOT EXISTS: Postgres may run a NOT EXISTS as a hashed
-// subplan, whose hash table it builds from a full scan of asks (Postgres 18 does even with
-// sequential scans disabled), while it runs a scalar subquery once per candidate document and
-// block, each run one probe of the index.
+// owedCopiesQuery reads owner's other documents, $2 being the document settled or its room as
+// copiedAskSourcesQuery binds it, whose latest version holds an ask block opener of the pairs ($1
+// block id, $4 LIKE pattern for its opener) with no ask of its own under that id, read through
+// asks_block_id_unique as copiedAskSourcesQuery reads it, and returns the value it binds as $3. No
+// document of the room $2 is edited in is another (refs.DocumentRoomSQL), as copiedAskSourcesQuery
+// reads none: an issue room's fragments hold its asks' own blocks, under ids unique across the
+// room, and a settlement of that room is what clears a pending row of any of them. The ask is
+// looked for by a scalar subquery, `(select … limit 1) is null`, not by NOT EXISTS: Postgres may
+// run a NOT EXISTS as a hashed subplan, whose hash table it builds from a full scan of asks
+// (Postgres 18 does even with sequential scans disabled), while it runs a scalar subquery once per
+// candidate document and block, each run one probe of the index.
 func owedCopiesQuery(owner artifactOwner) (string, string) {
 	documents, ownerKey := ownerDocuments(owner)
 	return `
@@ -416,7 +416,7 @@ func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, 
 		return nil, nil
 	}
 	query, ownerKey := owedCopiesQuery(document.owner)
-	rows, err := tx.Query(ctx, query, blockIDs, document.artifactID, ownerKey, patterns)
+	rows, err := tx.Query(ctx, query, blockIDs, roomBound(ctx, document.artifactID), ownerKey, patterns)
 	if err != nil {
 		return nil, fmt.Errorf("find copies of asks: %w", err)
 	}

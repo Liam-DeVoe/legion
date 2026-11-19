@@ -1544,7 +1544,11 @@ func (s *Service) roomTree(ctx context.Context, room string, layout roomLayout) 
 func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, versions, written refs.Versions, tick bool, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (roomIndex, error) {
 	var refKey string
 	var heldBlocks, heldDocuments []string
-	if err := tx.QueryRow(ctx, `
+	if address, created := pendingArtifact(ctx, room); created {
+		// A tree artifact this transaction creates (an issue born converted's) has no row yet,
+		// and so no issue_room_blocks row names it: its key is its registered address's.
+		refKey = address.RefKey
+	} else if err := tx.QueryRow(ctx, `
 		select a.ref_key,
 		       array(select r.block_id from issue_room_blocks r where r.tree_artifact_id = a.id order by r.block_id),
 		       array(select r.document_id::text from issue_room_blocks r where r.tree_artifact_id = a.id order by r.block_id)

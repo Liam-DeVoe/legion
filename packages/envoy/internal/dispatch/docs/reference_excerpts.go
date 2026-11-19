@@ -101,13 +101,14 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	// A document of an issue room, and the room's tree artifact once a document has joined it, is
 	// indexed by the room's one pass over every fragment (indexDocumentInRoom): no pass indexes one
 	// fragment of a room alone. The pass defers as one document's does, measured on the blocks it
-	// would index, every fragment's.
-	room, err := readDocumentRoom(ctx, tx, artifactID)
+	// would index, every fragment's. A document this transaction creates takes its room from the
+	// ledger (indexedRoom): its row is written in the write phase, after this read.
+	room, layout, err := indexedRoom(ctx, tx, artifactID)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	if len(room.layout) > 0 {
-		return s.indexDocumentInRoom(ctx, tx, room.room, room.layout, artifactID, rendered, nil, true)
+	if len(layout) > 0 {
+		return s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, nil, true)
 	}
 	// An empty version holds no block, whatever the transaction rendered, so one no write of this
 	// transaction rendered - an issue's decisions query's version 1, which no fragment holds - is
@@ -281,47 +282,49 @@ func removalsOfVersions(ctx context.Context, versions refs.Versions) graphstore.
 // room's settlement (writeVersionTx): the document's own pass where it is a room of its own with
 // no other fragment, and otherwise its room's one pass over every fragment (indexDocumentInRoom).
 func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
-	room, err := readDocumentRoom(ctx, tx, artifactID)
+	room, layout, err := indexedRoom(ctx, tx, artifactID)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	if len(room.layout) == 0 {
+	if len(layout) == 0 {
 		return s.indexDocument(ctx, tx, artifactID, versions, markdown, rendered, settled)
 	}
-	return s.indexDocumentInRoom(ctx, tx, room.room, room.layout, artifactID, rendered, settled, false)
+	return s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, settled, false)
 }
 
 // indexDocumentInRoom indexes, in tx, the issue room room, of layout, after a version of document -
 // one of its documents, or its tree artifact - that its writer wrote outside the room's
 // settlement: the room's one pass under its tree artifact (indexRoom), over every fragment, each at
-// its own document's latest version, the one just written for document. document's fragment is
-// the tree the version was rendered from (rendered), and every other fragment the room's own tree
-// of it (roomTree: the transaction's fork where it writes the room, else the room this server
-// holds or the stored room), which holds the very block ids its blocks were indexed under; a
-// stored rendering read back would mint a new id for each block whose id the rendering does not
-// carry, and the pass would state that block anew under the writer's event. A fragment whose
-// document holds no version yet is empty. Where a fragment does not read, or another fragment
-// reads otherwise than its document's latest version - a browser's edit the room's settlement has
-// not versioned yet - or document's own does where its writer rendered no tree of it (an upload
-// whose replacement changed nothing, or one whose written tree did not render as the version's
-// markdown: IndexDocumentReferences), the room is left owed and nothing of it indexed here, as the
-// block-index reconciliation leaves a room live ahead (indexOwedRoom): the version trigger marked
-// document owed when its row was inserted, and the reconciliation, or the settlement that
-// versions that edit, indexes the room. What the pass stated of every document is answered
-// together, for the event the writer appends. Where deferLarge is set - an upload's or a create's
-// write (IndexDocumentReferences) - and the room holds more blocks than a write indexes in its own
-// request (deferBlockIndexBlocks), the blocks are left to the block-index reconciliation, which
-// indexes the room whole (indexOwedRoom), and the room's references and typed nodes are indexed
-// here, as one document's deferred version's are (indexDeferredVersion). document's latest version
-// is the one its writer just wrote, whose node that writer writes after the index, so it is the
-// version a pass that drains this build's mark leaves out (indexRenderedVersion's written).
+// its own document's latest version as this transaction leaves it (latestRoomVersions), the one
+// just written for document. document's fragment is the tree the version was rendered from
+// (rendered), and every other fragment the room's own tree of it (roomParts, roomTree: the
+// transaction's fork where it writes the room, else the room this server holds or the stored
+// room; what the transaction wrote, for a room it creates), which holds the very block ids its
+// blocks were indexed under; a stored rendering read back would mint a new id for each block whose
+// id the rendering does not carry, and the pass would state that block anew under the writer's
+// event. A fragment whose document holds no version yet is empty. Where a fragment does not read,
+// or another fragment reads otherwise than its document's latest version - a browser's edit the
+// room's settlement has not versioned yet - or document's own does where its writer rendered no
+// tree of it (an upload whose replacement changed nothing, or one whose written tree did not
+// render as the version's markdown: IndexDocumentReferences), the room is left owed and nothing of
+// it indexed here, as the block-index reconciliation leaves a room live ahead (indexOwedRoom): the
+// version trigger marked document owed when its row was inserted, and the reconciliation, or the
+// settlement that versions that edit, indexes the room. What the pass stated of every document is
+// answered together, for the event the writer appends. Where deferLarge is set - an upload's or a
+// create's write (IndexDocumentReferences) - and the room holds more blocks than a write indexes
+// in its own request (deferBlockIndexBlocks), the blocks are left to the block-index
+// reconciliation, which indexes the room whole (indexOwedRoom), and the room's references and
+// typed nodes are indexed here, as one document's deferred version's are (indexDeferredVersion).
+// document's latest version is the one its writer just wrote, whose node that writer writes after
+// the index, so it is the version a pass that drains this build's mark leaves out
+// (indexRenderedVersion's written).
 func (s *Service) indexDocumentInRoom(ctx context.Context, tx pgx.Tx, room string, layout roomLayout, document string, rendered renderedTree, settled *askBlockSources, deferLarge bool) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	documents := layout.documents(room)
-	latest, err := readRoomVersions(ctx, tx, documents)
+	latest, err := latestRoomVersions(ctx, tx, documents)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	held, heldCounts, err := s.roomTree(ctx, room, layout)
+	parts, err := s.roomParts(ctx, room, layout)
 	switch {
 	case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
 		slog.Warn("dispatch: a version of a document of an issue room left the room to the block-index reconciliation: a fragment of the room does not read",
@@ -329,10 +332,6 @@ func (s *Service) indexDocumentInRoom(ctx context.Context, tx pgx.Tx, room strin
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, nil
 	case err != nil:
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
-	}
-	parts := layout.parts(held, heldCounts)
-	if parts == nil {
-		return model.ReferenceChanges{}, graphstore.Uncaused{}, fmt.Errorf("the tree of room %s does not part into its %d fragments", room, len(documents))
 	}
 	versions := refs.Versions{}
 	for index, id := range documents {
@@ -380,6 +379,36 @@ func (s *Service) indexDocumentInRoom(ctx context.Context, tx pgx.Tx, room strin
 	}
 	facts = append(facts, index.references)
 	return index.changes, graphstore.Joined(facts...), nil
+}
+
+// roomParts is each fragment of room, of layout, in the order of layout.documents, as
+// indexDocumentInRoom reads them: the room's own tree (roomTree) parted by its fragments; and, for
+// a room this transaction creates (an issue born converted's, Ledger.RegisterPendingArtifact),
+// what the transaction seeded or wrote into each fragment (Ledger.writtenRendering), a fragment it
+// wrote nothing into being empty. Such a room holds nothing but what its transaction wrote, and
+// its tree artifact has no row a read before the write phase sees, which the room's own read
+// locks the owner by (joinRead).
+func (s *Service) roomParts(ctx context.Context, room string, layout roomLayout) ([]*pmdoc.Node, error) {
+	documents := layout.documents(room)
+	if _, created := pendingArtifact(ctx, room); created {
+		ledger := ledgerFrom(ctx)
+		parts := make([]*pmdoc.Node, len(documents))
+		for index, id := range documents {
+			if parts[index] = ledger.writtenRendering(id).tree; parts[index] == nil {
+				parts[index] = &pmdoc.Node{Type: "doc"}
+			}
+		}
+		return parts, nil
+	}
+	held, counts, err := s.roomTree(ctx, room, layout)
+	if err != nil {
+		return nil, err
+	}
+	parts := layout.parts(held, counts)
+	if parts == nil {
+		return nil, fmt.Errorf("the tree of room %s does not part into its %d fragments", room, len(documents))
+	}
+	return parts, nil
 }
 
 // offsetBlocks is the blocks a render's offsets name, as the block index takes them, each with

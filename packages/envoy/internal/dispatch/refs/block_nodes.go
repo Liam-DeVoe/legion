@@ -483,13 +483,22 @@ type documentVersion struct {
 
 // versionAuthors answers held with the authors of each version of wanted it does not hold yet,
 // read through q in one statement: each version's authors in the order its row stores them (docs'
-// actorSlice, for a settlement's), and none for a version no row records.
+// actorSlice, for a settlement's), and none for a version no row records. A version the reading
+// transaction has queued and not written, which no row records yet, takes the authors its queued
+// row holds (Pending).
 func versionAuthors(ctx context.Context, q Queryer, held map[documentVersion][]model.Actor, wanted []documentVersion) (map[documentVersion][]model.Actor, error) {
+	pending := pendingOf(ctx)
 	var documents []string
 	var numbers []int32
 	for _, version := range wanted {
 		if _, known := held[version]; known {
 			continue
+		}
+		if pending != nil {
+			if authors, queued := pending.PendingAuthors(version.document, version.number); queued {
+				held[version] = authors
+				continue
+			}
 		}
 		held[version] = nil
 		documents, numbers = append(documents, version.document), append(numbers, int32(version.number))
@@ -1957,16 +1966,29 @@ type fragmentDocument struct {
 
 // fragmentDocuments reads, in one statement, each document other than artifactID that a block of
 // nodes names as the document whose fragment holds it: none for a document that is its own room,
-// whose blocks name none.
+// whose blocks name none. A document the reading transaction creates, whose row no read sees
+// before its write phase, is the address that transaction registered for it (Pending).
 func fragmentDocuments(ctx context.Context, q Queryer, artifactID string, nodes []model.ArtifactBlock) (map[string]fragmentDocument, error) {
+	documents := map[string]fragmentDocument{}
+	pending := pendingOf(ctx)
 	var ids []string
 	for _, block := range nodes {
-		if block.Document != "" && block.Document != artifactID && !slices.Contains(ids, block.Document) {
-			ids = append(ids, block.Document)
+		if block.Document == "" || block.Document == artifactID || slices.Contains(ids, block.Document) {
+			continue
 		}
+		if _, held := documents[block.Document]; held {
+			continue
+		}
+		if pending != nil {
+			if address, created := pending.PendingDocument(block.Document); created {
+				documents[block.Document] = fragmentDocument{refKey: address.RefKey, band: address.Band}
+				continue
+			}
+		}
+		ids = append(ids, block.Document)
 	}
 	if len(ids) == 0 {
-		return nil, nil
+		return documents, nil
 	}
 	rows, err := q.Query(ctx, `
 		select a.id::text, a.ref_key, `+DocumentBandSQL("a")+`
@@ -1976,7 +1998,6 @@ func fragmentDocuments(ctx context.Context, q Queryer, artifactID string, nodes 
 		return nil, fmt.Errorf("read the documents whose fragments of %s's room hold its blocks: %w", artifactID, err)
 	}
 	defer rows.Close()
-	documents := make(map[string]fragmentDocument, len(ids))
 	for rows.Next() {
 		var id, band string
 		var document fragmentDocument

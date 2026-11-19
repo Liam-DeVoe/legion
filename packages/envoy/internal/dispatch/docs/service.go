@@ -3618,11 +3618,74 @@ func roomLayoutSQL(room string) string {
 	return `array(
 			select d.id::text from document_rooms held join artifacts d on d.id = held.artifact_id
 			where held.room = ` + room + `
-			order by case ` + refs.DocumentBandSQL("d") + `
+			order by ` + roomLayoutRankSQL(refs.DocumentBandSQL("d")) + `, d.created_at, d.id)`
+}
+
+// roomLayoutRankSQL is, as SQL over the band expression band (refs.DocumentBandSQL), the place a
+// document of that band takes in its room's layout (roomLayoutSQL): verification-md, plan-md, the
+// spec, then every other document.
+func roomLayoutRankSQL(band string) string {
+	return `case ` + band + `
 				when '` + string(refs.RankBandVerification) + `' then 0
 				when '` + string(refs.RankBandPlan) + `' then 1
 				when '` + string(refs.RankBandSpec) + `' then 2
-				else 3 end, d.created_at, d.id)`
+				else 3 end`
+}
+
+// joinedRoomLayoutStatement is the layout of the room $1 (roomLayoutSQL) with the documents $2,
+// of the bands $3, each in its place: documents the reading transaction creates and joins to the
+// room, whose artifacts and document_rooms rows it has not written yet (Ledger.pendingJoins). Each
+// is created after every document the room holds, so it takes the last place of its band.
+var joinedRoomLayoutStatement = `
+	select array(
+		select layout.id from (
+			select d.id::text as id, ` + roomLayoutRankSQL(refs.DocumentBandSQL("d")) + ` as rank,
+				false as joining, d.created_at as at
+			from document_rooms held join artifacts d on d.id = held.artifact_id
+			where held.room = $1::uuid
+			union all
+			select joining.id, ` + roomLayoutRankSQL("joining.band") + `, true, null
+			from unnest($2::text[], $3::text[]) as joining(id, band)
+		) layout
+		order by layout.rank, layout.joining, layout.at, layout.id)`
+
+// indexedRoom is the room artifactID's document is edited in and that room's layout, as the
+// reference indexing of a version tx writes reads them (IndexDocumentReferences, indexVersion).
+// A document tx creates (Ledger.RegisterPendingArtifact) has no artifacts row a read before tx's
+// write phase can see, so its room is the ledger's: the issue room tx joins it to
+// (Ledger.RegisterPendingRoom), else the document itself, since a document_rooms row names an
+// artifacts row and every writer of one for a document its own transaction creates records it
+// there. Every other document's room is the stored one (readDocumentRoom). Where tx joins a
+// document it creates to the room, the layout holds that document in its place
+// (joinedRoomLayoutStatement).
+func indexedRoom(ctx context.Context, tx pgx.Tx, artifactID string) (string, roomLayout, error) {
+	ledger := ledgerFrom(ctx)
+	room, layout := artifactID, roomLayout(nil)
+	if _, created := pendingArtifact(ctx, artifactID); created {
+		if joined, ok := ledger.roomOf(artifactID); ok {
+			room = joined
+		}
+	} else {
+		read, err := readDocumentRoom(ctx, tx, artifactID)
+		if err != nil {
+			return "", nil, err
+		}
+		room, layout = read.room, read.layout
+	}
+	documents, bands := ledger.pendingJoins(room)
+	if len(documents) == 0 {
+		return room, layout, nil
+	}
+	for index, band := range bands {
+		if band == "\x00" {
+			return "", nil, fmt.Errorf("document %s joins room %s with no band registered for its row", documents[index], room)
+		}
+	}
+	var joined []string
+	if err := tx.QueryRow(ctx, joinedRoomLayoutStatement, room, documents, bands).Scan(&joined); err != nil {
+		return "", nil, fmt.Errorf("read the documents of room %s: %w", room, err)
+	}
+	return room, roomLayout(joined), nil
 }
 
 // documentRoomStatement is the one statement a document socket's admission reads the document
@@ -3674,15 +3737,31 @@ var DocumentRoomOfStatement = `
 	select coalesce(nullif(` + refs.DocumentRoomSQL("asked.id::uuid") + `, asked.id::uuid)::text, asked.id) as room
 	from (select $1::text as id) asked`
 
-// roomOf is the room artifactID's document is edited in (DocumentRoomOfStatement), read from q:
+// roomOf is the room artifactID's document is edited in: the issue room the transaction of ctx's
+// ledger joins it to or resolved it into (Ledger.roomOf) - for a document that transaction creates,
+// one no read before its write phase can see - else the room DocumentRoomOfStatement reads from q:
 // the issue room it was converted into, else the document itself. Every room entry point that
 // takes an artifact id resolves it here first.
 func roomOf(ctx context.Context, q Queryer, artifactID string) (string, error) {
+	if room, held := ledgerFrom(ctx).roomOf(artifactID); held {
+		return room, nil
+	}
 	var room string
 	if err := q.QueryRow(ctx, DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
 		return "", fmt.Errorf("read the document's room: %w", err)
 	}
 	return room, nil
+}
+
+// roomBound is what a statement that resolves artifactID's room in its own SQL
+// (refs.DocumentRoomSQL) binds for it: the room the ledger ctx carries holds for it (roomOf),
+// whose own room it is, else artifactID itself, whose document_rooms row the statement reads. A
+// document the transaction joins to a room before its row is written so resolves to that room.
+func roomBound(ctx context.Context, artifactID string) string {
+	if room, held := ledgerFrom(ctx).roomOf(artifactID); held {
+		return room
+	}
+	return artifactID
 }
 
 // waitForPendingUpdates waits until the room has handed persistence every update its update

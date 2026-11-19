@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // An issue's tree artifact (dispatch://INFRA-1253 R5, D3 and D14 of its plan) is created in its
@@ -56,13 +57,14 @@ func TestAnIssuesTreeArtifactTakesItsSlugItsNodeAndItsIssueTreesRow(t *testing.T
 		if err != nil {
 			t.Fatalf("queue the node of the tree's version 1: %v", err)
 		}
-		if err := ledger.Commit(ctx); err != nil {
-			t.Fatalf("run the tree's queued writes: %v", err)
+		// What the two node writes stated is appended after them in the same write phase, as the
+		// create queues it; the ledger's commit runs that phase and commits tx.
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			return graphstore.QueueCaused(ctx, b, graphstore.Joined(written, versionNode), graphstore.NoEvent)
+		}); err != nil {
+			t.Fatalf("queue what the tree's node writes stated: %v", err)
 		}
-		if err := graphstore.Caused(ctx, tx, graphstore.Joined(written, versionNode), graphstore.NoEvent); err != nil {
-			t.Fatalf("append what the tree's node writes stated: %v", err)
-		}
-		return id, tx.Commit(ctx)
+		return id, ledger.Commit(ctx)
 	}
 	id, err := created()
 	if err != nil {

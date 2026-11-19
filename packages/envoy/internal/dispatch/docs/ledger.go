@@ -628,6 +628,16 @@ func (l *Ledger) PendingArtifact(refKey string) (string, string, bool) {
 	return "", "", false
 }
 
+// PendingDocument is the address registered for the artifacts row of uuid id this transaction
+// writes (RegisterPendingArtifact).
+func (l *Ledger) PendingDocument(id string) (refs.DocumentAddress, bool) {
+	if l == nil {
+		return refs.DocumentAddress{}, false
+	}
+	address, pending := l.artifacts[id]
+	return address, pending
+}
+
 // PendingMarkdown is the markdown of the version of artifactID this transaction has queued and
 // not written yet (queuedVersion), the latest version of that document as the transaction
 // leaves it, which latestVersion answers with too.
@@ -637,6 +647,19 @@ func (l *Ledger) PendingMarkdown(artifactID string) (string, bool) {
 	}
 	pending, queued := l.latest[artifactID]
 	return pending.markdown, queued
+}
+
+// PendingAuthors is the authors of version number of artifactID where that is the version this
+// transaction has queued and not written yet (queuedVersion), as its row will store them.
+func (l *Ledger) PendingAuthors(artifactID string, number int) ([]model.Actor, bool) {
+	if l == nil || l.sealed {
+		return nil, false
+	}
+	pending, queued := l.latest[artifactID]
+	if !queued || pending.version.Number != number {
+		return nil, false
+	}
+	return pending.version.Authors, true
 }
 
 // PendingBlockAsks is every question block's ask of artifactID this transaction has queued a
@@ -733,12 +756,7 @@ func (l *Ledger) QueueAskParts(
 // (RegisterPendingArtifact), false when none is and the artifacts row is the only place to read
 // it.
 func pendingArtifact(ctx context.Context, artifactID string) (refs.DocumentAddress, bool) {
-	ledger := ledgerFrom(ctx)
-	if ledger == nil {
-		return refs.DocumentAddress{}, false
-	}
-	address, pending := ledger.artifacts[artifactID]
-	return address, pending
+	return ledgerFrom(ctx).PendingDocument(artifactID)
 }
 
 // recordPendingApproval records ask as artifactID's approval request as this transaction's queued
@@ -1435,6 +1453,28 @@ func (l *Ledger) noteRoom(document, room string) {
 // (refs.DocumentRoomSQL) does not see it.
 func (l *Ledger) RegisterPendingRoom(document, room string) {
 	l.noteRoom(document, room)
+}
+
+// pendingJoins is every document this transaction creates (RegisterPendingArtifact) whose
+// document_rooms row naming room it writes in its write phase (RegisterPendingRoom), in id order,
+// beside the band each one's row will rank in (refs.DocumentAddress.Band): what document_rooms
+// does not hold of room yet for a read of its layout made before that row is written
+// (readJoinedRoomLayout).
+func (l *Ledger) pendingJoins(room string) (documents, bands []string) {
+	if l == nil {
+		return nil, nil
+	}
+	for document, joined := range l.issueRooms {
+		if _, created := l.artifacts[document]; created && joined == room {
+			documents = append(documents, document)
+		}
+	}
+	slices.Sort(documents)
+	bands = make([]string, len(documents))
+	for index, document := range documents {
+		bands[index] = string(l.artifacts[document].Band)
+	}
+	return documents, bands
 }
 
 // LostOps reports which operations of this transaction's write to artifactID the live document

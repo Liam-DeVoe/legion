@@ -1143,6 +1143,42 @@ func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roo
 	return versions, nil
 }
 
+// latestRoomVersions is readRoomVersions of documents as the transaction tx leaves them, for the
+// index of a version its writer queued and has not written (indexDocumentInRoom): a document's
+// latest version is the one tx queued where it queued one (the ledger's, which latestVersion
+// answers with too), and a document tx creates (Ledger.RegisterPendingArtifact), whose row no read
+// before tx's write phase sees, holds that version alone, or none. Every other document's is read
+// from the table.
+func latestRoomVersions(ctx context.Context, tx pgx.Tx, documents []string) ([]roomVersion, error) {
+	stored := make([]string, 0, len(documents))
+	for _, id := range documents {
+		if _, created := pendingArtifact(ctx, id); !created {
+			stored = append(stored, id)
+		}
+	}
+	var read []roomVersion
+	if len(stored) > 0 {
+		var err error
+		if read, err = readRoomVersions(ctx, tx, stored); err != nil {
+			return nil, err
+		}
+	}
+	ledger := queueFor(ctx, tx)
+	versions := make([]roomVersion, len(documents))
+	for index, id := range documents {
+		if _, created := pendingArtifact(ctx, id); !created {
+			versions[index], read = read[0], read[1:]
+		}
+		if ledger == nil {
+			continue
+		}
+		if pending, queued := ledger.latest[id]; queued {
+			versions[index].number, versions[index].markdown, versions[index].at = pending.version.Number, pending.markdown, pending.version.CreatedAt
+		}
+	}
+	return versions, nil
+}
+
 // roomFragment is one fragment of an issue room as its settlement versions it (roomFragments):
 // the document whose fragment it is, the tree artifact for its own, the part of the room's tree
 // that fragment holds and its rendering, that document's latest version, and whether the
