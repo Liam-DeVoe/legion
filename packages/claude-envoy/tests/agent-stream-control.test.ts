@@ -341,6 +341,30 @@ test("a second clear before the first id is admitted takes only the latest id's 
   live.runner.stop()
 })
 
+test("an admission that lands for an id the session has left takes nothing", async () => {
+  // An `admitted` that settles every wait it handed out, the stale one included: the runner takes
+  // only the id it is on now.
+  const waits = new Map<string, PromiseWithResolvers<void>>()
+  const live = running((session) => {
+    const wait = Promise.withResolvers<void>()
+    waits.set(session, wait)
+    return wait.promise
+  })
+  live.mod.moveSession(CLEARED)
+  await settle()
+  live.mod.moveSession("ses_cleared_again")
+  await settle()
+  waits.get(CLEARED)?.resolve()
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([])
+  waits.get("ses_cleared_again")?.resolve()
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([
+    agentStreamControlSubject("ses_cleared_again"),
+  ])
+  live.runner.stop()
+})
+
 test("a stopped runner answers nothing more", async () => {
   const live = running()
   await live.control(SESSION, watchRequest)

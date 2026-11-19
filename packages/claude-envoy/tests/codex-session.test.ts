@@ -317,6 +317,31 @@ describe("the Codex live view", () => {
     expect([...subscribed]).toEqual([agentStreamControlSubject("s7")])
     stream.stop()
   })
+
+  test("an admission that lands for an id the session has left takes nothing", async () => {
+    // An `admitted` that settles every wait it handed out, the stale one included: the stream
+    // takes only the id it is on now.
+    const { connection, subscribed } = fakeConnection()
+    const waits = new Map<string, PromiseWithResolvers<void>>()
+    const stream = startCodexAgentStream({
+      admitted: (session) => {
+        const wait = Promise.withResolvers<void>()
+        waits.set(session, wait)
+        return wait.promise
+      },
+      connection,
+      sessionId: "s8",
+    })
+    stream.rebind("s9")
+    stream.rebind("s10")
+    waits.get("s9")?.resolve()
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([])
+    waits.get("s10")?.resolve()
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([agentStreamControlSubject("s10")])
+    stream.stop()
+  })
 })
 
 function frame(mode: "steer" | "btw", body: string): RenderInboundResult {
