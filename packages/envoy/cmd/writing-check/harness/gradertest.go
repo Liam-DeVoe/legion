@@ -309,16 +309,14 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 // graderReport is the grader test's table: for each judgement, the wrong and the right outputs
 // it marked correctly, then each output with what a correct grader answers and what it answered,
 // then what the calls cost. candidate says the grader is a candidate of candidates.yaml, and
-// added names the added grader's variant, which the report says where it is not the old one.
+// added names the added grader's variant, which the report says, old included.
 func graderReport(results []PlantedResult, grader string, candidate bool, added string, elapsed time.Duration) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Grader test: %s\n\n", grader)
 	if candidate {
 		fmt.Fprintf(&b, "%s is a candidate of candidates.yaml. It grades here because no candidate wrote a planted output; `harness score` refuses it as the grader (R2).\n\n", grader)
 	}
-	if added != AddedOld {
-		fmt.Fprintf(&b, "The added grader is %s (--added-grader).\n\n", added)
-	}
+	fmt.Fprintf(&b, "The added grader is %s (--added-grader).\n\n", added)
 	b.WriteString("| Judgement | Wrong outputs marked correctly | Right outputs marked correctly | Correct / total |\n| --- | ---: | ---: | ---: |\n")
 	all, allCorrect := 0, 0
 	for _, j := range Judgements {

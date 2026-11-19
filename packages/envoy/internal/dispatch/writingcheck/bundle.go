@@ -2,9 +2,8 @@ package writingcheck
 
 import "github.com/sjawhar/envoy/internal/dispatch/writingcheck/reader"
 
-// The bundle: what the check enforces, frozen with the measurement that chose it. Settings can
-// turn more off (DISPATCH_WRITING_CHECK_RULES_OFF, DISPATCH_WRITING_CHECK_DETECTOR) and never turn
-// on what the bundle leaves off.
+// The bundle: what the check enforces, frozen with the measurement that chose it. Its constants
+// decide the structure rules and the detector the server runs, and no setting changes them.
 //
 // The measurement: the rule-cost run of `writing-check rule-cost` over 600 drawn agent writes
 // (seed 3231, manifest sha256 a8a58b9cb8bbc5cd0228c83ead18cba27dd16035757b086f480c9795fb61f7a0).
@@ -39,8 +38,8 @@ var MeasuredOff = []RuleMeasurement{
 const DetectorRule = "vacuous-verb-phrase"
 
 // DetectorEnabled is whether the bundle runs the detector. The detector ships on only once its
-// final test bounds 1 - precision at 5% or below; until then it is off in the code, and
-// DISPATCH_WRITING_CHECK_DETECTOR=on does not turn it on.
+// final test bounds 1 - precision at 5% or below; until then it is off in the code, and no
+// setting turns it on.
 const DetectorEnabled = false
 
 // ReaderNoEffort is whether the reader sends no reasoning_effort at all: a Foundry chat

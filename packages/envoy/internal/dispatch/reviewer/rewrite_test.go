@@ -29,7 +29,7 @@ func TestARewriteReadsTheWritersAnswerWhenOneCame(t *testing.T) {
 	}
 	answer := Answer{Question: question, Text: "The node is the test server. Its first call fails."}
 
-	rewritten, err := Rewrite(t.Context(), chatModel(url, "rewriter"), []RuleSet{RuleNoslop, RuleAskParts}, askRecord(), answer)
+	rewritten, err := Rewrite(t.Context(), chatModel(url, "rewriter"), []RuleSet{RuleNoslop, RuleReaderWords, RuleAskParts}, askRecord(), answer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +46,7 @@ func TestARewriteReadsTheWritersAnswerWhenOneCame(t *testing.T) {
 		`- "writer_answer": the answer of the writer agent.`,
 		"Use only facts that are in the record or in the answer of the writer agent.",
 		`### Rule set "ask_parts"`,
+		"A word whose meaning the record and the answer do not give breaks no rule.",
 	} {
 		if !strings.Contains(request, want) {
 			t.Errorf("the rewrite's request does not hold %q", want)
@@ -53,7 +54,7 @@ func TestARewriteReadsTheWritersAnswerWhenOneCame(t *testing.T) {
 	}
 
 	// No answer came: the rewrite reads the record alone (change 4).
-	if _, err := Rewrite(t.Context(), chatModel(url, "rewriter"), []RuleSet{RuleNoslop}, askRecord(), Answer{}); err != nil {
+	if _, err := Rewrite(t.Context(), chatModel(url, "rewriter"), []RuleSet{RuleNoslop, RuleReaderWords}, askRecord(), Answer{}); err != nil {
 		t.Fatal(err)
 	}
 	request = stand.Requests()[1].Text
@@ -61,6 +62,9 @@ func TestARewriteReadsTheWritersAnswerWhenOneCame(t *testing.T) {
 		if strings.Contains(request, absent) {
 			t.Errorf("a rewrite with no answer holds %q", absent)
 		}
+	}
+	if !strings.Contains(request, "A word whose meaning the record does not give breaks no rule.") {
+		t.Errorf("a rewrite with no answer does not hold the reader_words rule for the record alone: %s", request)
 	}
 	if !strings.Contains(request, "<text kind=\"ask\" choice=\"single\">") || !strings.Contains(request, "<writer_texts>") {
 		t.Errorf("a rewrite with no answer does not read the record: %s", request)

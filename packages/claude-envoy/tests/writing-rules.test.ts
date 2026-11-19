@@ -163,8 +163,21 @@ test("the first write is refused once with the rules, the second posts, and a co
 
   const third = await comment("The rollback took 3 minutes.")
   expect(third.code).toBe(1)
-  expect(third.stdout).toStartWith("dispatch comment was not called:")
+  expect(third.stdout).toStartWith(
+    "dispatch comment was not called: this call is the first write of this session",
+  )
+  expect(third.stdout).toContain(RULES.trimEnd())
   expect(posted()).toHaveLength(1)
+  expect(asked("/api/v1/writing-rules").map((request) => request.body)).toEqual([
+    {
+      route: "POST /api/v1/issues/DSP-1/comments",
+      body: expect.objectContaining({ body: "The deploy finished at 14:02." }),
+    },
+    {
+      route: "POST /api/v1/issues/DSP-1/comments",
+      body: expect.objectContaining({ body: "The rollback took 3 minutes." }),
+    },
+  ])
 
   const fourth = await comment("The rollback took 3 minutes.")
   expect(fourth.code).toBe(0)
@@ -175,14 +188,32 @@ test("the first write is refused once with the rules, the second posts, and a co
 
 test("with the refusal off, nothing is refused, before or after a compaction", async () => {
   dispatch.refusal = "off"
+  // The steps of the row above: write, write, compaction, write, write. Each write posts.
+  expect((await sessionStart("startup")).code).toBe(0)
 
   const first = await comment("The deploy finished at 14:02.")
   expect(first.code).toBe(0)
-  expect((await sessionStart("compact")).code).toBe(0)
-  const second = await comment("The rollback took 3 minutes.")
-  expect(second.code).toBe(0)
+  expect(first.stdout).toContain("Posted comment")
+  expect(posted()).toHaveLength(1)
 
+  const second = await comment("The deploy finished at 14:02.")
+  expect(second.code).toBe(0)
+  expect(second.stdout).toContain("Posted comment")
   expect(posted()).toHaveLength(2)
+
+  const compacted = await sessionStart("compact")
+  expect(compacted.code).toBe(0)
+  expect(compacted.stderr).not.toContain("not counted")
+
+  const third = await comment("The rollback took 3 minutes.")
+  expect(third.code).toBe(0)
+  expect(third.stdout).toContain("Posted comment")
+  expect(posted()).toHaveLength(3)
+
+  const fourth = await comment("The rollback took 3 minutes.")
+  expect(fourth.code).toBe(0)
+  expect(fourth.stdout).toContain("Posted comment")
+  expect(posted()).toHaveLength(4)
   expect(asked("/api/v1/writing-rules")).toEqual([])
 }, 60_000)
 

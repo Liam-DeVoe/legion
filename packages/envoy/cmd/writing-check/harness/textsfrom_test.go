@@ -39,7 +39,8 @@ func readLines(t *testing.T, dir string) map[string]CaseResult {
 // score --texts-from grades the texts of an earlier run again and makes no call of the change: a
 // lockstep's directory gives one run for each of its models, in <out>/<model>, and one model's
 // directory a run in --out. Each line holds the earlier line's text, trace, wait and change calls;
-// run.json names the change, the candidate, the writer and the run the texts are from. With
+// run.json names the change, the candidate, the writer and the run the texts are from, and scores.md
+// names the run the texts are from and the added grader, old by default. With
 // --grades-from on the same run, the old grader takes every grade and calls no model; verify takes
 // the old added grade as its first call and makes the check alone; inputs-first calls lost and
 // added alone, for the one text the change changed; and inputs-first-verify, with inputs-first's
@@ -110,8 +111,9 @@ func TestTextsFromGradesAnEarlierRunsTextsWithNoChangeCall(t *testing.T) {
 			!reflect.DeepEqual(all.ChangeCost, allWas.ChangeCost) || !reflect.DeepEqual(all.Wait, allWas.Wait) || !reflect.DeepEqual(all.Added, allWas.Added) {
 			t.Errorf("%s: the figures %+v, want no change call, the grades taken, and the earlier change cost, wait and scores", m, f.Run)
 		}
-		if md, err := os.ReadFile(filepath.Join(dir, "scores.md")); err != nil || !strings.Contains(string(md), "The texts are those of the run in "+src+" (--texts-from)") {
-			t.Errorf("%s: scores.md does not name the run of the texts (%v)", m, err)
+		if md, err := os.ReadFile(filepath.Join(dir, "scores.md")); err != nil || !strings.Contains(string(md), "The texts are those of the run in "+src+" (--texts-from)") ||
+			!strings.Contains(string(md), "Added grader: old (--added-grader).") {
+			t.Errorf("%s: scores.md does not name the run of the texts and the added grader old (%v):\n%s", m, err, md)
 		}
 	}
 

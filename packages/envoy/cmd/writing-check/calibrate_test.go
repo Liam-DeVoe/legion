@@ -40,6 +40,39 @@ func TestMTMatchesPythonsRandom(t *testing.T) {
 	}
 }
 
+// confirmedDraw is the draw of the confirmation read's seed on the real input's 729 question
+// cases, which takes sample's set branch, as the pod's python3 (3.13.5) printed it:
+//
+//	python3 -c 'import random; print(random.Random(3231051).sample(range(729), 50))'
+var confirmedDraw = []int{482, 307, 46, 102, 177, 2, 17, 53, 693, 455, 487, 726, 632, 606, 446, 170, 205, 50, 534, 302, 640, 656, 52, 184, 375,
+	24, 581, 37, 643, 526, 208, 718, 672, 376, 401, 148, 42, 725, 587, 112, 723, 257, 92, 276, 211, 337, 109, 593, 520, 336}
+
+// The port's sample draws what CPython's draws, in the same order: random.Random(seed).sample(
+// range(n), k) as the pod's python3 (3.13.5) printed it with the command above each row, in the
+// set branch (n above setsize), in the pool branch (n at most setsize), and from a seed of two
+// 32-bit words.
+func TestSampleMatchesPythonsSample(t *testing.T) {
+	for _, c := range []struct {
+		seed uint64
+		n, k int
+		want []int
+	}{
+		{3231051, 729, 50, confirmedDraw},
+		// python3 -c 'import random; print(random.Random(20261115).sample(range(729), 50))'
+		{20261115, 729, 50, []int{308, 25, 487, 719, 676, 619, 165, 360, 181, 714, 718, 463, 643, 196, 97, 47, 245, 528, 698, 191, 153, 80, 556, 506, 162,
+			525, 728, 344, 348, 141, 373, 472, 375, 179, 557, 44, 625, 434, 8, 368, 568, 306, 332, 608, 361, 388, 333, 89, 214, 98}},
+		// python3 -c 'import random; print(random.Random(77).sample(range(100), 50))'
+		{77, 100, 50, []int{32, 41, 25, 30, 24, 14, 37, 60, 71, 78, 96, 18, 91, 80, 84, 64, 0, 35, 3, 63, 22, 95, 85, 49, 23,
+			42, 98, 15, 11, 70, 33, 68, 92, 26, 28, 90, 9, 5, 54, 12, 44, 82, 57, 65, 38, 45, 34, 4, 6, 61}},
+		// python3 -c 'import random; print(random.Random(1099514858827).sample(range(729), 10))', the seed 2**40 + 3231051
+		{1099514858827, 729, 10, []int{306, 199, 548, 194, 20, 56, 107, 24, 349, 522}},
+	} {
+		if got := newPyRandom(c.seed).sample(c.n, c.k); !slices.Equal(got, c.want) {
+			t.Errorf("Random(%d).sample(range(%d), %d) drew %v, want %v", c.seed, c.n, c.k, got, c.want)
+		}
+	}
+}
+
 // calFixtureRows is a made-up tuning part: question cases q01..q24 in split groups named for
 // letters, what the owner did after each explanation under labels v1 and v2, the score of the
 // explanation (yes, no, or error: a grade that failed), and the question check's categories.

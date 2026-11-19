@@ -795,7 +795,9 @@ text. The work has these steps:
 
 The dataset is a file artifact of INFRA-3231. It is never a file of this repository.
 `dataset/DATASET` holds the end time, the seed and the SHA-256 of each input and each output.
-`build --from <bundle>` prints the same SHA-256.
+`build --from <bundle>` prints the SHA-256 of the snapshot and the verdicts it read, the end and
+the owner of the snapshot's header, and the SHA-256 of each output, so a rebuild compares with
+`DATASET` on its inputs and its outputs. `build` does not read `DATASET`.
 
 `named` is not one of these steps. It builds cases from document versions and asks that it reads
 from the live Dispatch, for a text the dataset does not hold (see "named").
@@ -921,8 +923,10 @@ reads them. An agent's text is a text that `writingcheck.Checks` checks.
 | `--to-development` | Optional: the split groups whose cases go to the development part whatever the split says, one key a line. A blank line and a line that opens with `#` are skipped. See below the split. |
 | `--out` | The directory for the output files. |
 
-`build` refuses a verdicts file that has no verdict for one of the owner's texts. It makes the
-four groups of R1:
+`build` refuses a verdicts file that has no verdict for one of the owner's texts. It refuses a
+snapshot that holds an event created after the `end` of its header, and a header `end` or an
+event time that is no RFC 3339 time; the error gives the first such event's id and time. It makes
+the four groups of R1:
 
 - **question**: each owner text with the verdict `asks_word_meaning`, `cannot_understand` or
   `jargon_complaint`, with the agent text it answers.
@@ -1003,15 +1007,23 @@ With `--confirmed`, `counts.json` also holds `confirmed_sample`: the cases the r
 ask about words, the cases it read, the seed, the draw (`python3
 random.Random(<seed>).sample(sorted question cases by id, <total>)`, which drew the sample), the
 reader, and the result file's SHA-256. `build` refuses a result whose counts do not match its
-items, a case read twice, and a case that is not a question case of this build. The cases do not
-change.
+items, a case read twice, a case that is not a question case of this build, and items that are
+not that draw in its order; the error gives the first item that differs. `build` draws the sample
+itself as CPython's `random` draws it (`pyRandom.sample`, in `calibrate.go`): MT19937 seeded by
+`init_by_array` from the seed's 32-bit words, `getrandbits`, `_randbelow_with_getrandbits`, and
+`sample`'s pool and set branches, from the question case ids sorted as Python sorts them (byte
+order). `TestSampleMatchesPythonsSample` holds it to draws that python3 printed. The cases do
+not change.
 
 With `--to-development`, `counts.json` also holds `to_development`: the list's SHA-256, the split
 groups it lists, those of them the split held out and the list moved, and the cases moved, in all
 and by case group. It holds no key. The counts of the groups and of the parts are those after the
 move.
 
-`build` prints the SHA-256 of `documents.jsonl.gz`, `sessions.tsv` and `cases.jsonl.gz`. With
+`build` prints the SHA-256 of the snapshot (`snapshot sha256`) and of the verdicts file
+(`verdicts sha256`) it read, the `end` and the `owner` of the snapshot's header, and the SHA-256
+of `documents.jsonl.gz`, `sessions.tsv` and `cases.jsonl.gz`: `DATASET`'s `snapshot_sha256`,
+`verdicts_sha256`, `end`, `owner`, `documents_sha256`, `sessions_sha256` and `cases_sha256`. With
 `--to-development`, it also prints the split groups and cases that the list moved and, for each
 case group, the held-out share the split gave and the share after the move.
 
@@ -1633,7 +1645,7 @@ exits 1. `--out` also writes the rows as JSON.
 | `--vocabulary` | The `owner-texts.jsonl.gz` of `dataset owner-texts`. The `undefined` judgement then reads the words of each case's text that the owner wrote himself before the case (see "The owner's own words"). |
 | `--judgements` | The judgements to give, comma-separated (default all): a measurement of a few, such as `undefined` on the question cases. A run gives no reader answer that no named judgement grades. |
 | `--repeatability` | A `repeatability.json` of `harness compare`, whose agreement `scores.md` gives beside each score. |
-| `--added-grader` | How the `added` judgement is asked (see "The added grader"): `old` (the default), the request as it was; `inputs-first`, `lost`'s and `added`'s texts after the other parts; `verify`, the old request, then a check of each fact it lists; or `inputs-first-verify`, `inputs-first`'s requests, then the same check. `run.json` records it as `added_grader`. |
+| `--added-grader` | How the `added` judgement is asked (see "The added grader"): `old` (the default), the request as it was; `inputs-first`, `lost`'s and `added`'s texts after the other parts; `verify`, the old request, then a check of each fact it lists; or `inputs-first-verify`, `inputs-first`'s requests, then the same check. `run.json` records it as `added_grader`, and `scores.md` names it, `old` included. |
 | `--texts-from` | A run directory, or a lockstep's directory of them, whose texts this run grades again with no call of the change (see "Texts of another run"). It takes the change, its candidates, the part, the groups, the sample and `--session-chars` from that run. |
 | `--uncached-input-per-minute` | Hold the run's own model calls to this many uncached input tokens in any one minute (default 0: no pacing). See "Pacing". |
 
@@ -1857,7 +1869,7 @@ grading model, as `score` takes it, except that a candidate may grade here: no c
 planted output. The report then says the grader is a candidate, and `grader-test.json` records
 the grader and `grader_is_candidate`. `--uncached-input-per-minute` paces the test's calls as it
 paces `score`'s (see "Pacing"). `--added-grader` sets the added grader, as `score` takes it (see
-"The added grader"); the report names a variant other than `old`, `grader-test.json` records it
+"The added grader"); the report names the variant, `old` included, `grader-test.json` records it
 as `added_grader`, and the cost holds the check's calls.
 
 ### compare and repeatability

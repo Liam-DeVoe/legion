@@ -461,6 +461,11 @@ type dsIndex struct {
 	events                  int
 	firstEvent, lastEvent   int64
 	versionBytes            int64
+	// endAt is the end of a snapshot's header, which loadIndex reads, and endFault the first
+	// fault loadIndex finds against it: an end that is no RFC 3339 time, or an event created
+	// after it or at no such time. build refuses a snapshot with one.
+	endAt    time.Time
+	endFault error
 
 	texts          map[string][]*dsText
 	byEvent        map[int64][]*dsText
@@ -626,6 +631,13 @@ func (ix *dsIndex) addEvent(raw []byte) error {
 		ix.firstEvent = ev.ID
 	}
 	ix.lastEvent = ev.ID
+	if ix.endFault == nil && !ix.endAt.IsZero() {
+		if at, err := time.Parse(time.RFC3339Nano, ev.CreatedAt); err != nil {
+			ix.endFault = fmt.Errorf("the snapshot holds event %d, created at %q, which is no RFC 3339 time", ev.ID, ev.CreatedAt)
+		} else if at.After(ix.endAt) {
+			ix.endFault = fmt.Errorf("the snapshot holds event %d, created at %s, after its end %s", ev.ID, ev.CreatedAt, ix.end)
+		}
+	}
 	var err error
 	switch ev.Type {
 	case "issue.created", "issue.updated":
@@ -1330,7 +1342,8 @@ func dsNewBlocks(previous, current string) string {
 }
 
 // loadIndex reads a snapshot into an index: its header, events, bodies and labels, and which
-// versions it holds. Version Markdown is read by loadVersions.
+// versions it holds, and the first fault against its end (dsIndex.endFault). Version Markdown is
+// read by loadVersions.
 func loadIndex(path string) (*dsIndex, error) {
 	var ix *dsIndex
 	err := eachGzipLine(path, func(line []byte) error {
@@ -1348,6 +1361,11 @@ func loadIndex(path string) (*dsIndex, error) {
 			}
 			ix = newDSIndex(h.Owner, h.NamingIssue)
 			ix.header, ix.end = h, h.End
+			end, err := time.Parse(time.RFC3339Nano, h.End)
+			if err != nil {
+				ix.endFault = fmt.Errorf("the snapshot's end %q is no RFC 3339 time", h.End)
+			}
+			ix.endAt = end
 			return nil
 		}
 		switch kind {
@@ -2553,9 +2571,12 @@ type dsConfirmedSample struct {
 }
 
 // readConfirmed reads the result of the confirmation read: {"reader", "confirmed", "total",
-// "items": [{"case_id", "about_words"}...]}. It refuses a result whose counts do not match its
-// items, a case read twice, and a case that is not a question case of this build.
-func readConfirmed(path string, seed uint64, questions map[string]bool) (*dsConfirmedSample, error) {
+// "items": [{"case_id", "about_words"}...]}. questions are the build's question case ids, in any
+// order. It refuses a result whose counts do not match its items, a case read twice, a case that
+// is not a question case of this build, and items that are not the draw in its order, naming the
+// first item that differs. The draw is python3's random.Random(seed).sample of the question case
+// ids sorted as Python sorts strings, by code point, which is their byte order (pyRandom.sample).
+func readConfirmed(path string, seed uint64, questions []string) (*dsConfirmedSample, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -2572,12 +2593,14 @@ func readConfirmed(path string, seed uint64, questions map[string]bool) (*dsConf
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	population := slices.Sorted(slices.Values(questions))
 	confirmed, seen := 0, map[string]bool{}
 	for _, item := range r.Items {
+		_, question := slices.BinarySearch(population, item.CaseID)
 		switch {
 		case seen[item.CaseID]:
 			return nil, fmt.Errorf("%s reads case %s twice", path, item.CaseID)
-		case !questions[item.CaseID]:
+		case !question:
 			return nil, fmt.Errorf("%s reads %s, which is not a question case of this build", path, item.CaseID)
 		}
 		seen[item.CaseID] = true
@@ -2588,14 +2611,23 @@ func readConfirmed(path string, seed uint64, questions map[string]bool) (*dsConf
 	if len(r.Items) != r.Total || confirmed != r.Confirmed || r.Reader == "" {
 		return nil, fmt.Errorf("%s says %d of %d by %q, and its items give %d of %d", path, r.Confirmed, r.Total, r.Reader, confirmed, len(r.Items))
 	}
+	// The items are distinct question cases, so the sample is no larger than its population.
+	draw := fmt.Sprintf("python3 random.Random(%d).sample(sorted question cases by id, %d)", seed, r.Total)
+	for i, j := range newPyRandom(seed).sample(len(population), r.Total) {
+		if id := r.Items[i].CaseID; id != population[j] {
+			return nil, fmt.Errorf("%s: item %d is %s, and the draw %s gives %s there", path, i+1, id, draw, population[j])
+		}
+	}
 	return &dsConfirmedSample{
-		Confirmed: confirmed, Total: r.Total, Seed: seed, Reader: r.Reader, ResultSHA256: sha256Hex(data),
-		Draw: fmt.Sprintf("python3 random.Random(%d).sample(sorted question cases by id, %d)", seed, r.Total),
+		Confirmed: confirmed, Total: r.Total, Seed: seed, Reader: r.Reader, ResultSHA256: sha256Hex(data), Draw: draw,
 	}, nil
 }
 
-// dsBuildResult is what a build wrote.
+// dsBuildResult is what a build read and wrote: the SHA-256 of its snapshot and of its verdicts
+// file, its counts, and the SHA-256 of the files it wrote.
 type dsBuildResult struct {
+	snapshotSHA string
+	verdictsSHA string
 	counts      dsCounts
 	casesSHA    string
 	documentSHA string
@@ -2710,6 +2742,12 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	fmt.Fprintf(stdout, "wall time: %s\n", time.Since(started).Round(time.Second))
+	// What the build read, beside what it wrote: dataset/DATASET's snapshot_sha256,
+	// verdicts_sha256, end and owner, then its documents_sha256, sessions_sha256 and cases_sha256.
+	fmt.Fprintf(stdout, "snapshot sha256: %s\n", result.snapshotSHA)
+	fmt.Fprintf(stdout, "verdicts sha256: %s\n", result.verdictsSHA)
+	fmt.Fprintf(stdout, "end: %s\n", c.End)
+	fmt.Fprintf(stdout, "owner: %s\n", c.Owner)
 	fmt.Fprintf(stdout, "documents.jsonl.gz sha256: %s\n", result.documentSHA)
 	fmt.Fprintf(stdout, "sessions.tsv sha256: %s\n", result.sessionsSHA)
 	fmt.Fprintf(stdout, "cases.jsonl.gz sha256: %s\n", result.casesSHA)
@@ -2745,7 +2783,8 @@ func correctionShapes(owner, agent string) []string {
 }
 
 // buildDataset builds the dataset from its inputs into out, and answers its counts and digests.
-// It reads nothing else, so the same inputs write the same bytes.
+// It reads nothing else, so the same inputs write the same bytes. It refuses a snapshot that
+// holds an event created after its header's end.
 func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	var res dsBuildResult
 	if err := os.MkdirAll(out, 0o755); err != nil {
@@ -2756,8 +2795,17 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	if err != nil {
 		return res, err
 	}
+	if ix.endFault != nil {
+		return res, fmt.Errorf("%s: %w", snapshotPath, ix.endFault)
+	}
 	verdicts, err := readVerdicts(verdictsPath)
 	if err != nil {
+		return res, err
+	}
+	if res.snapshotSHA, err = fileSHA256(snapshotPath); err != nil {
+		return res, err
+	}
+	if res.verdictsSHA, err = fileSHA256(verdictsPath); err != nil {
 		return res, err
 	}
 	owners := ix.ownerTexts()
@@ -3126,10 +3174,10 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	counts.CasesWithSession, counts.Sessions = withSession, len(sessions)
 	counts.SHA256["cases.jsonl.gz"], counts.SHA256["documents.jsonl.gz"], counts.SHA256["sessions.tsv"] = res.casesSHA, res.documentSHA, res.sessionsSHA
 	if in.Confirmed != "" {
-		questions := map[string]bool{}
+		var questions []string
 		for _, c := range list {
 			if c.Group == dsGroupQuestion {
-				questions[c.ID] = true
+				questions = append(questions, c.ID)
 			}
 		}
 		if counts.ConfirmedSample, err = readConfirmed(in.Confirmed, in.ConfirmedSeed, questions); err != nil {

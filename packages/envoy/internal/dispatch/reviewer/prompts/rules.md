@@ -108,7 +108,7 @@ The "reader_words" tag gives the words that the reader asked about before. For e
 - The text does not say there what the word means.
 - The record{{if .Answer}} or the answer of the writer agent{{end}} says what the word means.
 
-The fix keeps the word and adds that meaning, in a few words. A word in quotation marks, in a name, a path, a command or a link breaks no rule. A word whose meaning the record{{if .Answer}} and the answer{{end}} do not give breaks no rule.{{if .Review}} Write no finding for it.{{end}}
+The fix keeps the word and adds that meaning, in a few words. A word in quotation marks, in a name, a path, a command or a link breaks no rule. A word whose meaning {{if .Answer}}the record and the answer do{{else}}the record does{{end}} not give breaks no rule.{{if .Review}} Write no finding for it.{{end}}
 {{- end}}
 {{- if .On.ask_parts}}
 

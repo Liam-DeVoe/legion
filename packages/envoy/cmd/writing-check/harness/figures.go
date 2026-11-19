@@ -412,9 +412,8 @@ func (f Figures) markdown() string {
 	if p.VocabularySHA256 != "" {
 		fmt.Fprintf(&b, "The undefined judgement read the words of each text that the owner wrote himself before it (owner texts SHA-256 %s).\n", p.VocabularySHA256)
 	}
-	if p.AddedGrader != "" && p.AddedGrader != AddedOld {
-		fmt.Fprintf(&b, "Added grader: %s (--added-grader).\n", p.AddedGrader)
-	}
+	// Params that name no variant are those of a grader that sent the old request (Grader.Added).
+	fmt.Fprintf(&b, "Added grader: %s (--added-grader).\n", cmp.Or(p.AddedGrader, AddedOld))
 	if f.Run.ReusedAnswers+f.Run.ReusedGrades+f.Run.ReusedFirstCalls > 0 {
 		fmt.Fprintf(&b, "Taken from other runs, with no call and no cost in this run: %d readers' answers and %d grades", f.Run.ReusedAnswers, f.Run.ReusedGrades)
 		if n := f.Run.ReusedFirstCalls; n > 0 {

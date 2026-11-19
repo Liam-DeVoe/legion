@@ -150,7 +150,8 @@ func TestTheGraderFlagRefusesAModelThatPlaysAnotherPart(t *testing.T) {
 
 // `grader-test --grader` admits a candidate: no candidate wrote a planted output. The report says
 // the grader is a candidate, and grader-test.json records the grader and that it is one. With no
-// --grader the test grades with candidates.yaml's grader and says nothing of the kind.
+// --grader the test grades with candidates.yaml's grader and says nothing of the kind. With no
+// --added-grader the report names the added grader old.
 func TestGraderTestAdmitsACandidateAsItsGrader(t *testing.T) {
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -177,8 +178,8 @@ func TestGraderTestAdmitsACandidateAsItsGrader(t *testing.T) {
 			t.Fatalf("grader-test --grader %q = %d:\n%s", c.grader, code, stderr)
 		}
 		said := strings.Contains(stdout, c.want+" is a candidate of candidates.yaml.")
-		if !strings.HasPrefix(stdout, "# Grader test: "+c.want+"\n") || said != c.candidate {
-			t.Errorf("grader-test --grader %q reports:\n%s\nwant the grader %s, said to be a candidate: %t", c.grader, stdout, c.want, c.candidate)
+		if !strings.HasPrefix(stdout, "# Grader test: "+c.want+"\n") || said != c.candidate || !strings.Contains(stdout, "\nThe added grader is old (--added-grader).\n") {
+			t.Errorf("grader-test --grader %q reports:\n%s\nwant the grader %s, said to be a candidate: %t, and the added grader old", c.grader, stdout, c.want, c.candidate)
 		}
 		data, err := os.ReadFile(filepath.Join(out, "grader-test.json"))
 		if err != nil {

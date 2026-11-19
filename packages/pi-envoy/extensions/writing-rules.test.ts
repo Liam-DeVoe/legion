@@ -229,8 +229,21 @@ test(
 
       const third = await comment("The rollback took 3 minutes.");
       expect(third.code).toBe(1);
-      expect(third.stdout).toStartWith("dispatch comment was not called:");
+      expect(third.stdout).toStartWith(
+        "dispatch comment was not called: this call is the first write of this session"
+      );
+      expect(third.stdout).toContain(RULES.trimEnd());
       expect(posted()).toHaveLength(1);
+      expect(asked("/api/v1/writing-rules").map((request) => request.body)).toEqual([
+        {
+          route: "POST /api/v1/issues/DSP-1/comments",
+          body: expect.objectContaining({ body: "The deploy finished at 14:02." }),
+        },
+        {
+          route: "POST /api/v1/issues/DSP-1/comments",
+          body: expect.objectContaining({ body: "The rollback took 3 minutes." }),
+        },
+      ]);
 
       const fourth = await comment("The rollback took 3 minutes.");
       expect(fourth.code).toBe(0);
@@ -250,10 +263,28 @@ test(
     dispatch.refusal = "off";
     const session = await startedSession("writing-rules-off");
     try {
-      expect((await comment("The deploy finished at 14:02.")).code).toBe(0);
-      await session.compact();
-      expect((await comment("The rollback took 3 minutes.")).code).toBe(0);
+      // The steps of the row above: write, write, compaction, write, write. Each write posts.
+      const first = await comment("The deploy finished at 14:02.");
+      expect(first.code).toBe(0);
+      expect(first.stdout).toContain("Posted comment");
+      expect(posted()).toHaveLength(1);
+
+      const second = await comment("The deploy finished at 14:02.");
+      expect(second.code).toBe(0);
+      expect(second.stdout).toContain("Posted comment");
       expect(posted()).toHaveLength(2);
+
+      await session.compact();
+
+      const third = await comment("The rollback took 3 minutes.");
+      expect(third.code).toBe(0);
+      expect(third.stdout).toContain("Posted comment");
+      expect(posted()).toHaveLength(3);
+
+      const fourth = await comment("The rollback took 3 minutes.");
+      expect(fourth.code).toBe(0);
+      expect(fourth.stdout).toContain("Posted comment");
+      expect(posted()).toHaveLength(4);
       expect(asked("/api/v1/writing-rules")).toEqual([]);
     } finally {
       await session.shutdown();

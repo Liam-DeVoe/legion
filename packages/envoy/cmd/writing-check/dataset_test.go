@@ -803,8 +803,10 @@ func TestDatasetOwnerTextsAreHisOwnWithTheirTimes(t *testing.T) {
 }
 
 // build --from the bundle pack wrote, whole or as parts, prints the digest the direct build
-// prints, and its counts carry the confirmation read the bundle holds. The read leaves the cases
-// as they were, and one that names a case that is not a question case is refused.
+// prints, and the SHA-256 of the snapshot and the verdicts it read with the header's end and
+// owner; its counts carry the confirmation read the bundle holds, whose items are the draw. The
+// read leaves the cases as they were, and one that names a case that is not a question case is
+// refused.
 func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -832,7 +834,12 @@ func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 		}
 		return path
 	}
-	in := dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed, Confirmed: confirm("confirm.json", questions[0], questions[1], questions[2]), ConfirmedSeed: 77}
+	sorted := slices.Sorted(slices.Values(questions))
+	var drawn []string
+	for _, j := range newPyRandom(77).sample(len(sorted), 3) {
+		drawn = append(drawn, sorted[j])
+	}
+	in := dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed, Confirmed: confirm("confirm.json", drawn...), ConfirmedSeed: 77}
 	direct, err := buildDataset(in, filepath.Join(dir, "direct"))
 	if err != nil {
 		t.Fatal(err)
@@ -862,14 +869,25 @@ func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 		t.Fatalf("a second pack of the same inputs: %s, %v; want %s", again, err, sum)
 	}
 	directCounts, _ := os.ReadFile(filepath.Join(dir, "direct", "counts.json"))
+	snapshotSHA, err := fileSHA256(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdictsSHA, err := fileSHA256(verdicts)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, from := range []string{bundle, bundle + ".manifest.json"} {
 		var stdout, stderr bytes.Buffer
 		out := filepath.Join(dir, "from-"+filepath.Base(from))
 		if code := run(t.Context(), []string{"dataset", "build", "--from", from, "--out", out}, &stdout, &stderr); code != 0 {
 			t.Fatalf("build --from %s: exit %d: %s", from, code, stderr.String())
 		}
-		if want := "cases.jsonl.gz sha256: " + direct.casesSHA; !strings.Contains(stdout.String(), want) {
-			t.Errorf("build --from %s printed:\n%s\nwant %q", from, stdout.String(), want)
+		for _, want := range []string{"\nsnapshot sha256: " + snapshotSHA + "\n", "\nverdicts sha256: " + verdictsSHA + "\n",
+			"\nend: 2026-11-01T00:00:00Z\n", "\nowner: " + fixtureOwner + "\n", "\ncases.jsonl.gz sha256: " + direct.casesSHA + "\n"} {
+			if !strings.Contains(stdout.String(), want) {
+				t.Errorf("build --from %s printed:\n%s\nwant %q", from, stdout.String(), want)
+			}
 		}
 		if counts, _ := os.ReadFile(filepath.Join(out, "counts.json")); !bytes.Equal(counts, directCounts) {
 			t.Errorf("build --from %s wrote counts\n%s\nwant the direct build's\n%s", from, counts, directCounts)
@@ -885,6 +903,81 @@ func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run(t.Context(), []string{"dataset", "build", "--from", bundle + ".manifest.json", "--out", filepath.Join(dir, "bad")}, &stdout, &stderr); code == 0 {
 		t.Fatalf("build --from a manifest whose part changed answered 0: %s", stdout.String())
+	}
+}
+
+// build reads a snapshot whose last event is created at its header's end, and refuses one that
+// holds an event created after it, naming the first such event's id and time.
+func TestDatasetBuildRefusesAnEventAfterTheEnd(t *testing.T) {
+	t.Parallel()
+	const end = "2026-11-01T00:00:00Z" // the end dsFixture.write gives the header
+	f := standardFixture()
+	f.events[len(f.events)-1]["created_at"] = end
+	snapshot, verdicts := f.write(t, t.TempDir())
+	if _, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(t.TempDir(), "out")); err != nil {
+		t.Fatalf("a snapshot whose last event is created at its end: %v", err)
+	}
+	f.comment("late-1", "TREE-1", fixtureAgent, "Written half a second after the end.", "")
+	late := f.next
+	f.events[len(f.events)-1]["created_at"] = "2026-11-01T00:00:00.5Z"
+	f.comment("late-2", "TREE-1", fixtureAgent, "Written a day after the end.", "")
+	f.events[len(f.events)-1]["created_at"] = "2026-11-02T00:00:00Z"
+	snapshot, verdicts = f.write(t, t.TempDir())
+	_, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(t.TempDir(), "out"))
+	if want := fmt.Sprintf("holds event %d, created at 2026-11-01T00:00:00.5Z, after its end %s", late, end); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("a snapshot with events after its end: %v, want a refusal saying %q", err, want)
+	}
+}
+
+// readConfirmed takes the items python3 drew, random.Random(3231051).sample of the 729 question
+// cases sorted by id, 50 (confirmedDraw), whatever order the build lists the cases in. It refuses
+// those items with one case swapped for a question case the draw does not hold, and with two
+// cases in the other order, naming the first item that differs.
+func TestReadConfirmedRefusesItemsThatAreNotTheDraw(t *testing.T) {
+	t.Parallel()
+	const seed = 3231051
+	ids := make([]string, 729)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("question/comment:%04d@1", i)
+	}
+	questions := slices.Clone(ids)
+	slices.Reverse(questions)
+	dir := t.TempDir()
+	write := func(name string, draw []int) string {
+		t.Helper()
+		items := make([]map[string]any, len(draw))
+		for i, j := range draw {
+			items[i] = map[string]any{"n": i + 1, "case_id": ids[j], "about_words": true}
+		}
+		data, _ := json.Marshal(map[string]any{"reader": "StandIn", "confirmed": len(draw), "total": len(draw), "items": items})
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	if s, err := readConfirmed(write("drawn.json", confirmedDraw), seed, questions); err != nil || s.Total != 50 || s.Confirmed != 50 {
+		t.Fatalf("the items python3 drew: %+v, %v", s, err)
+	}
+	notDrawn := 0
+	for slices.Contains(confirmedDraw, notDrawn) {
+		notDrawn++
+	}
+	swapped := slices.Clone(confirmedDraw)
+	swapped[6] = notDrawn
+	reordered := slices.Clone(confirmedDraw)
+	reordered[10], reordered[11] = reordered[11], reordered[10]
+	for _, c := range []struct {
+		name string
+		draw []int
+		says string
+	}{
+		{"swapped.json", swapped, fmt.Sprintf("item 7 is %s, and the draw python3 random.Random(3231051).sample(sorted question cases by id, 50) gives %s there", ids[notDrawn], ids[confirmedDraw[6]])},
+		{"reordered.json", reordered, fmt.Sprintf("item 11 is %s, and the draw python3 random.Random(3231051).sample(sorted question cases by id, 50) gives %s there", ids[confirmedDraw[11]], ids[confirmedDraw[10]])},
+	} {
+		if _, err := readConfirmed(write(c.name, c.draw), seed, questions); err == nil || !strings.Contains(err.Error(), c.says) {
+			t.Errorf("%s: %v, want a refusal saying %q", c.name, err, c.says)
+		}
 	}
 }
 

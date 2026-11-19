@@ -1,6 +1,9 @@
 # The dataset of INFRA-3231's R1. Its files are artifacts of INFRA-3231, never files of this
 # repository. From packages/envoy, `go run ./cmd/writing-check dataset build --from <bundle> --out <dir>`
-# prints cases_sha256, documents_sha256 and sessions_sha256 below. README.md, "dataset", says how.
+# prints snapshot_sha256, verdicts_sha256, end and owner below, of the inputs it reads, and
+# cases_sha256, documents_sha256 and sessions_sha256, of the files it writes; it does not read
+# this file. It refuses a snapshot that holds an event created after its end, and a confirmed.json
+# whose items are not the confirmed_draw below in its order. README.md, "dataset", says how.
 end: 2026-11-15T03:27:14Z
 owner: sami@theorem.dev
 seed: 20261115

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"math/bits"
 	"os"
 	"path/filepath"
@@ -684,7 +685,7 @@ func calClusterCI(clusters []calCluster, draws int, seed uint32) *[2]float64 {
 	if len(clusters) == 0 {
 		return nil
 	}
-	rng := newPyRandom(seed)
+	rng := newPyRandom(uint64(seed))
 	vals := make([]float64, 0, draws)
 	for range draws {
 		hits, n := 0, 0
@@ -737,15 +738,21 @@ const (
 	mtLower   = 0x7fffffff
 )
 
-// pyRandom is CPython's random.Random (Modules/_randommodule.c), as cluster_ci draws with it:
-// MT19937, seeded as random.Random(seed) seeds it for 0 <= seed < 2^32.
+// pyRandom is CPython's random.Random (Modules/_randommodule.c and Lib/random.py), as
+// cluster_ci draws with it and as the confirmation read's sample was drawn: MT19937, seeded as
+// random.Random(seed) seeds it for 0 <= seed < 2^64.
 type pyRandom struct {
 	mt [mtN]uint32
 	i  int
 }
 
-// newPyRandom is random.Random(seed): init_by_array with the one-word key [seed].
-func newPyRandom(seed uint32) *pyRandom {
+// newPyRandom is random.Random(seed) for an int seed, as random_seed seeds it: init_by_array
+// with the seed's 32-bit words, the least significant first, one word for a seed below 2^32.
+func newPyRandom(seed uint64) *pyRandom {
+	key, words := [2]uint32{uint32(seed), uint32(seed >> 32)}, 1
+	if key[1] != 0 {
+		words = 2
+	}
 	r := &pyRandom{}
 	mt := &r.mt
 	// init_genrand(19650218)
@@ -753,13 +760,16 @@ func newPyRandom(seed uint32) *pyRandom {
 	for i := 1; i < mtN; i++ {
 		mt[i] = 1812433253*(mt[i-1]^mt[i-1]>>30) + uint32(i)
 	}
-	// init_by_array([seed]): with a key of one word, its index j is always 0.
-	i := 1
+	// init_by_array(key): max(mtN, words) steps, each adding the key's next word j and j.
+	i, j := 1, 0
 	for range mtN {
-		mt[i] = (mt[i] ^ (mt[i-1]^mt[i-1]>>30)*1664525) + seed
+		mt[i] = (mt[i] ^ (mt[i-1]^mt[i-1]>>30)*1664525) + key[j] + uint32(j)
 		i++
 		if i >= mtN {
 			mt[0], i = mt[mtN-1], 1
+		}
+		if j++; j == words {
+			j = 0
 		}
 	}
 	for range mtN - 1 {
@@ -809,4 +819,40 @@ func (r *pyRandom) randrange(n int) int {
 			return v
 		}
 	}
+}
+
+// sample is the indices of random.Random's sample(population, k) on a population of n below
+// 2^32, in the order it draws them, for 0 <= k <= n: population[i] for each i is the sample.
+// It takes sample's two branches by its setsize. Where n is at most setsize it draws from a pool
+// of the n indices, and moves the pool's last undrawn index into the place of each it draws;
+// else it draws from all n, and draws again an index it drew before.
+func (r *pyRandom) sample(n, k int) []int {
+	setsize := 21 // a small set's size less an empty list's
+	if k > 5 {
+		// 4 ** ceil(log(k * 3, 4)): math.log(x, base) is log(x) / log(base).
+		setsize += 1 << (2 * int(math.Ceil(math.Log(float64(k*3))/math.Log(4))))
+	}
+	result := make([]int, k)
+	if n <= setsize {
+		pool := make([]int, n)
+		for i := range pool {
+			pool[i] = i
+		}
+		for i := range k {
+			j := r.randrange(n - i)
+			result[i] = pool[j]
+			pool[j] = pool[n-i-1]
+		}
+		return result
+	}
+	selected := make(map[int]bool, k)
+	for i := range k {
+		j := r.randrange(n)
+		for selected[j] {
+			j = r.randrange(n)
+		}
+		selected[j] = true
+		result[i] = j
+	}
+	return result
 }
