@@ -84,7 +84,7 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 	}
 	slices.Sort(issues)
 	s.markOwedTold(ctx, byIssue)
-	sweep := s.beginPodUpdateSweep(now, byIssue)
+	sweep := s.beginPodUpdateSweep(byIssue)
 	var replacements []podReplacement
 	for _, issue := range issues {
 		if ctx.Err() != nil {
@@ -255,7 +255,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// back either (podUpdateSweep.reposts): it is in a round for the sweep's record, and nothing
 	// more is charged for it.
 	opening := open == "" && !sweep.reposts(issue, round)
-	if opening && sweep.holds(issue) {
+	if opening && sweep.holds(issue, s.plan.clock.Now()) {
 		return nil
 	}
 	if open == "" {
@@ -1193,11 +1193,13 @@ func (s *supervision) oweToldMark(token claim.Token, owed toldMarkOwed) {
 // markOwedTold makes the told marks earlier sweeps owe, over the claims this sweep read, before
 // the walk weighs any round. An entry is dropped once the claims no longer need it: the claim
 // records the mark, the claim is in another round or in none, or the sweep groups no such claim
-// (it retired, or it is gone). Until then it is kept, and a mark made here keeps it too, since the
-// claims this sweep read were read before the mark and would read the round as never told: the
-// next sweep reads the mark and drops the entry. A machine still deciding something is tried
-// again at the next sweep. A mark the store refuses drops the entry, and the round is told again,
-// as a refused mark of a machine that was free is (Machine.PodUpdateTold).
+// (it retired, or it is gone). A mark made here keeps its entry until the next sweep, whose claims
+// carry the mark and drop it, so one rule drops the entry of every made mark. The round is told
+// once either way: the claims this sweep read were read before the mark, but the notice reads
+// each machine's published view before it tells (tellLateRound's noticeGroup, tellUpdateStalled's
+// roundTold), and that view carries the mark from the moment it is made. A machine still deciding
+// something is tried again at the next sweep. A mark the store refuses drops the entry, and the
+// round is told again, as a refused mark of a machine that was free is (Machine.PodUpdateTold).
 func (s *supervision) markOwedTold(ctx context.Context, byIssue map[string][]supervise.Claim) {
 	s.podUpdateToldMu.Lock()
 	defer s.podUpdateToldMu.Unlock()

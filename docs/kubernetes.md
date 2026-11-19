@@ -6143,9 +6143,10 @@ Only a `ready_for_update` call answers the round.
 The migration drops two columns that every release from `legion-v19.16.0` on reads and writes, and it resets the open pod rounds of every project in the database, so deploy this release to every daemon that shares the database in the same change ([Rolling back the release whose update round ends at its bound](#rolling-back-the-release-whose-update-round-ends-at-its-bound)).
 
 How many update rounds run at once is the project's to cap, with two optional top-level `legion.yaml` keys, each a positive integer (`beginPodUpdateSweep`, `podUpdateSweep`):
-`pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).
-The 50 seconds run from the moment of the last opening, not from the start of the sweep that made it:
-a sweep can take a while in its walk before it opens a round, on a slow read of a pod from the cluster for one, and the next sweep still opens nothing until more than 50 seconds after that opening (`recordPodUpdateOpening`).
+`pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where none opens 50 seconds or less after this daemon's last opening (`podUpdateOpeningGap`).
+The 50 seconds run from the moment of the last opening to the moment of the next, not from the start of a sweep:
+a sweep can wait in its walk before it reaches the issue it opens, on a write to the store for an issue before it (an ask or a notice it enqueues) for one, so each opening is dated when it is made (`recordPodUpdateOpening`) and the gap is read as the walk reaches the issue it would open (`podUpdateSweep.holds`).
+A sweep therefore opens nothing until more than 50 seconds after the last opening, and where each sweep's walk takes the same while to reach its opening, sweeps a minute apart open their round each.
 An issue holds one of those slots while a claim of it holds the round over the pod its claims record, or while its claims record two pods with a round open, which is a replacement in flight (`holdsOpenRound`).
 A round over a pod the claims no longer record holds none, since that pod is gone and the same sweep ends the round, and neither does a round whose claims record no pod at all.
 A round this daemon opened at an earlier sweep that no claim of the issue records yet holds a slot too, since it is an opening all the same: the post that carries a round to a machine is asynchronous, and a machine in a relaunch can take minutes to take it (`podUpdateOpenings`).
@@ -6167,6 +6168,7 @@ Its `reason` names that hold, and the notice names the issue, the round, the pod
 One round is told once, however many sweeps find it open.
 The sweep marks the round told on each claim of it without waiting for that claim's machine:
 a claim whose machine is busy, such as one in a relaunch, is marked at a later sweep, the round is not told again meanwhile, and no other issue's round waits for that relaunch (`markUpdateTold`, `markOwedTold`).
+The daemon keeps a mark it owes in memory only, so a daemon that restarts before it makes that mark tells the round once more, which is what a told mark the store refuses already costs.
 A round that waits for its roles before its bound is told to nobody, since the bound ends that wait by itself.
 An operator's suspension is the one hold only a person can clear: the daemon replaces the pod only after the operator resumes each such claim.
 A pod that goes before its round is over, replaced where it stood for a failure of its own, has the daemon write on the issue which roles had not answered and that the work they did not push went with the disk.

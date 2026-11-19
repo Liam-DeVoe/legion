@@ -2143,7 +2143,7 @@ func (m *Machine) stoppingProcess() func() {
 // every locked section that can change the wake, the credit or the intent ends in unlock, and a
 // section that takes mu without it reads the claim or counts goroutines and changes none of the
 // three. The sections that defer it are Handle, which every event and every timer of this package
-// comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold), PublishUpdateAsk, StartedBy,
+// comes through, ReleaseUncertainLaunch, PodUpdateTold, PublishUpdateAsk, StartedBy,
 // ReadProcess and Retree; the sections that take mu without it are Claim, OnDurableState, Wait,
 // compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
 // added later has to keep, rather than this list of the sections there are now.
