@@ -494,8 +494,8 @@ const IssueTitleMax = ${ISSUE_TITLE_MAX}
 
 // PriorityIDMax is the longest priority id, in characters, that POST /api/v1/priorities writes:
 // the bound of an id the caller names and the length the id it derives from a title is cut to.
-// Generated from PRIORITY_ID_MAX in packages/contracts so the server's refusal, the server's cut
-// and the priorities seed's cut cannot drift apart.
+// Generated from PRIORITY_ID_MAX in packages/contracts so the server's refusal and the server's
+// cut cannot drift apart.
 const PriorityIDMax = ${PRIORITY_ID_MAX}
 
 // DispatchBlockUnits is the longest one block of a comment, comment edit, message, broadcast or

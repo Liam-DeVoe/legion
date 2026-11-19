@@ -36,8 +36,8 @@ import (
 // fault reads: an issue standing in one of them advances a priority or is a fault. The page's
 // "in flight" column adds exactly these four counts.
 //
-// priorityParkedStatuses are the two the second fault reads: an issue that advances a priority
-// and stands in either is parked work, whichever way it got there.
+// priorityParkedStatuses are the two the second fault reads: an issue that states a priority no
+// issue above it carries and stands in either is parked work, whichever way it got there.
 //
 // Both are the lifecycle's own groupings (model.IssueStatusesInFlight, model.IssueStatusesParked)
 // rather than a list of this file's own, because the seeded corpus reports the same two faults
@@ -86,19 +86,23 @@ var priorityRelationsQuery = `select newest.from_id, newest.to_id
 	where newest.asserted
 	order by newest.from_id, newest.to_id`
 
+// priorityRelationSeed reads the relations the request read back as rows: $1 the issue keys and
+// $2 the priority ids, one pair per row, each an issue whose own row states a live priority.
+const priorityRelationSeed = `select key, priority from unnest($1::text[], $2::text[]) as seed(key, priority)`
+
 // priorityMemberTerms are the issues that advance each priority: the relations the request read
-// ($1 the issue keys, $2 the priority ids, one pair per row) and every issue below one of them.
-// An issue advances a priority when its own row names it or when any issue on its parent chain
-// does, so the walk descends from each stated issue — written as one descent per request rather
-// than one climb per issue, which is the shape issueAdvancesFilterTerms gives the same rule for
-// the listing. A relation on a child places nothing above it, so nothing climbs.
+// (priorityRelationSeed) and every issue below one of them. An issue advances a priority when its
+// own row names it or when any issue on its parent chain does, so the walk descends from each
+// stated issue — written as one descent per request rather than one climb per issue, which is
+// the shape issueAdvancesFilterTerms gives the same rule for the listing. A relation on a child
+// places nothing above it, so nothing climbs.
 //
 // The descent is bounded by parentDepthCap, which no chain passes (refuseParentTooDeep), so a
 // descendant the cap cuts off is one no chain could have reached anyway, and a raced reparent
 // that ever committed a cycle still terminates. `members` is distinct because an issue inherits
 // the same priority from every issue above it that states it.
 var priorityMemberTerms = `members_seed as (
-		select key, priority from unnest($1::text[], $2::text[]) as seed(key, priority)
+		` + priorityRelationSeed + `
 	), members_spread as (
 		select s.key, s.priority, 0 as depth from members_seed s
 		union all
@@ -191,27 +195,36 @@ func priorityUnplacedQuery(summary bool) string {
 	) listed on true`
 }
 
-// priorityParkedQuery is the second fault: an issue that advances a live priority and stands in
-// `backlog` or `icebox`. Beside the row's own columns it carries the time the issue was moved
-// there and the actor who moved it (parkedMoveLateral), which is the one read this body makes
-// over the events of the parked members alone. An issue whose events do not reach back to the
-// move answers both cells null and stays in the list, since the fault is the work standing there
-// and not the record of how it arrived.
+// priorityParkedQuery is the second fault: an open issue in `backlog` or `icebox` whose own row
+// names a live priority that no issue above it carries (advancesOriginTerms, the rule the
+// listing's `?own=true` reads). A child that only inherits a priority, or restates one an issue
+// above it carries, is no fault. The climb starts from the parked issues that state a priority
+// alone, so it costs those issues' chains rather than the work under every priority.
+//
+// Beside the row's own columns it carries the time the issue was moved there and the actor who
+// moved it (parkedMoveLateral), which is the one read this body makes over the events of the
+// parked issues alone. An issue whose events do not reach back to the move answers both cells
+// null and stays in the list, since the fault is the work standing there and not the record of
+// how it arrived. The count by priority counts each parked issue under every priority it so
+// names.
 //
 // Each listed row carries its `advances` relations as every issue read answers them: the listed
 // rows are the subjects of issueAdvancesTerms, the inheritance walk the issue read and the
 // listing climb, and the row answers issueAdvancesColumns, which advancesScan turns into the
-// entries, own and inherited. The walk climbs from the fifty listed rows alone, so the parked
-// count and the counts by priority still rest on the seed's descent (priorityMemberTerms).
+// entries, own and inherited. The walk climbs from the fifty listed rows alone.
 func priorityParkedQuery(summary bool) string {
-	parked := `with recursive ` + priorityMemberTerms + `, parked as (
-		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
-		from members m
-		join issues i on i.key = m.key
+	parked := `with recursive stated as (
+		` + priorityRelationSeed + `
+	), parked_keys as (
+		select distinct s.key
+		from stated s join issues i on i.key = s.key
 		where i.closed_at is null
 			and i.status in (` + sqlStringList(priorityParkedStatuses) + `)
 			and ` + priorityProjectFilter + `
-		group by i.key
+	), ` + advancesOriginTerms("stated", "parked_keys") + `, parked as (
+		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
+		from issues i
+		where i.key in (select key from advances_origins)
 	)`
 	if summary {
 		return parked + `
@@ -229,9 +242,9 @@ func priorityParkedQuery(summary bool) string {
 	select (select count(*) from parked) as total,
 	       (select coalesce(jsonb_object_agg(counted.priority, counted.total), '{}'::jsonb)
 	        from (
-	          select m.priority, count(*) as total
-	          from members m join parked p on p.key = m.key
-	          group by m.priority
+	          select o.priority, count(*) as total
+	          from advances_origins o
+	          group by o.priority
 	        ) counted) as by_priority,
 	       i.key, i.title, i.project_key, i.status, i.assignee,
 	       i.claimed_by, i.claimed_at, i.updated_at,

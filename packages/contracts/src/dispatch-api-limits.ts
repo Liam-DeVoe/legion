@@ -31,15 +31,14 @@ export const MAX_ISSUE_ADVANCES = 20;
 export const ISSUE_TITLE_MAX = 1000;
 
 /**
- * The longest priority id, in characters: an id is ASCII, so in bytes too. Three readers take it,
+ * The longest priority id, in characters: an id is ASCII, so in bytes too. Two readers take it,
  * so they hold one number. `POST /api/v1/priorities` refuses an `id` the caller names that is
  * longer, as `400 PRIORITY_INPUT` naming this bound. The same route cuts the id it derives from
- * the title, when the body names none, to fit it. And `scripts/priorities-seed.ts` cuts the id it
- * sends by the same rule. The cut keeps a slug of at most this many characters whole; it cuts a
- * longer one to its longest start that fits and ends at the end of a word, or to its first this
- * many characters when its first word is longer. `fixtures/priority-ids.json` holds the cases of
- * that rule, and its `description` names the tests that read them. Generated into Go as
- * `contracts.PriorityIDMax`.
+ * the title, when the body names none, to fit it. The cut keeps a slug of at most this many
+ * characters whole; it cuts a longer one to its longest start that fits and ends at the end of a
+ * word, or to its first this many characters when its first word is longer.
+ * `fixtures/priority-ids.json` holds the cases of that rule, and its `description` names the
+ * tests that read them. Generated into Go as `contracts.PriorityIDMax`.
  */
 export const PRIORITY_ID_MAX = 200;
 

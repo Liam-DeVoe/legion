@@ -1,5 +1,5 @@
 {
-  "description": "The rule by which POST /api/v1/priorities makes a priority's id from its title when the body names no id, written once as cases. The slug of a title is artifactSlug's (packages/envoy/internal/dispatch/api/artifacts.go): the title lower-cased by Go's simple case mapping, each run of characters other than a to z and 0 to 9 made one hyphen, and no hyphen at either end; a title that holds no ASCII letter or digit has no slug. The id is the slug when the slug has at most PRIORITY_ID_MAX (200) characters; otherwise it is the longest start of the slug that has at most 200 characters and ends at the end of a word, which is where the next character of the slug is a hyphen; and when the first word has more than 200 characters, it is the first 200. A case is {\"title\", \"id\"}, or {\"title\", \"refusal\"} where the refusal is a kind, never a message, because the Go and TypeScript messages differ: no-slug for a title that has no slug, and none or any for a title whose id after the cut is that word, which the issue listing reads in ?advances= as a keyword and so no priority may take as its id. Every accepted id is distinct, because the route test writes them all into one store and the seed refuses a table that gives two equal ids. The cases, in order: a short title; a slug of exactly 200 characters; slugs of 250, 376 and 510 characters; a slug whose 201st character is a hyphen; one whose 201st character is inside a word; one whose 200th character is a hyphen; a first word of exactly 200 characters with more after it; a first word of 218 characters, of a letter no other case's first 200 characters hold; U+0130 beside ASCII letters, which Go lower-cases to i; U+212A beside ASCII letters, which lower-cases to k; a title whose only letter is U+0130 and one whose only letter is U+212A, which have no slug because the guard reads the raw title; an i followed by U+0307 and then more letters, which gives i- because U+0307 is no ASCII letter; punctuation and spaces alone; None; Any; and None followed by 300 letters x, which the cut leaves as none. Three readers hold their code to these cases: TestPriorityIDFromTitle and TestPriorityIDFromTitleThroughTheRoute in packages/envoy/internal/dispatch/api/priority_id_fixture_test.go (the server's priorityIDFromTitle and its route), the `priority id:` rows of scripts/priorities-seed.test.ts (the seed's priorityId), and the long-title row of packages/dispatch/e2e/priorities.e2e.ts (the page's New priority form). Every title is made up: no real priority title goes into this file, because the repository is public.",
+  "description": "The rule by which POST /api/v1/priorities makes a priority's id from its title when the body names no id, written once as cases. The slug of a title is artifactSlug's (packages/envoy/internal/dispatch/api/artifacts.go): the title lower-cased by Go's simple case mapping, each run of characters other than a to z and 0 to 9 made one hyphen, and no hyphen at either end; a title that holds no ASCII letter or digit has no slug. The id is the slug when the slug has at most PRIORITY_ID_MAX (200) characters; otherwise it is the longest start of the slug that has at most 200 characters and ends at the end of a word, which is where the next character of the slug is a hyphen; and when the first word has more than 200 characters, it is the first 200. When the title has no slug, or the cut leaves none or any, which the issue listing reads in ?advances= as keywords and so no priority may take as its id, the id is priority- followed by the first 12 lower-case hex characters of the SHA-256 of the title's UTF-8 bytes; those ids here were computed with `jq -j '.cases[N].title' priority-ids.json | sha256sum | cut -c1-12`. So every title gives an id, and a case is {\"title\", \"id\"}. Every id is distinct, because the route test writes them all into one store. The cases, in order: a short title; a slug of exactly 200 characters; slugs of 250, 376 and 510 characters; a slug whose 201st character is a hyphen; one whose 201st character is inside a word; one whose 200th character is a hyphen; a first word of exactly 200 characters with more after it; a first word of 218 characters, of a letter no other case's first 200 characters hold; U+0130 beside ASCII letters, which Go lower-cases to i; U+212A beside ASCII letters, which lower-cases to k; a title whose only letter is U+0130 and one whose only letter is U+212A, which have no slug because the guard reads the raw title; an i followed by U+0307 and then more letters, which gives i- because U+0307 is no ASCII letter; punctuation and spaces alone; question marks alone; U+0130 alone; None; Any; and None followed by 300 letters x, which the cut leaves as none. Three tests hold code to these cases: TestPriorityIDFromTitle and TestPriorityIDFromTitleThroughTheRoute in packages/envoy/internal/dispatch/api/priority_id_fixture_test.go (the server's priorityIDFromTitle and its route), and the long-title row of packages/dispatch/e2e/priorities.e2e.ts (the page's New priority form). Every title is made up: no real priority title goes into this file, because the repository is public.",
   "cases": [
     {
       "title": "Ship the weekly report",
@@ -51,11 +51,11 @@
     },
     {
       "title": "\u0130 ?",
-      "refusal": "no-slug"
+      "id": "priority-878556dc7dcd"
     },
     {
       "title": "(\u212A)",
-      "refusal": "no-slug"
+      "id": "priority-6e555e234c1a"
     },
     {
       "title": "Li\u0307nk checker for the docs",
@@ -63,19 +63,27 @@
     },
     {
       "title": "... ?! -- ...",
-      "refusal": "no-slug"
+      "id": "priority-c3cab50272c0"
+    },
+    {
+      "title": "???",
+      "id": "priority-a03b221c6c6e"
+    },
+    {
+      "title": "\u0130",
+      "id": "priority-a65018cffe8e"
     },
     {
       "title": "None",
-      "refusal": "none"
+      "id": "priority-dc937b598926"
     },
     {
       "title": "Any",
-      "refusal": "any"
+      "id": "priority-2b505597daa7"
     },
     {
       "title": "None xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-      "refusal": "none"
+      "id": "priority-d8c4ba214100"
     }
   ]
 }

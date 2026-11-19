@@ -4071,7 +4071,8 @@ Each item below names a path with its method and identity, then its purpose.
   `advances` repeats too, each value a priority id (the issues that advance that priority, by their own relation or one an issue above them states, in any project), `none` (the issues that advance no live priority) or `any` (the issues that advance one, every issue `none` leaves out);
   several are a union, so `advances=none&advances=any` is every issue, and an id no live priority carries matches no issue rather than refusing.
   A blank `advances` is `400 INVALID_ADVANCES`.
-  `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
+  `own=true` keeps, of the issues the `advances` values answer, those whose own row names a priority a value matches and no issue above them carries it: a child that only inherits a priority, or restates one an issue above it carries, is left out, and `none`, which matches no priority, keeps nothing; without an `advances` value it filters nothing.
+  `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&own=true&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
   `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the parked fault of `GET /api/v1/priorities` reads them;
   a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
   `route_status` (`live`, `no_holder` or `unknown`;

@@ -1,6 +1,6 @@
 // priority_id_fixture_test.go holds the id a priority create derives from its title to
 // packages/contracts/fixtures/priority-ids.json, the one list of the cases of that rule, which the
-// priorities seed's test and the dashboard's browser row read too. TestPriorityIDFromTitle reads
+// dashboard's browser row reads too. TestPriorityIDFromTitle reads
 // priorityIDFromTitle itself and opens no store; TestPriorityIDFromTitleThroughTheRoute reads
 // what POST /api/v1/priorities writes for each title, against the database storetest.Open clones
 // (newTestHandlerWithStore). Every failure names the title of its case.
@@ -9,6 +9,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,26 +27,15 @@ import (
 // shared fixtures of this repository are (text/whitespace_fixture_test.go).
 const priorityIDFixturePath = "../../../../contracts/fixtures/priority-ids.json"
 
-// priorityIDCase is one case of the shared list: a title and the id a create derives from it, or
-// the kind of refusal the create meets. A refusal is a kind, never a message, because the server
-// and the seed word theirs differently: no-slug for a title no slug can be written from, and none
-// or any for a title whose id after the cut is that keyword of the issue listing.
+// priorityIDCase is one case of the shared list: a title and the id a create derives from it.
+// Every title gives an id.
 type priorityIDCase struct {
-	Title   string `json:"title"`
-	ID      string `json:"id"`
-	Refusal string `json:"refusal"`
+	Title string `json:"title"`
+	ID    string `json:"id"`
 }
 
-// priorityIDRefusalKeywords pairs the two keyword refusals of the shared list with the id each
-// one is: the filter keyword the cut leaves.
-var priorityIDRefusalKeywords = map[string]string{
-	"none": noAdvancesFilter,
-	"any":  anyAdvancesFilter,
-}
-
-// readPriorityIDCases reads the shared list and holds it to its own shape: each case carries an id
-// or a refusal of a kind the list names, and no two cases carry one id, because the route test
-// writes every accepted id into one store.
+// readPriorityIDCases reads the shared list and holds it to its own shape: each case carries an
+// id, and no two cases carry one id, because the route test writes every id into one store.
 func readPriorityIDCases(t *testing.T) []priorityIDCase {
 	t.Helper()
 	raw, err := os.ReadFile(priorityIDFixturePath)
@@ -65,25 +56,32 @@ func readPriorityIDCases(t *testing.T) []priorityIDCase {
 	}
 	titleOf := make(map[string]string, len(fixture.Cases))
 	for _, priorityCase := range fixture.Cases {
-		_, keyword := priorityIDRefusalKeywords[priorityCase.Refusal]
-		switch {
-		case priorityCase.ID == "" && priorityCase.Refusal == "":
-			t.Fatalf("the case of the title %q names neither an id nor a refusal", priorityCase.Title)
-		case priorityCase.ID != "" && priorityCase.Refusal != "":
-			t.Fatalf("the case of the title %q names both the id %q and the refusal %q",
-				priorityCase.Title, priorityCase.ID, priorityCase.Refusal)
-		case priorityCase.Refusal != "" && priorityCase.Refusal != "no-slug" && !keyword:
-			t.Fatalf("the case of the title %q names the refusal %q, want no-slug, none or any",
-				priorityCase.Title, priorityCase.Refusal)
-		case priorityCase.ID != "":
-			if other, taken := titleOf[priorityCase.ID]; taken {
-				t.Fatalf("the titles %q and %q both give the id %q, and one store holds one priority of an id",
-					other, priorityCase.Title, priorityCase.ID)
-			}
-			titleOf[priorityCase.ID] = priorityCase.Title
+		if priorityCase.ID == "" {
+			t.Fatalf("the case of the title %q names no id", priorityCase.Title)
 		}
+		if other, taken := titleOf[priorityCase.ID]; taken {
+			t.Fatalf("the titles %q and %q both give the id %q, and one store holds one priority of an id",
+				other, priorityCase.Title, priorityCase.ID)
+		}
+		titleOf[priorityCase.ID] = priorityCase.Title
 	}
 	return fixture.Cases
+}
+
+// hashedPriorityIDOf is the id the rule gives a title with no slug, or one whose cut is a keyword
+// of the issue listing: priority- and the first 12 hex characters of the SHA-256 of the title's
+// UTF-8 bytes, written here apart from priorityIDHash so the shared list is held to the rule as
+// the rule reads, not as the server computes it.
+func hashedPriorityIDOf(title string) string {
+	sum := sha256.Sum256([]byte(title))
+	return "priority-" + hex.EncodeToString(sum[:])[:12]
+}
+
+// priorityIDIsHashed says the case's id is the hashed one rather than a cut of the title's slug:
+// it is no start of the slug. A slug that itself begins with the word priority is a cut like any
+// other, since it starts with its own id.
+func priorityIDIsHashed(priorityCase priorityIDCase) bool {
+	return !strings.HasPrefix(artifactSlug(priorityCase.Title), priorityCase.ID)
 }
 
 // priorityIDCutProblem says what is wrong with id as the cut of slug, or "" when nothing is. The
@@ -106,46 +104,39 @@ func priorityIDCutProblem(slug, id string) string {
 	return fmt.Sprintf("the id %q stops inside a word of the title's slug %q", id, slug)
 }
 
-// TestPriorityIDFromTitle holds priorityIDFromTitle to every case of the shared list: an accepted
-// case derives its id, which priorityIDRefusal lets through and which ends at the end of a word
-// within priorityIDMax; a no-slug case derives nothing; and a keyword case derives the keyword,
-// which priorityIDRefusal refuses after the cut.
+// TestPriorityIDFromTitle holds priorityIDFromTitle to every case of the shared list: each title
+// derives its id, which priorityIDRefusal lets through. An id cut from the slug ends at the end of
+// a word within priorityIDMax; a hashed id is the rule's hash of the title, for a title with no
+// ASCII letter or digit or one whose cut is none or any.
 func TestPriorityIDFromTitle(t *testing.T) {
 	for _, priorityCase := range readPriorityIDCases(t) {
 		title := priorityCase.Title
 		id := priorityIDFromTitle(title)
-		switch keyword, isKeyword := priorityIDRefusalKeywords[priorityCase.Refusal]; {
-		case priorityCase.Refusal == "no-slug":
-			if id != "" {
-				t.Errorf("the title %q derives the id %q, want none: it holds no ASCII letter or digit", title, id)
-			}
-		case isKeyword:
-			if id != keyword {
-				t.Errorf("the title %q derives the id %q, want the keyword %q", title, id, keyword)
-			}
-			if refusal := priorityIDRefusal(id, true); refusal == "" {
-				t.Errorf("the title %q derives the id %q, which priorityIDRefusal lets through, want it refused", title, id)
-			}
-		default:
-			if id != priorityCase.ID {
-				t.Errorf("the title %q derives the id %q, want %q", title, id, priorityCase.ID)
-			}
-			if refusal := priorityIDRefusal(id, true); refusal != "" {
-				t.Errorf("the title %q derives the id %q, which priorityIDRefusal refuses: %s", title, id, refusal)
-			}
+		if id != priorityCase.ID {
+			t.Errorf("the title %q derives the id %q, want %q", title, id, priorityCase.ID)
+		}
+		if refusal := priorityIDRefusal(id); refusal != "" {
+			t.Errorf("the title %q derives the id %q, which priorityIDRefusal refuses: %s", title, id, refusal)
+		}
+		if !priorityIDIsHashed(priorityCase) {
 			if problem := priorityIDCutProblem(artifactSlug(title), id); problem != "" {
 				t.Errorf("the title %q: %s", title, problem)
 			}
+			continue
+		}
+		if want := hashedPriorityIDOf(title); priorityCase.ID != want {
+			t.Errorf("the title %q gives the id %q in the shared list, want the hash of the title %q", title, priorityCase.ID, want)
 		}
 	}
 }
 
 // TestPriorityIDFromTitleThroughTheRoute sends each title of the shared list to
-// POST /api/v1/priorities with no id. An accepted case is 201 under its id, with the title written
-// whole and an id that ends at the end of a word within priorityIDMax; a refusal is
-// 400 PRIORITY_INPUT. A create that names an id one past the bound is 400 PRIORITY_INPUT naming
-// the bound, since only a derived id is cut. The refused writes leave the store as it was: it
-// holds the accepted cases' priorities and nothing else.
+// POST /api/v1/priorities with no id. Each is 201 under its id, with the title written whole; an
+// id cut from the slug ends at the end of a word within priorityIDMax. A create that names an id
+// one past the bound is 400 PRIORITY_INPUT naming the bound, since only a derived id is cut, and
+// one that names none or any is 400 PRIORITY_INPUT, since the issue listing reads each as a
+// keyword. The refused writes leave the store as it was: it holds the cases' priorities and
+// nothing else.
 func TestPriorityIDFromTitleThroughTheRoute(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	var accepted []string
@@ -153,13 +144,6 @@ func TestPriorityIDFromTitleThroughTheRoute(t *testing.T) {
 		title := priorityCase.Title
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
 			map[string]any{"title": title}, "alice")
-		if priorityCase.Refusal != "" {
-			if code, text := refusalOf(t, response); response.Code != http.StatusBadRequest || code != codePriorityInput {
-				t.Errorf("the title %q: status=%d code=%s error=%.300q, want 400 %s for the refusal %s",
-					title, response.Code, code, text, codePriorityInput, priorityCase.Refusal)
-			}
-			continue
-		}
 		if response.Code != http.StatusCreated {
 			t.Errorf("the title %q: status=%d body=%.300s, want 201 under the id %q",
 				title, response.Code, response.Body.String(), priorityCase.ID)
@@ -172,8 +156,10 @@ func TestPriorityIDFromTitleThroughTheRoute(t *testing.T) {
 		if made.Title != strings.TrimSpace(title) {
 			t.Errorf("the title %q is written as %q, want it whole", title, made.Title)
 		}
-		if problem := priorityIDCutProblem(artifactSlug(title), made.ID); problem != "" {
-			t.Errorf("the title %q: %s", title, problem)
+		if !priorityIDIsHashed(priorityCase) {
+			if problem := priorityIDCutProblem(artifactSlug(title), made.ID); problem != "" {
+				t.Errorf("the title %q: %s", title, problem)
+			}
 		}
 		accepted = append(accepted, made.ID)
 	}
@@ -189,6 +175,14 @@ func TestPriorityIDFromTitleThroughTheRoute(t *testing.T) {
 	if !strings.Contains(text, fmt.Sprint(priorityIDMax)) {
 		t.Errorf("a create naming an id of %d characters is refused with %.300q, want it to name the bound %d",
 			len(named), text, priorityIDMax)
+	}
+	for _, keyword := range []string{noAdvancesFilter, anyAdvancesFilter} {
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
+			map[string]any{"id": keyword, "title": "A named keyword"}, "alice")
+		if code, text := refusalOf(t, response); response.Code != http.StatusBadRequest || code != codePriorityInput {
+			t.Errorf("a create naming the id %q: status=%d code=%s error=%.300q, want 400 %s",
+				keyword, response.Code, code, text, codePriorityInput)
+		}
 	}
 
 	var written int
