@@ -5,13 +5,22 @@ body: |-
   stub embedder -- return only once the process has left that machine's process table, waiting
   up to `REMOTE_GONE_SECONDS` after the SIGKILL, where they returned as soon as the signal was
   sent; a kill that cannot show its process gone, still there at that bound or behind an ssh that
-  did not reach the machine or timed out, returns 1, names it and keeps its pid file.
-  A step whose earlier tunnel is not shown gone is refused, and an `up` whose earlier stub
-  embedder is not shown gone stops, rather than starting another on the port it holds.
+  did not reach the machine or timed out, returns 1, names it and keeps its pid file. A kill
+  after a start whose ssh this pod did not see return first waits, up to that bound, for the
+  start to record its pid, and names the part as not shown gone when no record comes.
+  A step whose earlier tunnel or earlier `loadgen run` is not shown gone is refused, and an `up`
+  whose earlier stub embedder is not shown gone stops, rather than starting another beside it.
   A step stopped by `INT` or `TERM` names each part it did not show gone -- a kill that ran out,
   and a part whose start or stop the signal cut short -- and says only of the rest that they are
   ended.
   `cluster/cluster.sh`'s stop of a daemon fails, naming it and keeping its pidfile, while the
-  daemon is still there 10 s after its TERM, and `down` then goes on with its delete and fails;
-  the stop of a step's disk watcher waits for the children of its act that it kills, and names
-  one that has not ended.
+  daemon or any process of its process group is still there 10 s after its TERM, and `down`
+  then goes on with its delete and fails; the stop of a step's disk watcher kills every process
+  of its act, each `kubectl` below its `timeout` included, and waits until each has ended, every
+  thread of it, naming one that has not. A process whose `/proc` entry is there and cannot be
+  read is never taken for one that has ended: the stop names it, and the disk watcher and the
+  wait on the runner job read the step shell again at their next poll. `restart-step.sh` counts
+  the listener it kills as down only once every thread of it has gone, and fails, naming it, on
+  a `/proc` entry it cannot read; when the script fails, its SIGTERM goes to its own step's
+  `loadgen run`, by its pid, and no longer to every process of that command line, another run's
+  included.
