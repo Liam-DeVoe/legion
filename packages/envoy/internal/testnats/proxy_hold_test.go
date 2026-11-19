@@ -2,6 +2,7 @@ package testnats
 
 import (
 	"bufio"
+	"io"
 	"net"
 	"net/url"
 	"testing"
@@ -48,16 +49,19 @@ func TestAConnectHoldFindsItsLinesAcrossReads(t *testing.T) {
 	if _, err := client.Write([]byte("CON")); err != nil {
 		t.Fatalf("write the CONNECT's first part: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	// The proxy relays the first part before the rest is written, so its two reads are two: the
+	// server reads "CON" first.
+	first := make([]byte, 3)
+	if _, err := io.ReadFull(server, first); err != nil || string(first) != "CON" {
+		t.Fatalf("the server read %q, %v, want the CONNECT's first part alone", first, err)
+	}
 	if _, err := client.Write([]byte("NECT {}\r\n")); err != nil {
 		t.Fatalf("write the CONNECT's rest: %v", err)
 	}
-	// The proxy relays the CONNECT's two parts in milliseconds; 5 s bounds a row that fails, not
-	// the answer of one that passes.
 	select {
 	case <-hold.Held():
-	case <-time.After(5 * time.Second):
-		t.Fatal("a CONNECT split across two reads had not marked the hold held 5 s after its last part")
+	case <-time.After(Remaining(t)):
+		t.Fatal("a CONNECT split across two reads had not marked the hold held by the test's deadline")
 	}
 	if _, err := server.Write([]byte("+OK\r\n")); err != nil {
 		t.Fatalf("write the answer: %v", err)

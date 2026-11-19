@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,9 +19,13 @@ import (
 // guard and ends. The keep sweep's read of a lane head under the role's guard (sweptLaneHead) is
 // the row's second case, and gives the guard up the same way.
 //
+// The row decides by events and reads no clock to pass: the call's probe read under the guard,
+// then the row's own take of the guard while the handshake is still held, bounded only by the
+// test's deadline.
+//
 // The controls are the handover's pass, and the sweep's head read, made without asking the main
-// client first: its lane read waits for the reconnect with the guard held, and the case fails at
-// heldHandshakeWait.
+// client first: its lane read waits for the reconnect with the guard held (or the sweep's read
+// never asks the probe under the guard), and the case fails at the test's deadline.
 func TestAHandoverDuringAHeldMainClientHandshakeGivesTheRolesGuardUp(t *testing.T) {
 	for _, start := range []struct {
 		name string
@@ -55,37 +60,39 @@ func TestAHandoverDuringAHeldMainClientHandshakeGivesTheRolesGuardUp(t *testing.
 			case <-time.After(testnats.Remaining(t)):
 				t.Fatal("no reconnect's CONNECT of the main client reached the server through the hold by the test's deadline")
 			}
+			// The call's entry is an event: the main client's probe read made while the role's
+			// guard is held, which the probe's seam sees (it keeps the real read). A read made with
+			// the guard free is another caller's and is passed over.
+			entered := make(chan struct{})
+			var once sync.Once
+			restore := client.ProbeReadsDownForTest(func() bool {
+				if release, free := cfg.roleKeepDrains.tryHold(role); free {
+					release()
+				} else {
+					once.Do(func() { close(entered) })
+				}
+				return false
+			})
+			defer restore()
 			ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 			defer cancel()
 			ended := make(chan error, 1)
 			go func() { ended <- start.run(ctx, cfg, role) }()
-
-			// First the call takes the guard: a test that took it first would find it free
-			// whatever the call does. The call holds it for at least the probe's budget, which
-			// 5 ms polls see.
-			taken := false
-			for deadline := time.Now().Add(5 * time.Second); !taken; time.Sleep(5 * time.Millisecond) {
-				if time.Now().After(deadline) {
-					proxy.Restore()
-					t.Fatalf("%s had not taken role %s's guard 5 s after it began, so the row shows nothing", start.name, role)
-				}
-				if release, free := cfg.roleKeepDrains.tryHold(role); free {
-					release()
-				} else {
-					taken = true
-				}
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				proxy.Restore()
+				t.Fatalf("%s never asked the main client's probe while it held role %s's guard, by the test's deadline: its reads under the guard wait for the handshake", start.name, role)
 			}
-			free := false
-			for deadline := time.Now().Add(heldHandshakeWait); !free; time.Sleep(5 * time.Millisecond) {
-				if time.Now().After(deadline) {
-					proxy.Restore()
-					t.Fatalf("%s still held role %s's guard %s into the main client's held handshake: it waited for that client's connection with the guard held", start.name, role, heldHandshakeWait)
-				}
-				if release, taken := cfg.roleKeepDrains.tryHold(role); taken {
-					release()
-					free = true
-				}
+			// Then the guard is taken, bounded only by the test's deadline: the handshake is held
+			// until the row restores the proxy, so a take that comes first is the call giving the
+			// guard up during the handshake.
+			release, taken := cfg.roleKeepDrains.hold(ctx, role)
+			if !taken {
+				proxy.Restore()
+				t.Fatalf("%s still held role %s's guard at the test's deadline, during the main client's held handshake: it waited for that client's connection with the guard held", start.name, role)
 			}
+			release()
 			select {
 			case <-hold.Ended():
 				t.Fatalf("%s gave the role's guard up only once the main client's held handshake had ended", start.name)

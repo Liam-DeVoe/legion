@@ -422,6 +422,8 @@ type Client struct {
 	// is a test's seam (ProbeReadsDownForTest), nil outside tests.
 	prober    *connProber
 	probeDown atomic.Pointer[func() bool]
+	// stopHook is a test's seam on the stop's calls into nats.go (stopCall), nil outside tests.
+	stopHook func()
 	// life is the life of lifeConn that requests are bound to (Request, requestLife), under mu: a
 	// context endLife ends, with ErrConnectionLost as its cause, at the first drop of lifeConn its
 	// own status listener is sent, and lifeReconnects is nats.go's reconnect count of lifeConn when
@@ -1561,7 +1563,7 @@ func (c *Client) Close() {
 	conn := c.Conn
 	c.mu.Unlock()
 	if conn != nil {
-		conn.Close()
+		c.stopCall(conn.Close)
 	}
 	c.awaitKeeper()
 }
@@ -1607,7 +1609,8 @@ func (c *Client) Drain(timeout time.Duration) error {
 	c.stop()
 	conn := c.Conn
 	c.mu.Unlock()
-	reconnects := conn.Stats().Reconnects
+	var reconnects uint64
+	c.stopCall(func() { reconnects = conn.Stats().Reconnects })
 	c.mu.Lock()
 	c.drainedReconnects = reconnects
 	close(counted)
@@ -1650,6 +1653,16 @@ func (c *Client) Drain(timeout time.Duration) error {
 	case <-expired.C:
 		return fmt.Errorf("drain NATS: %w", context.DeadlineExceeded)
 	}
+}
+
+// stopCall is a stop's call into nats.go (Close, Drain), made with c.mu let go, since nats.go's
+// Close and Stats wait for its connection lock, which a reconnect's handshake holds. A test's hook
+// runs first (stopHook), so a row sees the stop reach nats.go.
+func (c *Client) stopCall(call func()) {
+	if c.stopHook != nil {
+		c.stopHook()
+	}
+	call()
 }
 
 // drainHookReserve is the part of Drain's timeout kept from the delivery subscriptions for the
