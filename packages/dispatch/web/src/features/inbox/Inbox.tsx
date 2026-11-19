@@ -694,7 +694,9 @@ function heldRow(
  *  nothing needs them. An expired request waits on nobody (`awaitsDecision`), so a list holding
  *  only expired ones still lets it say so, above which the section lists them for dismissal. The
  *  three filtered lines differ because only the reader's own list is about them: a cleared filter
- *  is about everyone, and any other selection is about whoever it names. */
+ *  is about everyone, and any other selection is about whoever it names. Nothing is drawn under
+ *  the line: the Inbox view lists every thread the reader has not dismissed, read or not, so no
+ *  thread waits anywhere else for a line to point at. */
 function emptyStateMessage({
   agent,
   agentTitle,
@@ -836,8 +838,8 @@ export function Inbox({
   // what the address holds.
   const words = searchWords(capSearchQuery(filter.q ?? ""));
   const typeQuery = (typed: string) => {
-    // One cut, here rather than a `maxLength` on the box as well: what the box writes and what
-    // the list filters by are then the one rule, and the cut stays provable from a browser.
+    // One cut, here as well as by the box's own `maxLength`: what the box writes and what the
+    // list filters by are then the one rule, and the cut stays provable from a browser.
     const next = capSearchQuery(typed);
     // A keypress on a box already at the cap produces the text the filter holds, and writing it
     // would replace the history entry and re-render every row for nothing. React restores a
@@ -1805,19 +1807,17 @@ export function Inbox({
             section: undefined,
           });
 
-  // The number the blocked-on-you banner carried on this page, now a control of the row
-  // (INFRA-3135, R7): the asks waiting on the reader plus the credential requests they may
-  // decide, with the oldest age the banner said in its title and its accessible name, so
-  // nothing the banner carried is lost. A press narrows the list to exactly those asks and
-  // leaves the credential requests above it: it takes off the four fields, the assignee and the
-  // search text with the section it writes, so the list holds every ask the number counts, and
-  // keeps the sort, the grouping and the view. It is absent at a count of zero, as the banner
-  // was, and absent beside an agent filter or in the Dismissed view, where a count over the
-  // whole inbox would contradict the list under it - the rule the banner held to here. Its
-  // number and its oldest age are drawn only once the credential requests and the sign-in have
-  // answered: until then, or while the requests' first read has failed, the control is drawn
-  // without them wherever an ask already waits, since a number that counted an unread list as
-  // empty would be no number of the reader's.
+  // The row's Blocked on you control: the asks waiting on the reader plus the credential
+  // requests they may decide, with the oldest one's age in its title and its accessible name. A
+  // press narrows the list to exactly those asks and leaves the credential requests above it: it
+  // takes off the four fields, the assignee and the search text with the section it writes, so
+  // the list holds every ask the number counts, and keeps the sort, the grouping and the view. It
+  // is absent at a count of zero, and beside an agent filter or in the Dismissed view, where a
+  // count over the whole inbox would contradict the list under it. Its number and its oldest age
+  // are drawn only once the credential requests and the sign-in have answered: until then, or
+  // while the requests' first read has failed, the control is drawn without them wherever an ask
+  // already waits, since a number that counted an unread list as empty would be no number of the
+  // reader's.
   const waiting = needsYou(adoptedInbox ?? [], credentials.requests, viewer);
   const waitingCounted = credentials.status === "listed" && viewer !== undefined;
   const needsYouControl =

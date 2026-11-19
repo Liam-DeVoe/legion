@@ -27,14 +27,15 @@ export function controlIn(root: ParentNode, name: ControlName): HTMLElement | nu
   return root.querySelector<HTMLElement>(`[data-control="${name}"]`);
 }
 
-/** How much room a control takes in its row. `compact` exists for the project List, whose toolbar
- *  holds more controls than a phone's width fits at the comfortable size. */
+/** How much room a control takes in its row. `compact` is for a toolbar that holds more controls
+ *  than a phone's width fits at the comfortable size: the project List's, the priorities
+ *  table's and the Delivery page's. */
 export type ControlSize = "comfortable" | "compact";
 
-/** 44 px: the touch target every page but the project List draws. The compact size keeps that
- *  target wherever a finger is the pointer and gives it up only from `md`, where a mouse is.
- *  The font is each control's own: a chip reads at `text-xs` and a search box at `text-sm`, and
- *  a size that carried one would change every chip in the application. */
+/** 44 px: the touch target of the comfortable size. The compact size keeps that target wherever
+ *  a finger is the pointer and gives it up only from `md`, where a mouse is. The font is each
+ *  control's own: a chip reads at `text-xs` and a search box at `text-sm`, and a size that
+ *  carried one would change every chip in the application. */
 export const controlPadding: Record<ControlSize, string> = {
   comfortable: "min-h-11 px-3 py-2",
   compact: "min-h-11 px-2 py-1 md:min-h-8",

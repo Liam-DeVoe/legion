@@ -15,7 +15,14 @@ import { flexRender } from "./DataTable";
  * those pages read and write is `lib/page-address.ts`'s alone. Both rules hold only for as long
  * as the NEXT page follows them, and a page that writes a box, a `<table>` or a
  * `useSearchParams` of its own compiles, passes its own tests and looks right on the screen.
- * This is the test that refuses it.
+ * This is the test that refuses it. In every file under `features/` it refuses a search box of
+ * the page's own (`type="search"`), a `<table>`, a panel opened through `AnchoredPanel` rather
+ * than through `PanelTrigger`, `DisplayMenu` or `MultiSelect`, a `data-control` written by hand,
+ * and a value import of the table library (`SHARED_MARKS`, `tableImportRefusals`). In the seven
+ * features whose address that module owns (`ADDRESS_FEATURES`) it refuses every read and write
+ * of the address that goes round it - the router's hooks, a hand-built query, a `navigate` or a
+ * `<Link>` to a query of the page's own, the browser's own location and history - and the
+ * router's own `<Navigate>` redirect (`ADDRESS_MARKS`).
  *
  * It carries no allow-list and names no exception, deliberately: a mark it finds is a mark to
  * take out, and a control a page genuinely lacks is a control to add here, where every page
