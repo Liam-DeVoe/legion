@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -188,175 +189,503 @@ const outboxHangGuard = 60 * time.Second
 // takes on an idle pod.
 const backOffDue = 10 * time.Second
 
-// An idle outbox scans nothing: no claim runs while no event is written and no retry falls due.
-// An event another process commits - which reaches this one only through the database, not its
-// broker - is claimed at once by the LISTEN on dispatch_events, and a back-off is claimed when it
-// falls due, by the one timer armed to it, with nothing else waking the outbox in between. Every
-// step is read from what the outbox and the database recorded - the waits armed, the claims made,
-// the moment the database marked the event published - and never from how long a step took.
+// The words of the log lines heldScans reads: a renewal of a hold the database left unanswered
+// (duty.Hold's renew), a Postgres listener whose connection is gone and that dials again
+// (pglisten.Listener's Run), the outbox taking the publisher hold (publish), and the prefix of
+// every line the outbox writes itself, whose errors are a statement that failed.
+const (
+	renewFailedLine = "renew hold failed"
+	redialLine      = "a Postgres listener has no connection; redialing"
+	tookHoldLine    = "dispatch outbox: took the publisher hold"
+	outboxLine      = "dispatch outbox: "
+)
+
+// armedWait is one wait serve armed its retry timer for, and the moment it was armed.
+type armedWait struct {
+	wait time.Duration
+	at   time.Time
+}
+
+// heldScan is one scan of the holder's as TestTheOutboxDoesNotScanWhileIdle reads it: the claims
+// serve made between two of its waits, since serve answers every take, wake and timer with one
+// scan and then waits again.
+type heldScan struct {
+	// claims is how many batches the scan read, and upTo the outbox's claims after them.
+	claims, upTo int64
+	// armed is the wait the scan armed the retry timer for, when it armed one.
+	armed []armedWait
+	// failed is the first error the outbox logged during the scan, when a statement of it failed.
+	failed string
+	// fault is the failure that gave the outbox this scan, when one did; empty for every other
+	// scan. woken is what the row can tell of the wake behind a scan with no fault.
+	fault, woken string
+	// pending is a scan with no fault that ended while a LISTEN connection was dialled and not yet
+	// reported up, or that continued from such a scan: its wake can be that connection's catch-up.
+	// The connection's report makes it a catch-up, and the connection's failure leaves it without a
+	// fault. A reader judges no pending scan.
+	pending bool
+}
+
+// renewFailure is one renewal of the publisher hold that the database left unanswered: the loss
+// deadline the hold had then, and the renewal's error.
+type renewFailure struct {
+	deadline time.Time
+	err      string
+}
+
+// take is one take of the publisher hold: the hold, and the claims the outbox had made by then,
+// which are all its earlier turns' claims, since no scan runs between two turns.
+type take struct {
+	hold   *duty.Hold
+	claims int64
+}
+
+// heldScans is the record TestTheOutboxDoesNotScanWhileIdle reads its outbox by: every scan the
+// holder ran, read at the wait that ends it, with the failure behind it when one gave it a reason,
+// and the claims the outbox had made when it last rested.
+//
+// An outbox with nothing to do still scans when the database fails it, and it must. In one CI job
+// the database left the publisher hold's renewals unanswered for three seconds: Postgres cancelled
+// two of them at their one-second bound while they waited on the row the renewal before them had
+// locked, the hold reached its loss deadline, and the outbox took the hold back and scanned at once,
+// 9 s into the row's 12 s idle window (run 44434907128, job envoy-go, 19 November). That scan is
+// the take's catch-up, which no holder may skip: while it did not hold the hold, another process
+// could have held it and left events unpublished, and a standby reads none. A LISTEN connection
+// that is lost and dialled again catches up the same way, since a notification sent while it had
+// none is never reported, and a statement that failed is tried again a retry.BaseDelay later. Each
+// of those is a scan with a reason, and none is the scan on a period this row is there to catch.
+//
+// So the row records each one when it happens, and judges only the scans no such failure explains.
+// A scan has a fault when it is:
+//
+//   - the first scan of a hold taken after the last one lapsed with at least one renewal the
+//     database left unanswered while the deadline it lapsed at stood. The lapsed hold's deadline
+//     and the deadline each failed renewal's warning names are one value then. A hold the outbox
+//     gave up early has its deadline moved to the moment it was given up, which no warning names,
+//     and a hold that lapsed because no renewal was sent has no warning: both count against the
+//     outbox;
+//   - the first scan after a LISTEN connection reported itself up, the connection's own catch-up;
+//   - the one scan after a scan that logged a failed statement and armed its retry;
+//   - a scan woken by a wake that was queued when a scan with a fault ended.
+//
+// A timer armed by a scan with a fault gives its own scan no fault: a hold taken back arms its
+// timer for a back-off that is really due, and that timer's scan is judged as the back-off's.
+type heldScans struct {
+	outbox *Outbox
+	// restingAt is the claims the outbox had made when the holder last entered a wait with nothing
+	// left to do, and -1 until it enters one (atRest).
+	restingAt atomic.Int64
+
+	// mu guards the rest. Every hook and every log line take it, and waited reads the wake queue
+	// under it rather than being handed it, because the facts must be read together: a connection
+	// reported up and the wake it sends, or a scan's end and the wakes still queued behind it.
+	mu    sync.Mutex
+	scans []heldScan
+	// open is what the scan serve is running now has armed and logged so far, and takes the takes
+	// of the hold since the holder's last wait.
+	open  heldScan
+	takes []take
+	// At the holder's last wait: the claims made by then, the hold it held, the LISTEN connections
+	// reported up by then, and whether a wake was queued.
+	lastClaims   int64
+	lastHold     *duty.Hold
+	lastReported int
+	lastQueued   bool
+	// reported counts the LISTEN connections that reported themselves up. up is whether the last
+	// one is still up, and dialing whether a dialled connection has neither reported nor failed
+	// yet. redialError is the last lost connection's error, for the messages.
+	reported    int
+	up, dialing bool
+	redialError string
+	// renewFailures is every renewal of the publisher hold the database left unanswered.
+	renewFailures []renewFailure
+}
+
+// dial is the outbox's LISTEN dial, recording each connection it opens as one coming up.
+func (h *heldScans) dial(dial func(context.Context) (*pgx.Conn, error)) func(context.Context) (*pgx.Conn, error) {
+	return func(ctx context.Context) (*pgx.Conn, error) {
+		conn, err := dial(ctx)
+		if err == nil {
+			h.mu.Lock()
+			h.dialing = true
+			h.mu.Unlock()
+		}
+		return conn, err
+	}
+}
+
+// install sets h's hooks on outbox, before Run starts it, and makes h's handler the default
+// logger's until the test ends; the handler still writes every record to stderr.
+func (h *heldScans) install(t *testing.T, outbox *Outbox) {
+	h.outbox = outbox
+	h.restingAt.Store(-1)
+	outbox.afterRetryArmed = h.armed
+	outbox.afterListening = h.listening
+	outbox.afterServeWait = h.waited
+	logtest.SetDefault(t, heldScansLog{Handler: slog.NewTextHandler(os.Stderr, nil), scans: h})
+}
+
+func (h *heldScans) armed(wait time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.open.armed = append(h.open.armed, armedWait{wait: wait, at: time.Now()})
+}
+
+// catchUp is the fault of a scan a LISTEN connection's catch-up gave.
+func (h *heldScans) catchUp() string {
+	if h.reported == 1 {
+		return "the LISTEN connection's first catch-up"
+	}
+	return fmt.Sprintf("a new LISTEN connection's catch-up, after the last one was lost (%s)", h.redialError)
+}
+
+// listening runs once a LISTEN connection is up, after the wake it sends: the scans that ended
+// while it came up can be that wake's.
+func (h *heldScans) listening() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.reported++
+	h.up, h.dialing = true, false
+	for i := range h.scans {
+		if h.scans[i].pending {
+			h.scans[i].pending, h.scans[i].fault = false, h.catchUp()
+		}
+	}
+	// One wake more, so the holder is certain to enter a wait after this. OnConnected wakes it
+	// before this runs, so it may have taken that connection's own wake, scanned and parked again
+	// while the connection still counted as coming up, and a wait it entered then is no rest.
+	h.outbox.signal()
+}
+
+// lapse is the fault behind the loss of hold when it lapsed at its deadline after renewals the
+// database left unanswered, and "" otherwise. hold has been released, so its deadline is final.
+func (h *heldScans) lapse(hold *duty.Hold) string {
+	deadline := hold.Deadline()
+	count, last := 0, ""
+	for _, failure := range h.renewFailures {
+		if failure.deadline.Equal(deadline) {
+			count, last = count+1, failure.err
+		}
+	}
+	if count == 0 {
+		return ""
+	}
+	return fmt.Sprintf("the publisher hold taken back after it lapsed, the database having left %d of its renewals unanswered before its deadline (%s)", count, last)
+}
+
+// took is the reason for the first scan of a hold taken after lost, or after none.
+func (h *heldScans) took(lost *duty.Hold) (fault, woken string) {
+	if lost == nil {
+		return "the publisher hold's first take", ""
+	}
+	if fault := h.lapse(lost); fault != "" {
+		return fault, ""
+	}
+	return "", "the take of a hold that did not lapse after renewals the database left unanswered"
+}
+
+// reason is the reason for a scan of the hold the holder held at its last wait.
+func (h *heldScans) reason() (fault, woken string) {
+	var before *heldScan
+	if n := len(h.scans); n > 0 {
+		before = &h.scans[n-1]
+	}
+	switch {
+	case h.reported > h.lastReported:
+		return h.catchUp(), ""
+	case before != nil && before.failed != "" && len(before.armed) > 0:
+		return fmt.Sprintf("the retry of a statement that failed (%s)", before.failed), ""
+	case before != nil && h.lastQueued && before.fault != "":
+		return before.fault, ""
+	case h.lastQueued:
+		return "", "a wake queued when the scan before it ended"
+	case before != nil && len(before.armed) > 0:
+		return "", "the timer the scan before it armed"
+	}
+	return "", "a wake"
+}
+
+// waited ends the scan serve has just run, as serve is about to wait, with the claims made since
+// its last wait. A take since then splits them: the claims before it are the lost hold's last scan,
+// and the claims after it are the new hold's first. It records a rest when nothing is left to do.
+func (h *heldScans) waited() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	claims := h.outbox.claims.Load()
+	from, held := h.lastClaims, h.lastHold
+	fault, woken := h.reason()
+	for _, next := range h.takes {
+		if next.claims > from {
+			h.scans = append(h.scans, heldScan{claims: next.claims - from, upTo: next.claims, fault: fault, woken: woken})
+		}
+		fault, woken = h.took(held)
+		from, held = next.claims, next.hold
+	}
+	h.takes = nil
+	scan := h.open
+	h.open = heldScan{}
+	scan.claims, scan.upTo, scan.fault, scan.woken = claims-from, claims, fault, woken
+	before := len(h.scans) > 0 && h.scans[len(h.scans)-1].pending
+	scan.pending = scan.fault == "" && (h.dialing || (h.lastQueued && before))
+	queued := len(h.outbox.wake) > 0
+	busy := !h.up || h.dialing || queued || len(scan.armed) > 0
+	h.scans = append(h.scans, scan)
+	h.lastClaims, h.lastHold, h.lastReported, h.lastQueued = claims, held, h.reported, queued
+	if !busy {
+		h.restingAt.Store(claims)
+	}
+}
+
+// logged reads the lines heldScans keeps: a failed renewal of the publisher hold, a lost LISTEN
+// connection, a take of the hold, and an error the outbox writes during a scan.
+func (h *heldScans) logged(record slog.Record) {
+	attrs := map[string]slog.Value{}
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs[attr.Key] = attr.Value
+		return true
+	})
+	text := func(key string) string {
+		if value, ok := attrs[key]; ok {
+			return value.String()
+		}
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	switch {
+	case strings.HasPrefix(record.Message, renewFailedLine) && text("hold") == publisherHold:
+		if deadline := attrs["deadline"]; deadline.Kind() == slog.KindTime {
+			h.renewFailures = append(h.renewFailures, renewFailure{deadline: deadline.Time(), err: text("error")})
+		}
+	case strings.HasSuffix(record.Message, redialLine) && strings.Contains(text("channels"), eventsChannel):
+		h.up, h.dialing, h.redialError = false, false, text("error")
+		for i := range h.scans {
+			h.scans[i].pending = false
+		}
+	case strings.HasPrefix(record.Message, tookHoldLine):
+		// Written after the store of the hold and before its first scan, on the goroutine that
+		// scans: the hold and the claims read here are the take's own. What the standby logged
+		// before it is no failure of a scan.
+		h.takes = append(h.takes, take{hold: h.outbox.hold.Load(), claims: h.outbox.claims.Load()})
+		h.open.failed = ""
+	case record.Level >= slog.LevelError && strings.HasPrefix(record.Message, outboxLine) && h.open.failed == "":
+		h.open.failed = strings.TrimPrefix(record.Message, outboxLine) + ": " + text("error")
+	}
+}
+
+// atRest waits until the holder is waiting with nothing left to do - no wake queued, no retry
+// armed, its LISTEN connection up and reported, no other dialled - and nothing scanned since. That
+// is a state rather than an edge: it holds for as long as the outbox has nothing to do, so a reader
+// cannot arrive too late to see it. No scan is pending at a rest.
+func (h *heldScans) atRest(t *testing.T, what string) {
+	t.Helper()
+	// restingAt is read first, so the claims it is compared with are never older than it: an
+	// equal pair is a wait no scan has followed, never a scan this read straddled.
+	waitFor(t, outboxHangGuard, what, func() bool { return h.restingAt.Load() == h.outbox.claims.Load() })
+}
+
+// mark is how many scans have ended: a part of the row reads the scans after it.
+func (h *heldScans) mark() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.scans)
+}
+
+// since is the scans that ended after mark.
+func (h *heldScans) since(mark int) []heldScan {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.scans[mark:])
+}
+
+// heldScansLog writes every record on, and gives heldScans each one first.
+type heldScansLog struct {
+	slog.Handler
+	scans *heldScans
+}
+
+func (l heldScansLog) Handle(ctx context.Context, record slog.Record) error {
+	l.scans.logged(record)
+	return l.Handler.Handle(ctx, record)
+}
+
+func (l heldScansLog) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return heldScansLog{Handler: l.Handler.WithAttrs(attrs), scans: l.scans}
+}
+
+func (l heldScansLog) WithGroup(name string) slog.Handler {
+	return heldScansLog{Handler: l.Handler.WithGroup(name), scans: l.scans}
+}
+
+// plain is whether a scan has no fault and is judged: one no failure explains.
+func (s heldScan) plain() bool { return s.fault == "" && !s.pending && s.claims > 0 }
+
+// withoutFault is the claims of the judged scans no failure explains, and what woke each of them.
+func withoutFault(scans []heldScan) (claims int64, woken []string) {
+	for _, scan := range scans {
+		if scan.plain() {
+			claims += scan.claims
+			woken = append(woken, fmt.Sprintf("%d by %s", scan.claims, scan.woken))
+		}
+	}
+	return claims, woken
+}
+
+// armedIn is every wait the scans armed, in order, split by whether a failure gave the scan that
+// armed it.
+func armedIn(scans []heldScan) (plain, faulted []armedWait) {
+	for _, scan := range scans {
+		if scan.fault == "" {
+			plain = append(plain, scan.armed...)
+		} else {
+			faulted = append(faulted, scan.armed...)
+		}
+	}
+	return plain, faulted
+}
+
+// logFaults writes each failure that gave the outbox scans during one part of the row, with the
+// claims they made, so a run that met one says so.
+func logFaults(t *testing.T, part string, scans []heldScan) {
+	t.Helper()
+	for _, scan := range scans {
+		if scan.fault != "" && scan.claims > 0 {
+			t.Logf("%s: %d claims came with a reason the row leaves out: %s", part, scan.claims, scan.fault)
+		}
+	}
+}
+
+// An idle outbox scans nothing: no claim runs while no event is written and no retry falls due,
+// unless the database fails it and so gives it a reason to (heldScans says which reasons, and why
+// the row leaves them out). An event another process commits - which reaches this one only through
+// the database, not its broker - is claimed by the LISTEN on dispatch_events, and a back-off is
+// claimed when it falls due, by the one timer armed to it, with nothing else waking the outbox in
+// between. Every step is read from what the outbox and the database recorded - the scans and what
+// gave each a reason, the waits armed, the moment the database marked the event published - and
+// never from how long a step took.
 func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	database := storetest.Open(t)
 	other := storetest.SecondProcess(t, database)
 	seedIssue(t, database, "T-1", nil)
-	publisher := &recordingPublisher{}
-	outbox := New(Deps{Store: database, Publisher: publisher, Broker: events.NewBroker(), Listen: database.Pool.Listener})
+	held := &heldScans{}
+	outbox := New(Deps{Store: database, Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: held.dial(database.Pool.Listener)})
+	held.install(t, outbox)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	// Every wait the outbox arms its one retry timer for, with the moment it was armed and the
-	// claims the outbox had made by then: the sequence this row reads, in place of a wall clock.
-	type armedWait struct {
-		wait   time.Duration
-		at     time.Time
-		claims int64
-	}
-	var armedMu sync.Mutex
-	var armed []armedWait
-	outbox.afterRetryArmed = func(wait time.Duration) {
-		armedMu.Lock()
-		defer armedMu.Unlock()
-		armed = append(armed, armedWait{wait: wait, at: time.Now(), claims: outbox.claims.Load()})
-	}
-	// armedWaits copies what has been armed so far, so nothing reads the slice unlocked.
-	armedWaits := func() []armedWait {
-		armedMu.Lock()
-		defer armedMu.Unlock()
-		return slices.Clone(armed)
-	}
-	// restingAt is the claims the outbox had made when the holder last entered its wait with
-	// nothing pending and the LISTEN connection already up, and -1 until it enters one. A wait
-	// entered with a wake pending records nothing, because the scan that wake causes is still to
-	// come; a wait entered before that connection is up records nothing either, because the
-	// connection's own catch-up scan is still to come and would land inside the idle window
-	// below. The holder stores this before it waits and scans only after, so while restingAt
-	// equals the claims made the holder is waiting and nothing has scanned since - a state that
-	// holds for as long as the outbox has nothing to do, rather than an edge a reader can arrive
-	// too late to see.
-	//
-	// Both hooks take restMu, and the wait's own queue is read under it rather than handed in,
-	// because the two facts have to be read together: the holder could otherwise record a rest
-	// in the gap between the flag going up and the wake that follows it, and the scan that wake
-	// causes would then land inside the window. Under one lock a wait that runs before the
-	// connection is reported is refused by the flag, and one that runs while that wake is still
-	// queued is refused by the queue. A wait after the wake's own scan finds the queue empty and
-	// records a rest, which is the rest this row is for: by then that scan is one of the claims
-	// restingAt is compared with.
-	var restMu sync.Mutex
-	listening := false
-	var restingAt atomic.Int64
-	restingAt.Store(-1)
-	outbox.afterListening = func() {
-		restMu.Lock()
-		defer restMu.Unlock()
-		listening = true
-		// One wake more, so the holder is certain to enter a wait after the flag is set.
-		// OnConnected signals before it reports, so the holder may have taken that connection's
-		// own wake, scanned and parked again while the flag was still false.
-		outbox.signal()
-	}
-	outbox.afterServeWait = func() {
-		restMu.Lock()
-		defer restMu.Unlock()
-		if listening && len(outbox.wake) == 0 {
-			restingAt.Store(outbox.claims.Load())
-		}
-	}
 	go func() { outbox.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	// atRest waits for the holder to be waiting with nothing pending and nothing scanned since,
-	// a wait it entered with the LISTEN connection already up. That is this row's "the outbox has
-	// nothing left to do": every catch-up scan - the hold's take, and that connection's - has
-	// already run, and only a new event can wake the outbox again. This row's publisher never
-	// disconnects, so such a wait is always one the holder reached with nothing to scan, never
-	// one it reached with NATS down.
-	atRest := func(what string) {
-		t.Helper()
-		// restingAt is read first, so the claims it is compared with are never older than it: an
-		// equal pair is a wait no scan has followed, never a scan this read straddled.
-		waitFor(t, outboxHangGuard, what, func() bool { return restingAt.Load() == outbox.claims.Load() })
-	}
 
 	waitFor(t, outboxHangGuard, "the outbox taking the publisher hold", outbox.Publishing)
 	// The first scan and the LISTEN connection's catch-up run as the hold is taken; the row reads
-	// that they are over rather than allowing them a span of time.
-	atRest("the outbox resting after the hold's first scan and the LISTEN connection's catch-up")
-	idleFrom := outbox.claims.Load()
+	// that they are over rather than allowing them a span of time. This row's publisher never
+	// disconnects, so a rest is always one the holder reached with nothing to scan, never one it
+	// reached with NATS down.
+	held.atRest(t, "the outbox resting after the hold's first scan and the LISTEN connection's catch-up")
+	idleFrom := held.mark()
 	// A lower bound on quiet, not an upper bound on work: the row asserts nothing scanned in this
-	// window, and load can only make an idle outbox quieter, never busier.
+	// window without a reason, and load can only make an idle outbox quieter, never busier.
 	time.Sleep(12 * time.Second)
-	if claims := outbox.claims.Load() - idleFrom; claims != 0 {
-		t.Fatalf("an idle outbox ran %d claims in 12 s, want 0", claims)
+	// A scan is read once it has ended, so one still running as the window closes is read at the
+	// rest that follows it.
+	held.atRest(t, "the outbox resting at the end of its idle window")
+	idle := held.since(idleFrom)
+	if claims, woken := withoutFault(idle); claims != 0 {
+		t.Fatalf("an idle outbox ran %d claims in 12 s, want 0: %s", claims, strings.Join(woken, "; "))
 	}
+	logFaults(t, "the idle window", idle)
 
 	// Committed on another process's pool, and published to no broker this outbox hears.
+	freshFrom := held.mark()
 	fresh := appendEvent(t, other, events.NewBroker(), model.Event{
 		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "fresh", IssueKey: new("T-1"), Body: "fresh"},
 	})
-	// A local clock for the hang guards and the readings below alone: no assertion reads it.
+	// A local clock for the reading below alone: no assertion reads it.
 	committed := time.Now()
-	// The 12 s window above showed this outbox scans on nothing periodic, so a claim at all after
-	// this commit is the notification's; the bound only stops the row hanging when no claim ever
-	// comes.
-	waitFor(t, outboxHangGuard, "the event another process committed claimed", func() bool {
-		return outbox.claims.Load() != idleFrom
-	})
-	t.Logf("the event another process committed was claimed %s after its commit", time.Since(committed).Round(time.Millisecond))
-	// The same hang guard: the claim above is this event's own scan, so the only way to this bound
-	// is a publication that never happens at all.
+	// The window above showed this outbox scans on nothing periodic, so what publishes this event
+	// is the notification's scan, or one a failure of the database gave, which is logged below; the
+	// bound only stops the row hanging when nothing publishes it at all.
 	waitFor(t, outboxHangGuard, "the other process's event published", func() bool { return publishedAt(t, database, fresh.ID) != nil })
+	t.Logf("the event another process committed was published %s after its commit", time.Since(committed).Round(time.Millisecond))
 	// The sequence below starts from an outbox at rest: the wait above returns as soon as the
 	// other process's event is marked published, while the batch that published it has still to
 	// start the batch that follows it and the scan has still to arm whatever comes of that.
-	atRest("the outbox resting after the other process's event")
+	held.atRest(t, "the outbox resting after the other process's event")
+	logFaults(t, "the other process's event", held.since(freshFrom))
 
 	// A back-off due in backOffDue, committed by the other process: its insert wakes the outbox,
 	// whose scan finds nothing due and arms its one retry timer to the back-off's own moment, and
-	// the timer's scan is the one that publishes it. The waits armed earlier in this row are not
-	// this one's.
-	armedBefore := len(armedWaits())
-	// The waits this back-off's own scan armed, read afresh each time: the slice only grows.
-	waitsSince := func() []armedWait { return armedWaits()[armedBefore:] }
+	// the timer's scan is the one that publishes it.
+	backOffFrom := held.mark()
 	// due is the moment the database computed for this back-off; every assertion about it below is
 	// made against that value, on the database's own clock.
 	backedOff, due := appendBackedOffEvent(t, other, backOffDue)
 	// A local clock for this loop's hang guard and the readings below alone: no assertion reads it.
 	inserted := time.Now()
 	var published time.Time
+	// The claims the outbox had made at the last reading taken while the back-off was still ahead:
+	// every claim up to it is of a scan that started before the back-off fell due.
+	startedBeforeDue := int64(-1)
 	for {
-		// Read oldest first, so nothing is judged against a reading younger than itself: the waits,
-		// then the claims (never fewer than the waits' own count), then the database's answer,
-		// whose now() is therefore no earlier than the moment those claims were read.
-		since := waitsSince()
+		// Read oldest first, so nothing is judged against a reading younger than itself: the scans
+		// that have ended, then the claims, then the database's answer, whose now() is therefore no
+		// earlier than the end of every scan and claim read.
+		scans := held.since(backOffFrom)
 		claims := outbox.claims.Load()
 		at, beforeDue := backOffState(t, database, backedOff.ID)
 		if at != nil {
 			published = *at
 			break
 		}
+		if beforeDue {
+			startedBeforeDue = claims
+		}
 		// The one clock left in this loop is a hang guard, 60 s against the backOffDue the work
 		// waits out, so no load reaches it: it fires only when nothing was published at all. A
 		// hang guard needs no agreement between clocks, so the local one serves.
 		if time.Since(inserted) > outboxHangGuard {
-			t.Fatalf("the back-off due in %s was never published: %s after its insert the outbox had armed %v",
-				backOffDue, time.Since(inserted).Round(time.Millisecond), waitsSince())
+			plain, faulted := armedIn(scans)
+			t.Fatalf("the back-off due in %s was never published: %s after its insert the outbox had armed %v, and %v after a failure",
+				backOffDue, time.Since(inserted).Round(time.Millisecond), plain, faulted)
 		}
-		// Nothing else wakes the outbox until the timer fires: no claim since the wait was armed,
-		// while the database says the back-off is still ahead on its own clock.
-		if len(since) > 0 && beforeDue {
-			if made := claims - since[0].claims; made != 0 {
-				t.Fatalf("the outbox made %d claims in the %s since it armed a %s wait for the back-off, %s after the insert and before the back-off fell due, want none",
-					made, time.Since(since[0].at).Round(time.Millisecond), since[0].wait.Round(time.Millisecond),
-					since[0].at.Sub(inserted).Round(time.Millisecond))
-			}
+		// Nothing but the insert's own notification wakes the outbox before the back-off falls
+		// due, failures apart: one ended scan with no fault, while the database says the back-off
+		// is still ahead on its own clock. The scans still running are judged after the publish.
+		if _, woken := withoutFault(scans); beforeDue && len(woken) > 1 {
+			t.Fatalf("the outbox ran %d scans in the %s after the back-off's insert and before it fell due, want only the one its insert woke: %s",
+				len(woken), time.Since(inserted).Round(time.Millisecond), strings.Join(woken, "; "))
 		}
 		// How often this loop reads, bounding nothing: a coarser poll would only read the same
 		// sequence later.
 		time.Sleep(5 * time.Millisecond)
 	}
 	publishedAfter := time.Since(inserted)
-	since := waitsSince()
-	if len(since) != 1 {
-		t.Fatalf("the outbox armed %d waits between the back-off's insert and its publish, want 1: %v", len(since), since)
+	// Every scan up to the publish is read once it has ended.
+	held.atRest(t, "the outbox resting after it published the back-off")
+	scans := held.since(backOffFrom)
+	logFaults(t, "the back-off", scans)
+	// The same statement for the scans that were still running when the loop above read them: a
+	// scan with no fault whose first claim the loop saw while the back-off was ahead started
+	// before it fell due, so its wake was not the back-off's timer. The timer's own scan cannot be
+	// one of them: the timer fires no sooner than the due moment, and the loop read each claims
+	// count before a database answer that put the due moment still ahead.
+	var early []string
+	for _, scan := range scans {
+		if scan.plain() && scan.upTo-scan.claims < startedBeforeDue {
+			early = append(early, fmt.Sprintf("%d by %s", scan.claims, scan.woken))
+		}
+	}
+	if len(early) > 1 {
+		t.Fatalf("the outbox started %d scans after the back-off's insert and before it fell due, want only the one its insert woke: %s",
+			len(early), strings.Join(early, "; "))
+	}
+	// One wait armed, by the scan the insert woke. A failure can arm another in that scan's place -
+	// a hold taken back reads the back-off afresh and arms the wait the lost one had, and a failed
+	// statement arms its retry - but nothing else arms one.
+	plain, faulted := armedIn(scans)
+	if len(plain) > 1 || len(plain)+len(faulted) == 0 {
+		t.Fatalf("the outbox armed %d waits between the back-off's insert and its publish, and %d more after a failure, want 1 in all: %v %v",
+			len(plain), len(faulted), plain, faulted)
 	}
 	// The wait is a value the database computed from its own next_attempt_at, not an elapsed time
 	// this test measured, so a loaded runner can only make it smaller: the only way past
@@ -364,11 +693,21 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// cheaper half of the same statement: nextRetry clamps a back-off already due to zero, so a
 	// wait of zero is a timer armed to fire at once, which is not the timer this row is about.
 	// A scan so late that the back-off is already due does not arm even that - it publishes the
-	// back-off in that scan and arms nothing - and the assertion above, exactly one wait armed,
-	// is what catches that.
-	if since[0].wait <= 0 || since[0].wait > backOffDue {
-		t.Fatalf("the outbox armed a %s wait for a back-off due in %s, want one above zero and no more than %s",
-			since[0].wait, backOffDue, backOffDue)
+	// back-off in that scan and arms nothing - and the assertion above, a wait armed at all, is
+	// what catches that. A wait a failure armed may be zero, since a hold taken back just as the
+	// back-off fell due arms the zero the clamp gives it, and is held to the same upper end: a
+	// failed statement's retry, retry.BaseDelay, is below it too.
+	for _, armed := range plain {
+		if armed.wait <= 0 || armed.wait > backOffDue {
+			t.Fatalf("the outbox armed a %s wait for a back-off due in %s, want one above zero and no more than %s",
+				armed.wait, backOffDue, backOffDue)
+		}
+	}
+	for _, armed := range faulted {
+		if armed.wait < 0 || armed.wait > backOffDue {
+			t.Fatalf("after a failure the outbox armed a %s wait for a back-off due in %s, want one no more than %s",
+				armed.wait, backOffDue, backOffDue)
+		}
 	}
 	// Exact where a margin was a guess: the publication time and the moment the back-off fell due
 	// are both the database's own values, so no clock is compared with another and no load can
@@ -378,12 +717,11 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		t.Fatalf("the back-off was published at %s, %s before the %s the database made it due, want no sooner than due",
 			published, due.Sub(published).Round(time.Millisecond), due)
 	}
-	// A reading for the record, not an assertion: the publishing batch starts another batch, so
-	// the scan the timer woke claims more than once.
-	t.Logf("the outbox armed a %s wait %s after the insert, the back-off was published %s after it and %s after the database made it due, and the outbox made %d claims from the arming to the publish",
-		since[0].wait.Round(time.Millisecond), since[0].at.Sub(inserted).Round(time.Millisecond),
-		publishedAfter.Round(time.Millisecond), published.Sub(due).Round(time.Millisecond),
-		outbox.claims.Load()-since[0].claims)
+	// A reading for the record, not an assertion.
+	first := slices.MinFunc(append(plain, faulted...), func(a, b armedWait) int { return a.at.Compare(b.at) })
+	t.Logf("the outbox armed a %s wait %s after the insert, and the back-off was published %s after it and %s after the database made it due",
+		first.wait.Round(time.Millisecond), first.at.Sub(inserted).Round(time.Millisecond),
+		publishedAfter.Round(time.Millisecond), published.Sub(due).Round(time.Millisecond))
 }
 
 // appendBackedOffEvent commits an event on database whose next attempt is due after wait on the
