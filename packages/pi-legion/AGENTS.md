@@ -100,7 +100,11 @@ the daemon block of `GET /legion/v1/state` carries `stateSeq`, the sequence of t
 event the project's daemon committed, read in the body's own snapshot, so a reader of the state
 events starts after a whole read at `stateSeq + 1`; the reader this plugin parses the state
 through takes the key as optional, because a caller from a pod whose claims record a contract
-under 166 is served the block without it, `api.stateFor`, `withoutStateSeq`), after contract 152
+under 166 is served the block without it, `api.stateFor`, `withoutStateSeq`), after contract 160
+(INFRA-2009: the cache trimmer in an issue pod's launcher process, which moves the daemon's answer
+to its hello (`volumeTrim`) and adds the launcher's `launcher_volume_report` frame, and puts
+`runtime.kubernetes.volume_trim` in the state's settings block, which the plugin parses loosely,
+so no shape the plugin parses moves), after contract 152
 (INFRA-2543: the GitHub App installation, and no longer the project's Dispatch repository mapping,
 decides which repositories a project works in, so the `repositories` block of
 `GET /legion/v1/state` names in `mapped` every repository the daemon serves, each with `apps`, the
