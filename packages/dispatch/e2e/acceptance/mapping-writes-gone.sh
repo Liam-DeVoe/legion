@@ -10,8 +10,9 @@
 #   - `DELETE /api/v1/settings/repo-projects/acme/probe` answers 404.
 # Both writes are sent with the operator's credential, DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (read
 # here and never printed). A build that still has the routes answers the PUT 400, since an empty
-# body names no project, and the DELETE 204, since no mapping holds acme/probe, so neither write
-# changes anything; the run names each status it was answered.
+# body names no project, and the DELETE 400 ACTOR_KIND, since a bearer's write names no actor
+# session (measured against main, with the shared token and with a personal token alike), so
+# neither write changes anything; the run names each status it was answered.
 #
 # Usage, from the repository's root:
 #
