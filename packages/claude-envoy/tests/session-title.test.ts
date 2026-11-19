@@ -427,17 +427,20 @@ test("queryTmux is bounded even by a tmux that ignores SIGTERM", async () => {
     { mode: 0o755 },
   )
   // A child of its own, so the stub is first on the PATH it starts with, wherever the spawn looks
-  // `tmux` up. The child reports the order of what it saw: a timer of its own, armed just before
-  // the call for a millisecond short of the call's one-second timeout, and the call's answer.
-  // Both run on the child's one event loop, which fires the earlier deadline first however
-  // loaded the machine, so a call killed before its timeout answers ahead of that timer. The
-  // child then ends on its own: a read the call left pending would keep it alive.
+  // `tmux` up. The child reports the order of what it saw on its one event loop: a timer of its
+  // own armed just before the call for a millisecond short of the call's one-second timeout, the
+  // call's answer, and a second timer armed just after the call for a millisecond past it. The
+  // loop fires timers in the order they are due however loaded the machine, and runs the
+  // microtasks one queues before the next (measured on Bun 1.4.4), so the call's own timer, armed
+  // inside the call, lands between the two: a call killed before its timeout answers ahead of the
+  // first, and one whose timeout grew answers after the second (R4: the order of the events, not
+  // a clock). The child then ends on its own: a read the call left pending would keep it alive.
   const source = join(import.meta.dir, "../src/session-title.ts")
   const child = Bun.spawn(
     [
       process.execPath,
       "-e",
-      `import { queryTmux } from ${JSON.stringify(source)}; const order = []; setTimeout(() => order.push("999 ms"), 999); const answer = await queryTmux("/nonexistent/tmux.sock", "%0", "x"); order.push(\`answer \${String(answer)}\`); process.stdout.write(JSON.stringify(order))`,
+      `import { queryTmux } from ${JSON.stringify(source)}; const order = []; setTimeout(() => order.push("999 ms"), 999); const call = queryTmux("/nonexistent/tmux.sock", "%0", "x"); const late = Promise.withResolvers(); setTimeout(() => { order.push("1001 ms"); late.resolve(); }, 1001); const answer = await call; order.push(\`answer \${String(answer)}\`); await late.promise; process.stdout.write(JSON.stringify(order))`,
     ],
     {
       env: {
@@ -455,8 +458,8 @@ test("queryTmux is bounded even by a tmux that ignores SIGTERM", async () => {
     )
     expect(exitCode).toBe(0)
     expect(existsSync(marker)).toBe(true)
-    // The call waited out its timeout, then was killed rather than waited for.
-    expect(JSON.parse(reported)).toEqual(["999 ms", "answer undefined"])
+    // The call waited out its timeout, and no longer, then was killed rather than waited for.
+    expect(JSON.parse(reported)).toEqual(["999 ms", "answer undefined", "1001 ms"])
   } finally {
     child.kill("SIGKILL")
     rmSync(directory, { recursive: true, force: true })

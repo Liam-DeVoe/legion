@@ -5,8 +5,14 @@
 // `scripts/smoke-role-takeover.sh`'s client process (`scripts/role-takeover/omp-client.ts`), one
 // client instance per OS process, and `test/session-pod-process.ts`, one session of a session pod
 // in an OS process of its own. A host method the extension starts to use is added here once, so
-// neither process can drift behind the suite.
-import type { MessageRenderer, PiApi } from "@legion/pi-shared/pi-types";
+// neither process can drift behind the suite; a member the host's own types hold is typed from
+// them (`@legion/pi-shared/pi-types`), so the stand-in cannot drift from the host either.
+import type {
+  RegisteredTool as HostRegisteredTool,
+  SessionContext as HostSessionContext,
+  MessageRenderer,
+  PiApi,
+} from "@legion/pi-shared/pi-types";
 import { z } from "zod";
 
 export type ToolResult = {
@@ -19,6 +25,7 @@ export type RegisteredTool = {
   readonly name: string;
   readonly description: string;
   readonly parameters: unknown;
+  readonly lenientArgValidation?: HostRegisteredTool["lenientArgValidation"];
   readonly execute: (
     id: string,
     params: Record<string, unknown>,
@@ -36,6 +43,8 @@ export type RegisteredCommand = {
 
 export type SessionContext = {
   readonly cwd: string;
+  /** Whether the host has a terminal UI (`ctx.hasUI`): false for RPC and print modes. */
+  readonly hasUI: boolean;
   /** Oh My Pi's agent identity: the top-level session's runner is `main`, a `task` subagent's `sub`. */
   readonly agent?: { readonly kind: "main" | "sub" };
   readonly sessionManager: {
@@ -52,6 +61,10 @@ export type SessionContext = {
   readonly setTimeout: (callback: () => void | Promise<void>, delayMs: number) => void;
   /** The host's `ctx.isIdle()`: false while a turn runs. */
   readonly isIdle?: () => boolean;
+  /** The host's side turn (`ctx.runEphemeralTurn`), where it has one. */
+  readonly runEphemeralTurn?: HostSessionContext["runEphemeralTurn"];
+  /** Whether the host holds a message for the next turn (`ctx.hasPendingMessages()`). */
+  readonly hasPendingMessages?: HostSessionContext["hasPendingMessages"];
   readonly ui: {
     readonly notify: (message: string, level: "info" | "warning") => void;
     readonly onTerminalInput: (handler: (input: unknown) => void) => () => void;
@@ -63,6 +76,8 @@ export type CommandContext = {
   readonly ui: {
     readonly notify: (message: string, level: "info" | "warning" | "error") => void;
   };
+  /** A command's session, as the host hands it to a command handler. */
+  readonly sessionManager?: SessionContext["sessionManager"];
 };
 
 export type TestPi = {

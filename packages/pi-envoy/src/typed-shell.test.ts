@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   statSync,
+  watch,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -351,9 +354,13 @@ describe("running a person's command", () => {
 
   // The limit is this module's own timer, in this process. The first run reads what the command
   // printed before the limit stopped it and the module's own record of the stop, which only the
-  // limit's kill writes. The second holds the timer on Bun's fake clock, so the moment it stops a
-  // command is read off the clock the row moves rather than timed: it is still armed a millisecond
-  // before the limit and has run at it.
+  // limit's kill writes. The second holds every timer of the run on Bun's fake clock, so when it
+  // stops a command and when it answers are read off the clock the row moves rather than timed
+  // (R4): the limit is still armed a millisecond before it and has run at it, and the answer then
+  // comes with the clock still held at the limit, so nothing after the kill - the drain's grace,
+  // or any wait a later change adds - waits a timer before the command answers. The drain's grace
+  // is armed there and cleared by the pipes' close, so no timer is left. A run that did wait one
+  // would never answer on the held clock, and the row would end at its guard.
   test("stops a command past its limit and keeps what it printed", async () => {
     const directory = scratch();
     try {
@@ -365,16 +372,16 @@ describe("running a person's command", () => {
       expect(result.status).toBe("The command was stopped after 1000 ms.");
 
       jest.useFakeTimers();
-      const run = runShellCommand("sleep 600", { cwd: directory, limitMs: 1_000 });
       try {
+        const run = runShellCommand("sleep 600", { cwd: directory, limitMs: 1_000 });
         jest.advanceTimersByTime(999);
         expect(jest.getTimerCount()).toBe(1);
         jest.advanceTimersByTime(1);
+        expect((await run).status).toBe("The command was stopped after 1000 ms.");
         expect(jest.getTimerCount()).toBe(0);
       } finally {
         jest.useRealTimers();
       }
-      expect((await run).status).toBe("The command was stopped after 1000 ms.");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -405,15 +412,35 @@ describe("running a person's command", () => {
   // which the default limit (120 s) scales to about 28 GiB. The row reads the module's own count of
   // what it held of the output (`keptBytes`), which only grows, so it is the most it held at once;
   // the bound is sixteen times the character cut, far above anything a module that bounds what it
-  // holds would reach.
+  // holds would reach. And it runs with a `TMPDIR` of its own, watched for every entry made in it
+  // while the command runs: that earlier shape made an `envoy-shell-*` directory there and removed
+  // it as the command ended, so the watch, not a read of the directory afterwards, sees it. A
+  // marker written after the run is the last entry the watch can report, so once it reports the
+  // marker it has reported everything made before it.
   test("bounds what an endless command writes to disk, not only what it reads back", async () => {
     const directory = scratch();
     const bound = 16 * SHELL_OUTPUT_MAX;
+    const temporary = join(directory, "tmp");
+    mkdirSync(temporary);
+    const made = new Set<string>();
+    const watcher = watch(temporary, (_event, name) => {
+      if (name !== null) made.add(name);
+    });
+    const ownTemporary = process.env.TMPDIR;
+    process.env.TMPDIR = temporary;
     try {
       const result = await runShellCommand("yes legion", { cwd: directory, limitMs: 400 });
       expect(result.cut).toBe(true);
       expect(result.keptBytes).toBeLessThanOrEqual(bound);
+      writeFileSync(join(temporary, "marker"), "");
+      await until("the watch of the command's TMPDIR to report the marker", () =>
+        made.has("marker")
+      );
+      expect([...made].filter((name) => name.startsWith("envoy-shell-"))).toEqual([]);
     } finally {
+      if (ownTemporary === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = ownTemporary;
+      watcher.close();
       rmSync(directory, { recursive: true, force: true });
     }
   });

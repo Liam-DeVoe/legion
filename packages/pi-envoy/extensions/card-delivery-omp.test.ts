@@ -19,7 +19,14 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { settled, until as waitUntil } from "@legion/test-fixtures/wait";
-import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
+import {
+  connect,
+  createInbox,
+  headers,
+  type MsgHdrs,
+  type NatsConnection,
+  StringCodec,
+} from "nats";
 import { z } from "zod";
 import { readCardLines } from "../test/card-entries";
 
@@ -370,7 +377,7 @@ async function startSession(
   const relayFrame = async (what: string, envelope: string): Promise<void> => {
     streamSeq += 1;
     try {
-      await sendRelayFrame({
+      await sendRelayFrame<MsgHdrs>({
         connection,
         newHeaders: headers,
         sessionID: sid,

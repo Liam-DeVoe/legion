@@ -184,7 +184,7 @@ import { name as packageName, version as packageVersion } from "../package.json"
   type: "json",
 };
 import { CardAges } from "../src/card-age";
-import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
+import { CardWake, cardWakeRecord, type EnvoyCardMarker } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
@@ -1272,6 +1272,9 @@ export default function envoyExtension(pi: PiApi): void {
     sendMessage: (message, options) => pi.sendMessage(message, options),
     startupTurn: () => publishedInterface?.startupTurn,
     isOwnSession: (session) => sessionOpen(session),
+    // The tests' record of the startup phase, written only where ENVOY_CARD_WAKE_RECORD_FILE
+    // names a file.
+    record: cardWakeRecord(process.env),
   });
 
   // When each card reached each session this process serves, which every model request shows

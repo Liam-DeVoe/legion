@@ -48,32 +48,25 @@ expect.extend(reportableJestDomMatchers());
 // flag of `package.json`'s test scripts rather than a line of this file, and both are explained
 // here, since this file is what every `web/src` test loads.
 //
-// The per-test deadline is `--timeout 60000`, carried by both command lines that run tests: the
-// `test:web` script for `web/src`, and the `bun test --parallel e2e/__tests__` run beside it.
-// Bun's own default is 5000 ms, which the lane test of `e2e/__tests__/harness-lanes.test.ts`
-// ("the Playwright config refuses a --workers that is not the lane count") fails on a 2-core
-// pod, where it reads 4.45 s idle and 6.55 s loaded; the suite's slowest test,
-// `row-configurations.test.ts`'s "no row runs twice in one configuration", reads 13.83 s loaded.
-// The number is twice the slowest loaded test, and it is sized on the slower of the two pod
-// shapes this suite runs in rather than on the one that measured 13.83 s: at code that does not
-// differ, dispatch://INFRA-983's pod reads 335 s for the whole suite where this one reads 156 s,
-// a factor of 2.15, which puts that same test at about 29.7 s there - inside a 30 s deadline by
-// 0.3 s, which is the failure this issue exists to remove rather than a margin. Twice 29.7 s is
-// 59.4 s, so 60 s, and it is kept as small as that rule allows, because every hung test costs
-// the whole budget on CI as well as in a pod. The flag carries it rather than a
-// `jest.setTimeout` here, for two measured reasons: a preload's deadline is not dependable,
-// since a 6 s probe in a directory run started by hand ended "this test timed out after 5000ms"
-// three times of three with two scratch files beside it and passed with one, and what file of a
-// run kept it and what file lost it did not reproduce the same way twice; and the
-// `e2e/__tests__` lane loads no preload at all, so there the flag is the only deadline those
-// files get. It cuts no deadline a row sets for itself, measured rather than assumed: a row
-// carrying `}, 5_000)` slept 1.2 s and passed under `bun test --timeout 200`, so a row's own
+// The per-test deadline is the `--timeout` of the command line that runs the file, each read
+// under load and written in `package.json`'s `"//"` note: 15000 on the `test:web` script that
+// runs `web/src`, and 60000 on the `bun test --parallel e2e/__tests__` run beside it. Bun's own
+// default is 5000 ms, which the lane test of `e2e/__tests__/harness-lanes.test.ts` ("the
+// Playwright config refuses a --workers that is not the lane count") fails on a 2-core pod,
+// where it reads 4.45 s idle and 6.55 s loaded. The flag carries it rather than a
+// `jest.setTimeout` here, because a preload's deadline is not dependable: a 6 s probe in a
+// directory run started by hand ended "this test timed out after 5000ms" three times of three
+// with two scratch files beside it and passed with one, and what file of a run kept it and what
+// file lost it did not reproduce the same way twice. Both command lines also preload
+// `@legion/test-fixtures/row-deadline`, which keeps the deadline each row's waits end by. The
+// flag cuts no deadline a row sets for itself, measured rather than assumed: a row carrying
+// `}, 5_000)` slept 1.2 s and passed under `bun test --timeout 200`, so a row's own
 // number wins over the flag whichever is larger. That is why no row or hook under `web/src` sets
 // one, nor calls `setDefaultTimeout`: the wait budget below is read from the flag alone, so a
-// row that ran past it on a number of its own would outlive the deadline its waits end by. The
-// `e2e/__tests__` rows that set one today (`compare-recordings-refusal.test.ts`,
-// `stub-web-server.test.ts`, `psql-session.test.ts`) set 60 s, equal to the flag. What lowering
-// the flag would cut is every row of the command.
+// row that ran past it on a number of its own would outlive the deadline its waits end by. An
+// `e2e/__tests__` row that sets one does so through `bounded-subprocess.ts`'s `rowLimit`, whose
+// rule `row-limits.test.ts` holds. What lowering a flag would cut is every row of its command
+// that sets none.
 //
 // The wait budget is set as each wait starts, from the row's own deadline. Every `waitFor` and
 // `findBy*` runs inside Testing Library's `asyncWrapper` and reads `asyncUtilTimeout` as the wait

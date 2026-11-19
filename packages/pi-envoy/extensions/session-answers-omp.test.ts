@@ -4,8 +4,9 @@ import * as path from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
 import {
+  ANSWERS_WAIT_RECORD_FILE,
   isSessionAnswersText,
-  renderSessionAnswers,
+  renderSessionAnswers as renderAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers";
@@ -85,6 +86,13 @@ const DELIVERER = `export default function deliverer(pi) {
   }
 }
 `;
+
+/** One wait the session gave a request's answers read, as its own record names it: the delay it
+ *  armed and which side ended the wait. */
+interface AnswersWait {
+  readonly armedMs: number;
+  readonly endedBy: "deadline" | "aborted" | "answered";
+}
 
 /** A request the stand-in served, with its place in the order the requests arrived in (`index`),
  *  and, for an answers request, how many requests had arrived when the stand-in answered it
@@ -211,6 +219,15 @@ function cachedOf(text: string): { readonly readAt: string; readonly reason: str
 
 const MINUTE = 60_000;
 
+/** The list text a request must carry, as the extension renders it: every case renders a list
+ *  with answers in its window, so the rendering is text, and a case that rendered none fails here
+ *  rather than comparing against nothing. */
+function renderSessionAnswers(...args: Parameters<typeof renderAnswers>): string {
+  const rendered = renderAnswers(...args);
+  if (rendered === undefined) throw new Error("the expected list renders nothing");
+  return rendered;
+}
+
 /** A person's answer to the session's ask, written `minutesAgo` minutes ago. */
 function answer(id: string, text: string, minutesAgo: number): SessionAnswer {
   return {
@@ -296,12 +313,16 @@ async function runSession(
   readonly answers: Seen[];
   readonly sentAfter: number[];
   readonly summary: string;
+  /** Each wait a request's answers read was given, from the session's own record
+   *  (`ANSWERS_WAIT_RECORD_FILE`, packages/envoy-client/src/session-answers.ts), in order. */
+  readonly waits: readonly AnswersWait[];
 }> {
   const { home, workspace, sessions, root } = await ompRoot(
     binary,
     "session-answers-omp-",
     cleanup
   );
+  const waitRecord = path.join(root, "answers-waits.jsonl");
   const summary = "SUMMARY-OF-THE-EARLIER-TURNS";
   let route: Route = { kind: "list", items: [] };
   const setRoute = (next: Route) => {
@@ -435,7 +456,12 @@ async function runSession(
       home,
       workspace,
       sessions,
-      env: { ENVOY_URL: base, DISPATCH_URL: base, DISPATCH_TOKEN: "session-answers-token" },
+      env: {
+        ENVOY_URL: base,
+        DISPATCH_URL: base,
+        DISPATCH_TOKEN: "session-answers-token",
+        [ANSWERS_WAIT_RECORD_FILE]: waitRecord,
+      },
       onFrame: (frame) => {
         if (settle?.(frame)) {
           settle = undefined;
@@ -504,6 +530,7 @@ async function runSession(
   }
   await rpc.end();
 
+  const recorded = await readFile(waitRecord, "utf8").catch(() => "");
   return {
     home,
     seen,
@@ -513,6 +540,10 @@ async function runSession(
     answers: seen.filter((request) => request.path.endsWith("/answers")),
     sentAfter,
     summary,
+    waits: recorded
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as AnswersWait),
   };
 }
 
@@ -725,14 +756,20 @@ test.skipIf(skipped)(
     const deadline = `Dispatch did not answer within ${SESSION_ANSWERS_DEADLINE_MS} ms`;
     /** The request went out while the answers read it waited on was still held, which the route
      *  lets go of only once the case ends, and the session's record of that read (`record`) names
-     *  the deadline the session waited, under a second. */
+     *  the deadline the session waited, under a second. The wait itself is the session's own
+     *  record of each wait it armed (R4: the bound the session chose and what ended it, read
+     *  across the process boundary, not a clock): each was armed for under a second, and a
+     *  hanging route ended one at its deadline. A wait armed longer than the line it writes, or a
+     *  second wait of its own, shows there whatever the line says. */
     const heldNoLonger = (
-      session: { readonly seen: Seen[] },
+      session: { readonly seen: Seen[]; readonly waits: readonly AnswersWait[] },
       request: Seen,
       record: string
     ): void => {
       expect(answersBefore(session.seen, request).answeredAfter).toBeUndefined();
       expect(deadlineNamed(record)).toBeLessThan(1_000);
+      expect(session.waits.some((wait) => wait.endedBy === "deadline")).toBe(true);
+      for (const wait of session.waits) expect(wait.armedMs).toBeLessThan(1_000);
     };
 
     // Turn 1, with no list ever read: the failure line.
@@ -968,6 +1005,10 @@ test.skipIf(skipped)(
     expect(rest).toEqual([]);
     expect(listOf(first as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
     expect(listOf(second as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    // And waited on nothing by the session's own record (R4): one wait for each main turn's read,
+    // each ended by its answer, and none for the side turn, so no side turn awaited a timer of
+    // the read's.
+    expect(session.waits.map((wait) => wait.endedBy)).toEqual(["answered", "answered"]);
   }
 );
 
@@ -1163,5 +1204,9 @@ test.skipIf(skipped)(
     expect(read.answeredAfter).toBeDefined();
     expect(first.index).toBeGreaterThanOrEqual(read.answeredAfter as number);
     expect(carriesList(first)).toBe(false);
+    // By the session's own record (R4): every wait of both copies ended on the one read's answer,
+    // so neither copy waited a deadline of its own.
+    expect(session.waits.length).toBeGreaterThan(0);
+    expect(session.waits.filter((wait) => wait.endedBy !== "answered")).toEqual([]);
   }
 );

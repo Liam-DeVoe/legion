@@ -69,7 +69,7 @@ import {
 import { createClaimSession } from "../src/claim-session";
 import { classifySession, type LegionSessionKind, requiredEnvironment } from "../src/classify";
 import { createControllerSession } from "../src/controller-session";
-import { createModelFallback } from "../src/model-fallback";
+import { createModelFallback, fallbackCheckRecord } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
 import { createStallAborter } from "../src/stall-abort";
@@ -288,6 +288,9 @@ export default function legionExtension(pi: PiApi): void {
     limits: fallbackCooldownLimits(process.env, logger),
     nextModel: nextFallbackModel,
     log: logger,
+    // The tests' record of each request's check, written only where
+    // LEGION_FALLBACK_CHECK_RECORD_FILE names a file.
+    recordRestoreCheck: fallbackCheckRecord(process.env),
   });
 
   // The fallback state of whatever session the pane is on: the record this plugin saved

@@ -16,7 +16,15 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { settled, span, until as waitUntil } from "@legion/test-fixtures/wait";
-import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCodec } from "nats";
+import {
+  connect,
+  ErrorCode,
+  headers,
+  type MsgHdrs,
+  type NatsConnection,
+  NatsError,
+  StringCodec,
+} from "nats";
 import { z } from "zod";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 
@@ -389,7 +397,7 @@ async function startSession(
       // frame goes again, as the one frame it is; the word it answers is what says it took it.
       streamSeq += 1;
       try {
-        await sendRelayFrame({
+        await sendRelayFrame<MsgHdrs>({
           connection,
           newHeaders: headers,
           sessionID: sid,
@@ -750,6 +758,11 @@ test.skipIf(skip)(
     if (message === undefined) throw new Error("no message frame came before the context frame");
     // Nothing the session published came between the message's own frame and the figures.
     expect(frame.seq).toBe(message.seq + 1);
+    // And it went out at once, not on the trailing timer: a frame published as it is read carries
+    // the moment it was read as its own, where one the timer held carries the end of the interval
+    // instead (`refreshAgentStreamContext`, extensions/envoy.ts). envoy.test.ts holds that timer
+    // on a fake clock.
+    expect(frame.at).toBe(frame.readAt);
   }
 );
 

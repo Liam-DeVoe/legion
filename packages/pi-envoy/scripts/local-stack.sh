@@ -13,67 +13,27 @@
 # codes stay its own.
 #
 # A smoke a workflow runs (smoke-role-takeover.sh, ci.yaml's envoy-session-stall job) sets its
-# guard once, at its head, with proof_guard and the reading beside it, and waits through wait_for
-# alone. poll_until is the bounded wait of smoke-registration-stall.sh, which a person runs and
-# which sets no guard; no smoke that sets one calls it.
+# guard once, at its head, with proof_guard and the reading beside it, and waits through
+# wait_held alone: scripts/e2e/lib/proof-wait.sh, sourced below, the stage proofs' own guard and
+# wait, whose returning form lets a smoke drive every row past one that did not hold. poll_until
+# is the bounded wait of smoke-registration-stall.sh, which a person runs and which sets no guard;
+# no smoke that sets one calls it.
 #
 # The caller defines
 #   refuse MESSAGE    prints MESSAGE prefixed with the script's name and exits 2; port_range
 #                     reports a kernel with no usable range below its ephemeral one through it
+#   note MESSAGE      prints a line of the run's progress, which a long wait says it is still
+#                     waiting through
+#   fail MESSAGE      what proof-wait.sh refuses a misused guard or wait through: `refuse` in a
+#                     smoke that sets a guard
 # and sets
 #   local_stack_fail  the function pick_port reports an exhausted range through: `refuse` in both
 #                     callers, each of which prints with the script's name and exits 2
-#   work              the run's scratch directory, where wait_for keeps its last poll's output
+#   work              the run's scratch directory, where each wait keeps its last poll's output
 # and reads, after port_range, ephemeral_low and port_floor.
 
-# proof_margin_seconds is how long before the guard's deadline every wait gives up, so the wait's
-# own failure and the teardown after it print before anything stops the run.
-proof_margin_seconds=30
-proof_guard_seconds=''
-# wait_gave_up is the line the last wait_for that gave up printed, empty after one that held, so
-# a caller that hides a wait's output (expect_true) can still say why it failed.
-wait_gave_up=''
-
-# proof_now_ms: the wall clock in epoch milliseconds, the unit LEGION_PROOF_DEADLINE_MS carries.
-proof_now_ms() {
-  local now=${EPOCHREALTIME/[.,]/}
-  printf '%s\n' "$((10#$now / 1000))"
-}
-
-# proof_guard SECONDS gives the smoke SECONDS from here, and exports LEGION_PROOF_DEADLINE_MS, the
-# moment in epoch milliseconds every wait of the run gives up by: the deadline less
-# proof_margin_seconds, which the run's Bun drivers read too (@legion/test-fixtures/wait). It arms
-# nothing: the CI job's timeout-minutes stops a run that hangs outside a wait.
-proof_guard() {
-  [[ -n "${EPOCHREALTIME:-}" ]] || "$local_stack_fail" "bash 5 or later is required (EPOCHREALTIME)"
-  proof_guard_seconds=$1
-  export LEGION_PROOF_DEADLINE_MS=$(($(proof_now_ms) + ($1 - proof_margin_seconds) * 1000))
-}
-
-# wait_for WHAT COMMAND...: runs COMMAND in this shell every 0.2 s until it succeeds, and returns 0;
-# at LEGION_PROOF_DEADLINE_MS it gives up and returns 1, with a line that names WHAT and the last
-# output of COMMAND printed on stderr and kept in wait_gave_up, so every caller decides how its
-# own run ends. A wait that starts past that moment runs COMMAND once. COMMAND runs in this shell,
-# so it can drive a client (send) and set variables, and its output goes to ${work}/wait-for.out.
-# It takes no bound and no pace: a step that is only slow never fails the run. A poll that never
-# returns would hold the wait past its deadline, so every remote call a COMMAND makes carries its
-# own timeout.
-wait_for() {
-  local what=$1 polls=0 output="${work}/wait-for.out"
-  shift
-  wait_gave_up=''
-  [[ -n "${LEGION_PROOF_DEADLINE_MS:-}" ]] ||
-    "$local_stack_fail" "wait_for: the run set no guard (proof_guard), so the wait for ${what} has no deadline"
-  while :; do
-    polls=$((polls + 1))
-    if "$@" >"$output" 2>&1; then return 0; fi
-    (($(proof_now_ms) < LEGION_PROOF_DEADLINE_MS)) || break
-    sleep 0.2
-  done
-  wait_gave_up="gave up waiting for ${what} after ${polls} polls, ${proof_margin_seconds}s before the run's guard of ${proof_guard_seconds}s; its last output: $(tail -n 3 "$output" | tr '\n' ' ')"
-  printf '%s\n' "$wait_gave_up" >&2
-  return 1
-}
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts/e2e/lib/proof-wait.sh"
 
 # port_range: the kernel's ephemeral range (ephemeral_low), which every outbound connection
 # autobinds from, and the floor a service binds above (port_floor).
@@ -154,4 +114,22 @@ natsd_serving() {
 # listener_healthy URL: the listener at URL answers /healthz healthy.
 listener_healthy() {
   curl -fsS --max-time 2 "${1}/healthz" | jq -e '.status == "healthy"' >/dev/null 2>&1
+}
+
+# exited PID WHAT: whether the process PID has exited, setting wait_impossible to say that WHAT
+# exited where it has: the failing fact of a wait whose fact only that process brings about.
+exited() {
+  kill -0 "$1" 2>/dev/null && return 1
+  wait_impossible="${2} exited"
+}
+
+# running PID WHAT COMMAND...: COMMAND, for a wait on what the process PID does; where COMMAND
+# does not hold and PID has exited, the wait ends at once naming WHAT (exited), rather than at
+# the guard's deadline.
+running() {
+  local pid=$1 what=$2
+  shift 2
+  "$@" && return 0
+  exited "$pid" "$what" || true
+  return 1
 }

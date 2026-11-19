@@ -8,33 +8,29 @@ import {
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
 import { startStallProxy } from "../../test/stall-proxy";
-import { RECOVERY_BOUND_MS } from "../../test/stall-scenario";
+import {
+  expectRecoveredByPingOut,
+  type NatsStatusEvent,
+  RECOVERY_BOUND_MS,
+  recoveryBoundMs,
+} from "../../test/stall-scenario";
 import { natsConnectionOptions } from "../nats-connection";
 
 const codec = StringCodec();
 
-/** How long nats.js 2.29.3 gives a dial before it abandons it, where the options set no `timeout`
- *  (`this.options.timeout || 20000`, lib/nats-base-client/protocol.js). */
-const NATS_JS_DIAL_TIMEOUT_MS = 20_000;
-/** nats.js 2.29.3's `reconnectJitter`, where the options set none (lib/nats-base-client/options.js). */
-const NATS_JS_RECONNECT_JITTER_MS = 100;
-
-// The minute the spec allows is the sum of the timers that pace a recovery, so it is held here on
-// those settings rather than read off a clock: nats.js drops a frozen path on the ping tick that
-// finds `maxPingOut` pings unanswered, and a redial that hangs too costs its dial timeout and the
-// reconnect wait before the next. The rows below show the recovery itself, in order.
+// The minute the spec allows is the sum of the timers that pace a recovery, so it is held on
+// those settings rather than read off a clock (R4): nats.js drops a frozen path on the ping tick
+// that finds `maxPingOut` pings unanswered, and a redial that hangs too costs its dial timeout
+// and the reconnect wait before the next. The rows below show, from the connection's own status
+// events, that a recovery takes exactly the steps this sum prices.
 test("natsConnectionOptions leaves a frozen path and dials past a hung redial within the spec's minute, by its settings", () => {
   const options = natsConnectionOptions({
     servers: ["nats://127.0.0.1:4222"],
     name: "nats-stall-settings",
     seed: undefined,
   });
-  const left = (options.pingInterval ?? Number.NaN) * ((options.maxPingOut ?? Number.NaN) + 1);
-  const redialed =
-    left +
-    (options.timeout ?? NATS_JS_DIAL_TIMEOUT_MS) +
-    (options.reconnectTimeWait ?? Number.NaN) +
-    (options.reconnectJitter ?? NATS_JS_RECONNECT_JITTER_MS);
+  const left = recoveryBoundMs(options, 0);
+  const redialed = recoveryBoundMs(options, 1);
   expect(
     redialed,
     `a frozen path is left after ${left} ms and a hung redial passed after ${redialed} ms`
@@ -57,19 +53,19 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
 
   for (const { row, slug, stalledRedials, unackedBytes } of [
     {
-      row: "A: with natsConnectionOptions it reconnects and receives again after the freeze",
+      row: "A: with natsConnectionOptions it reconnects and receives again within 60 s of the freeze",
       slug: "a",
       stalledRedials: 0,
       unackedBytes: 0,
     },
     {
-      row: "B: with natsConnectionOptions it reconnects and receives again after the freeze when its first redial also hangs, and closes the hung redial's socket once it gives up on it",
+      row: "B: with natsConnectionOptions it reconnects and receives again within 60 s of the freeze when its first redial also hangs, and closes the hung redial's socket once it gives up on it",
       slug: "b",
       stalledRedials: 1,
       unackedBytes: 0,
     },
     {
-      row: "C: with natsConnectionOptions it reconnects and receives again after the freeze when it wrote data the frozen path never acknowledged",
+      row: "C: with natsConnectionOptions it reconnects and receives again within 60 s of the freeze when it wrote data the frozen path never acknowledged",
       slug: "c",
       stalledRedials: 0,
       // Without patches/nats@2.29.3.patch's protocol.js hunk this row must fail: on Bun 1.4.4 a
@@ -82,9 +78,12 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
       if (stack === undefined) throw new Error("the Envoy stack did not start");
       const proxy = await startStallProxy(stack.natsHostPort);
       const publisher = await connect({ servers: [stack.natsUrl], name: `nats-stall-pub-${slug}` });
-      const client = await connect(
-        natsConnectionOptions({ servers: [proxy.url], name: `nats-stall-${slug}`, seed: undefined })
-      );
+      const options = natsConnectionOptions({
+        servers: [proxy.url],
+        name: `nats-stall-${slug}`,
+        seed: undefined,
+      });
+      const client = await connect(options);
       try {
         const subject = `nats-stall.${slug}.${crypto.randomUUID()}`;
         const before = Promise.withResolvers<void>();
@@ -102,9 +101,13 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         await publisher.flush();
         await before.promise;
 
+        // Every status event nats.js reports from here on, in order, and when the reconnect came,
+        // for the log line only.
+        const statuses: NatsStatusEvent[] = [];
         let reconnectedAt: number | undefined;
         void (async () => {
           for await (const status of client.status()) {
+            statuses.push({ type: status.type, data: status.data });
             if (status.type === Events.Reconnect) reconnectedAt ??= Date.now();
           }
         })();
@@ -139,7 +142,12 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         console.log(
           `nats-stall row ${slug.toUpperCase()}: reconnect ${reconnectMs === undefined ? "none" : `${(reconnectMs / 1000).toFixed(1)} s`}, first publish received ${receiveMs === undefined ? "never" : `${(receiveMs / 1000).toFixed(1)} s`} after the freeze`
         );
-        expect(reconnectedAt).toBeDefined();
+        // The reconnect's status event can follow the first publish that arrived on its path.
+        await until("the client to report its reconnect", () => reconnectedAt !== undefined);
+        // Within the minute, by the steps it took: the settings row prices a recovery of these
+        // steps under it, and the connection's own events show it took them and no others.
+        expect(recoveryBoundMs(options, stalledRedials)).toBeLessThan(RECOVERY_BOUND_MS);
+        expectRecoveredByPingOut({ options, statuses }, stalledRedials);
         const redials = proxy.connections.slice(beforeFreeze);
         // The stalled redials never subscribed; the one after them did.
         expect(redials.length).toBeGreaterThan(stalledRedials);

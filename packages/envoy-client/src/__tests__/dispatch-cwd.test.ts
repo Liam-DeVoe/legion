@@ -357,7 +357,17 @@ describe("defaultExec", () => {
     );
     controller.abort();
     // The call rejects as soon as it is aborted, before the child is gone; `died` is the proof.
-    await expect(settled("the aborted call's rejection", call)).rejects.toThrow();
+    // The rejection is caught inside the wait and read as a value, so the wait's own give-up
+    // error cannot stand for it: it is the abort's.
+    const rejection = await settled(
+      "the aborted call's rejection",
+      call.then(
+        () => undefined,
+        (error: unknown) => error
+      )
+    );
+    expect(rejection).toBeInstanceOf(Error);
+    expect(rejection).toMatchObject({ name: "AbortError", code: "ABORT_ERR" });
     expect(await settled("the child's death, which closes alive", died)).toBe("");
   });
 });

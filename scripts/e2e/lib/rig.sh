@@ -62,90 +62,13 @@ real_bin_path() {
   printf '%s\n' "$dest"
 }
 
-# A proof a workflow runs (.github/e2e-scripts.json's hosted list, and ci.yaml's Stage 1 step)
-# sets its guard once, at its head, with the reading of it beside the number, and waits through
-# wait_for alone, never through a helper that takes a bound of its own. until_true and await_start
-# are the bounded waits of the proofs only a person runs, which set no guard; no proof that sets
-# one calls them.
-#
-# proof_margin_seconds is how long before the guard's deadline every wait of the proof gives up,
-# so the wait's own failure, and the cleanup after it, print before anything stops the run: the
-# margin the Go tests' testwait keeps before the test binary's deadline, so a Go driver that takes
-# the time left as its -test.timeout (proof_seconds_left) gives up at the same moment.
-proof_margin_seconds=30
-proof_guard_seconds=''
-proof_deadline_ms=''
-# wait_impossible is what a wait_for COMMAND sets when it finds that the fact can no longer
-# happen, such as the process that would answer having exited (serving, below).
-wait_impossible=''
-
-# proof_now_ms prints the wall clock in epoch milliseconds, the unit LEGION_PROOF_DEADLINE_MS
-# carries.
-proof_now_ms() {
-  local now=${EPOCHREALTIME/[.,]/}
-  printf '%s\n' "$((10#$now / 1000))"
-}
-
-# proof_guard SECONDS sets this proof's one guard: the run may take SECONDS from here. It records
-# the deadline and exports LEGION_PROOF_DEADLINE_MS, the moment in epoch milliseconds that every
-# wait of the proof gives up by, proof_margin_seconds before the deadline; the proof's Bun drivers
-# read it (@legion/test-fixtures/wait). It arms nothing: what stops a run that hangs outside a
-# wait is the limit of the CI job that runs the proof, which is at least the guard plus the job's
-# setup. SECONDS is at least twice the longest green run on record, and the call carries that
-# reading in a comment beside it.
-proof_guard() {
-  local seconds=${1:-}
-  [ -n "${EPOCHREALTIME:-}" ] || fail "proof_guard: bash 5 or later is required (EPOCHREALTIME)"
-  if ! [[ "$seconds" =~ ^[1-9][0-9]*$ ]] || ((seconds <= proof_margin_seconds)); then
-    fail "proof_guard: '$seconds' is not a whole number of seconds above the ${proof_margin_seconds}s margin"
-  fi
-  [ -z "$proof_deadline_ms" ] || fail "proof_guard: this proof set its guard already"
-  proof_guard_seconds=$seconds
-  proof_deadline_ms=$(($(proof_now_ms) + seconds * 1000))
-  export LEGION_PROOF_DEADLINE_MS=$((proof_deadline_ms - proof_margin_seconds * 1000))
-}
-
-# proof_seconds_left prints the whole seconds left before the guard's deadline, and at least 1: a
-# Go driver's -test.timeout, under which testwait gives up proof_margin_seconds before it, where
-# wait_for does.
-proof_seconds_left() {
-  local left=$(((proof_deadline_ms - $(proof_now_ms)) / 1000))
-  printf '%s\n' "$((left > 0 ? left : 1))"
-}
-
-# wait_for WHAT COMMAND... is the one wait of a proof that set its guard. It runs COMMAND in this
-# shell every half second until it succeeds, and gives up proof_margin_seconds before the guard's
-# deadline, failing the run with a line that names WHAT and the last output of COMMAND; a wait
-# that starts past that moment runs COMMAND once and then fails, so the cleanup keeps the margin
-# to run in. COMMAND's output goes to $work/wait-for.out, so a COMMAND prints what it read for the
-# failure line to show. It takes no bound and no pace: a step that is only slow never fails the
-# run, and a fact that never comes fails it by name. It says how long it has waited every 60 s.
-#
-# COMMAND runs in this shell, so it can set variables. One that finds the fact can no longer
-# happen sets wait_impossible to why, and the wait fails at once saying so rather than at the
-# deadline: serving below is that COMMAND for a service the run started.
-wait_for() {
-  local what=$1 output=$work/wait-for.out polls=0 started=$SECONDS beat=$SECONDS
-  shift
-  [ -n "$proof_deadline_ms" ] || fail "wait_for: this proof set no guard (proof_guard), so the wait for $what has no deadline to end by"
-  if [ -z "$work" ] || [ ! -d "$work" ]; then
-    fail "wait_for: the run has no work directory to keep the output of its wait for $what in"
-  fi
-  while :; do
-    polls=$((polls + 1))
-    wait_impossible=''
-    if "$@" >"$output" 2>&1; then return 0; fi
-    [ -z "$wait_impossible" ] || fail "$what: $wait_impossible"
-    (($(proof_now_ms) < LEGION_PROOF_DEADLINE_MS)) || break
-    if ((SECONDS - beat >= 60)); then
-      beat=$SECONDS
-      note "still waiting for $what: poll $polls, $((SECONDS - started))s"
-    fi
-    sleep 0.5
-  done
-  if [ -n "${timeout_hook:-}" ]; then "$timeout_hook" || true; fi
-  fail "gave up waiting for $what after $polls polls, ${proof_margin_seconds}s before this proof's guard of ${proof_guard_seconds}s; its last output: $(tail -n 5 "$output" 2>/dev/null || true)"
-}
+# lib/proof-wait.sh holds the proof's one guard and its one wait (proof_guard, proof_seconds_left,
+# wait_for and its returning form wait_held), which the pi-envoy smokes share through
+# packages/pi-envoy/scripts/local-stack.sh. It reads the caller's work, timeout_hook, note and
+# fail, which this rig's caller sets and defines. until_true and await_start below are the bounded
+# waits of the proofs only a person runs, which set no guard; no proof that sets one calls them.
+# shellcheck source-path=SCRIPTDIR source=proof-wait.sh
+. "$root/scripts/e2e/lib/proof-wait.sh"
 
 # serving NAME PID COMMAND... runs COMMAND for a wait_for on the service NAME, started as PID
 # (start_process): once PID has exited it sets wait_impossible, naming the service's log, so the

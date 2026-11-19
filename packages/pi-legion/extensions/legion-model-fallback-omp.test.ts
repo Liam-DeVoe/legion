@@ -1,4 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import {
   type FallbackCooldownState,
   LEGION_FALLBACK_ENTRY,
@@ -16,6 +19,7 @@ import {
   runLegionPane,
   type StandinProvider,
 } from "@legion/pi-shared/test/omp-harness";
+import { FALLBACK_CHECK_RECORD_FILE, type RestoreCheck } from "../src/model-fallback";
 
 // The model fallback on the real Oh My Pi (src/model-fallback.ts, on the cooldown machine and the
 // chain resolver of @legion/pi-shared): only the real binary shows which model each request went
@@ -163,6 +167,9 @@ interface FallbackPane extends LegionPane {
   readonly cooldowns: () => Promise<FallbackCooldownState[]>;
   /** The same, each with the moment the pane wrote it. */
   readonly records: () => Promise<CooldownRecord[]>;
+  /** Each request's check of a refusal's arming, by the pane's own record
+   *  (`LEGION_FALLBACK_CHECK_RECORD_FILE`, src/model-fallback.ts), over both lives, in order. */
+  readonly checks: () => Promise<RestoreCheck[]>;
 }
 
 /**
@@ -183,6 +190,9 @@ async function fallbackPane(options: {
 }): Promise<FallbackPane> {
   const { binary, nats } = setup();
   const served: Served[] = [];
+  const scratch = await mkdtemp(path.join(tmpdir(), "fallback-checks-"));
+  cleanup.push(() => rm(scratch, { recursive: true, force: true }));
+  const checkRecord = path.join(scratch, "checks.jsonl");
   const pane = await runLegionPane(
     binary,
     [],
@@ -199,6 +209,7 @@ async function fallbackPane(options: {
         LEGION_REFUSAL_COOLDOWN_MS: String(options.cooldownMs ?? COOLDOWN_MS),
         // Well above every wait a case asks for, so the doubling is what decides them.
         LEGION_REFUSAL_COOLDOWN_MAX_MS: "600000",
+        [FALLBACK_CHECK_RECORD_FILE]: checkRecord,
       },
       answer: (url, body) => {
         if (url.pathname !== "/anthropic/v1/messages") return undefined;
@@ -226,6 +237,11 @@ async function fallbackPane(options: {
     },
     cooldowns: async () => (await records()).map((record) => record.state),
     records,
+    checks: async () =>
+      (await readFile(checkRecord, "utf8").catch(() => ""))
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as RestoreCheck),
   };
 }
 
@@ -248,6 +264,19 @@ function returnAfter(
   const returned = records.slice(from + 1).find((record) => record.state.arming === undefined);
   if (returned === undefined) throw new Error("the pane recorded no return after its arming");
   return returned;
+}
+
+/** Holds a return to the first request at or after its arming's due time, by the pane's own
+ *  record of each request's check (R4: the bound the pane chose and what it did at it, read
+ *  across the process boundary, not a clock): every check before the due time read the arming
+ *  not due, and the one check at or after it read it due and put the session back, so no request
+ *  went to the weaker model once the wait was over. */
+function expectBackAtFirstDueCheck(checks: readonly RestoreCheck[], dueAt: number): void {
+  const ofArming = checks.filter((check) => check.dueAt === dueAt);
+  expect(ofArming.filter((check) => check.at < dueAt && check.due)).toEqual([]);
+  expect(ofArming.filter((check) => check.at >= dueAt)).toEqual([
+    { at: expect.any(Number), dueAt, due: true },
+  ]);
 }
 
 test.skipIf(skip)(
@@ -483,6 +512,8 @@ test.skipIf(skip)(
       secondArming?.state.arming?.dueAt ?? Number.POSITIVE_INFINITY
     );
     expect(pane.beforeReturn(secondRefusal).length).toBeGreaterThan(0);
+    // And no later than it says: the first request past the due time came back.
+    expectBackAtFirstDueCheck(await pane.checks(), secondArming?.state.arming?.dueAt ?? Number.NaN);
   }
 );
 
@@ -529,5 +560,8 @@ test.skipIf(skip)(
     // And the return did come on this life's own turns: a life that had restored nothing would
     // have stayed on the weaker model for good.
     expect(() => pane.beforeReturn(firstLife - 1)).not.toThrow();
+    // And no later than it says, over the two lives: the first request past the due time came
+    // back.
+    expectBackAtFirstDueCheck(await pane.checks(), dueAt);
   }
 );

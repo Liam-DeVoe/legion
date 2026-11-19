@@ -23,11 +23,13 @@ import {
 import type * as EnvoyConfigModule from "../envoy-config";
 import {
   askgateSetting,
+  type CommandSpawnRecord,
   type EnvoyConfig,
   type EnvoyHarness,
   envoyConfigPath,
   missingConfigNotice,
   readEnvoyConfig,
+  recordCommandSpawnsForTests,
   type SectionOff,
 } from "../envoy-config";
 import { type EnabledEnvoySettings, envoySettings as resolveEnvoy } from "../envoy-settings";
@@ -1216,6 +1218,20 @@ describe("a ! command in envoy.json", () => {
     return readdirSync(scratch);
   }
 
+  /** Runs `body` with each `!` command's spawn recorded (`recordCommandSpawnsForTests`) and
+   * returns the records: the timeout the read armed and what ended the command, the read's own
+   * record rather than a time taken around a call that blocks this thread (R4). */
+  function spawnsDuring(body: () => void): CommandSpawnRecord[] {
+    const spawns: CommandSpawnRecord[] = [];
+    recordCommandSpawnsForTests((spawn) => spawns.push(spawn));
+    try {
+      body();
+    } finally {
+      recordCommandSpawnsForTests(undefined);
+    }
+    return spawns;
+  }
+
   /** Waits until the process with this pid is gone: a killed orphan is a zombie until the process
    * it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
   async function gone(pid: number): Promise<void> {
@@ -1230,7 +1246,9 @@ describe("a ! command in envoy.json", () => {
   }
 
   // The process the command leaves running writes `finished` only if it runs to its end, so a
-  // file there says the read waited for it instead of killing it.
+  // file there says the read waited for it instead of killing it. "At once" is the spawn's own
+  // record: the shell's exit ended it, not the 10 s timeout it was armed with, so a read that
+  // waited the timeout out on what the command left running fails here, whatever it then answers.
   test("that exits 0 is its value at once, and a process it left running is killed", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
@@ -1244,9 +1262,15 @@ describe("a ! command in envoy.json", () => {
     });
     const cwd = tempDir();
     let dispatch: DispatchWithToken | undefined;
-    const left = inScratchTmp(() => {
-      dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+    let left: string[] = [];
+    const spawns = spawnsDuring(() => {
+      left = inScratchTmp(() => {
+        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      });
     });
+    expect(spawns).toEqual([
+      { timeoutMs: 10_000, detached: true, exitedDueToTimeout: false, success: true },
+    ]);
     expect(dispatch).toEqual({
       enabled: true,
       url: "https://dispatch.example",
@@ -1263,9 +1287,11 @@ describe("a ! command in envoy.json", () => {
   // in the row creates, so only the read's own 10 s timeout ends it, however long this process is
   // not run. Its wait ends unreleased only at the row's deadline (`timeLeft`, in turns of its 0.1 s
   // look at the file), so a read that lost its timeout fails the row there rather than hang the
-  // suite: the read blocks this process, so no timer of the row can end it sooner. The process it
-  // leaves running, `sleep 900`, outlives any run, so its absence is the group kill and not its own
-  // end.
+  // suite: the read blocks this process, so no timer of the row can end it sooner. That the
+  // timeout is the 10 s the error names is the spawn's own record of what it was armed with and
+  // what ended it (R4), so a timer armed longer than its message says fails here too. The process
+  // it leaves running, `sleep 900`, outlives any run, so its absence is the group kill and not its
+  // own end.
   test("still running after 10 s is an error naming the field and the file, and every process it started is killed", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
@@ -1281,9 +1307,15 @@ describe("a ! command in envoy.json", () => {
     });
     const cwd = tempDir();
     let dispatch: DispatchWithToken | undefined;
-    const left = inScratchTmp(() => {
-      dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+    let left: string[] = [];
+    const spawns = spawnsDuring(() => {
+      left = inScratchTmp(() => {
+        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      });
     });
+    expect(spawns).toEqual([
+      { timeoutMs: 10_000, detached: true, exitedDueToTimeout: true, success: false },
+    ]);
     // An answer of `canary` is a command that ended by itself: its timeout did not end it.
     expect(dispatch).toEqual({
       enabled: false,

@@ -1,5 +1,5 @@
 import { expect } from "bun:test";
-import { connect, type KV } from "nats";
+import { connect, DebugEvents, Events, type KV } from "nats";
 import { z } from "zod";
 import { deliverSubject } from "../src/consumer-delivery";
 import { STORED_WHILE_AWAY_SUFFIX } from "../src/delivery-ledger";
@@ -8,10 +8,92 @@ import type { StallProxy } from "./stall-proxy";
 
 /**
  * The spec's bound: a session finds a path that answers within a minute of the freeze. The
- * settings that pace the recovery are held to it in src/__tests__/nats-stall.test.ts; the
- * scenario below asserts what the recovery does, in the order it must happen.
+ * recovery runs on nats.js's own timers, so it is held to the minute without a clock (R4): the
+ * settings a connection was dialled with price the recovery's steps (`recoveryBoundMs`), and the
+ * connection's own status events show it took exactly those steps (`expectRecoveredByPingOut`).
+ * src/__tests__/nats-stall.test.ts holds `natsConnectionOptions` to it that way, and the scenario
+ * below holds each session plugin's own connection to it, then asserts what the recovery does, in
+ * the order it must happen.
  */
 export const RECOVERY_BOUND_MS = 60_000;
+
+/** How long nats.js 2.29.3 gives a dial before it abandons it, where the options set no `timeout`
+ *  (`this.options.timeout || 20000`, lib/nats-base-client/protocol.js). */
+export const NATS_JS_DIAL_TIMEOUT_MS = 20_000;
+/** nats.js 2.29.3's `reconnectJitter`, where the options set none (lib/nats-base-client/options.js). */
+export const NATS_JS_RECONNECT_JITTER_MS = 100;
+
+/** The settings of a NATS dial that pace its recovery from a frozen path (nats.js's
+ *  `ConnectionOptions` of these names). */
+export interface NatsPacing {
+  readonly pingInterval?: number | undefined;
+  readonly maxPingOut?: number | undefined;
+  readonly timeout?: number | undefined;
+  readonly reconnectTimeWait?: number | undefined;
+  readonly reconnectJitter?: number | undefined;
+}
+
+/** One status event nats.js reported on a connection, as its `status()` iterator gave it. */
+export interface NatsStatusEvent {
+  readonly type: string;
+  readonly data: unknown;
+}
+
+/** A NATS connection as a session dialled it: the settings it chose, and every status event
+ *  nats.js reported on the connection since, in order. */
+export interface NatsDial {
+  readonly options: NatsPacing;
+  readonly statuses: readonly NatsStatusEvent[];
+}
+
+/**
+ * The longest a recovery from a frozen path can take on `options`, by the timers that pace it:
+ * nats.js 2.29.3 sends a ping each `pingInterval` and leaves the path on the tick that finds
+ * `maxPingOut` pings unanswered (lib/nats-base-client/heartbeats.js), the `maxPingOut + 1`th
+ * since the last answered one, and redials at once; each of `hungRedials` redials that hangs as
+ * well costs its dial timeout, the reconnect wait and its jitter before the next dial.
+ */
+export function recoveryBoundMs(options: NatsPacing, hungRedials: number): number {
+  const left = (options.pingInterval ?? Number.NaN) * ((options.maxPingOut ?? Number.NaN) + 1);
+  const redial =
+    (options.timeout ?? NATS_JS_DIAL_TIMEOUT_MS) +
+    (options.reconnectTimeWait ?? Number.NaN) +
+    (options.reconnectJitter ?? NATS_JS_RECONNECT_JITTER_MS);
+  return left + hungRedials * redial;
+}
+
+/** The status events of a recovery: the stale close, and each dial up to the reconnect. */
+const RECOVERY_EVENTS = new Set<string>([
+  DebugEvents.StaleConnection,
+  Events.Disconnect,
+  DebugEvents.Reconnecting,
+  Events.Reconnect,
+]);
+
+/**
+ * Holds a connection's recovery to the steps `recoveryBoundMs` prices, read from the status
+ * events nats.js reported rather than from a clock: the connection went stale once, on the ping
+ * tick numbered `maxPingOut + 1`, then dialled `hungRedials + 1` times, the last of them the
+ * reconnect. A nats.js that leaves a frozen path on a later tick, or redials on rules of its
+ * own, fails here, whatever the time it took.
+ */
+export function expectRecoveredByPingOut(dial: NatsDial, hungRedials: number): void {
+  const { statuses, options } = dial;
+  const types = statuses.map((status) => status.type);
+  const stale = types.indexOf(DebugEvents.StaleConnection);
+  expect(stale, `the connection's status events: ${types.join(", ")}`).toBeGreaterThan(0);
+  expect(statuses[stale - 1]).toEqual({
+    type: DebugEvents.PingTimer,
+    data: `${(options.maxPingOut ?? Number.NaN) + 1}`,
+  });
+  const recovery = types.slice(stale).filter((type) => RECOVERY_EVENTS.has(type));
+  expect(recovery.slice(0, recovery.indexOf(Events.Reconnect) + 1)).toEqual([
+    DebugEvents.StaleConnection,
+    Events.Disconnect,
+    ...Array<string>(hungRedials + 1).fill(DebugEvents.Reconnecting),
+    Events.Reconnect,
+  ]);
+}
 
 /** A session plugin under test, registered, whose NATS path `proxy` fronts. */
 export interface FreezeScenarioHost {
@@ -25,6 +107,9 @@ export interface FreezeScenarioHost {
   readonly proxy: StallProxy;
   /** The text of every message the host showed the session that holds `marker`, in order. */
   shown(marker: string): readonly string[];
+  /** The session's NATS connection as the plugin itself dialled it, read through a seam the
+   *  plugin leaves unset in production; undefined until it dialled. */
+  natsDial(): NatsDial | undefined;
   /** Resolves once `condition` holds, waiting through `@legion/test-fixtures/wait`; throws,
    *  naming `what`, when the wait gives up or the host's session can no longer make it hold. */
   waitFor(condition: () => boolean | Promise<boolean>, what: string): Promise<void>;
@@ -83,7 +168,8 @@ async function subscribedSince(monitorUrl: string, subject: string, since: numbe
  *
  * The host runs on nats.js's real ping and dial timers against a real listener, so each wait is
  * real time, and each ends at its row's deadline. How long the recovery took is logged for
- * reading, not judged here: the minute the spec allows is held by the settings that pace it.
+ * reading, not judged: the minute the spec allows is held on the session's own connection, by
+ * the settings the plugin dialled it with and the steps its status events show it took.
  */
 export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void> {
   const { label, stack, sessionID, proxy, shown, waitFor } = host;
@@ -129,6 +215,18 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
     // The connection nats.js dialled after the freeze subscribed again before the missed message
     // could be shown: the proxy forwards nothing on the frozen one.
     expect(resubscribed?.subscribedAt).toBeDefined();
+    // The minute, on the plugin's own connection: the settings it dialled with price a recovery
+    // under it, and its status events show the recovery took those steps and no others. The
+    // reconnect's event comes before the registration the missed message waited on; the wait
+    // below is for the seam's copy of it.
+    await waitFor(
+      () => host.natsDial()?.statuses.some((status) => status.type === Events.Reconnect) ?? false,
+      "the session's NATS client to report its reconnect"
+    );
+    const dial = host.natsDial();
+    if (dial === undefined) throw new Error("the session dialled no NATS connection");
+    expect(recoveryBoundMs(dial.options, 0)).toBeLessThan(RECOVERY_BOUND_MS);
+    expectRecoveredByPingOut(dial, 0);
     // The connection that replaced the frozen one carries the session's relay subject.
     expect(await subscribedSince(stack.monitorUrl, sessionSubject, frozenAt)).toBe(true);
     // The relay restarted only on a registration that named a new epoch, still on consumer

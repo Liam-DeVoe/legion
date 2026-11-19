@@ -195,6 +195,11 @@ async function preloadAfterRefresher(home: string, state: string, signal: string
 interface HookTiming {
   readonly began: number
   readonly printed: number | null
+  /** The moment the hook exits by once it printed, the delay it armed for that, and which came
+   *  first, its reads in flight settling or that delay; null where it printed nothing. */
+  readonly exitBy: number | null
+  readonly exitWaitMs: number | null
+  readonly endedBy: "reads" | "deadline" | null
   readonly ended: number
   readonly refresher: number | null
 }
@@ -262,14 +267,23 @@ function notFinishedReason(run: HookRun): string {
   return `a "!" command in envoy.json had not finished ${Math.round(printDeadline(run))} ms after the hook started`
 }
 
-/** Holds the hook to what it owes by its deadline: it printed, as its own record says. That it
+/** Holds the hook to what it owes by its deadline: it printed, as its own record says, and it
+ *  exits by the bound the design gives it, read from the hook's own record across the process
+ *  boundary rather than from a clock (R4): `ANSWERS_SETTLE_MS`, 50 ms, past the print deadline,
+ *  with the delay it armed for that no longer than what was left of it when it printed. That it
  *  waited on nothing the design bounds it from is the order of the case's events, not a time:
  *  the hook exited (`runHook`) while what it must not wait on still held — a token command
  *  behind a gate the case opens only afterwards, a Dispatch that never answers — and the budget
  *  it gave the read is the one its line names (`expectReadBudget`), which no scheduling
- *  changes. */
-function expectPrinted(run: HookRun): void {
-  expect(run.timing.printed).not.toBeNull()
+ *  changes. A case whose Dispatch never answers passes `endedBy: "deadline"`: the read the hook
+ *  leaves in flight aborts itself only at `READ_TIMEOUT_MS`, 10 s, so a hook that exited on
+ *  that read rather than on its own delay reads `reads` there. */
+function expectPrinted(run: HookRun, endedBy?: "deadline"): void {
+  const { printed, exitBy, exitWaitMs } = run.timing
+  expect(printed).not.toBeNull()
+  expect(exitBy).toBe(printDeadline(run) + 50)
+  expect(exitWaitMs).toBeLessThanOrEqual(Math.max(0, Math.round((exitBy ?? 0) - (printed ?? 0))))
+  if (endedBy !== undefined) expect(run.timing.endedBy).toBe(endedBy)
 }
 
 /** Holds a read that did not answer to the budget the design gives it, `waitedMs` as the hook's
@@ -444,7 +458,7 @@ test("with Dispatch hanging, answers by the hook's deadline with the list a hook
     }) as string,
   )
   expect(context).toContain("Read before Dispatch hung.")
-  expectPrinted(run)
+  expectPrinted(run, "deadline")
   expectReadBudget(run, Number(waited?.[1]))
   expect(dispatch.requests).toHaveLength(2)
 })
@@ -495,7 +509,7 @@ test("with Dispatch hanging and no list ever read, the failure line names the wa
   expect(context).toBe(
     sessionAnswersFailureLine(`Dispatch did not answer within ${waited?.[1]} ms`),
   )
-  expectPrinted(run)
+  expectPrinted(run, "deadline")
   expectReadBudget(run, Number(waited?.[1]))
 })
 

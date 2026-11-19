@@ -88,6 +88,20 @@ const CardEntrySchema = z.object({
   details: z.object({ handOver: z.string() }),
 });
 
+/** The role claim's transcript entry, which pi-envoy writes once the listener granted the name
+ *  (`ROLE_CLAIM_ENTRY`), with the timestamp the host stamped it with. */
+const RoleClaimEntrySchema = z.object({
+  customType: z.literal("envoy-role-claim"),
+  timestamp: z.string(),
+});
+
+/** The claim boot's own record of its deferred step (`ClaimStep`, written to
+ *  LEGION_CLAIM_RECORD_FILE): the bound armed, and the path that took the name. */
+const ClaimStepSchema = z.union([
+  z.object({ armed: z.number(), boundMs: z.number() }),
+  z.object({ claimedBy: z.enum(["bound", "first-turn"]), at: z.number() }),
+]);
+
 /** A running worker session, the stand-in it runs against, and the message kept for its role. */
 interface Worker {
   /** Every Messages request so far, in arrival order. */
@@ -123,6 +137,10 @@ interface Worker {
    * starting (`CardHandOver`, packages/pi-envoy/src/card-wake.ts).
    */
   handOverOf(summary: string): Promise<string>;
+  /** The claim boot's own record of its deferred step, in the order it wrote it. */
+  claimSteps(): Promise<z.infer<typeof ClaimStepSchema>[]>;
+  /** When the host stamped the role claim's transcript entry, in `Date.now()` time. */
+  roleClaimedAt(): Promise<number>;
 }
 
 /**
@@ -140,6 +158,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   );
   const state = path.join(root, "state");
   await mkdir(state, { recursive: true, mode: 0o700 });
+  const claimRecord = path.join(state, "claim-record.jsonl");
   // The daemon's golden registration answer (packages/daemon/internal/api), so a field the daemon
   // adds to it reaches this stand-in's `claims/register` too.
   const registered: Record<string, unknown> = JSON.parse(
@@ -288,6 +307,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
         LEGION_CLAIM_FIRST_TURN_BOUND_MS: String(options.boundMs),
+        LEGION_CLAIM_RECORD_FILE: claimRecord,
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
       },
@@ -363,6 +383,26 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
       if (written.length !== 1) throw new Error(`want one card carrying ${summary}: ${written}`);
       return CardEntrySchema.parse(JSON.parse(written[0] ?? "")).details.handOver;
     },
+    async claimSteps() {
+      return (await readFile(claimRecord, "utf8"))
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => ClaimStepSchema.parse(JSON.parse(line)));
+    },
+    async roleClaimedAt() {
+      // pi-envoy writes the entry once the listener granted the claim, which can follow the
+      // relay frame the listener hands over then.
+      const entry = await waitFor("the role claim's transcript entry", async () => {
+        const files = (await readdir(sessions, { recursive: true })).filter((file) =>
+          file.endsWith(".jsonl")
+        );
+        if (files.length !== 1) return undefined;
+        return (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
+          .split("\n")
+          .find((line) => line.includes('"envoy-role-claim"'));
+      });
+      return Date.parse(RoleClaimEntrySchema.parse(JSON.parse(entry)).timestamp);
+    },
   };
 }
 
@@ -422,6 +462,10 @@ test.skipIf(skip)(
     // host wrote the card as one taken while a run was active.
     expect(worker.runsEnded()).toBe(0);
     expect(await worker.handOverOf(worker.kept)).toBe("run-active");
+    // The boot's own record: the first turn took the name, not the bound.
+    expect(
+      (await worker.claimSteps()).flatMap((step) => ("claimedBy" in step ? [step.claimedBy] : []))
+    ).toEqual(["first-turn"]);
     read.reply("Read the task and the message.");
   }
 );
@@ -443,6 +487,20 @@ test.skipIf(skip)(
 
     const woken = await worker.nextTurn("the turn the kept message started");
     expect(worker.bootOrder()).toEqual(["ready", "claim"]);
+    // At the bound, by the program's own records of when it acted, never the test's clock: the
+    // boot recorded the moment it armed the bound and that the bound's timer took the name, and
+    // the host stamped the role claim's transcript entry once the listener granted it. A timer
+    // fires no sooner than its delay, and both moments are the pane's own clock, so no load can
+    // bring the two closer than `boundMs`; load only pushes the claim later.
+    const steps = await worker.claimSteps();
+    const armed = steps.flatMap((step) => ("armed" in step ? [step] : []));
+    expect(armed).toEqual([{ armed: expect.any(Number), boundMs }]);
+    expect(steps.flatMap((step) => ("claimedBy" in step ? [step.claimedBy] : []))).toEqual([
+      "bound",
+    ]);
+    expect((await worker.roleClaimedAt()) - (armed[0]?.armed ?? Number.NaN)).toBeGreaterThanOrEqual(
+      boundMs
+    );
     expect(conversation(woken.request)).toContain(worker.kept);
     // This session was sent nothing, so the turn it ran is the kept message's own.
     expect(worker.turns).toHaveLength(1);

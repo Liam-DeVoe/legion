@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { SQL } from "bun";
 
-// A PostgreSQL database of a test's own. A Bun test that needs PostgreSQL takes one from here and
-// never opens the database a variable of the environment names: that one is the server's shared
-// database, which another test binary, another file or another role of the pod writes too. The
-// server is the one LEGION_TEST_PG_DSN names, the variable the pod and CI give every suite, or
-// DISPATCH_TEST_DATABASE_URL's for a caller that names it, as the Dispatch stack of
-// packages/envoy-client does because the job that runs it sets that one. This module is the one
-// place a Bun test reads either variable.
+// A PostgreSQL database of a test's own. A Bun test that writes to PostgreSQL writes to a database
+// of its own and never to the database a variable of the environment names: that one is the
+// server's shared database, which another test binary, another file or another role of the pod
+// writes too. The server is the one LEGION_TEST_PG_DSN names, the variable the pod and CI give
+// every suite, or DISPATCH_TEST_DATABASE_URL's for a caller that names it, as the Dispatch stack
+// of packages/envoy-client does because the job that runs it sets that one. A suite that takes its
+// database from here reads neither variable itself; three files of packages/dispatch's
+// e2e/__tests__ read LEGION_TEST_PG_DSN themselves, for the psql and the driver they test:
+// harness-stacks.test.ts runs a `select 1` on the server's own database, and psql-session.test.ts
+// and replace-blocks-guard.test.ts make and drop databases of their own.
 
 /** The environment variables that may name the test server. */
 export type ServerVariable = "LEGION_TEST_PG_DSN" | "DISPATCH_TEST_DATABASE_URL";

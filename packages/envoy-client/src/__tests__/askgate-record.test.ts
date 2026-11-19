@@ -110,11 +110,14 @@ while (!(await stdin.read()).done);
     );
   } finally {
     for (const child of children) child.stdin.end();
-    await settled(
-      "the writers' exits once their stdin closed",
-      Promise.all(children.map((child) => child.exited))
-    );
   }
+  // Waited only once the row's own reads passed: after a read that failed at the row's deadline
+  // a wait here would start past it and replace that read's failure with its own, and the
+  // `afterEach` above ends the writers then.
+  await settled(
+    "the writers' exits once their stdin closed",
+    Promise.all(children.map((child) => child.exited))
+  );
   // A child that never prints its line, or a renameSync or readdirSync that never returns, fails
   // the wait for that line by name. In a 2-CPU pod the row costs 1.47 s idle and, under 16 busy
   // loops (8 x nproc), 25.67 s at most in a whole-suite run.

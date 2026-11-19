@@ -439,8 +439,8 @@ for (const [clipboard, target, stored] of [
     stored,
     target: where,
     // Without the prosemirror-tables patch an empty row sends fixTables round forever. That loop
-    // is synchronous, so Bun interrupts nothing and names nothing: the step hangs until the
-    // command's guard ends it.
+    // is synchronous, so Bun interrupts nothing and names nothing, and neither its `--timeout`
+    // nor the row-deadline preload can end it: the step hangs until the job's own timeout.
   });
 }
 
@@ -602,8 +602,9 @@ for (const [row, clipboard, header, body] of [
       target: { caretAfter: "Intro" },
       // The hang this row exists for: without the prosemirror-tables patch fixTables runs forever
       // on a cell-less header row, inside appendTransaction and synchronously, so the case never
-      // returns. Bun cannot interrupt it, so `bun test` reports nothing and the whole
-      // `proof-editor` step hangs until the command's guard ends it.
+      // returns. Bun cannot interrupt it, so `bun test` reports nothing, neither its `--timeout`
+      // nor the row-deadline preload ends it, and the whole `proof-editor` step hangs until the
+      // job's own timeout.
     });
   }
 }

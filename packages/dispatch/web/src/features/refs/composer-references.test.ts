@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
 
-import { referenceTrimReads } from "./reference-spans";
+import { referenceReads, referenceReadsSince } from "./reference-reads";
 import { composerReferences } from "./routes";
 
 const origin = "https://dispatch.test";
@@ -42,10 +42,35 @@ test.each([
   ],
   ["parentheses then a letter", `dispatch://CORE-1${")".repeat(1 << 16)}x`, []],
 ] as const)("a reference trailed by %s is read in one pass", (_name, body, refs) => {
-  const before = referenceTrimReads();
+  const before = referenceReads();
   const cited = composerReferences(body, origin).map((item) => item.reference);
-  const read = referenceTrimReads() - before;
-  expect(read).toBeGreaterThanOrEqual(body.length);
-  expect(read).toBeLessThanOrEqual(2 * body.length);
+  const read = referenceReadsSince(before);
+  expect(read.trimReference.characters).toBeGreaterThanOrEqual(body.length);
+  expect(read.trimReference.characters).toBeLessThanOrEqual(2 * body.length);
+  // Each body is one span, handed to the route reader once.
+  expect(read.referenceRouteFromHref.calls).toBe(1);
+  expect(read.referenceRouteFromHref.characters).toBeLessThanOrEqual(body.length);
   expect(cited).toEqual([...refs]);
+});
+
+// The composer hands each span of a body to `referenceRouteFromHref` once, so its reading of a
+// body costs one pass over the body's spans whatever they hold, counted rather than timed
+// (`reference-reads.ts`). The spans here take its longest way: a `dispatch://` reference to an
+// ask's part pinned to a revision (the fragment read apart, the reference before it parsed
+// again), and a 65,536-character id that parses as far as the extra segment after it. A caller
+// that handed it the body, or the rest of it, for every span reads about the square of the body.
+test("a body of many references hands each span to referenceRouteFromHref once", () => {
+  const count = 4096;
+  const pinned = Array.from(
+    { length: count },
+    (_, index) => `dispatch://CORE-1/ask/q${index}#b-q${index}@v1`
+  );
+  const long = `dispatch://CORE-1/ask/${"a".repeat(1 << 16)}/x`;
+  const body = `${pinned.join(" ")} ${long}`;
+  const before = referenceReads();
+  const cited = composerReferences(body, origin).map((item) => item.reference);
+  const read = referenceReadsSince(before);
+  expect(cited).toEqual(pinned);
+  expect(read.referenceRouteFromHref.calls).toBe(count + 1);
+  expect(read.referenceRouteFromHref.characters).toBe(body.length - count);
 });

@@ -119,12 +119,13 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. */
-export interface RelayConnection {
+/** What a relay frame needs of a NATS connection, sending the header set `H` its frame makes;
+ *  `nats`'s `NatsConnection` is one, for `nats`'s `MsgHdrs`. */
+export interface RelayConnection<H extends RelayFrameHeaders = RelayFrameHeaders> {
   request(
     subject: string,
     payload: Uint8Array,
-    options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
+    options: { readonly timeout: number; readonly headers: H }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -134,10 +135,10 @@ export interface RelayFrameHeaders {
 }
 
 /** One frame of the stand-in stream, as `sendRelayFrame` sends it. */
-export interface RelayFrame {
-  readonly connection: RelayConnection;
+export interface RelayFrame<H extends RelayFrameHeaders = RelayFrameHeaders> {
+  readonly connection: RelayConnection<H>;
   /** Makes an empty header set; `nats`'s `headers` is one. */
-  readonly newHeaders: () => RelayFrameHeaders;
+  readonly newHeaders: () => H;
   /** The session the listener relays to, which the deliver subject names. */
   readonly sessionID: string;
   /** The subject the stream stored the message on, which the frame carries. */
@@ -231,7 +232,9 @@ function isRequestTimeout(error: unknown): boolean {
  * the answer through it: a caller that awaits a send would otherwise read a frame the session
  * dropped, or one it refused, as a frame it took.
  */
-export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
+export async function sendRelayFrame<H extends RelayFrameHeaders>(
+  frame: RelayFrame<H>
+): Promise<RelayTake> {
   // The request in flight, read at each of the wait's asks rather than awaited by it, so a run
   // that ended (`stopped`) fails the send at once even while a request waits; and the error the
   // last request met from the server, which a send that reaches the deadline names.
@@ -1144,7 +1147,10 @@ export async function runLegionPane(
       selfChecks: selfCheckRequests,
     };
     for (const prompt of prompts) {
+      // Each prompt waits on a run end of its own: one the host ended for the prompt before
+      // would otherwise hold the settle below before this prompt's first turn.
       runEnded = Promise.withResolvers<void>();
+      endedAtTurns = -1;
       rpc.send({ type: "prompt", message: prompt });
       const settle = options.settledWhen;
       if (settle === undefined) {

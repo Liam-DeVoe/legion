@@ -17,8 +17,8 @@ ends before the guard of the command that runs it, with a failure that names wha
 and it cannot read a row's own number. The second command runs the files whose rows take far
 longer than the rest: `nats-stall.test.ts`, `nats-auth.test.ts`, the two `*.live.test.ts` suites,
 `dispatch-askgate.test.ts`, `dispatch-who-waits.test.ts` and `askgate-record.test.ts`; the first
-runs every other file. Each guard is for now the largest limit its files' rows carried before
-(60 s and 600 s), until a measured guard replaces it.
+runs every other file. The guards are 30000 and 120000 ms, each at least twice the slowest row or
+hook its command ran under 8 busy loops on 2 CPUs; `package.json`'s `"//"` note gives each reading.
 
 Bun reads the guard from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
 preload that calls `jest.setTimeout` governs the first test file of a run only, and

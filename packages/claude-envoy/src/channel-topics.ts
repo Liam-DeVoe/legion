@@ -3,6 +3,7 @@ import { DedupeIdentitySchema } from "@legion/envoy-client/delivery"
 import { messageFor } from "@legion/envoy-client/errors"
 import { expandSubscriptionTopics } from "@legion/envoy-client/transport"
 import { z } from "zod"
+import type { ChannelRecord } from "./channel-record"
 
 /** A message as the broker yields it (a nats.js `Msg` satisfies this). */
 export interface ChannelBrokerMessage {
@@ -65,6 +66,8 @@ export interface ChannelTopics {
 export interface ChannelTopicsOptions {
   /** How long close waits for a broker drain before closing outright. */
   readonly drainTimeoutMs?: number
+  /** The tests' record of the server's bounded waits (`./channel-record`); unset in production. */
+  readonly record?: ChannelRecord | undefined
 }
 
 // A delivery's identity fields parse independently: a field the shared rule refuses identifies
@@ -129,14 +132,20 @@ export function createChannelTopics(
     async close() {
       following.clear()
       if (connection.isClosed()) return
-      const timeout = Promise.withResolvers<void>()
-      const timer = setTimeout(timeout.resolve, drainTimeoutMs)
+      const timeout = Promise.withResolvers<"bound">()
+      const timer = setTimeout(() => timeout.resolve("bound"), drainTimeoutMs)
+      // A drain that fails ended the wait as much as one that finished: what it waited for came.
+      let endedBy: "fact" | "bound" = "fact"
       try {
-        await Promise.race([connection.drain(), timeout.promise])
+        endedBy = await Promise.race([
+          connection.drain().then(() => "fact" as const),
+          timeout.promise,
+        ])
       } catch (error) {
         report("draining the broker connection failed", error)
       }
       clearTimeout(timer)
+      options.record?.({ wait: "drain", armedMs: drainTimeoutMs, endedBy })
       if (connection.isClosed()) return
       try {
         await connection.close()

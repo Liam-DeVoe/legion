@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   type FallbackChainContext,
@@ -60,6 +61,37 @@ export interface ModelFallbackDeps {
     model: HostModel
   ) => Promise<HostModel | undefined>;
   readonly log: FallbackChainLog;
+  /** Tests only: told of each request's check of a refusal's arming, with the moment it read
+   *  (`now`), the due time it read it against and whether that made it due, so a test reads the
+   *  program's own record of the requests that waited and the one that came back
+   *  (`fallbackCheckRecord`). Unset in production. */
+  readonly recordRestoreCheck?: ((check: RestoreCheck) => void) | undefined;
+}
+
+/** One request's check of a refusal's arming, for `ModelFallbackDeps.recordRestoreCheck`. */
+export interface RestoreCheck {
+  readonly at: number;
+  readonly dueAt: number;
+  readonly due: boolean;
+}
+
+/** Tests only: the file `fallbackCheckRecord` appends each `RestoreCheck` to, one JSON line each.
+ *  Unset, as every deployment runs, nothing is written. */
+export const FALLBACK_CHECK_RECORD_FILE = "LEGION_FALLBACK_CHECK_RECORD_FILE";
+
+/** The `recordRestoreCheck` the file `env` names takes, or undefined where it names none. */
+export function fallbackCheckRecord(
+  env: Record<string, string | undefined>
+): ((check: RestoreCheck) => void) | undefined {
+  const file = env[FALLBACK_CHECK_RECORD_FILE];
+  if (file === undefined || file === "") return undefined;
+  return (check) => {
+    try {
+      appendFileSync(file, `${JSON.stringify(check)}\n`);
+    } catch {
+      // The tests' seam only: a write it cannot make changes nothing the fallback does.
+    }
+  };
 }
 
 export interface ModelFallback {
@@ -390,7 +422,12 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
     // wait that is. The `superseded` and `restored` bookkeeping skipped while an arming waits
     // moves no model: it is read again at the first request after the wait is over.
     const suppressed = () => ctx.modelRegistry?.isSelectorSuppressed?.(arming.restoreTo) === true;
-    if (restoreDue(state, deps.now(), suppressed) === undefined) return;
+    const now = deps.now();
+    const due = restoreDue(state, now, suppressed);
+    if (arming.cause === "refusal") {
+      deps.recordRestoreCheck?.({ at: now, dueAt: arming.dueAt, due: due !== undefined });
+    }
+    if (due === undefined) return;
     const newest = newestModelChange(ctx);
     // Any model change since the fallback — the operator's `/model`, the host's own restore,
     // another session resumed in this process — is not this arming's to undo.

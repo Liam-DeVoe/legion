@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
@@ -462,6 +462,11 @@ export interface SessionAnswersRead {
   readonly notice?: string;
 }
 
+/** Tests only: the file each wait below appends `{ armedMs, endedBy }` to, one JSON line each, so
+ *  a test across the process boundary reads the deadline a request's read was given and what
+ *  ended it rather than timing the request. Unset, as every deployment runs, nothing is written. */
+export const ANSWERS_WAIT_RECORD_FILE = "ENVOY_ANSWERS_WAIT_RECORD_FILE";
+
 /** `promise`'s value, or which came first of `ms` passing and `signal` aborting. */
 async function settleWithin<T>(
   promise: Promise<T>,
@@ -477,7 +482,17 @@ async function settleWithin<T>(
     signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    return await Promise.race([promise, stop]);
+    const outcome = await Promise.race([promise, stop]);
+    const record = process.env[ANSWERS_WAIT_RECORD_FILE];
+    if (record !== undefined && record !== "") {
+      const endedBy = outcome === "deadline" || outcome === "aborted" ? outcome : "answered";
+      try {
+        appendFileSync(record, `${JSON.stringify({ armedMs: ms, endedBy })}\n`);
+      } catch {
+        // The tests' seam only: a write it cannot make changes nothing the read answers.
+      }
+    }
+    return outcome;
   } finally {
     clearTimeout(timer);
     if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);

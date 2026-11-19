@@ -6089,8 +6089,11 @@ The caller sets `root` (the checkout), `work` (the run's scratch directory:
 every process whose working directory or command line names it is the run's, and `wait_for` keeps its last poll's output there), `evidence` (each service started by `start_process` logs to `$evidence/logs/<name>.log`) and `timeout_hook` (empty, or a function a timed-out wait runs before it fails), and defines `note` and `fail`, which exits.
 Stage 1 calls `proof_guard`, `wait_for` with `serving`, `real_bin_path`, `keep_port`, `start_process` and `held_only_by`.
 
-A proof a workflow runs (the `hosted` list of `.github/e2e-scripts.json`, and `ci.yaml`'s Stage 1 step) sets its one guard with `proof_guard`, at its head, with the reading of it beside the number, and waits through `wait_for` alone.
+A proof a workflow runs (the `hosted` list of `.github/e2e-scripts.json`, `ci.yaml`'s Stage 1 step, and its envoy-session-stall job's role takeover smoke) sets its one guard with `proof_guard`, at its head, with the reading of it beside the number, and waits through `wait_for` or `wait_held` alone.
 `until_true` and `await_start` are the bounded waits of the proofs only a person runs, which set no guard, and no proof that sets one calls them.
+
+The guard and the wait, the first four items below, are `lib/proof-wait.sh`'s, which this file sources, and which `packages/pi-envoy/scripts/local-stack.sh` sources for the pi-envoy smokes.
+It reads the caller's `work`, `timeout_hook`, `note` and `fail`.
 
 Each item below names a function, then what it does.
 
@@ -6109,12 +6112,18 @@ Each item below names a function, then what it does.
 
 - `wait_for WHAT CMD…`
 
-  is the one wait of a proof that set its guard, and fails at once in a proof that set none.
+  is the wait of a proof that set its guard, failing the run, and fails at once in a proof that set none.
   It runs CMD in the calling shell every half second until it succeeds, and keeps CMD's output in `$work/wait-for.out`.
   It gives up `proof_margin_seconds` before the guard's deadline: it runs `timeout_hook`, then fails naming WHAT and the last lines CMD printed.
   A wait that starts past that moment runs CMD once and then fails, so the cleanup keeps the margin to run in.
   It takes no bound and no pace, so a step that is only slow never fails the run, and it says how long it has waited every 60 s.
   A CMD that finds the fact can no longer happen sets `wait_impossible` to why, and the wait fails at once saying so
+
+- `wait_held WHAT CMD…`
+
+  is the same wait returning rather than failing, for a run that goes on past a wait that did not hold and reports it itself, as the role takeover smoke drives every row.
+  It returns 0 once CMD succeeds, and 1 where CMD set `wait_impossible` or the deadline came, with the line `wait_for` would fail with in `wait_gave_up` and how the wait ended (`impossible` or `deadline`) in `wait_ended_by`.
+  A wait inside another wait's CMD keeps its output in `$work/wait-for.<depth>.out`, so it never overwrites what the outer wait reports, and the `wait_impossible` it reads is its own
 
 - `serving NAME PID CMD…`
 

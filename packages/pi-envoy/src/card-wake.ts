@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import { type EnvoyPluginInterface, LOCAL_ENVOY_NOTICE } from "@legion/pi-shared/interface";
 import type {
   AutoCompactionEndEvent,
@@ -260,6 +261,38 @@ export interface CardWakeDeps {
   /** Whether `session` is the session the cards go into: this instance's own, and the host's
    *  live one. */
   readonly isOwnSession: (session: string) => boolean;
+  /** The tests' record of the startup phase's hold and wake (`cardWakeRecord`); unset in
+   *  production. */
+  readonly record?: ((step: CardWakeStep) => void) | undefined;
+}
+
+/** One step of the startup phase, for `CardWakeDeps.record`, in this process's `Date.now()`: an
+ *  unsent start-turn mark first read, with the moment its cap ends the hold; a check the mark
+ *  held, with the delay it read the mark again after; and the wake a check sent, with how many
+ *  cards it named. */
+export type CardWakeStep =
+  | { readonly startTurnMark: { readonly firstRead: number; readonly capAt: number } }
+  | { readonly heldFor: number }
+  | { readonly woke: number };
+
+/** Tests only: the file `cardWakeRecord` appends each `CardWakeStep` to, one JSON line each, so a
+ *  test across the process boundary reads the hold the module chose and the wake it sent rather
+ *  than timing the card's turn. Unset, as every deployment runs, nothing is written. */
+export const CARD_WAKE_RECORD_FILE = "ENVOY_CARD_WAKE_RECORD_FILE";
+
+/** The `record` the file `env` names takes, or undefined where it names none. */
+export function cardWakeRecord(
+  env: Record<string, string | undefined>
+): ((step: CardWakeStep) => void) | undefined {
+  const file = env[CARD_WAKE_RECORD_FILE];
+  if (file === undefined || file === "") return undefined;
+  return (step) => {
+    try {
+      appendFileSync(file, `${JSON.stringify(step)}\n`);
+    } catch {
+      // The tests' seam only: a write it cannot make changes nothing the wake does.
+    }
+  };
 }
 
 /** A card whose `message_end` was seen and that waits for the check: the run it came in, and
@@ -499,7 +532,12 @@ export class CardWake {
       const left = mark.sentAt + STARTUP_TURN_CAP_MS - now;
       return left > 0 ? left : undefined;
     }
-    if (this.#unsentMark?.mark !== mark) this.#unsentMark = { mark, firstRead: now };
+    if (this.#unsentMark?.mark !== mark) {
+      this.#unsentMark = { mark, firstRead: now };
+      this.#deps.record?.({
+        startTurnMark: { firstRead: now, capAt: now + STARTUP_TURN_CAP_MS },
+      });
+    }
     const left = this.#unsentMark.firstRead + STARTUP_TURN_CAP_MS - now;
     return left > 0 ? Math.min(left, STARTUP_TURN_POLL_MS) : undefined;
   }
@@ -546,7 +584,10 @@ export class CardWake {
       for (const card of this.#seen) {
         if (card.startup) this.#owed.add(card.id);
       }
-      if (this.#seen.length > 0) this.#arm(context, holdMs);
+      if (this.#seen.length > 0) {
+        this.#deps.record?.({ heldFor: holdMs });
+        this.#arm(context, holdMs);
+      }
       return;
     }
     // A card fed to a run that has since started is that run's to read, and one an interrupt
@@ -570,6 +611,7 @@ export class CardWake {
     this.#owed.clear();
     this.#startupPhase = false;
     if (unread === 0) return;
+    this.#deps.record?.({ woke: unread });
     // Worded for a session that has had no turn yet too: a startup card's wake may be its first.
     this.#deps.sendMessage(
       {

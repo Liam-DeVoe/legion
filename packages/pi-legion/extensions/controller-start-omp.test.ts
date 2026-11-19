@@ -231,7 +231,19 @@ interface ControllerSession {
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
   /** Resolves once the screen shows all of `texts` at once; fails on `what` at the deadline. */
   shows(what: string, ...texts: readonly string[]): Promise<void>;
+  /** pi-envoy's own record of the startup phase (`CardWakeStep`, packages/pi-envoy/src/
+   *  card-wake.ts, written to ENVOY_CARD_WAKE_RECORD_FILE), in the order it wrote it. */
+  cardWakeSteps(): Promise<z.infer<typeof CardWakeStepSchema>[]>;
 }
+
+/** One line of pi-envoy's record of the startup phase: an unsent start-turn mark first read, with
+ *  when its cap ends the hold; a check the mark held, with the delay it reads it again after; the
+ *  wake a check sent. */
+const CardWakeStepSchema = z.union([
+  z.object({ startTurnMark: z.object({ firstRead: z.number(), capAt: z.number() }) }),
+  z.object({ heldFor: z.number() }),
+  z.object({ woke: z.number() }),
+]);
 
 /** A request the stand-in holds, the first of its kind, until the case releases it. */
 interface Hold {
@@ -513,6 +525,8 @@ async function startController(
   const secretFile = path.join(root, "controller-secret");
   await writeFile(secretFile, "controller-start-capability\n", { mode: 0o600 });
   const startupHold = path.join(root, "startup-hold.ts");
+  // pi-envoy's record of its startup phase (`ENVOY_CARD_WAKE_RECORD_FILE`), which no deployment sets.
+  const cardWakeRecord = path.join(root, "card-wake-record.jsonl");
   if (hooks.startupHold !== undefined) await writeFile(startupHold, STARTUP_HOLD_EXTENSION);
 
   const terminal = spawnInteractive(
@@ -536,6 +550,7 @@ async function startController(
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
         LEGION_TEST_STARTUP_HOLD_URL: `${base}${STARTUP_HOLD_ROUTE}`,
+        ENVOY_CARD_WAKE_RECORD_FILE: cardWakeRecord,
       },
       args,
       cols: COLUMNS,
@@ -602,6 +617,13 @@ async function startController(
         const screen = terminal.screen();
         return texts.every((text) => screen.includes(text)) ? true : undefined;
       });
+    },
+    async cardWakeSteps() {
+      const written = await readFile(cardWakeRecord, "utf8").catch(() => "");
+      return written
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => CardWakeStepSchema.parse(JSON.parse(line)));
     },
   };
 }
@@ -1126,6 +1148,10 @@ await connection.close();`,
     expect(silentOutcome).toMatch(
       new RegExp(`${sid} took no relay frame.*(still unanswered|TIMEOUT)`)
     );
+    // A session that never subscribed is the unheard half above, whose send meets a 503: the
+    // cause text names that error beside "still unanswered" when an earlier request met it, so
+    // the silent half refuses it, and holds that the one request out was taken.
+    expect(silentOutcome).not.toMatch(/503|no responders/i);
     expect(silentLeft).toBe("0");
   }
 );
@@ -1848,6 +1874,11 @@ test.skipIf(skip)(
 // launched without the start word on its command line. A card that reached the idle session must
 // still get a turn of its own, without waiting for the operator to type; pi-envoy's
 // STARTUP_TURN_CAP_MS (30 s) is when.
+//
+// The bound the row held the card's turn to before its waits ended at its deadline: three times
+// that cap. And how often pi-envoy reads an unsent mark again (STARTUP_TURN_POLL_MS).
+const STARTUP_CARD_TURN_BOUND_MS = 90_000;
+const STARTUP_TURN_POLL_MS = 1_000;
 for (const variant of ["the start claim never answers", "the start command never runs"] as const) {
   test.skipIf(skip)(
     `a startup card held by an unsent start mark gets its turn when ${variant}`,
@@ -1880,11 +1911,29 @@ for (const variant of ["the start claim never answers", "the start command never
       startupHold.release();
 
       // The card's own turn, which no typing started. When it comes is pi-envoy's
-      // STARTUP_TURN_CAP_MS, a timer of its own that src/card-wake.test.ts holds on a fake clock;
-      // the wait here ends at the row's deadline.
+      // STARTUP_TURN_CAP_MS, a timer of its own in the pane's process, so the wait here ends at
+      // the row's deadline and the bound is read from pi-envoy's own record of the hold it chose
+      // (R4: the bound the product chose, across the process boundary, not a clock):
+      // src/card-wake.test.ts holds the same timer on a fake clock.
       const first = await session.until("the startup card's model request", () => session.turns[0]);
       expect(conversation(first.request)).toContain(card.summary);
       expect(lastMessage(first.request)).toContain(WAKE_ONE);
+      // The unsent mark held the card back from its first read to its cap, and every check it held
+      // read the mark again within a second; the wake then came from a check, not from anything
+      // that rescued it later. Together that is the 90 s this row held the card's turn to, with
+      // room: the hold's cap and one more read.
+      const steps = await session.cardWakeSteps();
+      const marks = steps.flatMap((step) => ("startTurnMark" in step ? [step.startTurnMark] : []));
+      const mark = marks.at(-1);
+      expect(mark).toBeDefined();
+      const holds = steps.flatMap((step) => ("heldFor" in step ? [step.heldFor] : []));
+      expect(holds.length).toBeGreaterThan(0);
+      const longestHold = Math.max(...holds);
+      expect(longestHold).toBeLessThanOrEqual(STARTUP_TURN_POLL_MS);
+      expect(
+        (mark?.capAt ?? Number.NaN) - (mark?.firstRead ?? Number.NaN) + longestHold
+      ).toBeLessThan(STARTUP_CARD_TURN_BOUND_MS);
+      expect(steps.filter((step) => "woke" in step)).toEqual([{ woke: 1 }]);
     }
   );
 }

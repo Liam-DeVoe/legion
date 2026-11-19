@@ -20,7 +20,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
-import { until } from "@legion/test-fixtures/wait";
+import { span, until } from "@legion/test-fixtures/wait";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
@@ -53,6 +53,10 @@ import { until } from "@legion/test-fixtures/wait";
 // legion-background-subagent-omp.test.ts; a run without them skips, except on GitHub Actions,
 // where the pi-legion job supplies both (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
+
+/** How often the pane reads the host's snapshot of its background work
+ *  (`SESSION_ACTIVITY_PERIOD_MS`, a constant of extensions/legion.ts's entry). */
+const SESSION_ACTIVITY_PERIOD_MS = 5_000;
 
 /** The pane's role, tree and issue; the daemon's state below moves the issue past this phase. */
 const ROLE = "implementer";
@@ -374,20 +378,23 @@ test.skipIf(skip)(
 
     // Nothing else of the session is running — the role's turn is held by the stand-in, which is
     // the host waiting on the model, not background work of the session's own. The pane reads the
-    // host's snapshot once a period and sends only what changed, so a service the host reported
-    // would show in every report from here on: the two that the job and the subagent below make
-    // the pane send are read for exactly the kinds they name, which a reported service would add
-    // to. The service is running all the while: it writes a heartbeat after its first, and more
-    // by the end.
-    const serviceTicks = await pane.until(
-      "a heartbeat of the service after its first",
-      async () => {
-        const written = await ticks();
-        return written > started ? written : undefined;
-      }
+    // host's snapshot once a period (`SESSION_ACTIVITY_PERIOD_MS`, 5 s, extensions/legion.ts) and
+    // sends a report between turns only when the reading changed, so a service the host reported
+    // would change the reading and be sent within a period of the service's start. Whether it is
+    // reported is an absence: no state of the pane says the service was read and left out, and no
+    // later action of the case reaches the period's tick, so the case holds the window the base
+    // held, three periods and two seconds, from the service's first heartbeat, and then reads
+    // every report since. One that came before the service started tells nothing of it.
+    await span(
+      3 * SESSION_ACTIVITY_PERIOD_MS + 2_000,
+      "three of the pane's 5 s activity periods from the named service's start, in which a service the host reported would change the reading and be sent; no state or later action reaches that tick"
     );
-    // The pane sends its first report once a period, which a loaded machine stretches past the
-    // heartbeats above, so the case waits for that report rather than reading it is already there.
+    // The service is running all the while: it wrote a heartbeat after its first, and more by the
+    // end.
+    const serviceTicks = await ticks();
+    expect(serviceTicks).toBeGreaterThan(started);
+    // The pane sends its first report once a period, which a loaded machine stretches, so the
+    // case waits for that report rather than reading it is already there.
     await pane.until("the session's first activity report", () =>
       pane.reports.length > 0 ? pane.reports.length : undefined
     );

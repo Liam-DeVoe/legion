@@ -13,6 +13,7 @@ import {
   type Reply,
   type Request,
   runLegionPane,
+  type TranscriptRecord,
 } from "@legion/pi-shared/test/omp-harness";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
@@ -41,6 +42,8 @@ interface StallPane extends LegionPane {
   readonly publishes: () => Record<string, unknown>[];
   /** The persisted transcript's phase-stall entries, in order. */
   readonly phaseEntries: () => Promise<unknown[]>;
+  /** The same entries with the moment the host stamped each, on the pane's own clock. */
+  readonly phaseRecords: () => Promise<TranscriptRecord[]>;
   /** The commit `legion/STALL-2@origin` names in the pane's workspace: the pushed tip its
    * `handoff_complete` reports beside the record. */
   readonly pushedTip: string;
@@ -83,6 +86,27 @@ function stallCounts(entries: readonly unknown[]): number[] {
       : Number.NaN
   );
   return counts.filter((count, index) => index === 0 || count !== counts[index - 1]);
+}
+
+/** One field of a phase-stall entry's data (`PhaseStallEntry`), or undefined where it has none. */
+function entryField(data: unknown, field: "state" | "count"): unknown {
+  return typeof data === "object" && data !== null && field in data
+    ? (data as Record<string, unknown>)[field]
+    : undefined;
+}
+
+/** How far ahead of itself each activity report the pane sent after its `turn`th turn's model
+ *  request put the wake it named, in ms: the report's `phase.nextReminderAt` less its own `at`,
+ *  both on the pane's clock. A report that names no live wake is left out. */
+function wakesAfter(pane: LegionPaneProgress, turn: number): number[] {
+  const request = pane.turns()[turn - 1];
+  const from = request === undefined ? -1 : pane.requests.indexOf(request);
+  if (from < 0) return [];
+  return pane.requests.slice(from + 1).flatMap((later) => {
+    if (later.path !== ACTIVITY_ROUTE) return [];
+    const { at, phase } = LegionActivityRequest.parse(later.body).activity;
+    return phase.nextReminderAt === null ? [] : [Date.parse(phase.nextReminderAt) - Date.parse(at)];
+  });
 }
 
 /** The listener's answer to a publish it accepted: an envelope, which the client parses before
@@ -349,6 +373,7 @@ async function stallPane(
         .filter((request) => request.path === "/v1/messages/publish")
         .map((request) => request.body),
     phaseEntries: () => pane.transcriptEntries(PHASE_STALL_ENTRY),
+    phaseRecords: () => pane.transcriptRecords(PHASE_STALL_ENTRY),
     pushedTip,
   };
 }
@@ -581,6 +606,22 @@ test.skipIf(skip)(
     expect(stallCounts(entries)).toEqual([0, 1, 0]);
     expect(entries.at(-1)).toMatchObject({ state: "closed", count: 0 });
     expect(pane.completions()).toHaveLength(1);
+    // The wait itself, on the pane's own records, never the test's clock: the WAITING settle
+    // writes its entry (state `waiting`) before it arms the reminder, and the reminder writes the
+    // entry that counts it (count 1) only once its timer has fired and its record check answered,
+    // so the host's stamps on the two are at least the wait apart. A timer fires no sooner than
+    // its delay and both stamps are the pane's own clock, so load only moves them further apart;
+    // a host `setTimeout` that fired early is what brings them closer.
+    const records = await pane.phaseRecords();
+    const waiting = records.findIndex((record) => entryField(record.data, "state") === "waiting");
+    const reminded = records.findIndex(
+      (record, index) => index > waiting && entryField(record.data, "count") === 1
+    );
+    expect(waiting).toBeGreaterThanOrEqual(0);
+    expect(reminded).toBeGreaterThan(waiting);
+    expect(
+      (records[reminded]?.at ?? Number.NaN) - (records[waiting]?.at ?? Number.NaN)
+    ).toBeGreaterThanOrEqual(waitMs);
   }
 );
 
@@ -677,10 +718,11 @@ test.skipIf(skip)(
           LEGION_STALL_WAITING_MS: "600000",
         },
         // The reminders come on the pane's own timer, each after its run has settled, so the run
-        // ends on the sixth turn, whose WAITING line arms the next reminder ten minutes ahead.
+        // ends on the sixth turn, whose WAITING line arms the next reminder ten minutes ahead, and
+        // the case settles once the pane has reported that wake.
         settledWhen: {
-          what: "the sixth turn, whose WAITING line arms the next reminder ten minutes ahead",
-          done: (progress) => progress.turns().length >= 6,
+          what: "the sixth turn, and the activity report of the wake its WAITING line armed",
+          done: (progress) => wakesAfter(progress, 6).length > 0,
         },
       }
     );
@@ -690,6 +732,18 @@ test.skipIf(skip)(
     // unanswered in a row, so the threshold is never reached.
     expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2, 0, 1, 2]);
     expect(pane.publishes()).toEqual([]);
+    // And the sixth turn's WAITING line holds off a seventh: the only wake the pane armed after
+    // that turn, as its own activity reports name it, is the ten minutes the line bought, not the
+    // half second between reminders. A report names only a live timer (`phaseWake`), and the
+    // pane's moment and the wake it names are the wait apart, less the little it did between
+    // arming and reporting.
+    const wakes = wakesAfter(pane, 6);
+    expect(wakes.length).toBeGreaterThan(0);
+    for (const wake of wakes) {
+      expect(wake).toBeGreaterThanOrEqual(600_000 - 100);
+      expect(wake).toBeLessThanOrEqual(600_000);
+    }
+    expect(entryField((await pane.phaseRecords()).at(-1)?.data, "state")).toBe("waiting");
   }
 );
 

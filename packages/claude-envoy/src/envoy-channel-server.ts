@@ -94,6 +94,7 @@ import { name as packageName, version as packageVersion } from "../package.json"
   type: "json",
 }
 import { type AgentStreamRunner, startAgentStream } from "./agent-stream-runner"
+import { channelRecord } from "./channel-record"
 import {
   type ChannelConnection,
   type ChannelTopicSubscription,
@@ -624,6 +625,8 @@ export function createChannelDelivery(input: {
  */
 export async function startChannelSession(options: ChannelSessionOptions): Promise<ChannelSession> {
   const { identity } = options
+  /** The tests' record of this server's bounded waits (`./channel-record`); unset in production. */
+  const record = channelRecord(process.env)
   let directSubject = legacyAgentSubject(identity.id)
   /**
    * What this session does with a person's direct messages, for the id now bound: the record is
@@ -681,12 +684,21 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    *  test that shortens `settleMs` shortens this with it. */
   const shutdownSettleMs = Math.min(settleMs, SHUTDOWN_SETTLE_MS)
 
-  /** Resolves when `settling` settles, or when `ms` have passed. */
-  const settledOrGivenUp = async (settling: Promise<unknown>, ms = settleMs): Promise<void> => {
-    const { promise, resolve } = Promise.withResolvers<void>()
-    const timer = setTimeout(resolve, ms)
+  /** Resolves when `settling` settles, or when `ms` have passed, naming which came first. */
+  const settledOrGivenUp = async (
+    settling: Promise<unknown>,
+    ms = settleMs,
+  ): Promise<"fact" | "bound"> => {
+    const { promise, resolve } = Promise.withResolvers<"bound">()
+    const timer = setTimeout(() => resolve("bound"), ms)
     try {
-      await Promise.race([settling.catch(() => undefined), promise])
+      return await Promise.race([
+        settling.then(
+          () => "fact" as const,
+          () => "fact" as const,
+        ),
+        promise,
+      ])
     } finally {
       clearTimeout(timer)
     }
@@ -986,7 +998,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
   // the one NATS subscription this process makes is the relay's (`openRelay`).
-  const followedTopics: ChannelTopics = createChannelTopics(options.connection)
+  const followedTopics: ChannelTopics = createChannelTopics(options.connection, { record })
 
   /**
    * Drops removed topics from the followed set and the registry entry, its failure reported
@@ -1794,7 +1806,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // behind outlives this process by the whole gone horizon, and the process is not given the
       // two full waits before it is killed.
       const settleBy = Date.now() + shutdownSettleMs
-      await settledOrGivenUp(registryWrites, shutdownSettleMs)
+      const settled = await settledOrGivenUp(registryWrites, shutdownSettleMs)
+      record?.({ wait: "settle", armedMs: shutdownSettleMs, endedBy: settled })
       await deregister(identity.id, Math.max(0, settleBy - Date.now())).catch((error: unknown) => {
         process.stderr.write(
           `envoy-channel: session deregistration failed — ${messageFor(error)}\n`,
@@ -2305,13 +2318,25 @@ export async function runEnvoyChannelServer(): Promise<void> {
       stampOnce(() => identity.id)
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
-      connection = await connect(
-        natsConnectionOptions({
-          servers: inbound.natsUrls,
-          name: `claude-envoy-channel-${identity.id}`,
-          seed: inbound.natsSeed,
-        }),
-      )
+      const dialled = natsConnectionOptions({
+        servers: inbound.natsUrls,
+        name: `claude-envoy-channel-${identity.id}`,
+        seed: inbound.natsSeed,
+      })
+      const nats = await connect(dialled)
+      connection = nats
+      // The tests' record (`./channel-record`), unset in production: the settings this dial
+      // chose, which pace its recovery from a path that froze, and each status event nats.js
+      // reports on it, which show the steps a recovery took.
+      const record = channelRecord(process.env)
+      if (record !== undefined) {
+        const { pingInterval, maxPingOut, timeout, reconnectTimeWait, reconnectJitter } = dialled
+        record({ dial: { pingInterval, maxPingOut, timeout, reconnectTimeWait, reconnectJitter } })
+        const statuses = nats.status()
+        void (async () => {
+          for await (const status of statuses) record({ status: status.type, data: status.data })
+        })()
+      }
       session = await startChannelSession({
         identity,
         connection,

@@ -61,7 +61,7 @@ import {
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
-import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
+import { type NatsDial, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
@@ -90,7 +90,7 @@ import { settled, span, until } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
-import { nkeys, connect as realConnect } from "nats";
+import { type NatsConnection, nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
@@ -101,6 +101,7 @@ import {
   type BranchEntry,
   type CommandContext,
   createStandInHost,
+  type RegisteredTool,
   type SessionContext,
   type TestPi,
 } from "../test/stand-in-host";
@@ -161,7 +162,15 @@ function relayCarries(subject: string): boolean {
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this file found it: what a row restores and what the live stack uses. */
 const nativeFetch: typeof globalThis.fetch = installedFetch;
-const recordingFetch: typeof globalThis.fetch = async (input, init) => {
+/** A row's stand-in for `fetch`, as `globalThis.fetch` takes it. Bun's `fetch` carries
+ *  `preconnect` beside its call, which no stand-in here answers for, so the real one's goes with
+ *  it: the type says what a stand-in must be, and this is the one place that supplies the rest. */
+function standInFetch(
+  answer: (...request: Parameters<typeof fetch>) => Promise<Response>
+): typeof fetch {
+  return Object.assign(answer, { preconnect: nativeFetch.preconnect });
+}
+const recordingFetch: typeof globalThis.fetch = standInFetch(async (input, init) => {
   try {
     if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
       const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -174,7 +183,7 @@ const recordingFetch: typeof globalThis.fetch = async (input, init) => {
     // A request that is not a registration, or a body that is not JSON, teaches nothing.
   }
   return installedFetch(input, init);
-};
+});
 /** The fetch a row installed, for a row that answers some requests itself and hands on the rest. */
 const rowFetch = (): typeof globalThis.fetch => installedFetch;
 Object.defineProperty(globalThis, "fetch", {
@@ -270,6 +279,12 @@ const natsState = {
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
   realConnect: false,
+  /** Each dial handed to nats.js itself: the settings the extension dialled with, and every
+   *  status event nats.js reported on that connection since, in order. */
+  realDials: [] as {
+    readonly options: NatsDial["options"];
+    statuses: NatsDial["statuses"][number][];
+  }[],
   /** A connect a test parks on, so a pass can be abandoned at its deadline while its connection
    *  is still being made and what its late continuation writes can be watched. */
   heldConnect: undefined as Promise<void> | undefined,
@@ -328,7 +343,18 @@ const natsStandInConnect = async (options: {
   // Parked only where a test asks for it: every other connect answers at once, as before.
   if (natsState.heldConnect !== undefined) await natsState.heldConnect;
   if (natsState.realConnect) {
-    return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
+    const connection = await realConnect(options as unknown as Parameters<typeof realConnect>[0]);
+    const dial = {
+      options: options as unknown as NatsDial["options"],
+      statuses: [] as NatsDial["statuses"][number][],
+    };
+    natsState.realDials.push(dial);
+    void (async () => {
+      for await (const status of connection.status()) {
+        dial.statuses.push({ type: status.type, data: status.data });
+      }
+    })();
+    return connection;
   }
   let closed = false;
   return {
@@ -621,7 +647,17 @@ restoreEntryLoad();
 // set at module scope would run and leave the next file of the same run dialling this stand-in.
 // No pane starts before this `beforeAll`: every row of this file builds its own instance in its
 // own body.
-beforeAll(() => setNatsConnectForTests(natsStandInConnect));
+// The extension always dials with a name and servers (`natsConnectionOptions`), which is all the
+// stand-in reads of nats.js's options, and it answers with a connection of the part the extension
+// uses, or nats.js's own where a row asks for it.
+beforeAll(() =>
+  setNatsConnectForTests(
+    (options) =>
+      natsStandInConnect(
+        options as Parameters<typeof natsStandInConnect>[0]
+      ) as unknown as Promise<NatsConnection>
+  )
+);
 afterAll(() => resetNatsConnectForTests());
 
 beforeEach(() => {
@@ -637,7 +673,7 @@ beforeEach(() => {
   // (the client defaults to http://127.0.0.1:9020, which on a devbox is production): point the
   // URL at an unroutable host and answer every request with the registration echo by default.
   process.env.ENVOY_URL = "http://envoy.test";
-  globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+  globalThis.fetch = standInFetch(async (input, init) => responseWithRegistration(input, init, []));
   delete process.env.DISPATCH_URL;
   delete process.env.DISPATCH_TOKEN;
   delete process.env.DISPATCH_TOKEN_FILE;
@@ -754,6 +790,7 @@ afterEach(async () => {
   natsState.connectionsClosed = false;
   natsState.failSubscribes = 0;
   natsState.realConnect = false;
+  natsState.realDials.length = 0;
   natsState.drainHangs = false;
   natsState.drainStarted = false;
   natsState.statusReaders.length = 0;
@@ -765,6 +802,9 @@ afterEach(async () => {
   hostBuiltins.length = 0;
   ledgerSeam.beforeFailureNotice = undefined;
 });
+
+/** One stand-in host and its records, as `createPi` builds it. */
+type PiFixture = ReturnType<typeof createPi>;
 
 function createPi(options: { readonly clipboardError?: Error; readonly zod?: typeof z } = {}) {
   clipboardState.error = options.clipboardError;
@@ -1167,7 +1207,7 @@ async function bootDirectSession(
   // The session's replies to the direct message's attempts, as Dispatch's reply route took them.
   const replies: { readonly path: string; readonly body: unknown }[] = [];
   const replyWaiters: { readonly count: number; readonly resolve: () => void }[] = [];
-  globalThis.fetch = async (input, init) => {
+  globalThis.fetch = standInFetch(async (input, init) => {
     const url = new URL(input.toString());
     // This Dispatch runs the keyed layer: its answers to a keyed write carry the key back and its
     // /healthz says so, so a failed accept is asked again under its key.
@@ -1212,7 +1252,7 @@ async function bootDirectSession(
     const answered = await options.dispatch?.(url, init);
     if (answered !== undefined) return answered;
     return responseWithRegistration(input, init, {});
-  };
+  });
   // Query-string isolation gives each caller its own instance of this stateful extension, and a
   // restart its second one; the specifier is the caller's, so it cannot be a static import.
   const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
@@ -1235,7 +1275,7 @@ async function bootDirectSession(
   const run = options.sendUserInput;
   envoyExtension({
     ...fixture.pi,
-    sendMessage: (message: never, sendOptions: unknown) => {
+    sendMessage: (message: Parameters<TestPi["sendMessage"]>[0], sendOptions: unknown) => {
       options.beforeSend?.(message.content);
       recordedWhenDelivered.push(handledRecords());
       fixture.pi.sendMessage(message, sendOptions);
@@ -1365,7 +1405,7 @@ function stubBroker(label: string) {
     },
     watch: () => {
       const answered = rowFetch();
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.host === "dispatch.test") {
           presented.push({
@@ -1374,7 +1414,7 @@ function stubBroker(label: string) {
           });
         }
         return await answered(input, init);
-      };
+      });
     },
     stop: () => {
       restore();
@@ -1476,7 +1516,7 @@ const ANY_CLIENT_INSTANCE = expect.stringMatching(/^[0-9a-f]{32}$/);
 
 /** The transcript record a landed claim of `role` for `session` writes: the role, the session
  *  claimed for and the process that claimed it (INFRA-783). */
-function roleClaimRecord(role: string, session: string): unknown {
+function roleClaimRecord(role: string, session: string): BranchEntry {
   return {
     type: "custom",
     customType: "envoy-role-claim",
@@ -1486,7 +1526,11 @@ function roleClaimRecord(role: string, session: string): unknown {
 
 /** The body a claim of `role` for `session` sends, `rest` carrying what that claim adds (`soft`,
  *  `previous_session_id`): every claim names the process making it (INFRA-783). */
-function roleClaimBody(session: string, role: string, rest: Record<string, unknown> = {}): unknown {
+function roleClaimBody(
+  session: string,
+  role: string,
+  rest: Record<string, unknown> = {}
+): { readonly session_id: string; readonly role: string } & Record<string, unknown> {
   return { session_id: session, role, ...rest, client_instance_id: ANY_CLIENT_INSTANCE };
 }
 
@@ -1521,9 +1565,9 @@ function sessionPodListener(): SessionPodListener {
   const registrations = new Map<string, number>();
   const holders = new Map<string, string>();
   const interests = new Map<string, readonly string[]>();
-  globalThis.fetch = async (input, init) => {
+  globalThis.fetch = standInFetch(async (input, init) => {
     const { pathname } = new URL(input.toString());
-    const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+    const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
     if (pathname === "/v1/interests/subscribe") {
       registrations.set(body.session_id, (registrations.get(body.session_id) ?? 0) + 1);
       seen.push({ registered: body.session_id });
@@ -1568,7 +1612,7 @@ function sessionPodListener(): SessionPodListener {
       return response({ role, holder, last_seen: 1 });
     }
     return responseWithRegistration(input, init, {});
-  };
+  });
   return {
     seen,
     released,
@@ -1837,7 +1881,7 @@ async function bootAskNudge(
   const queries: string[] = [];
   const registrations: string[] = [];
   let registration = Promise.withResolvers<void>();
-  globalThis.fetch = async (input, init) => {
+  globalThis.fetch = standInFetch(async (input, init) => {
     const url = new URL(input.toString());
     if (url.pathname === "/v1/roles/set") {
       const body = JSON.parse(init?.body?.toString() ?? "{}") as { readonly role?: string };
@@ -1890,7 +1934,7 @@ async function bootAskNudge(
       }),
       { headers: { "Content-Type": "application/json" } }
     );
-  };
+  });
   const fixture = createPi();
   const asked: { readonly prompt: string; readonly signal?: AbortSignal }[] = [];
   const selfCheck = options.selfCheck;
@@ -2081,7 +2125,7 @@ describe("envoy OMP extension", () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
     process.env.DISPATCH_TOKEN = "token";
     const requests: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/api/v1/asks/open") {
         requests.push(url.pathname + url.search);
@@ -2099,7 +2143,7 @@ describe("envoy OMP extension", () => {
         );
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?open-ask-summary");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -2117,12 +2161,12 @@ describe("envoy OMP extension", () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
     process.env.DISPATCH_TOKEN = "token";
     const notifications: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (new URL(input.toString()).pathname === "/api/v1/asks/open") {
         throw new Error("network offline");
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?open-ask-unavailable");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -2148,7 +2192,7 @@ describe("envoy OMP extension", () => {
     const notifications: string[] = [];
     let activeSessionID = "ses_availability_a";
     let available = false;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (new URL(input.toString()).pathname === "/api/v1/asks/open") {
         if (!available) throw new Error("network offline");
         return new Response(
@@ -2165,7 +2209,7 @@ describe("envoy OMP extension", () => {
         );
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?open-ask-availability-latch");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -2934,7 +2978,7 @@ describe("envoy OMP extension", () => {
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = "token";
       const queries: string[] = [];
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname === "/api/v1/asks/open") {
           queries.push(url.search);
@@ -2952,7 +2996,7 @@ describe("envoy OMP extension", () => {
           );
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-subagent");
       const asked: string[] = [];
       const parent = createPi();
@@ -3143,13 +3187,13 @@ describe("envoy OMP extension", () => {
     // query their turn makes has not answered when the verdict does.
     const arming = Promise.withResolvers<void>();
     const dispatch = rowFetch();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/api/v1/asks/open" && !url.search.includes("since=")) {
         await arming.promise;
       }
       return dispatch(input, init);
-    };
+    });
     try {
       const typed = session.userTurn("actually, do this instead");
       for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
@@ -3837,9 +3881,9 @@ describe("envoy OMP extension", () => {
 
   test("registers the shared eight-tool contract and delegates HTTP operations to EnvoyClient", async () => {
     const requests: { readonly path: string; readonly body: unknown }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
       requests.push({ path: url.pathname, body });
       if (url.pathname === "/v1/roles/set") {
         const role = typeof body?.role === "string" ? body.role : "";
@@ -3872,8 +3916,8 @@ describe("envoy OMP extension", () => {
         payload_summary: "message",
         trace_id: "trace_1",
       });
-    };
-    const { default: envoyExtension } = await import("./envoy.ts");
+    });
+    const { default: envoyExtension } = await import("./envoy.ts?eight-tool-contract");
     const fixture = createPi();
 
     envoyExtension(fixture.pi);
@@ -4003,7 +4047,7 @@ describe("envoy OMP extension", () => {
       "notifications.role.controller": { kept_reason: "unclaimed" },
     };
     const published: Record<string, unknown>[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname !== "/v1/messages/publish") {
         return responseWithRegistration(input, init, {});
@@ -4025,7 +4069,7 @@ describe("envoy OMP extension", () => {
         }),
         { status: 202 }
       );
-    };
+    });
     const fixture = transcriptFixture();
     try {
       // A process whose first top-level session has no id yet, a subagent of it, which therefore
@@ -4174,7 +4218,9 @@ describe("envoy OMP extension", () => {
     if (send === undefined || spec === undefined) throw new Error("envoy_send was not registered");
 
     const input = { session_id: "ses_target", message: "direct", urgency: "urgent" };
-    const expected = z.object(spec.arguments(z) as unknown as z.ZodRawShape).safeParse(input);
+    const expected = z
+      .object(spec.arguments(z as never) as unknown as z.ZodRawShape)
+      .safeParse(input);
     const actual = (send.parameters as z.ZodType).safeParse(input);
     if (expected.success || actual.success) throw new Error("invalid urgency unexpectedly parsed");
 
@@ -4194,10 +4240,10 @@ describe("envoy OMP extension", () => {
 
   test("refuses an Envoy tool call once with every problem, before reaching the listener", async () => {
     let requests = 0;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       requests += 1;
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?envoy-tool-one-pass");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4225,7 +4271,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("surfaces a missing target session as an envoy_send tool error", async () => {
-    globalThis.fetch = async (input) => {
+    globalThis.fetch = standInFetch(async (input) => {
       if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
         return response({
           session_id: "ses_omp",
@@ -4238,7 +4284,7 @@ describe("envoy OMP extension", () => {
       return new Response(JSON.stringify({ error: "no live session ses_missing" }), {
         status: 404,
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?missing-target-error");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4257,7 +4303,7 @@ describe("envoy OMP extension", () => {
       "Your sending is rate limited. This message was not sent. This listener lets one session " +
       "send 4 messages a minute and 2 at once. You can send it again after 15 seconds.";
     const routes: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const path = new URL(input.toString()).pathname;
       if (path !== "/v1/messages/send" && path !== "/v1/messages/publish") {
         return responseWithRegistration(input, init, {});
@@ -4275,7 +4321,7 @@ describe("envoy OMP extension", () => {
         }),
         { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "15" } }
       );
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?sender-rate-limited");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4325,7 +4371,9 @@ describe("envoy OMP extension", () => {
     });
     process.env.PATH = `${dir}${delimiter}${process.env.PATH ?? ""}`;
     process.env.SLACK_POST_API_URL = `http://127.0.0.1:${slack.port}/api`;
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     const { default: envoyExtension } = await import(`./envoy.ts?slack-post-${slack.port}`);
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4390,7 +4438,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("rejects malformed wildcard bases before opening subscriptions", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     const { default: envoyExtension } = await import("./envoy.ts?malformed-wildcard-base");
     const fixture = createPi();
 
@@ -4409,7 +4459,7 @@ describe("envoy OMP extension", () => {
 
   test("a resumed session re-subscribes its persisted interests and re-claims its held role", async () => {
     const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/ses_omp") {
         return response({
@@ -4434,7 +4484,7 @@ describe("envoy OMP extension", () => {
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?interest-recovery");
     const fixture = createPi();
 
@@ -4479,7 +4529,7 @@ describe("envoy OMP extension", () => {
         "notifications.role.INFRA.legion-infra-controller"
       );
       const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname === "/v1/interests/ses_omp") {
           return response({
@@ -4503,7 +4553,7 @@ describe("envoy OMP extension", () => {
           });
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       // A fresh module per row, as every test here loads one: the extension keeps its state in
       // module scope, so a static import would carry one row's hold into the next.
       const { default: envoyExtension } = await import(
@@ -4524,7 +4574,7 @@ describe("envoy OMP extension", () => {
 
   test("a session rebind moves a held role from the dead id to the new one", async () => {
     const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/ses_before") {
         return response({
@@ -4547,7 +4597,7 @@ describe("envoy OMP extension", () => {
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-rebind");
     const fixture = createPi();
 
@@ -4573,7 +4623,7 @@ describe("envoy OMP extension", () => {
   test("a rebind re-claims a held role from memory when the registry rows are gone", async () => {
     const registeredSessions = new Set<string>();
     const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -4608,7 +4658,7 @@ describe("envoy OMP extension", () => {
         });
       }
       return response({});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-memory-rebind");
     const fixture = createPi();
 
@@ -4628,7 +4678,7 @@ describe("envoy OMP extension", () => {
 
   test("new and resume switches do not carry the outgoing session role", async () => {
     const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         return responseWithRegistration(input, init, {});
@@ -4657,7 +4707,7 @@ describe("envoy OMP extension", () => {
         });
       }
       return response({});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-new-resume-switch");
     const fixture = createPi();
 
@@ -4695,7 +4745,7 @@ describe("envoy OMP extension", () => {
     // Life 1: claim a role. The listener later reaps the dead session's rows,
     // so life 2 finds no interest row at all — only the transcript remembers.
     const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/ses_reaped")
         return response({ error: "nats: key not found" });
@@ -4710,7 +4760,7 @@ describe("envoy OMP extension", () => {
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: firstLife } = await import("./envoy.ts?role-reaped-life-1");
     const first = createPi();
     firstLife(first.pi);
@@ -4741,7 +4791,7 @@ describe("envoy OMP extension", () => {
     // fork moved the live claim to the child. The listener arbitrates: the
     // extension sends soft:true and the listener answers 409 with the holder.
     const roleClaims: { readonly session_id: string; readonly soft: boolean | undefined }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/ses_fork_parent") {
         return response({ error: "nats: key not found" });
@@ -4767,7 +4817,7 @@ describe("envoy OMP extension", () => {
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-no-steal");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4842,7 +4892,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("names the top-level session in DISPATCH_SESSION_ID at start and after a switch", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?dispatch-session-id");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4929,7 +4981,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("the main agent's tool call finds the session's current title in its title file", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?title-file-main");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4961,7 +5015,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a task subagent's shell command writes no title file: the session it names is its parent's", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?title-file-sub");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4980,7 +5036,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a registration heartbeat writes the session's title file with no tool call at all", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?title-file-heartbeat");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -5003,7 +5061,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a heartbeat while the host answers no name leaves the title file standing", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?title-file-no-name");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -5064,13 +5124,13 @@ describe("envoy OMP extension", () => {
   test("a title write that throws leaves the heartbeat's registration posting", async () => {
     const registered: string[] = [];
     const reregistered = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
         registered.push(JSON.parse(init?.body?.toString() ?? "{}").session_id);
         if (registered.length === 2) reregistered.resolve();
       }
       return responseWithRegistration(input, init, []);
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?title-file-write-throws");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -5094,7 +5154,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a title write that throws leaves the main agent's tool call returning", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?title-file-tool-call-throws");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -5116,7 +5178,9 @@ describe("envoy OMP extension", () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
     delete process.env.DISPATCH_TOKEN;
     process.env.HOME = "/nonexistent-home-for-dispatch-gating";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     const { default: envoyExtension } = await import("./envoy.ts?native-dispatch-disabled");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -5165,10 +5229,10 @@ describe("envoy OMP extension", () => {
       delete process.env.ENVOY_URL;
       delete process.env.ENVOY_NATS_URL;
       const requests: string[] = [];
-      globalThis.fetch = async (input) => {
+      globalThis.fetch = standInFetch(async (input) => {
         requests.push(input.toString());
         return new Response("no request belongs here", { status: 500 });
-      };
+      });
       try {
         const { default: envoyExtension } = await import("./envoy.ts?envoy-json-profile");
         const fixture = createPi();
@@ -5218,10 +5282,10 @@ describe("envoy OMP extension", () => {
         })
       );
       const hosts: string[] = [];
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         hosts.push(new URL(input.toString()).host);
         return responseWithRegistration(input, init, []);
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?envoy-json-envoy-only");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -5259,10 +5323,10 @@ describe("envoy OMP extension", () => {
         })
       );
       const auth: (string | null)[] = [];
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         auth.push(new Headers(init?.headers).get("Authorization"));
         return responseWithRegistration(input, init, []);
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?envoy-json-credentials");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -5284,10 +5348,10 @@ describe("envoy OMP extension", () => {
       process.env.ENVOY_TOKEN_FILE = tokenFile;
       process.env.NATS_NKEY_SEED_FILE = seedFile;
       const auth: (string | null)[] = [];
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         auth.push(new Headers(init?.headers).get("Authorization"));
         return responseWithRegistration(input, init, []);
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?envoy-json-pane-credentials");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -5554,7 +5618,7 @@ console.log(JSON.stringify(args));
       expect(notifications).toEqual([rulesNotice]);
 
       const next: string[] = [];
-      await fixture.handlers.get("session_start")?.({}, gateContext(next, "ses_askgate_next"));
+      await fixture.handlers.get("session_start")?.({}, gateContext(next));
       expect(next).toEqual([]);
     });
     /**
@@ -5785,7 +5849,7 @@ console.log(JSON.stringify(args));
         envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
         const root = join(stateHome, "dispatch");
-        expect(process.env.DISPATCH_STATE_DIR).toBe(root);
+        expect<string | undefined>(process.env.DISPATCH_STATE_DIR).toBe(root);
         // The host refreshes the shell's environment after session_start.
         procmgr.refreshShellConfigCache();
         const shell = procmgr.getShellConfig().env;
@@ -5891,7 +5955,7 @@ console.log(JSON.stringify(args));
           published.push(JSON.parse(line ?? "{}") as Record<string, unknown>);
         for (const wake of recordWaiters.splice(0)) wake();
       };
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = String(input instanceof Request ? input.url : input);
         const byName = /\/api\/v1\/projects\/INFRA\/artifacts\/(.+)$/.exec(url);
         if (byName !== null && (init?.method ?? "GET").toUpperCase() === "GET") {
@@ -5924,7 +5988,7 @@ console.log(JSON.stringify(args));
           return Response.json({ applied: body.ops?.length ?? 0 });
         }
         return other(input, init);
-      };
+      });
     };
     /**
      * Waits for `wanted` records to reach the stand-in Dispatch. An unmarked write's record runs
@@ -5964,7 +6028,7 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          fetchImpl: standInFetch(async () => Response.json({})),
         }
       );
       await fixture.handlers.get("tool_result")?.(
@@ -6135,7 +6199,7 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          fetchImpl: standInFetch(async () => Response.json({})),
         }
       );
       const readLedger = () =>
@@ -6578,7 +6642,7 @@ console.log(JSON.stringify(args));
 
   test("envoy_sessions rejects a non-string machine filter before calling Envoy", async () => {
     const requests: string[] = [];
-    globalThis.fetch = async (input) => {
+    globalThis.fetch = standInFetch(async (input) => {
       requests.push(new URL(input.toString()).pathname);
       return response([
         {
@@ -6591,7 +6655,7 @@ console.log(JSON.stringify(args));
           self_subscribed: true,
         },
       ]);
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?invalid-session-machine");
     const fixture = createPi();
 
@@ -6631,7 +6695,7 @@ console.log(JSON.stringify(args));
         self_subscribed: true,
       },
     ];
-    globalThis.fetch = async () => response(sessions);
+    globalThis.fetch = standInFetch(async () => response(sessions));
     const { default: envoyExtension } = await import("./envoy.ts?sessions-machine-filter");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -7045,9 +7109,9 @@ console.log(JSON.stringify(args));
     let currentRoleTopic = "";
     const requests: string[] = [];
     const unregistrations: (readonly string[])[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
       requests.push(url.pathname);
       if (url.pathname === "/v1/roles/set") {
         const role = typeof body?.role === "string" ? body.role : "";
@@ -7061,13 +7125,13 @@ console.log(JSON.stringify(args));
       }
       if (url.pathname === "/v1/interests/unsubscribe") {
         const topics = Array.isArray(body?.topics)
-          ? body.topics.filter((topic): topic is string => typeof topic === "string")
+          ? body.topics.filter((topic: unknown): topic is string => typeof topic === "string")
           : [];
         unregistrations.push(topics);
         return response({});
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-agent-delivery");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
@@ -7121,9 +7185,9 @@ console.log(JSON.stringify(args));
     const ordinary = "notifications.github.acme.widgets.pr.7";
     const roleClaims: string[] = [];
     const unregistered: string[][] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/roles/set") {
         const claimed = typeof body?.role === "string" ? body.role : "";
         roleClaims.push(claimed);
@@ -7139,7 +7203,7 @@ console.log(JSON.stringify(args));
         return response({});
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-set-keeps-bound-role");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -7214,9 +7278,9 @@ console.log(JSON.stringify(args));
     // The topics of every registration, in order, and of every removal from the registry.
     const registrations: string[][] = [];
     const unregistered: string[][] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         registrations.push(Array.isArray(body?.topics) ? body.topics : []);
       }
@@ -7233,7 +7297,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?controller-notice-lane");
     const fixture = createPi();
     let shown = Promise.withResolvers<void>();
@@ -7318,14 +7382,14 @@ console.log(JSON.stringify(args));
   test("a session that holds no controller role registers no controller notice lane", async () => {
     const lane = "notifications.legion.acme.controller";
     const registrations: string[][] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         registrations.push(Array.isArray(body?.topics) ? body.topics : []);
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?controller-lane-unheld");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -7356,10 +7420,10 @@ console.log(JSON.stringify(args));
     let stop: (() => Promise<unknown>) | undefined;
     try {
       const paths: string[] = [];
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         paths.push(new URL(input.toString()).pathname);
         return responseWithRegistration(input, init, []);
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?outage-still-registers");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -7405,7 +7469,9 @@ console.log(JSON.stringify(args));
       await settle();
     };
     try {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, [])
+      );
       const { default: envoyExtension } = await import("./envoy.ts?background-confirm");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -7474,7 +7540,7 @@ console.log(JSON.stringify(args));
         (n) => `notifications.github.acme.widgets.issue.${n}`
       );
       const paths: string[] = [];
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         paths.push(url.pathname);
         if (url.pathname === "/v1/interests/ses_many_subjects")
@@ -7485,7 +7551,7 @@ console.log(JSON.stringify(args));
             topics: recovered,
           });
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?one-bound-per-pass");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -7531,7 +7597,9 @@ console.log(JSON.stringify(args));
     let live = sessionContext("ses_reconnect_mark");
     let stop: (() => Promise<unknown>) | undefined;
     try {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, [])
+      );
       const { default: envoyExtension } = await import("./envoy.ts?reconnect-clears-mark");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -7578,7 +7646,9 @@ console.log(JSON.stringify(args));
     let live = sessionContext("ses_background_mark");
     let stop: (() => Promise<unknown>) | undefined;
     try {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, [])
+      );
       const { default: envoyExtension } = await import("./envoy.ts?background-clears-mark");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -7638,7 +7708,9 @@ console.log(JSON.stringify(args));
     const context = sessionContext("ses_shutdown_stops_asking");
     let stop: (() => Promise<unknown>) | undefined;
     try {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, [])
+      );
       const { default: envoyExtension } = await import("./envoy.ts?shutdown-stops-asking");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -7753,9 +7825,9 @@ console.log(JSON.stringify(args));
     // its first registration: one test writes transcript records as that process, another reads
     // the one a claim recorded.
     let ownInstance: string | undefined;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/roles/set") {
         const claimed = typeof body?.role === "string" ? body.role : "";
         const claimant = body?.session_id;
@@ -7765,8 +7837,9 @@ console.log(JSON.stringify(args));
           failingClaims -= 1;
           return new Response(JSON.stringify({ error: "listener failed" }), { status: 500 });
         }
-        if (gated?.role === claimed) {
-          const { reached, release } = gated;
+        const hold = gated;
+        if (hold !== undefined && hold.role === claimed) {
+          const { reached, release } = hold;
           gated = undefined;
           reached();
           await release;
@@ -7901,20 +7974,22 @@ console.log(JSON.stringify(args));
         // The listener's registry entry for the session is written now, which moves its
         // `last_seen` whoever registers it.
         lastSeen.set(body?.session_id, (lastSeen.get(body?.session_id) ?? 1) + 1);
-        if (registered?.session === body?.session_id) {
-          const { seen } = registered;
+        const seenFor = registered;
+        if (seenFor !== undefined && seenFor.session === body?.session_id) {
+          const { seen } = seenFor;
           registered = undefined;
           seen();
         }
-        if (registrationHold?.session === body?.session_id) {
-          const { reached, release } = registrationHold;
+        const parked = registrationHold;
+        if (parked !== undefined && parked.session === body?.session_id) {
+          const { reached, release } = parked;
           registrationHold = undefined;
           reached();
           await release;
         }
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import(`./envoy.ts?${label}`);
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -7929,10 +8004,11 @@ console.log(JSON.stringify(args));
     // Each message the extension sent, with the host's session it landed in.
     const landed: { session: string; content: string }[] = [];
     const send = fixture.pi.sendMessage;
-    fixture.pi.sendMessage = (message, options) => {
+    const sendInto: TestPi["sendMessage"] = (message, options) => {
       landed.push({ session: manager.id, content: String(message.content) });
       return send(message, options);
     };
+    Object.assign(fixture.pi, { sendMessage: sendInto });
     let heartbeat: (() => void) | undefined;
     const notifications: string[] = [];
     const host = (): SessionContext => {
@@ -11534,9 +11610,9 @@ console.log(JSON.stringify(args));
   test("injects a post-takeover forwarded role event into B only", async () => {
     const role = "legion-controller";
     const roleTopic = `notifications.role.${role}`;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/roles/set") {
         const holder = typeof body?.session_id === "string" ? body.session_id : "";
         return response({
@@ -11547,7 +11623,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtensionA } = await import("./envoy.ts?role-agent-takeover-a");
     const fixtureA = createPi();
     envoyExtensionA(fixtureA.pi);
@@ -11594,7 +11670,7 @@ console.log(JSON.stringify(args));
   test("keeps forwarded role delivery live while the listener HTTP API is unavailable", async () => {
     const role = "legion-controller";
     let listenerAvailable = true;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/roles/set") {
         return response({
@@ -11606,7 +11682,7 @@ console.log(JSON.stringify(args));
       }
       if (!listenerAvailable) throw new Error("listener API unavailable");
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-agent-listener-down");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
@@ -11641,7 +11717,7 @@ console.log(JSON.stringify(args));
       readonly topics: readonly string[];
     }[] = [];
     const heartbeatRegistration = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/roles/set") {
         return response({
@@ -11671,7 +11747,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-claim-heartbeat");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
@@ -12103,7 +12179,7 @@ console.log(JSON.stringify(args));
     const roleClaims: Record<string, unknown>[] = [];
     const reasserted = Promise.withResolvers<void>();
     const unsubscriptions: (readonly string[])[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === `/v1/roles/${role}`) {
         if (!listenerHoldsClaim) {
@@ -12133,7 +12209,7 @@ console.log(JSON.stringify(args));
         return response({});
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-preserves-role");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
@@ -12177,9 +12253,9 @@ console.log(JSON.stringify(args));
   test("never registers a topic no stream subject captures, however it was followed", async () => {
     const registrations: string[][] = [];
     const carried: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
         registrations.push(topics);
@@ -12202,7 +12278,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?uncaptured-subscribe");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -12254,7 +12330,7 @@ console.log(JSON.stringify(args));
     const roleTopic = `notifications.role.${role}`;
     const agentTopic = "notifications.agent.ses_role_subscription";
     const unsubscriptions: (readonly string[])[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/roles/set") {
         return response({
@@ -12282,7 +12358,7 @@ console.log(JSON.stringify(args));
         return response({});
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-subscription-unsubscribe");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -12338,7 +12414,7 @@ console.log(JSON.stringify(args));
     const roleClaims: Record<string, unknown>[] = [];
     const roleReads: string[] = [];
     const reasserted = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === `/v1/roles/${role}`) {
         roleReads.push(url.pathname);
@@ -12360,7 +12436,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-reassert");
     const regained: { readonly role: string; readonly reason: string }[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -12406,7 +12482,7 @@ console.log(JSON.stringify(args));
     const role = "legion-reviewer";
     const roleClaims: Record<string, unknown>[] = [];
     const reasserted = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === `/v1/roles/${role}`) {
         // The listener's own refusal body (writeRoleHolderError), not a bare error string.
@@ -12432,7 +12508,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?role-read-404");
     const regained: { readonly role: string; readonly reason: string }[] = [];
     const regainFired = Promise.withResolvers<void>();
@@ -12468,7 +12544,7 @@ console.log(JSON.stringify(args));
     const roleClaims: unknown[] = [];
     let roleReads = 0;
     let registrations = 0;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === `/v1/roles/${role}`) {
         roleReads += 1;
@@ -12485,7 +12561,7 @@ console.log(JSON.stringify(args));
       }
       if (url.pathname === "/v1/interests/subscribe") registrations += 1;
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-quiet");
     const regained: unknown[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -12527,7 +12603,7 @@ console.log(JSON.stringify(args));
     const roleClaims: Record<string, unknown>[] = [];
     let newerHolderLive = true;
     let registrations = 0;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === `/v1/roles/${role}`) {
         if (!newerHolderLive) {
@@ -12554,7 +12630,7 @@ console.log(JSON.stringify(args));
       }
       if (url.pathname === "/v1/interests/subscribe") registrations += 1;
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-409");
     const regained: unknown[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -12619,7 +12695,7 @@ console.log(JSON.stringify(args));
     let registryDown = false;
     const roleClaims: unknown[] = [];
     let registrations = 0;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (registryDown) throw new Error("network unreachable");
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe") registrations += 1;
@@ -12636,7 +12712,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-outage-regain");
     const regained: { readonly role: string; readonly reason: string }[] = [];
     const hooked = Promise.withResolvers<void>();
@@ -12699,7 +12775,7 @@ console.log(JSON.stringify(args));
     let listenerHoldsClaim = true;
     let registrations = 0;
     const thirdRegistration = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === `/v1/roles/${role}`) {
         if (!listenerHoldsClaim) {
@@ -12721,7 +12797,7 @@ console.log(JSON.stringify(args));
         if (registrations === 3) thirdRegistration.resolve();
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-hung-hook");
     let hookCalls = 0;
     onEnvoyRoleRegained(async () => {
@@ -12772,7 +12848,7 @@ console.log(JSON.stringify(args));
       const wedged = Promise.withResolvers<void>();
       const answered = Promise.withResolvers<void>();
       let registrations = 0;
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
           // The call the pass awaits, as a socket that is accepted and never answered leaves it:
           // nothing resolves it, and the request's abort signal goes unread.
@@ -12783,7 +12859,7 @@ console.log(JSON.stringify(args));
           } else registrations += 1;
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?heartbeat-wedged-pass");
       const fixture = createPi();
       const intervals: (() => void)[] = [];
@@ -12839,7 +12915,7 @@ console.log(JSON.stringify(args));
       let wedgeRoleRead = false;
       const answered = Promise.withResolvers<void>();
       let registrations = 0;
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname === `/v1/roles/${role}`) {
           if (wedgeRoleRead) {
@@ -12858,7 +12934,7 @@ console.log(JSON.stringify(args));
         }
         if (url.pathname === "/v1/interests/subscribe") registrations += 1;
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?heartbeat-wedged-move");
       const fixture = createPi();
       const intervals: (() => void)[] = [];
@@ -12904,7 +12980,7 @@ console.log(JSON.stringify(args));
       let wedgePass = false;
       let registrations = 0;
       const answered = Promise.withResolvers<void>();
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
           registrations += 1;
           if (wedgePass) {
@@ -12913,7 +12989,7 @@ console.log(JSON.stringify(args));
           }
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-said-once");
       const warnings: string[] = [];
       const stopSink = logger.registerLogSink((entry) => {
@@ -12995,7 +13071,7 @@ console.log(JSON.stringify(args));
       const registered: string[] = [];
       let wedgePass = false;
       const answered = Promise.withResolvers<void>();
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
           const body = JSON.parse(init?.body?.toString() ?? "{}") as {
             readonly session_id: string;
@@ -13007,7 +13083,7 @@ console.log(JSON.stringify(args));
           }
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-new-session");
       const fixture = createPi();
       const intervals: (() => void)[] = [];
@@ -13031,7 +13107,10 @@ console.log(JSON.stringify(args));
         // in it registers the session the pane is now running.
         void fixture.handlers
           .get("session_switch")?.({ reason: "new" }, sessionContext("ses_stall_moved_b"))
-          .then(switched.resolve, switched.resolve);
+          .then(
+            () => switched.resolve(),
+            () => switched.resolve()
+          );
         await settle();
         const before = registered.length;
 
@@ -13070,7 +13149,7 @@ console.log(JSON.stringify(args));
       const answered = Promise.withResolvers<void>();
       const roleClaims: unknown[] = [];
       let registrations = 0;
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname === `/v1/roles/${role}`) {
           return response({ role, holder: "ses_stall_regain", last_seen: 1 });
@@ -13091,7 +13170,7 @@ console.log(JSON.stringify(args));
           } else registrations += 1;
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-regain");
       const regained: { readonly role: string; readonly reason: string }[] = [];
       const hooked = Promise.withResolvers<void>();
@@ -13156,7 +13235,7 @@ console.log(JSON.stringify(args));
       const handedBack: string[] = [];
       let wedgeClaim = false;
       const claimAnswered = Promise.withResolvers<void>();
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname === "/v1/roles/set") {
           const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -13184,7 +13263,7 @@ console.log(JSON.stringify(args));
           return response({});
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?abandoned-writes-nothing");
       const fixture = createPi();
       const connected = Promise.withResolvers<void>();
@@ -13262,7 +13341,9 @@ console.log(JSON.stringify(args));
     // ends, and this row holds the open to clearing it itself rather than leaving the subject to
     // that path. Only a connection closed for good makes the open give up; a rejection on a
     // connection that is not closed leaves it to go on, confirmed in the background.
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     const { default: envoyExtension } = await import("./envoy.ts?control-flush-fails");
     const fixture = createPi();
     const control = "agentstream.ses_control_flush.control";
@@ -13293,7 +13374,9 @@ console.log(JSON.stringify(args));
   test("a dial abandoned mid-flight is closed, and the connection a newer pass made stands", async () => {
     // The wait is real: the pass is abandoned on a real timer, read at the pass's start.
     await withEnvoyTimings({ heartbeatMs: 25, passDeadlineMs: 200 }, async () => {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, {})
+      );
       // Each row loads its own instance of the extension, as every row in this file does.
       const { default: envoyExtension } = await import("./envoy.ts?abandoned-dial-closed");
       const fixture = createPi();
@@ -13338,7 +13421,7 @@ console.log(JSON.stringify(args));
     let roleReadBroken = false;
     const roleClaims: unknown[] = [];
     let roleReads = 0;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === `/v1/roles/${role}`) {
         roleReads += 1;
@@ -13356,7 +13439,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-role-read-failure");
     const regained: unknown[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -13407,7 +13490,7 @@ console.log(JSON.stringify(args));
     let roleReadBroken = false;
     let registrations = 0;
     const roleClaims: unknown[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         if (registryDown) throw new Error("network unreachable");
@@ -13428,7 +13511,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-late-regain");
     const regained: { readonly role: string; readonly reason: string }[] = [];
     const hooked = Promise.withResolvers<void>();
@@ -13486,10 +13569,10 @@ console.log(JSON.stringify(args));
 
   test("registers a self-subscribed interest on session start", async () => {
     const requests: { readonly path: string; readonly body: unknown }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       requests.push({
         path: new URL(input.toString()).pathname,
-        body: init?.body === undefined ? undefined : JSON.parse(init.body.toString()),
+        body: init?.body == null ? undefined : JSON.parse(init.body.toString()),
       });
       return responseWithRegistration(input, init, {
         session_id: "ses_register",
@@ -13497,7 +13580,7 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?register-session");
     const fixture = createPi();
 
@@ -13527,7 +13610,7 @@ console.log(JSON.stringify(args));
   });
   test("never registers a followed topic reaching a private stream subject", async () => {
     const registrations: { readonly topics: readonly string[] }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
         registrations.push(JSON.parse(init?.body?.toString() ?? "{}"));
       }
@@ -13537,7 +13620,7 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    };
+    });
     // Query isolation gives this stateful extension its own module state, as every test here does.
     const { default: envoyExtension } = await import("./envoy.ts?register-bounded");
     const fixture = createPi();
@@ -13573,7 +13656,7 @@ console.log(JSON.stringify(args));
     const replies: unknown[] = [];
     const replyPosted = Promise.withResolvers<void>();
     const calls: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const path = new URL(input.toString()).pathname;
       if (path === "/v1/interests/subscribe") {
         registrations.push(JSON.parse(init?.body?.toString() ?? "{}"));
@@ -13589,7 +13672,7 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: ["notifications.agent.ses_target"],
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?targeted-btw");
     const fixture = createPi();
     const asked: string[] = [];
@@ -13651,7 +13734,7 @@ console.log(JSON.stringify(args));
     process.env.DISPATCH_TOKEN = "dispatch-token";
     const replies: Array<{ readonly path: string; readonly body: unknown }> = [];
     const replyPosted = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const path = new URL(input.toString()).pathname;
       if (path === "/v1/interests/subscribe") {
         return response({
@@ -13670,7 +13753,7 @@ console.log(JSON.stringify(args));
         replyPosted.resolve();
       }
       return response({});
-    };
+    });
     // Query-string isolation gives this stateful extension its own NATS subscription.
     const { default: envoyExtension } = await import("./envoy.ts?targeted-comment-btw");
     const fixture = createPi();
@@ -13855,7 +13938,7 @@ console.log(JSON.stringify(args));
         if (sendAt === "before") await send();
         if (foldAt === "before") await fold();
         for (const [event, payload, host] of events) {
-          const was = idle;
+          const was: boolean = idle;
           if (host === "idle") idle = true;
           await fixture.handlers.get(event)?.(payload, context);
           idle = was;
@@ -15739,7 +15822,7 @@ console.log(JSON.stringify(args));
           // What each Dispatch request was signed with: the accept keeps its own in `accepts`,
           // and the reply's reaches nothing the fixture records.
           const answered = rowFetch();
-          globalThis.fetch = async (input, init) => {
+          globalThis.fetch = standInFetch(async (input, init) => {
             const url = new URL(input.toString());
             if (url.host === "dispatch.test") {
               presented.push({
@@ -15748,7 +15831,7 @@ console.log(JSON.stringify(args));
               });
             }
             return await answered(input, init);
-          };
+          });
 
           agent.push(directDispatchEnvelope("steer", "shell-command-broker-signed-reply"));
           await replied(1);
@@ -17137,6 +17220,9 @@ console.log(JSON.stringify(args));
       readonly interval: number;
       readonly at: number;
       readonly readAt: number;
+      readonly kind: string;
+      readonly seq: number;
+      readonly v: number;
     }[] =>
       natsState.published
         .filter((each) => each.subject === framesSubject)
@@ -17226,6 +17312,9 @@ console.log(JSON.stringify(args));
     // turn, and the ring would otherwise hold the figure before it for as long as the session
     // then stays idle. The figure is the message's own: the host answers for the turn that is
     // running, so a reading taken when the frame goes out would be a different conversation's.
+    // The trailing timer is the publisher's own, in this process, so the row holds it and
+    // `Date.now()` on Bun's fake clock (R4): the held frame has not gone out a millisecond before
+    // its interval ends, and goes out at that end, stamped with it.
     test("publishes the reading its interval held back, as it stood at the message", async () => {
       process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS = "50";
       let tokens = 50_000;
@@ -17234,6 +17323,7 @@ console.log(JSON.stringify(args));
       });
       await attachViewer();
 
+      jest.useFakeTimers();
       await fixture.handlers.get("turn_start")?.({}, context);
       tokens = 60_000;
       await fixture.handlers.get("message_end")?.({ message }, context);
@@ -17242,16 +17332,21 @@ console.log(JSON.stringify(args));
       // that is running.
       tokens = 5;
 
-      await until("the frame the message's reading was owed", () => publishedContext().length > 1);
+      jest.advanceTimersByTime(49);
+      await settle();
+      expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
+      jest.advanceTimersByTime(1);
+      await settle();
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 60_000]);
       // The held reading went out when its interval was up, so it is the next interval's.
       expect(publishedContext().map((frame) => frame.interval)).toEqual([1, 2]);
-      // The first went out as it was read; the held one went out when its interval was up, no
-      // later than one interval after its reading was taken.
+      // The first went out as it was read; the held one went out at its interval's end, carrying
+      // that end as its moment and the moment its reading was taken, which the held clock had
+      // not moved from.
       const [first, held] = publishedContext();
       expect(first?.at).toBe(first?.readAt);
       expect(held?.at).toBe((first?.at ?? 0) + 50);
-      expect((held?.at ?? 0) - (held?.readAt ?? 0)).toBeLessThanOrEqual(50);
+      expect(held?.readAt).toBe(first?.readAt);
     });
 
     // An interval that sent nothing is a number no frame carries: the frame that goes out at once
@@ -17573,7 +17668,7 @@ console.log(JSON.stringify(args));
           // The card, picture and all, is the moved-to conversation's for the comment, and
           // nobody's for the delivery, whose picture is left unshown in both sessions so that
           // the copy reaching ses_delivery carries it.
-          expect(carded().flatMap((card) => card.content as unknown[])).toEqual(
+          expect(carded().flatMap((card) => card.content as unknown as unknown[])).toEqual(
             held ? [] : [{ type: "text", text: expect.stringContaining(address) }, image]
           );
           expect(shownPictures(moved).has(address)).toBe(!held);
@@ -17637,7 +17732,7 @@ console.log(JSON.stringify(args));
           JSON.stringify(delivery.content).includes(`dispatch-${named}`)
         );
       await until("the comment's card", () => carded(slug).length > 0);
-      expect(carded(slug).flatMap((card) => card.content as unknown[])).toEqual([
+      expect(carded(slug).flatMap((card) => card.content as unknown as unknown[])).toEqual([
         { type: "text", text: expect.stringContaining(address) },
         image,
       ]);
@@ -18009,7 +18104,7 @@ console.log(JSON.stringify(args));
 
       agent.push(directDispatchEnvelope("steer", `${slug}-2`, { attempt: 2, body }));
       await delivered(2);
-      expect(fixture.deliveries.at(-1)?.content).toEqual([
+      expect(fixture.deliveries.at(-1)?.content as unknown).toEqual([
         {
           type: "text",
           text: expect.stringContaining(`- image 1: ${address} (shot.png, image/png, 10 bytes)`),
@@ -18051,7 +18146,7 @@ console.log(JSON.stringify(args));
 
       agent.push(directDispatchEnvelope("steer", `${slug}-2`, { attempt: 2, body }));
       await delivered(2);
-      expect(fixture.deliveries.at(-1)?.content).toEqual([
+      expect(fixture.deliveries.at(-1)?.content as unknown).toEqual([
         {
           type: "text",
           text: expect.stringContaining(`- image 1: ${address} (shot.png, image/png, 10 bytes)`),
@@ -18178,7 +18273,9 @@ console.log(JSON.stringify(args));
       test(`a ${reason} counts the pictures its transcript shows as shown and forgets the id it left`, async () => {
         const [from, to] = [`ses_pictures_${reason}_from`, `ses_pictures_${reason}_to`];
         const addresses = transcriptAddresses(reason);
-        globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+        globalThis.fetch = standInFetch(async (input, init) =>
+          responseWithRegistration(input, init, [])
+        );
         const { default: envoyExtension } = await import(`./envoy.ts?pictures-${reason}`);
         const fixture = createPi();
         envoyExtension(fixture.pi);
@@ -18203,7 +18300,9 @@ console.log(JSON.stringify(args));
 
     test("a session started on its transcript counts the pictures that transcript shows as shown", async () => {
       const addresses = transcriptAddresses("restart");
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, [])
+      );
       const { default: envoyExtension } = await import("./envoy.ts?pictures-restart");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -18223,7 +18322,9 @@ console.log(JSON.stringify(args));
     });
 
     test("a session that shuts down forgets the pictures it was shown", async () => {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, {})
+      );
       const { default: envoyExtension } = await import("./envoy.ts?pictures-shutdown");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -18239,7 +18340,9 @@ console.log(JSON.stringify(args));
     // early), so its closure's id stays empty while its tool calls carry the host's live id into
     // the registry; its shutdown forgets that id, not the empty one.
     test("a subagent instance that shuts down forgets the id its tool calls carried", async () => {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, {})
+      );
       const { default: envoyExtension } = await import("./envoy.ts?pictures-subagent-shutdown");
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -18252,7 +18355,9 @@ console.log(JSON.stringify(args));
   });
 
   test("deduplicates targeted Dispatch frames by dedupe key", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     const { default: envoyExtension } = await import("./envoy.ts?targeted-dedupe");
     const fixture = createPi();
     const distinctDelivery = Promise.withResolvers<void>();
@@ -18282,7 +18387,7 @@ console.log(JSON.stringify(args));
     process.env.DISPATCH_TOKEN = "dispatch-token";
     const replies: unknown[] = [];
     const posted = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (
         new URL(input.toString()).pathname ===
         "/api/v1/messages/11111111-1111-4111-8111-111111111111/reply"
@@ -18291,7 +18396,7 @@ console.log(JSON.stringify(args));
         posted.resolve();
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?targeted-btw-rejection");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -18329,7 +18434,7 @@ console.log(JSON.stringify(args));
     process.env.DISPATCH_TOKEN = "dispatch-token";
     const replies: unknown[] = [];
     let posted = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (
         new URL(input.toString()).pathname ===
         "/api/v1/messages/11111111-1111-4111-8111-111111111111/reply"
@@ -18338,7 +18443,7 @@ console.log(JSON.stringify(args));
         posted.resolve();
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?targeted-btw-retry");
     const fixture = createPi();
     let sideTurns = 0;
@@ -18390,14 +18495,14 @@ console.log(JSON.stringify(args));
     // The reply Dispatch would be posted if the session took the frame.
     // Deregistration hangs, so the shutdown handler is still running when the frame arrives.
     const deregistration = Promise.withResolvers<Response>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const path = new URL(input.toString()).pathname;
       if (path === "/v1/sessions/ses_delivery") return deregistration.promise;
       if (path === "/api/v1/messages/11111111-1111-4111-8111-111111111111/reply") {
         replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?targeted-btw-shutdown");
     const fixture = createPi();
     const calls: string[] = [];
@@ -18432,7 +18537,7 @@ console.log(JSON.stringify(args));
     process.env.DISPATCH_TOKEN = "dispatch-token";
     const replies: unknown[] = [];
     const posted = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (
         new URL(input.toString()).pathname ===
         "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply"
@@ -18441,7 +18546,7 @@ console.log(JSON.stringify(args));
         posted.resolve();
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?targeted-malformed");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -18483,7 +18588,7 @@ console.log(JSON.stringify(args));
   });
   test("registers every session and starts its heartbeat on session start", async () => {
     const registrations: unknown[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -18501,7 +18606,7 @@ console.log(JSON.stringify(args));
         });
       }
       return response({});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?always-register");
     const fixture = createPi();
     const heartbeats: (() => void)[] = [];
@@ -18533,12 +18638,12 @@ console.log(JSON.stringify(args));
 
   function recordingRegistrations(): string[] {
     const registrations: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
         registrations.push(JSON.parse(init?.body?.toString() ?? "{}").session_id);
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     return registrations;
   }
 
@@ -18616,7 +18721,7 @@ console.log(JSON.stringify(args));
   /** The message bodies a fixture's tools posted, by listener path. */
   function recordingMessages(): { readonly path: string; readonly body: MessageBody }[] {
     const posted: { readonly path: string; readonly body: MessageBody }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const path = new URL(input.toString()).pathname;
       if (path === "/v1/messages/send" || path === "/v1/messages/publish") {
         posted.push({ path, body: JSON.parse(init?.body?.toString() ?? "{}") });
@@ -18632,7 +18737,7 @@ console.log(JSON.stringify(args));
         });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     return posted;
   }
 
@@ -18738,13 +18843,13 @@ console.log(JSON.stringify(args));
       href: "/issues/LEGION-1#ask-ask_1",
     };
     const reads: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.host !== "dispatch.test") return responseWithRegistration(input, init, {});
       reads.push(url.pathname);
       const session = url.pathname.split("/")[4] ?? "";
       return Response.json({ session_id: session, since: item.at, total: 1, items: [item] });
-    };
+    });
     return { reads, item };
   }
 
@@ -18801,10 +18906,11 @@ console.log(JSON.stringify(args));
   test("a Dispatch answering 200 with no list keeps the dispatch-first skill and carries the failure line", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
     process.env.DISPATCH_TOKEN = "answers-token";
-    globalThis.fetch = async (input, init) =>
+    globalThis.fetch = standInFetch(async (input, init) =>
       new URL(input.toString()).host === "dispatch.test"
         ? Response.json({ unexpected: true })
-        : responseWithRegistration(input, init, {});
+        : responseWithRegistration(input, init, {})
+    );
     const { default: envoyExtension } = await import("./envoy.ts?session-answers-malformed");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -18829,7 +18935,7 @@ console.log(JSON.stringify(args));
     process.env.DISPATCH_URL = base;
     process.env.DISPATCH_TOKEN = "answers-token";
     const reads: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.host !== "dispatch-no-route.test") return responseWithRegistration(input, init, {});
       if (url.pathname.endsWith("/answers")) reads.push(url.pathname);
@@ -18837,7 +18943,7 @@ console.log(JSON.stringify(args));
         { code: "NOT_FOUND", error: `no route for GET ${url.pathname}` },
         { status: 404 }
       );
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?session-answers-no-route");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -18881,10 +18987,11 @@ console.log(JSON.stringify(args));
     answeringDispatch("Go the second way.");
     const answering = rowFetch();
     let failing = false;
-    globalThis.fetch = async (input, init) =>
+    globalThis.fetch = standInFetch(async (input, init) =>
       failing && new URL(input.toString()).host === "dispatch.test"
         ? Response.json({ unexpected: true })
-        : answering(input, init);
+        : answering(input, init)
+    );
     const { default: envoyExtension } = await import("./envoy.ts?session-answers-kept-failure");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -19262,7 +19369,7 @@ console.log(JSON.stringify(args));
       // The listener never delivers a message to the session it names as its source, so a
       // subagent publishing to a role its parent holds gets a 200 with that holder and nothing
       // else. The tool result has to say so; only the role case is visible in the answer.
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname !== "/v1/messages/publish") {
           return responseWithRegistration(input, init, {});
@@ -19279,7 +19386,7 @@ console.log(JSON.stringify(args));
           trace_id: "trace_echo",
           holder: topic.endsWith("controller") ? "ses_parent" : "ses_reviewer",
         });
-      };
+      });
       const host = await subagentProcess("publish-echo", "ses_parent", fixture.transcript);
       const child = await host.boot(
         "ses_child",
@@ -19409,10 +19516,10 @@ console.log(JSON.stringify(args));
   test("registers the session title from the host and refreshes it on heartbeat", async () => {
     const subscribeTitles: unknown[] = [];
     const heartbeatSubscribe = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe" && init?.body !== undefined) {
-        subscribeTitles.push(JSON.parse(init.body.toString()).title);
+        subscribeTitles.push(JSON.parse(String(init?.body)).title);
         if (subscribeTitles.length === 2) heartbeatSubscribe.resolve();
       }
       return responseWithRegistration(input, init, {
@@ -19421,7 +19528,7 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?register-title");
     const fixture = createPi();
     // Titles are assigned by omp after the first turn, so session_start
@@ -19430,6 +19537,8 @@ console.log(JSON.stringify(args));
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
       cwd: "/tmp/envoy-omp-test",
+      hasUI: false,
+      setTimeout: () => undefined,
       sessionManager: {
         ...topLevelSession,
         getSessionId: () => "ses_titled",
@@ -19475,14 +19584,14 @@ console.log(JSON.stringify(args));
     async function bootPlacedSession(query: string, sessionID: string) {
       const places: (TmuxPlace | undefined)[] = [];
       let registered: (() => void) | undefined;
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname === "/v1/interests/subscribe" && init?.body !== undefined) {
-          places.push(JSON.parse(init.body.toString()).tmux_place);
+          places.push(JSON.parse(String(init?.body)).tmux_place);
           registered?.();
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
       const fixture = createPi();
       const heartbeats: (() => void)[] = [];
@@ -19670,7 +19779,7 @@ console.log(JSON.stringify(args));
     const registrations: { readonly topics: readonly string[] }[] = [];
     const unregistrations: (readonly string[])[] = [];
     const registryTopics = new Set<string>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -19705,7 +19814,7 @@ console.log(JSON.stringify(args));
         });
       }
       return response({ session_id: "ses_registry", machine_id: "test", dir: "/tmp", topics: [] });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?live-registration");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
@@ -19765,7 +19874,7 @@ console.log(JSON.stringify(args));
   });
 
   test("merges locally live subscriptions into envoy_list before the next heartbeat", async () => {
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -19790,7 +19899,7 @@ console.log(JSON.stringify(args));
         });
       }
       return response({ session_id: "ses_list", machine_id: "test", dir: "/tmp", topics: [] });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?list-live-subscriptions");
     const fixture = createPi();
 
@@ -19921,6 +20030,8 @@ console.log(JSON.stringify(args));
     const intervals: (() => void)[] = [];
     const context: SessionContext = {
       cwd: "/tmp/envoy-omp-test",
+      hasUI: false,
+      setTimeout: () => undefined,
       sessionManager: { ...topLevelSession, getSessionId: () => "ses_unconfigured" },
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
@@ -19947,6 +20058,8 @@ console.log(JSON.stringify(args));
     const intervals: (() => void)[] = [];
     const context: SessionContext = {
       cwd: "/tmp/envoy-omp-test",
+      hasUI: false,
+      setTimeout: () => undefined,
       sessionManager: { ...topLevelSession, getSessionId: () => "ses_seed_refused" },
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
@@ -20076,7 +20189,7 @@ console.log(JSON.stringify(args));
     test(`with ${name}, the Legion claim refuses naming why, before any listener call`, async () => {
       const why = configure();
       const requests: string[] = [];
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const { pathname } = new URL(input.toString());
         requests.push(pathname);
         if (pathname !== "/v1/roles/set") return responseWithRegistration(input, init, {});
@@ -20087,7 +20200,7 @@ console.log(JSON.stringify(args));
           dir: "/tmp/envoy-omp-test",
           topics: [`notifications.role.${body.role ?? ""}`],
         });
-      };
+      });
       const { default: envoyExtension } = await import(`./envoy.ts?claim-inbound-off-${slug}`);
       const fixture = createPi();
       envoyExtension(fixture.pi);
@@ -20103,12 +20216,16 @@ console.log(JSON.stringify(args));
   }
 
   test("retries NATS in the background when the initial connection fails", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     natsState.failConnects = 1;
     const notifications: string[] = [];
     const intervals: { callback: () => void; intervalMs: number }[] = [];
     const context: SessionContext = {
       cwd: "/tmp/envoy-omp-test",
+      hasUI: false,
+      setTimeout: () => undefined,
       sessionManager: { ...topLevelSession, getSessionId: () => "ses_retry" },
       setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
@@ -20148,7 +20265,9 @@ console.log(JSON.stringify(args));
   });
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?session-switch");
     const fixture = createPi();
 
@@ -20162,7 +20281,9 @@ console.log(JSON.stringify(args));
   });
 
   test("tells the agent its identity changed when a branch re-mints the session id", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?branch-identity-notice");
     const fixture = createPi();
 
@@ -20182,7 +20303,9 @@ console.log(JSON.stringify(args));
   });
 
   test("tells the agent its identity changed when a fork re-mints the session id", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?fork-identity-notice");
     const fixture = createPi();
 
@@ -20200,7 +20323,9 @@ console.log(JSON.stringify(args));
   });
 
   test("tells the agent its identity changed when a handoff re-mints the session id", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?handoff-identity-notice");
     const fixture = createPi();
 
@@ -20219,7 +20344,9 @@ console.log(JSON.stringify(args));
   });
 
   test("stays silent about identity when a switch replaces the transcript or keeps the id", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?switch-identity-silent");
     const fixture = createPi();
 
@@ -20242,7 +20369,9 @@ console.log(JSON.stringify(args));
   });
 
   test("stays silent about identity when the session gains its first id", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?first-identity-silent");
     const fixture = createPi();
 
@@ -20260,7 +20389,7 @@ console.log(JSON.stringify(args));
 
   test("a network outage during rebind does not swallow the identity notice", async () => {
     let registryDown = false;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (registryDown) throw new Error("network unreachable");
       return responseWithRegistration(input, init, {
         session_id: "ses_outage_before",
@@ -20268,7 +20397,7 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?identity-notice-outage");
     const fixture = createPi();
     const notifications: string[] = [];
@@ -20296,7 +20425,9 @@ console.log(JSON.stringify(args));
 
   test("an in-process session switch leaves the session it left behind nothing to receive on", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?switch-no-resubscribe");
     const fixture = createPi();
 
@@ -20326,7 +20457,9 @@ console.log(JSON.stringify(args));
 
   test("envoy_unsubscribe is not undone by the resubscribe path", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-stays");
     const fixture = createPi();
 
@@ -20356,7 +20489,9 @@ console.log(JSON.stringify(args));
 
   test("a subscription.removed notice drops the local follow so dead-connection recovery does not resurrect it", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?subscription-removed-drops-local");
     const fixture = createPi();
 
@@ -20403,7 +20538,9 @@ console.log(JSON.stringify(args));
 
   test("a subscription.removed notice naming a different session leaves this session's subscription and emits no notice", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import(
       "./envoy.ts?subscription-removed-other-session"
     );
@@ -20450,14 +20587,14 @@ console.log(JSON.stringify(args));
     globalThis.setTimeout = ((_: () => void) => {
       retryScheduled.resolve();
       return undefined as never;
-    }) as typeof setTimeout;
+    }) as unknown as typeof setTimeout;
     try {
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
-        const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+        const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
         if (url.pathname === "/v1/interests/unsubscribe") {
           const topics = Array.isArray(body?.topics)
-            ? body.topics.filter((topic): topic is string => typeof topic === "string")
+            ? body.topics.filter((topic: unknown): topic is string => typeof topic === "string")
             : [];
           unregistrations.push(topics);
           return response({});
@@ -20472,7 +20609,7 @@ console.log(JSON.stringify(args));
           });
         }
         return response({});
-      };
+      });
       const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-awaiting-retry");
       const fixture = createPi();
 
@@ -20500,7 +20637,9 @@ console.log(JSON.stringify(args));
 
   test("a deliberately closed relay subject still recovers from a genuine death once it is back", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?marker-is-consumed");
     const fixture = createPi();
     const home = deliverSubject("ses_home");
@@ -20544,7 +20683,9 @@ console.log(JSON.stringify(args));
 
   test("permits redelivery after a failed injection and warns with the envelope id", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?deliver-retry");
     const fixture = createPi();
     let throwNext = true;
@@ -20616,7 +20757,9 @@ console.log(JSON.stringify(args));
   });
 
   test("deduplicates a redelivery after successful injection", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     // Query isolation gives this stateful extension its own NATS subscription.
     const { default: envoyExtension } = await import("./envoy.ts?deliver-dedupe");
     const fixture = createPi();
@@ -20665,7 +20808,9 @@ console.log(JSON.stringify(args));
   // subject, so one CI settlement arrives on both. Its key does not name its event, so only the
   // event id the two copies share makes the second one the first again.
   test("injects one publish once when two followed subscriptions both carry it", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     // Query isolation gives this stateful extension its own NATS subscription.
     const { default: envoyExtension } = await import("./envoy.ts?deliver-overlapping-copies");
     const fixture = createPi();
@@ -20725,7 +20870,9 @@ console.log(JSON.stringify(args));
 
   test("an ended subscription iterator resubscribes instead of going deaf", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?resubscribe");
     const fixture = createPi();
     const relay = deliverSubject("ses_deaf");
@@ -20759,7 +20906,7 @@ console.log(JSON.stringify(args));
     // flipped inside the same function object rather than by reassigning
     // globalThis.fetch afterwards.
     let registryDown = false;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (registryDown) throw new Error("network unreachable");
       return responseWithRegistration(input, init, {
         session_id: "ses_heartbeat",
@@ -20767,7 +20914,7 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-blip");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
@@ -20826,7 +20973,7 @@ console.log(JSON.stringify(args));
       await reached.promise;
       await settle();
     };
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const registering = new URL(input.toString()).pathname === "/v1/interests/subscribe";
       if (registering) {
         attempted += 1;
@@ -20844,7 +20991,7 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-retry");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
@@ -20917,7 +21064,7 @@ console.log(JSON.stringify(args));
 
   test("a rebind during a network outage notifies instead of failing the handler", async () => {
     let registryDown = false;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       if (registryDown) throw new Error("network unreachable");
       return responseWithRegistration(input, init, {
         session_id: "ses_rebind",
@@ -20925,12 +21072,14 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?rebind-blip");
     const fixture = createPi();
     const notifications: string[] = [];
     const context: SessionContext = {
       cwd: "/tmp/envoy-omp-test",
+      hasUI: false,
+      setTimeout: () => undefined,
       sessionManager: { ...topLevelSession, getSessionId: () => "ses_rebind" },
       setInterval: () => undefined,
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
@@ -20955,7 +21104,7 @@ console.log(JSON.stringify(args));
   test("deregisters a live session before draining its NATS connection", async () => {
     const requests: { readonly method: string; readonly path: string }[] = [];
     let drainHadStartedAtDeregistration: boolean | undefined;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       requests.push({ method: init?.method ?? "GET", path: url.pathname });
       if (url.pathname === "/v1/sessions/ses_shutdown") {
@@ -20967,7 +21116,7 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: ["notifications.agent.ses_shutdown"],
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?shutdown-deregister");
     const fixture = createPi();
 
@@ -20983,7 +21132,9 @@ console.log(JSON.stringify(args));
   });
 
   test("session_shutdown resolves within its budget when drain hangs on a dead connection", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?shutdown-hang");
     const fixture = createPi();
 
@@ -21001,7 +21152,7 @@ console.log(JSON.stringify(args));
   test("starts NATS drain while listener deregistration is still pending", async () => {
     const deletion = Promise.withResolvers<Response>();
     const deleteStarted = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const path = new URL(input.toString()).pathname;
       if (path === "/v1/interests/subscribe") return responseWithRegistration(input, init, []);
       if (path === "/v1/sessions/ses_shutdown") {
@@ -21009,7 +21160,7 @@ console.log(JSON.stringify(args));
         return deletion.promise;
       }
       return response({});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?shutdown-parallel-drain");
     const fixture = createPi();
 
@@ -21035,7 +21186,7 @@ console.log(JSON.stringify(args));
     let registrationPending = false;
     let registrationPendingAtDelete: boolean | undefined;
     let registrations = 0;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const path = new URL(input.toString()).pathname;
       requests.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v1/sessions/ses_shutdown") {
@@ -21052,7 +21203,7 @@ console.log(JSON.stringify(args));
         return answer;
       }
       return response({});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?shutdown-settles-registration");
     const fixture = createPi();
 
@@ -21097,7 +21248,7 @@ console.log(JSON.stringify(args));
     const requests: string[] = [];
     const registration = Promise.withResolvers<Response>();
     let registrations = 0;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const path = new URL(input.toString()).pathname;
       requests.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v1/sessions/ses_shutdown") return response({});
@@ -21108,7 +21259,7 @@ console.log(JSON.stringify(args));
         return registration.promise;
       }
       return response({});
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?shutdown-bounds-settle");
     const fixture = createPi();
 
@@ -21144,10 +21295,10 @@ console.log(JSON.stringify(args));
   // left registered it reads as live, and then as unresponsive, for an hour of peers' sends.
   test("a session id switch deregisters the id this process left", async () => {
     const requests: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       requests.push(`${init?.method ?? "GET"} ${new URL(input.toString()).pathname}`);
       return responseWithRegistration(input, init, []);
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?switch-deregisters-old-id");
     const fixture = createPi();
 
@@ -21167,7 +21318,7 @@ console.log(JSON.stringify(args));
   // asked for, and must arrive with the state and the heartbeat that say it is only stalled.
   test("envoy_sessions asks for the unresponsive sessions and renders each one's state and last_seen", async () => {
     const urls: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       urls.push(`${url.pathname}${url.search}`);
       if (url.pathname !== "/v1/sessions") return responseWithRegistration(input, init, []);
@@ -21184,7 +21335,7 @@ console.log(JSON.stringify(args));
           state: "unresponsive",
         },
       ]);
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?sessions-render-state");
     const fixture = createPi();
 
@@ -21205,13 +21356,14 @@ console.log(JSON.stringify(args));
   });
 
   test("/whoami reads the live session ID when the session was created after session_start", async () => {
-    globalThis.fetch = async (input, init) =>
+    globalThis.fetch = standInFetch(async (input, init) =>
       responseWithRegistration(input, init, {
         session_id: "ses_live",
         machine_id: "test",
         dir: "/tmp",
         topics: [],
-      });
+      })
+    );
     const { default: envoyExtension } = await import("./envoy.ts?whoami-live-id");
     const fixture = createPi();
 
@@ -21235,9 +21387,9 @@ console.log(JSON.stringify(args));
 
   test("the heartbeat heals a stale registration when the session ID drifts", async () => {
     const registered: string[] = [];
-    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = standInFetch(async (input: string | URL | Request, init?: RequestInit) => {
       if (init?.body !== undefined) {
-        const body = JSON.parse(init.body.toString());
+        const body = JSON.parse(String(init?.body));
         if (typeof body.session_id === "string") registered.push(body.session_id);
       }
       return responseWithRegistration(input, init, {
@@ -21246,13 +21398,15 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?heartbeat-drift");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     let liveSessionID = "";
     const context: SessionContext = {
       cwd: "/tmp/envoy-omp-test",
+      hasUI: false,
+      setTimeout: () => undefined,
       sessionManager: { ...topLevelSession, getSessionId: () => liveSessionID },
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: () => undefined },
@@ -21290,7 +21444,7 @@ console.log(JSON.stringify(args));
   });
 
   test("surfaces listener subscribe warnings in the envoy_subscribe result", async () => {
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const body = JSON.parse(init?.body?.toString() ?? "{}") as {
         readonly session_id?: string;
         readonly dir?: string;
@@ -21305,7 +21459,7 @@ console.log(JSON.stringify(args));
         warnings: ["no matching event in stream"],
         delivery: consumerDelivery(body.session_id ?? "ses_omp", { streamID: TEST_STREAM_ID }),
       });
-    };
+    });
     const { default: envoyExtension } = await import("./envoy.ts?subscribe-warnings");
     const fixture = createPi();
 
@@ -21324,7 +21478,9 @@ console.log(JSON.stringify(args));
   });
 
   test("returns the 50 newest rendered deliveries from envoy_inbox", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     const { default: envoyExtension } = await import("./envoy.ts?inbox");
     const fixture = createPi();
     const delivered = Promise.withResolvers<void>();
@@ -21902,7 +22058,9 @@ describe("consumer delivery", () => {
   // session holds no subscription for it beyond the relay subject the set above pins.
   test("a connection probe on the relay subject is answered, follows a session-id change, and the relay subscription closes when the session moves or shuts down", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension } = await import("./envoy.ts?connection-probe");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -22664,9 +22822,14 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
                 delivery.customType === "envoy-message" && delivery.content.includes(marker)
             )
             .map((delivery) => delivery.content),
+        // The extension's NATS dial, through `setNatsConnectForTests`, which production never
+        // sets: the last one is the session's connection through the proxy.
+        natsDial: () => natsState.realDials.at(-1),
         // The session runs on nats.js's real ping and dial timers and a real listener, so each
         // wait asks again until its condition holds.
-        waitFor: (condition, what) => until(what, condition),
+        waitFor: async (condition, what) => {
+          await until(what, condition);
+        },
       });
     } finally {
       await fixture.handlers.get("session_shutdown")?.({}, context);
