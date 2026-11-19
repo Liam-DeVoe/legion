@@ -1645,7 +1645,7 @@ start_daemon() {
 # restart_daemon stops the run's daemon and starts it again on a legion.yaml written afresh
 # (write_legion_config); the new one binds the old one's ports, so one still there fails the check.
 restart_daemon() {
-  stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its replacement would meet its ports"
+  stop_pid "$daemon_pid" "" "port:$port_daemon" "port:$port_worker_stream" || fail "the daemon (pid $daemon_pid) did not stop or its ports are still held (named above); its replacement would meet its ports"
   daemon_pid=
   write_legion_config
   start_daemon
@@ -5497,7 +5497,7 @@ begin restart-mid-tree
 before=$(claim_view "$tree1" merger | jq -c '{session, incarnation: .locator.incarnation, podUid: .locator.sandbox.podUid, container: .locator.sandbox.container}')
 live_before=$(live_claims) || fail "legion claims could not be read"
 stale_before=$(log_lines "$stale_msg" | wc -l)
-stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its ports"
+stop_pid "$daemon_pid" "" "port:$port_daemon" "port:$port_worker_stream" || fail "the daemon (pid $daemon_pid) did not stop or its ports are still held (named above); its restart would meet its ports"
 daemon_pid=
 start_daemon
 on_tree "$tree1" until_true 300 "the merger to be re-adopted" sh -c \
@@ -5550,7 +5550,7 @@ new_envoy_url=$(upper_host "$handed_envoy_url")
 [ "$new_envoy_url" != "$old_envoy_url" ] || fail "LEGION_E2E_ENVOY_URL's host has no lower-case letter to upper-case"
 stale_before=$(log_lines "$stale_msg" | wc -l)
 failed_before=$(log_lines "supervise: launch failed" | wc -l)
-stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its ports"
+stop_pid "$daemon_pid" "" "port:$port_daemon" "port:$port_worker_stream" || fail "the daemon (pid $daemon_pid) did not stop or its ports are still held (named above); its restart would meet its ports"
 daemon_pid=
 handed_envoy_url=$new_envoy_url
 handed_envoy_source="LEGION_E2E_ENVOY_URL with its host upper-cased"
@@ -5604,7 +5604,7 @@ old_stream=tcp://$host:$port_worker_stream
 old_daemon_url=http://$host:$port_daemon
 stale_before=$(log_lines "$stale_msg" | wc -l)
 failed_before=$(log_lines "supervise: launch failed" | wc -l)
-stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its ports"
+stop_pid "$daemon_pid" "" "port:$port_daemon" "port:$port_worker_stream" || fail "the daemon (pid $daemon_pid) did not stop or its ports are still held (named above); its restart would meet its ports"
 daemon_pid=
 read -r port_daemon port_worker_stream <<<"$port_worker_stream $port_daemon"
 write_legion_config

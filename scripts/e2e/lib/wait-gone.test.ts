@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -15,19 +23,33 @@ import { scriptFunctions } from "./script-functions";
 // has not finished ending, as one in uninterruptible sleep stays, is a stand-in whose SIGKILL the
 // harness's own `kill` drops (drop_kill): the wait must run to its deadline and name it. What
 // /proc shows of a reused pid, a zombie whose other threads still run and an entry that cannot be
-// read is a tree this test writes, the waits pointed at it by wait_gone_proc.
+// read is a tree this test writes, the waits pointed at it by wait_gone_proc. A pid gone does not
+// free what it held when a child it forked holds the same socket and lock: a stand-in that forks
+// one (child=) shows that a wait on the pid alone returns with both still held, and that a wait on
+// the port and the lock themselves (`port:N`, `lock:FILE`) does not.
 const lib = import.meta.dir;
 const e2e = join(lib, "..");
 const root = join(e2e, "..", "..");
 const dir = temporaryDirectory("wait-gone-test");
 const holderPath = join(dir, "holder.py");
 const pidsFile = join(dir, "started.pids");
-// A case waits out deadlines and stand-ins that leave late, up to about 45 s by its own bounds (a
-// stand-in's start, then a stop's 40 s deadline), and a machine at a load of 500 runs each stand-in
-// many times slower; so each bash run may take 240 s and each case 300 s. A bound a case asserts on
-// its own timing leaves several seconds of slack, and is still seconds short of what the fault it
-// catches would take.
-setDefaultTimeout(300_000);
+// Each case's own timeout, the one fixed time this file sets, and what every wait a case needs an
+// answer from runs to: END (caseEnd below) is that timeout counted from the case's start, less
+// what the case does after the wait, so that a wait that never ends fails the case with its own
+// line before bun stops it. A bound that is itself what a case checks (a 2 s deadline the wait must
+// run to, a grace of 1 s) keeps its own value, and a mutant of wait-gone.sh shows the case fails
+// when the bound is not kept.
+const caseTimeoutMs = 300_000;
+setDefaultTimeout(caseTimeoutMs);
+let caseStart = Date.now();
+beforeEach(() => {
+  caseStart = Date.now();
+});
+// caseEnd() is END: the epoch second at which the case's own timeout leaves 60 s for what follows
+// the wait (its later reads, the harness's exit, bun's own bookkeeping).
+function caseEnd() {
+  return String(Math.floor((caseStart + caseTimeoutMs - 60_000) / 1000));
+}
 
 // The stand-in, written once the suite's directory exists (temporaryDirectory makes it before the
 // first test).
@@ -40,6 +62,10 @@ const holder = `import ctypes, fcntl, os, signal, socket, sys, threading, time
 #               drain writes (a few hundred files, never so many that removing them takes minutes)
 #   log=FILE    it appends "serving" to FILE, and with term=slow "shutdown-complete" as it ends
 #   lock=FILE   it holds an flock on FILE
+#   child=SECONDS  it forks a child, once the port and the lock are set up, that holds both (the
+#               same socket and the same open lock file) until SECONDS after this process is gone
+#   release=FILE   with child=, the child holds on until FILE is there instead
+#   pids=FILE   the child appends its pid to FILE, for the suite's last cleanup
 #   threads=N   it starts N threads that sleep, as every Go binary and Bun has threads
 #   mib=M       it touches M MiB, which its exit after SIGKILL takes a measurable time to release
 #   leader=exit its main thread exits once it is set up (pthread_exit), and its other threads keep
@@ -74,6 +100,21 @@ listener.listen()
 if "lock" in args:
     lock = open(args["lock"], "a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+if "child" in args or "release" in args:
+    parent = os.getpid()
+    if os.fork() == 0:
+        if "pids" in args:
+            with open(args["pids"], "a") as pids:
+                stat = open("/proc/self/stat").read()
+                pids.write("%d %s\\n" % (os.getpid(), stat[stat.rindex(")") + 2:].split()[19]))
+        while os.getppid() == parent:
+            time.sleep(0.01)
+        if "release" in args:
+            while not os.path.exists(args["release"]):
+                time.sleep(0.01)
+        else:
+            time.sleep(float(args["child"]))
+        os._exit(0)
 for _ in range(int(args.get("threads", "0"))):
     threading.Thread(target=time.sleep, args=(3600,), daemon=True).start()
 memory = bytearray(int(args.get("mib", "0")) << 20)
@@ -91,16 +132,18 @@ time.sleep(3600)
 `;
 beforeAll(() => writeFileSync(holderPath, holder));
 
-// Every stand-in a harness starts is recorded in started.pids; one a harness could not end is
-// ended here, by that pid, while its command line still names holder.py, so a pid the kernel gave
-// to another process since is never signalled.
+// Every stand-in a harness starts is recorded in started.pids with its start time (stat field 22);
+// one a harness could not end is ended here, by that pid, while the pid still has that start time,
+// so a pid the kernel gave to another process since is never signalled. Only /proc/PID/stat is
+// read, which waits on nothing of the process it describes.
 afterAll(() => {
   if (!existsSync(pidsFile)) return;
   for (const line of readFileSync(pidsFile, "utf8").split("\n")) {
-    const pid = Number(line);
-    if (!pid) continue;
+    const [pid, start] = line.split(" ").map(Number);
+    if (!pid || !start) continue;
     try {
-      if (!readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(holderPath)) continue;
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      if (Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]) !== start) continue;
       process.kill(pid, "SIGKILL");
     } catch {}
   }
@@ -122,7 +165,9 @@ holder() {
   file=$(mktemp -u "$DIR/port.XXXXXX")
   python3 "$HOLDER" port="$file" "$@" &
   started+=("$!")
-  echo "$!" >>"$PIDS"
+  local start=''
+  process_start "$!" start || true
+  echo "$! $start" >>"$PIDS"
   printf -v "$name" '%s' "$!"
   for _ in $(seq 1 600); do [ -s "$file" ] && break; sleep 0.05; done
   [ -s "$file" ] || { echo "the stand-in $name wrote no port" >&2; exit 2; }
@@ -142,7 +187,7 @@ drop_kill() {
 }
 `;
 
-function bash(body: string, env: Record<string, string> = {}, timeout = 240_000) {
+function bash(body: string, env: Record<string, string> = {}) {
   const ran = Bun.spawnSync(["bash", "-c", `${prelude}\n${body}`], {
     env: {
       PATH: process.env.PATH ?? "",
@@ -150,11 +195,13 @@ function bash(body: string, env: Record<string, string> = {}, timeout = 240_000)
       DIR: dir,
       HOLDER: holderPath,
       PIDS: pidsFile,
+      END: caseEnd(),
       ...env,
     },
     stdout: "pipe",
     stderr: "pipe",
-    timeout,
+    // Stopped 30 s before the case's own timeout, so the case reports what it read.
+    timeout: Math.max(1_000, caseStart + caseTimeoutMs - 30_000 - Date.now()),
   });
   return { code: ran.exitCode, stdout: ran.stdout.toString(), stderr: ran.stderr.toString() };
 }
@@ -179,7 +226,7 @@ function freshDir(name: string) {
 describe("wait_gone and kill_gone", () => {
   test("a sleep given SIGTERM is gone at once", () => {
     const r = bash(`sleep 30 & started+=("$!")
-kill_gone TERM "$((EPOCHSECONDS + 30))" "$!"; echo "rc=$?"`);
+kill_gone TERM "$END" "$!"; echo "rc=$?"`);
     expect(values(r.stdout).rc).toBe("0");
   });
 
@@ -189,7 +236,7 @@ sleep 0.3
 deadline=$((EPOCHSECONDS + 2))
 kill_gone TERM "$deadline" "$b"; echo "rc=$?"
 echo "ended_ms=$(now_ms)"; echo "deadline=$deadline"; echo "pid=$b"
-kill_gone KILL "$((EPOCHSECONDS + 30))" "$b"; echo "killed=$?"`);
+kill_gone KILL "$END" "$b"; echo "killed=$?"`);
     const v = values(r.stdout);
     expect(v.rc).toBe("1");
     expect(r.stderr).toMatch(
@@ -211,26 +258,29 @@ bash -c 'sleep 30 & echo $! >"$1"; wait' zombie-parent "$zpid" & parent=$!; star
 while [ ! -s "$zpid" ]; do sleep 0.05; done
 z=$(<"$zpid")
 kill -STOP "$parent"
+# Stopped before the kill: a parent the stop has not reached yet would reap the zombie at once.
+until [ "$(awk '{print $3}' "/proc/$parent/stat")" = T ]; do sleep 0.01; done
 start=$(now_ms)
-kill_gone KILL "$((EPOCHSECONDS + 15))" "$z"; echo "rc=$?"
+kill_gone KILL "$END" "$z"; echo "rc=$?"
 echo "ms=$(($(now_ms) - start))"
 echo "state=$(awk '{print $3}' "/proc/$z/stat" 2>/dev/null)"
 kill -CONT "$parent"`);
     const v = values(r.stdout);
     expect(v.rc).toBe("0");
     expect(v.state).toBe("Z");
-    expect(Number(v.ms)).toBeLessThan(10_000);
+    // Its parent stays stopped until after: a wait that did not count the zombie gone would have run
+    // to END and returned 1.
   });
 
   test("a whole process group given SIGKILL is gone", () => {
     const r = bash(`setsid bash -c 'sleep 30 & sleep 30 & wait' & g=$!; started+=("$g")
 sleep 0.3
-kill_gone KILL "$((EPOCHSECONDS + 30))" "-$g"; echo "rc=$?"`);
+kill_gone KILL "$END" "-$g"; echo "rc=$?"`);
     expect(values(r.stdout).rc).toBe("0");
   });
 
   test("a pid with no process is gone", () => {
-    const r = bash(`wait_gone "$((EPOCHSECONDS + 1))" 999999999; echo "rc=$?"`);
+    const r = bash(`wait_gone "$END" 999999999; echo "rc=$?"`);
     expect(values(r.stdout).rc).toBe("0");
   });
 
@@ -260,7 +310,7 @@ echo "left=\${wait_gone_left[*]}"
 echo "pid=$h"
 listening "$h_port" && echo listening=yes
 held "$LOCK" && echo held=yes
-kill_gone KILL "$((EPOCHSECONDS + 30))" "$h"; echo "killed=$?"
+kill_gone KILL "$END" "$h" "port:$h_port" "lock:$LOCK"; echo "killed=$?"
 listening "$h_port" || echo listening_after=no
 held "$LOCK" || echo held_after=no`,
       { LOCK: lock }
@@ -272,12 +322,12 @@ held "$LOCK" || echo held_after=no`,
     expect([v.killed, v.listening_after, v.held_after]).toEqual(["0", "no", "no"]);
   });
 
-  test("is gone after its SIGKILL only once its last thread has released the port and the lock", () => {
+  test("given SIGKILL with its port and lock as targets, is waited for until both are free", () => {
     const lock = join(freshDir("threads-kill"), "lock");
     const r = bash(
       `for t in 1 2 3; do
   holder h threads=8 mib=1024 lock="$LOCK.$t"
-  kill_gone KILL "$((EPOCHSECONDS + 30))" "$h"; rc=$?
+  kill_gone KILL "$END" "$h" "port:$h_port" "lock:$LOCK.$t"; rc=$?
   listening "$h_port" && echo "trial $t: port held after kill_gone returned $rc"
   held "$LOCK.$t" && echo "trial $t: lock held after kill_gone returned $rc"
 done
@@ -285,6 +335,54 @@ echo done=yes`,
       { LOCK: lock }
     );
     expect(r.stdout).toBe("done=yes\n");
+  });
+});
+
+describe("a port or a lock a forked child of the process still holds", () => {
+  test("a wait on the pid alone returns while the child still holds the port and the lock", () => {
+    const d = freshDir("child-control");
+    const r = bash(
+      `holder h release="$D/release" lock="$D/lock" pids="$PIDS"
+kill_gone KILL "$END" "$h"; echo "rc=$?"
+listening "$h_port" && echo port=held
+held "$D/lock" && echo lock=held
+touch "$D/release"
+kill_gone KILL "$END" "port:$h_port" "lock:$D/lock"; echo "freed=$?"`,
+      { D: d }
+    );
+    expect(values(r.stdout)).toMatchObject({ rc: "0", port: "held", lock: "held", freed: "0" });
+  });
+
+  test("kill_gone given the port and the lock returns only once the child has let both go", () => {
+    const d = freshDir("child");
+    const r = bash(
+      `for t in 1 2 3; do
+  holder h child=1 lock="$D/lock.$t" pids="$PIDS"
+  kill_gone KILL "$END" "$h" "port:$h_port" "lock:$D/lock.$t"; rc=$?
+  listening "$h_port" && echo "trial $t: port held after kill_gone returned $rc"
+  held "$D/lock.$t" && echo "trial $t: lock held after kill_gone returned $rc"
+done
+echo done=yes`,
+      { D: d }
+    );
+    expect(r.stdout).toBe("done=yes\n");
+  });
+
+  test("a port and a lock still held at the deadline are named", () => {
+    const d = freshDir("child-named");
+    const r = bash(
+      `holder h release="$D/release" lock="$D/lock" pids="$PIDS"
+kill_gone KILL "$((EPOCHSECONDS + 2))" "$h" "port:$h_port" "lock:$D/lock"; echo "rc=$?"
+echo "port=$h_port"
+touch "$D/release"`,
+      { D: d }
+    );
+    const v = values(r.stdout);
+    expect(v.rc).toBe("1");
+    expect(r.stderr).toMatch(
+      new RegExp(`^port ${v.port} is still listened on \\(.*\\) at its deadline`, "m")
+    );
+    expect(r.stderr).toContain(`lock ${d}/lock is still held at its deadline`);
   });
 });
 
@@ -306,15 +404,15 @@ describe("what wait_gone reads of /proc", () => {
     }
     return proc;
   }
-  // wait_gone in the background against PROC with a deadline SECONDS away, CHANGE run 0.5 s in,
-  // and what it returned and when. A case that expects the wait to end early gives it 15 s, so the
-  // change can land late on a busy machine and a wait that misses it still reaches the deadline; a
-  // case that expects it to run to the deadline gives it 3.
-  function waitAcross(proc: string, pid: number, change: string, seconds: number) {
+  // wait_gone in the background against PROC with DEADLINE (a bash word), CHANGE run 0.5 s in, and
+  // what it returned and when. A case that expects the wait to end once CHANGE lands gives it END,
+  // so a wait that missed the change runs to END and returns 1; a case that expects it to run to the
+  // deadline gives it 3 s, the bound it checks.
+  function waitAcross(proc: string, pid: number, change: string, deadline: string) {
     return bash(
       `wait_gone_proc=$PROC
 kill() { return 0; }
-deadline=$((EPOCHSECONDS + ${seconds}))
+deadline=${deadline}
 start=$(now_ms)
 ( wait_gone "$deadline" ${pid}; echo "rc=$? ms=$(($(now_ms) - start))" ) &
 sleep 0.5
@@ -330,35 +428,29 @@ wait $!`,
       proc,
       4242,
       `printf '%s\\n' "$(sed 's/ 100 0 0$/ 200 0 0/' "$PROC/4242/stat")" >"$PROC/4242/stat.new" && mv "$PROC/4242/stat.new" "$PROC/4242/stat"`,
-      15
+      '"$END"'
     );
-    const [rc, ms] = r.stdout.trim().split(" ");
-    expect(rc).toBe("rc=0");
-    expect(Number(ms.slice(3))).toBeLessThan(10_000);
+    expect(r.stdout.trim().split(" ")[0]).toBe("rc=0");
   });
 
   test("a pid whose start time stays is the same process, still there at the deadline", () => {
     const proc = fakeProc({ 4242: { start: 100 } });
-    const r = waitAcross(proc, 4242, ":", 3);
+    const r = waitAcross(proc, 4242, ":", '"$((EPOCHSECONDS + 3))"');
     expect(r.stdout.trim().split(" ")[0]).toBe("rc=1");
   });
 
   test("a zombie whose task directory lists another thread is not gone until that thread is", () => {
     const proc = fakeProc({ 4244: { state: "Z", tasks: [4244, 4245] } });
-    const kept = waitAcross(proc, 4244, ":", 3);
+    const kept = waitAcross(proc, 4244, ":", '"$((EPOCHSECONDS + 3))"');
     expect(kept.stdout.trim().split(" ")[0]).toBe("rc=1");
-    const r = waitAcross(proc, 4244, `rmdir "$PROC/4244/task/4245"`, 15);
-    const [rc, ms] = r.stdout.trim().split(" ");
-    expect(rc).toBe("rc=0");
-    expect(Number(ms.slice(3))).toBeLessThan(10_000);
+    const r = waitAcross(proc, 4244, `rmdir "$PROC/4244/task/4245"`, '"$END"');
+    expect(r.stdout.trim().split(" ")[0]).toBe("rc=0");
   });
 
   test("a zombie with no thread but its main one is gone at once", () => {
     const proc = fakeProc({ 4246: { state: "Z" } });
-    const r = waitAcross(proc, 4246, ":", 15);
-    const [rc, ms] = r.stdout.trim().split(" ");
-    expect(rc).toBe("rc=0");
-    expect(Number(ms.slice(3))).toBeLessThan(10_000);
+    const r = waitAcross(proc, 4246, ":", '"$END"');
+    expect(r.stdout.trim().split(" ")[0]).toBe("rc=0");
   });
 
   test("an entry whose stat cannot be read is not gone, and kill_gone says why it names it", () => {
@@ -381,7 +473,7 @@ kill_gone TERM "$((EPOCHSECONDS + 1))" 4243; echo "rc=$?"`,
 describe("stop_gone: one deadline for the SIGTERM's wait and the SIGKILL's", () => {
   test("a process that ends on SIGTERM is gone, given no SIGKILL", () => {
     const r = bash(`holder h term=slow:0.5
-stop_gone 10 "$((EPOCHSECONDS + 20))" "$h"; echo "rc=$?"
+stop_gone 10 "$END" "$h"; echo "rc=$?"
 wait "$h"; echo "status=$?"`);
     expect(values(r.stdout)).toMatchObject({ rc: "0", status: "0" });
   });
@@ -389,7 +481,7 @@ wait "$h"; echo "status=$?"`);
   test("a process that ignores SIGTERM gets its SIGKILL at the grace and is gone", () => {
     const r = bash(`holder h term=ignore
 start=$(now_ms)
-stop_gone 1 "$((EPOCHSECONDS + 20))" "$h"; echo "rc=$?"
+stop_gone 1 "$END" "$h"; echo "rc=$?"
 echo "ms=$(($(now_ms) - start))"
 wait "$h"; echo "status=$?"`);
     const v = values(r.stdout);
@@ -402,7 +494,7 @@ wait "$h"; echo "status=$?"`);
     // whole second, would end almost at once and SIGKILL a stand-in that needs half of it.
     const r = bash(`holder h term=slow:0.5
 while [ "\${EPOCHREALTIME#*.}" -lt 900000 ]; do sleep 0.01; done
-stop_gone 1 "$((EPOCHSECONDS + 20))" "$h"; echo "rc=$?"
+stop_gone 1 "$END" "$h"; echo "rc=$?"
 wait "$h"; echo "status=$?"`);
     expect(values(r.stdout)).toMatchObject({ rc: "0", status: "0" });
   });
@@ -439,7 +531,7 @@ note() { :; }
 fail() { echo "FAIL $*"; exit 1; }
 . "$ROOT/scripts/e2e/lib/rig.sh"`;
 
-  test("port: lib/rig.sh's stop_pid of a daemon that ignores SIGTERM, then Stage 4b's ports_free", () => {
+  test("port: lib/rig.sh's stop_pid, given the port as Stage 4b's restarts give it, of a daemon that ignores SIGTERM, then Stage 4b's ports_free", () => {
     const work = freshDir("port");
     const r = bash(
       `${rig}
@@ -447,7 +539,7 @@ ${stage4b("ports_free")}
 stop_pid_grace=1
 for t in 1 2 3; do
   holder d term=ignore threads=8 mib=1024
-  stop_pid "$d" "$((EPOCHSECONDS + 60))" || echo "trial $t: stop_pid returned 1"
+  stop_pid "$d" "$END" "port:$d_port" || echo "trial $t: stop_pid returned 1"
   ports_free "$d_port"
 done
 echo free=yes`,
@@ -456,35 +548,59 @@ echo free=yes`,
     expect(r.stdout).toBe("free=yes\n");
   });
 
-  test("port: Stage 2's stop_pid of a daemon that drains for a second on SIGTERM, then the port's next bind", () => {
-    const work = freshDir("port-stage2");
+  test("port: Stage 4b's restart_daemon waits for the ports a child of the daemon still holds before it starts the new one", () => {
+    const work = freshDir("restart-child");
     const r = bash(
-      `${stage4b("ports_free")}
+      `${rig}
+${stage4b("ports_free")}
+${stage4b("restart_daemon")}
+write_legion_config() { :; }
+start_daemon() { ports_free "$port_daemon" "$port_worker_stream" && echo started=yes; }
+stop_pid_grace=1
+holder daemon_pid child=1 pids="$PIDS"
+port_daemon=$daemon_pid_port port_worker_stream=$daemon_pid_port
+restart_daemon`,
+      { WORK: work }
+    );
+    expect(r.stdout).toBe("started=yes\n");
+  });
+
+  test("process table: Stage 2's stop_pid of a daemon that drains for a second on SIGTERM, then the next run's refuse_leftovers reads the table", () => {
+    const work = freshDir("table-stage2");
+    const r = bash(
+      `. "$ROOT/scripts/e2e/lib/leftovers.sh"
 ${stage2("stop_pid")}
 fail() { echo "FAIL $*"; exit 1; }
 for t in 1 2 3; do
   holder d term=slow:1 threads=8 mib=256
-  stop_pid "$d" "$((EPOCHSECONDS + 60))" || echo "trial $t: stop_pid returned 1"
-  ports_free "$d_port"
+  stop_pid "$d" "$END" || echo "trial $t: stop_pid returned 1"
+  leftover_started "$d" >/dev/null && echo "trial $t: refuse_leftovers would read pid $d as running"
 done
-echo free=yes`,
+echo gone=yes`,
       { WORK: work }
     );
-    expect(r.stdout).toBe("free=yes\n");
+    expect(r.stdout).toBe("gone=yes\n");
   });
 
-  test("lock: lib/box-login.sh's stop_box_login_processes of a pane that ignores SIGTERM, then the next run's take_box_login_lock", () => {
-    const lock = join(freshDir("lock"), "box-login.lock");
+  test("lock: a run's stop_box_login_processes of a pane whose child holds the inherited lock, then the next run's take_box_login_lock", () => {
+    // As a stage proof holds it: the run takes the lock, so every pane it starts, and every process
+    // a pane starts, inherits the locked descriptor. The run ends after its teardown (the subshell
+    // below), and the next run takes the lock.
+    const d = freshDir("lock");
     const r = bash(
       `. "$ROOT/scripts/e2e/lib/box-login.sh"
 box_login_stop_grace=1
 for t in 1 2 3; do
-  holder pane term=ignore threads=8 mib=1024 lock="$LOCK.$t"
-  stop_box_login_processes "$pane" || echo "trial $t: the stop returned 1"
-  box_login_lock_file=$LOCK.$t bash -c '. "$ROOT/scripts/e2e/lib/box-login.sh"; take_box_login_lock' || echo "trial $t: refused"
+  (
+    box_login_lock_file=$D/lock.$t
+    take_box_login_lock || exit 1
+    holder pane term=ignore threads=8 mib=256 child=1 pids="$PIDS"
+    stop_box_login_processes "$pane" || echo "trial $t: the stop returned 1"
+  )
+  box_login_lock_file=$D/lock.$t bash -c '. "$ROOT/scripts/e2e/lib/box-login.sh"; take_box_login_lock' 2>/dev/null || echo "trial $t: refused"
 done
 echo took=yes`,
-      { LOCK: lock }
+      { D: d }
     );
     expect(r.stdout).toBe("took=yes\n");
   });
@@ -591,6 +707,7 @@ ${stage4b("restart_daemon")}
 stop_pid_grace=0
 holder daemon_pid term=${stays ? "ignore" : "default"}
 ${stays ? 'drop_kill "$daemon_pid"' : ""}
+port_daemon=$daemon_pid_port port_worker_stream=$daemon_pid_port
 echo "pid=$daemon_pid"
 restart_daemon`,
         { WORK: work }
@@ -599,7 +716,7 @@ restart_daemon`,
     const pid = values(stays.stdout).pid;
     expect(values(stays.stdout).started).toBeUndefined();
     expect(stays.stdout).toContain(
-      `FAIL the daemon (pid ${pid}) did not stop (named above); its replacement would meet its ports`
+      `FAIL the daemon (pid ${pid}) did not stop or its ports are still held (named above); its replacement would meet its ports`
     );
     expect(stays.stderr).toMatch(
       new RegExp(

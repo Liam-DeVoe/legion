@@ -272,21 +272,29 @@ signalable() {
   return 1
 }
 
-# stop_pid PID [DEADLINE] ends PID with stop_gone (lib/wait-gone.sh): SIGTERM, up to stop_pid_grace
-# seconds for it to be gone, then SIGKILL and a wait until DEADLINE, by default stop_pid_grace + 10
-# seconds from the call. A caller restarts a service on the same fixed port next (stage4b's
-# restart_daemon, whose start_daemon refuses a port still held), drops a database the process was
-# connected to, or reads the process table, and a process SIGKILL has not finished ending still
-# holds its port, its connections and its pid. Returns 0 once PID is gone, and for an empty PID or
-# one signalable refuses; 1 when PID is still there at DEADLINE, named on stderr. A caller whose
-# next step needs PID gone fails there; a teardown goes on (`stop_pid PID || true`), since a failed
+# stop_pid PID [DEADLINE [TARGET...]] ends PID with stop_gone (lib/wait-gone.sh): SIGTERM, up to
+# stop_pid_grace seconds for it to be gone, then SIGKILL and a wait until DEADLINE (empty: the
+# default, stop_pid_grace + 10 seconds from the call). A caller restarts a service on the same fixed
+# port next (stage4b's restart_daemon, whose start_daemon refuses a port still held), drops a
+# database the process was connected to, or reads the process table, and a process SIGKILL has not
+# finished ending still holds its port, its connections and its pid. A caller whose next step binds
+# a port or takes a lock passes it as a TARGET (`port:N`, `lock:FILE`), and the stop waits for that
+# fact itself, since a child of PID, or any process that inherited the socket, keeps the port after
+# PID is gone. An empty PID, or one signalable refuses, is not signalled, and only the TARGETs are
+# waited for. Returns 0 once PID is gone and every TARGET free; 1 when one is still there at
+# DEADLINE, named on stderr. A caller whose next
+# step needs PID gone fails there; a teardown goes on (`stop_pid PID || true`), since a failed
 # cleanup must never obscure the check that failed.
 stop_pid_grace=10
 stop_pid() {
-  local pid=${1:-} deadline=${2:-$((EPOCHSECONDS + stop_pid_grace + 10))}
+  local pid=${1:-} deadline=${2:-}
   [ -n "$pid" ] || return 0
-  signalable "$pid" || return 0
-  stop_gone "$stop_pid_grace" "$deadline" "$pid"
+  [ -n "$deadline" ] || deadline=$((EPOCHSECONDS + stop_pid_grace + 10))
+  shift
+  [ $# = 0 ] || shift
+  # A pid already gone, or one signalable refuses, is signalled no more; the TARGETs are still read.
+  signalable "$pid" || pid=
+  stop_gone "$stop_pid_grace" "$deadline" "$pid" "$@"
 }
 
 # stop_tree PID stops PID and every process under it. A watcher is a loop whose kubectl, jq or sleep

@@ -54,12 +54,22 @@ box_login_stop_grace=10
 # and a wait until 10 s past the grace, naming any still there then. A pane's Oh My Pi in the middle
 # of a token refresh gets the time to write the rotated token back to the operator's database
 # before it goes; a plain SIGKILL could leave the database with a refresh token that is already
-# spent. Each pane holds the box-login lock it inherited until its last thread has exited, so the
-# next box-login run's take_box_login_lock would meet a pane SIGKILL has not finished ending.
-# Returns 0 once every PID is gone, 1 when one is still there at the deadline: every caller is a
+# spent. Each pane, and each process a pane started, holds the box-login lock it inherited until it
+# has exited, so the next box-login run's take_box_login_lock would meet one still ending. A caller
+# that holds the lock itself (take_box_login_lock left box_login_lock_fd open) is done with the
+# box-login route once it stops the panes: the stop closes the caller's descriptor first, and then
+# waits for the lock itself to be free (`lock:FILE`), which a process that holds the inherited
+# descriptor and is not among the PIDs would otherwise keep from the next run unseen. Returns 0 once
+# every PID is gone and the lock free, 1 when one is still there at the deadline: every caller is a
 # teardown, which goes on, and the next run's take_box_login_lock names the holder if it stays.
 stop_box_login_processes() {
-  stop_gone "$box_login_stop_grace" "$((EPOCHSECONDS + box_login_stop_grace + 10))" "$@"
+  local -a lock=()
+  if [ -n "${box_login_lock_fd:-}" ]; then
+    exec {box_login_lock_fd}>&-
+    box_login_lock_fd=
+    lock=("lock:$box_login_lock_file")
+  fi
+  stop_gone "$box_login_stop_grace" "$((EPOCHSECONDS + box_login_stop_grace + 10))" "$@" ${lock[@]+"${lock[@]}"}
 }
 
 # unlink_box_login_db AGENT_DIR — removes AGENT_DIR/agent.db when it is a symlink (the link
