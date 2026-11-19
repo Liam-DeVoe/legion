@@ -580,8 +580,11 @@ test("a panel that is no modal, losing its last controls, keeps the focus inside
   });
 });
 
-// (u) So does the Inbox drawer, a modal dialog of rows: its last two rows answered together, the
-// focus stays in the drawer, on its first control (the real drawer's is its Close button).
+// (u) So does the Inbox drawer, a modal dialog of rows: its last two rows taken together by an
+// update, with no press of the reader's, the focus stays in the drawer. Each `<li>` is a row by its
+// element alone (`row-marker.ts`'s `ROW_SELECTOR`), so the first row's control, the nearest one
+// before them, is no landing for a loss the reader did not cause (ag): the box the rows are drawn
+// in takes the focus instead, which here, with no box inside it that clips, is the drawer itself.
 test("the Inbox drawer, losing its last rows, keeps the focus inside it", async () => {
   await withRescue(async () => {
     const pageSearch = pageSearchIn(mainOf("Before").main);
@@ -602,7 +605,8 @@ test("the Inbox drawer, losing its last rows, keeps the focus inside it", async 
       rows[1]?.closest("li")?.remove();
     });
     await settled();
-    expect(rows[0]).toHaveFocus();
+    expect(drawer).toHaveFocus();
+    expect(rows[0]).not.toHaveFocus();
     expect(pageSearch).not.toHaveFocus();
   });
 });
@@ -1017,8 +1021,9 @@ test("a control hidden after the reader scrolled it out of sight stays out of si
 });
 
 /** A box that scrolls by itself, laid out from 100 px to 400 px down the window, holding one row
- *  per label - an Inbox row, carrying the row marker as the Inbox draws it, and the one checkbox
- *  a row marks itself by - appended to `parent`. */
+ *  per label - an Inbox row, a `div` carrying the row marker where the Inbox draws an `<li>`, a
+ *  row by the same rule (`ROW_SELECTOR`), and the one checkbox a row marks itself by - appended
+ *  to `parent`. */
 function rowBoxIn(
   parent: Element,
   ...labels: string[]

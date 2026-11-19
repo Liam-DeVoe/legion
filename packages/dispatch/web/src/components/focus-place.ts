@@ -4,7 +4,7 @@ import { commitsOnBlur, PANEL_ATTRIBUTE, takesText } from "../features/shell/key
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
-import { ROW_MARKER_SELECTOR } from "./row-marker";
+import { ROW_SELECTOR } from "./row-marker";
 
 /** What the keyboard focus can reach: a link, a form control that is not `disabled`, or anything
  *  given a Tab stop of its own. A control refused with `aria-disabled` is one, since it keeps its
@@ -147,10 +147,12 @@ export function useFocusPlace(
 const DIALOG = `[role="dialog"], [${PANEL_ATTRIBUTE}]`;
 
 /** Whether `element` is a row of a table or list or inside one: whether it or an element around
- *  it carries the one marker every row carries where it is drawn (`ROW_MARKER_SELECTOR`). A loss
- *  the reader did not cause lands in no row, and in no control inside one. */
+ *  it is an item of a list or a table by HTML or ARIA (an `<li>`, a `<tr>`, a `row`, a
+ *  `listitem`, a `feed`'s `article`) or carries the shared row marker - `row-marker.ts`'s one
+ *  rule, `ROW_SELECTOR`. A loss the reader did not cause lands in no row, and in no control
+ *  inside one. */
 export function inRow(element: Element): boolean {
-  return element.closest(ROW_MARKER_SELECTOR) !== null;
+  return element.closest(ROW_SELECTOR) !== null;
 }
 
 /** The one checkbox a row draws for its mark (the project List's `Select <key>`, the Inbox's
@@ -543,12 +545,13 @@ function recentPress(): Press | null {
 }
 
 /** The places a press could have taken `element`'s focus from and still be the reader's own doing:
- *  the element itself, the row it is in, and the dialog, panel or selection bar it was lost from.
- *  A press in a list's panel is in that panel, so a pick that takes the panel away is the
- *  reader's own, and the focus goes back to the trigger that opened it. */
+ *  the element itself, the row it is in (`ROW_SELECTOR`, the rule `inRow` reads), and the dialog,
+ *  panel or selection bar it was lost from. A press in a list's panel is in that panel, so a pick
+ *  that takes the panel away is the reader's own, and the focus goes back to the trigger that
+ *  opened it. */
 function pressPlaces(element: Element): Element[] {
   const places: Element[] = [element];
-  const row = element.closest(ROW_MARKER_SELECTOR);
+  const row = element.closest(ROW_SELECTOR);
   if (row !== null) places.push(row);
   const region = element.closest(PRESS_REGION);
   if (region !== null) places.push(region);
@@ -836,12 +839,13 @@ function landBox(box: HTMLElement): boolean {
  *  text and with no scroll. A candidate that takes typed text (`takesText`) - a text box, a
  *  `<textarea>`, a content-editable element - is passed over, since the reader never chose it and
  *  their next key would be typed there; a candidate in no row takes the focus where it is, since
- *  the loss itself was in sight; a candidate in a row sends the focus to the box that row is drawn
- *  in instead (`boxAround`), never into the row and only while the reader can see the box.
- *  Answers whether the focus landed. */
+ *  the loss itself was in sight; a candidate in a row (`ROW_SELECTOR`, the rule `inRow` reads: an
+ *  `<li>`, a `<tr>` or another item of a list or table, or an element carrying the row marker)
+ *  sends the focus to the box that row is drawn in instead (`boxAround`), never into the row and
+ *  only while the reader can see the box. Answers whether the focus landed. */
 function landQuietly(candidate: HTMLElement, region: Element): boolean {
   if (!candidate.isConnected || !rendered(candidate) || takesText(candidate)) return false;
-  const row = candidate.closest(ROW_MARKER_SELECTOR);
+  const row = candidate.closest(ROW_SELECTOR);
   if (row === null) return focusNoScroll(candidate);
   const box = boxAround(row, region);
   return box !== null && landBox(box);
