@@ -2622,8 +2622,6 @@ GATES = [
         (f"{ENVOY}/cmd/dispatch/README.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:783 names it and :791 reads it ('states the rule'): the CLI guide's sentence on an assignee move names the project's default assignee"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         ("docs/site/src/content/docs/dispatch/for-agents.md", "packages/envoy-client/src/__tests__/plans-command.test.ts:314 readFileSync (REPO_ROOT :210): the guide for agents' Plans row, held to the contract's rating scale"),
-        ("scripts/e2e/lib/plan-ratings-read.test.ts", f"{at('envoy-client', 'Typecheck Envoy client')}: packages/envoy-client/tsconfig.json includes it, so the typecheck holds its typed answer to the contract"),
-        ("scripts/e2e/lib/fake-dispatch-command.ts", f"{at('envoy-client', 'Typecheck Envoy client')}: scripts/e2e/lib/plan-ratings-read.test.ts:13 imports it, so tsc compiles it in that program"),
         (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
     ) + bun_job("envoy-client")),
 

@@ -174,7 +174,8 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 // parsePlansWindow is the plans read's [since, until) window on the close (parseWindow); the read
 // rounds each bound up to the microsecond it compares.
 func parsePlansWindow(query url.Values) (workflowstore.Window, error) {
-	return parseWindow(windowBound{name: "since", text: query.Get("since")}, windowBound{name: "until", text: query.Get("until")})
+	since, until, err := parseWindow(windowBound{name: "since", text: query.Get("since")}, windowBound{name: "until", text: query.Get("until")})
+	return workflowstore.Window{Since: since, Until: until}, err
 }
 
 // planRecord is a plan as the routes answer it: the owner's document and version are null for a

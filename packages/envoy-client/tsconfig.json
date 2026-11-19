@@ -12,10 +12,5 @@
     "types": ["bun"],
     "skipLibCheck": true
   },
-  "include": [
-    "bin/**/*.ts",
-    "src/**/*.ts",
-    "test/**/*.ts",
-    "../../scripts/e2e/lib/plan-ratings-read.test.ts"
-  ]
+  "include": ["bin/**/*.ts", "src/**/*.ts", "test/**/*.ts"]
 }

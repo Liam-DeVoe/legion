@@ -12,8 +12,8 @@ import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 // what `dispatch plans` (packages/envoy-client/src/dispatch-commands/plans.ts) prints of typed
 // finished issues, rendered by that command itself, so a line the command prints and the script
 // cannot read fails here: a header, then one finished issue per line, newest close first. Bun
-// drops the answer's types when it runs this file, so packages/envoy-client's typecheck, whose
-// tsconfig includes it, holds the answer to the contract's types.
+// drops the answer's types when it runs this file, so the typecheck of scripts/e2e/lib, whose
+// tsconfig.json includes it, holds the answer to the contract's types.
 const script = join(import.meta.dir, "..", "plan-ratings-read.sh");
 const dir = temporaryDirectory("plan-ratings-read-test");
 
