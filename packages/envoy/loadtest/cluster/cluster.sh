@@ -749,11 +749,20 @@ lock_issue() {
 
 # proc_start PID: the process's start time (field 22 of /proc/PID/stat, read after the command name,
 # which may hold spaces), so a pid the kernel reused for another process is told apart. For a pid
-# that has left the table it prints nothing and still succeeds: sed exits 2 on the missing file,
-# and under pipefail and errexit an assignment of that status would end the shell with nothing
-# said -- pg_disk_watch_stop reads the start of each child of the watcher's act, and one of those
-# can end between the read of the children and the read of its start.
-proc_start() { sed -E 's/^.*\) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20 || true; }
+# that has left the table -- its /proc entry gone -- it prints nothing and succeeds:
+# pg_disk_watch_stop reads the start of each child of the watcher's act, and one of those can end
+# between the read of the children and the read of its start. Any other read that fails -- an
+# entry there with no stat read from it, for want of a file descriptor, say -- fails, so no caller
+# takes a read it could not make for a process that has gone.
+proc_start() {
+  local stat fields
+  if ! read -r stat 2>/dev/null <"/proc/$1/stat"; then
+    [ ! -e "/proc/$1" ] || return 1
+    return 0
+  fi
+  read -r -a fields <<<"${stat##*) }" && [ -n "${fields[19]:-}" ] || return 1
+  printf '%s\n' "${fields[19]}"
+}
 
 # proc_ended PID START: the process that PID named when it started at START (proc_start) has
 # ended: PID has left the table, names a process that started at another time, or names a zombie,
@@ -1473,14 +1482,17 @@ pg_disk_watch() {
 # path out of a step hangs on a watcher that is stuck. The line it writes names the step, since
 # a watcher killed there left whatever it was doing in the copy half done. Those children are
 # the watcher's, not this shell's, so no wait here reaps them: each is waited until it has ended
-# (proc_ended), for PG_DISK_STOP_SECONDS more, and one that has not is named.
+# (proc_ended), for PG_DISK_STOP_SECONDS more, and one that has not is named. A child that has left
+# the table before its start is read is no process to kill or wait on, since its pid may name
+# another process by then; one whose start cannot be read for another reason is named and left
+# alone, since nothing tells it from another process that took its pid.
 #
 # PG_DISK_STOPPING names the stop while it runs, set in the one command that clears the watcher's
 # pid. A signal that ends the step shell inside the stop runs the EXIT trap, whose call of this
 # finds that pid gone; it names the watcher as not shown gone, rather than returning as though
 # it had stopped it.
 pg_disk_watch_stop() {
-  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline kids=() kid_starts=() i
+  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline found=() kids=() kid_starts=() kid start i
   if [ -n "$PG_DISK_STOPPING" ]; then
     note "the stop of $PG_DISK_STOPPING was cut short, so nothing shows it gone"
     PG_DISK_STOPPING=""
@@ -1491,8 +1503,14 @@ pg_disk_watch_stop() {
   deadline=$((EPOCHSECONDS + PG_DISK_STOP_SECONDS))
   while kill -0 -- "$pid" 2>/dev/null; do
     if ((EPOCHSECONDS >= deadline)); then
-      read -ra kids <"/proc/$pid/task/$pid/children" 2>/dev/null || true
-      for i in "${!kids[@]}"; do kid_starts[i]=$(proc_start "${kids[i]}"); done
+      read -ra found <"/proc/$pid/task/$pid/children" 2>/dev/null || true
+      for kid in "${found[@]}"; do
+        if ! start=$(proc_start "$kid"); then
+          note "step $name: the start of a child of the disk watcher's act (pid $kid) could not be read, so it is not killed, and nothing shows it ended"
+          continue
+        fi
+        [ -z "$start" ] || { kids+=("$kid"); kid_starts+=("$start"); }
+      done
       kill -KILL -- "$pid" "${kids[@]}" 2>/dev/null || true
       note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed"
       break

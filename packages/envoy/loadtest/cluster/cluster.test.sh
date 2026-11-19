@@ -3895,11 +3895,12 @@ pass "a step shell that a signal ends inside its stop of the disk watcher names 
 # reads the children of a watcher it has to kill and then the start time of each (proc_start), and
 # a child can leave the table between the two reads. proc_start's sed then failed on the missing
 # /proc file, and under cluster.sh's errexit and pipefail the assignment of that status ended the
-# step shell with status 2 and nothing said: this suite's case (dd) ended so once beside a loaded
-# machine. A read of a pid that has left the table now prints nothing and succeeds, and the stop
-# reads that child as ended. The read runs in a bash of its own that sourced cluster.sh: errexit
-# does nothing inside a subshell whose status an || reads, and run_in_runner calls the stop as a
-# statement of its own, where errexit applies.
+# step shell with status 2 and nothing said. A read of a pid that has left the table now prints
+# nothing and succeeds, and the stop reads that child as ended. Any other read that fails still
+# fails: here the entry the read is given is there, a live process's task directory, and it holds
+# no stat, which the sed read just as it read a pid that had gone. The reads run in a bash of its
+# own that sourced cluster.sh: errexit does nothing inside a subshell whose status an || reads, and
+# run_in_runner calls the stop as a statement of its own, where errexit applies.
 gone_out=$fake/gone-start.out
 gone_rc=0
 # shellcheck disable=SC2016 # expanded by the bash that sourced cluster.sh
@@ -3912,6 +3913,11 @@ bash -c '
   started=$(proc_start "$gone")
   printf "went on, start %s\n" "${started:-none}"
   ! proc_ended "$gone" "$started" || echo "read as ended"
+  if started=$(proc_start "$$/task"); then
+    printf "a read of an entry with no stat went on, start %s\n" "${started:-none}"
+  else
+    echo "a read of an entry with no stat failed"
+  fi
 ' _ "$cluster" "$real_sleep" >"$gone_out" 2>&1 || gone_rc=$?
 ((gone_rc == 0)) ||
   fail "a shell that sourced cluster.sh ended with $gone_rc at proc_start of a pid that has left the table, its errexit ending it with nothing said: $(cat "$gone_out")"
@@ -3919,4 +3925,76 @@ grep -qx 'went on, start none' "$gone_out" ||
   fail "proc_start of a pid that has left the table printed a start, or the shell did not go on: $(cat "$gone_out")"
 grep -qx 'read as ended' "$gone_out" ||
   fail "a child whose start could not be read is not read as ended: $(cat "$gone_out")"
-pass "proc_start of a pid that has left the table prints nothing and lets a shell under errexit go on, and that pid reads as ended"
+grep -qx 'a read of an entry with no stat failed' "$gone_out" ||
+  fail "proc_start of an entry that is there and whose stat it could not read did not fail: $(cat "$gone_out")"
+pass "proc_start of a pid that has left the table prints nothing and lets a shell under errexit go on, and that pid reads as ended, while a read that fails of an entry that is there fails"
+
+# The stop's KILL goes to the watcher and to each child whose start it read, and to no other: a
+# child that has left the table by the read of its start is no process, and its pid may name
+# another by the KILL, and one whose start cannot be read for another reason is named and left
+# alone. The watcher is a stand-in that ignores TERM, with three sleeps as its act's children; in
+# the shell that runs the stop, proc_start reads the second as gone and fails for the third. The
+# first then ends, and the other two, which no signal reached, run on, each the process it was.
+kids_out=$fake/kids.out
+kids_rc=0
+# shellcheck disable=SC2016 # expanded by the bash that sourced cluster.sh
+bash -c '
+  source "$1"
+  (
+    trap "" TERM
+    "$2" 300 &
+    "$2" 300 &
+    "$2" 300 &
+    wait
+  ) &
+  PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=kids PG_DISK_STOP_SECONDS=0
+  found=() starts=() at=$SECONDS
+  # The children file ends with no newline, so read returns 1 and still fills the array.
+  until [ "${#found[@]}" = 3 ]; do
+    ((SECONDS - at <= 10)) || { echo "the watcher showed ${#found[@]} children, not 3, in 10 s"; exit 1; }
+    "$2" 0.05
+    read -ra found <"/proc/$PG_DISK_WATCHER/task/$PG_DISK_WATCHER/children" 2>/dev/null || true
+  done
+  for kid in "${found[@]}"; do starts+=("$(proc_start "$kid")"); done
+  printf "kids %s\n" "${found[*]}"
+  eval "orig_$(declare -f proc_start)"
+  proc_start() {
+    [ "$1" != "${found[1]}" ] || return 0
+    [ "$1" != "${found[2]}" ] || return 1
+    orig_proc_start "$1"
+  }
+  pg_disk_watch_stop
+  echo "the stop returned"
+  at=$SECONDS
+  until proc_ended "${found[0]}" "${starts[0]}"; do
+    ((SECONDS - at <= 10)) || { echo "the child whose start was read still runs 10 s after the stop"; break; }
+    "$2" 0.1
+  done
+  "$2" 1
+  for i in 1 2; do proc_ended "${found[i]}" "${starts[i]}" || echo "child $i runs on"; done
+' _ "$cluster" "$real_sleep" >"$kids_out" 2>&1 || kids_rc=$?
+read -r _ kid_read kid_gone kid_unread < <(grep '^kids ' "$kids_out" || true)
+# Each sleep is ended here and waited until it has left the table or is a zombie, which has
+# ended; the watcher, killed, is no parent to reap them.
+for kid in ${kid_read:-} ${kid_gone:-} ${kid_unread:-}; do
+  kill -KILL "$kid" 2>/dev/null || true
+  kids_at=$SECONDS
+  while [ -e "/proc/$kid" ] && [ "$(awk '{print $3}' "/proc/$kid/stat" 2>/dev/null)" != Z ]; do
+    ((SECONDS - kids_at <= 10)) || fail "a child of the stand-in watcher (pid $kid) still runs 10 s after its SIGKILL"
+    "$real_sleep" 0.1
+  done
+done
+((kids_rc == 0)) ||
+  fail "the stop of a watcher with a child whose start reads as gone and one whose start cannot be read ended with $kids_rc: $(cat "$kids_out")"
+grep -qx 'the stop returned' "$kids_out" ||
+  fail "the stop of a watcher with a child whose start reads as gone and one whose start cannot be read did not return: $(cat "$kids_out")"
+[ -n "${kid_unread:-}" ] || fail "the stand-in watcher did not show its three children: $(cat "$kids_out")"
+! grep -qF "still runs 10 s after the stop" "$kids_out" ||
+  fail "the stop sent no SIGKILL to the child whose start it read (pid $kid_read): $(cat "$kids_out")"
+grep -qx 'child 1 runs on' "$kids_out" ||
+  fail "the stop's SIGKILL reached the child whose start read as gone (pid $kid_gone): $(cat "$kids_out")"
+grep -qx 'child 2 runs on' "$kids_out" ||
+  fail "the stop's SIGKILL reached the child whose start it could not read (pid $kid_unread): $(cat "$kids_out")"
+grep -qF "step kids: the start of a child of the disk watcher's act (pid $kid_unread) could not be read, so it is not killed, and nothing shows it ended" "$kids_out" ||
+  fail "the stop does not name the child whose start it could not read (pid $kid_unread): $(cat "$kids_out")"
+pass "the stop of the disk watcher sends its SIGKILL to the watcher and to each child whose start it read, and names a child whose start it could not read"
