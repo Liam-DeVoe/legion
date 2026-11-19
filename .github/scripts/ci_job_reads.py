@@ -1750,54 +1750,168 @@ PLUGIN_SMOKE_RUNS = [
 # and the worker image of this commit - and which every piece of comes from
 # scripts/e2e/lib/kind-sandbox.sh: the rig's own measuring test, the three live tests of
 # internal/daemon that launch issue pods and a controller through the Sandbox runtime, and the
-# Sandbox runtime's own live test, TestStage4aSandboxRuntimeLive, one subtest per check. The job's
-# rig part runs them all for now, one package at a time. KIND_PACKAGE_FILES names, for each
-# package, the files the job takes whole, as AGENT_HARNESS_FILES are, and the tests of them, and
-# hold_whole_files() holds each package's list to its files. Both of daemon-go's steps skip
-# KIND_TESTS by name, built from the same lists as the rig part's -run is - the plain step runs
-# internal/kindtest and internal/runtime/sandbox, and the race step internal/daemon - so a kind
-# test runs once per run of the router, in the kind job, where its reads are that job's inputs:
-# the rig's library, Agent Sandbox's manifest and CRD, every file the worker image is built from
-# (worker_image_reads below), and what the live tests read beside them, none of which daemon-go's
-# filter needs to name.
+# Sandbox runtime's own live test, TestStage4aSandboxRuntimeLive, whose checks run in groups, each
+# group a subtest of its name on a rig of its own (live_test.go's liveGroups). The job runs them in
+# parts, each a literal job of the called file: KIND_PARTS is the one list of what each part runs,
+# beside the tree part below. KIND_PACKAGE_FILES names, for each package, the files the job takes
+# whole, as AGENT_HARNESS_FILES are; hold_whole_files() holds the parts' tests of each package to its
+# files, and hold_kind_parts() holds the groups the parts run to those live_test.go declares. Both of
+# daemon-go's steps skip KIND_TESTS by name, the union of the parts' tests and the tree part's - the
+# plain step runs internal/kindtest and internal/runtime/sandbox, and the race step internal/daemon -
+# so a kind test runs once per run of the router, in the kind job, where its reads are that job's
+# inputs: the rig's library, Agent Sandbox's manifest and CRD, every file the worker image is built
+# from (worker_image_reads below), and what the live tests read beside them, none of which
+# daemon-go's filter needs to name.
 KIND_PACKAGE_FILES = {
-    "internal/kindtest": (["rig_test.go"], ["TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub"]),
-    "internal/daemon": (["burstable_live_test.go", "controller_sweep_live_test.go", "share_volumes_live_test.go"],
-                        ["TestABurstableIssuePodRendersLive", "TestTheControllerOrphanSweepLive",
-                         "TestShareVolumesMountInAnIssuePodLive"]),
-    "internal/runtime/sandbox": (["live_app_test.go", "live_cache_test.go", "live_displaced_test.go", "live_install_test.go",
-                                  "live_lifecycle_test.go", "live_operator_test.go", "live_pod_update_test.go",
-                                  "live_secrets_test.go", "live_sessions_test.go", "live_setup_test.go", "live_test.go"],
-                                 ["TestStage4aSandboxRuntimeLive"]),
+    "internal/kindtest": ["rig_test.go"],
+    "internal/daemon": ["burstable_live_test.go", "controller_sweep_live_test.go", "share_volumes_live_test.go"],
+    "internal/runtime/sandbox": ["live_app_test.go", "live_cache_test.go", "live_displaced_test.go", "live_install_test.go",
+                                 "live_lifecycle_test.go", "live_operator_test.go", "live_pod_update_test.go",
+                                 "live_secrets_test.go", "live_sessions_test.go", "live_setup_test.go", "live_test.go"],
+}
+KIND_STAGE4A = "TestStage4aSandboxRuntimeLive"
+KIND_STAGE4A_PACKAGE = "internal/runtime/sandbox"
+# The parts, in the order the called file holds them: each part's job id, the name of its one test
+# step, its test binaries' -timeout, and its tests by package - whole tests by name, or one group of
+# TestStage4aSandboxRuntimeLive's as `TestStage4aSandboxRuntimeLive/<group>`, which its -run selects
+# by name alone. Each part stays within the time of daemon-go's median green run, about 24 minutes,
+# its setup included; the comment on each part's job gives its budget and the run that measured it.
+# -timeout is each test binary's own, more than half again over the longest binary of the part:
+# 20m for the first two, whose longest binaries took 675 s (the share test) and 654 s (the burstable
+# and sweep tests, about 734 s with a first load of the image's archive) in CI run 44561190194, and
+# 30m for a group's, about six minutes of rig and the run's setup and twelve at most of checks.
+KIND_PARTS = {
+    "rig-and-shares": ("Run the rig's measuring test and the share test", "20m", {
+        "internal/kindtest": ["TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub"],
+        "internal/daemon": ["TestShareVolumesMountInAnIssuePodLive"],
+    }),
+    "burstable-and-sweep": ("Run the burstable pod and controller sweep tests", "20m", {
+        "internal/daemon": ["TestABurstableIssuePodRendersLive", "TestTheControllerOrphanSweepLive"],
+    }),
+    "runtime-root": ("Run the Sandbox runtime's root group", "30m", {
+        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/root"],
+    }),
+    "runtime-roles": ("Run the Sandbox runtime's roles group", "30m", {
+        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/roles"],
+    }),
+    "runtime-image-and-issues": ("Run the Sandbox runtime's image-and-issues group", "30m", {
+        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/image-and-issues"],
+    }),
+    "runtime-pod-update": ("Run the Sandbox runtime's pod-update group", "30m", {
+        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/pod-update"],
+    }),
 }
 # The tree part's tests: the daemon's two whole-tree tests of internal/daemon, which boot the whole
 # daemon on the rig with Dispatch, the Envoy listener and natsd built from the checkout and real
 # agents in issue pods (kind_tree_rig_live_test.go, their shared rig): Stage 4b's tree, one subtest
 # per checkpoint, and the Claude Code backend in an issue pod. Each brings up a rig of its own and
-# runs for most of an hour, so they run in a part of their own, beside the rig part's.
+# runs for most of an hour, so they run in a part of their own, beside KIND_PARTS'.
 KIND_TREE_FILES = {
     "internal/daemon": (["claude_backend_kind_live_test.go", "kind_tree_rig_live_test.go", "stage4b_kind_live_test.go"],
                         ["TestStage4bSandboxTreeOnTheKindRigLive",
                          "TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"]),
 }
-KIND_PACKAGES = list(KIND_PACKAGE_FILES)
-KIND_RIG_TESTS = [test for _, tests in KIND_PACKAGE_FILES.values() for test in tests]
-KIND_TREE_TESTS = [test for _, tests in KIND_TREE_FILES.values() for test in tests]
-KIND_TESTS = KIND_RIG_TESTS + KIND_TREE_TESTS
 KIND_JOB = "kind"
 KIND_WORKFLOW = job_file(KIND_JOB)
 KIND_IMAGE = "image"
 KIND_IMAGE_STEP = "Build the worker image into a docker archive"
-KIND_RIG = "rig"
-KIND_STEP = "Run the kind tests"
-KIND_PATTERN = f"'^({'|'.join(sorted(KIND_RIG_TESTS))})$'"
-# -p 1: each package's tests bring up a rig of their own, a kind cluster, a registry and the worker
-# image in Docker, which one runner holds one of at a time. -timeout is each test binary's own: the
-# sandbox runtime's, the longest, is one rig (about five minutes in the rig's first CI run), the
-# checkout's agent-secrets build and plugin pack, and some forty checks, each a pod start under
-# gVisor or a wait of a minute or two, so about an hour; 90m leaves half again over it.
-KIND_SCRIPT = (f"go test -v -count=1 -p 1 -timeout 90m -run {KIND_PATTERN} "
-               + " ".join(f"./{package}/" for package in KIND_PACKAGES))
+# The groups of TestStage4aSandboxRuntimeLive, as live_test.go declares them: the list
+# `var liveGroups = []liveGroup{` holds, and the `name:` that opens each of its elements.
+KIND_STAGE4A_FILE = Path(DAEMON) / KIND_STAGE4A_PACKAGE / "live_test.go"
+KIND_STAGE4A_GROUPS = re.compile(r"^var liveGroups = \[\]liveGroup\{\n(.*?)^\}", re.M | re.S)
+KIND_STAGE4A_GROUP = re.compile(r"^\t\{name: ", re.M)
+
+
+def stage4a_groups():
+    """The groups TestStage4aSandboxRuntimeLive runs, by name, in the order live_test.go's liveGroups
+    declares them: the string literal after the `{name: ` that opens each element of that list,
+    found where go_code_only leaves code, so a comment naming a group declares none."""
+    text = KIND_STAGE4A_FILE.read_text()
+    code = go_code_only(text)
+    block = KIND_STAGE4A_GROUPS.search(code)
+    if not block:
+        raise ValueError(f"{KIND_STAGE4A_FILE.as_posix()} declares no `var liveGroups = []liveGroup{{`, the groups of "
+                         f"{KIND_STAGE4A}'s checks each of which a kind part runs; follow the list here")
+    names = []
+    for element in KIND_STAGE4A_GROUP.finditer(code, block.start(1), block.end(1)):
+        literal = re.match(r'"([^"\\\n]+)"', text[element.end():])
+        if not literal:
+            raise ValueError(f"{KIND_STAGE4A_FILE.as_posix()}:{text.count(chr(10), 0, element.start()) + 1}: a group of "
+                             f"liveGroups whose name is no plain string literal, which no part's -run can be held to")
+        names.append(literal.group(1))
+    return names
+
+
+def hold_kind_parts():
+    """Refuse KIND_PARTS where its parts' -runs no longer select each kind test, and each group of
+    TestStage4aSandboxRuntimeLive, once: a part naming a package KIND_PACKAGE_FILES does not, whose
+    tests nothing holds to its files; a part naming a group beside any other name, which one -run
+    cannot select, since its subtest pattern would apply to every test it names; a group of another
+    test, or of this one outside its package; the test itself named whole, which runs every group
+    in one part, past its budget; a name two parts run; and a group live_test.go's liveGroups does
+    not declare, or one it declares that no part runs. Held to nothing, a renamed or added group
+    passes every other check green while its checks run nowhere: its part's -run matches no subtest,
+    and the test, which brings a rig up only inside a group, passes having run nothing, while both
+    daemon-go steps skip the whole test by name. hold_whole_files() holds each package's whole
+    tests to its files."""
+    declared, run = stage4a_groups(), []
+    for part, (_, _, tests) in KIND_PARTS.items():
+        names = [(package, name) for package, package_tests in tests.items() for name in package_tests]
+        for package in tests:
+            if package not in KIND_PACKAGE_FILES:
+                raise ValueError(f"KIND_PARTS[{part!r}] runs tests of {package}, which KIND_PACKAGE_FILES does not name, so "
+                                 f"nothing holds its names to that package's files; name its files there")
+        if any("/" in name for _, name in names) and len(names) != 1:
+            raise ValueError(f"KIND_PARTS[{part!r}] names {', '.join(name for _, name in names)}: a part runs whole tests "
+                             f"or one group of {KIND_STAGE4A}, since the subtest pattern of one -run applies to every "
+                             f"test it selects")
+        for package, name in names:
+            test, _, group = name.partition("/")
+            if group and (test != KIND_STAGE4A or package != KIND_STAGE4A_PACKAGE):
+                raise ValueError(f"KIND_PARTS[{part!r}] names {name} in {package}: the one test whose groups a part runs "
+                                 f"is {KIND_STAGE4A}, in {KIND_STAGE4A_PACKAGE}")
+            if name == KIND_STAGE4A:
+                raise ValueError(f"KIND_PARTS[{part!r}] names {KIND_STAGE4A} whole, which runs every group of it in one "
+                                 f"part, each on a rig of its own; name its groups, one a part")
+            if name in run:
+                raise ValueError(f"KIND_PARTS[{part!r}] names {name}, which another part runs too: a test run twice is "
+                                 f"a test whose second run tells nobody anything")
+            run.append(name)
+    groups = [name.partition("/")[2] for name in run if name.startswith(f"{KIND_STAGE4A}/")]
+    unknown = ", ".join(group for group in groups if group not in declared)
+    if unknown:
+        raise ValueError(f"KIND_PARTS runs the groups {unknown} of {KIND_STAGE4A}, which "
+                         f"{KIND_STAGE4A_FILE.as_posix()}'s liveGroups does not declare: the part's -run matches no "
+                         f"subtest and passes having run nothing. Follow the rename, or take the part out")
+    unrun = ", ".join(group for group in declared if group not in groups)
+    if unrun:
+        raise ValueError(f"{KIND_STAGE4A_FILE.as_posix()}'s liveGroups declares the groups {unrun} of {KIND_STAGE4A}, "
+                         f"which no part of KIND_PARTS runs, and both daemon-go steps skip the whole test: give each a "
+                         f"part of its own, within the part budget")
+
+
+def kind_part_script(timeout, tests):
+    """A part's step: one go test over its packages, by -run - the names of its whole tests, or the
+    group it runs as TestStage4aSandboxRuntimeLive's subtest of that name, every check of it with
+    it. -p 1 where its tests are in more than one package: each test brings up a rig of its own, a
+    kind cluster, a registry and the worker image in Docker, which one runner holds one of at a
+    time, and a package's own tests run one after another as it is."""
+    names = [name for package_tests in tests.values() for name in package_tests]
+    test, _, group = names[0].partition("/")
+    pattern = f"'^{test}$/^{group}$'" if group else f"'^({'|'.join(sorted(names))})$'"
+    return (f"go test -v -count=1 {'-p 1 ' if len(tests) > 1 else ''}-timeout {timeout} -run {pattern} "
+            + " ".join(f"./{package}/" for package in tests))
+
+
+hold_kind_parts()
+KIND_PART_SCRIPTS = {part: kind_part_script(timeout, tests) for part, (_, timeout, tests) in KIND_PARTS.items()}
+# The parts that run a group of TestStage4aSandboxRuntimeLive's, each of which packs this
+# checkout's two plugins with bun and builds its agent-secrets (newKindLiveEnv).
+KIND_STAGE4A_PARTS = [part for part, (_, _, tests) in KIND_PARTS.items() if KIND_STAGE4A_PACKAGE in tests]
+KIND_PART_TESTS = sorted({name.partition("/")[0] for _, _, tests in KIND_PARTS.values()
+                          for package_tests in tests.values() for name in package_tests})
+KIND_TREE_TESTS = [test for _, tests in KIND_TREE_FILES.values() for test in tests]
+KIND_TESTS = KIND_PART_TESTS + KIND_TREE_TESTS
 KIND_TREE = "tree"
 KIND_TREE_STEP = "Run the tree tests"
 # The two run one after the other in one test binary, each on a rig of its own: the Claude Code
@@ -1805,24 +1919,32 @@ KIND_TREE_STEP = "Run the tree tests"
 # refresh and two daemon restarts that relaunch every claim among them, so -timeout is two hours.
 KIND_TREE_SCRIPT = (f"go test -v -count=1 -timeout 120m -run '^({'|'.join(sorted(KIND_TREE_TESTS))})$' "
                     + " ".join(f"./{package}/" for package in KIND_TREE_FILES))
-for _files_of, _name in ((KIND_PACKAGE_FILES, "KIND_PACKAGE_FILES"), (KIND_TREE_FILES, "KIND_TREE_FILES")):
-    for _package, (_files, _tests) in _files_of.items():
-        hold_whole_files(KIND_JOB, _package, _files, _tests, f"{_name}[{_package!r}]'s files",
-                         f"{_name}[{_package!r}]'s tests", both_steps=True)
+for _package, _files in KIND_PACKAGE_FILES.items():
+    hold_whole_files(KIND_JOB, _package, _files,
+                     sorted({name.partition("/")[0] for _, _, tests in KIND_PARTS.values() for name in tests.get(_package, [])}),
+                     f"KIND_PACKAGE_FILES[{_package!r}]", f"KIND_PARTS' tests of {_package}", both_steps=True)
+for _package, (_files, _tests) in KIND_TREE_FILES.items():
+    hold_whole_files(KIND_JOB, _package, _files, _tests, f"KIND_TREE_FILES[{_package!r}]'s files",
+                     f"KIND_TREE_FILES[{_package!r}]'s tests", both_steps=True)
 # The rig's own files beside the worker image's: the library every piece of it is a function of,
 # and the Agent Sandbox CRD and manifest kind_sandbox_install_agent_sandbox applies.
 KIND_LIB = "scripts/e2e/lib/kind-sandbox.sh"
 KIND_TESTDATA = f"{DAEMON}/internal/runtime/sandbox/testdata"
 
 
-def at_kind_rig(step):
-    """A citation of a step of the kind job's rig part."""
-    return at(KIND_RIG, step, KIND_WORKFLOW)
+def at_kind_part(part):
+    """A citation of the test step of one of KIND_PARTS' parts."""
+    return at(part, KIND_PARTS[part][0], KIND_WORKFLOW)
 
 
 def at_kind_tree(step):
     """A citation of a step of the kind job's tree part."""
     return at(KIND_TREE, step, KIND_WORKFLOW)
+
+
+def at_kind_test_steps():
+    """A citation of every part's test step, the tree part's last."""
+    return ", ".join(at_kind_part(part) for part in KIND_PARTS) + f" and {at_kind_tree(KIND_TREE_STEP)}"
 
 
 WORKER_IMAGE_FILTER = "worker_image"
@@ -3255,7 +3377,7 @@ GATES = [
       + bun_job(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
 
-    # The kind job: its rig part runs the tests of KIND_PACKAGE_FILES and its tree part those of
+    # The kind job: each part of KIND_PARTS runs its tests and its tree part those of
     # KIND_TREE_FILES, which both daemon-go steps skip by name (KIND_TESTS), and each compiles the
     # packages its tests are in to do it, so this filter is those packages' whole
     # test closure - internal/kindtest and the fake GitHub it serves, internal/fakegithub,
@@ -3276,11 +3398,14 @@ GATES = [
     # none of. The called file's jobs carry ids of their own, so this gate keeps `workflow=CI`, as
     # agent_harness does.
     gate("kind", KIND_JOB, exact=[
-        pinned_step(KIND_RIG, KIND_STEP, DAEMON, KIND_SCRIPT, [
-            (DAEMON, [f"./{package}/" for package in KIND_PACKAGES], "go test -run over the packages the kind tests are in", {}),
-            (ENVOY, ["./cmd/agent-secrets"], "internal/runtime/sandbox/live_test.go:434 newKindLiveEnv runs go build "
+        pinned_step(part, step, DAEMON, KIND_PART_SCRIPTS[part], [
+            (DAEMON, [f"./{package}/" for package in tests], "go test -run over the packages the part's tests are in", {}),
+        ] + ([
+            (ENVOY, ["./cmd/agent-secrets"], "internal/runtime/sandbox/live_test.go:479 newKindLiveEnv runs go build "
                                             "./cmd/agent-secrets in packages/envoy", {"mode": "build"}),
-        ], workflow=KIND_WORKFLOW),
+        ] if part in KIND_STAGE4A_PARTS else []), workflow=KIND_WORKFLOW)
+        for part, (step, _, tests) in KIND_PARTS.items()
+    ] + [
         pinned_step(KIND_TREE, KIND_TREE_STEP, DAEMON, KIND_TREE_SCRIPT, [
             (DAEMON, [f"./{package}/" for package in KIND_TREE_FILES], "go test -run over the package the tree tests are in", {}),
             (ENVOY, ["./cmd/listener", "./internal/testnats/cmd/natsd"],
@@ -3291,30 +3416,30 @@ GATES = [
                                      "kind_tree_rig_live_test.go:197 calls, runs go build ./cmd/legion", {"mode": "build"}),
         ], workflow=KIND_WORKFLOW),
     ], reads=reads(
-        (KIND_LIB, f"{at_kind_rig(KIND_STEP)}: packages/daemon/internal/kindtest/kindtest.go:470 sources it for each "
-                   "piece of the rig, and :621 for its teardown"),
+        (KIND_LIB, f"{at_kind_test_steps()}: packages/daemon/internal/kindtest/kindtest.go:509 sources it for each "
+                   "piece of the rig, and :661 for its teardown"),
         (f"{KIND_TESTDATA}/sandboxes.agents.x-k8s.io.yaml", f"{KIND_LIB}:164 kind_sandbox_install_agent_sandbox applies it"),
         (f"{KIND_TESTDATA}/agent-sandbox-v1.0.3.yaml", f"{KIND_LIB}:166 kind_sandbox_install_agent_sandbox applies it"),
-        ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/live_test.go:401 newKindLiveEnv fills it "
+        ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/live_test.go:446 newKindLiveEnv fills it "
                                                      "for the operator's pod every launch carries"),
-        ("deploy/kubernetes/operator-route/models.yml", "internal/runtime/sandbox/live_test.go:401 newKindLiveEnv fills it "
+        ("deploy/kubernetes/operator-route/models.yml", "internal/runtime/sandbox/live_test.go:446 newKindLiveEnv fills it "
                                                         "for the run's operator route ConfigMap"),
-        ("deploy/kubernetes/operator-route/overlay.yml", "internal/runtime/sandbox/live_test.go:425 newKindLiveEnv puts it "
+        ("deploy/kubernetes/operator-route/overlay.yml", "internal/runtime/sandbox/live_test.go:470 newKindLiveEnv puts it "
                                                          "in the run's operator route ConfigMap"),
         ("scripts/e2e/lib/role-namespaces.sh", "internal/daemon/share_volumes_live_test.go:180 and "
                                                "kind_tree_rig_live_test.go:208 source it for role_enter_sh"),
-        ("scripts/e2e/lib/pack-plugin.sh", "internal/runtime/sandbox/live_test.go:505 packLivePlugins runs it for "
+        ("scripts/e2e/lib/pack-plugin.sh", "internal/runtime/sandbox/live_test.go:550 packLivePlugins runs it for "
                                            "pi-envoy and pi-legion"),
     ) + [
-        Read(g, "internal/runtime/sandbox/live_test.go:505 packLivePlugins runs scripts/e2e/lib/pack-plugin.sh, whose "
+        Read(g, "internal/runtime/sandbox/live_test.go:550 packLivePlugins runs scripts/e2e/lib/pack-plugin.sh, whose "
                 "`bun pm pack` runs each plugin's prepack")
         for g in PACK_READS
     ] + worker_image_reads(f"{at(KIND_IMAGE, KIND_IMAGE_STEP, KIND_WORKFLOW)} builds packages/daemon/docker/worker.Dockerfile "
                            f"from it, as .github/workflows/worker-image.yaml's build does, whose image a pull request's "
-                           f"run hands {at_kind_rig(KIND_STEP)} instead")
-      + setup_go(KIND_RIG, f"{DAEMON}/go.mod", KIND_WORKFLOW)
+                           f"run hands {at_kind_test_steps()} instead")
+      + [r for part in KIND_PARTS for r in setup_go(part, f"{DAEMON}/go.mod", KIND_WORKFLOW)]
       + setup_go(KIND_TREE, f"{DAEMON}/go.mod", KIND_WORKFLOW)
-      + bun_job(KIND_RIG, KIND_WORKFLOW)
+      + [r for part in KIND_STAGE4A_PARTS for r in bun_job(part, KIND_WORKFLOW)]
       + CI_SELF + job_self(KIND_JOB), workflow=CI),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`

@@ -3552,11 +3552,11 @@ jobs:
               - '.github/workflows/ci-job-proof-sdk-offline.yaml'
 
             # The kind job (.github/workflows/ci-job-kind.yaml): the tests of ci_job_reads.py's
-            # KIND_TESTS, on a kind cluster its rig part brings up with
+            # KIND_TESTS, on kind clusters its parts bring up with
             # scripts/e2e/lib/kind-sandbox.sh and the Agent Sandbox CRD and manifest of
             # packages/daemon/internal/runtime/sandbox/testdata, against the worker image of this
-            # commit and the fake GitHub of packages/daemon/internal/fakegithub. The rig part
-            # compiles internal/kindtest's tests, whose closure is under packages/daemon and
+            # commit and the fake GitHub of packages/daemon/internal/fakegithub. Its rig-and-shares
+            # part compiles internal/kindtest's tests, whose closure is under packages/daemon and
             # packages/envoy/testprereq. The worker image is a read of the job however the run came
             # by it, its own image job's build or worker-image.yaml's, so this list names every
             # path worker_image names as that filter writes it, worker-image.yaml with them, but
@@ -5888,8 +5888,12 @@ jobs:
   # The kind rig: parts that each bring up a kind cluster on the runner with Agent Sandbox's
   # controller and gVisor, a registry the node pulls from and the fake GitHub of
   # packages/daemon/internal/fakegithub, and run the Sandbox runtime's tests on it against the
-  # worker image of this commit. Its one part today, rig, runs the rig's own measuring test, which
-  # .github/scripts/ci_job_reads.py's KIND_TESTS names and both daemon-go steps skip by name.
+  # worker image of this commit. Its parts, each a job of the called file, run the tests
+  # .github/scripts/ci_job_reads.py's KIND_TESTS names, which both daemon-go steps skip by name:
+  # the rig's own measuring test and the share test in one, the burstable and controller sweep
+  # tests in another, the Sandbox runtime's live test in four, one group of its checks each, each
+  # of those six within about 24 minutes, and the two whole-tree tests in tree, which no run has
+  # timed yet.
   # The image under test is the worker-image job's on a pull request where that job built the
   # head, handed down as `worker-image`, and otherwise the called file's image job builds it once
   # per run; so this job needs worker-image for the order, and ci-images too, since the rig pulls

@@ -726,6 +726,7 @@ Each item below names a task and where its code is, then notes on it.
 - Prove the Kubernetes runtime live — the `kind` job of `ci.yaml`: `TestStage4aSandboxRuntimeLive` runs the runtime alone, and `TestStage4bSandboxTreeOnTheKindRigLive` drives a full tree through the whole daemon
 
   Both run on the kind rig, with the fake GitHub, a Messages stand-in and Dispatch and the listener built from the checkout (`packages/daemon/internal/kindtest`)
+  — `TestStage4aSandboxRuntimeLive` in groups of its checks, each group on a rig of its own and in a part of the job of its own, selected by `-run '^TestStage4aSandboxRuntimeLive$/^<group>$'` (`liveGroups`, `packages/daemon/internal/runtime/sandbox/live_test.go`)
 
 - Run a database, broker or server the work needs — `docs/kubernetes.md`, "Running a workload in the cluster from a role"
 

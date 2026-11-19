@@ -5,12 +5,17 @@
 // ServiceAccount under the grants docs/kubernetes.md ("RBAC the Go daemon needs") gives the
 // daemon (liveIdentity), with the rig's admin kubeconfig only for what an operator does beside it:
 // exec, PVC reads, a ConfigMap's patch. The kind job of ci.yaml runs it
-// (.github/workflows/ci-job-kind.yaml), and newKindLiveEnv sets up everything it runs on.
+// (.github/workflows/ci-job-kind.yaml), one group of its checks in each of four parts, and
+// newKindLiveEnv sets up everything it runs on.
 //
-// Each check runs as a subtest of its own name, prints what it observed, each line naming the
-// identity that observed it, and then `CHECK <name>: PASS`. The first check that does not hold
-// prints `CHECK <name>: FAIL: <why>` and ends the run, since a later check starts from the state
-// the earlier ones left. The agent every pod runs is a stub (decision 7): the Go shim bridges it as
+// The checks run in groups (liveGroups), each group a run of its own on a kind rig of its own, so a
+// part of the kind job runs one group by -run alone ('^TestStage4aSandboxRuntimeLive$/^<group>$').
+// Each check runs as a subtest of its group's, by its own name, prints what it observed, each line
+// naming the identity that observed it, and then `CHECK <name>: PASS`. The first check of a group
+// that does not hold prints `CHECK <name>: FAIL: <why>` and ends its group, since a later check of
+// the group starts from the state the earlier ones left; no group starts from another's, and a
+// group redoes first what its checks need of the state a check of another group leaves
+// (liveGroup.setup). The agent every pod runs is a stub (decision 7): the Go shim bridges it as
 // it would Oh My Pi, and it appends its own role, pod uid and generation to a marker file on the
 // issue pod's own disk, and sleeps. That disk is the pod's own ephemeral volume and dies with it,
 // so the marker proves a role's identity within one pod and nothing across pods. Within the pod it is
@@ -84,51 +89,91 @@ type liveCheck struct {
 	blocked func(*liveRig) string
 }
 
-// liveChecks are the harness's checks, in the order they run: the one list of them, which a
-// test's subtests are each of them, by name, so a part of the kind job selects a group of checks
-// with -run; a check that rides an earlier one's state is selected with it.
-var liveChecks = []liveCheck{
-	{"image-probe", (*liveRig).checkImageProbe, nil},
-	{"image-probe-negative", (*liveRig).checkImageProbeRefusal, nil},
-	{"image-probe-capability-negative", (*liveRig).checkImageProbeCapabilityRefusal, nil},
-	{"image-probe-missing-volume-negative", (*liveRig).checkImageProbeMissingVolumeRefusal, nil},
-	{"root-ready", (*liveRig).checkRootReady, nil},
-	{"gvisor", (*liveRig).checkGVisor, nil},
-	{"resources", (*liveRig).checkResources, nil},
-	{"operator-token", (*liveRig).checkOperatorToken, nil},
-	{"pod-baseline", (*liveRig).checkPodBaseline, nil},
-	{"setup-ran", (*liveRig).checkSetupRan, nil},
-	{"setup-negative", (*liveRig).checkSetupNegative, nil},
-	{"adopt-working-copy", (*liveRig).checkAdoptWorkingCopy, nil},
-	{"worker-shares-issue-pod", (*liveRig).checkWorkerSharesIssuePod, nil},
-	{"secrets-two-roles-enrolled", (*liveRig).checkSecretsTwoRolesEnrolled, secretsBlocked},
-	{"secrets-automatic-grant", (*liveRig).checkSecretsAutomaticGrant, secretsBlocked},
-	{"secrets-cross-pod-negative", (*liveRig).checkSecretsCrossPodNegative, secretsBlocked},
-	{"secrets-copied-token-negative", (*liveRig).checkSecretsCopiedTokenNegative, secretsBlocked},
-	{"secrets-self-enroll-negative", (*liveRig).checkSecretsSelfEnrollNegative, secretsBlocked},
-	{"secrets-approval-ask", (*liveRig).checkSecretsApprovalAsk, secretsBlocked},
-	{"suspend", (*liveRig).checkSuspend, nil},
-	{"role-isolation", (*liveRig).checkRoleIsolation, nil},
-	{"resume", (*liveRig).checkResume, nil},
-	{"stale-plugin-install", (*liveRig).checkStalePluginInstall, nil},
-	{"same-agent-negative", (*liveRig).checkSameAgentNegative, nil},
-	{"kill-role-init", (*liveRig).checkKillRoleInit, nil},
-	{"stale-incarnation", (*liveRig).checkStaleIncarnation, nil},
-	{"secrets-old-uid-and-revocation", (*liveRig).checkSecretsOldUIDAndRevocation, secretsBlocked},
-	{"respawn-before-register", (*liveRig).checkRespawnBeforeRegister, nil},
-	{"independent-provision", (*liveRig).checkIndependentProvision, nil},
-	{"second-owner", (*liveRig).checkSecondOwner, nil},
-	{"repository-cache", (*liveRig).checkRepositoryCache, nil},
-	{"cache-second-pod", (*liveRig).checkCacheSecondPod, nil},
-	{"cache-lost-volume", (*liveRig).checkCacheLostVolume, nil},
-	{"re-adopt", (*liveRig).checkReAdopt, nil},
-	{"orphan-sweep", (*liveRig).checkOrphanSweep, nil},
-	{"cleanup-reaps-the-issue", (*liveRig).checkCleanupReapsTheIssue, nil},
-	{"displaced", (*liveRig).checkDisplaced, nil},
-	{"pod-update", (*liveRig).checkPodUpdate, nil},
-	{"pod-update-fleet", (*liveRig).checkPodUpdateFleet, nil},
-	{"postgres-resume", (*liveRig).checkPostgresResume, nil},
-	{"issue-suspend-resume", (*liveRig).checkIssueSuspendResume, nil},
+// liveGroup is a group of the harness's checks, a run of its own on a kind rig of its own: its
+// name, which the subtest that runs it carries and a part of the kind job selects with -run; setup,
+// what the group redoes first of the state a check of another group leaves its checks, or nil
+// where they need none; and its checks, in the order they run.
+type liveGroup struct {
+	name   string
+	setup  func(*liveRig) error
+	checks []liveCheck
+}
+
+// liveGroups are the harness's checks, in groups that each stay within a part of the kind job
+// (.github/scripts/ci_job_reads.py's KIND_PARTS names the part that runs each). A check that reads
+// state an earlier check left, and puts back no claim of it itself, is in that check's group:
+// secrets-automatic-grant, secrets-cross-pod-negative, secrets-copied-token-negative and
+// secrets-self-enroll-negative start from the root and the worker secrets-two-roles-enrolled runs
+// and enrolls, and secrets-cross-pod-negative from the grant and request secrets-automatic-grant
+// records; stale-incarnation reads kill-role-init's kill and relaunch; and repository-cache,
+// cache-second-pod and cache-lost-volume read the runtime root-ready starts and the cache its
+// launch makes. Every other check puts each claim it starts from where it needs it itself
+// (ensureRunning, ensureSuspended), or launches one no check before it in its group launched. A
+// group that does not hold root-ready redoes first what root-ready leaves every later launch on
+// the run's repository (mapRunRepository), and roles, whose checks start from the run's first
+// issue, what root-ready and worker-shares-issue-pod leave them too (runFirstIssue).
+var liveGroups = []liveGroup{
+	// root: the run's first issue pod — its launch, which makes the run's repository's cache, the
+	// pod and the worker beside it, their enrollments with the broker, another issue's enrollment
+	// across a replacement of its pod — and the cache.
+	{name: "root", checks: []liveCheck{
+		{"root-ready", (*liveRig).checkRootReady, nil},
+		{"gvisor", (*liveRig).checkGVisor, nil},
+		{"resources", (*liveRig).checkResources, nil},
+		{"operator-token", (*liveRig).checkOperatorToken, nil},
+		{"pod-baseline", (*liveRig).checkPodBaseline, nil},
+		{"setup-ran", (*liveRig).checkSetupRan, nil},
+		{"setup-negative", (*liveRig).checkSetupNegative, nil},
+		{"adopt-working-copy", (*liveRig).checkAdoptWorkingCopy, nil},
+		{"worker-shares-issue-pod", (*liveRig).checkWorkerSharesIssuePod, nil},
+		{"secrets-two-roles-enrolled", (*liveRig).checkSecretsTwoRolesEnrolled, secretsBlocked},
+		{"secrets-automatic-grant", (*liveRig).checkSecretsAutomaticGrant, secretsBlocked},
+		{"secrets-cross-pod-negative", (*liveRig).checkSecretsCrossPodNegative, secretsBlocked},
+		{"secrets-copied-token-negative", (*liveRig).checkSecretsCopiedTokenNegative, secretsBlocked},
+		{"secrets-self-enroll-negative", (*liveRig).checkSecretsSelfEnrollNegative, secretsBlocked},
+		{"secrets-approval-ask", (*liveRig).checkSecretsApprovalAsk, secretsBlocked},
+		{"secrets-old-uid-and-revocation", (*liveRig).checkSecretsOldUIDAndRevocation, secretsBlocked},
+		{"repository-cache", (*liveRig).checkRepositoryCache, nil},
+		{"cache-second-pod", (*liveRig).checkCacheSecondPod, nil},
+		{"cache-lost-volume", (*liveRig).checkCacheLostVolume, nil},
+	}},
+	// roles: the roles of that issue's pod — a stop, isolation, a resume, a plugin install, a
+	// refused resume, a kill and its stale incarnation, a respawn before a hello — a second tree's
+	// two issues, the re-adoption of every live claim by a fresh runtime, the orphan sweep and the
+	// issue's cleanup.
+	{name: "roles", setup: (*liveRig).runFirstIssue, checks: []liveCheck{
+		{"suspend", (*liveRig).checkSuspend, nil},
+		{"role-isolation", (*liveRig).checkRoleIsolation, nil},
+		{"resume", (*liveRig).checkResume, nil},
+		{"stale-plugin-install", (*liveRig).checkStalePluginInstall, nil},
+		{"same-agent-negative", (*liveRig).checkSameAgentNegative, nil},
+		{"kill-role-init", (*liveRig).checkKillRoleInit, nil},
+		{"stale-incarnation", (*liveRig).checkStaleIncarnation, nil},
+		{"respawn-before-register", (*liveRig).checkRespawnBeforeRegister, nil},
+		{"independent-provision", (*liveRig).checkIndependentProvision, nil},
+		{"re-adopt", (*liveRig).checkReAdopt, nil},
+		{"orphan-sweep", (*liveRig).checkOrphanSweep, nil},
+		{"cleanup-reaps-the-issue", (*liveRig).checkCleanupReapsTheIssue, nil},
+	}},
+	// image-and-issues: the worker image's probe and its three refusals, then issues of their own,
+	// a check each: one on another owner's repository, a role its pod's replacement displaces, a
+	// resume from the session table alone, and an issue closed and resumed.
+	{name: "image-and-issues", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
+		{"image-probe", (*liveRig).checkImageProbe, nil},
+		{"image-probe-negative", (*liveRig).checkImageProbeRefusal, nil},
+		{"image-probe-capability-negative", (*liveRig).checkImageProbeCapabilityRefusal, nil},
+		{"image-probe-missing-volume-negative", (*liveRig).checkImageProbeMissingVolumeRefusal, nil},
+		{"second-owner", (*liveRig).checkSecondOwner, nil},
+		{"displaced", (*liveRig).checkDisplaced, nil},
+		{"postgres-resume", (*liveRig).checkPostgresResume, nil},
+		{"issue-suspend-resume", (*liveRig).checkIssueSuspendResume, nil},
+	}},
+	// pod-update: the update round over one drifted issue pod, and over two issues' pods a change
+	// drifts at once.
+	{name: "pod-update", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
+		{"pod-update", (*liveRig).checkPodUpdate, nil},
+		{"pod-update-fleet", (*liveRig).checkPodUpdateFleet, nil},
+	}},
 }
 
 // The runtime's settings for the run: the boot timeout covers the worker image's pull from the
@@ -849,8 +894,8 @@ type liveRig struct {
 	// until a check records its cleanup confirmed.
 	trees *fakeStore
 	// mapped is the repositories the run maps (Options.Mapped): each added just before its first
-	// issue pod launches (root-ready, second-owner), so no sweep makes a cache the run's first
-	// launch of that repository is to make.
+	// issue pod launches (root-ready, second-owner, or the setup of a group that does not hold
+	// root-ready), so no sweep makes a cache the run's first launch of that repository is to make.
 	mappedMu sync.Mutex
 	mapped   []ghrepo.Repository
 
@@ -893,19 +938,35 @@ type liveRig struct {
 	sessionStore ompsessions.Store
 }
 
-// TestStage4aSandboxRuntimeLive runs liveChecks in their order on the kind rig, each as a subtest
-// of its name, and stops at the first that fails.
+// TestStage4aSandboxRuntimeLive runs each group of liveGroups as a subtest of its name, on a kind
+// rig of its own (runLiveGroup). A group starts from nothing another group left, so one that fails
+// stops no other.
 func TestStage4aSandboxRuntimeLive(t *testing.T) {
 	fixtureenv.Live(t)
+	for _, group := range liveGroups {
+		t.Run(group.name, func(t *testing.T) { runLiveGroup(t, group) })
+	}
+}
+
+// runLiveGroup runs group as t: a kind rig of the group's own and the run's setup on it, the
+// group's own setup, then its checks in their order, each as a subtest of its name, stopping at the
+// first that fails.
+func runLiveGroup(t *testing.T, group liveGroup) {
 	rig := kindtest.Start(t)
 	r := newLiveRig(t, newKindLiveEnv(t, rig))
 	defer r.close()
-	for _, check := range liveChecks {
+	if group.setup != nil {
+		fmt.Printf("== setup of %s\n", group.name)
+		if err := group.setup(r); err != nil {
+			t.Fatalf("the setup of %s: %v", group.name, err)
+		}
+	}
+	for _, check := range group.checks {
 		if !t.Run(check.name, func(t *testing.T) { r.run(t, check) }) {
 			return
 		}
 	}
-	fmt.Println("stage 4a harness: every check it ran passed")
+	fmt.Printf("stage 4a harness: every check of %s passed\n", group.name)
 }
 
 // run runs check as t. A check the run cannot support prints SKIPPED-BLOCKED with the reason, and
@@ -1595,10 +1656,10 @@ func (r *liveRig) suspend(c *liveClaim) error {
 	return nil
 }
 
-// ensureRunning and ensureSuspended put a claim where a check starts from: nothing to do in a full
-// run, where the earlier checks left it there, and the same runtime calls in a development run. A
-// claim that has run before comes back from its recorded session, which the table holds whatever
-// became of the pod that first ran it.
+// ensureRunning and ensureSuspended put a claim where a check starts from: nothing to do where an
+// earlier check of its group left it there, and the same runtime calls where none did. A claim that
+// has run before comes back from its recorded session, which the table holds whatever became of
+// the pod that first ran it.
 func (r *liveRig) ensureRunning(c *liveClaim) error {
 	if c.state == stateRunning {
 		return nil
@@ -1631,6 +1692,33 @@ func (r *liveRig) ensureSuspended(c *liveClaim) error {
 		return fmt.Errorf("setup: suspend %s: %w", c.name, err)
 	}
 	note("runtime", "setup: %s suspended", c.name)
+	return nil
+}
+
+// mapRunRepository is what root-ready leaves every later launch on the run's repository, which a
+// group that does not hold root-ready redoes first: the runtime running, and the repository in the
+// run's mapping, as Dispatch's mapping names a repository before any issue of it launches.
+func (r *liveRig) mapRunRepository() error {
+	if err := r.startRuntimeOnce(); err != nil {
+		return err
+	}
+	r.mapRepository(r.env.repo)
+	note("runtime", "setup: %s mapped", r.env.repo)
+	return nil
+}
+
+// runFirstIssue is what root-ready and worker-shares-issue-pod leave the checks of the run's first
+// issue after them, which the roles group redoes first: mapRunRepository's, then the root running,
+// whose launch makes the run's repository's cache, and the worker running beside it in its pod.
+func (r *liveRig) runFirstIssue() error {
+	if err := r.mapRunRepository(); err != nil {
+		return err
+	}
+	for _, name := range []string{"root", "worker"} {
+		if err := r.ensureRunning(r.claim(name)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

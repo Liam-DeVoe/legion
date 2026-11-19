@@ -31,8 +31,9 @@ func secretsBlocked(r *liveRig) string {
 
 // ensureEnrolled enrolls c's running role process unless the harness already did for this
 // incarnation — what the daemon's machine does on the role's hello. Every check that needs an
-// enrollment starts here, so the suspend, resume and kill checks between them, which relaunch
-// processes the harness does not enroll, leave nothing stale behind.
+// enrollment starts here, so a launch since the last enrollment of the claim (a resume, a
+// relaunch after a kill or a pod replacement), which the harness does not enroll, leaves nothing
+// stale behind.
 func (r *liveRig) ensureEnrolled(c *liveClaim) (string, error) {
 	if e, ok := r.enrollments[c.token]; ok && e.incarnation == c.loc.Incarnation {
 		return e.id, nil
