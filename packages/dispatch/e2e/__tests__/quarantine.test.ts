@@ -75,10 +75,6 @@ const plantedOnly = retained(
     "--pass-with-no-tests",
   ])
 );
-/** The limit of a row that waits on one of the listings above, which all start together. */
-const listingsAtOnce = rowLimit({
-  atOnce: ["listing", "listing", "listing", "listing", "listing"],
-});
 
 /** The projects a quarantined row can belong to: those that take the config's one retry on CI,
  *  which is what makes a row reportable as flaky, and that a run naming no project selects, which
@@ -94,7 +90,7 @@ test(
     expect(retryingProjects).toContain("chromium");
     expect(quarantineFaults(quarantine, retryingProjects, await embedderFiles)).toEqual([]);
   },
-  listingsAtOnce
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
 );
 
 // A fix entry's shape: its row, a dispatch:// issue and a full lower-case sha. Whether the sha
@@ -132,7 +128,7 @@ test(
         "row and take its entry out before another goes in",
     ]);
   },
-  listingsAtOnce
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
 );
 
 test(
@@ -148,7 +144,7 @@ test(
         'the row came in as added: "YYYY-MM-DD"',
     ]);
   },
-  listingsAtOnce
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
 );
 
 test(
@@ -161,7 +157,7 @@ test(
         'as "2026-02-30", which is no calendar day written YYYY-MM-DD',
     ]);
   },
-  listingsAtOnce
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
 );
 
 test(
@@ -184,7 +180,7 @@ test(
       "entry 2 (heavy-bodies.e2e.ts [chromium-alone] a planted row) repeats an entry above it",
     ]);
   },
-  listingsAtOnce
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
 );
 
 // The embedder job runs its files with no quarantine, on both lanes, and every other run skips
@@ -205,7 +201,7 @@ test(
         "gating as before and run it ungated nowhere",
     ]);
   },
-  listingsAtOnce
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
 );
 
 test(
@@ -213,7 +209,7 @@ test(
   async () => {
     expect(selectionFaults(quarantine, rowsOfListing(await quarantinedRows))).toEqual([]);
   },
-  listingsAtOnce
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
 );
 
 test(
@@ -247,5 +243,5 @@ test(
         "the listing names it",
     ]);
   },
-  listingsAtOnce
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
 );

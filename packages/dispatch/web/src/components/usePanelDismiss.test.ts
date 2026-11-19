@@ -43,7 +43,7 @@ test("an Escape that ends an IME composition leaves the open panel open", () => 
       new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
     );
     expect(changes).toEqual([false]);
-    expect(document.activeElement).toBe(trigger);
+    expect(trigger).toHaveFocus();
     expect(behind.length, "the panel's Escape reached the view behind").toBe(1);
   } finally {
     view.unmount();

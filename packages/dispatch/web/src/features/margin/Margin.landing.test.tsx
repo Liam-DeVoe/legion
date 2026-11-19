@@ -350,7 +350,7 @@ test("on a phone, a link followed in a panel portaled into Details closes the sh
   const view = render(tree(null));
   try {
     const details = await screen.findByTestId("desktop-margin-shell");
-    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    await waitFor(() => expect(details).not.toHaveAttribute("hidden"));
     view.rerender(tree(details));
     await user.click(screen.getByRole("link", { name: "a panel's link" }));
     await waitFor(() =>
@@ -396,7 +396,7 @@ test("on a phone, a link that keeps Details open leaves the sheet open, and a pl
   const view = render(tree(null));
   try {
     const details = await screen.findByTestId("desktop-margin-shell");
-    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    await waitFor(() => expect(details).not.toHaveAttribute("hidden"));
     view.rerender(tree(details));
     for (const name of ["a turn's time", "a link inside a turn"]) {
       await user.click(screen.getByRole("link", { name }));
