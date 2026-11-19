@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  The load test's stops wait for what they end, and say what they could not end.
+  `vm/vm.sh`'s kills on the load machine -- a step's profiling tunnel, its `loadgen run` and the
+  stub embedder -- return only once the process has left that machine's process table, waiting
+  up to `REMOTE_GONE_SECONDS` after the SIGKILL, where they returned as soon as the signal was
+  sent; a kill that cannot show its process gone, still there at that bound or behind an ssh that
+  did not reach the machine or timed out, returns 1, names it and keeps its pid file.
+  A step whose earlier tunnel is not shown gone is refused, and an `up` whose earlier stub
+  embedder is not shown gone stops, rather than starting another on the port it holds.
+  A step stopped by `INT` or `TERM` names each part it did not show gone -- a kill that ran out,
+  and a part whose start or stop the signal cut short -- and says only of the rest that they are
+  ended.
+  `cluster/cluster.sh`'s stop of a daemon fails, naming it and keeping its pidfile, while the
+  daemon is still there 10 s after its TERM, and `down` then goes on with its delete and fails;
+  the stop of a step's disk watcher waits for the children of its act that it kills, and names
+  one that has not ended.
