@@ -334,6 +334,67 @@ func TestEveryEventOfADeletedMessageGivesNoBodyAndKeepsTheReplysFrozenPreview(t 
 	}
 }
 
+// A delete event carries no body, whoever's body it is (dispatch://INFRA-1523, the architect's
+// ruling of 2026-11-16, and chk-events: "the payload of each delete event carries no body"). A
+// reply's own creation froze a preview of the post it answers, which the event log keeps. Its
+// delete is a new event, written after the fact, so it writes no new copy of that other post's
+// text: comment.deleted of a reply carries reply_block null, and message.deleted of a reply
+// carries no reply_body and no reply_block text, for a plain reply and for one naming a block,
+// with the parent still standing. The control is the reply's creation, which keeps the preview.
+func TestAReplysDeleteEventCarriesNoTextOfThePostItAnswers(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A reply's delete event", "A spec")
+	const phrase = "the standing parent whose words its replies quote"
+	parent := createIssueMessage(t, handler, issue.Key, map[string]any{"body": phrase + "\n\nIts second paragraph."}, "alice")
+	plain := createIssueMessage(t, handler, issue.Key, map[string]any{
+		"body": "a plain reply to withdraw", "in_reply_to": parent.ID,
+	}, "bob")
+	block := createIssueMessage(t, handler, issue.Key, map[string]any{
+		"body": "a block reply to withdraw", "in_reply_to": parent.ID, "in_reply_to_block": "b1",
+	}, "bob")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": phrase}, "alice")
+	commentReply := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "a comment reply to withdraw", "reply_to": comment.ID, "reply_to_block": "b1",
+	}, "bob")
+	quotes := func(payload map[string]any) bool {
+		preview, _ := payload["reply_body"].(string)
+		blockText := ""
+		if quoted, _ := payload["reply_block"].(map[string]any); quoted != nil {
+			blockText, _ = quoted["text"].(string)
+		}
+		return strings.Contains(preview, phrase) || strings.Contains(blockText, phrase)
+	}
+	replies := []string{plain.ID, block.ID, commentReply.ID}
+	for _, id := range replies {
+		froze := false
+		for _, event := range decodedIssueEvents(t, handler, issue.Key) {
+			if event.Payload["id"] == id && quotes(event.Payload) {
+				froze = true
+			}
+		}
+		if !froze {
+			t.Fatalf("no event of reply %s quotes its parent before the delete, so its delete event proves nothing", id)
+		}
+	}
+
+	deleteIssueMessage(t, handler, plain.ID, "bob")
+	deleteIssueMessage(t, handler, block.ID, "bob")
+	deleteThreadComment(t, handler, commentReply.ID, "bob")
+
+	for _, event := range decodedIssueEvents(t, handler, issue.Key) {
+		if id, _ := event.Payload["id"].(string); !slices.Contains(replies, id) {
+			continue
+		}
+		if event.Type != "message.deleted" && event.Type != "comment.deleted" {
+			continue
+		}
+		if quotes(event.Payload) {
+			t.Fatalf("the %s of reply %s carries reply_body %q and reply_block %v, its parent's text: a delete event writes no copy of another post's text",
+				event.Type, event.Payload["id"], event.Payload["reply_body"], event.Payload["reply_block"])
+		}
+	}
+}
+
 // Every event of an edited post reads with the time its author last replaced the body, as the
 // post itself does, its own edit events among them: the event of its creation keeps the body as
 // first written, and the mark is what tells a reader of the log that the body was replaced
