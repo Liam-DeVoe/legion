@@ -276,8 +276,11 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 // fields Dispatch's JSON upload reads (its jsonArtifactUpload), and asks for a create alone
 // (create_only): where the issue already holds an artifact of that name or slug, whoever made it
 // or renamed another to it, Dispatch refuses it with 409 ARTIFACT_NAME_TAKEN and writes no
-// version, where a plain upload would write that document's next version. A Dispatch older than
-// create_only ignores the member and writes that version, as every upload did.
+// version, where a plain upload would write that document's next version. The daemon needs
+// Dispatch legion-envoy-v30.21.0 or later. A release from that one on that predates create_only
+// ignores the member and writes that version, as every upload did; a release before it refuses
+// every member its JSON upload does not declare, so it answers 400 INVALID_JSON
+// (OlderDispatchRefusesCreateOnly).
 func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
 	var response struct {
 		Artifact struct {
@@ -297,6 +300,13 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 	}
 	return response.Artifact.Slug, nil
 }
+
+// OlderDispatchRefusesCreateOnly is the likely cause of a 400 INVALID_JSON answer to
+// UploadArtifact, whose body is JSON the daemon builds itself: a Dispatch before
+// legion-envoy-v30.21.0, whose JSON upload refuses each member it does not declare, create_only
+// among them. The outbox logs it beside that refusal. No upload without create_only stands in for
+// it, since that upload would write a version into a document of that name the issue holds.
+const OlderDispatchRefusesCreateOnly = "a Dispatch older than legion-envoy-v30.21.0 refuses the create_only member of the daemon's document upload: the daemon needs Dispatch legion-envoy-v30.21.0 or later"
 
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it: each event as Dispatch serves it, which is

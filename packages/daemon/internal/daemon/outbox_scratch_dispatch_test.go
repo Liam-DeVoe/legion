@@ -343,22 +343,6 @@ func (d *documentMadeAfterRead) ArtifactSlugs(ctx context.Context, key string) (
 	return slugs, err
 }
 
-// uploadScratchDocument uploads a markdown document named name to issue as identity and answers
-// its id.
-func uploadScratchDocument(t *testing.T, baseURL, issue, name, content string, identity scratchIdentity) string {
-	t.Helper()
-	var uploaded struct {
-		Artifact struct {
-			ID string `json:"id"`
-		} `json:"artifact"`
-	}
-	dispatchCallAs(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": name, "content": content}, &uploaded, identity)
-	if uploaded.Artifact.ID == "" {
-		t.Fatalf("Dispatch answered the upload of %s to %s with no document id", name, issue)
-	}
-	return uploaded.Artifact.ID
-}
-
 // scratchDocumentVersions is who wrote each version Dispatch holds of the issue's document id,
 // oldest first, read from the issue's artifact list.
 func scratchDocumentVersions(t *testing.T, baseURL, issue, id string) []string {

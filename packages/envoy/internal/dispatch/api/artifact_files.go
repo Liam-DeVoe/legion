@@ -34,10 +34,10 @@ import (
 // refusal instead is not safe, since the store is keyed by the bytes' hash and another version,
 // or another upload in flight, can name the same object. The transaction's own checks still
 // decide: an upload this check passes that a concurrent write then makes refusable (another
-// upload taking its name with another kind, the issue closing), or whose insert fails, leaves an
-// object no row names, which a later upload of the same bytes reuses. The row records the hash
-// the object is keyed by, and the bytes too only while a live server process has no bucket
-// (fleetServesFilesFromRows).
+// upload taking its name with another kind, or taking it at all where this one asks to create
+// only, the issue closing), or whose insert fails, leaves an object no row names, which a later
+// upload of the same bytes reuses. The row records the hash the object is keyed by, and the
+// bytes too only while a live server process has no bucket (fleetServesFilesFromRows).
 func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, sha string, input artifactUploadInput, target artifactTarget) bool {
 	if kind == "doc" || s.deps.Files == nil {
 		return true

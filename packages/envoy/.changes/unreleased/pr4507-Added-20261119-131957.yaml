@@ -5,8 +5,13 @@ body: |-
     slug of an artifact the owner already holds, a renamed document's new name included, Dispatch
     answers 409 ARTIFACT_NAME_TAKEN, naming that artifact, and writes no version. The check is made
     under the owner's lock, in the upload's own transaction, so a document another writer makes just
-    before the upload is refused too. A file under a name already held is refused before its bytes
-    reach the file store. An upload without it writes the next version of a held name, as before.
+    before the upload is refused too. A file under a name held when the upload starts is refused
+    before its bytes reach the file store. A file whose name another upload takes while its bytes
+    are being stored is refused by the transaction, as every refusal made there is, and leaves those
+    bytes in the store, named by no version; a later upload of the same bytes reuses them. An upload
+    without it writes the next version of a held name, as before. ARTIFACT_NAME_TAKEN, from an
+    upload or a rename, now names the held artifact's kind (a document, an image or a file) where it
+    said "a document" of every kind.
 time: 2026-11-19T13:19:57.312465536Z
 custom:
     Issue: pr4507

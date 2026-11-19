@@ -85,7 +85,8 @@ type artifactUploadInput struct {
 	// createOnly reports an upload that asks for a new artifact and nothing else
 	// (jsonArtifactUpload.CreateOnly, or the multipart field of that name): storeArtifact refuses
 	// it where the name already names an artifact of the owner, and refuseUploadBeforeItsObject
-	// refuses a file's before its object is stored.
+	// refuses a file's before its object is stored where the name is held by then; a name taken
+	// after that check leaves the object, as putUploadedFile says of every refusal there.
 	createOnly bool
 }
 
