@@ -1611,10 +1611,11 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   `answered`, posted as the answer; `not_answered` (the agent cannot answer from its conversation and what `gh` reads) and `needs_work` (the question asks for work only a running agent can do, which the agent says it cannot do now, never promising it), both posted and passed on;
   and `none`, offered only for an Envoy message or a person's reply on the agent's ask, which posts nothing.
   The form's own field descriptions tell the model the two rules its schema cannot hold a reply to: a `not_answered` or `needs_work` reply names what it needs, and every kind but `none` carries text.
-  The daemon holds a reply to one more rule: the text of every kind but `none` is no placeholder, meaning one word of letters alone that is neither yes nor no and is no word of the agent's conversation, the question or the answer's `gh` results.
+  The daemon holds a reply to one more rule: the text of every kind but `none` is no placeholder, meaning one word of letters alone that is neither yes nor no and is no word of the agent's conversation, the question or the answer's `gh` results, raw JSON among them read with each escape such as `\n` as a space.
   The rule is that narrow so that a terse right answer passes: `No.`, a commit sha, or a marker such as `SBOM-ZINC-512`.
   A reply that breaks one of these rules is asked for once again, with the daemon's reason as a message after it, inside the same `model_calls`, `answer_seconds` and `output_tokens`, and the exchange appended to the conversation then holds the refused reply, that message and the reply after it, in that order.
   A second such reply, or one made on the last call `model_calls` allows, is `malformed` (below).
+  The placeholder rule does not read an exchange of its own that the conversation holds, a refused placeholder and the daemon's reason after it, so a placeholder refused once is refused again on a later question.
 
 - **No answer.**
   A bound passed (`answer_seconds`, `model_calls`, `length` at `output_tokens`), a refusal, a reply not in the form (`malformed`), a provider that failed (`provider_error`), the day's spend over `daily_usd` (`over_limit`), `no_provider`, `no_price`, `unknown_format`, a run the provider metered no call of
@@ -1625,7 +1626,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   A reply Dispatch or the listener refuses for good is passed on as `post_refused`.
 
 - **Passing on.**
-  The controller gets one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text}}`, the text cut at 2,000 characters), and, because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 149), which the controller reads at its start.
+  The controller gets one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text}}`, the text cut at 2,000 characters), and, because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 168), which the controller reads at its start.
 
 - **Posting**, in the agent's name and once:
   a Dispatch message through its delivery's reply route, a mention through the comment's reply route, an ask thread as a comment carrying the reply's marker (the thread is read for it before a post is made again), an Envoy message by a direct message to its sender in reply to it.

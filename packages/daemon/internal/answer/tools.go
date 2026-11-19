@@ -71,8 +71,9 @@ type ghArgsSchema struct {
 	AdditionalProperties bool     `json:"additionalProperties"`
 }
 
-// toolSet is the loop's tools as agentloop offers and runs them for req.
-func toolSet(req Request) []agentloop.Tool {
+// toolSet is the loop's tools as agentloop offers and runs them for req, each call's output
+// given to add as the model reads it (inFront.add).
+func toolSet(req Request, add func(string)) []agentloop.Tool {
 	set := make([]agentloop.Tool, len(tools))
 	for i, t := range tools {
 		set[i] = agentloop.Tool{
@@ -80,7 +81,9 @@ func toolSet(req Request) []agentloop.Tool {
 			Description: t.description(req),
 			Schema:      t.schema(req),
 			Run: func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
-				return t.run(ctx, req, call)
+				output, isError := t.run(ctx, req, call)
+				add(output)
+				return output, isError
 			},
 		}
 	}

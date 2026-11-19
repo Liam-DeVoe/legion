@@ -8,7 +8,10 @@ body: |-
   `placeholder` and `x` as two answers although the agent's conversation held the answer. The
   text of a reply of any kind but `none` is a placeholder when it is one word of letters alone (no
   digit, no punctuation, no space), is neither yes nor no, and is no word of the agent's
-  conversation, the question or the answer's `gh` results. Such a reply is asked for once again
+  conversation, the question or the answer's `gh` results, raw JSON read with each escape such
+  as `\n` as a space. The rule does not read its own refused placeholder and reason that an
+  earlier answer appended to the conversation, so a placeholder refused once is refused again on
+  a later question. Such a reply is asked for once again
   with the reason, as a reply the form's other rules refuse is, within the same `model_calls`,
   `answer_seconds` and `output_tokens`; a second placeholder, or one made on the last allowed
   call, is `malformed`. The rule is that narrow because a wider one refuses right answers: in a

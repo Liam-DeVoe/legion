@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"iter"
 	"strings"
 	"unicode"
 )
@@ -178,9 +177,9 @@ var errPlaceholder = errors.New("your reply's text is a placeholder: answer the 
 
 // placeholder says whether text, the text of a reply of any kind but none, is a placeholder
 // rather than an answer: trimmed, it is one or more letters and nothing else (no digit, no
-// punctuation, no space), it is neither yes nor no, and it is no word of texts, a word being a
-// run of letters and digits as long as it goes, compared in any case. texts are what the agent
-// has in front of it as it replies: the conversation, the question and the run's gh results.
+// punctuation, no space), it is neither yes nor no, and holds says it is no word of what the
+// agent has in front of it as it replies: the conversation, the question and the run's gh
+// results (inFront.holds).
 //
 // The rule is this narrow because a wider one refuses right answers. Replayed on 2026-11-19 as
 // whole loops, a guard refusing any one word or any text under 12 characters refused all 12
@@ -188,19 +187,11 @@ var errPlaceholder = errors.New("your reply's text is a placeholder: answer the 
 // malformed after the one ask again. This rule refused none of 24 terse right answers (the
 // marker, and "No" to a yes-or-no question) and caught the one "x" of 24 loops on a long
 // question, which the ask again answered right.
-func placeholder(text string, texts iter.Seq[string]) bool {
+func placeholder(text string, holds func(string) bool) bool {
 	text = strings.TrimSpace(text)
 	if text == "" || strings.ContainsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) }) ||
 		strings.EqualFold(text, "yes") || strings.EqualFold(text, "no") {
 		return false
 	}
-	notWord := func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) }
-	for t := range texts {
-		for word := range strings.FieldsFuncSeq(t, notWord) {
-			if strings.EqualFold(word, text) {
-				return false
-			}
-		}
-	}
-	return true
+	return !holds(text)
 }

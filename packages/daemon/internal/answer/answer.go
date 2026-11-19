@@ -21,13 +21,17 @@
 package answer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/sjawhar/envoy/agentloop"
 
@@ -324,41 +328,24 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 	question := userMessage(req)
 	// The gh tool adds each call's output to what the agent has in front of it (inFront).
 	front := &inFront{history: history, question: question}
-	toolset := toolSet(req)
-	for i, t := range toolset {
-		toolset[i].Run = func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
-			output, isError := t.Run(ctx, call)
-			front.add(output)
-			return output, isError
-		}
-	}
-	// read reads a reply by the form's own rules: parseReply's, and a text of any kind but
-	// none that is no placeholder.
-	read := func(value json.RawMessage) (form, error) {
-		reply, err := parseReply(value, req.MayAskNothing)
-		if err == nil && reply.kind != None && placeholder(reply.text, front.texts) {
-			return form{}, errPlaceholder
-		}
-		return reply, err
-	}
 	result, runErr := agentloop.Run(ctx, agentloop.Request{
 		Model:   r.agentModel(req.Conversation.ThinkingLevel),
 		System:  systemPrompt(req),
 		History: history,
 		Input:   []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: question}}}},
-		Tools:   toolset,
+		Tools:   toolSet(req, front.add),
 		Bounds: agentloop.Bounds{
 			Time: req.Bounds.Answer, Calls: req.Bounds.ModelCalls, OutputTokens: req.Bounds.OutputTokens,
 		},
 		FirstToolIndex: firstToolIndex(req.Earlier),
 		Final:          finalSchema(req.MayAskNothing),
-		// A reply the form's own rules refuse is asked for once again, with the rule's
-		// sentence (parseReply's, or errPlaceholder) as the message after it, within the
-		// same bounds: the rules the strict schema cannot state are the ones a model gets
-		// wrong, and one more call costs less than a question passed on as malformed. A
-		// second refusal is finish's to make.
+		// A reply the form's own rules refuse (inFront.read) is asked for once again, with
+		// the rule's sentence (parseReply's, or errPlaceholder) as the message after it,
+		// within the same bounds: the rules the strict schema cannot state are the ones a
+		// model gets wrong, and one more call costs less than a question passed on as
+		// malformed. A second refusal is finish's to make.
 		Check: func(value json.RawMessage) error {
-			_, err := read(value)
+			_, err := front.read(value, req.MayAskNothing)
 			return err
 		},
 		AskAgain: 1,
@@ -389,14 +376,14 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		reply.Fault, reply.Detail = Unmetered, fmt.Sprintf("the provider reported no usage for the answer's %d model call(s)", len(result.Steps))
 		return reply, nil
 	}
-	finish(&reply, req, r, result, question, read)
+	finish(&reply, req, r, result, front)
 	return reply, nil
 }
 
-// inFront is what the agent has in front of it as it replies, the texts whose words a reply may
-// be without being a placeholder (placeholder): the conversation's history and the question the
-// run is given, and the output of every gh call the run makes, which add takes as the gh tool
-// runs it. The SDK runs a tool call on a goroutine of its own and agentloop checks a reply on
+// inFront is what the agent has in front of it as it replies, whose words a reply may be without
+// being a placeholder (placeholder): the conversation's history and the question the run is
+// given, and the output of every gh call the run makes, which add takes as the gh tool runs it
+// (toolSet). The SDK runs a tool call on a goroutine of its own and agentloop checks a reply on
 // Run's, so the outputs are held under a lock.
 type inFront struct {
 	history  []agentloop.Message
@@ -412,32 +399,87 @@ func (f *inFront) add(output string) {
 	f.outputs = append(f.outputs, output)
 }
 
-// texts are its texts: each history block's text (prose, thinking, a reasoning summary or a tool
-// result's output), a tool call's input and a tool result's parts; the question; and the gh
-// outputs.
-func (f *inFront) texts(yield func(string) bool) {
-	for _, message := range f.history {
+// read reads a reply by the form's own rules: parseReply's, and a text of any kind but none that
+// is no placeholder of what the agent has in front of it.
+func (f *inFront) read(value json.RawMessage, mayAskNothing bool) (form, error) {
+	reply, err := parseReply(value, mayAskNothing)
+	if err == nil && reply.kind != None && placeholder(reply.text, f.holds) {
+		return form{}, errPlaceholder
+	}
+	return reply, err
+}
+
+// holds says whether word is a word of what the agent has in front of it: of each history
+// block's text (prose, thinking, a reasoning summary or a tool result's output), a tool call's
+// input and a tool result's parts; of the question; and of the gh outputs. A word is a run of
+// letters and digits as long as it goes (notWord), compared in any case. A text holding a
+// backslash is read once more with each JSON escape as a space (jsonEscape), which can only add
+// words.
+//
+// The guard's own exchange is left out: a user message whose one block is the placeholder
+// sentence (errPlaceholder), and the reply before it that the sentence refused. An earlier
+// answer appends both to the conversation (finish), and the refused reply holds its
+// placeholder, so without the skip the same placeholder would pass on every later question.
+func (f *inFront) holds(word string) bool {
+	inText := func(text string) bool {
+		for w := range strings.FieldsFuncSeq(text, notWord) {
+			if strings.EqualFold(w, word) {
+				return true
+			}
+		}
+		return false
+	}
+	inString := func(text string) bool {
+		return inText(text) || strings.Contains(text, `\`) && inText(jsonEscape.ReplaceAllLiteralString(text, " "))
+	}
+	wordBytes := []byte(word)
+	inBytes := func(text []byte) bool {
+		for w := range bytes.FieldsFuncSeq(text, notWord) {
+			if bytes.EqualFold(w, wordBytes) {
+				return true
+			}
+		}
+		return false
+	}
+	inInput := func(input json.RawMessage) bool {
+		return inBytes(input) || bytes.IndexByte(input, '\\') >= 0 && inBytes(jsonEscape.ReplaceAllLiteral(input, []byte(" ")))
+	}
+	for i, message := range f.history {
+		if askedAgain(message) || message.Role == agentloop.Assistant && i+1 < len(f.history) && askedAgain(f.history[i+1]) {
+			continue
+		}
 		for _, block := range message.Blocks {
-			if !yield(block.Text) || !yield(string(block.Input)) {
-				return
+			if inString(block.Text) || inInput(block.Input) {
+				return true
 			}
 			for _, part := range block.Content {
-				if !yield(part.Text) {
-					return
+				if inString(part.Text) {
+					return true
 				}
 			}
 		}
 	}
-	if !yield(f.question) {
-		return
+	if inString(f.question) {
+		return true
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, output := range f.outputs {
-		if !yield(output) {
-			return
-		}
-	}
+	return slices.ContainsFunc(f.outputs, inString)
+}
+
+// notWord says whether r ends a word: a word is a run of letters and digits.
+func notWord(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) }
+
+// jsonEscape is one escape of a JSON string. Raw JSON (a tool call's input, gh's --json or gh
+// api output) glues the letters after an escape to the escape's own: `\nBramble` and
+// `\u003eBramble` hold no word Bramble until the escape is read as a space.
+var jsonEscape = regexp.MustCompile(`\\(u[0-9a-fA-F]{4}|.)`)
+
+// askedAgain says whether message is the placeholder sentence (errPlaceholder) as the loop asks
+// again with it and an appender writes it: a user message of that one text.
+func askedAgain(message agentloop.Message) bool {
+	return message.Role == agentloop.User && len(message.Blocks) == 1 &&
+		message.Blocks[0].Kind == agentloop.TextBlock && message.Blocks[0].Text == errPlaceholder.Error()
 }
 
 // unmetered says whether nothing counted the run's model calls (Unmetered). Two things say so,
@@ -470,20 +512,20 @@ func firstToolIndex(earlier []store.AnswerToolCall) int {
 	return first
 }
 
-// finish reads the run's last reply into reply with read: the agent's reply in the form, or no
-// answer when the form's own rules refuse it, which they do once agentloop has asked again where
-// its bounds let it; and, with it, the turns to append, every call of the run in order but a cut
-// one whose call agentloop made again, which no later call was sent and the conversation never
-// holds.
-func finish(reply *Reply, req Request, r route, result agentloop.Result, question string, read func(json.RawMessage) (form, error)) {
-	form, err := read(result.Value)
+// finish reads the run's last reply into reply by the form's own rules (front's read): the
+// agent's reply in the form, or no answer when the rules refuse it, which they do once agentloop
+// has asked again where its bounds let it; and, with it, the turns to append under front's
+// question, every call of the run in order but a cut one whose call agentloop made again, which
+// no later call was sent and the conversation never holds.
+func finish(reply *Reply, req Request, r route, result agentloop.Result, front *inFront) {
+	form, err := front.read(result.Value, req.MayAskNothing)
 	if err != nil {
 		reply.Fault, reply.Detail = Malformed, fmt.Sprintf("%v: %.500q", err, result.Text)
 		return
 	}
 	reply.Kind, reply.Text, reply.Needs = form.kind, form.text, form.needs
 	reply.Append = conversation.Append{
-		QuestionID: req.Question.ID, Question: question,
+		QuestionID: req.Question.ID, Question: front.question,
 		Provider: string(r.provider), API: string(r.kind), Model: r.model,
 	}
 	for _, step := range result.Steps {

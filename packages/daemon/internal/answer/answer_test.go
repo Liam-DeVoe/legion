@@ -813,21 +813,45 @@ func TestAReplyTheFormRefusesIsAskedForOnceAgain(t *testing.T) {
 	}
 }
 
+// anthropicAnswer is a model turn on the Anthropic conversation that says text.
+func anthropicAnswer(text string) conversation.Message {
+	return conversation.Message{
+		Role: conversation.Assistant, Provider: "anthropic", API: anthropicMessages, Model: "claude-standin",
+		Content: []conversation.Block{{Type: conversation.Text, Text: text}},
+	}
+}
+
 // A reply of any kind but none whose text is a placeholder, one word of letters alone that is
 // neither yes nor no and no word of the conversation, the question or the run's gh results, is
 // asked for once again with the placeholder sentence, as a reply the form's other rules refuse
 // is, and the reply after it is the one posted. Neither the request's history nor its question
-// holds any of the placeholders.
+// holds any of the placeholders, but for the guard's own exchange in one case: an earlier answer
+// whose x was refused with the sentence and then answered, as finish appends it, whose refused
+// reply and sentence the guard does not read.
 func TestAPlaceholderReplyIsAskedForOnceAgain(t *testing.T) {
 	const sentence = "your reply's text is a placeholder: answer the question from your conversation"
 	for _, c := range []struct {
 		name, refused, second string
 		kind                  Kind
 		text, needs           string
+		// history changes the request's conversation.
+		history func(*conversation.Conversation)
 	}{
 		{
 			name: "answered x", refused: `{"kind":"answered","text":"x","needs":""}`,
 			second: `{"kind":"answered","text":"PR 7 is green.","needs":""}`, kind: Answered, text: "PR 7 is green.",
+		},
+		{
+			name: "answered x refused once before", refused: `{"kind":"answered","text":"x","needs":""}`,
+			second: `{"kind":"answered","text":"PR 7 is green.","needs":""}`, kind: Answered, text: "PR 7 is green.",
+			history: func(c *conversation.Conversation) {
+				c.Messages = append(c.Messages,
+					conversation.Message{Role: conversation.User, Content: []conversation.Block{{Type: conversation.Text, Text: "Is the plan written?"}}},
+					anthropicAnswer(`{"kind":"answered","text":"x","needs":""}`),
+					conversation.Message{Role: conversation.User, Content: []conversation.Block{{Type: conversation.Text, Text: sentence}}},
+					anthropicAnswer(`{"kind":"answered","text":"The plan is written.","needs":""}`),
+				)
+			},
 		},
 		{
 			name: "answered placeholder", refused: `{"kind":"answered","text":"placeholder","needs":""}`,
@@ -849,7 +873,11 @@ func TestAPlaceholderReplyIsAskedForOnceAgain(t *testing.T) {
 				anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicText(c.refused)),
 				anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 25}, anthropicText(c.second)),
 			)
-			reply, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 3))
+			req := anthropicRequest(t, s, &stubGH{}, 3)
+			if c.history != nil {
+				c.history(&req.Conversation)
+			}
+			reply, err := Answer(context.Background(), req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -872,10 +900,29 @@ func TestAPlaceholderReplyIsAskedForOnceAgain(t *testing.T) {
 	}
 }
 
+// ghExchange changes the Anthropic conversation's answer to end on a gh call whose input is the
+// raw JSON input, then the call's result output and one more turn of the agent's.
+func ghExchange(input, output string) func(*conversation.Conversation) {
+	return func(c *conversation.Conversation) {
+		c.Messages[1].Content = append(c.Messages[1].Content, conversation.Block{
+			Type: conversation.ToolCall, ToolCallID: "toolu_h1", ToolName: "gh", Arguments: json.RawMessage(input),
+		})
+		c.Messages = append(c.Messages,
+			conversation.Message{Role: conversation.Tool, Content: []conversation.Block{{
+				Type: conversation.ToolResult, ToolCallID: "toolu_h1", ToolName: "gh",
+				Content: []conversation.Block{{Type: conversation.Text, Text: output}},
+			}}},
+			anthropicAnswer("Done."),
+		)
+	}
+}
+
 // A terse right reply is no placeholder and is posted at once, never asked for again: a text with
-// a digit, a punctuation mark or a space in it, a bare yes or no, and a word of letters alone that
-// the conversation's history holds (in another case) each on one model call, and a word of
-// letters alone that only a gh result of the run holds on two, the gh call's and the reply's.
+// a digit, a punctuation mark or a space in it, a bare yes or no, a word of letters alone that
+// only the question holds ("Is PR 7 green?"), and one that the conversation's history holds (in
+// another case, or only behind a JSON escape in a tool call's input or a tool result's raw JSON)
+// each on one model call, and a word of letters alone that only a gh result of the run holds on
+// two, the gh call's and the reply's. No text of the request holds the word no.
 func TestATerseReplyIsPostedAtOnce(t *testing.T) {
 	for _, c := range []struct {
 		text string
@@ -888,12 +935,16 @@ func TestATerseReplyIsPostedAtOnce(t *testing.T) {
 		{text: "Yes, merged in #12."},
 		{text: "SBOM-ZINC-512"},
 		{text: "No."},
+		{text: "No"},
 		{text: "yes"},
 		{text: "4f1c2ab"},
 		{text: "go 1.22"},
+		{text: "green"},
 		{text: "bramble", history: func(c *conversation.Conversation) {
 			c.Messages[1].Content[1].Text = "The plan is written, on the branch named Bramble."
 		}},
+		{text: "Medlar", history: ghExchange(`{"args":["pr","comment","7","--body","Merged.\nMedlar is next."]}`, "Commented.")},
+		{text: "Sloe", history: ghExchange(`{"args":["pr","view","7","--json","body"]}`, `{"body":"Merged.\nSloe is next."}`)},
 		{text: "Quince", gh: []string{"release", "view", "quince", "-R", "acme/widgets"}},
 	} {
 		t.Run(c.text, func(t *testing.T) {
