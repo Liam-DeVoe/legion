@@ -1401,6 +1401,54 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
   expect(document.activeElement).toBe(second);
 });
 
+/** An Escape that ends an input-method composition, as the browser sends it to `target`. */
+function composingEscape(target: Element): void {
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+      key: "Escape",
+    })
+  );
+}
+
+// The tester's finding at #4205's 2ff6850a, on the ruling that a key that ends an input-method
+// composition acts on nothing: a reader typing in Japanese, Chinese or Korean in a row's editor
+// presses Escape to drop the candidate the input method shows, and that Escape is the input
+// method's. At 2ff6850a the editor's own Escape (`useNodeEditing.ts`'s `leave`) reads the key
+// alone, so it ends the editing and takes the caret out mid-word.
+test("an Escape that ends an input-method composition in a row's editor leaves the editing as it was", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        id: "spec#b-r1",
+        statement: true,
+        text: "A statement of the spec.",
+        type: "requirement",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, { artifacts: [specDocument] });
+  const [row] = rowsFor(view.container, "spec#b-r1");
+  if (row === undefined) throw new Error("the statement's row is not drawn");
+  await act(async () => row.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(view.edited.at(-1)).toBe("artifact-spec"));
+  const focused = document.activeElement;
+  await act(async () => composingEscape(focused ?? row));
+  expect(view.edited.at(-1), "an Escape that ended a composition ended the editing").toBe(
+    "artifact-spec"
+  );
+  expect(document.activeElement, "an Escape that ended a composition moved the focus").toBe(
+    focused
+  );
+});
+
 // The tester's red row on c-keys (`the caret Enter puts in a statement deep in its document
 // stays on screen while the reader writes`): the row the reader is editing in grows as they
 // write, and put back at its top at each change of its size (`NodeRow.tsx`'s
