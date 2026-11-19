@@ -86,10 +86,13 @@ import {
   askFacts,
   focusedNodeFacts,
   focusedRowFacts,
+  historyDayOf,
   historyEntries,
   historyItem,
   historyPanel,
+  newestHistoryEntry,
   rowFacts,
+  seededHistoryEntry,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
@@ -186,6 +189,7 @@ test("the conversation is the outline and the history is in the panel", async ({
     }
     await openDetails(page);
     // The newest entry, the three uploads, says the history has drawn the log it reads.
+    await expect(await newestHistoryEntry(page)).toHaveAttribute("data-history-uploads", "3");
     await expect(historyPanel(page).locator('[data-history-uploads="3"]')).toHaveCount(1);
     await expect(
       marginShell(page).getByText("Thread 1 opens here.", { exact: false }),
@@ -212,7 +216,7 @@ test("the conversation is the outline and the history is in the panel", async ({
     // The history pages the log 200 events at a time: every page is read in before it is. A
     // page is pressed for only once the first is drawn, and the log's length bounds the presses.
     const events = await allEvents(seeded.key);
-    await expect(historyEntries(page).first()).toBeVisible();
+    await newestHistoryEntry(page);
     const older = historyPanel(page).getByRole("button", {
       exact: true,
       name: CONTROL_LABELS.load_older,
@@ -374,16 +378,33 @@ test("the history lists the events and the agents' threads the outline does not 
     const history = historyPanel(page);
     await expect(history).toBeVisible();
     const rows = historyEntries(page);
-    // The issue's own events, each a line of its own.
-    for (const description of ["updated the issue", "claimed the issue", "added note.md"]) {
+    // The issue's own events, each a line of its own, read by its event (`seededHistoryEntry`).
+    const events = await getIssueEvents(issue.key, { limit: 100 });
+    const lines: [string, (event: DispatchEvent) => boolean][] = [
+      ["updated the issue", (event) => event.type === "issue.updated"],
+      ["claimed the issue", (event) => event.type === "issue.claimed"],
+      [
+        "added note.md",
+        (event) => event.type === "artifact.created" && event.payload.artifact.name === "note.md",
+      ],
+    ];
+    for (const [description, drawn] of lines) {
+      const event = events.find(drawn);
+      if (event === undefined) throw new Error(`the seed recorded no event of "${description}"`);
+      await seededHistoryEntry(
+        page,
+        history.locator(`[data-event-seq="${event.seq}"]`),
+        event.created_at
+      );
       await expect(rows.filter({ hasText: description })).toHaveCount(1);
     }
     // The threads agents wrote among themselves, each once, whole, with its Reply - and no row
     // of the outline.
-    for (const id of [resolved.id, open.id, message.id]) {
-      await expect(historyItem(page, id)).toHaveCount(1);
-      await expect(history.locator(`[data-history-reply="${id}"]`)).toHaveCount(1);
-      await expect(nodeRow(page, id)).toHaveCount(0);
+    for (const thread of [resolved, open, message]) {
+      await seededHistoryEntry(page, historyItem(page, thread.id), thread.created_at);
+      await expect(historyItem(page, thread.id)).toHaveCount(1);
+      await expect(history.locator(`[data-history-reply="${thread.id}"]`)).toHaveCount(1);
+      await expect(nodeRow(page, thread.id)).toHaveCount(0);
     }
     await expect(historyItem(page, open.id)).toContainText("An open thread.");
     // The asks are rows of the outline, answered and retracted, and no line of the history.
@@ -408,7 +429,10 @@ test("the history lists the events and the agents' threads the outline does not 
 // opens it; the reader's watermark is drawn where it stood when the history first drew, at the
 // end of today's list when the reader stopped on an earlier day, and a later move of the mark -
 // a write the outline does not make yet, made here by the API and read back on a refocus -
-// leaves the line where it was, across a close and an open of Details too.
+// leaves the line where it was, across a close and an open of Details too. Each day is the one
+// the page files its moves under, named as the page names it, worked out in the page from the
+// moves' own times (`historyDayOf`): a midnight between the seeding and the read makes the newer
+// moves' day a day before the reader's today too, which the row opens before it reads its lines.
 test("the history folds each day before today and marks where the reader stopped", async ({
   browser,
 }) => {
@@ -446,15 +470,31 @@ test("the history folds each day before today and marks where the reader stopped
     const page = await alice.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
 
+    // The day of each move, as the page files and names it: the newer two moves' is the reader's
+    // today unless a midnight came between the seeding and this read, the three back-dated
+    // ones' a day before it.
+    const newest = await historyDayOf(page, fourth.created_at);
+    const oldestUnread = await historyDayOf(page, third.created_at);
+    const backDated = await historyDayOf(page, yesterday);
     const days = historyPanel(page).locator("[data-history-day]");
-    await expect(days).toHaveCount(2);
-    await expect(days.first()).toContainText(CONTROL_LABELS.history_today);
-    const earlier = days.nth(1).getByRole("button", {
-      name: `${CONTROL_LABELS.history_yesterday} · 3`,
+    await expect(days).toHaveCount(new Set([newest.date, oldestUnread.date, backDated.date]).size);
+    await expect(days.first()).toHaveAttribute("data-history-day", newest.date);
+    await expect(days.first()).toContainText(newest.label);
+    await expect(days.last()).toHaveAttribute("data-history-day", backDated.date);
+    const earlier = days.last().getByRole("button", {
+      name: `${backDated.label} · 3`,
     });
     await expect(earlier).toHaveAttribute("aria-expanded", "false");
-    // Today's lines are drawn, and the line that says what is new closes today's list, which is
-    // open, rather than heading the day the list folds; yesterday's are behind its one line.
+    // The newer moves' lines are drawn, their day opened where the page drew it folded, and the
+    // line that says what is new closes the list of the oldest unread move's day, which is open,
+    // rather than heading the day the list folds; the back-dated ones are behind its one line.
+    for (const move of [fourth, third]) {
+      await seededHistoryEntry(
+        page,
+        historyPanel(page).locator(`[data-event-seq="${move.seq}"]`),
+        move.created_at
+      );
+    }
     const order = () =>
       historyPanel(page)
         .locator("[data-event-seq], li[aria-label]")
@@ -480,9 +520,9 @@ test("the history folds each day before today and marks where the reader stopped
       String(created.seq),
     ];
     expect(await order()).toEqual(marked);
-    // The line stays the last of today's list, above yesterday's lines, with the day open.
+    // The line stays the last of its day's list, above the back-dated lines, with their day open.
     await expect(
-      days.first().locator(":scope > ol > li").last(),
+      historyPanel(page).locator(`[data-history-day="${oldestUnread.date}"] > ol > li`).last(),
       "opening Yesterday moved the line out of today's list"
     ).toHaveAttribute("aria-label", CONTROL_LABELS.history_unread);
 
@@ -516,11 +556,17 @@ test("a history line pins its event, the pin outlives a reload, and the line unp
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Pin an event" });
   await patchIssue(issue.key, { status: "in_progress" });
+  const updated = (await getIssueEvents(issue.key, { limit: 100 })).find(
+    (event) => event.type === "issue.updated"
+  );
+  if (updated === undefined) throw new Error(`${issue.key} recorded no issue.updated`);
 
   const alice = await reader(browser, "alice");
   try {
     const page = await alice.newPage();
+    const line = historyPanel(page).locator(`[data-event-seq="${updated.seq}"]`);
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await seededHistoryEntry(page, line, updated.created_at);
     const row = historyEntries(page).filter({ hasText: "updated the issue" });
     await expect(row).toHaveCount(1);
     await row.getByRole("button", { exact: true, name: CONTROL_LABELS.pin }).click();
@@ -531,6 +577,7 @@ test("a history line pins its event, the pin outlives a reload, and the line unp
     await expect(page.getByRole("region", { name: "Pending changes" })).toHaveCount(0);
 
     await page.reload();
+    await seededHistoryEntry(page, line, updated.created_at);
     const again = historyEntries(page).filter({ hasText: "updated the issue" });
     await expect(
       again.getByRole("button", { exact: true, name: CONTROL_LABELS.unpin })
@@ -567,6 +614,10 @@ test("a mention that could not be delivered reads as not delivered in the focuse
       )
     )
     .toEqual(["failed"]);
+  const created = (await getIssueEvents(issue.key, { limit: 100 })).find(
+    (event) => event.type === "issue.created"
+  );
+  if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
 
   const alice = await reader(browser, "alice");
   try {
@@ -579,6 +630,11 @@ test("a mention that could not be delivered reads as not delivered in the focuse
     // Details' history, open beside the facts, draws no line of the comment or its delivery:
     // read once its log is drawn, which the issue's own creation says.
     await expect(historyPanel(page)).toBeVisible();
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${created.seq}"]`),
+      created.created_at
+    );
     await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
     await expect(historyEntries(page).filter({ hasText: "mention" })).toHaveCount(0);
   } finally {
@@ -606,6 +662,7 @@ test("the history draws an agent's comment longer than one event whole, linked t
     const page = await alice.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     const item = historyItem(page, comment.id);
+    await seededHistoryEntry(page, item, comment.created_at);
     await expect(item).toHaveCount(1);
     await expect(item).toContainText(first);
     await expect(item).toContainText(second);
@@ -680,6 +737,22 @@ function handoffLine(page: Page, version: number): Locator {
   });
 }
 
+/** Waits until the history draws the line of each handoff version `seedHandoffs` recorded on
+ *  `key`, each read by its event (`seededHistoryEntry`). */
+async function handoffLinesDrawn(page: Page, key: string): Promise<void> {
+  const recorded = (await getIssueEvents(key, { limit: 100 })).filter(
+    (event) => event.type === "handoff.recorded"
+  );
+  expect(recorded, "the seed recorded both handoffs").toHaveLength(2);
+  for (const event of recorded) {
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${event.seq}"]`),
+      event.created_at
+    );
+  }
+}
+
 // The conversation's handoff cards are the history's lines (the
 // Design's "Where each thing goes": "The conversation's handoff cards, and the Activity tab -
 // The history in the panel"), and each line keeps what the card opened: its fields and every
@@ -694,6 +767,7 @@ test("the history lists each handoff version, and opening one shows its fields a
     const page = await alice.newPage();
     await gotoIssue(page, `/issues/${key}/activity`);
     await expect(historyPanel(page)).toBeVisible();
+    await handoffLinesDrawn(page, key);
 
     const lines = historyEntries(page).filter({ hasText: "recorded the implement handoff" });
     await expect(lines).toHaveCount(2);
@@ -755,6 +829,7 @@ test("a handoff written while the history is open arrives without a reload", asy
   try {
     const page = await alice.newPage();
     await gotoIssue(page, `/issues/${key}/activity`);
+    await handoffLinesDrawn(page, key);
     const cards = historyEntries(page).filter({ hasText: "recorded the implement handoff" });
     await expect(cards).toHaveCount(2);
     // A mark on this document alone: a reload would load a new one, which carries no attribute of
@@ -796,6 +871,7 @@ test("the history has one line per recorded handoff version", async ({ browser }
     const page = await alice.newPage();
     await gotoIssue(page, `/issues/${key}/activity`);
     await expect(historyPanel(page)).toBeVisible();
+    await handoffLinesDrawn(page, key);
     const rows = historyEntries(page);
     await expect(rows.filter({ hasText: "recorded the implement handoff" })).toHaveCount(2);
     for (const version of [1, 2]) {
@@ -856,31 +932,38 @@ async function readingAnchor(page: Page, clip: { bottom: number; top: number }):
 }
 
 /** Opens `/activity` on `issueKey`, which opens Details at the history, and waits until the
- *  history holds `newest`. */
-async function openHistory(page: Page, issueKey: string, newest: string): Promise<void> {
+ *  history draws the seed `newest`, a comment's or a message's turn, read by its id
+ *  (`seededHistoryEntry`). */
+async function openHistory(
+  page: Page,
+  issueKey: string,
+  newest: { readonly created_at: string; readonly id: string }
+): Promise<void> {
   await gotoIssue(page, `/issues/${issueKey}/activity`);
-  await expect(historyPanel(page).getByText(newest)).toBeVisible();
+  await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
 }
 
-/** An issue with `count` messages an agent wrote, `Existing message <n>`, newest last. */
+/** An issue with `count` messages an agent wrote, `Existing message <n>`, newest last, and the
+ *  newest of them. */
 async function seedMessages(title: string, count: number, words = "Existing message") {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title });
-  for (let index = 0; index < count; index += 1) {
-    await createMessage(issue.key, { body: `${words} ${index}` }, attentionSession);
+  let newest = await createMessage(issue.key, { body: `${words} 0` }, attentionSession);
+  for (let index = 1; index < count; index += 1) {
+    newest = await createMessage(issue.key, { body: `${words} ${index}` }, attentionSession);
   }
-  return issue;
+  return { issue, newest };
 }
 
 test("a reader scrolled down the history keeps their place when a new entry arrives", async ({
   browser,
 }) => {
-  const issue = await seedMessages("Attention test", 30);
+  const { issue, newest } = await seedMessages("Attention test", 30);
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
-    await openHistory(page, issue.key, "Existing message 29");
+    await openHistory(page, issue.key, newest);
     // The browser's own scroll anchoring is turned off. No box of the page sets
     // `overflow-anchor`, so Chromium anchors Details' box itself and would put the entry back
     // where it was when the arrival lands above it: the row would pass with the history's own
@@ -928,12 +1011,12 @@ test("a reader scrolled down the history keeps their place when a new entry arri
 test("a reader at the top of Details finds a new entry at the history's head", async ({
   browser,
 }) => {
-  const issue = await seedMessages("Attention test", 30);
+  const { issue, newest } = await seedMessages("Attention test", 30);
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
-    await openHistory(page, issue.key, "Existing message 29");
+    await openHistory(page, issue.key, newest);
     await scrollHistoryTo(page, 0);
 
     await createMessage(issue.key, { body: "Arrived at the top" }, attentionSession);
@@ -953,13 +1036,13 @@ test("a reader at the top of Details finds a new entry at the history's head", a
 test("a new entry arriving while the reader is on a filter leaves Details where they left it", async ({
   browser,
 }) => {
-  const issue = await seedMessages("Away from the history", 30);
+  const { issue, newest } = await seedMessages("Away from the history", 30);
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize(DESKTOP);
-    await openHistory(page, issue.key, "Existing message 29");
+    await openHistory(page, issue.key, newest);
     // Up to the panel's own top, off the history and onto the issue's properties.
     await scrollHistoryTo(page, 0);
 
@@ -992,13 +1075,66 @@ test("a new entry arriving while the reader is on a filter leaves Details where 
   }
 });
 
+// The history draws each day before the reader's today folded to one line, and the page reads
+// its today from the browser's clock at each render, while the server stamps each seed with its
+// own time: a row whose seeding and drawing fall on either side of the reader's midnight finds its
+// seeds a day before today, folded. So the rows read a seed through `seededHistoryEntry`, which
+// finds it by its id and opens the day the page drew it folded in, and none of them assumes which
+// day a seed falls in. Here, and in no other row, the page's own clock is moved past the reader's
+// next midnight after the seeding, before the history is drawn: the seeds are then in the day
+// before the page's today, named as the page names it, and the rows' reading finds them there.
+test("entries made before the reader's midnight are found in the day the history draws them in after it", async ({
+  browser,
+}) => {
+  const { issue, newest } = await seedMessages("Seeded before midnight", 3);
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    // The page's own clock, from the real time, so the row can move it once the seeds are made.
+    await page.clock.install();
+    await gotoIssue(page, `/issues/${issue.key}`);
+    // Every write of this issue is an agent's message, which the outline draws no row for, so
+    // the tree is drawn with no row in it.
+    await expectIssuePageDrawn(page);
+    // How far the reader's next midnight is, by the page's clock.
+    const toMidnight = await page.evaluate(() => {
+      const now = new Date();
+      const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      return midnight.getTime() - now.getTime();
+    });
+    await page.clock.fastForward(toMidnight + 5_000);
+    const seeded = await historyDayOf(page, newest.created_at);
+    expect(seeded.today, "the page's clock did not pass the reader's midnight").toBe(false);
+
+    // The history is drawn past that midnight, and read as every row reads it.
+    await openHistory(page, issue.key, newest);
+    const day = historyPanel(page).locator(`[data-history-day="${seeded.date}"]`);
+    await expect(
+      day.getByRole("button", { name: `${seeded.label} · ` }),
+      "the seeds' day is not the day the page names before its today, opened"
+    ).toHaveAttribute("aria-expanded", "true");
+    for (let index = 0; index < 3; index += 1) {
+      await expect(day.getByText(`Existing message ${index}`, { exact: true })).toBeVisible();
+    }
+    await expect(
+      historyPanel(page).locator("[data-history-day]"),
+      "the history drew a day the seeds are not in"
+    ).toHaveCount(1);
+  } finally {
+    await context.close();
+  }
+});
+
 // Paging is the history's: the outline reads each of its three lists whole and offers no
 // `Load older` at all. Older events land beneath the entries already on screen, so the entry
 // the reader is on does not move; and the reader who presses on reaches the log's start, where
 // the control goes.
 test("loading older history entries keeps the reader anchor", async ({ browser }) => {
   // One more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists.
-  const issue = await seedMessages("Older events", 205, "Older message");
+  const { issue, newest } = await seedMessages("Older events", 205, "Older message");
+  const created = (await allEvents(issue.key)).find((event) => event.type === "issue.created");
+  if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
 
   const context = await reader(browser, "alice");
   try {
@@ -1015,6 +1151,7 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     // move the entry the reader is on is a history that draws something else in place of its
     // list while that page is read, or that hands the focus to a control off screen once it lands.
     await withoutScrollAnchoring(page);
+    await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
     const loadOlder = historyPanel(page).getByRole("button", { name: CONTROL_LABELS.load_older });
     await expect(loadOlder).toBeVisible();
     await loadOlder.scrollIntoViewIfNeeded();
@@ -1033,6 +1170,11 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
 
     // The proof the older page landed is the oldest entry of all: the issue's own creation,
     // which only the page beneath the first 200 holds.
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${created.seq}"]`),
+      created.created_at
+    );
     await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
     await expect
       .poll(
@@ -1066,6 +1208,17 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
   }
 });
 
+/** The event of the upload of `name` on `key`, among the newest 200 of its log, the page the
+ *  history reads first. */
+async function uploadEvent(key: string, name: string): Promise<DispatchEvent> {
+  const event = (await getIssueEvents(key, { limit: 200, order: "desc" })).find(
+    (one) => one.type === "artifact.created" && one.payload.artifact.name === name
+  );
+  if (event === undefined)
+    throw new Error(`${key} recorded no upload of ${name} on its first page`);
+  return event;
+}
+
 // "Load older" adds entries under the reader, and the line they read keeps its place on the
 // screen; and by the focus rule of `IssueHistory.tsx`, a press of Load older made by keyboard
 // hands the focus to a control the page it read added, never one out of the reader's view. One
@@ -1097,6 +1250,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
     await createMessage(issue.key, { body: `Later message ${index}` }, attentionSession);
   }
   const newest = "shot-9.png";
+  const upload = await uploadEvent(issue.key, newest);
 
   const context = await reader(browser, "alice");
   try {
@@ -1126,6 +1280,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
     // By pointer: the reader is on the newest file of the run, and the older page lands.
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     await withoutScrollAnchoring(page);
+    await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await expect(loadOlder).toBeVisible();
     const run = historyPanel(page).locator("[data-history-uploads]");
@@ -1152,6 +1307,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
 
     // By keyboard: Load older pressed with the focus on it hands the focus to a control in view.
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await putFileAtCentre();
     await loadOlder.focus();
@@ -1201,23 +1357,28 @@ test("Load older by keyboard keeps the focus in view when the older page extends
   // newest upload sorts it above the message. The 197 messages after them leave the run's two
   // newest uploads and the message at the foot of the log's first page.
   for (let index = 0; index < 8; index += 1) await upload(index);
-  await createMessage(issue.key, { body: "Between the uploads" }, attentionSession);
+  const between = await createMessage(issue.key, { body: "Between the uploads" }, attentionSession);
   for (let index = 8; index < 10; index += 1) await upload(index);
   for (let index = 0; index < 197; index += 1) {
     await createMessage(issue.key, { body: `Later message ${index}` }, attentionSession);
   }
+  const newestUpload = await uploadEvent(issue.key, "shot-9.png");
+  const created = (await allEvents(issue.key)).find((event) => event.type === "issue.created");
+  if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     const run = historyPanel(page).locator("[data-history-uploads]");
+    await seededHistoryEntry(page, run, newestUpload.created_at);
     await expect(run).toHaveCount(1);
     const firstPage = Number(await run.getAttribute("data-history-uploads"));
     expect(
       firstPage > 0 && firstPage < 10,
       `the log's first page holds ${firstPage} of the run's 10 uploads, so the run does not straddle the page and the row proves nothing`
     ).toBe(true);
+    await seededHistoryEntry(page, historyItem(page, between.id), between.created_at);
     await expect(
       historyPanel(page).getByText("Between the uploads"),
       "the message between the uploads is not drawn on the first page"
@@ -1229,6 +1390,11 @@ test("Load older by keyboard keeps the focus in view when the older page extends
     await expect(run, "the older page did not extend the run").toHaveAttribute(
       "data-history-uploads",
       "10"
+    );
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${created.seq}"]`),
+      created.created_at
     );
     await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
     await nextFrames(page);
@@ -1328,8 +1494,8 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
   // Each turn is about a thousand pixels whole at Details' width and six lines cut, as the long
   // turns of the real issue were.
   const paragraph = "the agents read the history and wrote what they found ".repeat(6);
-  for (let index = 0; index < 205; index += 1) {
-    await createMessage(
+  const turn = (index: number) =>
+    createMessage(
       issue.key,
       {
         body: Array.from(
@@ -1339,12 +1505,14 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
       },
       attentionSession
     );
-  }
+  let newest = await turn(0);
+  for (let index = 1; index < 205; index += 1) newest = await turn(index);
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
     const loadOlder = historyPanel(page).getByRole("button", { name: CONTROL_LABELS.load_older });
     await expect(loadOlder, "the log's first page offers no Load older").toHaveCount(1);
     await loadOlder.focus();
@@ -1392,11 +1560,14 @@ test("the reader's place in the history holds when a turn above it is cut by mor
   const issue = await createIssue({ project: "CORE", title: "A long turn above the reader" });
   // Oldest first: thirty short turns, one long turn, twelve short turns. The history lists them
   // newest first, so the long turn stands below the first screen with thirty turns under it.
+  const older: { readonly created_at: string; readonly id: string }[] = [];
   for (let index = 0; index < 30; index += 1) {
-    await createMessage(issue.key, { body: `Older turn ${index}` }, attentionSession);
+    older.push(await createMessage(issue.key, { body: `Older turn ${index}` }, attentionSession));
   }
+  const seventeenth = older[17];
+  if (seventeenth === undefined) throw new Error("the seed made no seventeenth older turn");
   const paragraph = "the agents read the history and wrote what they found ".repeat(6);
-  await createMessage(
+  const longTurn = await createMessage(
     issue.key,
     { body: Array.from({ length: 40 }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n") },
     attentionSession
@@ -1410,10 +1581,12 @@ test("the reader's place in the history holds when a turn above it is cut by mor
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     const long = historyEntries(page).filter({ hasText: "Part 39:" });
+    await seededHistoryEntry(page, long, longTurn.created_at);
     await expect(long).toHaveCount(1);
     // The focus jumps to an older turn well under the long turn, which never shows on the way,
     // so it stays whole above the reader.
     const target = historyEntries(page).filter({ hasText: "Older turn 17" });
+    await seededHistoryEntry(page, target, seventeenth.created_at);
     await target.locator("[data-history-time]").focus();
     await nextFrames(page);
     const view = await historyViewport(page);
@@ -1544,6 +1717,7 @@ test("a control at the foot of a long turn keeps the focus in view when the turn
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     const turn = historyItem(page, long.id);
+    await seededHistoryEntry(page, turn, long.created_at);
     await expect(turn).toHaveCount(1);
     const reply = historyPanel(page).locator(`[data-history-reply="${long.id}"]`);
     await expect(reply).toHaveCount(1);
@@ -1633,6 +1807,7 @@ test("more pressed by keyboard opens a turn's words in place, its head where it 
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     const turn = historyItem(page, long.id);
+    await seededHistoryEntry(page, turn, long.created_at);
     const more = turn.locator("[data-node-more]");
     // A turn in view, wholly or in part, keeps its whole length, and is cut to six lines once it
     // lies wholly outside the view (`clamp-measurer.ts`). So the reader scrolls to the long turn,
@@ -1693,17 +1868,16 @@ async function verifyGapDetection(
 ): Promise<void> {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Attention test" });
-  const comments: string[] = [];
+  const comments: { readonly created_at: string; readonly id: string }[] = [];
   for (let index = 0; index < 20; index += 1) {
-    const comment = await createComment(
-      issue.key,
-      { body: `Gap comment ${index}` },
-      attentionSession
+    comments.push(
+      await createComment(issue.key, { body: `Gap comment ${index}` }, attentionSession)
     );
-    comments.push(comment.id);
   }
+  const newest = comments.at(-1);
+  if (newest === undefined) throw new Error("the seed made no comment");
   const events = await getIssueEvents(issue.key, { limit: 200 });
-  const dayOld = new Set(comments.slice(0, 10));
+  const dayOld = new Set(comments.slice(0, 10).map((comment) => comment.id));
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
   await Promise.all([
     ...[...dayOld].map((id) => setCreatedAt("comments", id, yesterday)),
@@ -1720,7 +1894,7 @@ async function verifyGapDetection(
   // The mark moves back to the twelfth comment below: the eight after it are unread, so the line
   // comes in today's list, two entries above the gap the reader is parked on.
   const twelfth = events.find(
-    (event) => event.type === "comment.created" && event.payload.id === comments[11]
+    (event) => event.type === "comment.created" && event.payload.id === comments[11]?.id
   )?.seq;
   if (twelfth === undefined) throw new Error("the seed recorded no twelfth comment");
 
@@ -1730,14 +1904,16 @@ async function verifyGapDetection(
     if (viewport !== undefined) {
       await page.setViewportSize(viewport);
     }
-    await openHistory(page, issue.key, "Gap comment 19");
+    await openHistory(page, issue.key, newest);
     const divider = historyPanel(page).getByRole("listitem", {
       name: CONTROL_LABELS.history_unread,
     });
     await expect(divider).toHaveCount(0);
-    const dayBefore = historyPanel(page).getByRole("button", {
-      name: new RegExp(`^${CONTROL_LABELS.history_yesterday} · \\d+$`),
-    });
+    // The back-dated day, named as the page names the day it files those comments under.
+    const backDated = await historyDayOf(page, yesterday);
+    const dayBefore = historyPanel(page)
+      .locator(`[data-history-day="${backDated.date}"]`)
+      .getByRole("button", { name: `${backDated.label} · ` });
     await dayBefore.click();
     await expect(dayBefore).toHaveAttribute("aria-expanded", "true");
     await expect(historyPanel(page).getByText("Gap comment 0", { exact: true })).toBeVisible();
@@ -2625,8 +2801,14 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
 });
 
 /** An issue with an agents' thread, a message an agent wrote that no person wrote in, dated a
- *  day back with its event, so the history folds the day it is in. */
-async function seedAgentsThread(): Promise<{ key: string; message: string }> {
+ *  day back with its event, so the history folds the day it is in: its id, the time it is dated
+ *  to (`messageAt`), and the newest of the notes after it (`newest`). */
+async function seedAgentsThread(): Promise<{
+  key: string;
+  message: string;
+  messageAt: string;
+  newest: { readonly created_at: string; readonly id: string };
+}> {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "The history's addresses" });
   await createComment(issue.key, { body: "A person's comment, a row of the outline." });
@@ -2638,8 +2820,17 @@ async function seedAgentsThread(): Promise<{ key: string; message: string }> {
     { body: "The agents' turn an address names." },
     attentionSession
   );
-  for (let index = 0; index < 12; index += 1) {
-    await createMessage(issue.key, { body: `An agent's later note ${index}.` }, attentionSession);
+  let newest = await createMessage(
+    issue.key,
+    { body: "An agent's later note 0." },
+    attentionSession
+  );
+  for (let index = 1; index < 12; index += 1) {
+    newest = await createMessage(
+      issue.key,
+      { body: `An agent's later note ${index}.` },
+      attentionSession
+    );
   }
   const created = (await getIssueEvents(issue.key, { limit: 200 })).find(
     (event) => event.type === "message.created" && event.payload.id === message.id
@@ -2650,7 +2841,7 @@ async function seedAgentsThread(): Promise<{ key: string; message: string }> {
     setCreatedAt("messages", message.id, yesterday),
     setEventCreatedAt(created.id, yesterday),
   ]);
-  return { key: issue.key, message: message.id };
+  return { key: issue.key, message: message.id, messageAt: yesterday, newest };
 }
 
 // `t v` opens `/activity` with the history's heading in view and the
@@ -2745,12 +2936,14 @@ test("t v and t o open Details at the history and at the collaborators, and an a
 
     // An agents' turn's own address, on a fresh load, opens Details there: the day before today
     // the turn is in open, the turn marked and on screen. A press on that day's line folds it.
+    // The day is named as the page names the turn's own date.
     await gotoIssue(page, `/issues/${seeded.key}/messages/${seeded.message}`);
     await expect(marginShell(page), "the turn's address did not open Details").toBeVisible();
     const turn = historyItem(page, seeded.message);
-    const dayBefore = historyPanel(page).getByRole("button", {
-      name: new RegExp(`^${CONTROL_LABELS.history_yesterday} · \\d+$`),
-    });
+    const turnDay = await historyDayOf(page, seeded.messageAt);
+    const dayBefore = historyPanel(page)
+      .locator(`[data-history-day="${turnDay.date}"]`)
+      .getByRole("button", { name: `${turnDay.label} · ` });
     await expect(dayBefore, "the turn's address left its day folded").toHaveAttribute(
       "aria-expanded",
       "true"
@@ -2775,6 +2968,7 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     // and on screen. The link in the comment's words is an anchor the browser follows, which
     // loads the page again, and it reaches the turn too.
     await gotoIssue(page, `/issues/${seeded.key}/activity`);
+    await seededHistoryEntry(page, historyItem(page, seeded.newest.id), seeded.newest.created_at);
     await expect(historyPanel(page).getByText("An agent's later note 11.")).toBeVisible();
     await closeDetails(page);
     await page.evaluate(() => document.documentElement.setAttribute("data-loaded-once", "yes"));
@@ -3406,7 +3600,7 @@ test("a growth above Details' view once the t o hold has ended leaves the rows i
     await nextFrames(page);
     await nextFrames(page);
     log.resolve();
-    const entry = historyEntries(page).first();
+    const entry = await newestHistoryEntry(page);
     await expect(entry, "the history drew no entry").toBeAttached();
     await nextFrames(page);
 
@@ -3489,6 +3683,7 @@ test("/activity read cold opens Details with the history's heading at the top of
     });
     await gotoIssue(page, `/issues/${seeded.key}/activity`);
     await expect(marginShell(page), "/activity did not open Details").toBeVisible();
+    await newestHistoryEntry(page);
     await expect(historyEntries(page).first(), "the history drew no entry").toBeAttached();
     await nextFrames(page);
     const heading = historyPanel(page).getByRole("heading", {
@@ -3540,6 +3735,7 @@ test("t v from a load with Details shut opens Details with the history's heading
       new RegExp(`/issues/${seeded.key}/activity$`)
     );
     await expect(marginShell(page), "t v did not open Details").toBeVisible();
+    await newestHistoryEntry(page);
     await expect(historyEntries(page).first(), "the history drew no entry").toBeAttached();
     await nextFrames(page);
     const heading = historyPanel(page).getByRole("heading", {
@@ -3634,12 +3830,13 @@ test("on a phone a link of the history and Reply close Details", async ({ browse
         contentType: "image/png",
         name: "phone-shot.png",
       });
-      return { key: issue.key, message: message.id };
+      return { key: issue.key, message: message.id, messageAt: message.created_at };
     },
     async (page, seeded) => {
       await page.setViewportSize(PHONE);
       await gotoIssue(page, `/issues/${seeded.key}/activity`);
       await expect(marginShell(page)).toBeVisible();
+      await seededHistoryEntry(page, historyItem(page, seeded.message), seeded.messageAt);
 
       // A turn's time keeps Details open: the page records each value the aside of Details takes
       // for its `hidden` attribute and its class during the press, and keeps the hidden ones.
@@ -3689,6 +3886,7 @@ test("on a phone a link of the history and Reply close Details", async ({ browse
       // Reply closes it too.
       await gotoIssue(page, `/issues/${seeded.key}/activity`);
       await expect(marginShell(page)).toBeVisible();
+      await seededHistoryEntry(page, historyItem(page, seeded.message), seeded.messageAt);
       await historyPanel(page).locator(`[data-history-reply="${seeded.message}"]`).click();
       await expect(marginShell(page), "Reply left Details over the page").toBeHidden();
     }
@@ -3950,7 +4148,7 @@ test("t o, a wheel to the history and the pointer coming to rest on its newest e
   const titles = Promise.withResolvers<void>();
   const { context, page } = await afterTo(browser, key, DESKTOP, { titles: titles.promise });
   try {
-    const entry = historyEntries(page).first();
+    const entry = await newestHistoryEntry(page);
     await expect(entry, "the history drew no entry").toBeAttached();
     await nextFrames(page);
     // One read of where `t o` left the newest entry: Details has drawn the history and stood
@@ -4034,6 +4232,7 @@ async function sweepPlace(browser: Browser, key: string, place: ReaderPlace): Pr
   const { context, page } = await afterOpener(browser, key, place.opener, titles.promise);
   try {
     const history = historyPanel(page);
+    await newestHistoryEntry(page);
     await expect(historyEntries(page).first(), "the history drew no entry").toBeAttached();
     await nextFrames(page);
     if (place.focus === "page") await focusThePage(page);
