@@ -35,9 +35,9 @@ name: CI job kind
 # its tests' state when it fails, ends with the ci-ok-report step, and stays within the time of
 # daemon-go's median green run, about 24 minutes, its setup included; the comment on each part says
 # its budget and the run it was measured in. .github/scripts/ci_job_reads.py's KIND_PARTS is the one
-# list of what each part but tree runs, and KIND_TREE_FILES tree's; it builds each part's test step
-# from them, and daemon-go's two `-skip`s from their union (KIND_TESTS), and holds each step to what
-# it builds.
+# list of what each part but the two tree parts runs, and KIND_TREE_PARTS theirs, one test of
+# KIND_TREE_FILES each; it builds each part's test step from them, and daemon-go's two `-skip`s from
+# their union (KIND_TESTS), and holds each step to what it builds.
 #
 # rig-and-shares runs the rig's measuring test, which times each piece of the rig by name (the
 # pinned kind's build, the cluster, Agent Sandbox, gVisor, the registry, the fake GitHub, the worker
@@ -56,8 +56,9 @@ name: CI job kind
 # identity of the cluster's own, PostgreSQL in the cluster and this repository's own broker in the
 # test process. A part selects its group by -run alone. Each group brings up a rig of its own and
 # redoes first what its checks need of the state another group's checks leave, so no part depends
-# on another. tree runs internal/daemon's two whole-tree tests, which boot the whole daemon on the
-# rig with real agents in issue pods.
+# on another. tree-claude and tree-stage4b each run one of internal/daemon's two whole-tree tests,
+# which boot the whole daemon on the rig with real agents in issue pods: tree-claude the Claude Code
+# backend's in an issue pod, and tree-stage4b Stage 4b's tree.
 #
 # A failed test leaves the cluster's pods, Sandboxes, events, logs and the Agent Sandbox
 # controller's log, the fake GitHub's requests and the test's own logs under kind-logs, which the
@@ -595,17 +596,90 @@ jobs:
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
 
-  tree:
+  tree-claude:
     needs: image
     # Past the image job the caller's worker-image input skipped, and never past one that failed,
     # whose own report has posted the failure.
     if: ${{ !cancelled() && needs.image.result != 'failure' }}
     runs-on: ubuntu-24.04
-    # The step runs internal/daemon's two whole-tree tests, one after the other, each on a rig of
-    # its own (about five minutes): the Claude Code backend's three checks over one issue pod, and
-    # Stage 4b's tree, whose fourteen checkpoints include a credential refresh and two restarts that
-    # relaunch every claim. The test binary has two hours; the rest is the disk's cleanup, the
-    # archive's download and the binaries' builds.
+    # Budget, from the one part that ran both whole-tree tests in one binary, one after the other:
+    # the Claude Code backend's test, three checks over one issue pod, took 732 s in CI run
+    # 44615479190 (job 135889669379), all three passing, and 706 s in run 44625956146 (job
+    # 135928071024), where the steps before the test step took 98 s; with them and the test
+    # binary's build the setup took about five minutes: about 17 minutes in all, within the part
+    # budget of about 24. The test binary's -timeout is 20m, more than half again over 732 s; the
+    # job has that, the setup's five minutes on top, and five more for a failed test's upload, so a
+    # hung test's own -timeout ends it first and its state still uploads: 30 minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rig-and-shares' comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # The test builds its package's test binary, and its rig (kind_tree_rig_live_test.go) the
+      # `legion` every pod's launcher and the fence's worker-shim are, and Dispatch, the Envoy
+      # listener and natsd from packages/envoy.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name. .github/scripts/ci_job_reads.py builds this text from KIND_TREE_PARTS,
+      # whose tests daemon-go's two `-skip`s name with the other parts', and holds the step to it.
+      # The image comes as rig-and-shares' does, and a failed test's state goes to kind-logs.
+      - name: Run the Claude Code backend's tree test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 20m -run '^(TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state: rig-and-shares' upload, and the daemon's, Dispatch's and the
+      # listener's own logs beside it.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-tree-claude-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tree-stage4b:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget: unmeasured. Stage 4b's tree has not run whole in CI: a run has taken it as far as its
+    # third checkpoint of fourteen, at 554 s, and the fourteen include a credential refresh and two
+    # daemon restarts that relaunch every claim. The part budget, 24 minutes 21 seconds, is checked
+    # against its first whole run, which these limits are then set from. Until then the test binary
+    # has two hours (-timeout 120m), and the job that, the setup's five minutes as tree-claude's
+    # and room to spare: 150 minutes.
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -627,32 +701,28 @@ jobs:
           name: kind-worker-image-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kind-image
 
-      # The tests build their package's test binary, the `legion` every pod's launcher and the
-      # fence's worker-shim are, and Dispatch, the Envoy listener and natsd from packages/envoy.
+      # Go, for what tree-claude's comments say: the test's rig is the same.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
 
-      # The tests, by name. .github/scripts/ci_job_reads.py builds this text from KIND_TREE_FILES,
-      # whose tests daemon-go's two `-skip`s name with the other parts', and holds the step to it.
-      # The image comes as rig-and-shares' does, and a failed test's state goes to kind-logs.
-      - name: Run the tree tests
+      # The test, by name, as tree-claude runs its own.
+      - name: Run Stage 4b's tree test
         env:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
           LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
           LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
-        run: go test -v -count=1 -timeout 120m -run '^(TestStage4bSandboxTreeOnTheKindRigLive|TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$' ./internal/daemon/
+        run: go test -v -count=1 -timeout 120m -run '^(TestStage4bSandboxTreeOnTheKindRigLive)$' ./internal/daemon/
         working-directory: packages/daemon
 
-      # A failed test's state, one directory per test: rig-and-shares' upload, and the daemon's,
-      # Dispatch's and the listener's own logs beside it.
+      # A failed test's state, as tree-claude uploads its own.
       - name: Upload the rig's state at the failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: kind-tree-logs-${{ github.run_attempt }}
+          name: kind-tree-stage4b-logs-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kind-logs
 
       - name: Report ci-ok when this job decides a merge-group run

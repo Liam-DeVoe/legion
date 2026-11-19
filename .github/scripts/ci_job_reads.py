@@ -1753,15 +1753,16 @@ PLUGIN_SMOKE_RUNS = [
 # Sandbox runtime's own live test, TestStage4aSandboxRuntimeLive, whose checks run in groups, each
 # group a subtest of its name on a rig of its own (live_test.go's liveGroups). The job runs them in
 # parts, each a literal job of the called file: KIND_PARTS is the one list of what each part runs,
-# beside the tree part below. KIND_PACKAGE_FILES names, for each package, the files the job takes
-# whole, as AGENT_HARNESS_FILES are; hold_whole_files() holds the parts' tests of each package to its
-# files, and hold_kind_parts() holds the groups the parts run to those live_test.go declares. Both of
-# daemon-go's steps skip KIND_TESTS by name, the union of the parts' tests and the tree part's - the
-# plain step runs internal/kindtest and internal/runtime/sandbox, and the race step internal/daemon -
-# so a kind test runs once per run of the router, in the kind job, where its reads are that job's
-# inputs: the rig's library, Agent Sandbox's manifest and CRD, every file the worker image is built
-# from (worker_image_reads below), and what the live tests read beside them, none of which
-# daemon-go's filter needs to name.
+# beside the tree parts below (KIND_TREE_PARTS). KIND_PACKAGE_FILES names, for each package, the
+# files the job takes whole, as AGENT_HARNESS_FILES are; hold_whole_files() holds the parts' tests of
+# each package to its files, and hold_kind_parts() holds the groups the parts run to those
+# live_test.go declares, as hold_kind_tree_parts() holds the tree parts to the tests of
+# KIND_TREE_FILES. Both of daemon-go's steps skip KIND_TESTS by name, the union of the parts' tests
+# and the tree parts' - the plain step runs internal/kindtest and internal/runtime/sandbox, and the
+# race step internal/daemon - so a kind test runs once per run of the router, in the kind job, where
+# its reads are that job's inputs: the rig's library, Agent Sandbox's manifest and CRD, every file
+# the worker image is built from (worker_image_reads below), and what the live tests read beside
+# them, none of which daemon-go's filter needs to name.
 KIND_PACKAGE_FILES = {
     "internal/kindtest": ["rig_test.go"],
     "internal/daemon": ["burstable_live_test.go", "controller_sweep_live_test.go", "share_volumes_live_test.go"],
@@ -1801,15 +1802,32 @@ KIND_PARTS = {
         KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/pod-update"],
     }),
 }
-# The tree part's tests: the daemon's two whole-tree tests of internal/daemon, which boot the whole
+# The tree parts' tests: the daemon's two whole-tree tests of internal/daemon, which boot the whole
 # daemon on the rig with Dispatch, the Envoy listener and natsd built from the checkout and real
 # agents in issue pods (kind_tree_rig_live_test.go, their shared rig): Stage 4b's tree, one subtest
-# per checkpoint, and the Claude Code backend in an issue pod. Each brings up a rig of its own and
-# runs for most of an hour, so they run in a part of their own, beside KIND_PARTS'.
+# per checkpoint, and the Claude Code backend in an issue pod. Each brings up a rig of its own, and
+# the two one after the other run past the part budget, so each runs in a part of its own, beside
+# KIND_PARTS': KIND_TREE_PARTS below.
 KIND_TREE_FILES = {
     "internal/daemon": (["claude_backend_kind_live_test.go", "kind_tree_rig_live_test.go", "stage4b_kind_live_test.go"],
                         ["TestStage4bSandboxTreeOnTheKindRigLive",
                          "TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"]),
+}
+# The tree parts, in the order the called file holds them and in KIND_PARTS' shape: each part's job
+# id, the name of its one test step, its test binary's -timeout, and its one test of KIND_TREE_FILES
+# by package; hold_kind_tree_parts() holds them to run each of those tests once and nothing else.
+# -timeout is more than half again over the test's time where a run has measured it: 20m for the
+# Claude Code backend's, which took 732 s and 706 s in CI runs 44615479190 and 44625956146. Stage
+# 4b's tree, which no run has taken whole yet - its fourteen checkpoints include a credential
+# refresh and two daemon restarts that relaunch every claim - has 120m until its first whole run
+# measures it.
+KIND_TREE_PARTS = {
+    "tree-claude": ("Run the Claude Code backend's tree test", "20m", {
+        "internal/daemon": ["TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"],
+    }),
+    "tree-stage4b": ("Run Stage 4b's tree test", "120m", {
+        "internal/daemon": ["TestStage4bSandboxTreeOnTheKindRigLive"],
+    }),
 }
 KIND_JOB = "kind"
 KIND_WORKFLOW = job_file(KIND_JOB)
@@ -1890,6 +1908,38 @@ def hold_kind_parts():
                          f"part of its own, within the part budget")
 
 
+def hold_kind_tree_parts():
+    """Refuse KIND_TREE_PARTS where its parts no longer run each test of KIND_TREE_FILES once, one
+    test a part, and nothing else: a part whose job id KIND_PARTS holds too, which would pin two
+    test steps on one job; a part that runs other than one test, since each of the two brings up a
+    rig of its own and the two one after the other run past the part budget; a test KIND_TREE_FILES
+    does not hold for its package, which nothing holds to that package's files; a test two parts
+    run; and a test of KIND_TREE_FILES no part runs, which both daemon-go steps skip by name, so it
+    would run nowhere while every other check passes green."""
+    run = []
+    for part, (_, _, tests) in KIND_TREE_PARTS.items():
+        if part in KIND_PARTS:
+            raise ValueError(f"KIND_TREE_PARTS[{part!r}] is a part of KIND_PARTS too: a job of the called file has one "
+                             f"test step, so give the tree part an id of its own")
+        names = [(package, name) for package, package_tests in tests.items() for name in package_tests]
+        if len(names) != 1:
+            raise ValueError(f"KIND_TREE_PARTS[{part!r}] runs {', '.join(name for _, name in names) or 'no test'}: a "
+                             f"tree part runs one test of KIND_TREE_FILES, since each brings up a rig of its own and "
+                             f"two one after the other run past the part budget")
+        for package, name in names:
+            if name not in KIND_TREE_FILES.get(package, ([], []))[1]:
+                raise ValueError(f"KIND_TREE_PARTS[{part!r}] runs {name} of {package}, which KIND_TREE_FILES does not "
+                                 f"hold for that package, so nothing holds it to the package's files; name it there")
+            if (package, name) in run:
+                raise ValueError(f"KIND_TREE_PARTS[{part!r}] runs {name}, which another tree part runs too: a test run "
+                                 f"twice is a test whose second run tells nobody anything")
+            run.append((package, name))
+    unrun = ", ".join(name for package, (_, tests) in KIND_TREE_FILES.items() for name in tests if (package, name) not in run)
+    if unrun:
+        raise ValueError(f"KIND_TREE_FILES holds {unrun}, which no part of KIND_TREE_PARTS runs, and both daemon-go "
+                         f"steps skip it by name: give each a tree part of its own, within the part budget")
+
+
 def kind_part_script(timeout, tests):
     """A part's step: one go test over its packages, by -run - the names of its whole tests, or the
     group it runs as TestStage4aSandboxRuntimeLive's subtest of that name, every check of it with
@@ -1904,7 +1954,9 @@ def kind_part_script(timeout, tests):
 
 
 hold_kind_parts()
+hold_kind_tree_parts()
 KIND_PART_SCRIPTS = {part: kind_part_script(timeout, tests) for part, (_, timeout, tests) in KIND_PARTS.items()}
+KIND_TREE_PART_SCRIPTS = {part: kind_part_script(timeout, tests) for part, (_, timeout, tests) in KIND_TREE_PARTS.items()}
 # The parts that run a group of TestStage4aSandboxRuntimeLive's, each of which packs this
 # checkout's two plugins with bun and builds its agent-secrets (newKindLiveEnv).
 KIND_STAGE4A_PARTS = [part for part, (_, _, tests) in KIND_PARTS.items() if KIND_STAGE4A_PACKAGE in tests]
@@ -1912,13 +1964,6 @@ KIND_PART_TESTS = sorted({name.partition("/")[0] for _, _, tests in KIND_PARTS.v
                           for package_tests in tests.values() for name in package_tests})
 KIND_TREE_TESTS = [test for _, tests in KIND_TREE_FILES.values() for test in tests]
 KIND_TESTS = KIND_PART_TESTS + KIND_TREE_TESTS
-KIND_TREE = "tree"
-KIND_TREE_STEP = "Run the tree tests"
-# The two run one after the other in one test binary, each on a rig of its own: the Claude Code
-# test's three checks over one issue pod, and the tree's fourteen checkpoints, a credential
-# refresh and two daemon restarts that relaunch every claim among them, so -timeout is two hours.
-KIND_TREE_SCRIPT = (f"go test -v -count=1 -timeout 120m -run '^({'|'.join(sorted(KIND_TREE_TESTS))})$' "
-                    + " ".join(f"./{package}/" for package in KIND_TREE_FILES))
 for _package, _files in KIND_PACKAGE_FILES.items():
     hold_whole_files(KIND_JOB, _package, _files,
                      sorted({name.partition("/")[0] for _, _, tests in KIND_PARTS.values() for name in tests.get(_package, [])}),
@@ -1933,18 +1978,14 @@ KIND_TESTDATA = f"{DAEMON}/internal/runtime/sandbox/testdata"
 
 
 def at_kind_part(part):
-    """A citation of the test step of one of KIND_PARTS' parts."""
-    return at(part, KIND_PARTS[part][0], KIND_WORKFLOW)
-
-
-def at_kind_tree(step):
-    """A citation of a step of the kind job's tree part."""
-    return at(KIND_TREE, step, KIND_WORKFLOW)
+    """A citation of the test step of one of KIND_PARTS' or KIND_TREE_PARTS' parts."""
+    return at(part, (KIND_PARTS.get(part) or KIND_TREE_PARTS[part])[0], KIND_WORKFLOW)
 
 
 def at_kind_test_steps():
-    """A citation of every part's test step, the tree part's last."""
-    return ", ".join(at_kind_part(part) for part in KIND_PARTS) + f" and {at_kind_tree(KIND_TREE_STEP)}"
+    """A citation of every part's test step, the tree parts' last."""
+    steps = [at_kind_part(part) for part in [*KIND_PARTS, *KIND_TREE_PARTS]]
+    return ", ".join(steps[:-1]) + f" and {steps[-1]}"
 
 
 WORKER_IMAGE_FILTER = "worker_image"
@@ -3385,7 +3426,7 @@ GATES = [
       + bun_job(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
 
-    # The kind job: each part of KIND_PARTS runs its tests and its tree part those of
+    # The kind job: each part of KIND_PARTS runs its tests and each of KIND_TREE_PARTS one test of
     # KIND_TREE_FILES, which both daemon-go steps skip by name (KIND_TESTS), and each compiles the
     # packages its tests are in to do it, so this filter is those packages' whole
     # test closure - internal/kindtest and the fake GitHub it serves, internal/fakegithub,
@@ -3399,8 +3440,8 @@ GATES = [
     # filter to the image job's build as it holds worker_image to worker-image.yaml's. Beside them
     # are the live tests' own reads: the operator route's files, the role-namespace helper, the
     # plugin pack and the frozen bun install it needs, and the checkout's agent-secrets, which the
-    # sandbox runtime's test builds; and the tree part's: the `legion` buildProofLegion builds, and
-    # the Envoy listener and natsd its rig builds from packages/envoy (Dispatch is
+    # sandbox runtime's test builds; and the tree parts': the `legion` buildProofLegion builds, and
+    # the Envoy listener and natsd their shared rig builds from packages/envoy (Dispatch is
     # outbox_scratch_dispatch_test.go's RULES row). Those reads are declared here, keyed on the
     # job, rather than in RULES rows of the tests' files, which the daemon-go steps compile and run
     # none of. The called file's jobs carry ids of their own, so this gate keeps `workflow=CI`, as
@@ -3414,15 +3455,16 @@ GATES = [
         ] if part in KIND_STAGE4A_PARTS else []), workflow=KIND_WORKFLOW)
         for part, (step, _, tests) in KIND_PARTS.items()
     ] + [
-        pinned_step(KIND_TREE, KIND_TREE_STEP, DAEMON, KIND_TREE_SCRIPT, [
-            (DAEMON, [f"./{package}/" for package in KIND_TREE_FILES], "go test -run over the package the tree tests are in", {}),
+        pinned_step(part, step, DAEMON, KIND_TREE_PART_SCRIPTS[part], [
+            (DAEMON, [f"./{package}/" for package in tests], "go test -run over the package the part's tree test is in", {}),
             (ENVOY, ["./cmd/listener", "./internal/testnats/cmd/natsd"],
              "internal/daemon/kind_tree_rig_live_test.go:803,830 testbuild.EnvoyBinary, which runs go build "
              "./internal/testnats/cmd/natsd and ./cmd/listener in packages/envoy (internal/testbuild/testbuild.go:112)",
              {"mode": "build"}),
             (DAEMON, [LEGION_BUILD], "internal/daemon/live_agent_proof_test.go buildProofLegion, which "
                                      "kind_tree_rig_live_test.go:197 calls, runs go build ./cmd/legion", {"mode": "build"}),
-        ], workflow=KIND_WORKFLOW),
+        ], workflow=KIND_WORKFLOW)
+        for part, (step, _, tests) in KIND_TREE_PARTS.items()
     ], reads=reads(
         (KIND_LIB, f"{at_kind_test_steps()}: packages/daemon/internal/kindtest/kindtest.go:509 sources it for each "
                    "piece of the rig, and :661 for its teardown"),
@@ -3445,8 +3487,7 @@ GATES = [
     ] + worker_image_reads(f"{at(KIND_IMAGE, KIND_IMAGE_STEP, KIND_WORKFLOW)} builds packages/daemon/docker/worker.Dockerfile "
                            f"from it, as .github/workflows/worker-image.yaml's build does, whose image a pull request's "
                            f"run hands {at_kind_test_steps()} instead")
-      + [r for part in KIND_PARTS for r in setup_go(part, f"{DAEMON}/go.mod", KIND_WORKFLOW)]
-      + setup_go(KIND_TREE, f"{DAEMON}/go.mod", KIND_WORKFLOW)
+      + [r for part in [*KIND_PARTS, *KIND_TREE_PARTS] for r in setup_go(part, f"{DAEMON}/go.mod", KIND_WORKFLOW)]
       + [r for part in KIND_STAGE4A_PARTS for r in bun_job(part, KIND_WORKFLOW)]
       + CI_SELF + job_self(KIND_JOB), workflow=CI),
 

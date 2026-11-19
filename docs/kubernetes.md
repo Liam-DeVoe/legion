@@ -6709,7 +6709,7 @@ It has no pod create or delete and no PVC verb (LEGION-206 Requirement 8).
 ### The test on a kind cluster
 
 `TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`) drives an issue tree through the Go daemon on this runtime, in a kind cluster with Agent Sandbox and gVisor, against Dispatch, the Envoy listener and NATS built from the checkout and a fake GitHub, with real agents on a Messages stand-in, one subtest per checkpoint.
-The kind job of `ci.yaml` runs it in its `tree` part.
+The kind job of `ci.yaml` runs it in its `tree-stage4b` part.
 
 ### Probing a configuration before the daemon boots on it
 

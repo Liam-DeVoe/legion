@@ -568,7 +568,7 @@ A script whose first 15 lines use the words proof, smoke, check or test, and tha
 
 - `LEGION_TEST_KIND_IMAGE_ARCHIVE=<docker save of the worker image> go test -count=1 -v -timeout 120m -run '^(TestStage4bSandboxTreeOnTheKindRigLive|TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$' ./internal/daemon/` (in packages/daemon)
 
-  The whole daemon on the kind rig, which the `tree` part of `ci.yaml`'s `kind` job runs:
+  The whole daemon on the kind rig, which the `tree-claude` and `tree-stage4b` parts of `ci.yaml`'s `kind` job run, one test each:
   Dispatch, the Envoy listener and natsd built from the checkout, PostgreSQL in the cluster, the fake GitHub, which sends its pushes and pull requests to the listener as signed webhooks, and real agents in issue pods on a Messages stand-in.
   `TestStage4bSandboxTreeOnTheKindRigLive` drives a tree through Stage 4b's checkpoints, one subtest each;
   `TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive` runs a Claude Code implementer in an issue pod on its pinned bridge and resumes its session after the pod and its disk are deleted (`stage4b_kind_live_test.go` and `claude_backend_kind_live_test.go` of `packages/daemon/internal/daemon`, on the rig of `kind_tree_rig_live_test.go`)
@@ -699,7 +699,7 @@ Each item below names a task and where its code is, then notes on it.
   A phase worker's role on `claude` runs `legion claude-bridge -- claude -p …` under either runtime, with claude-envoy's `dist/envoy-channel.js` (the `legion` MCP tool, its claim, Envoy, the phase reminder's hook endpoint) as its one MCP server and claude-envoy plus its generated `legion/` plugin as its plugins.
   Under tmux boot resolves `LEGION_CLAUDE_PATH`, `LEGION_BUN_PATH` and `LEGION_CLAUDE_PLUGIN_DIR`;
   a pod takes bun and the plugin from the worker image, which carries Claude Code's pin and no Claude Code (its licence grants no redistribution), and its start script installs the pinned release at every launch and verifies it, failing the launch when the fetch fails or does not verify (`claudeCodeBlock`, `packages/daemon/internal/runtime/sandbox/plugins.go`).
-  `docs/deployment.md` "How a harness plugs in", `docs/kubernetes.md`; its tests on real agents are `packages/daemon/internal/daemon/claude_backend_live_test.go`, which the `tmux-scripts` part of the `agent-harness` job runs, and `packages/daemon/internal/daemon/claude_backend_kind_live_test.go`, which the `tree` part of the `kind` job runs
+  `docs/deployment.md` "How a harness plugs in", `docs/kubernetes.md`; its tests on real agents are `packages/daemon/internal/daemon/claude_backend_live_test.go`, which the `tmux-scripts` part of the `agent-harness` job runs, and `packages/daemon/internal/daemon/claude_backend_kind_live_test.go`, which the `tree-claude` part of the `kind` job runs
 
 - Shared plugin interface — `packages/pi-shared/`
 
@@ -738,8 +738,8 @@ Each item below names a task and where its code is, then notes on it.
 - Prove the Kubernetes runtime live — the `kind` job of `ci.yaml`: `TestStage4aSandboxRuntimeLive` runs the runtime alone, and `TestStage4bSandboxTreeOnTheKindRigLive` drives a full tree through the whole daemon
 
   Every test of the job runs on the kind rig, with the fake GitHub and, for the whole daemon, a Messages stand-in and Dispatch and the listener built from the checkout (`packages/daemon/internal/kindtest`), in a part of the job that runs its tests by name once the `image` part has built the worker image under test
-  — `rig-and-shares` runs the rig's own measuring test and the share test, `burstable-and-sweep` the burstable issue pod and the controller sweep tests, `runtime-root`, `runtime-roles`, `runtime-image-and-issues` and `runtime-pod-update` one group each of `TestStage4aSandboxRuntimeLive`'s checks, selected by `-run '^TestStage4aSandboxRuntimeLive$/^<group>$'` (`liveGroups`, `packages/daemon/internal/runtime/sandbox/live_test.go`), and `tree` the two whole-tree tests;
-  `KIND_PARTS` and `KIND_TREE_FILES` of `.github/scripts/ci_job_reads.py` are the one list of what each part runs
+  — `rig-and-shares` runs the rig's own measuring test and the share test, `burstable-and-sweep` the burstable issue pod and the controller sweep tests, `runtime-root`, `runtime-roles`, `runtime-image-and-issues` and `runtime-pod-update` one group each of `TestStage4aSandboxRuntimeLive`'s checks, selected by `-run '^TestStage4aSandboxRuntimeLive$/^<group>$'` (`liveGroups`, `packages/daemon/internal/runtime/sandbox/live_test.go`), and `tree-claude` and `tree-stage4b` one whole-tree test each;
+  `KIND_PARTS` and `KIND_TREE_PARTS` of `.github/scripts/ci_job_reads.py` are the one list of what each part runs
 
 - Run a database, broker or server the work needs — `docs/kubernetes.md`, "Running a workload in the cluster from a role"
 

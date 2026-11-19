@@ -5918,8 +5918,8 @@ jobs:
   # .github/scripts/ci_job_reads.py's KIND_TESTS names, which both daemon-go steps skip by name:
   # the rig's own measuring test and the share test in one, the burstable and controller sweep
   # tests in another, the Sandbox runtime's live test in four, one group of its checks each, each
-  # of those six within about 24 minutes, and the two whole-tree tests in tree, which no run has
-  # timed yet.
+  # of those six within about 24 minutes, and the two whole-tree tests in two more, one each:
+  # tree-claude, within about 24 minutes too, and tree-stage4b, which no run has timed whole yet.
   # The image under test is the worker-image job's on a pull request where that job built the
   # head, handed down as `worker-image`, and otherwise the called file's image job builds it once
   # per run; so this job needs worker-image for the order, and ci-images too, since the rig pulls
