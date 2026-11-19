@@ -652,17 +652,7 @@ func (d *durableReach) bootedAs(logged *testlog.Buffer, daemonController, readsL
 // a release that closed its cases in memory alone and a roll forward, leaves no line open that
 // would silence the next line of its case (R6). A case that still holds keeps its line.
 func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) {
-	project, _ := claim.ProjectToken("legion")
-	controller := claim.ControllerToken(project)
-	controllerClaim := func(marked bool) supervise.Claim {
-		c := supervise.Claim{Token: controller, Project: project, Role: claim.RoleController, Generation: 2,
-			State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
-			Locator: pluginTestLocator(controller), ActivityAt: reachBoot}
-		if marked {
-			c.LastRelaunch, c.LastRelaunchGeneration = reachBoot.Add(-10*time.Minute), 2
-		}
-		return c
-	}
+	controller := storedController(false).Token
 	for _, tc := range []struct {
 		name             string
 		stored           []fleetalert.Line
@@ -679,26 +669,23 @@ func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) 
 			stored: []fleetalert.Line{{Word: fleetalert.NoLiveSession.Word}, {Word: fleetalert.SessionListUnreadable.Word}}},
 		{name: "the controller's line where no list is read, its stored record marked", daemonController: true, readsList: false,
 			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
-			claims: []supervise.Claim{controllerClaim(true)}, markedReach: true},
+			claims: []supervise.Claim{storedController(true)}, markedReach: true},
 		{name: "the controller's line of a controller back in reach", daemonController: true, readsList: true,
 			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
-			claims: []supervise.Claim{controllerClaim(false)}},
+			claims: []supervise.Claim{storedController(false)}},
 		{name: "the controller's line of a controller gone from the claims", daemonController: true, readsList: true,
 			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}}},
 		{name: "the controller's line of a controller still out of reach", daemonController: true, readsList: true,
 			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
-			claims: []supervise.Claim{controllerClaim(true)}, markedReach: true, open: true},
+			claims: []supervise.Claim{storedController(true)}, markedReach: true, open: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newDurableReach(t)
 			for _, c := range tc.claims {
-				d.put(c)
 				if tc.markedReach {
-					marked := supervise.Reach{Session: c.Session, FirstReady: c.LastReady, Since: reachBoot.Add(-30 * time.Minute),
-						Generation: 2, Relaunched: true, RelaunchedAt: c.LastRelaunch}
-					if known, err := d.st.PutClaimReach(context.Background(), c.Token, marked); err != nil || !known {
-						t.Fatalf("mark the controller out of reach = %t, %v", known, err)
-					}
+					d.markController(c)
+				} else {
+					d.put(c)
 				}
 			}
 			for _, l := range tc.stored {
@@ -731,6 +718,35 @@ func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) 
 	}
 }
 
+// storedController is the project controller's claim as a daemon before this one left it: idle
+// on its session, last ready an hour before the boot and, where relaunched, relaunched by that
+// daemon 25 minutes before the boot, past notBackAfter, at the generation it runs. So a sweep that
+// reads its case as holding opens its line, which an open line keeps it from writing again.
+func storedController(relaunched bool) supervise.Claim {
+	project, _ := claim.ProjectToken("legion")
+	controller := claim.ControllerToken(project)
+	c := supervise.Claim{Token: controller, Project: project, Role: claim.RoleController, Generation: 2,
+		State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
+		Locator: pluginTestLocator(controller), ActivityAt: reachBoot}
+	if relaunched {
+		c.LastRelaunch, c.LastRelaunchGeneration = reachBoot.Add(-25*time.Minute), 2
+	}
+	return c
+}
+
+// markController stores c, a relaunched storedController, and its reach record marked out of
+// reach since 30 minutes before the boot with that relaunch taken in, as the daemon before this one
+// left them.
+func (d *durableReach) markController(c supervise.Claim) {
+	d.t.Helper()
+	d.put(c)
+	marked := supervise.Reach{Session: c.Session, FirstReady: c.LastReady, Since: reachBoot.Add(-30 * time.Minute),
+		Generation: c.LastRelaunchGeneration, Relaunched: true, RelaunchedAt: c.LastRelaunch}
+	if known, err := d.st.PutClaimReach(context.Background(), c.Token, marked); err != nil || !known {
+		d.t.Fatalf("mark the controller out of reach = %t, %v", known, err)
+	}
+}
+
 // A read of Envoy's list that fails right after a boot ends no case: the controller's line the
 // store holds open, for a controller whose stored reach record is marked out of reach, is kept
 // through it, so the next read that answers, which finds the case still holding, writes no second
@@ -738,19 +754,10 @@ func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) 
 // so the case is read from the record the claim carries from the store (recordOf).
 func TestAFailedListReadAfterABootKeepsTheControllersStoredLine(t *testing.T) {
 	ctx := context.Background()
-	project, _ := claim.ProjectToken("legion")
-	controller := claim.ControllerToken(project)
 	d := newDurableReach(t)
-	c := supervise.Claim{Token: controller, Project: project, Role: claim.RoleController, Generation: 2,
-		State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
-		Locator: pluginTestLocator(controller), ActivityAt: reachBoot,
-		LastRelaunch: reachBoot.Add(-10 * time.Minute), LastRelaunchGeneration: 2}
-	d.put(c)
-	marked := supervise.Reach{Session: c.Session, FirstReady: c.LastReady, Since: reachBoot.Add(-30 * time.Minute),
-		Generation: 2, Relaunched: true, RelaunchedAt: c.LastRelaunch}
-	if known, err := d.st.PutClaimReach(ctx, controller, marked); err != nil || !known {
-		t.Fatalf("mark the controller out of reach = %t, %v", known, err)
-	}
+	c := storedController(true)
+	d.markController(c)
+	controller := c.Token
 	line := store.FleetAlertLine{Project: "LEGION", Case: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}
 	if err := d.st.PutFleetAlertLine(ctx, line); err != nil {
 		t.Fatalf("store the open line %+v: %v", line, err)
@@ -762,8 +769,10 @@ func TestAFailedListReadAfterABootKeepsTheControllersStoredLine(t *testing.T) {
 	d.at(time.Minute)
 	k.sweep(ctx, d.stored())
 	k.wait()
+	// An Errorf, not a Fatalf: the line count below is the consequence this pins, and it is
+	// reached whether or not the failed read kept the line.
 	if open, err := d.st.FleetAlertLines(ctx, "LEGION"); err != nil || !slices.Equal(open, []store.FleetAlertLine{line}) {
-		t.Fatalf("after a failed read the store holds the open lines %+v, %v; want the controller's line kept", open, err)
+		t.Errorf("after a failed read the store holds the open lines %+v, %v; want the controller's line kept", open, err)
 	}
 	d.listUnreadable(false)
 	d.at(2 * time.Minute)
@@ -771,7 +780,7 @@ func TestAFailedListReadAfterABootKeepsTheControllersStoredLine(t *testing.T) {
 	k.wait()
 
 	if written := strings.Count(logged.String(), "case="+fleetalert.ControllerUnreachable.Word); written != 0 {
-		t.Fatalf("the booted daemon wrote the controller's line %d times over a failed read and one that answered, want none: the daemon before it wrote it, and its case held throughout", written)
+		t.Errorf("the booted daemon wrote the controller's line %d times over a failed read and one that answered, want none: the daemon before it wrote it, and its case held throughout", written)
 	}
 	if open, err := d.st.FleetAlertLines(ctx, "LEGION"); err != nil || !slices.Equal(open, []store.FleetAlertLine{line}) {
 		t.Fatalf("after the read that answered the store holds the open lines %+v, %v; want the controller's line alone", open, err)
