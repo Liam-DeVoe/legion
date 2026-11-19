@@ -998,6 +998,51 @@ exec "$git" "$@"
 	wantRefused(t, err, []string{"notes.md: " + theClass})
 }
 
+// git show writes in the encoding i18n.logOutputEncoding names, which a push can set: in the
+// repository's own configuration, or with a `git -c` on the push, which git hands the pre-push
+// hook as GIT_CONFIG_PARAMETERS ('i18n.logOutputEncoding'='UTF-16', measured with git 2.47.3).
+// In UTF-16 each letter git show writes holds a zero byte, so the fields the guard splits its
+// answer into at zero bytes would be single letters (Guard.commitRecords), the parents among
+// them: a merge would be read as a commit of one parent, and so would a root commit, and
+// diff-tree, asked of either with no parent named, lists none of its files. The guard's git show
+// writes UTF-8 whatever the push sets (gitPins), so each case's line that names a host, the one a
+// merge's resolution adds and the one a root commit adds, refuses the push.
+func TestAPushIsReadWhateverLogOutputEncodingItSets(t *testing.T) {
+	named := map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}
+	for _, tc := range []struct {
+		name string
+		// push makes the case's repository, whose commit adds named, and answers the push of it.
+		push func(t *testing.T) PushRequest
+		// env is the guard's environment beyond the test's own (guardWith).
+		env []string
+	}{
+		{
+			name: "a merge's own line, from a repository whose configuration sets UTF-16",
+			push: func(t *testing.T) PushRequest {
+				repo, base, head, destination := pushOf(t, nil, map[string]string{}, named, nil)
+				fixturegit.Isolated(t, t.TempDir()).Run(repo, "git", "config", "i18n.logOutputEncoding", "UTF-16")
+				return mainPush(repo, base, head, "origin", destination)
+			},
+		},
+		{
+			name: "a root commit's line, under a git -c on the push that sets UTF-16",
+			push: func(t *testing.T) PushRequest {
+				orphan := func(t *testing.T, repo string) {
+					fixturegit.Isolated(t, t.TempDir()).Run(repo, "git", "checkout", "--quiet", "--orphan", "orphan")
+				}
+				repo, _, head, destination := pushOf(t, nil, nil, named, orphan)
+				return PushRequest{Dir: repo, Remote: "origin", URL: destination, Updates: []Update{{LocalRef: "refs/heads/orphan", LocalSHA: head, RemoteRef: "refs/heads/orphan", RemoteSHA: noSHA}}}
+			},
+			env: []string{"GIT_CONFIG_PARAMETERS='i18n.logOutputEncoding'='UTF-16'"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, tc.env...)
+			wantRefused(t, guard.Push(bound(t), tc.push(t)), []string{"notes.md: " + theClass})
+		})
+	}
+}
+
 // ParseUpdates reads git's own pre-push lines, which is how a `legion leak-check` standing in for
 // a pre-push hook reads what the push would move, and refuses a line of another shape rather than
 // guessing at it.

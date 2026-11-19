@@ -15,14 +15,19 @@ import (
 
 // gitPins is the configuration every git this package starts reads last: no hook and no
 // file-system monitor runs, whatever the repository's own configuration names; no replacement
-// object stands in for a commit, so the records read are the commits the push would send; and a
-// path is printed as it is, rather than with its non-ASCII bytes escaped, so that what the rules
-// read is the path the destination would hold.
+// object stands in for a commit, so the records read are the commits the push would send; a path
+// is printed as it is, rather than with its non-ASCII bytes escaped, so that what the rules read
+// is the path the destination would hold; and git show writes UTF-8, whatever
+// i18n.logOutputEncoding the repository's configuration or a `git -c` on the push
+// (GIT_CONFIG_PARAMETERS) names, which a command line's -c outranks: in UTF-16 each letter would
+// hold a zero byte, and the fields Guard.commitRecords splits git show's answer into at zero bytes
+// would be single letters, a merge's parents read as one.
 var gitPins = []string{
 	"--no-replace-objects",
 	"-c", "core.quotePath=false",
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "core.fsmonitor=false",
+	"-c", "i18n.logOutputEncoding=UTF-8",
 }
 
 // gitArgv is one git command with the pins in front of it, which is how every git of this
