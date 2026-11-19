@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A pod that cannot prepare its durable and has no other pod to give the lease to tries again: a
@@ -292,10 +293,10 @@ func TestAListenerWithoutTheLeaseGrantDeliversWithoutALease(t *testing.T) {
 	}
 	t.Cleanup(publisher.Close)
 	standIn := startSessionStandInOn(t, publisher.Conn, "ses_ungranted", answerDone)
-	registerThroughListener(t, listener, subscribeBody{
+	registerThroughListener(t, listener, listenerwire.SubscribeRequest{
 		SessionID: "ses_ungranted", Topics: []string{topic}, Title: "ungranted", Dir: "/test/ses_ungranted",
 		SelfSubscribed: true, Host: "box-ungranted",
-		Delivery: &subscribeDelivery{Consumer: true, Epoch: "ungranted-" + id.New()},
+		Delivery: &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "ungranted-" + id.New()},
 	})
 	item := newEnvelope("github", topic, "pull request 1 was opened")
 	publish(t, publisher, item)

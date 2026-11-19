@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A listener whose NATS user holds exactly the grant envoy-infra renders for its machine
@@ -72,10 +73,10 @@ func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testin
 	})
 
 	standIn := startSessionStandIn(t, granted.AdminURL, sessionID, answerDone)
-	registerThroughListener(t, listener, subscribeBody{
+	registerThroughListener(t, listener, listenerwire.SubscribeRequest{
 		SessionID: sessionID, Topics: []string{topic}, Title: "granted", Dir: "/test/" + sessionID,
 		Capabilities: []string{"btw"}, SelfSubscribed: true, Host: machineID,
-		Delivery: &subscribeDelivery{Consumer: true, Epoch: "grant-" + id.New()},
+		Delivery: &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "grant-" + id.New()},
 	})
 	publisher := connectPublisher(t, granted.AdminURL)
 	item := newEnvelope("github", topic, "pull request 1 was opened")
@@ -114,7 +115,7 @@ func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testin
 
 // registerThroughListener registers body against a started listener process, as a session's
 // plugin does: one POST of /v1/interests/subscribe, which must be answered 200.
-func registerThroughListener(t *testing.T, listener *listenerProcess, body subscribeBody) {
+func registerThroughListener(t *testing.T, listener *listenerProcess, body listenerwire.SubscribeRequest) {
 	t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {

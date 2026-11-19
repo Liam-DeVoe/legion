@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // registrationBehindALostStreamRead bounds a registration whose consumer create joins the stream's
@@ -65,8 +66,8 @@ func TestARegistrationBehindAnotherSessionsLostStreamReadIsAnswered(t *testing.T
 	}()
 	waitFor(t, 5*time.Second, "the restart's stream read to be dropped", func() bool { return relay.droppedRequests() == 1 })
 
-	body, err := json.Marshal(subscribeBody{SessionID: registering, Topics: []string{contracts.LegacyAgentSubject(registering)}, SelfSubscribed: true,
-		Delivery: &subscribeDelivery{Consumer: true, Epoch: "e"}})
+	body, err := json.Marshal(listenerwire.SubscribeRequest{SessionID: registering, Topics: []string{contracts.LegacyAgentSubject(registering)}, SelfSubscribed: true,
+		Delivery: &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"}})
 	if err != nil {
 		t.Fatalf("marshal the registration: %v", err)
 	}

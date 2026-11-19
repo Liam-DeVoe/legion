@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/webhook"
+	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/listenfd"
 	"github.com/sjawhar/envoy/natsversion"
 )
@@ -486,24 +487,23 @@ func checkSelfHealth(caches []listenerCache, durable func() error) error {
 	return nil
 }
 
-// sessionHealthFields returns observability fields about the session cache for
-// /healthz. Kept separate from the handler so it stays cheap (no Keys()/List(),
-// just in-memory reads) and unit-testable.
-func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface{} {
+// sessionHealthFields is the session cache's state as /healthz reports it. Kept separate from the
+// handler so it stays cheap (no Keys()/List(), just in-memory reads) and unit-testable.
+func sessionHealthFields(sessions *session.SessionRegistry) *listenerwire.SessionCache {
 	watchError := ""
 	if err := sessions.WatchErr(); err != nil {
 		watchError = err.Error()
 	}
-	return map[string]interface{}{
-		"session_cache_ready": sessions.CacheReady(),
-		"session_cache_size":  sessions.CacheSize(),
-		"session_watch_error": watchError,
+	return &listenerwire.SessionCache{
+		SessionCacheReady: sessions.CacheReady(),
+		SessionCacheSize:  sessions.CacheSize(),
+		SessionWatchError: watchError,
 		// The maximum age in use: the age the session bucket really carries, which the registry
 		// reads back after it writes the deployment's own (ENVOY_SESSION_MAX_AGE) and again on
 		// every pass of the session reaper. With the setting unset it is the registry's default,
 		// so the field is always present once the registry is open, and an operator can see from
 		// here whether a record stands long enough for the gone horizon to be reached.
-		"session_max_age": sessions.TTL().String(),
+		SessionMaxAge: sessions.TTL().String(),
 	}
 }
 
@@ -514,7 +514,7 @@ const healthzDeadline = 5 * time.Second
 // healthAnswer is one /healthz answer: its HTTP status and its JSON body.
 type healthAnswer struct {
 	code int
-	body map[string]interface{}
+	body listenerwire.Health
 }
 
 // healthzHandler is the listener's /healthz, the readiness answer of every pod of a machine id. It
@@ -605,7 +605,7 @@ type healthAnswer struct {
 // listener over: a restart completes no scan that keeps timing out.
 //
 // The answer reports the role claim copy's freshness too, under "role_claim_repair"
-// (roleClaimRepairHealth): when the role claim watcher's last whole read of the role bucket
+// (listenerwire.RoleClaimRepair): when the role claim watcher's last whole read of the role bucket
 // completed, as RFC 3339 in UTC, and how long ago on the registry's clock, both null until a read
 // has completed; the bound that age is held to, store.RoleClaimRepairBound, in seconds; and how many
 // claims that read put back into the copy and took out of it (store.Registry.RoleClaimRepair). The
@@ -632,9 +632,9 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], verifiers ...*apiVerifie
 		select {
 		case answer = <-answered:
 		case <-ctx.Done():
-			answer = healthAnswer{http.StatusServiceUnavailable, map[string]interface{}{
-				"status": "unhealthy",
-				"error":  "health checks did not finish within " + healthzDeadline.String(),
+			answer = healthAnswer{http.StatusServiceUnavailable, listenerwire.Health{
+				Status: listenerwire.HealthUnhealthy,
+				Error:  "health checks did not finish within " + healthzDeadline.String(),
 			}}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -647,19 +647,19 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], verifiers ...*apiVerifie
 // checks within healthzBudget of it.
 func listenerHealth(ctx context.Context, d *listenerDeps, verifiers ...*apiVerifier) healthAnswer {
 	if d == nil || !discovered(verifiers) {
-		return healthAnswer{http.StatusServiceUnavailable, map[string]interface{}{"status": "starting"}}
+		return healthAnswer{http.StatusServiceUnavailable, listenerwire.Health{Status: listenerwire.HealthStarting}}
 	}
-	unhealthy := func(body map[string]interface{}) healthAnswer {
-		body["status"] = "unhealthy"
+	unhealthy := func(body listenerwire.Health) healthAnswer {
+		body.Status = listenerwire.HealthUnhealthy
 		return healthAnswer{http.StatusServiceUnavailable, body}
 	}
 	ctx, cancel := context.WithTimeout(ctx, healthzBudget)
 	defer cancel()
 	if err := d.client.Conn.FlushWithContext(ctx); err != nil {
-		return unhealthy(map[string]interface{}{"error": "nats unavailable"})
+		return unhealthy(listenerwire.Health{Error: "nats unavailable"})
 	}
 	if d.roleLane != nil && (!d.roleLane.Connected() || !d.roleLane.CoreSubOK()) {
-		return unhealthy(map[string]interface{}{"error": "role lane subscription inactive"})
+		return unhealthy(listenerwire.Health{Error: "role lane subscription inactive"})
 	}
 	for _, c := range d.caches {
 		if err := c.cache.WatchErr(); err != nil {
@@ -671,45 +671,41 @@ func listenerHealth(ctx context.Context, d *listenerDeps, verifiers ...*apiVerif
 			return dependencyHealth(c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed))
 		}
 	}
-	response := map[string]interface{}{"status": "healthy"}
-	for k, v := range sessionHealthFields(d.sessions) {
-		response[k] = v
-	}
+	response := listenerwire.Health{Status: listenerwire.HealthHealthy, SessionCache: sessionHealthFields(d.sessions)}
 	if d.ciStore == nil {
-		response["ci_cache"] = "not_applicable"
+		response.CICache = "not_applicable"
 	}
 	report := d.receiver.report()
 	if report.NoLease {
-		response["lease"] = listenerLeaseUnavailable
+		response.Lease = listenerLeaseUnavailable
 	}
 	if report.State != receiveActive {
-		response["role"] = "standby"
-		if report.Lease.ActiveInstance != "" {
-			response["active_instance"] = report.Lease.ActiveInstance
-		}
+		response.Role = listenerwire.RoleStandby
+		response.ActiveInstance = report.Lease.ActiveInstance
 		if report.State != receiveStandby {
-			response["receive"] = report.State.String()
+			response.Receive = report.State.String()
 		}
 		if report.Deliverer {
 			// This pod is the machine's deliverer and does not receive yet (receiveReport.Deliverer):
 			// nothing of the durable reaches a session until that changes, which no answer of this
 			// pod may call healthy. It stays 200, as a standby does, so a readiness probe keeps
 			// sending it /v1.
-			response["status"] = "degraded"
+			response.Status = listenerwire.HealthDegraded
 		}
 		if report.Failing > 0 {
-			response["error"] = "durable consumer unavailable: " + report.FailingReason
-			response["receive_failing_ms"] = report.Failing.Milliseconds()
+			response.Error = "durable consumer unavailable: " + report.FailingReason
+			failing := report.Failing.Milliseconds()
+			response.ReceiveFailingMS = &failing
 			if report.Stuck || report.Refused {
 				return unhealthy(response)
 			}
-			response["status"] = "degraded"
+			response.Status = listenerwire.HealthDegraded
 		}
 		return okAnswer(response, d)
 	}
-	response["role"] = "active"
+	response.Role = listenerwire.RoleActive
 	if !report.SubscriptionValid {
-		return unhealthy(map[string]interface{}{"role": "active", "error": "subscription inactive"})
+		return unhealthy(listenerwire.Health{Role: listenerwire.RoleActive, Error: "subscription inactive"})
 	}
 	consumerInfo, err := d.client.JS().ConsumerInfo(bus.Stream, d.receiver.consumer, nats.Context(ctx))
 	switch {
@@ -719,42 +715,26 @@ func listenerHealth(ctx context.Context, d *listenerDeps, verifiers ...*apiVerif
 		// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
 		return dependencyHealth("durable consumer", err, true)
 	case err != nil:
-		response["status"] = "degraded"
-		response["error"] = "durable consumer unavailable: " + err.Error()
+		response.Status = listenerwire.HealthDegraded
+		response.Error = "durable consumer unavailable: " + err.Error()
 	case consumerInfo.Config.DeliverSubject != report.Subject:
 		// One read and no confirming second one, unlike the self-health probe's: the endpoint
 		// reports the fault the moment a request finds it, and a request landing in a
 		// resubscribe's own gap simply answers 503 until the next one.
 		return dependencyHealth("durable consumer", errDurableUnbound, true)
 	default:
-		response["num_pending"] = consumerInfo.NumPending
-		response["num_ack_pending"] = consumerInfo.NumAckPending
+		response.DurableLag = &listenerwire.DurableLag{NumAckPending: consumerInfo.NumAckPending, NumPending: consumerInfo.NumPending}
 	}
 	return okAnswer(response, d)
 }
 
-// roleClaimRepairHealth is the "role_claim_repair" field of a /healthz answer: the role claim
-// watcher's last whole read of the role bucket that completed, which repairs the copy every claim
-// view answers from (store.Registry.RoleClaimRepair), beside the bound its age is held to. The two
-// fields that name that read are null until one has completed, so a reader never takes the zero
-// time for a read; the counts are 0 then, as they are for the first read of an epoch, which fills
-// the copy rather than repairing it.
-type roleClaimRepairHealth struct {
-	// CompletedAt is when the read completed, RFC 3339 in UTC.
-	CompletedAt *string `json:"completed_at"`
-	// AgeSeconds is how long before the answer the read completed, on the registry's clock, the
-	// age store.RoleClaimRepairReport.Err judges.
-	AgeSeconds *float64 `json:"age_seconds"`
-	// BoundSeconds is store.RoleClaimRepairBound, past which the answer is degraded.
-	BoundSeconds float64 `json:"bound_seconds"`
-	// PutBack and TookOut are the claims the read put back into the copy and took out of it.
-	PutBack int `json:"put_back"`
-	TookOut int `json:"took_out"`
-}
-
-// roleClaimRepairHealthOf is report as /healthz answers it, its age to the millisecond.
-func roleClaimRepairHealthOf(report store.RoleClaimRepairReport) roleClaimRepairHealth {
-	health := roleClaimRepairHealth{
+// roleClaimRepairHealthOf is report as /healthz's "role_claim_repair" field answers it
+// (listenerwire.RoleClaimRepair): the role claim watcher's last whole read of the role bucket that
+// completed (store.Registry.RoleClaimRepair), its age to the millisecond on the registry's clock,
+// the age store.RoleClaimRepairReport.Err judges, beside the bound that age is held to,
+// store.RoleClaimRepairBound.
+func roleClaimRepairHealthOf(report store.RoleClaimRepairReport) *listenerwire.RoleClaimRepair {
+	health := &listenerwire.RoleClaimRepair{
 		BoundSeconds: store.RoleClaimRepairBound.Seconds(),
 		PutBack:      report.PutBack,
 		TookOut:      report.TookOut,
@@ -785,14 +765,14 @@ func healthzPing(ctx context.Context, cache kvCache) (answered bool, err error) 
 // when the failure is terminal, else 200 "degraded".
 func dependencyHealth(dependency string, err error, terminal bool) healthAnswer {
 	statusCode := http.StatusOK
-	status := "degraded"
+	status := listenerwire.HealthDegraded
 	if terminal {
 		statusCode = http.StatusServiceUnavailable
-		status = "unhealthy"
+		status = listenerwire.HealthUnhealthy
 	}
-	return healthAnswer{statusCode, map[string]interface{}{
-		"status": status,
-		"error":  dependencyUnavailable(dependency, err),
+	return healthAnswer{statusCode, listenerwire.Health{
+		Status: status,
+		Error:  dependencyUnavailable(dependency, err),
 	}}
 }
 
@@ -824,14 +804,14 @@ func dependencyHealth(dependency string, err error, terminal bool) healthAnswer 
 // the role claim view or its late repair - in the order they are read here (carryReport): every
 // one of them is this same 200 "degraded", and an operator reading the answer wants the whole of
 // what is wrong, not whichever part the endpoint found last.
-func okAnswer(response map[string]interface{}, d *listenerDeps) healthAnswer {
+func okAnswer(response listenerwire.Health, d *listenerDeps) healthAnswer {
 	viewErr := d.registry.RoleViewErr()
 	repair := d.registry.RoleClaimRepair()
-	response["role_claim_repair"] = roleClaimRepairHealthOf(repair)
+	response.RoleClaimRepair = roleClaimRepairHealthOf(repair)
 	if viewErr != nil {
-		carryReport(response, "role claim view", viewErr)
+		carryReport(&response, "role claim view", viewErr)
 	} else if err := repair.Err(); err != nil {
-		carryReport(response, "role claim repair", err)
+		carryReport(&response, "role claim repair", err)
 	}
 	stall, hookErr := d.client.HookStall()
 	if stall < bus.RepairGrace {
@@ -844,19 +824,19 @@ func okAnswer(response map[string]interface{}, d *listenerDeps) healthAnswer {
 		// is the whole of it.
 		rebuild = fmt.Errorf("%w (%w)", hookErr, rebuild)
 	}
-	carryReport(response, "KV watch rebuild", rebuild)
+	carryReport(&response, "KV watch rebuild", rebuild)
 	return healthAnswer{http.StatusOK, response}
 }
 
 // carryReport adds a dependency's failure to a 200 /healthz answer: the answer is "degraded", and
 // a report it already carries keeps its place, with this one named after it.
-func carryReport(response map[string]interface{}, dependency string, err error) {
+func carryReport(response *listenerwire.Health, dependency string, err error) {
 	reported := dependencyUnavailable(dependency, err)
-	if carried, ok := response["error"].(string); ok {
-		reported = carried + "; " + reported
+	if response.Error != "" {
+		reported = response.Error + "; " + reported
 	}
-	response["status"] = "degraded"
-	response["error"] = reported
+	response.Status = listenerwire.HealthDegraded
+	response.Error = reported
 }
 
 // dependencyUnavailable is the `error` field a /healthz answer gives for a dependency, so the
@@ -963,7 +943,7 @@ func (g *startingGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeListRefilling(w)
 			return
 		}
-		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
+		writeJSONError(w, http.StatusServiceUnavailable, listenerwire.ServiceStarting)
 		return
 	}
 	mux.ServeHTTP(w, r)

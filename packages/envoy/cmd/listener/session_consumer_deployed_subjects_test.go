@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A topic under a subject only a newer build's stream carries (notifications.x.>, which this build
@@ -50,7 +51,7 @@ func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.
 	if err := json.Unmarshal([]byte(raw), &answer); err != nil {
 		t.Fatalf("decode the registration's answer %s: %v", raw, err)
 	}
-	if want := []string{contracts.UncapturedTopicWarning(uncaptured, sessionID)}; !slices.Equal(answer.Warnings, want) {
+	if want := []string{listenerwire.UncapturedTopicWarning(uncaptured, sessionID)}; !slices.Equal(answer.Warnings, want) {
 		t.Fatalf("warnings = %q, want only %q: %s is captured by the deployed stream and %s by no stream", answer.Warnings, want, captured, uncaptured)
 	}
 	if !slices.Contains(answer.Topics, captured) || !slices.Contains(answer.Topics, uncaptured) {

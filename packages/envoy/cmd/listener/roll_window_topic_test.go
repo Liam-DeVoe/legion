@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The rows here play a roll: this build's listener runs against the stream a deployment of this
@@ -324,7 +325,7 @@ func TestATopicNoStreamCapturesIsKeptInTheRowAndTheFilterAndDeliversNothing(t *t
 		if want := bus.SessionConsumerFilters([]string{own, topic}); !slices.Equal(rig.filters(t, sessionID), want) {
 			t.Fatalf("registration %d left the consumer of %s filtering on %v, want %v", registration+1, sessionID, rig.filters(t, sessionID), want)
 		}
-		if want := []string{contracts.UncapturedTopicWarning(topic, sessionID)}; !slices.Equal(answer.Warnings, want) {
+		if want := []string{listenerwire.UncapturedTopicWarning(topic, sessionID)}; !slices.Equal(answer.Warnings, want) {
 			t.Fatalf("registration %d warnings = %q, want only %q", registration+1, answer.Warnings, want)
 		}
 	}

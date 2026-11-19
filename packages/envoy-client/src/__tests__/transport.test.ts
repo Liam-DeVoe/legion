@@ -775,7 +775,7 @@ describe("EnvoyClient", () => {
   // A role publish names the holder the listener resolved and the state its record put that
   // holder in, under the two names every role answer uses; a publish to a plain topic names
   // neither, since the stream stores one copy each subscribed session's own consumer delivers
-  // (`cmd/listener/api.go`'s `publishResponse`).
+  // (`listenerwire.PublishResponse`).
   test("a role publish names its holder and that holder's state, and a topic publish names neither", async () => {
     const envelope = {
       event_id: "event-stored",
@@ -1702,7 +1702,7 @@ describe("EnvoyClient", () => {
     expect((error as Error).message).toBe("no live session ses_target");
   });
 
-  // The listener's 429 for a sender past its limit (`senderRateLimitedAnswer`,
+  // The listener's 429 for a sender past its limit (`listenerwire.SenderRateLimited`, built in
   // packages/envoy/cmd/listener/sender_limit.go): its sentence is what the agent reads, and its
   // wait is what a caller times a resend by.
   const RATE_LIMITED_SENTENCE =

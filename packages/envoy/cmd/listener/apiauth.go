@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const bearerPrefix = "Bearer "
@@ -302,7 +303,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 			)
-			writeJSONError(w, http.StatusServiceUnavailable, "service starting")
+			writeJSONError(w, http.StatusServiceUnavailable, listenerwire.ServiceStarting)
 			return
 		}
 		if open && !servesHost(r.Host, auth.allowedHosts) {
@@ -466,7 +467,7 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	switch {
 	case errors.Is(err, errBrokerTokensStarting):
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
+		writeJSONError(w, http.StatusServiceUnavailable, listenerwire.ServiceStarting)
 	case errors.Is(err, brokertoken.ErrBrokerUnreachable):
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again in a minute")

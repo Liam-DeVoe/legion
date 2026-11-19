@@ -306,18 +306,6 @@ func ControllerRoleToken(project string) string {
 	return ${controllerRoleToken}
 }
 
-// UncapturedTopicWarning is the warning POST /v1/interests/subscribe answers for topic, a
-// notification topic that no stream subject captures yet, that is no role lane and that reaches
-// no private stream subject: the registration keeps it for sessionID in the row, and nothing is
-// delivered on it until a stream subject captures it (uncapturedTopics in cmd/listener). Generated
-// from uncapturedTopicWarning in packages/contracts, so the listener and the plugins read one
-// sentence. A plugin hides the warning of a topic its caller did not name only when the warning is
-// this exact text for that topic and the answer's session_id (warningsForNamedTopics in
-// @legion/envoy-client). A plugin built on other words shows every such warning.
-func UncapturedTopicWarning(topic, sessionID string) string {
-	return ${uncapturedTopicWarningText}
-}
-
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
 // notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
@@ -540,19 +528,20 @@ const DocumentNewerContentCloseReason = ${JSON.stringify(DOCUMENT_NEWER_CONTENT_
 
 // DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
 // document socket whose page the live server processes no longer admit, once the message in flight
-// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
-// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
-// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
-// dashboard's reading of it cannot drift apart.
+// on it is out, and an open document socket whose upgrade's Identity-Aware Proxy assertion has
+// expired. The Hocuspocus provider reconnects on the code, and the reconnect is admitted again.
+// Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON
+// in packages/contracts so the server's close and the dashboard's reading of it cannot drift
+// apart.
 const DocumentAdmissionRevokedCloseCode = ${DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE}
 const DocumentAdmissionRevokedCloseReason = ${JSON.stringify(DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON)}
 
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
-// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
-// the most subscriptions one live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE,
-// LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in
-// packages/contracts so the server's close and limit and the dashboard's reading of them cannot
-// drift apart.
+// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), or once its upgrade's
+// Identity-Aware Proxy assertion expires, and LiveSocketMaxSubscriptions the most subscriptions one
+// live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE, LIVE_SOCKET_MIN_AGE_MS,
+// LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in packages/contracts so the server's
+// close and limit and the dashboard's reading of them cannot drift apart.
 const LiveSocketMaxAgeClose = ${LIVE_SOCKET_MAX_AGE_CLOSE}
 const LiveSocketMinAge = ${LIVE_SOCKET_MIN_AGE_MS} * time.Millisecond
 const LiveSocketMaxAge = ${LIVE_SOCKET_MAX_AGE_MS} * time.Millisecond
@@ -934,11 +923,7 @@ function renderEnvelope(schema: Schema) {
     .map((key) => valueChecks(key, schema.properties[key], !req.has(key)))
     .filter(Boolean)
     .join("\n");
-  // A map property is the Go map envelopeKind names it, so it has neither a struct of its own nor
-  // required keys to check.
-  const objects = keys.filter(
-    (key) => schema.properties[key].type === "object" && !mapValues(schema.properties[key])
-  );
+  const objects = envelopeObjects(schema);
   const nestedChecks = objects
     .map((key) => objectChecks(key, schema.properties[key]))
     .filter(Boolean)
@@ -960,7 +945,50 @@ ${validate}
 }`;
 }
 
+// The envelope's object properties that are structs of their own (renderEnvelopeObject). A map
+// property is the Go map envelopeKind names it, so it has neither a struct of its own nor
+// required keys to check.
+function envelopeObjects(schema: Schema) {
+  return Object.keys(schema.properties).filter(
+    (key) => schema.properties[key].type === "object" && !mapValues(schema.properties[key])
+  );
+}
+
+// The envelope's Go mirror is the Envoy listener's wire package's, packages/envoy/listenerwire,
+// which the listener and its clients import and which imports the standard library alone, and so
+// is the one sentence of a registration's answer that a plugin reads by its words.
+function renderListenerwireEnvelope(envelope: Schema) {
+  return `// Code generated by scripts/gen-go.ts from schemas/envelope.schema.json and src/subject.ts. DO NOT EDIT.
+
+package listenerwire
+
+import (
+	"fmt"
+	"strings"
+)
+
+${renderEnvelope(envelope)}
+
+// UncapturedTopicWarning is the warning POST /v1/interests/subscribe answers for topic, a
+// notification topic that no stream subject captures yet, that is no role lane and that reaches
+// no private stream subject: the registration keeps it for sessionID in the row, and nothing is
+// delivered on it until a stream subject captures it (uncapturedTopics in cmd/listener). Generated
+// from uncapturedTopicWarning in packages/contracts, so the listener and the plugins read one
+// sentence. A plugin hides the warning of a topic its caller did not name only when the warning is
+// this exact text for that topic and the answer's session_id (warningsForNamedTopics in
+// @legion/envoy-client). A plugin built on other words shows every such warning.
+func UncapturedTopicWarning(topic, sessionID string) string {
+	return ${uncapturedTopicWarningText}
+}
+`;
+}
+
+// internal/contracts names each envelope type listenerwire declares, so the code of the envoy
+// module reads the one type as contracts.Envelope.
 function renderContracts(envelope: Schema) {
+  const aliases = ["Envelope", ...envelopeObjects(envelope).map((key) => `Envelope${name(key)}`)]
+    .map((type) => `type ${type} = listenerwire.${type}`)
+    .join("\n");
   return `package contracts
 
 import (
@@ -971,9 +999,13 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-${renderEnvelope(envelope)}
+// The envelope and the types of its object properties are listenerwire's
+// (listenerwire/envelope_generated.go), named here as well.
+${aliases}
 
 ${keep}
 `;
@@ -1205,6 +1237,11 @@ const outputs = [
   {
     path: resolve(import.meta.dir, "../../envoy/internal/contracts/generated.go"),
     rendered: renderContracts(envelope),
+    language: "go",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/listenerwire/envelope_generated.go"),
+    rendered: renderListenerwireEnvelope(envelope),
     language: "go",
   },
   {

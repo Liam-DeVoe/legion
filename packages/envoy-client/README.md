@@ -157,7 +157,7 @@ It leaves out no topic for being outside the stream subjects this build was comp
 `expandSubscriptionTopics` (`@legion/envoy-client/transport`) carries the base of every `<base>.>`
 it expands for the same reason. For a topic no deployed stream subject captures yet, the listener
 answers a warning in the words of `@legion/contracts`'s `uncapturedTopicWarning`, which
-`packages/contracts/scripts/gen-go.ts` emits as `contracts.UncapturedTopicWarning`. A host's
+`packages/contracts/scripts/gen-go.ts` emits as `listenerwire.UncapturedTopicWarning`. A host's
 subscribe tool shows its caller the listener's warnings through
 `warningsForNamedTopics(answer, named)`: every warning but the uncaptured-topic warning of a
 topic the caller did not name in this call, such as the base a named `X.>` adds or another topic

@@ -9,8 +9,8 @@ body: |-
     listener left the topic out and warned
     `<topic> was not registered: no stream subject captures it, so nothing would be delivered to
     <session> on it; follow a notifications.team.<name> topic instead`. The Go function that builds
-    the text is now `contracts.UncapturedTopicWarning`, generated from `uncapturedTopicWarning` in
-    `@legion/contracts`. It was `contracts.UncapturedTopicRefusal`.
+    the text is now `listenerwire.UncapturedTopicWarning`, in the listener's wire package, generated
+    from `uncapturedTopicWarning` in `@legion/contracts`. It was `contracts.UncapturedTopicRefusal`.
 
     The clients (`@legion/envoy-client`, pi-envoy and claude-envoy) no longer refuse a topic that
     no stream subject captures. They send every followed topic, except a topic that reaches a

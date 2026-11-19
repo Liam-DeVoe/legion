@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // hangingSeenKV is the listener state bucket as a pod reads it over a bus that went silent
@@ -91,7 +92,7 @@ func TestTheInterestsListAnswersWithinItsBudgetWhileTheLastSeenBucketHangs(t *te
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/interests/ = %d %s, want 200", recorder.Code, recorder.Body.String())
 	}
-	var rows []interestRow
+	var rows []listenerwire.InterestRow
 	if err := json.NewDecoder(recorder.Body).Decode(&rows); err != nil {
 		t.Fatalf("decode the list: %v", err)
 	}
