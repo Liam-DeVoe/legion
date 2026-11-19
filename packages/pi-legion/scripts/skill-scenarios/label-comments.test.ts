@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { unshownSettingUrl } from "@legion/contracts/setting-url";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   REDIRECT_CODES,
   type RedirectServers,
@@ -179,7 +180,7 @@ function io(fetch: (input: string, init: RequestInit) => Promise<Response>) {
       env: {
         HOME: scratch,
         DISPATCH_URL: "http://dispatch.test",
-        DISPATCH_TOKEN: "dispatch-token",
+        DISPATCH_TOKEN: fixtureSecret("dsp"),
       },
       cwd: scratch,
       fetch,

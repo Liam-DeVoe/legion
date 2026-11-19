@@ -9,7 +9,7 @@
  */
 
 import { BlockList, isIP } from "node:net";
-import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { type RedirectTarget, redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "./redirect";
 
 /** The broker's agent secret holding the Legion Slack app's bot token (`xoxb-…`). */
@@ -334,11 +334,9 @@ export async function postSlackReply(
   }
   const override = env[SLACK_POST_API_URL_VARIABLE];
   if (override !== undefined && override !== "" && !allowedAPIURL(override)) {
-    // The override may carry a user and a password: the refusal names it with neither, and one
-    // that `shownSettingUrl` would not show by its length and what to correct (`unshownSettingUrl`).
-    const shown = shownSettingUrl(override);
+    // Its value is not quoted: a URL can carry user info or a token in its query.
     throw new Error(
-      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host${shown === undefined ? `: ${unshownSettingUrl(override)}` : ` (got ${shown})`}; nothing was posted`
+      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host; nothing was posted`
     );
   }
   const { PATH: searchPath = "" } = env;

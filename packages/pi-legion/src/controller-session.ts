@@ -4,6 +4,7 @@ import {
   legionProjectToken,
   slackMentionTopic,
 } from "@legion/contracts";
+import { scrub } from "@legion/contracts/held-secrets";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -286,8 +287,9 @@ export function createControllerSession(deps: {
       })
       .catch((error: unknown) => {
         if (error instanceof LegionDaemonApiError) {
+          // The daemon's detail is its own text, and it can echo the boot token it was sent.
           logger.error(
-            `[legion] claims/register for the controller failed (${error.status}): ${error.detail}`
+            `[legion] claims/register for the controller failed (${error.status}): ${scrub(error.detail)}`
           );
         }
         throw error;

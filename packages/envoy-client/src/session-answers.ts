@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer } from "@legion/contracts";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { urlForText } from "@legion/contracts/log-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
@@ -562,7 +562,7 @@ export async function readSessionAnswers(
     current.noRouteReported = true;
     return {
       ...read,
-      notice: `Dispatch at ${shownSettingUrl(url) ?? `a URL ${url.length} characters long`} has no answers route (its build is older than the route), so people's answers cannot be read from it`,
+      notice: `Dispatch at ${urlForText(url, "the configured Dispatch URL")} has no answers route (its build is older than the route), so people's answers cannot be read from it`,
     };
   };
   if ((state.noRouteUntil.get(url) ?? 0) > now()) return noRoute();
@@ -573,15 +573,16 @@ export async function readSessionAnswers(
   if (read === undefined) {
     // The client runs the read once: an answer of no route is this read's own (`isNoAnswersRoute`,
     // `NO_ROUTE_BACKOFF_MS`), and that 5-minute back-off, not the client's waits, is what carries
-    // the request past a release rolling out, within this call's deadline.
+    // the request past a release rolling out, within this call's deadline. The deadline is the
+    // client's own, so its credential is given the read less the request's reserve.
     const client = new DispatchClient(url, dispatch.credential, options.fetchImpl ?? fetch, {
       retryNoRoute: false,
+      deadlineMs: READ_TIMEOUT_MS,
     });
     const started = client
       .sessionAnswers(session, {
         since: new Date(now() - SESSION_ANSWERS_WINDOW_MS).toISOString(),
         maxChars: SESSION_ANSWERS_MAX_CHARS,
-        signal: AbortSignal.timeout(READ_TIMEOUT_MS),
       })
       .then(
         (response): ReadOutcome => {

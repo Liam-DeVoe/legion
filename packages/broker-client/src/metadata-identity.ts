@@ -1,6 +1,7 @@
 // packages/broker-client/src/metadata-identity.ts
 
 import { Agent, request } from "node:http";
+import { errorClass } from "@legion/contracts/log-text";
 import type { SubjectToken, TokenSource } from "./source";
 import { SUBJECT_TOKEN_TYPE_GOOGLE } from "./wire";
 
@@ -56,6 +57,17 @@ function tokenUrl(audience: string, env: NodeJS.ProcessEnv): string | undefined 
   return `http://${host}${IDENTITY_PATH}?audience=${encodeURIComponent(audience)}&format=full`;
 }
 
+/**
+ * The metadata server as a text names it: by {@link METADATA_HOST_VAR} where that names it, never
+ * by its value, which is a host, like a NATS server's setting, and a host cannot be told from a
+ * secret pasted there by its spelling; else by Google's own host, which no setting wrote.
+ */
+function serverNamed(env: NodeJS.ProcessEnv): string {
+  return (env[METADATA_HOST_VAR] ?? "").trim() === ""
+    ? `at ${DEFAULT_METADATA_HOST}`
+    : `${METADATA_HOST_VAR} names`;
+}
+
 /** One answer of the metadata server: the status it gave and the body it wrote. */
 interface MetadataAnswer {
   readonly status: number;
@@ -87,7 +99,12 @@ function get(url: string, signal: AbortSignal | undefined): Promise<MetadataAnsw
       answer.on("error", reject);
     }
   );
-  call.on("timeout", () => call.destroy(new Error(`no answer within ${TIMEOUT_MS} ms`)));
+  // A code, as the runtime's own errors carry one, so a text names the timeout by it (`errorClass`).
+  call.on("timeout", () =>
+    call.destroy(
+      Object.assign(new Error(`no answer within ${TIMEOUT_MS} ms`), { code: "ETIMEDOUT" })
+    )
+  );
   call.on("error", reject);
   call.end();
   return promise;
@@ -117,21 +134,20 @@ export function metadataIdentity(
           `${METADATA_HOST_VAR} must name the metadata server's host, with an optional port and nothing else: its value is ${host.length} characters long`
         );
       }
-      // The URL is made from a judged host and this module's own path, so a line may name it.
+      const named = `the metadata server ${serverNamed(env)}`;
       let answer: { status: number; body: string };
       try {
         answer = await get(url, signal);
       } catch (error) {
-        throw new Error(
-          `the metadata server at ${url} could not be reached (${METADATA_HOST_VAR} names its host): ${(error as Error).message}`
-        );
+        // By its class: the runtime's message repeats the host it was handed.
+        throw new Error(`${named} could not be reached: ${errorClass(error)}`);
       }
       if (answer.status < 200 || answer.status > 299) {
-        throw new Error(`the metadata server at ${url} answered HTTP ${answer.status}`);
+        throw new Error(`${named} answered HTTP ${answer.status}`);
       }
       const token = answer.body.trim();
       if (token === "") {
-        throw new Error(`the metadata server at ${url} answered an empty identity token`);
+        throw new Error(`${named} answered an empty identity token`);
       }
       return { token, tokenType: SUBJECT_TOKEN_TYPE_GOOGLE };
     },

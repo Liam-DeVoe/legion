@@ -20,7 +20,7 @@ import type {
   IssueSummary,
   MessageRead,
 } from "@legion/contracts";
-import type { RequestCredential } from "@legion/envoy-client/bearer";
+import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer";
 import { type DispatchEnvironment, dispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { envoyConfigPath, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -179,15 +179,22 @@ export class ProductionDispatch {
       if (attempt > 1) await this.#sleep(backoffMs(attempt - 1));
       let response: Response;
       try {
-        // One deadline for the credential and the read, its body included: a broker credential
-        // waiting on a pod's missing registration stops at it, naming the session.
+        // One deadline for the credential and the read, its body included, 60 s, the credential
+        // waiting on all of it but the read's 1 s reserve (`credentialDeadline`): a broker
+        // credential waiting on a pod's missing registration stops there, and one that hands over
+        // its live token leaves the read that reserve.
         const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         response = await this.#fetch(url.toString(), {
           method: "GET",
           redirect: "manual",
           headers: {
             Accept: "application/json",
-            ...(await this.#credential.headers("GET", url.toString(), undefined, deadline)),
+            ...(await this.#credential.headers(
+              "GET",
+              url.toString(),
+              undefined,
+              credentialDeadline(deadline, REQUEST_TIMEOUT_MS)
+            )),
           },
           signal: deadline,
         });
