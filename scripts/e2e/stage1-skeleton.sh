@@ -31,9 +31,12 @@ timeout_hook=
 mkdir -p "$work/logs"
 # cleanup never returns non-zero: a trap that fails under set -e would mask the real status. The
 # work directory survives a failure — its state documents, refusal log and daemon log are the
-# evidence, and the daemon log is printed — and goes when the run passed.
+# evidence, and the daemon log is printed — and goes when the run passed. A daemon still running
+# is stopped and waited for first (lib/rig.sh's stop_pid), so the log printed holds every line its
+# shutdown writes; pid is set only once lib/rig.sh is sourced.
 cleanup() {
-  if [ -n "${pid:-}" ]; then kill -TERM "$pid" 2>/dev/null || true; fi
+  if [ -n "${pid:-}" ]; then stop_pid "$pid"; fi
+  # no-wait: the keeper's TERM handler only unlinks its socket, and its port is the run's own.
   if [ -n "${daemon_keeper_pid:-}" ]; then kill -TERM "$daemon_keeper_pid" 2>/dev/null || true; fi
   docker rm -f -v "$container" >/dev/null 2>&1 || true
   if [ -n "${ok:-}" ]; then
@@ -350,7 +353,7 @@ jq -e '.settings.review_round_cap == 5
   echo "the legions registry does not carry exactly one entry for $project on $port"
   exit 1
 }
-kill -TERM "$pid"
+kill -TERM "$pid" # no-wait: stop_daemon, next, polls the daemon and then waits for it
 stop_daemon SIGTERM
 
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"

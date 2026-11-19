@@ -56,6 +56,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# scripts/e2e/lib/wait-gone.sh holds kill_gone, the wait for a process this check signals.
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/wait-gone.sh
+. "$SCRIPT_DIR/../../../scripts/e2e/lib/wait-gone.sh"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LEAN_DIR="$ENVOY_DIR/internal/broker/airlock/lean"
 
@@ -1252,6 +1255,7 @@ EOF
 			exec bash '"$d"'/az-broker -- bash '"$d"'/az-steps.sh' >>"$d/runs.log" 2>>"$d/cli.err"
 		echo "exit $?" >>"$d/runs.log"
 	done
+	# no-wait: it only approves the CLI's pending requests, and the runs it served have ended.
 	kill "$watcher" 2>/dev/null || true
 	K6_AZ_RUNS="$(grep -c '^exit ' "$d/runs.log")"
 	K6_AZ_FAILED="$(grep -c '^exit [^0]' "$d/runs.log" || true)"
@@ -1885,10 +1889,12 @@ k9_cpu() { # <pid>
 
 # k9_sample_rss appends one line per broker process every two seconds, which is how this check
 # reads a peak resident set on a kernel whose /proc/<pid>/status has no VmHWM (see the block
-# above). It runs until it is killed.
+# above). It runs until it is sent TERM, which it takes once the awk or the sleep under way has
+# ended, so the file holds only whole lines once the sampler is gone.
 k9_sample_rss() { # <file> <pid>...
 	local file="$1" pid
 	shift
+	trap 'exit 0' TERM
 	while :; do
 		for pid in "$@"; do
 			awk -v p="$pid" '/^VmRSS:/ { print p, $2 }' "/proc/$pid/status" 2>/dev/null >>"$file"
@@ -1959,7 +1965,8 @@ check_k9() {
 		>/dev/null 2>"$WORK_DIR/k9/load.err"
 	wall_after="$(date +%s.%N)"
 	for pid in "${pids[@]}"; do after+=("$(k9_cpu "$pid")"); done
-	kill "$sampler" 2>/dev/null || true
+	# Gone before its file is read: an awk of the sampler still running would append to it.
+	kill_gone TERM 10 "$sampler" || true
 
 	local calls failed p50 base_p50 added
 	calls="$(jq -r '.calls' "$WORK_DIR/k9/load.json")"
@@ -2041,6 +2048,7 @@ check_k9() {
 		--out "$WORK_DIR/k9/stopped.json" >/dev/null 2>&1 &
 	local gap_pid=$!
 	sleep 3
+	# no-wait: the drain this starts is what the case observes; stop_stack waits for the stack.
 	kill "$stopped" 2>/dev/null || true
 	wait "$gap_pid" 2>/dev/null || true
 	# Four calls, not one: the stack's proxy front is a round-robin over both brokers' ports

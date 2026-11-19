@@ -65,6 +65,10 @@ set -m
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly project_root
+# scripts/e2e/lib/wait-gone.sh holds wait_gone, the wait the --callout case runs on its second
+# broker.
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/wait-gone.sh
+. "$project_root/scripts/e2e/lib/wait-gone.sh"
 readonly driver="${project_root}/packages/envoy/scripts/dev-stack.sh"
 temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/dev-stack-test.XXXXXX")"
 readonly temporary_dir
@@ -91,6 +95,7 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
+  # no-wait: the stand-ins it matches end on TERM and write nothing under temporary_dir after it.
   pkill -f "${temporary_dir}/dev-stack\." 2>/dev/null || true
   rm -rf "$temporary_dir"
 }
@@ -173,7 +178,7 @@ case "$mode" in
     done
     [[ -n "$port_file" && -n "$socket" ]] || exit 2
     sleeper=""
-    trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM INT
+    trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM INT # no-wait: its own sleep; nothing reads it
     printf '%s\n' "$$" >"$socket"
     printf '%s\n' "$$" >"$port_file"
     sleep 999999 &
@@ -391,7 +396,7 @@ CLIENT
   # on, and end at 0 when it is stopped, killing the sleep so nothing of the stub outlives it.
   cat >>"$target" <<'IDLE'
 sleeper=""
-trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM INT
+trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM INT # no-wait: its own sleep; nothing reads it
 sleep 999999 &
 sleeper=$!
 wait "$sleeper"
@@ -757,7 +762,7 @@ printf 'PASS: each instance laid out a second box of its own, with its own HOME,
 
 # (e1) A normal exit: one process of the stack stops by itself, so the run stops the rest, drops
 # both of its databases and exits with that process's status.
-kill -TERM "${port1[natsd]}"
+kill -TERM "${port1[natsd]}" # no-wait: dev-stack.sh reaps it, and wait_for_exit waits for that
 wait_for_exit 1
 [[ "$exited_status" -eq 0 ]] || fail "instance 1 exited $exited_status after a process of it stopped cleanly"
 grep -q 'dev-stack: a process of this stack stopped (status 0)' "$log1" ||
@@ -771,7 +776,7 @@ assert_databases_dropped 'instance 1' "$psql_calls1" "$suffix1"
 printf 'PASS: a normal exit stopped every process instance 1 started and dropped both its databases\n'
 
 # (e2) An interrupt: the same stop, with 130, the status a run interrupted by Ctrl-C reports.
-kill -INT "${instance_pid[2]}"
+kill -INT "${instance_pid[2]}" # no-wait: wait_for_exit, next, waits for it to exit
 wait_for_exit 2
 [[ "$exited_status" -eq 130 ]] || fail "instance 2 exited $exited_status on INT, not 130"
 process_port=()
@@ -801,7 +806,7 @@ for name in "${!process_port[@]}"; do term_port["$name"]="${process_port[$name]}
 # and what the group's own signal does to dev-stack.sh by chance whenever a process of the stack
 # takes it first. The loop ends the moment there is no process left to signal.
 for _ in $(seq 1 200); do
-  kill -TERM -"${instance_pid[1]}" 2>/dev/null || break
+  kill -TERM -"${instance_pid[1]}" 2>/dev/null || break # no-wait: wait_for_exit, below, waits
 done
 wait_for_exit 1
 # 143 when dev-stack.sh's own TERM trap ran the stop, 0 when a process of the stack took the
@@ -881,7 +886,7 @@ for binary in "${prebuilt_packages[@]##*/}"; do
   cmp -s "${prebuilt}/${binary}" "${work_dir}/bin/${binary}" ||
     fail "the --binaries run's own $binary is not the prebuilt one it was given"
 done
-kill -INT "${instance_pid[1]}"
+kill -INT "${instance_pid[1]}" # no-wait: wait_for_exit, next, waits for it to exit
 wait_for_exit 1
 [[ "$exited_status" -eq 130 ]] || fail "the --binaries run exited $exited_status on INT, not 130"
 assert_everything_stopped 'the --binaries run'
@@ -979,6 +984,10 @@ for pair in "DEV_STACK_CALLOUT=1" "NATS_AUTH=broker" "DEV_STACK_NATS_SERVICE_TOK
     fail "the --callout run exported ${pair%%=*}=$(exported "$log1" "${pair%%=*}"), not ${pair#*=}"
 done
 kill -TERM "$second_broker_port"
+# Gone first: a broker still in the process table would make the check below pass with nothing
+# stopped. dev-stack.sh, its parent, reaps it.
+wait_gone 10 "$second_broker_port" ||
+  fail "the --callout run's second broker (pid $second_broker_port) was still in the process table 10 s after its SIGTERM"
 sleep 1
 kill -0 "${instance_pid[1]}" 2>/dev/null || fail "the --callout run stopped when its second broker did"
 if grep -q 'a process of this stack stopped' "$log1"; then
@@ -1039,7 +1048,7 @@ kill -0 "${instance_pid[1]}" 2>/dev/null || fail "the --callout run stopped acro
 if grep -q 'a process of this stack stopped' "$log1"; then
   fail "the --callout run stopped across its restarts"
 fi
-kill -INT "${instance_pid[1]}"
+kill -INT "${instance_pid[1]}" # no-wait: wait_for_exit, next, waits for it to exit
 wait_for_exit 1
 [[ "$exited_status" -eq 130 ]] || fail "the --callout run exited $exited_status on INT, not 130"
 assert_everything_stopped 'the --callout run'

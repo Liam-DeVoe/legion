@@ -331,8 +331,9 @@ stop_agent() {
   grep -qsF "$work" "/proc/$1/cmdline" || grep -qsF "$work" "/proc/$1/environ" || return 0
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
-  kill -TERM -- -"$1" 2>/dev/null || true
+  kill -TERM -- -"$1" 2>/dev/null || true # no-wait: stop_pid, next, waits for the group's leader
   stop_pid "$1"
+  # no-wait: the group holds no database connection or port; the work directory is kept.
   kill -KILL -- -"$1" 2>/dev/null || true
 }
 
@@ -1598,6 +1599,7 @@ check_gone_only_past_the_horizon() {
     ENVOY_SESSION_REAP_INTERVAL=10s ENVOY_ROLE_CLAIM_REAP_INTERVAL=10s "$work/bin/envoy-listener"
   await_start shortlistener "$shortlistener_pid" 60 "the short-horizon listener to serve" serving "$short_port"
   exec {victim_fd}>&-
+  # no-wait: the kill starts what is measured; what follows reads the listener's state of it.
   kill -KILL "$victim_pid" || refuse "could not kill the victim session" || return 1
   killed_at=$(date +%s)
   # Everything from here to the stop runs through one status, so a refusal still stops the

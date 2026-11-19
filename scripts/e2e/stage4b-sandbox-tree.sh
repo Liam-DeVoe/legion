@@ -2933,7 +2933,9 @@ cleanup() {
       echo "CHECK production-audit: FAIL: $(audit_failure)"
     fi
   fi
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  # Waited for, so the next run's refuse_leftovers and ports_free meet nothing of this one.
+  # shellcheck disable=SC2046 # one pid per word
+  kill_gone KILL 10 $(run_processes) || true
   remove_run_container "$pg_container"
   remove_run_container "$session_db_container"
   rm -rf "$work"

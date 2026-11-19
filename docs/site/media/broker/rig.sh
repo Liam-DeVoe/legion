@@ -133,6 +133,7 @@ cleanup() {
   # children go too: run-server.sh's `flock … go build`, before it execs the server, is one.
   stop_pid "$helper_pid"
   for pid in "$dispatch_pid" "$fake_github_pid" "$fake_envoy_pid" "$broker_pid" "$issuer_pid"; do
+    # no-wait: stop_pid, next, waits for the group's leader; the drop below forces, $work is kept.
     [ -z "$pid" ] || kill -TERM -- "-$pid" 2>/dev/null || true
     stop_pid "$pid"
   done

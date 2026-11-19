@@ -175,7 +175,9 @@ cleanup() {
 	stop_dev_server
 	# Any experiment, worker or restate-server still running was started from this
 	# run's directory, whose path is in its command line and in no other process's.
+	# no-wait: the cleanup's last act before it exits; a later run probes its ports free.
 	pkill -KILL -f -- "$bin_dir/" 2>/dev/null || true
+	# no-wait: as above, for what runs from the run's directory.
 	pkill -KILL -f -- "$run_dir/" 2>/dev/null || true
 	exit "$status"
 }

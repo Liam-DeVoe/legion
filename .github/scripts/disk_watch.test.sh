@@ -34,6 +34,7 @@ cleanup() {
     # SIGCONT first: the stall case leaves a stopped sampler behind if it dies partway, and a
     # stopped process takes SIGTERM only once it is running again.
     kill -CONT "$pid" 2>/dev/null || true
+    # no-wait: the sampler takes TERM at its default, so it writes nothing for the rm -rf to meet.
     kill "$pid" 2>/dev/null || true
   fi
   rm -rf "$work"

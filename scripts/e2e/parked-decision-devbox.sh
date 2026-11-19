@@ -181,7 +181,9 @@ cleanup() {
   stop_pid "$dispatch_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   stop_agent_daemons
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  # Waited for, so the next run's refuse_leftovers meets nothing of this one.
+  # shellcheck disable=SC2046 # one pid per word
+  kill_gone KILL 10 $(run_processes) || true
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   close_unpassed_run_pull_requests
   remove_run_branches >&2
@@ -557,7 +559,7 @@ wait_for_run_processes() {
 # later gave the same id is left alone. It finds nothing by working directory alone: what it misses,
 # a service whose broker did not end it among them, cleanup-is-complete's wait still names.
 stop_agent_daemons() {
-  local file dir real leader p stat sid line env_dir i alive
+  local file dir real leader p stat sid line env_dir
   local -a run=() targets=() environ=()
   local -A dirs=()
   while IFS= read -r -d '' file; do
@@ -588,13 +590,10 @@ stop_agent_daemons() {
   ((${#targets[@]} > 0)) || return 0
   note "stopping ${#targets[@]} processes of ${#dirs[@]} Oh My Pi daemon broker sessions: ${targets[*]}"
   kill -TERM "${targets[@]}" 2>/dev/null || true
-  for i in $(seq 1 50); do
-    alive=
-    for p in "${targets[@]}"; do ! kill -0 "$p" 2>/dev/null || alive=1; done
-    [ -n "$alive" ] || return 0
-    sleep 0.2
-  done
-  kill -KILL "${targets[@]}" 2>/dev/null || true
+  wait_gone 10 "${targets[@]}" && return 0
+  # The ones still there are ended and waited for, so the next run's refuse_leftovers meets none.
+  # shellcheck disable=SC2154 # wait_gone_left is lib/wait-gone.sh's, which wait_gone sets
+  kill_gone KILL 10 "${wait_gone_left[@]}" || true
   return 0
 }
 

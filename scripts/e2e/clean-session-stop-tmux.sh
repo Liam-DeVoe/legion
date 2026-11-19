@@ -312,8 +312,9 @@ stop_agent() {
   [ -n "${1:-}" ] || return 0
   grep -qsF "$work" "/proc/$1/cmdline" || grep -qsF "$work" "/proc/$1/environ" || return 0
   signalable "$1" || return 0
-  kill -TERM -- -"$1" 2>/dev/null || true
+  kill -TERM -- -"$1" 2>/dev/null || true # no-wait: stop_pid, next, waits for the group's leader
   stop_pid "$1"
+  # no-wait: the group holds no database connection or port; SIGKILL leaves it nothing to write.
   kill -KILL -- -"$1" 2>/dev/null || true
 }
 
@@ -330,6 +331,7 @@ cleanup() {
   stop_pid "$listener_keeper_pid"
   # Any pane the daemon's tmux server left: every one of them runs out of this run's work
   # directory, and nothing else of this user's does.
+  # no-wait: no connection to the database dropped below, no port; nothing to write after SIGKILL.
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
   if [ -n "$database" ]; then
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
@@ -598,7 +600,7 @@ kill_the_agent() {
   [ -n "$pane" ] && [ "$pane" != null ] || return 1
   agent=$(agent_descendant "$pane" "$name") || return 1
   shimmed "$agent" || return 1
-  kill -KILL "$agent" || return 1
+  kill -KILL "$agent" || return 1 # no-wait: the kill starts what is measured: the listener's view
   date +%s%3N
 }
 
@@ -938,6 +940,7 @@ check_unseen_kill_waits_out_the_horizon() {
     refuse "no last_seen for the control session while it is live" || return 1
   exec {control_fd}>&-
   control_fd=
+  # no-wait: the kill starts what is measured; what follows reads the listener's state of it.
   kill -KILL "$control_pid" || refuse "could not kill the control session" || return 1
   killed_ms=$(date +%s%3N)
   killed_at=$((killed_ms / 1000))

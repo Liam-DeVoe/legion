@@ -379,8 +379,10 @@ kill_label() {
   group=""
   if [[ -r "/proc/$p/stat" ]]; then read -r _ _ _ _ group _ <"/proc/$p/stat" 2>/dev/null || true; fi
   if [[ "$group" == "$p" ]]; then
+    # no-wait: a TERM signal to p is polled 5 s below; after the KILL signal the leader p is waited.
     kill "-$signal" -- "-$p" 2>/dev/null || true
   else
+    # no-wait: a TERM signal is polled 5 s below; after the KILL signal the next line waits for it.
     kill "-$signal" "$p" 2>/dev/null || true
   fi
   if [[ "$signal" == KILL ]]; then

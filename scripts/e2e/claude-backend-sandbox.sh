@@ -967,9 +967,10 @@ prove_daemon_container() {
 # was fixed before then, and docker signals it whoever asks. The watchdog runs under errexit, so
 # nothing here may fail.
 kill_harness() {
+  # no-wait: the TERM of the run that follows starts the EXIT trap, whose stop_pid waits for it.
   if ! docker kill --signal TERM "$daemon_container" >/dev/null 2>&1 &&
     [ -n "$daemon_pid" ] && signalable "$daemon_pid" 2>/dev/null; then
-    kill -TERM "$daemon_pid" 2>/dev/null || true
+    kill -TERM "$daemon_pid" 2>/dev/null || true # no-wait: as above: the EXIT trap stops it
   fi
   return 0
 }
@@ -1116,7 +1117,9 @@ cleanup() {
   bridge_stop
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  # Waited for, so the next run's refuse_leftovers and ports_free meet nothing of this one.
+  # shellcheck disable=SC2046 # one pid per word
+  kill_gone KILL 10 $(run_processes) || true
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch

@@ -86,6 +86,7 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$model_pid"
   stop_pid "$daemon_keeper_pid"
+  # no-wait: SIGKILL leaves them nothing to write for the rm -rf; nothing after reads the table.
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1
   rm -rf "$work"

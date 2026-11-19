@@ -46,7 +46,7 @@ mkdir -p "$fake_bin_dir" "$control_dir"
 broker_stand_in=""
 cleanup() {
   if [ -n "$broker_stand_in" ] && kill -0 "$broker_stand_in" 2>/dev/null; then
-    kill "$broker_stand_in" 2>/dev/null || true
+    kill "$broker_stand_in" 2>/dev/null || true # no-wait: a sleep, holding nothing the rm -rf meets
   fi
   rm -rf "$temporary_dir"
 }
@@ -209,7 +209,7 @@ run_check() {
   done
   printf '1700000000000' >"${control_dir}/clock"
   if [ -n "$broker_stand_in" ] && kill -0 "$broker_stand_in" 2>/dev/null; then
-    kill "$broker_stand_in" 2>/dev/null || true
+    kill "$broker_stand_in" 2>/dev/null || true # no-wait: the next run is handed a new stand-in
   fi
   sleep 600 &
   broker_stand_in=$!

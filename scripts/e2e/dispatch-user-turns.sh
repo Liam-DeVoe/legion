@@ -94,7 +94,9 @@ cleanup() {
   tm kill-server >/dev/null 2>&1
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  # Waited for, so the next run's refuse_leftovers meets nothing of this one.
+  # shellcheck disable=SC2046 # one pid per word
+  kill_gone KILL 10 $(run_processes) || true
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
   [ -n "$ok" ] || echo "dispatch user turns e2e: FAIL (check $check)"

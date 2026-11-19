@@ -43,24 +43,26 @@ take_box_login_lock() {
   printf '%s %s\n' "$$" "$(ps -o args= -p "$$" 2>/dev/null || echo "$0")" >"$file"
 }
 
+# lib/wait-gone.sh, beside this file, holds the wait below.
+# shellcheck source-path=SCRIPTDIR source=wait-gone.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/wait-gone.sh"
+
 # box_login_stop_grace is how long stop_box_login_processes waits, in seconds.
 box_login_stop_grace=10
 # stop_box_login_processes PID… — SIGTERM to every PID, a wait of at most box_login_stop_grace
-# seconds for all of them to exit, then SIGKILL to those still alive. A pane's Oh My Pi in the
-# middle of a token refresh gets the time to write the rotated token back to the operator's
+# seconds for all of them to exit, then SIGKILL to those still alive and a wait of at most 10 s for
+# them to leave the process table (lib/wait-gone.sh), naming any still there. A pane's Oh My Pi in
+# the middle of a token refresh gets the time to write the rotated token back to the operator's
 # database before it goes; a plain SIGKILL could leave the database with a refresh token that is
-# already spent. Never fails.
+# already spent. Each pane holds the box-login lock it inherited until its exit has finished, so the
+# next box-login run's take_box_login_lock meets one that SIGKILL has not finished ending. Never
+# fails.
 stop_box_login_processes() {
-  local pid i alive
-  [ $# -gt 0 ] || return 0
-  kill -TERM "$@" 2>/dev/null || true
-  for ((i = 0; i < box_login_stop_grace * 5; i++)); do
-    alive=()
-    for pid in "$@"; do kill -0 "$pid" 2>/dev/null && alive+=("$pid"); done
-    [ "${#alive[@]}" -gt 0 ] || return 0
-    sleep 0.2
-  done
-  kill -KILL "${alive[@]}" 2>/dev/null || true
+  local pids=("$@")
+  [ "${#pids[@]}" -gt 0 ] || return 0
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  wait_gone "$box_login_stop_grace" "${pids[@]}" && return 0
+  kill_gone KILL 10 "${wait_gone_left[@]}" || true
   return 0
 }
 

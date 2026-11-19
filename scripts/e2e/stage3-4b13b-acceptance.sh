@@ -164,6 +164,7 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "${instructor_pid:-}"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
+  # no-wait: the workspace is kept, and nothing after reads the table or binds a port of theirs.
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
   collect_transcripts
   rm -rf "$work/model-gateway-cache" || true
@@ -302,6 +303,7 @@ start_daemon() {
   await_start daemon "$daemon_pid" 180 "the Go daemon to answer /healthz" \
     curl -fsS --max-time 5 "http://127.0.0.1:$port_daemon/healthz"
 }
+# no-wait: stop_pid, on the same line, sends TERM again and waits for the daemon to go.
 stop_daemon() { kill -TERM "$daemon_pid" 2>/dev/null || true; stop_pid "$daemon_pid"; daemon_pid=; }
 
 claim_session_file() {
@@ -1155,7 +1157,10 @@ stop_pid "$bridge_pid"; bridge_pid=
 stop_pid "${instructor_pid:-}"; instructor_pid=
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 stop_pid "$nats_pid"; nats_pid=
-for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+# Waited for: the read of the process table on the next line would otherwise meet a process SIGKILL
+# has not finished ending.
+# shellcheck disable=SC2046 # one pid per word
+kill_gone KILL 10 $(run_processes) || true
 [ -z "$(run_processes)" ] || fail "a proof process remains"
 pass
 

@@ -29,6 +29,7 @@ stop_servers() {
 dispatch_pid=""
 cleanup() {
   stop_servers
+  # no-wait: the fake Dispatch takes TERM at its default and answers no request at exit.
   [[ -z "$dispatch_pid" ]] || kill "$dispatch_pid" 2>/dev/null || true
   rm -rf "$temporary_dir"
 }

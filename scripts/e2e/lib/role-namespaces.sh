@@ -92,4 +92,5 @@ done
 [ -n "$shim" ] || { echo "role-init $init runs no worker-shim" >&2; exit 1; }
 group=$(sed "s/.*) //" "$proc/$shim/stat" | cut -d" " -f3)
 [ "$group" = "$shim" ] || { echo "the shim $shim of role-init $init is in process group $group, not its own" >&2; exit 1; }
+# no-wait: the last act; the caller waits, bounded, for the daemon to see the generation end.
 kill -s KILL -- "-$group"'

@@ -209,7 +209,10 @@ cleanup() {
     unlink_box_login_db "$profile_agent"
   fi
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  # Waited for, so the next run's refuse_leftovers, and under box-login its lock, meet nothing of
+  # this one.
+  # shellcheck disable=SC2046 # one pid per word
+  kill_gone KILL 10 $(run_processes) || true
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts
   close_unpassed_run_pull_requests
@@ -1252,7 +1255,7 @@ restart_scenarios() {
   # The same session in the same process incarnation is what "no phase restarted" means; the claim's
   # turn state (working, idle) may change across the restart as the agent finishes a turn.
   before_restart=$(daemon_state | jq -c --arg issue "$restart_issue" '.issues[$issue].workers.implementer.claim | {session, incarnation: (.locator.incarnation // "")}')
-  kill -TERM "$daemon_pid"
+  kill -TERM "$daemon_pid" # no-wait: stop_pid, next, sends TERM again and waits for it to go
   stop_pid "$daemon_pid"
   daemon_pid=
   # While the daemon is down, a human board write becomes a durable Dispatch event that the restored
@@ -1451,7 +1454,10 @@ if [ "$model_route" = box-login ]; then
 fi
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
-for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+# Waited for: the read of the process table below would otherwise meet a process SIGKILL has not
+# finished ending.
+# shellcheck disable=SC2046 # one pid per word
+kill_gone KILL 10 $(run_processes) || true
 [ "$(docker ps -aq --filter "name=^/$pg_container$" --filter "name=^/$nats_container$")" = "" ] || fail "a proof container remains"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" has-session 2>/dev/null && fail "the proof tmux server remains"
 [ -z "$(run_processes)" ] || fail "a proof process remains"

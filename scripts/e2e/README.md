@@ -729,7 +729,7 @@ Every wait is bounded and names what it waited for;
 a failed assertion prints `FAIL <check>: <why>` and exits 1, and any other failing command names the check it ended.
 A failed run also [notes](#libmodel-gateway-unservedsh) each agent that could have failed that check for want of a model key, and still exits 1.
 The `EXIT` trap — on a pass, a failure, or an interrupt
-— stops both daemons (SIGKILL after 10 s), under `box-login` gives every process of the run SIGTERM and up to 10 s and removes the profile's `agent.db` link, kills both private tmux servers, stops the listener, SIGKILLs any process still naming the work directory in its command line or working directory, removes both containers and the OMP profile, and removes the work directory when the run passed (keeping it, with `transcript.log` (the whole run), `daemon.log`, `deadline.log`, `listener.log`, the model key command's log and each refusal's log, when it did not).
+— stops both daemons (SIGKILL after 10 s), under `box-login` gives every process of the run SIGTERM and up to 10 s and removes the profile's `agent.db` link, kills both private tmux servers, stops the listener, SIGKILLs any process still naming the work directory in its command line or working directory and waits up to 10 s for each to leave the process table ([`lib/wait-gone.sh`](#libwait-gonesh)), removes both containers and the OMP profile, and removes the work directory when the run passed (keeping it, with `transcript.log` (the whole run), `daemon.log`, `deadline.log`, `listener.log`, the model key command's log and each refusal's log, when it did not).
 The trap still runs when whoever reads the run's output goes first, for example a supervised launcher's own `tee` stopped with the run, and a stop follows:
 the run's output goes through [`lib/transcript.sh`](#libtranscriptsh)'s `tee`, which outlives the reader.
 The transcript is in the work directory, whose processes the teardown kills by path, so the script opens it on fd 8 and calls `transcript_to /dev/fd/8`.
@@ -3630,7 +3630,9 @@ What the run touches, and nothing else:
   The boot refusals exit before any bind and get none.
 
 After any exit — pass, failure, or an interrupt
-— the `EXIT` trap signals both binaries and removes both containers; `docker ps -a --filter name=verifiers-e2e` comes back empty.
+— the `EXIT` trap gives both binaries SIGTERM and waits up to 30 s for each to leave the process table, then SIGKILLs one still there and waits 10 s more, naming it ([`lib/wait-gone.sh`](#libwait-gonesh)).
+The next run's first step removes `/tmp/verifiers-e2e`, which a binary still draining would go on writing into.
+The trap then removes both containers; `docker ps -a --filter name=verifiers-e2e` comes back empty.
 
 ### No raw token is printed
 
@@ -5591,6 +5593,34 @@ read_port_file "$work/dispatch.port" "$server_pid" port || waited=$?
 It prints nothing, so each caller words its own failure:
 it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 after `port_file_seconds` (30).
 
+## lib/wait-gone.sh
+
+The one wait for a process a script has signalled, before a later step binds its port, takes its lock, reads a file it writes, removes its directory or reads the process table.
+[`lib/rig.sh`](#librigsh) (so its `stop_pid` and every stage proof's teardown sweep), [`lib/box-login.sh`](#libbox-loginsh), `stage2-tmux-supervision.sh`, `verifiers-staging-token.sh`, and `packages/envoy/scripts/airlock-check.sh`, `callout-check.sh` and `dev-stack.test.sh` source it.
+Sourced, never run; it needs nothing of its caller's.
+
+```sh
+. "$root/scripts/e2e/lib/wait-gone.sh"
+kill_gone KILL 10 $(run_processes) || true     # a teardown sweep
+```
+
+A signal ends nothing by itself.
+A process given SIGTERM goes on until its handler has run, and a server's handler drains first.
+One given SIGKILL keeps its port, its descriptors (an inherited lock among them) and its working directory until its exit has finished, which for a process holding a few GiB takes most of a second on a busy devbox, and its pid stays in the process table until its parent reaps it.
+
+- `wait_gone SECONDS TARGET…`
+
+  Returns 0 once every TARGET, a pid or `-PGID` for every process of that group, has left the process table, and 1 once the clock has passed SECONDS whole seconds since the call, so never sooner.
+  A pid counts as gone once `/proc` holds no process of that pid that started when the first read found it, so a pid the kernel hands a new process during the wait is not taken for the old one.
+  It prints nothing; the targets still there are left in the array `wait_gone_left`, for the caller to name.
+
+- `kill_gone SIGNAL SECONDS TARGET…`
+
+  Sends SIGNAL to every TARGET, one already gone being no failure, and waits for them with `wait_gone`.
+  Each one still there at the bound is named on stderr with its command line, and it returns 1.
+
+A signal that needs no wait says why on its own line, or in the comment block right above its command, as `# no-wait: <why>`: the end of a script with nothing after it that the process could disturb, a process another line already waits for, or a process whose end is itself what the check measures.
+
 ## lib/built-from.sh
 
 Prints what a stage proof ran, so a run can be tied to a commit after its scratch directory, and the binary in it, are gone.
@@ -6013,7 +6043,8 @@ A taken lock fails at once, naming the holder the file records:
 `another box-login proof holds <file>: pid <pid> (<command>); one box-login proof runs at a time`, or that the pid has exited and a process it started still holds the lock.
 Every pane of a box-login run shares the operator's login database; one run at a time keeps the load on that login bounded and each run's evidence its own.
 
-`stop_box_login_processes PID…` sends SIGTERM to every pid, waits at most `box_login_stop_grace` (10) seconds for all of them to exit, then SIGKILLs only those still alive, so a pane in the middle of a token refresh can write the rotated token back before it goes.
+`stop_box_login_processes PID…` sends SIGTERM to every pid, waits at most `box_login_stop_grace` (10) seconds for all of them to exit, then SIGKILLs only those still alive and waits up to 10 s more for them to leave the process table ([`lib/wait-gone.sh`](#libwait-gonesh)), naming any still there, so a pane in the middle of a token refresh can write the rotated token back before it goes.
+A pane holds the box-login lock it inherited until its exit has finished, so the wait is what lets the next box-login run take the lock at once.
 `unlink_box_login_db
 AGENT_DIR` removes `AGENT_DIR/agent.db` when it is a symlink, the link itself and never what it names;
 the stages call it once the run's processes are gone, since a process that opened the database again after the link went would make a fresh database of its own in the profile.
@@ -6198,7 +6229,7 @@ Each item below names a function, then what it does.
 
 - `stop_pid PID`
 
-  TERM, then KILL after 10 s; best effort, so a failed cleanup never hides the check that failed.
+  TERM, up to 10 s for the process to leave the process table, then KILL and up to 10 s more ([`lib/wait-gone.sh`](#libwait-gonesh)), naming one still there; best effort, so a failed cleanup never hides the check that failed.
   An empty PID does nothing; a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line, since `kill 0` signals the caller's whole process group
 
 - `stop_tree PID`

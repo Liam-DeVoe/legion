@@ -289,8 +289,10 @@ stop_instance() {
   local waited=0
   [[ -n "$instance_pid" ]] || return 0
   if [[ -n "$instance_group" ]]; then
+    # no-wait: the loop below polls the group until it is gone, up to 30 s, before any KILL.
     kill -TERM -"$instance_group" 2>/dev/null || return 0
   else
+    # no-wait: the loop below polls the pid until it is gone, up to 30 s, before any KILL.
     kill -TERM "$instance_pid" 2>/dev/null || return 0
   fi
   while ((waited < 60)); do
@@ -299,8 +301,10 @@ stop_instance() {
     waited=$((waited + 1))
   done
   if [[ -n "$instance_group" ]]; then
+    # no-wait: the cleanup's last steps; SIGKILL leaves the group nothing to write for its rm -rf.
     kill -KILL -"$instance_group" 2>/dev/null || true
   else
+    # no-wait: the cleanup's last steps; SIGKILL leaves the pid nothing to write for its rm -rf.
     kill -KILL "$instance_pid" 2>/dev/null || true
   fi
 }

@@ -101,6 +101,11 @@ until_true() {
 # shellcheck source-path=SCRIPTDIR source=port-file.sh
 . "$root/scripts/e2e/lib/port-file.sh"
 
+# lib/wait-gone.sh holds wait_gone and kill_gone, the wait for a process the run has signalled to
+# leave the process table, which stop_pid and every stage's teardown sweep run.
+# shellcheck source-path=SCRIPTDIR source=wait-gone.sh
+. "$root/scripts/e2e/lib/wait-gone.sh"
+
 # await_port_file NAME FILE VAR waits, bounded (read_port_file, lib/port-file.sh), for FILE, the
 # port file held-port.py writes before it runs the service NAME, while NAME's process (<NAME>_pid)
 # lives, and assigns VAR its port. The locals' names are ones no caller passes.
@@ -267,17 +272,20 @@ signalable() {
   return 1
 }
 
-# stop_pid is intentionally best effort: a failed cleanup must never obscure the check that failed.
+# stop_pid PID ends PID: SIGTERM, up to 10 s for it to leave the process table, then SIGKILL and up
+# to 10 s more (wait_gone and kill_gone, lib/wait-gone.sh). A caller restarts a service on the same
+# fixed port next (stage4b's restart_daemon, whose start_daemon refuses a port still held), drops a
+# database the process was connected to, or reads the process table, and a process SIGKILL has not
+# finished ending still holds its port, its connections and its pid. One still there at the bound
+# is named on stderr. It is intentionally best effort and returns 0: a failed cleanup must never
+# obscure the check that failed.
 stop_pid() {
-  local pid=${1:-} i
+  local pid=${1:-}
   [ -n "$pid" ] || return 0
   signalable "$pid" || return 0
   kill -TERM "$pid" 2>/dev/null || return 0
-  for i in $(seq 1 50); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 0.2
-  done
-  kill -KILL "$pid" 2>/dev/null || true
+  wait_gone 10 "$pid" && return 0
+  kill_gone KILL 10 "$pid" || true
   return 0
 }
 
@@ -296,6 +304,8 @@ stop_tree() {
   [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$parent" ] || return 0
   kill -STOP "$pid" 2>/dev/null || return 0
   for child in $(pgrep -P "$pid" || true); do stop_tree "$child" "$pid"; done
+  # no-wait: the loop and its kubectl, jq and sleep hold no port, lock or file a later step reads;
+  # one that run_processes names is ended again, and waited for, by the teardown's sweep.
   kill -KILL "$pid" 2>/dev/null || true
 }
 

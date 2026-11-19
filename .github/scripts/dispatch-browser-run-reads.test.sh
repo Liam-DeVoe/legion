@@ -73,6 +73,7 @@ calls=\$(find "$work/calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/calls/call.\$calls"
 if [ -f "$work/kill-wrapper.\$calls" ]; then
   [ ! -f "$work/stderr.\$calls" ] || cat "$work/stderr.\$calls" >&2
+  # no-wait: the wrapper is the script's own child; the script reads its end after its own wait.
   if ! kill -9 "\$(awk '{print \$4}' "/proc/\$PPID/stat")"; then
     echo "dispatch-browser-run-reads.test.sh could not stage a killed wrapper: the kill of" \
       "the wrapper this stand-in was run by failed, so what follows is this harness failing" \

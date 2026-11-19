@@ -133,16 +133,16 @@ until_true() {
 
 # ---- cleanup: never fails, leaves nothing of the run behind ---------------------------------------
 
-# stop_pid PID: SIGTERM, a bounded wait, then SIGKILL. Never fails.
+# stop_pid PID: SIGTERM, up to 10 s for PID to leave the process table, then SIGKILL and up to 10 s
+# more, naming it when it is still there (wait_gone and kill_gone, lib/wait-gone.sh, which
+# lib/box-login.sh sources above): the next run's refuse_leftovers, and under box-login its lock,
+# read what a process SIGKILL has not finished ending still holds. Never fails.
 stop_pid() {
-  local pid=$1 i
+  local pid=$1
   [ -n "$pid" ] || return 0
   kill -TERM "$pid" 2>/dev/null || return 0
-  for i in $(seq 1 50); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 0.2
-  done
-  kill -KILL "$pid" 2>/dev/null || true
+  wait_gone 10 "$pid" && return 0
+  kill_gone KILL 10 "$pid" || true
   return 0
 }
 # run_processes: every process of this run still alive — any whose command line names the work
@@ -188,7 +188,8 @@ cleanup() {
     TMUX_TMPDIR=$work/tmux tmux -L "legion-$p" kill-server >/dev/null 2>&1 || true
   done
   stop_pid "$listener_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  # shellcheck disable=SC2046 # one pid per word
+  kill_gone KILL 10 $(run_processes) || true
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1 || true
   rm -rf "$work/model-gateway-cache" || true
   if [ -n "${ok:-}" ]; then
@@ -286,7 +287,7 @@ stop_daemon() {
   for i in $(seq 1 100); do
     kill -0 "$pid" 2>/dev/null || break
     [ "$i" = 100 ] && {
-      kill -KILL "$pid" 2>/dev/null || true
+      kill_gone KILL 10 "$pid" || true
       fail "the daemon ignored $2 for 20s (SIGKILLed)"
     }
     sleep 0.2
@@ -785,7 +786,7 @@ before1=$(claim_json "$c1")
 before2=$(claim_json "$c2")
 panes_before=$(panes)
 boots_before=$(legion state --json --port "$port" | jq -r .daemon.boots)
-kill -TERM "$daemon_pid"
+kill -TERM "$daemon_pid" # no-wait: stop_daemon, next, polls it and then waits for it to exit
 stop_daemon "$daemon_pid" SIGTERM
 [ "$(panes)" = "$panes_before" ] || fail "the panes changed while the daemon was down"
 start_daemon

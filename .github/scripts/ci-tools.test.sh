@@ -79,6 +79,8 @@ repository=$(cd "$script_dir/../.." && pwd)
 helper="$script_dir/ci-tools.sh"
 work=$(mktemp -d)
 servers=()
+# no-wait: the origins take TERM at its default and write only while answering a request, and
+# none is in flight at exit, so the rm -rf meets no new file; their ports are the kernel's choice.
 trap 'for server in ${servers[@]+"${servers[@]}"}; do kill "$server" 2>/dev/null || true; done; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
