@@ -890,6 +890,21 @@ export function inboundUnavailableNoticeText(why: string): string {
   return noticeText(INBOUND_UNAVAILABLE_NOTICE, { error: why });
 }
 
+/**
+ * The notice a session that was told its inbound is unavailable gets once a registration is
+ * accepted again: without it the outage notice is the last word the session has, and a session
+ * that recovered a few seconds later reads itself as deaf for its life. The event has no fact
+ * beyond its kind, so the notice states only its kind. The step its reader takes is in
+ * `envoy_inbox`'s description (`tool-contract.ts`).
+ */
+export const INBOUND_RESTORED_NOTICE = noticeKind("envoy", "Envoy inbound restored", []);
+
+/** The inbound-restored notice, built once for every host. Each host shows it where it shows a
+ *  gap notice. */
+export function inboundRestoredNoticeText(): string {
+  return noticeText(INBOUND_RESTORED_NOTICE, {});
+}
+
 /** One session's outage report (`inboundUnavailable`). */
 export interface InboundUnavailable {
   /**
@@ -897,19 +912,25 @@ export interface InboundUnavailable {
    * this outage already told it.
    */
   refused(error: unknown): void;
-  /** A registration was accepted: the next outage tells the session again. */
+  /** A registration was accepted: ends the outage, telling the session so through the host's
+   *  `restored` when it was told of the outage, and the next outage tells the session again. */
   accepted(): void;
 }
 
 /**
- * Says once per outage that the session receives nothing. The listener refuses a registration it
- * can give no consumer, and the host registers again at every heartbeat, so a host that told the
- * session each time would tell it every tick for as long as the outage lasts; one that never told
- * it again would leave a second outage silent. `tell` takes the listener's own message
- * (`messageFor`), which each host words with `inboundUnavailableNoticeText` and shows where it
- * shows a gap notice.
+ * Says once per outage that the session receives nothing, and that it receives again once a
+ * registration is accepted. The listener refuses a registration it can give no consumer, and the
+ * host registers again at every heartbeat, so a host that told the session each time would tell
+ * it every tick for as long as the outage lasts; one that never told it again would leave a second
+ * outage silent; and one that never said the outage ended would leave the session believing it
+ * deaf after it recovered. `tell` takes the listener's own message (`messageFor`), which each host
+ * words with `inboundUnavailableNoticeText`, and `restored` is worded with
+ * `inboundRestoredNoticeText`; each host shows both where it shows a gap notice.
  */
-export function inboundUnavailable(tell: (why: string) => void): InboundUnavailable {
+export function inboundUnavailable(
+  tell: (why: string) => void,
+  restored: () => void
+): InboundUnavailable {
   let told = false;
   return {
     refused(error) {
@@ -918,7 +939,9 @@ export function inboundUnavailable(tell: (why: string) => void): InboundUnavaila
       tell(messageFor(error));
     },
     accepted() {
+      if (!told) return;
       told = false;
+      restored();
     },
   };
 }
@@ -933,6 +956,12 @@ export interface RelayRegistration<Result> {
    * session holds no relay subject (no NATS connection yet, or inbound off for this session).
    */
   readonly relay: RegisteringRelay | undefined;
+  /**
+   * Why the session holds no relay subject when `relay` is undefined, in words a notice may hold
+   * (`natsFailureReason` of the failure of the NATS call that would have opened it); the refusal and
+   * the outage notice name it. Undefined when the host has no failure to name.
+   */
+  readonly relayMissing?: string;
   /** This session's own agent subject, which every registration carries. */
   readonly ownAgentSubject: string;
   /** Every topic the session follows now, filtered by `registrationTopics`. */
@@ -951,6 +980,13 @@ export interface RelayRegistration<Result> {
 }
 
 /**
+ * `registerWithRelay`'s refusal of a session that holds no relay subject, so a host can tell it
+ * from a refusal the listener sent. Its message names why the relay is missing when the host said
+ * (`relayMissing`).
+ */
+export class NoRelaySubjectError extends Error {}
+
+/**
  * One registration, as every host that holds a relay makes it: the topics the listener will
  * store (`registrationTopics`), stamped on the relay before the registration carries them, then
  * sent, with the outage told once whichever way it ends.
@@ -962,6 +998,7 @@ export interface RelayRegistration<Result> {
  */
 export function registerWithRelay<Result>({
   relay,
+  relayMissing,
   ownAgentSubject,
   followed,
   roles,
@@ -970,8 +1007,8 @@ export function registerWithRelay<Result>({
   answered,
 }: RelayRegistration<Result>): Promise<Result> {
   if (relay === undefined) {
-    const refused = new Error(
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing"
+    const refused = new NoRelaySubjectError(
+      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
     );
     outage.refused(refused);
     return Promise.reject(refused);

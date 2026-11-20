@@ -3,7 +3,9 @@ import { noticeProblems } from "@legion/test-fixtures/notice-fields";
 import {
   GAP_NOTICE,
   gapNoticeText,
+  INBOUND_RESTORED_NOTICE,
   INBOUND_UNAVAILABLE_NOTICE,
+  inboundRestoredNoticeText,
   inboundUnavailableNoticeText,
 } from "../consumer-delivery";
 import {
@@ -64,6 +66,12 @@ test("every plugin notice states its fields", () => {
       ],
     },
     {
+      // A notice of no fact but its kind: its two renderings are one text, which holds its kind
+      // line alone.
+      declared: INBOUND_RESTORED_NOTICE,
+      variants: [[inboundRestoredNoticeText(), inboundRestoredNoticeText()]],
+    },
+    {
       declared: MESSAGE_NOT_SHOWN_NOTICE,
       variants: [
         [
@@ -94,4 +102,9 @@ test("every plugin notice states its fields", () => {
   for (const { declared, variants } of renderings) {
     expect(noticeProblems(declared, variants)).toEqual([]);
   }
+});
+
+// The inbound-restored notice declares no field, so its text is its root and its kind line, whole.
+test("the inbound-restored notice states its kind alone", () => {
+  expect(inboundRestoredNoticeText()).toBe("envoy:\n  notice: Envoy inbound restored");
 });

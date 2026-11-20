@@ -5,7 +5,11 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
-import { GAP_NOTICE, INBOUND_UNAVAILABLE_NOTICE } from "../consumer-delivery";
+import {
+  GAP_NOTICE,
+  INBOUND_RESTORED_NOTICE,
+  INBOUND_UNAVAILABLE_NOTICE,
+} from "../consumer-delivery";
 import { MESSAGE_NOT_SHOWN_NOTICE } from "../delivery-ledger";
 import {
   envoyToolSpecs,
@@ -217,6 +221,7 @@ describe("envoyToolSpecs", () => {
         INBOUND_UNAVAILABLE_NOTICE.kind,
         "read live sources until a registration is accepted; what the stream stored arrives then",
       ],
+      ["envoy_inbox", INBOUND_RESTORED_NOTICE.kind, "rely on Envoy messages again"],
       ["envoy_inbox", "unread messages", "read each card above the notice"],
       [
         "envoy_inbox",

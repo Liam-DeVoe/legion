@@ -76,9 +76,9 @@ const TOPIC_GUIDE =
 const ENVOY_NOTICE_STEPS =
   "On notice: messages may be missing, whatever its cause, read the live source of each thing " +
   "you wait on. On notice: Envoy inbound unavailable, read live sources until a registration is " +
-  "accepted; what the stream stored arrives then. On notice: unread messages, read each card " +
-  "above the notice. On notice: message not shown, read it now with the command its read_with " +
-  "names.";
+  "accepted; what the stream stored arrives then. On notice: Envoy inbound restored, rely on " +
+  "Envoy messages again. On notice: unread messages, read each card above the notice. On notice: " +
+  "message not shown, read it now with the command its read_with names.";
 
 export type { SchemaApi, ToolArgumentsShape } from "@legion/contracts";
 
