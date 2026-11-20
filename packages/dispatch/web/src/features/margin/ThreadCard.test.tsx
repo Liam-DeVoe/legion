@@ -1285,3 +1285,63 @@ test("a margin reply's quote of a passage of an edited post marks the post as ed
     view.unmount();
   }
 });
+
+// R3 of dispatch://INFRA-1523 and the architect's ruling of 2026-11-20 05:13Z: an edit kept under a
+// comment its author deleted holds no word of the comment the edit was written over. An edit that
+// adds to the comment's own words, rather than replacing them, keeps those words in its draft, and
+// the card drew them under the deleted line as "Your edit is kept here: Root comment Also Friday."
+// (test round at 869d340e). The comment's words are not drawn anywhere in the card; Discard my edit
+// stays its one action.
+test("an edit that added to a comment deleted since draws none of the comment's words under the deleted line", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
+    blocks: [],
+    indexed: false,
+    item: graphNode({ id: root.id, issue_key: "CORE-1", kind: "comment" }),
+  });
+  const tree = (current: Thread) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <EditableCard
+          actionFailure={undefined}
+          artifactSlug="spec"
+          expanded
+          hovered={false}
+          isClosed={false}
+          onAction={() => {}}
+          onEdit={async () => {}}
+          onRetryAction={() => {}}
+          onToggle={() => {}}
+          owner={{ key: "CORE-1", kind: "issue" }}
+          pendingAction={false}
+          thread={current}
+          viewerLogin="alice"
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(thread()));
+  const card = () => screen.getByTestId(`margin-comment-${root.id}`);
+  try {
+    const [rootEdit] = within(card()).getAllByRole("button", { name: "Edit" });
+    if (rootEdit === undefined) throw new Error("The root comment has no Edit button.");
+    await user.click(rootEdit);
+    const field = screen.getByLabelText("Edit comment");
+    // The positive control: the editor opens on the comment's own words, which the edit keeps.
+    expect(field instanceof HTMLTextAreaElement ? field.value : undefined).toBe(root.body);
+    await user.click(field);
+    await user.keyboard("{Control>}{End}{/Control}");
+    await user.paste(" Also Friday.");
+
+    view.rerender(tree(thread({ root: { comment: deletedRoot, kind: "comment" } })));
+    await within(card()).findByRole("button", { name: "Discard my edit" });
+    expect(card()).toHaveTextContent("Deleted by alice");
+    expect(card()).not.toHaveTextContent(root.body);
+  } finally {
+    view.unmount();
+    commentBlocks.mockRestore();
+  }
+});
