@@ -415,56 +415,95 @@ func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, fact intake.Ha
 	return e.store.PutPhase(ctx, tx, row)
 }
 
-// stopTask stops w's task of issue where it stands, in the caller's transaction: the end of the
-// step the issue stands in is named as end says (nameEnd), which the fact's settle writes, since
-// the stopped task stands in no step (standingStep reads its plan's hold), the task keeps its
-// place and becomes stopped with why (record.Store.StopTask), and the issue is held from the phase
-// that place derives for the stopped task (record.HoldTaskStopped), as a failed claim's hold is
-// written (claimFailed). The hold keeps the task's place (moveTask) and the slot of the phase it is
-// from (record.KeepsSlot reads record.StandsAt), and it writes no Dispatch status, since held has
-// none (PhaseStatus). The process of the step's role is stopped with its session kept (the op
-// step_stop, whose source is the daemon's, said as its reason), except for accepting, whose
-// architect is the owner itself and runs no process of Legion's for the step, and a phase no role
-// works. The task's state is the caller's to have read: a task done or left is no task to stop
-// (StopTask refuses it).
-func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, why, said string, end StepEnd) error {
+// stopTask stops w's task of issue where it stands, in the caller's transaction, or answers why
+// the task cannot stop there (stopRefusal) and writes nothing. Every stop of a task comes here, the
+// owner's (taskStopped) and a failed step's with no step to take its work back (stopUnreturned), so
+// no stop writes a hold the record cannot hold. A run with no plan rows stands before its first step,
+// the one place taskStopped stops such a run: once the stop is judged, the plan that step would walk
+// is settled (planFirstStep), the newest plan its owner gave or the project's default steps, and the
+// task stops there, standing stopped before its first step (waitForFirstStep brings it back).
+//
+// The stop itself: the end of the step the issue stands in is named as end says (nameEnd), which
+// the fact's settle writes, since the stopped task stands in no step (standingStep reads its plan's
+// hold), the task keeps its place and becomes stopped with why (record.Store.StopTask), and the
+// issue is held from the phase that place derives for the stopped task (record.HoldTaskStopped), as
+// a failed claim's hold is written (claimFailed). The hold keeps the task's place (moveTask) and the
+// slot of the phase it is from (record.KeepsSlot reads record.StandsAt), and it writes no Dispatch
+// status, since held has none (PhaseStatus). The process of the step's role is stopped with its
+// session kept (the op step_stop, whose source is the daemon's, said as its reason), except for
+// accepting, whose architect is the owner itself and runs no process of Legion's for the step, and a
+// phase no role works. The task's state is the caller's to have read: a task done or left is no task
+// to stop (StopTask refuses it).
+func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, why, said string, end StepEnd) (*intake.Refusal, error) {
+	if refusal := stopRefusal(issue, w.Task); refusal != nil {
+		return refusal, nil
+	}
+	if !w.Stored {
+		if err := e.planFirstStep(ctx, tx, issue); err != nil {
+			return nil, err
+		}
+		var err error
+		if w, err = e.walk(ctx, tx, issue); err != nil {
+			return nil, err
+		}
+	}
 	from := record.StandsAt(issue)
 	if step, ok := standingStep(w, issue); ok {
 		if err := e.nameEnd(ctx, issue, step, end); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := e.store.StopTask(ctx, tx, issue.Key, issue.Generation, w.Task, why); err != nil {
-		return err
+		return nil, err
 	}
 	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from, Reason: record.HoldTaskStopped}
 	if err := e.WriteIssue(ctx, tx, issue); err != nil {
-		return err
+		return nil, err
 	}
 	// The stop takes the issue into held, which is a phase change and so a movement (the rule in
 	// dispatchIssue), as a failed claim's hold is.
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
-		return err
+		return nil, err
 	}
 	e.logOnCommit(ctx, "workflow: a task is stopped", "issue", issue.Key, "tree", issue.Tree, "task", w.Task, "from", from, "reason", why)
 	role := phase.RoleFor(from)
 	if role == "" || role == claim.RoleArchitect {
-		return nil
+		return nil, nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: said})
+	return nil, e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: said})
+}
+
+// stopRefusal is the refusal of a stop of task of issue where issue stands, and nil where the
+// stop's hold can stand there. A root that waits on a person before its first step stands in
+// awaiting_person, which no hold is from: the issues table refuses such a hold
+// (issues_held_from_check), and a wait's columns outside awaiting_person (issues_awaiting_shape).
+// So its task cannot stop there, and the owner changes it with a later version of its plan, or
+// stops it once the person has answered (TaskAwaitsPerson). Every other place an issue of the
+// workflow stands is one a hold is from, held itself among them, since a held issue's place is
+// the phase its hold is from (record.StandsAt).
+func stopRefusal(issue record.Issue, task string) *intake.Refusal {
+	if record.StandsAt(issue) == phase.AwaitingPerson {
+		return intake.TaskAwaitsPerson(issue.Key, task)
+	}
+	return nil
 }
 
 // stopUnreturned stops w's task of issue, whose step standing in issue.Phase failed with no step
 // before it of the type implementation to take its work back (returnTarget), as stop_task
 // stops it (stopTask), its step ending as end says; and tells the task's owner once, in a notice
 // of kind task-stopped whose reason names the task and the step. No return happened, so no pass,
-// pair, round or hook is counted.
+// pair, round or hook is counted. A failed step stands in the phase of its role, where a hold
+// always stands, so the stop's refusal is an error.
 func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, end StepEnd) error {
 	place, _ := w.PlaceOf(issue.Phase)
 	why := fmt.Sprintf("step %d (%s) failed and no earlier step of the type implementation can take the work", place.Position, w.Steps[place.Position-1].Role)
 	said := fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)
-	if err := e.stopTask(ctx, tx, issue, w, why, said, end); err != nil {
+	refusal, err := e.stopTask(ctx, tx, issue, w, why, said, end)
+	if err != nil {
 		return err
+	}
+	if refusal != nil {
+		return fmt.Errorf("stop task %s of %s after its failed step: %s", w.Task, issue.Key, refusal.Message)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.Role(w.Steps[place.Position-1].Role), Phase: issue.Phase, Reason: said})
 }
@@ -484,16 +523,16 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // took plans, has no task to stop, and a task the plan does not hold is none either (TaskNotFound,
 // which lists the plan's tasks only where it has some): an issue with no plan rows changes
 // nothing. An issue that stands before its first step has no plan rows yet, and its task is one
-// that is not done: the stop settles the plan that step would walk (planFirstStep), the newest
-// plan its owner gave or the project's default steps, then stops its task there, which stands
-// stopped before its first step (waitForFirstStep brings it back). A task that plan does not hold
-// is refused first, naming the plan's tasks, and nothing is written. A stop of a task already
-// stopped changes nothing and is no refusal, so a retry of a stop already applied finds it stopped.
-// A task that is done, or left the workflow with its issue before it was done, has nothing left to
-// stop (TaskDone, TaskLeft): each is refused here, before the store's stop, which refuses both
-// states itself and would fail the whole fact, and before the linger a root's leave begins, since
-// the task's own state is the truer answer. A stop in a lingering tree changes nothing and says
-// so.
+// that is not done: its task is one of the plan that step would walk, the newest plan its owner
+// gave or the project's default steps, and stopTask settles that plan as it stops the task. A task
+// that plan does not hold is refused first, naming the plan's tasks, and nothing is written. A
+// stop of a task already stopped changes nothing and is no refusal, so a retry of a stop already
+// applied finds it stopped. A task that is done, or left the workflow with its issue before it was
+// done, has nothing left to stop (TaskDone, TaskLeft): each is refused here, before the store's
+// stop, which refuses both states itself and would fail the whole fact, and before the linger a
+// root's leave begins, since the task's own state is the truer answer. A stop in a lingering tree
+// changes nothing and says so, and so does a stop where its hold cannot stand: a root that waits on
+// a person before its first step (stopRefusal).
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -506,13 +545,12 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// settle says the stop settles the plan the issue's first step would walk, waiting, which is
-	// nil for the project's default steps.
-	settle := !w.Stored && beforeItsWork(*issue)
-	var waiting *record.StoredPlan
 	switch {
-	case settle:
-		if waiting, err = e.store.OwnersNewestPlan(ctx, tx, *issue); err != nil {
+	case !w.Stored && beforeItsWork(*issue):
+		// The stop's task is one of the plan the issue's first step would walk: the newest its
+		// owner gave, or the task default of the project's default steps.
+		waiting, err := e.store.OwnersNewestPlan(ctx, tx, *issue)
+		if err != nil {
 			return intake.Result{}, err
 		}
 		tasks := []string{defaultTask}
@@ -544,22 +582,11 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the owner's stop of task %s", w.Task)), nil
 	}
-	if settle {
-		earlier, err := e.passOverEarlierOwners(ctx, tx, *issue)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		if err := e.takeFirstPlan(ctx, tx, *issue, waiting, earlier); err != nil {
-			return intake.Result{}, err
-		}
-		if w, err = e.walk(ctx, tx, *issue); err != nil {
-			return intake.Result{}, err
-		}
-	}
 	from := record.StandsAt(*issue)
 	why := fmt.Sprintf("task %s of %s was stopped by its owner", w.Task, issue.Key)
-	if err := e.stopTask(ctx, tx, *issue, w, why, why, stepStopped); err != nil {
-		return intake.Result{}, err
+	refusal, err := e.stopTask(ctx, tx, *issue, w, why, why, stepStopped)
+	if err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: phase.RoleFor(from), Phase: from,
 		StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)})
@@ -649,18 +676,16 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // which its log line names. It runs where restartTask runs for a task whose work ran. Nothing of the
 // task ran, so it goes back the way a task that was never stopped goes into its first step: it waits
 // at no act again with its stop's reason gone (moveTask), the hold is cleared, and the issue stands
-// where the hold is from, admitted, or awaiting a person for a root that waits on one before its
-// first step (enterAwaiting). Nothing starts here: the design gate, the waiting line and admission
-// decide when the first step starts (StartFirstPhase), and no count is raised, since no run of the
-// task ended. Neither phase has a Dispatch status of its own (PhaseStatus), so none is written. The
-// issue leaves held, which is a movement (the rule in dispatchIssue). The act is task_released,
-// which the log line names.
+// in admitted, where the hold is from: no stop holds a root that waits on a person (stopRefusal).
+// Nothing starts here: the design gate, the waiting line and admission decide when the first step
+// starts (StartFirstPhase), and no count is raised, since no run of the task ended. Admitted has no
+// Dispatch status of its own (PhaseStatus), so none is written. The issue leaves held, which is a
+// movement (the rule in dispatchIssue). The act is task_released, which the log line names.
 func (e *Engine) waitForFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string) error {
-	from := record.StandsAt(issue)
 	if err := e.moveTask(ctx, tx, &issue, &w, phase.Admitted, record.TaskWaiting); err != nil {
 		return err
 	}
-	issue.Phase, issue.Hold = from, nil
+	issue.Hold = nil
 	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return err
 	}
@@ -668,7 +693,7 @@ func (e *Engine) waitForFirstStep(ctx context.Context, tx pgx.Tx, issue record.I
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a task stopped before its first step waits for that step again", "issue", issue.Key, "tree", issue.Tree,
-		"task", w.Task, "act", "task_released", "to", from, "reason", reason)
+		"task", w.Task, "act", "task_released", "to", issue.Phase, "reason", reason)
 	return nil
 }
 

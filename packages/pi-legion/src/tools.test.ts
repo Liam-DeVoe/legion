@@ -253,6 +253,7 @@ const STOP_TASK_TERMS = {
     "(TREE_LINGERING)",
     "(ISSUE_OUTSIDE_TREE)",
     "(TASK_STALE_GENERATION)",
+    "(TASK_AWAITING_PERSON",
   ],
 } as const;
 

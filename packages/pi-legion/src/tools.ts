@@ -473,10 +473,11 @@ export function createLegionTool(deps: {
         "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). On an " +
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
-        "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE) and a stop in a tree that lingers after it left the " +
-        "workflow (TREE_LINGERING). It also refuses, changing nothing, a stop of an issue outside your tree or one that left it " +
-        "(ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion applied it: read the issue again " +
-        "(TASK_STALE_GENERATION). " +
+        "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
+        "workflow (TREE_LINGERING) and a stop of a root that waits on a person before its first step (TASK_AWAITING_PERSON: change its " +
+        "task with a later version of the plan, or stop it once the person has answered). It also refuses, changing nothing, a stop of " +
+        "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
+        "applied it: read the issue again (TASK_STALE_GENERATION). " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro. The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +

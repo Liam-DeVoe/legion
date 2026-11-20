@@ -152,7 +152,8 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return engine.stopTask(ctx, tx, issue, w, stopsBy, stopsBy, stepStopped)
+				_, err = engine.stopTask(ctx, tx, issue, w, stopsBy, stopsBy, stepStopped)
+				return err
 			},
 			refusal: "put LEGION-208 at generation 1: it stands in held from implementing, and its task a is stopped at {Kind:step Position:3}, which stands in reviewing",
 		},
@@ -162,6 +163,17 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 				return engine.enterAwaiting(ctx, tx, issue, record.Awaiting{Ask: "ask-1"}, "the architect asked a person")
 			},
 			refusal: "put LEGION-208 at generation 1: it stands in awaiting_person, and its task a is running at {Kind:step Position:1}, which stands in implementing",
+		},
+		{
+			// No writer of the workflow holds an issue from awaiting_person (stopRefusal), and the
+			// issues table refuses such a hold: WriteIssue refuses it first, in the words of every
+			// other refusal here.
+			name: "a hold from a root's wait on a person", at: phase.Admitted, generation: 1, place: record.TaskPlace{},
+			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
+				issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.AwaitingPerson, Reason: record.HoldTaskStopped}
+				return engine.WriteIssue(ctx, tx, issue)
+			},
+			refusal: "put LEGION-208 at generation 1: it stands in held from awaiting_person, and its task a is running at {Kind: Position:0}, which stands in admitted",
 		},
 		{
 			name: "an adopted member parked at its next run (moveIntoTree)", at: phase.Admitted, generation: 2, place: implementing,

@@ -2480,10 +2480,13 @@ package api
 // `404 ISSUE_NOT_FOUND`, `404 ARTIFACT_NOT_ON_ISSUE`, `502 PLAN_UNREADABLE` or
 // `502 DISPATCH_FAILED`. `POST /legion/v1/tasks/stop` (`grantId`, `issue`, `task`) stops one task
 // of the issue and answers 200 `{}`, `404 TASK_NOT_FOUND`, `409 TASK_DONE`, `409 TREE_LINGERING`,
-// `409 TASK_STALE_GENERATION`, `403 ARCHITECT_REQUIRED`, `403 ISSUE_OUTSIDE_TREE` or
-// `404 ISSUE_NOT_FOUND`; on an issue whose first step has not run, the stop first settles the plan
-// that step would walk (the newest plan its owner gave, or the project's default steps) and stops
-// that plan's task, and a task the plan does not hold is refused before anything is written. A
+// `409 TASK_STALE_GENERATION`, `409 TASK_AWAITING_PERSON`, `403 ARCHITECT_REQUIRED`,
+// `403 ISSUE_OUTSIDE_TREE` or `404 ISSUE_NOT_FOUND`; on an issue whose first step has not run, the
+// stop first settles the plan that step would walk (the newest plan its owner gave, or the
+// project's default steps) and stops that plan's task, and a task the plan does not hold is refused
+// before anything is written. A root that waits on a person before its first step is refused
+// `409 TASK_AWAITING_PERSON` with nothing written: its owner changes the task with a later version
+// of the plan, or stops it once the person has answered. A
 // stopped task starts again at its first step on a later version of the plan that changes it
 // (register_plan), or on a root on a person's `todo`; one that never started waits for its gate
 // and its line first, as any task does before its first step. `POST

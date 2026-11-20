@@ -1885,6 +1885,15 @@ func TaskLeft(issue, task string) *Refusal {
 		"task %s of %s left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing.", task, issue)}
 }
 
+// TaskAwaitsPerson is the 409 TASK_AWAITING_PERSON refusal of stop_task for task of issue, a root
+// that waits on a person before its first step (phase.AwaitingPerson): the record holds no hold
+// from that phase, so the task cannot stop there (workflow's stopRefusal). A task that has not
+// started takes a later version of its plan, and the stop is taken once the person has answered.
+func TaskAwaitsPerson(issue, task string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_AWAITING_PERSON", Message: fmt.Sprintf(
+		"%s waits on a person before its first step, and Legion cannot stop task %s there. To change the task, give a later version of the plan with register_plan; to stop it, call stop_task again once the person has answered. This stop changed nothing.", issue, task)}
+}
+
 // RestartOfDoneTask is the 409 TASK_DONE refusal of a restart of task of issue at its first step —
 // a person's todo on a root held for the stopped task, a later version of the plan — where the
 // task is done: nothing of it is left to start, and the code is that of a stop of a done task.

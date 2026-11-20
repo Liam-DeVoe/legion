@@ -2027,8 +2027,10 @@ export const LegionPlanRegisterRequest = z.strictObject({
  * project's default steps. A task the plan does not hold is refused (`TASK_NOT_FOUND`), and so is
  * one that is done (`TASK_DONE`), a stop in a tree that lingers after it left the workflow
  * (`TREE_LINGERING`), a stop of an issue outside the architect's tree or one that left it
- * (`ISSUE_OUTSIDE_TREE`), and a stop of a run of the issue that ended before the daemon applied it
- * (`TASK_STALE_GENERATION`). */
+ * (`ISSUE_OUTSIDE_TREE`), a stop of a run of the issue that ended before the daemon applied it
+ * (`TASK_STALE_GENERATION`), and a stop of a root that waits on a person before its first step
+ * (`TASK_AWAITING_PERSON`), which a later version of the plan changes, or which stops once the
+ * person has answered. Each refusal writes nothing. */
 export const LegionTaskStopRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

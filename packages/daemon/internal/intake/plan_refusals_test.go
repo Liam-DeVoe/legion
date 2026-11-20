@@ -46,6 +46,9 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 			Message: "task a of LEGION-208 is done, so nothing of it is left to stop. This stop changed nothing."}},
 		{"a task that left the workflow with its issue", TaskLeft("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing."}},
+		{"a task of a root that waits on a person before its first step", TaskAwaitsPerson("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_AWAITING_PERSON",
+			Message: "LEGION-208 waits on a person before its first step, and Legion cannot stop task a there. To change the task, give a later version of the plan with register_plan; " +
+				"to stop it, call stop_task again once the person has answered. This stop changed nothing."}},
 		{"a version that changes a task that is done", PlanOfDoneTask("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 is done, so nothing of it is left to change. This plan changed nothing."}},
 		{"a version that changes a task that left the workflow", PlanOfLeftTask("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
