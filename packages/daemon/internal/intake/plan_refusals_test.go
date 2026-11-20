@@ -42,9 +42,9 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 			Message: "the plan Legion runs for LEGION-208 has no task b; its tasks are a. This stop changed nothing."}},
 		{"a task of an issue with no plan rows", TaskNotFound("LEGION-208", "a", nil), Refusal{Status: http.StatusNotFound, Code: "TASK_NOT_FOUND",
 			Message: "LEGION-208 has no plan of tasks in Legion's record, so it has no task a. This stop changed nothing."}},
-		{"a task that is done", TaskDone("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
+		{"a stop of a task that is done", FinishedTask("LEGION-208", "a", record.TaskDone, StopOfTask), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 is done, so nothing of it is left to stop. This stop changed nothing."}},
-		{"a task that left the workflow with its issue", TaskLeft("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
+		{"a stop of a task that left the workflow with its issue", FinishedTask("LEGION-208", "a", record.TaskLeft, StopOfTask), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing."}},
 		{"a task of a root that waits on a person before its first step", TaskAwaitsPerson("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_AWAITING_PERSON",
 			Message: "LEGION-208 waits on a person before its first step, and Legion cannot stop task a there. To change the task, give a later version of the plan with register_plan; " +
@@ -55,10 +55,14 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 		{"a retry of a task a failed step stopped", RetryOfStoppedTask("LEGION-208", "a", "step 2 (tester) failed and no earlier step of the type implementation can take the work"),
 			Refusal{Status: http.StatusConflict, Code: "TASK_STOPPED", Message: "task a of LEGION-208 was stopped: step 2 (tester) failed and no earlier step of the type implementation can take the work; " +
 				"a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing."}},
-		{"a version that changes a task that is done", PlanOfDoneTask("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
+		{"a version that changes a task that is done", FinishedTask("LEGION-208", "a", record.TaskDone, ChangeOfTask), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 is done, so nothing of it is left to change. This plan changed nothing."}},
-		{"a version that changes a task that left the workflow", PlanOfLeftTask("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
+		{"a version that changes a task that left the workflow", FinishedTask("LEGION-208", "a", record.TaskLeft, ChangeOfTask), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to change. This plan changed nothing."}},
+		{"a restart of a task that is done", FinishedTask("LEGION-208", "a", record.TaskDone, RestartOfTask), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
+			Message: "task a of LEGION-208 is done, so nothing of it is left to start again. This restart changed nothing."}},
+		{"a restart of a task that left the workflow", FinishedTask("LEGION-208", "a", record.TaskLeft, RestartOfTask), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
+			Message: "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to start again. This restart changed nothing."}},
 		{"an issue that started before Legion took plans", PlanRefused([]plan.Refusal{StartedBeforePlans("LEGION-208")}), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: LEGION-208 started its work before Legion took plans, " +
 				"so it runs the steps it started with to their end. This plan changed nothing.",
@@ -89,6 +93,15 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 				t.Fatalf("refusal = %+v, want %+v", tc.got, tc.want)
 			}
 		})
+	}
+	// A task that is neither done nor left has its work still before it, so no act on it is
+	// refused TASK_DONE.
+	for _, state := range []string{record.TaskWaiting, record.TaskRunning, record.TaskStopped} {
+		for _, act := range []TaskAct{ChangeOfTask, StopOfTask, RestartOfTask} {
+			if got := FinishedTask("LEGION-208", "a", state, act); got != nil {
+				t.Fatalf("FinishedTask of a task %s = %+v, want no refusal", state, got)
+			}
+		}
 	}
 	// Only a refused plan carries reasons: every other refusal is a code and a sentence, which is
 	// what tells the route to write the plain failure for it.

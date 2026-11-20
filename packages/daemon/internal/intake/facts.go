@@ -1167,7 +1167,7 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
 // (RunningTaskChanged, or StartedBeforePlans for an issue that ran before Legion took plans),
-// PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (PlanOfDoneTask, PlanOfLeftTask),
+// PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
 // generation, the document and the version, so a version refused while its task ran is the same
@@ -1775,21 +1775,6 @@ func PlanDocumentChanged(issue, artifact string) *Refusal {
 		"the plan in force of %s is document %s; give a later version of that document.", issue, artifact)}
 }
 
-// PlanOfDoneTask is the 409 TASK_DONE refusal of a version that changes task of issue, which is
-// done: nothing of it is left to change, and the code is that of a stop of a done task.
-func PlanOfDoneTask(issue, task string) *Refusal {
-	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
-		"task %s of %s is done, so nothing of it is left to change. This plan changed nothing.", task, issue)}
-}
-
-// PlanOfLeftTask is the 409 TASK_DONE refusal of a version that changes task of issue, which left
-// the workflow with its issue before it was done (record.TaskLeft): nothing moves it again, as for
-// a task that is done, and the code is that one's.
-func PlanOfLeftTask(issue, task string) *Refusal {
-	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
-		"task %s of %s left the workflow with its issue before it was done, so nothing of it is left to change. This plan changed nothing.", task, issue)}
-}
-
 // StartedBeforePlans is the reason a plan is refused for issue, which the daemon recorded with no
 // plan rows at its generation and whose work has started: it ran before Legion took plans, and it
 // walks today's line to its end. It names no task, and it does not end with "This release
@@ -1871,18 +1856,51 @@ func TaskNotFound(issue, task string, tasks []string) *Refusal {
 	return &Refusal{Status: 404, Code: "TASK_NOT_FOUND", Message: message}
 }
 
-// TaskDone is the 409 TASK_DONE refusal of stop_task for task of issue, which is done.
-func TaskDone(issue, task string) *Refusal {
-	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
-		"task %s of %s is done, so nothing of it is left to stop. This stop changed nothing.", task, issue)}
+// TaskAct is what a call asks of a task, as its TASK_DONE refusal names it (FinishedTask).
+type TaskAct int
+
+const (
+	// ChangeOfTask is a version of the plan that changes the task (register_plan).
+	ChangeOfTask TaskAct = iota
+	// StopOfTask is the owner's stop of the task (stop_task).
+	StopOfTask
+	// RestartOfTask is a start of the task again at its first step: a person's todo on a root
+	// held for the stopped task, or a later version of the plan that changes the stopped task.
+	RestartOfTask
+)
+
+// words is what act does to a task, as the refusal says nothing of the task is left to do, and the
+// call that changed nothing.
+func (act TaskAct) words() (does, call string) {
+	switch act {
+	case StopOfTask:
+		return "stop", "stop"
+	case RestartOfTask:
+		return "start again", "restart"
+	}
+	return "change", "plan"
 }
 
-// TaskLeft is the 409 TASK_DONE refusal of stop_task for task of issue, which left the workflow
-// with its issue before it was done (record.TaskLeft): nothing starts it again, so there is
-// nothing of it to stop, as for a task that is done, and the code is that one's.
-func TaskLeft(issue, task string) *Refusal {
+// FinishedTask is the 409 TASK_DONE refusal of act on task of issue, whose state is done or left
+// (record.TaskDone, record.TaskLeft), and nil for a task in any other state. A task that is done
+// has nothing of it left, and one that left the workflow with its issue before it was done is
+// never moved again, so each refuses every act with the one code, the code of a stop of a done
+// task. Every refusal of a finished task is made here, so the workflow judges the state once for
+// each act: a version of the plan (versionRefusal), the owner's stop (taskStopped) and a restart
+// (restartTask).
+func FinishedTask(issue, task, state string, act TaskAct) *Refusal {
+	var stands string
+	switch state {
+	case record.TaskDone:
+		stands = "is done"
+	case record.TaskLeft:
+		stands = "left the workflow with its issue before it was done"
+	default:
+		return nil
+	}
+	does, call := act.words()
 	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
-		"task %s of %s left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing.", task, issue)}
+		"task %s of %s %s, so nothing of it is left to %s. This %s changed nothing.", task, issue, stands, does, call)}
 }
 
 // TaskAwaitsPerson is the 409 TASK_AWAITING_PERSON refusal of stop_task for task of issue, a root
@@ -1892,22 +1910,6 @@ func TaskLeft(issue, task string) *Refusal {
 func TaskAwaitsPerson(issue, task string) *Refusal {
 	return &Refusal{Status: 409, Code: "TASK_AWAITING_PERSON", Message: fmt.Sprintf(
 		"%s waits on a person before its first step, and Legion cannot stop task %s there. To change the task, give a later version of the plan with register_plan; to stop it, call stop_task again once the person has answered. This stop changed nothing.", issue, task)}
-}
-
-// RestartOfDoneTask is the 409 TASK_DONE refusal of a restart of task of issue at its first step —
-// a person's todo on a root held for the stopped task, a later version of the plan — where the
-// task is done: nothing of it is left to start, and the code is that of a stop of a done task.
-func RestartOfDoneTask(issue, task string) *Refusal {
-	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
-		"task %s of %s is done, so nothing of it is left to start again. This restart changed nothing.", task, issue)}
-}
-
-// RestartOfLeftTask is the 409 TASK_DONE refusal of a restart of task of issue at its first step
-// where the task left the workflow with its issue before it was done (record.TaskLeft): nothing
-// moves it again, as for a task that is done, and the code is that one's.
-func RestartOfLeftTask(issue, task string) *Refusal {
-	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
-		"task %s of %s left the workflow with its issue before it was done, so nothing of it is left to start again. This restart changed nothing.", task, issue)}
 }
 
 // RetryOfStoppedTask is the 409 TASK_STOPPED refusal of a release of issue's hold — the

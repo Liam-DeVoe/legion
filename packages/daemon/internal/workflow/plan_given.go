@@ -97,13 +97,12 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			if at < 0 {
 				continue
 			}
-			switch state := given.stored.Tasks[at].State; state {
-			case record.TaskRunning:
+			state := given.stored.Tasks[at].State
+			if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
+				return givenVersion{}, refusal, nil
+			}
+			if state == record.TaskRunning {
 				running = append(running, intake.RunningTaskChanged(id))
-			case record.TaskDone:
-				return givenVersion{}, intake.PlanOfDoneTask(fact.Issue, id), nil
-			case record.TaskLeft:
-				return givenVersion{}, intake.PlanOfLeftTask(fact.Issue, id), nil
 			}
 		}
 		if len(running) > 0 {

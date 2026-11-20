@@ -374,7 +374,7 @@ func TestStopTaskRecordsTheOwnersStop(t *testing.T) {
 		t.Fatalf("facts = %#v, want %#v: each stop its own fact", got, want)
 	}
 
-	for _, refusal := range []*intake.Refusal{intake.TaskNotFound("LEGION-208", "b", []string{"a"}), intake.TaskDone("LEGION-208", "a")} {
+	for _, refusal := range []*intake.Refusal{intake.TaskNotFound("LEGION-208", "b", []string{"a"}), intake.FinishedTask("LEGION-208", "a", record.TaskDone, intake.StopOfTask)} {
 		facts.refusal = refusal
 		refusedSaying(t, stopTask(h, architect.grant(t), "LEGION-208", "a"), refusal.Status, refusal.Code, refusal.Message)
 	}
