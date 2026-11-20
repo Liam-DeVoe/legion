@@ -468,6 +468,86 @@ test("a collapsed card draws its root's Copy reference beside its preview, outsi
   }
 });
 
+/** A collapsed card, as its host draws it, whose root holds a web link, once its preview has
+ *  drawn the link; `onToggle` hears each toggle the host makes. */
+async function foldedLinkedCard() {
+  const onToggle = jest.fn();
+  const linked = comment(
+    "root-1",
+    "Read [a page elsewhere](https://elsewhere.test/page) first.",
+    "2026-09-10T00:00:00Z"
+  );
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient()}>
+        <ToggledCard
+          actionFailure={undefined}
+          artifactSlug="spec"
+          folded
+          hovered={false}
+          isClosed={false}
+          onAction={() => {}}
+          onEdit={async () => undefined}
+          onRetryAction={() => {}}
+          onToggle={onToggle}
+          owner={{ key: "CORE-1", kind: "issue" }}
+          pendingAction={false}
+          thread={thread({ replies: [], root: { comment: linked, kind: "comment" } })}
+          viewerLogin="alice"
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const card = screen.getByTestId(`margin-comment-${linked.id}`);
+  const preview = card.querySelector<HTMLElement>('button[aria-expanded="false"]');
+  if (preview === null) throw new Error("The collapsed card draws no preview button.");
+  const link = await waitFor(() => {
+    const drawn = preview.querySelector("a");
+    if (drawn === null) throw new Error("The preview has not drawn its link yet.");
+    return drawn;
+  });
+  expect(link.textContent).toBe("a page elsewhere");
+  // The test document follows no link; the press itself is what reaches the card.
+  link.addEventListener("click", (event) => event.preventDefault());
+  return { card, link, onToggle, preview, view };
+}
+
+test("a click and a Ctrl+click on a link in a collapsed card's preview leave the card folded, and a click on its words opens it", async () => {
+  // The preview is Markdown (`MarkdownPreview`), empty until the lazy Markdown engine loads.
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  // What each press left, on a card of its own, in one comparison, so a row that fails says
+  // which press opened the card.
+  const left: Record<string, unknown> = {};
+  for (const press of ["click", "Ctrl+click"] as const) {
+    const { card, link, onToggle, view } = await foldedLinkedCard();
+    try {
+      if (press === "Ctrl+click") await user.keyboard("{Control>}");
+      await user.click(link);
+      if (press === "Ctrl+click") await user.keyboard("{/Control}");
+      left[press] = {
+        expanded: card.getAttribute("aria-expanded"),
+        linkInPage: link.isConnected,
+        replyBox: within(card).queryByRole("textbox", { name: "Reply" }) !== null,
+        toggles: onToggle.mock.calls.length,
+      };
+    } finally {
+      view.unmount();
+    }
+  }
+  const folded = { expanded: "false", linkInPage: true, replyBox: false, toggles: 0 };
+  expect(left).toEqual({ "Ctrl+click": folded, click: folded });
+
+  const { card, onToggle, preview, view } = await foldedLinkedCard();
+  try {
+    await user.click(within(preview).getByText("first.", { exact: false }));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(card).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+  }
+});
+
 test("on the Conversation tab each reply is a turn its keys reach, and elsewhere no reply takes the focus", async () => {
   const inTab = render(
     <ConversationTurns value>
@@ -509,11 +589,26 @@ test("on the Conversation tab each reply is a turn its keys reach, and elsewhere
   }
 });
 
-/** A card its host opens and closes as the margin's list does: its toggle flips `expanded`. */
-function ToggledCard(props: Omit<EditableCardProps, "expanded" | "onToggle">) {
-  const [expanded, setExpanded] = useState(true);
+/** A card its host opens and closes as the margin's list does: its toggle flips `expanded`, which
+ *  starts open unless `folded`, and `onToggle` hears each toggle. */
+function ToggledCard({
+  folded = false,
+  onToggle,
+  ...props
+}: Omit<EditableCardProps, "expanded" | "onToggle"> & {
+  folded?: boolean;
+  onToggle?: () => void;
+}) {
+  const [expanded, setExpanded] = useState(!folded);
   return (
-    <EditableCard {...props} expanded={expanded} onToggle={() => setExpanded((open) => !open)} />
+    <EditableCard
+      {...props}
+      expanded={expanded}
+      onToggle={() => {
+        onToggle?.();
+        setExpanded((open) => !open);
+      }}
+    />
   );
 }
 

@@ -567,13 +567,17 @@ export function ThreadCard({
             )}
           </>
         ) : (
-          // The root's Copy reference sits beside the preview, outside it: the preview is one
-          // button that opens the thread.
+          // The root's Copy reference sits beside the preview, outside it. The preview is one
+          // button that opens the thread on a press anywhere but on one of its links, which stay
+          // live (`MarkdownPreview`'s `links="live"`): a click or a Ctrl+click on a link opens the
+          // link and leaves the card folded, the link still in the page. A middle click is no
+          // `click`, so it never reaches this handler.
           <div className="flex items-start gap-1">
             <button
               aria-expanded={false}
               className={`block min-w-0 flex-1 text-left ${textPrimaryOnSurface}`}
-              onClick={() => {
+              onClick={(event) => {
+                if (event.target instanceof Element && event.target.closest("a") !== null) return;
                 if (
                   pulseOrphanBlock &&
                   thread.anchor?.orphaned &&
