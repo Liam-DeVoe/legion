@@ -9,10 +9,12 @@ body: |-
   launcher's first `ensure`, and none for a later tick. The script is told that deadline
   (`LEGION_TESTPG_DEADLINE`). A run still going at it is stopped with its whole process group, so
   no start it began goes on to start a server after the probe's stop. A server that still runs
-  after the probe's stop is stopped by the probe and its data removed, and the probe names, on one
-  line, the step that ran out, a stop that failed, and the server it stopped. `initdb` writes a new
-  cluster into a directory of its own, renamed into place only once it ends, so a start the boot
-  budget stopped part way no longer leaves a cluster every later tick fails to start.
+  after the probe's stop is stopped by the probe, and its data and the System V shared memory
+  segment its postmaster made are removed (a SIGKILL leaves that segment in the kernel). The probe
+  names, on one line, the step that ran out, a stop that failed, and the server it stopped.
+  `initdb` writes a new cluster into a directory of its own, renamed into place only once it ends,
+  so a start the boot budget stopped part way no longer leaves a cluster every later tick fails to
+  start.
 time: 2026-11-19T07:07:21Z
 custom:
   Issue: fixed-docker-bounds

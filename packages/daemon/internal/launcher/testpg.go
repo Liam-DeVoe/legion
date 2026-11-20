@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"golang.org/x/sys/unix"
 )
 
 // The pod's own PostgreSQL for tests, which an issue pod's launcher serves when the deployment
@@ -270,8 +272,9 @@ func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, c
 // reads whether a process of the server still runs (testPGServerProcesses). One that does is the
 // probe's to end, since the probe pod must leave nothing running: it stops each (its process group,
 // then the process, each after a start-time check), waits for them to leave, and removes the
-// cluster's data (stopTestPGServer). A failed stop and a server left running are named after the
-// step's own failure, on the same line, with what the probe did about them.
+// cluster's data and the shared memory segment the server's postmaster made (stopTestPGServer). A
+// failed stop and a server left running are named after the step's own failure, on the same line,
+// with what the probe did about them.
 func CheckTestPostgres(ctx context.Context, dir string) error {
 	base := []string{TestPGVariable + "=" + TestPGDSN, testPGDirVariable + "=" + dir}
 	run := func(ctx context.Context, env []string, name string, argv ...string) error {
@@ -426,16 +429,90 @@ func testPGProcessStat(proc string, pid int) (group int, started string, ok bool
 	return group, fields[19], true
 }
 
+// testPGSegment is the System V shared memory segment a server's postmaster made: the postmaster's
+// pid and the segment's id. PostgreSQL keeps that small segment beside its mmap'd memory, as its
+// check that no second server runs on the same data directory, and removes it when it exits; a
+// SIGKILL leaves it in the kernel, owned by this uid, until something removes it.
+type testPGSegment struct{ postmaster, id int }
+
+// testPGServerSegment reads, from data's postmaster.pid, the segment its postmaster made: the
+// postmaster's pid, on the file's first line, and the segment's key and id, on its seventh, which
+// the postmaster writes as two numbers right after it makes the segment (LOCK_FILE_LINE_SHMEM_KEY,
+// PostgreSQL's miscadmin.h). It answers false where the file is missing or its seventh line holds
+// no id: a postmaster that had not made its segment, or a file that is no postmaster's. A
+// postmaster killed between making its segment and writing that line leaves one this cannot name.
+func testPGServerSegment(data string) (testPGSegment, bool) {
+	text, err := os.ReadFile(filepath.Join(data, "postmaster.pid"))
+	if err != nil {
+		return testPGSegment{}, false
+	}
+	lines := strings.Split(string(text), "\n")
+	if len(lines) < 7 {
+		return testPGSegment{}, false
+	}
+	postmaster, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil {
+		return testPGSegment{}, false
+	}
+	fields := strings.Fields(lines[6])
+	if len(fields) != 2 {
+		return testPGSegment{}, false
+	}
+	id, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return testPGSegment{}, false
+	}
+	return testPGSegment{postmaster: postmaster, id: id}, true
+}
+
+// removeTestPGSegment removes seg's segment, once the server's processes have left, only where it
+// is still the one that postmaster made and nothing uses it: the segment with that id was created
+// by that postmaster (its creator pid), this process's uid owns it, and no process attaches to it.
+// So a segment the probe's server did not make, such as one another server of this uid left, is
+// never removed. It answers true when it removed the segment, and false with no error where the
+// segment is already gone, as it is when the server exited on its own; otherwise an error naming
+// the segment and why it is left. Between the read and the removal no process of the probe's
+// server is left to attach; a new server of this uid that finds the segment by its key attaches
+// only to see whether it is in use, and makes its own when it is not.
+func removeTestPGSegment(seg testPGSegment) (bool, error) {
+	var desc unix.SysvShmDesc
+	if _, err := unix.SysvShmCtl(seg.id, unix.IPC_STAT, &desc); err != nil {
+		if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EIDRM) {
+			return false, nil
+		}
+		return false, fmt.Errorf("its shared memory segment %d could not be read, so it is left as it is: %w", seg.id, err)
+	}
+	var why string
+	switch uid := os.Getuid(); {
+	case int(desc.Cpid) != seg.postmaster:
+		why = fmt.Sprintf("pid %d made it, not the postmaster %d its postmaster.pid names", desc.Cpid, seg.postmaster)
+	case desc.Perm.Uid != uint32(uid):
+		why = fmt.Sprintf("uid %d owns it, not this process's uid %d", desc.Perm.Uid, uid)
+	case desc.Nattch != 0:
+		why = fmt.Sprintf("a process still attaches to it (%d attached)", desc.Nattch)
+	}
+	if why != "" {
+		return false, fmt.Errorf("its shared memory segment %d is left as it is: %s", seg.id, why)
+	}
+	if _, err := unix.SysvShmCtl(seg.id, unix.IPC_RMID, nil); err != nil {
+		return false, fmt.Errorf("removing its shared memory segment %d failed: %w", seg.id, err)
+	}
+	return true, nil
+}
+
 // stopTestPGServer ends the processes of the server in dir's data directory that the probe's stop
-// left running, and answers the error that names them and what it did. Each process, while its
-// start time is still the one it was found with, is sent SIGKILL to its process group, where it
-// leads one other than this process's (the postmaster runs in a session of its own, which pg_ctl
-// starts), and then to itself. It waits up to testPGServerGone for every one to leave, and once
-// none is left it removes the cluster's data (data, and data.initdb, an initdb's that did not
-// finish), so the probe leaves nothing behind. A process still there is named, and the data is
-// left as it is.
+// left running, and answers the error that names them and what it did. Before any signal it reads
+// the shared memory segment the server's postmaster made (testPGServerSegment), since a SIGKILL
+// leaves the segment in the kernel. Each process, while its start time is still the one it was
+// found with, is sent SIGKILL to its process group, where it leads one other than this process's
+// (the postmaster runs in a session of its own, which pg_ctl starts), and then to itself. It waits
+// up to testPGServerGone for every one to leave, and once none is left it removes that segment
+// (removeTestPGSegment) and the cluster's data (data, and data.initdb, an initdb's that did not
+// finish), so the probe leaves nothing behind. A process still there is named, and the data and the
+// segment are left as they are.
 func stopTestPGServer(proc, dir string, running []testPGProcess) error {
 	data := filepath.Join(dir, "data")
+	segment, recorded := testPGServerSegment(data)
 	names := make([]string, len(running))
 	ownGroup := syscall.Getpgrp()
 	for i, p := range running {
@@ -462,13 +539,39 @@ func stopTestPGServer(proc, dir string, running []testPGProcess) error {
 		}
 	}
 	if len(still) > 0 {
-		return fmt.Errorf("%s; the probe sent each SIGKILL, and %s still ran %s later, so %s is left as it is",
-			found, strings.Join(still, ", "), testPGServerGone, data)
+		kept := data + " is"
+		if recorded {
+			kept = fmt.Sprintf("%s and its shared memory segment %d are", data, segment.id)
+		}
+		return fmt.Errorf("%s; the probe sent each SIGKILL, and %s still ran %s later, so %s left as it is",
+			found, strings.Join(still, ", "), testPGServerGone, kept)
 	}
-	for _, part := range []string{data, filepath.Join(dir, "data.initdb")} {
-		if err := os.RemoveAll(part); err != nil {
-			return fmt.Errorf("%s; the probe stopped it (SIGKILL to its process group and to each pid), and removing %s failed: %w", found, part, err)
+	var removed, failed []string
+	if recorded {
+		switch gone, err := removeTestPGSegment(segment); {
+		case err != nil:
+			failed = append(failed, err.Error())
+		case gone:
+			removed = append(removed, fmt.Sprintf("its shared memory segment %d", segment.id))
 		}
 	}
-	return fmt.Errorf("%s; the probe stopped it (SIGKILL to its process group and to each pid) and removed %s", found, data)
+	dataRemoved := true
+	for _, part := range []string{data, filepath.Join(dir, "data.initdb")} {
+		if err := os.RemoveAll(part); err != nil {
+			failed = append(failed, fmt.Sprintf("removing %s failed: %v", part, err))
+			dataRemoved = false
+			break
+		}
+	}
+	if dataRemoved {
+		removed = append([]string{data}, removed...)
+	}
+	said := found + "; the probe stopped it (SIGKILL to its process group and to each pid)"
+	if len(removed) > 0 {
+		said += " and removed " + strings.Join(removed, " and ")
+	}
+	for _, why := range failed {
+		said += "; " + why
+	}
+	return errors.New(said)
 }

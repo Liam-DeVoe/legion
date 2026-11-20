@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // stubTestPG puts a `legion-testpg` on PATH that appends one line per call — the subcommand, the
@@ -787,6 +790,121 @@ func TestTheTestDatabasesServerIsFoundByItsArgumentsOrItsWorkingDirectory(t *tes
 	}
 	if got, want := strings.Join(named, ", "), "pid 100 (postgres), pid 101 (postgres)"; got != want {
 		t.Errorf("testPGServerProcesses named %q, want %q: the postmaster by its arguments and the backend by its working directory", got, want)
+	}
+}
+
+// plantSegment makes a System V shared memory segment of this process's, 64 bytes, mode 0600 and
+// detached, as a server of this uid that was killed leaves one, and removes it when the test ends
+// where it is still the one this process made.
+func plantSegment(t *testing.T) int {
+	t.Helper()
+	id, err := unix.SysvShmGet(unix.IPC_PRIVATE, 64, unix.IPC_CREAT|0o600)
+	if err != nil {
+		t.Fatalf("making a shared memory segment: %v", err)
+	}
+	t.Cleanup(func() {
+		var desc unix.SysvShmDesc
+		if _, err := unix.SysvShmCtl(id, unix.IPC_STAT, &desc); err == nil && int(desc.Cpid) == os.Getpid() {
+			_, _ = unix.SysvShmCtl(id, unix.IPC_RMID, nil)
+		}
+	})
+	return id
+}
+
+// shmSegment answers the kernel's record of the shared memory segment id, and false once there is
+// no such segment.
+func shmSegment(t *testing.T, id int) (unix.SysvShmDesc, bool) {
+	t.Helper()
+	var desc unix.SysvShmDesc
+	_, err := unix.SysvShmCtl(id, unix.IPC_STAT, &desc)
+	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EIDRM) {
+		return desc, false
+	}
+	if err != nil {
+		t.Fatalf("reading shared memory segment %d: %v", id, err)
+	}
+	return desc, true
+}
+
+// writePostmasterPID writes data's postmaster.pid as a PostgreSQL 16 or 18 postmaster writes it
+// once its segment exists: its pid, the data directory, its start time, the port, the socket
+// directory, the listen address, the segment's key and id as `%9lu %9lu`, and its status.
+func writePostmasterPID(t *testing.T, data string, postmaster, id int) {
+	t.Helper()
+	lines := []string{strconv.Itoa(postmaster), data, "1795167050", "5433", filepath.Join(data, "sockets"), "127.0.0.1",
+		fmt.Sprintf("%9d %9d", 5433001, id), "ready   ", ""}
+	if err := os.WriteFile(filepath.Join(data, "postmaster.pid"), []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The probe removes the shared memory segment a server's postmaster.pid names only where that
+// postmaster made it, this uid owns it and no process attaches to it; every other segment is left,
+// and named, so the probe never removes one that another server of this uid made. The segments are
+// real ones this test makes, so each check reads what the kernel answers: the test process stands
+// in for the postmaster that made them, and its parent for one that did not. A postmaster.pid with
+// no seventh line, as one written before the segment exists, names no segment.
+func TestTheProbeRemovesOnlyTheSegmentItsServersPostmasterMadeAndNothingUses(t *testing.T) {
+	early := t.TempDir()
+	if err := os.WriteFile(filepath.Join(early, "postmaster.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"+early+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if seg, ok := testPGServerSegment(early); ok {
+		t.Errorf("a postmaster.pid of two lines names segment %+v, want none", seg)
+	}
+	uid := os.Getuid()
+	other := uint32(65534)
+	if uint32(uid) == other {
+		other = 65533
+	}
+	for _, c := range []struct {
+		name       string
+		postmaster int
+		prepare    func(t *testing.T, id int)
+		left       string // why the segment is left; "" where it is removed
+	}{
+		{name: "made by the postmaster, owned by this uid, unused", postmaster: os.Getpid()},
+		{name: "made by another process", postmaster: os.Getppid(),
+			left: fmt.Sprintf("pid %d made it, not the postmaster %d its postmaster.pid names", os.Getpid(), os.Getppid())},
+		{name: "owned by another uid", postmaster: os.Getpid(), prepare: func(t *testing.T, id int) {
+			desc, _ := shmSegment(t, id)
+			desc.Perm.Uid = other
+			if _, err := unix.SysvShmCtl(id, unix.IPC_SET, &desc); err != nil {
+				t.Fatalf("giving shared memory segment %d to uid %d: %v", id, other, err)
+			}
+		}, left: fmt.Sprintf("uid %d owns it, not this process's uid %d", other, uid)},
+		{name: "still attached", postmaster: os.Getpid(), prepare: func(t *testing.T, id int) {
+			mem, err := unix.SysvShmAttach(id, 0, 0)
+			if err != nil {
+				t.Fatalf("attaching shared memory segment %d: %v", id, err)
+			}
+			t.Cleanup(func() { _ = unix.SysvShmDetach(mem) })
+		}, left: "a process still attaches to it (1 attached)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			id := plantSegment(t)
+			if c.prepare != nil {
+				c.prepare(t, id)
+			}
+			data := t.TempDir()
+			writePostmasterPID(t, data, c.postmaster, id)
+			seg, ok := testPGServerSegment(data)
+			if want := (testPGSegment{postmaster: c.postmaster, id: id}); !ok || seg != want {
+				t.Fatalf("postmaster.pid names segment %+v (%v), want %+v", seg, ok, want)
+			}
+			removed, err := removeTestPGSegment(seg)
+			_, there := shmSegment(t, id)
+			if c.left == "" {
+				if !removed || err != nil || there {
+					t.Errorf("removeTestPGSegment = %v, %v; the segment is still there: %v; want it removed", removed, err, there)
+				}
+				return
+			}
+			want := fmt.Sprintf("its shared memory segment %d is left as it is: %s", id, c.left)
+			if removed || err == nil || err.Error() != want || !there {
+				t.Errorf("removeTestPGSegment = %v, %v; the segment is still there: %v; want it left, and %q", removed, err, there, want)
+			}
+		})
 	}
 }
 
