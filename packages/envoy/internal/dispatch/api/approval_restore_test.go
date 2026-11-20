@@ -278,6 +278,7 @@ func TestAnUploadOfAnApprovedTextAnotherRendererVersionStoredCarriesTheApproval(
 		t.Helper()
 		uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 			"actor": sessionActor(), "name": "spec.md", "content": content,
+			"precondition": uploadBase(t, handler, artifactID),
 		})
 		adviceFromResponse(t, uploaded.Code, uploaded.Body.String())
 		waitForArtifactVersion(t, handler, artifactID, number)
