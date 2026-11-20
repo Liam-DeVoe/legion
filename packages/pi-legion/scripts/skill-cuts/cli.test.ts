@@ -1116,6 +1116,157 @@ describe("behaviour", () => {
     );
   }, 300_000);
 
+  /** Writes `count` as the reading sessions by model of `s` (attribute's
+   *  `<cut id>/models/<skill>.json`) to `name` in its directory, and returns that file. */
+  const readingModels = (s: Scenario, name: string, count: object) => {
+    const file = path.join(s.dir, name);
+    writeFileSync(file, JSON.stringify(count));
+    return file;
+  };
+
+  test("with --reading-models, screen refuses a skill too few of whose reading sessions are on served models, before any call, and report gives it no verdict", async () => {
+    const s = scenario("reading-few", LOSS_SKILL(), [{ id: "c00" }]);
+    const file = readingModels(s, "reading-models.json", {
+      sessions: 8,
+      byModel: [
+        { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 5 },
+        { model: "acme-gateway/gpt-6.1", anthropic: false, served: false, sessions: 3 },
+      ],
+      noModel: 0,
+      notQueried: 0,
+      notAnthropic: 3,
+      served: 5,
+      withModel: 8,
+    });
+    const reason =
+      "too few sessions on served models: 5 of its 8 reading sessions are on a model the gateway serves, fewer than 6";
+    const from = recorder.requests.length;
+    const screen = await cli(behaviour("screen", s, "--reading-models", file));
+    expect(screen.code).toBe(2);
+    expect(screen.stderr).toContain(
+      `the skill alpha gets no verdict, and no case of it is screened: ${reason} (--reading-models ${file}); the walk of the cut's ranking goes on to its next skill`
+    );
+    expect(existsSync(caseResultFile(s.out, "c00"))).toBe(false);
+    const reported = await cli([...report(s), "--reading-models", file]);
+    expect(reported.code).toBe(0);
+    expect(reported.stdout.split("\n")).toContain(`verdict: none: ${reason}`);
+    // A file that is no skill's reading sessions by model is refused, before any call too.
+    const bad = readingModels(s, "not-reading-models.json", { sessions: 8 });
+    const refused = await cli(behaviour("screen", s, "--reading-models", bad));
+    expect(refused.code).toBe(2);
+    expect(refused.stderr).toContain(
+      `--reading-models ${bad} is not a skill's reading sessions by model`
+    );
+    expect(requestsSince(from)).toHaveLength(0);
+  }, 60_000);
+
+  test("report --reading-models prints the reading sessions by model and the screened cases' models, and the verdict names the reading sessions it speaks for", async () => {
+    const s = scenario("reading-models", f1File(2), [
+      { id: "c04" },
+      { id: "c05" },
+      { id: "c06" },
+      { id: "c07" },
+      { id: "c08", model: "gateway/claude-sonnet-5-5" },
+      { id: "c09", model: "openai/gpt-6.1-sol" },
+    ]);
+    recordCaptures(s, ["old", "new", "none", "minus"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    const sonnet = {
+      model: "anthropic/claude-sonnet-5-5",
+      anthropic: true,
+      served: true,
+      sessions: 6,
+    };
+    const others = [
+      { model: "acme-gateway/gpt-6.1", anthropic: false, served: false, sessions: 2 },
+      { model: "openai/gpt-6.1-sol", anthropic: false, served: true, sessions: 2 },
+      { model: "gateway/claude-sonnet-5-5", anthropic: true, served: true, sessions: 1 },
+    ];
+    const file = readingModels(s, "reading-models.json", {
+      sessions: 13,
+      byModel: [sonnet, ...others],
+      noModel: 1,
+      notQueried: 1,
+      notAnthropic: 4,
+      served: 9,
+      withModel: 11,
+    });
+    // 9 of the 13 reading sessions are on served models: the screen runs.
+    const screen = await cli(behaviour("screen", s, "--reading-models", file));
+    expect({ code: screen.code, stderr: screen.stderr }).toEqual({ code: 0, stderr: "" });
+    expect((await cli(behaviour("control", s))).code).toBe(0);
+    const keeps =
+      "verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c04) is a loss";
+
+    // Without --reading-models the report says so, and its verdict names no models.
+    const plain = (await cli(report(s))).stdout.split("\n");
+    expect(plain).toContain(
+      "reading sessions by model: not given (no --reading-models), so the verdict names no models"
+    );
+    expect(plain).toContain(keeps);
+
+    // c08's model counts under the served model of its id, and so do its reading sessions.
+    const reported = await cli([...report(s), "--reading-models", file]);
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    for (const line of [
+      `reading sessions by model (--reading-models ${file}): 13 sessions`,
+      "  anthropic/claude-sonnet-5-5: 6 sessions, served by the gateway",
+      "  acme-gateway/gpt-6.1: 2 sessions, not served by the gateway",
+      "  openai/gpt-6.1-sol: 2 sessions, served by the gateway",
+      "  gateway/claude-sonnet-5-5: 1 session, served by the gateway",
+      "  with no model (its file's head names none): 1; not queried (in no models query's rows): 1",
+      "screened cases by the served model they ran on: anthropic/claude-sonnet-5-5 5 cases, openai/gpt-6.1-sol 1 case",
+      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions), openai/gpt-6.1-sol (2 sessions); not for the 2 sessions on models the gateway does not serve`,
+    ]) {
+      expect(lines).toContain(line);
+    }
+
+    // Under a configuration that serves a third model, which no screened case ran on, the
+    // reading sessions on it are named apart.
+    const { config } = setup();
+    const fixture = JSON.parse(readFileSync(config, "utf8"));
+    const opusConfig = path.join(s.dir, "skill-cuts-opus.json");
+    writeFileSync(
+      opusConfig,
+      JSON.stringify({
+        ...fixture,
+        servedModels: [...fixture.servedModels, "anthropic/claude-opus-5-5"],
+      })
+    );
+    const opus = readingModels(s, "reading-models-opus.json", {
+      sessions: 16,
+      byModel: [
+        sonnet,
+        { model: "anthropic/claude-opus-5-5", anthropic: true, served: true, sessions: 3 },
+        ...others,
+      ],
+      noModel: 1,
+      notQueried: 1,
+      notAnthropic: 4,
+      served: 12,
+      withModel: 14,
+    });
+    const withOpus = await cli([
+      "behaviour",
+      "report",
+      "--config",
+      opusConfig,
+      "--out",
+      s.out,
+      "--old",
+      s.old,
+      "--cases",
+      s.casesFile,
+      "--reading-models",
+      opus,
+    ]);
+    expect(withOpus.stdout.split("\n")).toContain(
+      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions), openai/gpt-6.1-sol (2 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 3 sessions on served models no screened case ran on`
+    );
+  }, 300_000);
+
   test("Oh My Pi is --omp, LEGION_OMP_PATH or the omp on PATH, as an absolute path, and behaviour and load given --models refuse by name when none names one", async () => {
     const bin = path.join(scratch, "omp-bin");
     mkdirSync(bin, { recursive: true });

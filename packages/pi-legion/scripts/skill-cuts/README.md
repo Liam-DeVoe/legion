@@ -23,7 +23,8 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--planted-line <text>] [--budget-usd <n>] [--concurrency <n, default 8>] \
   [--after-case <command>] [--request-log <file>] \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
-  [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]
+  [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
+  [--reading-models <file>]
 ```
 
 One skill per run: `--old` and `--new` are that skill's own directories, and `--cases` holds that
@@ -37,7 +38,11 @@ skill's cases (`cases.ts`), one JSON object per line.
   whose model the gateway does not serve (none of the configuration's `servedModels` has its id,
   the text after its last `/`) is dropped before any call as `model-not-served`; a case on a
   served model runs as that served `provider/model`, so an Anthropic model behind another
-  gateway prefix runs as `anthropic/<id>`.
+  gateway prefix runs as `anthropic/<id>`. With `--reading-models` (the skill's
+  `<cut id>/models/<skill>.json` that `attribute` writes: its reading sessions by model), a skill
+  with fewer than 6 reading sessions on models the gateway serves is refused before any call
+  (exit 2): it gets no verdict, with the reason `too few sessions on served models` and its served
+  and total counts, and the walk of the cut's ranking goes on to the next skill.
 - `confirm`: 40 fresh runs of old and new for each flagged case.
 - `control`: 40 runs of `minus` (old without the case's line, or without `--planted-line`) and 40
   fresh runs of old, on the skill's control case.
@@ -47,7 +52,16 @@ skill's cases (`cases.ts`), one JSON object per line.
   new texts, the pass rates taken from each case's own screen; its assumptions are printed with
   it), a table of the chance it finds a loss of 10 to 40 points in one informative case, the spend
   at list price, the peak memory, and how many captures' system-prompt digests differ from their
-  session's. It calls no model, and needs only `--config`, `--out`, `--old` and `--cases`.
+  session's. It calls no model, and needs only `--config`, `--out`, `--old` and `--cases`. With
+  `--reading-models` it also prints each model of that file with its sessions and whether the
+  gateway serves it, the sessions whose file names no model and those in no models query's rows,
+  and the served models the screened cases ran on, each with its cases; a verdict then ends with
+  the reading sessions it speaks for, on each served model its screened cases ran on (a model
+  counted under the served model of its id, so `gateway/claude-sonnet-5-5` under
+  `anthropic/claude-sonnet-5-5`), and those it does not speak for, on models the gateway does not
+  serve and on served models no screened case ran on. A skill too few of whose reading sessions
+  are on served models gets no verdict. Without `--reading-models`, it says the reading sessions
+  by model were not given, and the verdict names no models.
 
 `score.ts` holds the rules. Each case's results are one file, `<out>/cases/<case id>.json`,
 written whole after each round of runs, so a run started again goes on from what was saved and
@@ -173,7 +187,12 @@ with, then by the copies the store's context installs; counts each session once 
 count's queries; marks ties and loaded skills; states each store's span; ranks each cut's changed
 skills for the behaviour test and writes each ranked skill's reading sessions
 (`<out>/<cut id>/sessions/<skill>.jsonl`, file hashes only). With `--models`, it also counts each
-copy's reading sessions by model.
+copy's reading sessions by model, and writes each ranked skill's
+`<out>/<cut id>/models/<skill>.json`: the counts by model of the sessions its sessions file holds
+(`sessions`; `byModel`, each `{model, anthropic, served, sessions}`, most first; `noModel`, the
+sessions whose file's head names no model; `notQueried`, those no models query held;
+`notAnthropic`; `served`, those on a model the gateway serves; `withModel`), which `behaviour
+--reading-models` reads. Without `--models` it writes no models file.
 
 ### `build-cases` and `build-tasks`
 

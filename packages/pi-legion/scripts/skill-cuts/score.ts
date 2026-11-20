@@ -1,5 +1,5 @@
 /**
- * The rules of INFRA-4676's behaviour test (R2, as the plan's R5 table states them), its load
+ * The rules of the behaviour test (R2, as the plan's R5 table states them), its load
  * test (R6) and its name test (R7), as pure functions: no file, network or clock. The runner
  * reads the constants below to decide how many runs to start, and `report` reads the same
  * functions to print each case's passes and each skill's verdict, so both apply one rule.
@@ -274,6 +274,22 @@ export function scoreSkill(records: readonly RunRecord[]): SkillScore {
 export function screeningRefusal(sessions: number): NoVerdict | undefined {
   return sessions < MIN_READING_SESSIONS
     ? { verdict: null, reason: `fewer than ${MIN_READING_SESSIONS} sessions read it` }
+    : undefined;
+}
+
+/** The no-verdict outcome of a skill whose reading sessions on a model the gateway serves
+ *  (`served` of its `sessions`: attribute.ts's `ModelCount` of its sessions file) are fewer than
+ *  MIN_READING_SESSIONS: a case runs only on a served model, so the skill is then not screened;
+ *  undefined for a skill that is screened. */
+export function servedScreeningRefusal(counts: {
+  served: number;
+  sessions: number;
+}): NoVerdict | undefined {
+  return counts.served < MIN_READING_SESSIONS
+    ? {
+        verdict: null,
+        reason: `too few sessions on served models: ${counts.served} of its ${counts.sessions} reading sessions are on a model the gateway serves, fewer than ${MIN_READING_SESSIONS}`,
+      }
     : undefined;
 }
 

@@ -11,6 +11,7 @@ import {
   type InstallersRow,
   MODELS_BY_CUT_COLUMNS,
   MODELS_BY_SKILL_COLUMNS,
+  ModelCountFile,
   main,
   modelCount,
   modelId,
@@ -1208,6 +1209,35 @@ test("the command writes the count, its report, each cut's ranking and the model
     ["skills-1", "2", "beta", "0", "", "", "0"],
     ["skills-1", "3", "gone", "0", "", "", "0"],
   ]);
+  // Each ranked skill's models file: the counts of the sessions its sessions file holds, in the
+  // shape behaviour --reading-models reads.
+  const modelsOf = (skill: string) =>
+    ModelCountFile.parse(
+      JSON.parse(readFileSync(path.join(out, "skills-1", "models", `${skill}.json`), "utf8"))
+    );
+  expect(modelsOf("alpha")).toEqual({
+    sessions: 3,
+    byModel: [
+      { model: sonnet, anthropic: true, served: true, sessions: 2 },
+      { model: other, anthropic: false, served: false, sessions: 1 },
+    ],
+    noModel: 0,
+    notQueried: 0,
+    notAnthropic: 1,
+    served: 2,
+    withModel: 3,
+  });
+  const empty = {
+    sessions: 0,
+    byModel: [],
+    noModel: 0,
+    notQueried: 0,
+    notAnthropic: 0,
+    served: 0,
+    withModel: 0,
+  };
+  expect([modelsOf("beta"), modelsOf("gone")]).toEqual([empty, empty]);
+  expect(result.out).toContain(`${path.join(out, "skills-1", "models")}/ (3 files)`);
 
   const report = readFileSync(path.join(out, "skill-read-count.md"), "utf8");
   for (const line of [
@@ -1237,14 +1267,18 @@ test("the command writes the count, its report, each cut's ranking and the model
   }
 });
 
-test("without --models the report says so and writes no models table", () => {
+test("without --models the report says so and writes no models table and no models file", () => {
   const root = path.join(dir, "no-models");
   const countDir = tree(path.join(root, "count"), {
     "store_a/2026-11-20.txt": f7("F7-count-first.txt"),
     "run.log": "2026-11-21T20:00:01Z\tstore_a\t2026-11-20\trc=0\tseconds=1.0\t\n",
   });
   const copiesDir = r4Dir(path.join(root, "copies"), f7World());
-  const spans = path.join(tree(root, { "spans.jsonl": "" }), "spans.jsonl");
+  const files = tree(root, {
+    "spans.jsonl": "",
+    "changed.txt": "src/alpha\n",
+  });
+  const spans = path.join(files, "spans.jsonl");
   const out = path.join(root, "out");
   const result = run([
     "--config",
@@ -1257,12 +1291,16 @@ test("without --models the report says so and writes no models table", () => {
     spans,
     "--out",
     out,
+    "--changed",
+    `skills-1=${path.join(files, "changed.txt")}`,
   ]);
   expect(result.code).toBe(0);
   expect(readFileSync(path.join(out, "skill-read-count.md"), "utf8")).toContain(
     "Not counted: no --models directory was given."
   );
   expect(existsSync(path.join(out, "models-by-skill.tsv"))).toBe(false);
+  expect(existsSync(path.join(out, "skills-1", "sessions", "alpha.jsonl"))).toBe(true);
+  expect(existsSync(path.join(out, "skills-1", "models"))).toBe(false);
 });
 
 test("the command refuses missing flags, an --out inside an input, an unknown cut, and R4 tables of other columns", () => {

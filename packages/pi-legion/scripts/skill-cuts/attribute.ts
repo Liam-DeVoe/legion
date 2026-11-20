@@ -103,6 +103,12 @@
  *                          (`sessionFiles`): each read session of the cut repository's copy, after
  *                          every attribution rule, one line `{"store", "hash"}` (the 16-hex file
  *                          hash), sorted by store then hash: what `build-cases --sessions` reads.
+ *   <cut id>/models/<skill>.json
+ *                          With --models, for each `--changed` cut, one file per sessions file
+ *                          (`modelFiles`): the ModelCount of the same sessions, as JSON (sessions,
+ *                          byModel, each `{model, anthropic, served, sessions}`, noModel,
+ *                          notQueried, notAnthropic, served, withModel): what `behaviour
+ *                          --reading-models` reads (ModelCountFile).
  *   models-by-skill.tsv    With --models: MODELS_BY_SKILL_COLUMNS, one row per copy, in
  *                          skill-copies.tsv's order: repository, path, name, sessions, by_model
  *                          (each `<model>=<sessions>`, most first, joined by `; `),
@@ -1365,6 +1371,25 @@ export interface ModelCount {
   readonly withModel: number;
 }
 
+/** A ranked skill's `<cut id>/models/<skill>.json` (`modelFiles`): its ModelCount, as
+ *  `behaviour --reading-models` reads it. */
+export const ModelCountFile: z.ZodType<ModelCount> = z.strictObject({
+  sessions: Count,
+  byModel: z.array(
+    z.strictObject({
+      model: z.string().min(1),
+      anthropic: z.boolean(),
+      served: z.boolean(),
+      sessions: Count,
+    })
+  ),
+  noModel: Count,
+  notQueried: Count,
+  notAnthropic: Count,
+  served: Count,
+  withModel: Count,
+});
+
 /** The read sessions `sessions` (each a `sessionKey`) by the model `models` gives each. */
 export function modelCount(sessions: ReadonlySet<string>, models: SessionModels): ModelCount {
   const byModel = new Map<string, SessionModel & { sessions: number }>();
@@ -1489,6 +1514,27 @@ export function rankingModels(
   }));
 }
 
+/** The ranked changed skills of `ranking` that get files of their own under its cut's directory,
+ *  in rank order, each with the read sessions of the cut repository's copy. A skill whose name is
+ *  no file name, or that two ranked directories share, gets none and is named in `skipped`. */
+function filedSkills(
+  attribution: Attribution,
+  ranking: Ranking
+): { rows: { skill: string; sessions: ReadonlySet<string> }[]; skipped: string[] } {
+  const ranked = rankedSessions(attribution, ranking);
+  const rows: { skill: string; sessions: ReadonlySet<string> }[] = [];
+  const skipped: string[] = [];
+  for (const row of ranked) {
+    const shared = ranked.filter((other) => other.skill === row.skill).length > 1;
+    if (!/^[A-Za-z0-9._-]+$/.test(row.skill) || row.skill.startsWith(".") || shared) {
+      skipped.push(`${row.skill} (${row.path})`);
+      continue;
+    }
+    rows.push(row);
+  }
+  return { rows, skipped };
+}
+
 /**
  * The sessions files of `ranking`, `sessions/<skill>.jsonl` under its cut's directory, for
  * `build-cases --sessions`: one per ranked changed skill, one line per read session of the cut
@@ -1500,22 +1546,29 @@ export function sessionFiles(
   attribution: Attribution,
   ranking: Ranking
 ): { files: { name: string; text: string }[]; skipped: string[] } {
-  const ranked = rankedSessions(attribution, ranking);
-  const files: { name: string; text: string }[] = [];
-  const skipped: string[] = [];
-  for (const row of ranked) {
-    const shared = ranked.filter((other) => other.skill === row.skill).length > 1;
-    if (!/^[A-Za-z0-9._-]+$/.test(row.skill) || row.skill.startsWith(".") || shared) {
-      skipped.push(`${row.skill} (${row.path})`);
-      continue;
-    }
+  const { rows, skipped } = filedSkills(attribution, ranking);
+  const files = rows.map((row) => {
     const lines = [...row.sessions].sort().map((key) => {
       const [store = "", hash = ""] = key.split("\t");
       return `${JSON.stringify({ store, hash })}\n`;
     });
-    files.push({ name: path.join("sessions", `${row.skill}.jsonl`), text: lines.join("") });
-  }
+    return { name: path.join("sessions", `${row.skill}.jsonl`), text: lines.join("") };
+  });
   return { files, skipped };
+}
+
+/** The models files of `ranking`, `models/<skill>.json` under its cut's directory, for `behaviour
+ *  --reading-models`: one per sessions file (`sessionFiles`), the ModelCount of that file's
+ *  sessions by the models `models` gives them, as JSON. */
+export function modelFiles(
+  attribution: Attribution,
+  ranking: Ranking,
+  models: SessionModels
+): { name: string; text: string }[] {
+  return filedSkills(attribution, ranking).rows.map((row) => ({
+    name: path.join("models", `${row.skill}.json`),
+    text: `${JSON.stringify(modelCount(row.sessions, models), null, 2)}\n`,
+  }));
 }
 
 /** models-by-cut.tsv's text: each cut's ranked changed skills, in rank order. */
@@ -1645,7 +1698,7 @@ function modelsMarkdown(report: Report): string[] {
     "",
     "### Each cut's ranked changed skills: the share of reading sessions on a model that is not Anthropic's, and the sessions on a model the gateway serves",
     "",
-    "The share is of the sessions with a model. models-by-cut.tsv holds each skill's every model, and the models the gateway does not serve.",
+    "The share is of the sessions with a model. models-by-cut.tsv holds each skill's every model, and the models the gateway does not serve. Each ranked skill's counts are also in `<cut id>/models/<skill>.json`, of the sessions its sessions file holds: what `behaviour --reading-models` reads.",
     ""
   );
   if (rankings.length === 0) lines.push("None: no --changed file was given.");
@@ -2065,14 +2118,24 @@ export function main(argv: readonly string[], io: Output): number {
       "skill-read-count.md",
       readCountMarkdown({ config, attribution, count, issues, spans, r4, rankings, models })
     );
+    /** Writes `files` (each named below the cut's directory) into its directory `dir`, made even
+     *  when they are none, and lists that directory once. */
+    const writeDir = (
+      cut: string,
+      dir: string,
+      files: readonly { name: string; text: string }[]
+    ) => {
+      const full = path.join(out, cut, dir);
+      mkdirSync(full, { recursive: true });
+      for (const file of files) writeFileSync(path.join(out, cut, file.name), file.text);
+      written.push(`${full}/ (${files.length} files)`);
+    };
     for (const ranking of rankings) {
       const rows = ranking.rows.map(({ skill, sessions }) => ({ skill, sessions }));
       write(path.join(ranking.cut, "ranking.json"), `${JSON.stringify(rows, null, 2)}\n`);
-      const sessionsDir = path.join(out, ranking.cut, "sessions");
-      mkdirSync(sessionsDir, { recursive: true });
-      const { files } = sessionFiles(attribution, ranking);
-      for (const file of files) writeFileSync(path.join(out, ranking.cut, file.name), file.text);
-      written.push(`${sessionsDir}/ (${files.length} files)`);
+      writeDir(ranking.cut, "sessions", sessionFiles(attribution, ranking).files);
+      if (models !== undefined)
+        writeDir(ranking.cut, "models", modelFiles(attribution, ranking, models.sessions));
     }
     if (models !== undefined) {
       write("models-by-skill.tsv", modelsBySkillTsv(attribution, models.sessions));

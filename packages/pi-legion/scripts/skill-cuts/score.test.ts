@@ -16,6 +16,7 @@ import {
   scoreSkill,
   screeningDone,
   screeningRefusal,
+  servedScreeningRefusal,
   skillVerdict,
   stageOutcome,
   taskFault,
@@ -399,6 +400,20 @@ const rows: [string, () => unknown, unknown][] = [
     { verdict: null, reason: "fewer than 6 sessions read it" },
   ],
   ["a skill 6 sessions read is screened", () => screeningRefusal(6), undefined],
+  [
+    "a skill 5 of whose 8 reading sessions are on served models gets no screening",
+    () => servedScreeningRefusal({ served: 5, sessions: 8 }),
+    {
+      verdict: null,
+      reason:
+        "too few sessions on served models: 5 of its 8 reading sessions are on a model the gateway serves, fewer than 6",
+    },
+  ],
+  [
+    "a skill 6 of whose 8 reading sessions are on served models is screened",
+    () => servedScreeningRefusal({ served: 6, sessions: 8 }),
+    undefined,
+  ],
   [
     "screening stops at 6 informative cases",
     () => screeningDone({ screened: 6, informative: 6 }),

@@ -10,6 +10,7 @@
  *       [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>]
  *       [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>]
  *       [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>]
+ *       [--reading-models <file>]
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *   bun scripts/skill-cuts/cli.ts control <map|attack|same-job|sentence> --config <file>
@@ -41,7 +42,12 @@
  *   per arm (old, new, none; capture.ts, read back when saved already), SCREEN_RUNS replays of
  *   each, every reply of the round judged blind (all arms shuffled under a recorded seed), and
  *   rounds of extra runs for the runs with no verdict, as score.ts's `stageOutcome` says, at most
- *   MAX_EXTRA_RUNS per arm.
+ *   MAX_EXTRA_RUNS per arm. With `--reading-models <file>` (attribute.ts's
+ *   `<cut id>/models/<skill>.json` of the skill: its reading sessions by model), a skill whose
+ *   reading sessions on a model the gateway serves are fewer than MIN_READING_SESSIONS is refused
+ *   before any model call (score.ts's `servedScreeningRefusal`: `too few sessions on served
+ *   models`, with the served and total counts): it gets no verdict, and the walk of the cut's
+ *   ranking goes on to its next skill.
  * - `confirm`: FRESH_RUNS fresh runs of old and new for each flagged case.
  * - `control`: FRESH_RUNS runs of `minus` (old less the case's line, or less `--planted-line`) and
  *   FRESH_RUNS fresh runs of old, on the skill's control case.
@@ -52,7 +58,14 @@
  *   the registered rule"), the rule's sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7
  *   and drops of 0.1 to 0.4), the estimated false-loss rate at the cases run (`falseLossChance`),
  *   the spend, the peak memory, and how many captures' system-prompt digests differ from their
- *   session's.
+ *   session's. With `--reading-models`, it prints each model of the file with its sessions and
+ *   whether the gateway serves it (the file's `served`), the sessions with no model and not
+ *   queried, and the served models the screened cases ran on, each with its cases; a verdict's
+ *   line then ends with the reading sessions it speaks for, on each served model its screened
+ *   cases ran on (a model of the file counted under the served model of its id), and the ones it
+ *   does not: on models the gateway does not serve, and on served models no screened case ran
+ *   on; a skill the screen's refusal holds for gets no verdict. Without it, `report` says the
+ *   reading sessions by model were not given, and its verdict names no models.
  *
  * Captures are saved under `<out>/captures/<arm>-<digest of the arm's skill directory>/`, so a new
  * text, or another planted line, is captured again. Making one runs Oh My Pi (`--omp`, else
@@ -113,7 +126,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { type Arm, type ArmDirs, type ArmName, buildArm } from "./arms";
-import { main as attributeMain, modelId } from "./attribute";
+import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from "./attribute";
 import { main as buildMain } from "./build";
 import { type Capture, captureBody, capturePaths, gatewayHints } from "./capture";
 import { type Case, loadCases, Thinking } from "./cases";
@@ -176,6 +189,7 @@ import {
   Stage,
   scoreSkill,
   screeningDone,
+  servedScreeningRefusal,
   stageOutcome,
 } from "./score";
 
@@ -820,17 +834,21 @@ export const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none:
 
 // `behaviour`: running the stages.
 
-/** A behaviour command's cases and where it writes. */
+/** A behaviour command's cases and where it writes. `servedModels` are the configuration's, and
+ *  `readingModels` the skill's reading sessions by model that `--reading-models` names, with its
+ *  file (undefined without it). */
 interface Behaviour {
   readonly io: CliIo;
   readonly command: string;
   readonly out: string;
   readonly casesFile: string;
   readonly cases: readonly Case[];
+  readonly servedModels: readonly string[];
+  readonly readingModels: { readonly file: string; readonly count: ModelCount } | undefined;
 }
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
- *  send through it, each logged. `servedModels` are the configuration's. */
+ *  send through it, each logged. */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
   readonly texts: { readonly old: string; readonly new: string };
@@ -838,7 +856,6 @@ interface Runner extends Behaviour {
   readonly gateway: Gateway;
   readonly replays: Gateway;
   readonly judge: Gateway;
-  readonly servedModels: readonly string[];
   capture(c: Case, arm: Arm): Promise<Capture>;
   readonly afterCase: string | undefined;
   readonly afterCaseFailures: string[];
@@ -1322,12 +1339,91 @@ function stageLine(result: CaseResult, stage: Stage): string {
   }
 }
 
-/** The skill's verdict as one line: the verdict and its reason, or what it waits for. */
+/** `count` with `word`, plural unless the count is 1: `1 session`, `2 sessions`. */
+const counted = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/** The served models the screened (counted) cases of `score` ran on, each case on the served model
+ *  of its model's id (`servedModel`), with its screened cases, most first, a tie by model. */
+function screenedModels(b: Behaviour, score: SkillScore): { model: string; cases: number }[] {
+  const cases = new Map<string, number>();
+  for (const each of score.cases) {
+    const c = b.cases.find((candidate) => candidate.id === each.caseId);
+    if (c === undefined || each.screen.state !== "counted") continue;
+    const model = servedModel(c.model, b.servedModels) ?? c.model;
+    cases.set(model, (cases.get(model) ?? 0) + 1);
+  }
+  return [...cases]
+    .map(([model, count]) => ({ model, cases: count }))
+    .sort((x, y) => y.cases - x.cases || x.model.localeCompare(y.model));
+}
+
+/** The report's lines on the skill's reading sessions by model (`--reading-models`): each model
+ *  of the file with its sessions and whether the gateway serves it, the sessions with no model and
+ *  not queried, and the served models the screened cases ran on; or one line saying they were not
+ *  given. */
+function modelLines(b: Behaviour, score: SkillScore): string[] {
+  if (b.readingModels === undefined) {
+    return [
+      "reading sessions by model: not given (no --reading-models), so the verdict names no models",
+    ];
+  }
+  const { file, count } = b.readingModels;
+  const ran = screenedModels(b, score)
+    .map((item) => `${item.model} ${counted(item.cases, "case")}`)
+    .join(", ");
+  return [
+    `reading sessions by model (--reading-models ${file}): ${counted(count.sessions, "session")}`,
+    ...count.byModel.map(
+      (item) =>
+        `  ${item.model}: ${counted(item.sessions, "session")}, ${item.served ? "served" : "not served"} by the gateway`
+    ),
+    `  with no model (its file's head names none): ${count.noModel}; not queried (in no models query's rows): ${count.notQueried}`,
+    `screened cases by the served model they ran on: ${ran || "none"}`,
+  ];
+}
+
+/** The end of a verdict's line with `--reading-models`: the reading sessions the verdict speaks
+ *  for, on each served model its screened cases ran on (a served model of the file counted under
+ *  the one of its id), and those it does not: the sessions on models the gateway does not serve,
+ *  and any on served models no screened case ran on. Empty without `--reading-models`. */
+function speaksFor(b: Behaviour, score: SkillScore): string {
+  const count = b.readingModels?.count;
+  if (count === undefined) return "";
+  const spoken = screenedModels(b, score).map(({ model }) => ({
+    model,
+    id: modelId(model),
+    sessions: 0,
+  }));
+  let unserved = 0;
+  let otherServed = 0;
+  for (const item of count.byModel) {
+    const ran = item.served ? spoken.find((each) => each.id === modelId(item.model)) : undefined;
+    if (ran !== undefined) ran.sessions += item.sessions;
+    else if (item.served) otherServed += item.sessions;
+    else unserved += item.sessions;
+  }
+  const models = spoken
+    .map((each) => `${each.model} (${counted(each.sessions, "session")})`)
+    .join(", ");
+  return (
+    `; it speaks for the reading sessions on ${models}; not for the ${counted(unserved, "session")} on models the gateway does not serve` +
+    (otherServed === 0
+      ? ""
+      : `; nor for the ${counted(otherServed, "session")} on served models no screened case ran on`)
+  );
+}
+
+/** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
+ *  ends with the reading sessions it speaks for (`speaksFor`). With `--reading-models`, a skill
+ *  too few of whose reading sessions are on served models (`servedScreeningRefusal`) gets none. */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
   score: SkillScore
 ): string {
+  const refusal =
+    b.readingModels === undefined ? undefined : servedScreeningRefusal(b.readingModels.count);
+  if (refusal !== undefined) return `none: ${refusal.reason}`;
   const unfinished = screenUnfinished(b, results, score);
   if (unfinished !== undefined) return `not yet: ${unfinished} (behaviour screen)`;
   const outcome = score.outcome;
@@ -1340,10 +1436,10 @@ function verdictLine(
   const flagged = score.cases.filter((each) => each.flagged).length;
   const control = `the planted-loss control (case ${score.controlCase}) is a loss`;
   if (outcome.verdict === "keeps") {
-    return `no loss detected by the registered rule: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}`;
+    return `no loss detected by the registered rule: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}${speaksFor(b, score)}`;
   }
   const losses = score.cases.filter((each) => each.loss).map((each) => each.caseId);
-  return `loss: in ${losses.join(", ")} the cut's text passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than the old text, and ${control}`;
+  return `loss: in ${losses.join(", ")} the cut's text passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than the old text, and ${control}${speaksFor(b, score)}`;
 }
 
 /** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures. */
@@ -1385,6 +1481,7 @@ function reportCommand(b: Behaviour): void {
       ? "control case: none, since no case is informative"
       : `control case: ${score.controlCase}`
   );
+  lines.push(...modelLines(b, score));
   lines.push(`verdict: ${verdictLine(b, results, score)}`);
 
   const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
@@ -1442,8 +1539,21 @@ const BEHAVIOUR_USAGE = [
   "usage: cli.ts behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>",
   "  [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>] [--request-log <file>]",
   "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
+  "  [--reading-models <file>] (the skill's <cut id>/models/<skill>.json, written by attribute)",
   "  report needs only --config, --out, --old and --cases",
 ].join("\n");
+
+/** The reading sessions by model `file` holds: attribute.ts's `<cut id>/models/<skill>.json` of a
+ *  skill (ModelCountFile). Throws a refusal naming the file. */
+function readReadingModels(file: string): ModelCount {
+  const parsed = ModelCountFile.safeParse(readJson(file, "the reading sessions by model"));
+  if (!parsed.success) {
+    throw new Refused(
+      `--reading-models ${file} is not a skill's reading sessions by model (attribute's <cut id>/models/<skill>.json): ${issueText(parsed.error)}`
+    );
+  }
+  return parsed.data;
+}
 
 /** `skill-cuts behaviour <command>`. */
 async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<number> {
@@ -1468,6 +1578,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       "omp-config": { type: "string", multiple: true },
       "cache-dir": { type: "string" },
       scratch: { type: "string" },
+      "reading-models": { type: "string" },
     },
     BEHAVIOUR_USAGE
   );
@@ -1487,16 +1598,30 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     throw new Refused(messageFor(error));
   }
   if (cases.length === 0) throw new Refused(`${given.cases} holds no case`);
+  const readingModels = values["reading-models"];
   const behaviour: Behaviour = {
     io,
     command: `behaviour ${command}`,
     out: given.out,
     casesFile: given.cases,
     cases,
+    servedModels: config.servedModels,
+    readingModels:
+      readingModels === undefined
+        ? undefined
+        : { file: readingModels, count: readReadingModels(readingModels) },
   };
   if (report) {
     reportCommand(behaviour);
     return EXIT.ok;
+  }
+  if (command === "screen" && behaviour.readingModels !== undefined) {
+    const refusal = servedScreeningRefusal(behaviour.readingModels.count);
+    if (refusal !== undefined) {
+      throw new Refused(
+        `the skill ${cases[0]?.skill} gets no verdict, and no case of it is screened: ${refusal.reason} (--reading-models ${readingModels}); the walk of the cut's ranking goes on to its next skill`
+      );
+    }
   }
 
   if (!statSync(given.new, { throwIfNoEntry: false })?.isDirectory()) {
@@ -1543,7 +1668,6 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     gateway,
     replays: loggedGateway(gateway, log, "replay"),
     judge: loggedGateway(gateway, log, "judge"),
-    servedModels: config.servedModels,
     capture: (c, arm) => {
       const outDir = armCaptureDir(given.out, arm);
       const files = capturePaths(outDir, c.id, arm.name);
