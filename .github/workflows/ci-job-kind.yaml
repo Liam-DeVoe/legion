@@ -71,6 +71,11 @@ name: CI job kind
 # controller's log, the fake GitHub's requests and the test's own logs under kind-logs, which the
 # step after it uploads.
 #
+# Each part's download of the image has a 10-minute limit of its own. Of 35 downloads in CI runs
+# 44816526076, 44822857211 and 44829535701, the median took 36 s and the longest 128 s, and one
+# more, of runtime-pod-update in 44829535701, stalled after its blob download started and held the
+# part until the job's own limit 38 minutes later.
+#
 # Each job's last step reports ci-ok for the caller: on a merge-group run that job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
@@ -202,6 +207,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -277,6 +283,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -344,6 +351,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -417,6 +425,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -494,6 +503,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -563,6 +573,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -630,6 +641,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -698,6 +710,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -771,6 +784,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -845,6 +859,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -910,6 +925,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
@@ -975,6 +991,7 @@ jobs:
 
       - name: Download the worker image the image job built
         if: inputs.worker-image == ''
+        timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: kind-worker-image-${{ github.run_attempt }}
