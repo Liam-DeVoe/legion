@@ -84,10 +84,14 @@ type PlanChange struct {
 	Needs     []int           `json:"needs,omitempty"`
 }
 
-// PlanAnswer is a plan call's answer: the plan's number within the run and each of its rows.
+// PlanAnswer is a plan call's answer: the plan's number within the run, each of its rows, and the
+// rows the server approved with the plan, which run at once (Run): the one create of a new-issue
+// run (RunNewIssue), which the Enter that started the run approved. Every other plan's rows wait
+// for the person, or for Auto-review, and Run holds none.
 type PlanAnswer struct {
 	Plan int           `json:"plan"`
 	Rows []PlanRowRead `json:"rows"`
+	Run  []PlanRun     `json:"run,omitempty"`
 }
 
 // PlanRowRead is one row of a plan as Auto-review's model reads it: its number (the change's
@@ -353,20 +357,23 @@ type Budget struct {
 }
 
 // ClaimedRun is a run under the lease a claim took: what the person asked, the conversation it
-// belongs to and the run it continues, its level and mode, what it spent, its lease, its history,
-// and the turns of its conversation before it.
+// belongs to and the run it continues, its kind, its level and mode, what it spent, its lease, its
+// history, and the turns of its conversation before it.
 type ClaimedRun struct {
 	ID           string          `json:"id"`
 	Conversation string          `json:"conversation"`
 	Continues    string          `json:"continues,omitempty"`
 	Words        string          `json:"words"`
 	Context      json.RawMessage `json:"context,omitempty"`
-	Level        string          `json:"level"`
-	Mode         string          `json:"mode"`
-	Shape        int             `json:"shape"`
-	BudgetUsed   Budget          `json:"budget_used"`
-	LeaseToken   string          `json:"lease_token"`
-	LeaseEndsAt  time.Time       `json:"lease_ends_at"`
+	// Kind is RunNewIssue for a run of the line File as a new issue, and "" for a run of the
+	// person's words.
+	Kind        string    `json:"kind,omitempty"`
+	Level       string    `json:"level"`
+	Mode        string    `json:"mode"`
+	Shape       int       `json:"shape"`
+	BudgetUsed  Budget    `json:"budget_used"`
+	LeaseToken  string    `json:"lease_token"`
+	LeaseEndsAt time.Time `json:"lease_ends_at"`
 	// History is the run's saved steps in order: the last 8 whole, each older one as its note
 	// alone, with no body.
 	History []SavedStep `json:"history"`
@@ -381,6 +388,12 @@ type ClaimedRun struct {
 
 // EarlierTurns is how many of a conversation's runs before a run its claim answers.
 const EarlierTurns = 8
+
+// RunNewIssue is the kind of run the command bar's line File as a new issue starts
+// (ClaimedRun.Kind): a Fast run whose one task is to file the person's words as one new issue,
+// whose plan is that issue's create alone, which the Enter that started the run approved, so it
+// runs without waiting for the person (PlanAnswer.Run).
+const RunNewIssue = "new_issue"
 
 // Turn is one earlier run of a conversation, as a follow-up is given it: its words and the notes
 // of its steps, in order.
@@ -518,15 +531,22 @@ type EndRequest struct {
 // conversation, with a new budget of the same level.
 const OfferContinue = "continue"
 
+// OfferUndo is the offer of a new-issue run that filed its issue (EndFrame.Issue): Undo, which
+// closes that issue and posts nothing on it (POST /api/v1/going/runs/{id}/undo). The server adds
+// it to the run's end frame; an agent's end offers OfferContinue alone.
+const OfferUndo = "undo"
+
 // FrameEnd is the frame an end appends to the run's events: its state, its reason and its offers
 // (EndFrame).
 const FrameEnd = "end"
 
-// EndFrame is the data of a run's end frame.
+// EndFrame is the data of a run's end frame: the state the run's turn ended in, why, what its
+// record offers its person next, and the key of the issue a new-issue run filed, "" for none.
 type EndFrame struct {
 	State  string   `json:"state"`
 	Reason string   `json:"reason,omitempty"`
 	Offers []string `json:"offers"`
+	Issue  string   `json:"issue,omitempty"`
 }
 
 // EndAnswer acknowledges an end.

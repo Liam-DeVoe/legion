@@ -707,7 +707,8 @@ func goingTranslateResolveAsk(_ context.Context, _ goingReader, call goingCallIn
 
 // goingCommentBody is what both comment rows take of a call besides an anchor: the body, the
 // comment or block it replies to, the ask (`reply_to_ask`, the route's `ask_id`) or ask part it
-// replies under, and the turn.
+// replies under, the turn, and each target it mentions, which the route reads as `{target}`, as
+// `dispatch comment --mention` sends it.
 func goingCommentBody(arguments map[string]any) map[string]any {
 	body := goingPick(arguments, "body", "turn")
 	if replyTo := goingText(arguments, "reply_to"); replyTo != "" {
@@ -723,6 +724,13 @@ func goingCommentBody(arguments map[string]any) map[string]any {
 		if block != "" {
 			body["reply_to_block"] = block
 		}
+	}
+	if targets, named := arguments["mentions"].([]any); named {
+		mentions := make([]map[string]any, 0, len(targets))
+		for _, target := range targets {
+			mentions = append(mentions, map[string]any{"target": target})
+		}
+		body["mentions"] = mentions
 	}
 	return body
 }

@@ -92,14 +92,17 @@ func (shown goingRowShown) unchanged(other goingRowShown) bool {
 
 // goingRowApproval is what let a row run (going_plan_rows.approval): the person, with any values
 // they edited, or Auto-review (By), and the read of its item that approval was made over (Seen),
-// which the row's item is read against again before its write.
+// which the row's item is read against again before its write. Route is the route the create of a
+// new-issue run carries beside its arguments (going_new_issue.go), "" for every other row.
 type goingRowApproval struct {
 	By     string         `json:"by"`
 	Edited map[string]any `json:"edited,omitempty"`
 	Seen   goingRowShown  `json:"seen"`
+	Route  string         `json:"route,omitempty"`
 }
 
-// Who approves a row (goingRowApproval.By).
+// Who approves a row (goingRowApproval.By): the person, by an approval of the plan or by the
+// Enter that started a new-issue run, or Auto-review.
 const (
 	goingApprovedByPerson     = "person"
 	goingApprovedByAutoReview = "auto_review"
@@ -198,7 +201,7 @@ func (p goingPlanStored) answer(run, mode string) goingPlanAnswer {
 	answer := goingPlanAnswer{Run: run, Plan: p.plan, State: p.state, Summary: p.summary, Mode: mode, Rows: []goingPlanRow{}}
 	for _, row := range p.rows {
 		read := goingPlanRow{
-			Row: row.row, Tool: row.tool, Class: string(goingWriteTools[row.tool].Class), Arguments: row.arguments,
+			Row: row.row, Tool: row.tool, Class: string(goingRowClass(row.tool, row.arguments)), Arguments: row.arguments,
 			Needs: append([]int{}, row.needs...), State: row.state, Item: row.shown.Item, Issue: row.shown.Issue,
 			Fields: append([]string{}, row.shown.Fields...), Now: row.shown.Now, Claim: row.shown.Claim,
 			Waits: append([]string{}, row.shown.Waits...), Changed: row.shown.Changed,
@@ -365,9 +368,11 @@ func goingRowArguments(raw json.RawMessage) (map[string]any, error) {
 // the first that does not refuses the plan CALL_REFUSED, naming the change and why, which the
 // model is told. A send to an agent session is kept naming the session by its id and showing the
 // issue it is posted on (goingPlaceSend). A run whose latest plan still waits for its person, or
-// has rows to run, is refused another. A second try of the call's step answers the plan its first
-// try made. The plan is kept in one transaction that holds the run's lease, with a plan frame on
-// the run's events.
+// has rows to run, is refused another. A new-issue run's plan is one create of an issue, with the
+// deployment's settings for a new issue put on it, and the Enter that started the run approved
+// it, so it is kept approved and answered as the row to run now (going_new_issue.go); such a run
+// keeps one plan. A second try of the call's step answers the plan its first try made. The plan
+// is kept in one transaction that holds the run's lease, with a plan frame on the run's events.
 func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequest, run goingCallRun, doer GoingDoer) (agentwire.CallAnswer, *agentwire.Error) {
 	proposal := request.Proposal
 	if proposal == nil || len(proposal.Changes) == 0 {
@@ -377,11 +382,20 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused,
 			"a plan holds at most %d changes, and this one holds %d: propose the first of them, and the rest once they ran", goingPlanMostRows, len(proposal.Changes))
 	}
+	newIssue := run.kind == agentwire.RunNewIssue
+	if newIssue {
+		if refusal := goingNewIssueProposal(proposal); refusal != nil {
+			return agentwire.CallAnswer{}, refusal
+		}
+	}
 	if made, err := a.planOfStep(ctx, run.id, request.Step); err != nil || made != nil {
 		return made.callAnswer(), goingAgentFailedIf(err)
 	}
 	if open, err := readGoingPlan(ctx, a.s.deps.Store.Pool, run.id, 0); err != nil {
 		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
+	} else if open != nil && newIssue {
+		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused,
+			"this run files one new issue, and plan %d is its plan: propose no other plan", open.plan)
 	} else if open != nil && open.state != "rejected" && open.state != "done" {
 		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused,
 			"plan %d of this run still waits for the person or has changes to run: propose no other plan until they answer it", open.plan)
@@ -408,6 +422,10 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 		if err != nil {
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %v", index, change.Tool, err)
 		}
+		var route string
+		if newIssue {
+			route = a.s.goingNewIssueSettings(arguments)
+		}
 		var sendIssue string
 		if change.Tool == goingSendToAgent {
 			sendIssue, err = a.s.goingPlaceSend(ctx, doer, run.id, arguments)
@@ -428,9 +446,17 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 		if needs == nil {
 			needs = []int{}
 		}
-		rows = append(rows, goingPlanRowStored{row: index, tool: change.Tool, arguments: encoded, needs: needs, state: "waiting", shown: shown})
+		row := goingPlanRowStored{row: index, tool: change.Tool, arguments: encoded, needs: needs, state: "waiting", shown: shown}
+		if newIssue {
+			row.state, row.approval = "approved", &goingRowApproval{By: goingApprovedByPerson, Seen: shown, Route: route}
+		}
+		rows = append(rows, row)
 	}
-	plan, refusal := a.keepPlan(ctx, request, run.id, proposal.Summary, rows)
+	var approvedBy map[string]any
+	if newIssue {
+		approvedBy = goingNewIssueApprovedBy(run.login)
+	}
+	plan, refusal := a.keepPlan(ctx, request, run.id, proposal.Summary, rows, approvedBy)
 	if refusal != nil {
 		return agentwire.CallAnswer{}, refusal
 	}
@@ -459,8 +485,13 @@ func (a *AgentListener) planOfStep(ctx context.Context, run string, step int) (*
 }
 
 // keepPlan keeps rows as the run's next plan, proposed by request's step, in one transaction that
-// holds the run's lease, and appends the plan frame to the run's events.
-func (a *AgentListener) keepPlan(ctx context.Context, request agentwire.CallRequest, run, summary string, rows []goingPlanRowStored) (*goingPlanStored, *agentwire.Error) {
+// holds the run's lease, and appends the plan frame to the run's events. Each row is kept in its
+// state with its approval: every row waits, but for the create of a new-issue run, which is kept
+// approved. approvedBy, nil for a plan nobody approved yet, is who approved the plan as
+// going_plans.approved_by holds it, which keeps the plan in the state its rows give it.
+func (a *AgentListener) keepPlan(ctx context.Context, request agentwire.CallRequest, run, summary string, rows []goingPlanRowStored,
+	approvedBy map[string]any,
+) (*goingPlanStored, *agentwire.Error) {
 	tx, err := a.s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, goingAgentFailed(agentwire.CallCall, err)
@@ -495,10 +526,35 @@ func (a *AgentListener) keepPlan(ctx context.Context, request agentwire.CallRequ
 		if err != nil {
 			return nil, goingAgentFailed(agentwire.CallCall, err)
 		}
+		var approval *string
+		if row.approval != nil {
+			encoded, err := json.Marshal(row.approval)
+			if err != nil {
+				return nil, goingAgentFailed(agentwire.CallCall, err)
+			}
+			text := string(encoded)
+			approval = &text
+		}
 		if _, err := tx.Exec(ctx, `
-			insert into going_plan_rows (run_id, plan, row, change, needs, state, shown)
-			values ($1::uuid, $2, $3, $4::jsonb, $5, 'waiting', $6::jsonb)
-		`, run, plan.plan, row.row, string(change), row.needs, string(shown)); err != nil {
+			insert into going_plan_rows (run_id, plan, row, change, needs, state, shown, approval)
+			values ($1::uuid, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb)
+		`, run, plan.plan, row.row, string(change), row.needs, row.state, string(shown), approval); err != nil {
+			return nil, goingAgentFailed(agentwire.CallCall, err)
+		}
+	}
+	if approvedBy != nil {
+		by, err := json.Marshal(approvedBy)
+		if err != nil {
+			return nil, goingAgentFailed(agentwire.CallCall, err)
+		}
+		if _, err := tx.Exec(ctx, `update going_plans set approved_at = now(), approved_by = $3::jsonb where run_id = $1::uuid and plan = $2`,
+			run, plan.plan, string(by)); err != nil {
+			return nil, goingAgentFailed(agentwire.CallCall, err)
+		}
+		if _, err := tx.Exec(ctx, goingPlanStateSQL, run, plan.plan); err != nil {
+			return nil, goingAgentFailed(agentwire.CallCall, err)
+		}
+		if err := tx.QueryRow(ctx, `select state from going_plans where run_id = $1::uuid and plan = $2`, run, plan.plan).Scan(&plan.state); err != nil {
 			return nil, goingAgentFailed(agentwire.CallCall, err)
 		}
 	}
@@ -520,7 +576,9 @@ func appendGoingPlanFrame(ctx context.Context, tx pgx.Tx, run string, plan int, 
 	return appendGoingRunFrames(ctx, tx, run, []agentwire.Frame{{Name: goingFramePlan, Data: data}})
 }
 
-// callAnswer is the plan as a plan call answers it (agentwire.PlanAnswer).
+// callAnswer is the plan as a plan call answers it (agentwire.PlanAnswer): its rows, and each row
+// approved and not yet run as a row to run now, as a claim of the run would answer it
+// (goingPendingRows), with the step of a call that already began it.
 func (p *goingPlanStored) callAnswer() agentwire.CallAnswer {
 	if p == nil {
 		return agentwire.CallAnswer{}
@@ -531,6 +589,13 @@ func (p *goingPlanStored) callAnswer() agentwire.CallAnswer {
 			Row: row.row, Tool: row.tool, Arguments: row.arguments, Item: row.shown.Item, Fields: row.shown.Fields,
 			Now: row.shown.Now, Waits: row.shown.Waits,
 		})
+		if row.state == "approved" || row.state == "running" {
+			run := agentwire.PlanRun{PlanRow: agentwire.PlanRow{Plan: p.plan, Row: row.row}, Tool: row.tool, Arguments: row.arguments}
+			if row.result != nil {
+				run.Step = row.result.Step
+			}
+			answer.Run = append(answer.Run, run)
+		}
 	}
 	body, _ := json.Marshal(answer)
 	return agentwire.CallAnswer{Status: http.StatusOK, Body: body, ContentType: "application/json"}

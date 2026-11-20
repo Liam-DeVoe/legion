@@ -691,9 +691,9 @@ func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agent
 		update going_runs set state = 'working', lease_token = gen_random_uuid(), lease_owner = $2,
 		  lease_ends_at = now() + make_interval(secs => $3)
 		where id = $1::uuid
-		returning coalesce(conversation_id, id)::text, continues::text, words, context, coalesce(level, ''), coalesce(mode, ''),
+		returning coalesce(conversation_id, id)::text, continues::text, words, context, coalesce(kind, ''), coalesce(level, ''), coalesce(mode, ''),
 		  shape, budget_used, lease_token::text, lease_ends_at
-	`, run, instance, goingLeaseTerm.Seconds()).Scan(&claimed.Conversation, &continues, &claimed.Words, &chip,
+	`, run, instance, goingLeaseTerm.Seconds()).Scan(&claimed.Conversation, &continues, &claimed.Words, &chip, &claimed.Kind,
 		&claimed.Level, &claimed.Mode, &claimed.Shape, &budget, &claimed.LeaseToken, &claimed.LeaseEndsAt); err != nil {
 		return nil, fmt.Errorf("lease run %s: %w", run, err)
 	}
@@ -1042,10 +1042,11 @@ func goingLeaseHeld(ctx context.Context, tx pgx.Tx, run, token string) (bool, er
 // the run's end frame (agentwire.EndFrame), which names what the run's record offers its person
 // next. A turn that ends done while a row of the run's plan waits for its person leaves the run
 // waiting (goingRowsWaitSQL), and a run left waiting appends going_plan.updated, since its plan now
-// waits in its person's Inbox. The statement locks the run's row for the update it makes, which no
-// share lock is taken before: a share lock held while the update waits behind a renew's would
-// deadlock with it. An ended run is no suspect any more, and its instance's run slot is free
-// (runEnded).
+// waits in its person's Inbox. The end of a new-issue run names the issue it filed and offers Undo,
+// or, where it filed none, ends the run failed and says why (goingNewIssueEnd). The statement locks
+// the run's row for the update it makes, which no share lock is taken before: a share lock held
+// while the update waits behind a renew's would deadlock with it. An ended run is no suspect any
+// more, and its instance's run slot is free (runEnded).
 func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (agentwire.EndAnswer, *agentwire.Error) {
 	if refusal := goingRunID(request.Run, request.LeaseToken); refusal != nil {
 		return agentwire.EndAnswer{}, refusal
@@ -1074,7 +1075,12 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 			request.State = agentwire.StateWaiting
 		}
 	}
-	frame, err := json.Marshal(agentwire.EndFrame{State: request.State, Reason: request.Reason, Offers: append([]string{}, request.Offers...)})
+	ended := agentwire.EndFrame{State: request.State, Reason: request.Reason, Offers: append([]string{}, request.Offers...)}
+	if err := goingNewIssueEnd(ctx, tx, request.Run, &ended); err != nil {
+		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
+	}
+	request.State, request.Reason = ended.State, ended.Reason
+	frame, err := json.Marshal(ended)
 	if err != nil {
 		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
 	}

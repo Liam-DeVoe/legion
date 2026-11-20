@@ -443,7 +443,7 @@ func (a *AgentListener) reviewCall(ctx context.Context, request agentwire.CallRe
 		}
 		lets := map[int]bool{}
 		for _, row := range stored.rows {
-			if row.state != "waiting" || !slices.Contains(request.Asked, row.row) || !goingAutoReviewLets(row.tool, row.shown.Waits) {
+			if row.state != "waiting" || !slices.Contains(request.Asked, row.row) || !goingAutoReviewLets(row.tool, row.arguments, row.shown.Waits) {
 				continue
 			}
 			if slices.ContainsFunc(row.needs, func(need int) bool { return !lets[need] }) {

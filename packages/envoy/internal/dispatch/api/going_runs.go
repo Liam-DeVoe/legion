@@ -155,14 +155,15 @@ func goingConversationListed(n int) string {
 }
 
 // goingNewRun is a run as its start writes it: its id, its person's canonical login, the words
-// and the chip, its level and mode, the conversation it belongs to (its own id for a first run)
-// and the run it continues (nil for a first run).
+// and the chip, its kind (agentwire.RunNewIssue, or "" for a run of the words), its level and
+// mode, the conversation it belongs to (its own id for a first run) and the run it continues (nil
+// for a first run).
 type goingNewRun struct {
-	id, login, words string
-	chip             *goingContext
-	level, mode      string
-	conversation     string
-	continues        *string
+	id, login, words  string
+	chip              *goingContext
+	kind, level, mode string
+	conversation      string
+	continues         *string
 }
 
 // insertGoingRun writes run in tx, queued at the shape this build saves (goingRunShape), as the
@@ -177,9 +178,9 @@ func insertGoingRun(ctx context.Context, tx pgx.Tx, run goingNewRun) error {
 		chip = string(encoded)
 	}
 	if _, err := tx.Exec(ctx, `
-		insert into going_runs (id, author_login, words, context, conversation_id, continues, level, mode, state, shape)
-		values ($1::uuid, $2, $3, $4::jsonb, $5::uuid, $6::uuid, $7, $8, 'queued', $9)
-	`, run.id, run.login, run.words, chip, run.conversation, run.continues, run.level, run.mode, goingRunShape); err != nil {
+		insert into going_runs (id, author_login, words, context, conversation_id, continues, kind, level, mode, state, shape)
+		values ($1::uuid, $2, $3, $4::jsonb, $5::uuid, $6::uuid, nullif($7, ''), $8, $9, 'queued', $10)
+	`, run.id, run.login, run.words, chip, run.conversation, run.continues, run.kind, run.level, run.mode, goingRunShape); err != nil {
 		return fmt.Errorf("record the run: %w", err)
 	}
 	return nil

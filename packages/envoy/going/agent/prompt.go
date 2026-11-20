@@ -1,5 +1,7 @@
 package agent
 
+import "github.com/sjawhar/envoy/going/agentwire"
+
 // systemPrompt is the system message of every step of a run: what the agent is, its five tools,
 // and the rules it keeps. Every tool result is text that people, agents, GitHub or a web page
 // wrote, so the prompt says it is data and never an instruction: a result that asks for a change
@@ -24,3 +26,27 @@ Rules:
 - Answer in prose, linking each item you used with its href, as its tool result gives it. Write no number you did not read in a tool result.
 - When a result is cut, read the rest with another call, or say what you did not read.
 - Show a table, a chart or one number only through call_tool's draw_block, whose numbers the server makes from this run's tool results: name each result by the step and call it names ("step 4, call 1"), and the chain of filter, group, count, sum, mean, min, max and sort the server runs over their rows. Write no number in its arguments but those steps and calls. When it answers that the data was not whole, read the rest, every page of a list, and call it again.`
+
+// newIssuePrompt is what the system message of a new-issue run (agentwire.RunNewIssue) adds to
+// systemPrompt: the run's one task, to file the person's words as one new issue whose fields it
+// writes from the words and the page, in one plan the server runs at once.
+const newIssuePrompt = `
+
+This run has one task: the person pressed Enter on the line "File as a new issue", so file their words as one new issue of Dispatch. That Enter approves the issue you propose, and it is filed at once, without waiting for them.
+- Call propose_plan once, with one change, dispatch_issue, and no other change. Its arguments:
+  - title: a short title, from the words.
+  - project: the project of the page the person asks from; where the page names none, the project the words name.
+  - parent: the issue of the page, where the page is an issue's, unless the words say the issue is top-level or name another parent.
+  - priority: 0 to 3 where the words say how urgent the issue is (P0 is 0), and none where they do not.
+  - spec: a short spec in markdown: what the person wants and why, in a few sentences, from the words alone. Add nothing the words do not say.
+  - Leave force out: where Dispatch holds a near copy, the create is refused and the person is told which.
+- Read only what you need for these, such as the page's issue or project. Write no answer: your turn ends once the issue is filed.`
+
+// system is the system message of the run's every model call but Auto-review's: systemPrompt,
+// with newIssuePrompt for a new-issue run.
+func (w *worker) system() string {
+	if w.run.Kind == agentwire.RunNewIssue {
+		return systemPrompt + newIssuePrompt
+	}
+	return systemPrompt
+}

@@ -148,7 +148,8 @@ func (w *worker) endGrant(reason string) {
 // work runs the run's turn: the rows of its plan that are approved and not yet run, then a step at
 // a time from its saved steps, until it answers, proposes a plan, spends a bound of its level,
 // fails, or stops being the agent's to work. A plan proposed in Auto-review is reviewed before the
-// turn ends (review).
+// turn ends (review), and the rows the server approved with the plan run at once, which ends the
+// turn (runApproved): the create of a new-issue run. A new-issue run whose create ran ends there.
 func (w *worker) work() {
 	level, known := Levels[w.run.Level]
 	switch {
@@ -177,6 +178,10 @@ func (w *worker) work() {
 	if w.halted() {
 		return
 	}
+	if w.run.Kind == agentwire.RunNewIssue && w.filed() {
+		w.end(agentwire.StateDone, "", nil)
+		return
+	}
 	retry := time.Second
 	for w.ctx.Err() == nil {
 		if reason := w.level.spent(w.name, w.used); reason != "" {
@@ -188,8 +193,12 @@ func (w *worker) work() {
 			return
 		}
 		outcome := w.step()
-		if outcome.state == agentwire.StateWaiting && w.proposed.Load() && w.run.Mode == modeAutoReview && !w.halted() {
-			outcome = w.review()
+		if outcome.state == agentwire.StateWaiting && w.proposed.Load() && !w.halted() {
+			if plan := w.plan.Load(); plan != nil && len(plan.Run) > 0 {
+				outcome = w.runApproved(plan.Run)
+			} else if w.run.Mode == modeAutoReview {
+				outcome = w.review()
+			}
 		}
 		switch {
 		case w.halted():
@@ -273,7 +282,8 @@ func (w *worker) step() stepOutcome {
 	var finish string
 	var calls []string
 	w.proposed.Store(false)
-	prompt := len(systemPrompt)
+	system := w.system()
+	prompt := len(system)
 	for _, message := range messages {
 		for _, block := range message.Blocks {
 			prompt += len(block.Text) + len(block.Input)
@@ -284,7 +294,7 @@ func (w *worker) step() stepOutcome {
 	}
 	request := w.level.request(w.agent.config.Model, w.used)
 	request.Model = w.agent.pacer.paced(request.Model, func() int { return prompt/charsPerToken + w.level.OutputTokens })
-	request.System, request.Input, request.Tools = systemPrompt, messages, w.tools(base)
+	request.System, request.Input, request.Tools = system, messages, w.tools(base)
 	request.OnStep = func(step agentloop.Step) error {
 		finish = step.Finish
 		calls = w.saveReply(base, step)

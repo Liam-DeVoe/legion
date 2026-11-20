@@ -4,7 +4,8 @@ package agent
 // model call reviews it against the person's words (review), and the server lets through the rows
 // those words ask for that its mode policy lets through; and the rows the person approved, or
 // Auto-review let through, run in order, each as a call of the server that names its row
-// (runRows), each saved as a step of the run.
+// (runRows), each saved as a step of the run. The rows the server approved with the plan itself,
+// the create of a new-issue run, run at once, and the run's turn ends (runApproved).
 
 import (
 	"context"
@@ -173,6 +174,23 @@ func (w *worker) applyReview(step int, asked []int) stepOutcome {
 	}
 	w.runRows(review.Run)
 	return stepOutcome{}
+}
+
+// runApproved runs rows, those the server approved with the plan its step proposed
+// (agentwire.PlanAnswer.Run), and ends the turn done: the create of a new-issue run, which the
+// Enter that started the run approved, and the server's end names what it filed, or ends the run
+// failed saying why it filed nothing.
+func (w *worker) runApproved(rows []agentwire.PlanRun) stepOutcome {
+	w.runRows(rows)
+	return stepOutcome{state: agentwire.StateDone}
+}
+
+// filed reports whether the run's history holds a row of its plan that ran, as runRows saves one.
+func (w *worker) filed() bool {
+	return slices.ContainsFunc(w.history, func(step agentwire.SavedStep) bool {
+		var body toolBody
+		return step.Kind == agentwire.StepTool && len(step.Body) > 0 && json.Unmarshal(step.Body, &body) == nil && body.Row != nil
+	})
 }
 
 // runRows runs rows in order, each as a route call of its tool and arguments that names its row,

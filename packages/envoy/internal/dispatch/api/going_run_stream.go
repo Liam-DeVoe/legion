@@ -175,12 +175,16 @@ func (g *goingRunReaders) admit(run, login string) (func(), string) {
 	}), ""
 }
 
-// goingRunInput is POST /api/v1/going/runs's body: the words, the context chip, the level (Fast,
-// Standard or Deep; Standard where it is empty), the mode (the person's setting where it is
-// empty), and the run the new one follows (empty for the first run of a conversation).
+// goingRunInput is POST /api/v1/going/runs's body: the words, the context chip, the run's kind
+// (empty for a run of the words, new_issue for the line File as a new issue, a Fast run that files
+// the words as one new issue at once: going_new_issue.go), the level (Fast, Standard or Deep;
+// Standard where it is empty, and Fast alone for a new-issue run), the mode (the person's setting
+// where it is empty), and the run the new one follows (empty for the first run of a
+// conversation).
 type goingRunInput struct {
 	Words     string             `json:"words" required:"true"`
 	Context   *goingContextInput `json:"context"`
+	Kind      string             `json:"kind" enum:"new_issue"`
 	Level     string             `json:"level" enum:"fast,standard,deep"`
 	Mode      string             `json:"mode" enum:"ask,auto_review"`
 	Continues string             `json:"continues"`
@@ -225,7 +229,16 @@ func (s *server) createGoingRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	level := input.Level
-	if level == "" {
+	switch {
+	case input.Kind != "" && input.Kind != agentwire.RunNewIssue:
+		writeError(w, codeGoingInput, http.StatusBadRequest, fmt.Sprintf("kind %q is not new_issue: leave it out for a run of the words", input.Kind))
+		return
+	case input.Kind == agentwire.RunNewIssue && level != "" && level != goingNewIssueLevel:
+		writeError(w, codeGoingInput, http.StatusBadRequest, fmt.Sprintf("a new-issue run is Fast, not %s", level))
+		return
+	case input.Kind == agentwire.RunNewIssue:
+		level = goingNewIssueLevel
+	case level == "":
 		level = "standard"
 	}
 	if _, known := agent.Levels[level]; !known {
@@ -246,7 +259,7 @@ func (s *server) createGoingRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codeGoingInput, http.StatusBadRequest, fmt.Sprintf("mode %q is neither ask nor auto_review", mode))
 		return
 	}
-	run := goingNewRun{id: uuid.NewString(), login: grant.login, words: words, chip: chip, level: level, mode: mode}
+	run := goingNewRun{id: uuid.NewString(), login: grant.login, words: words, chip: chip, kind: input.Kind, level: level, mode: mode}
 	run.conversation = run.id
 	var follows string
 	if continues := strings.TrimSpace(input.Continues); continues != "" {

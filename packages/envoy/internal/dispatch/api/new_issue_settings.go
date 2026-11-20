@@ -12,10 +12,9 @@ import (
 // issue when those words match nothing it found: the label that issue carries and the session it
 // is routed to, as the deployment configured them (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
 // DISPATCH_NEW_ISSUE_SESSION). Each is empty where the deployment set none: with no label the
-// issue carries none, and with no session the bar makes the issue and starts no conversation on
-// it. The bar writes the issue through the routes every other client writes through
-// (POST /api/v1/issues and the issue's own artifact, patch and message routes), so this read is
-// the only thing the configuration adds to the API.
+// issue carries none, and with no session it takes no route. The bar's line File as a new issue
+// starts a new-issue run, whose create carries both (going_new_issue.go), and nothing is posted on
+// the issue.
 type newIssueSettings struct {
 	Label   string `json:"label"`
 	Session string `json:"session"`

@@ -68,7 +68,10 @@ type createIssueInput struct {
 	Assignee   json.RawMessage `json:"assignee"`
 	Components json.RawMessage `json:"components"`
 	Repo       json.RawMessage `json:"repo"`
-	Actor      *model.Actor    `json:"actor"`
+	// Route is the route the new issue takes, role:<name> or session:<id>, held to the rule an
+	// update's route is (checkIssueRoute); none, or one written empty, leaves it with none.
+	Route *string      `json:"route"`
+	Actor *model.Actor `json:"actor"`
 }
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +234,14 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if err := checkIssueRoute(input.Route); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	var route *string
+	if input.Route != nil && *input.Route != "" {
+		route = input.Route
 	}
 	// The near-copy gate, run once for every create it covers whatever `force` says: a forced
 	// create's record of what it went past must be the refusal an unforced create would have met,
@@ -461,9 +472,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	issueRank := rank.Between(lastRank, "")
 
 	if _, err := tx.Exec(r.Context(), `
-		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, key, input.Project, number, input.Title, parentRef, actorJSON, labels, priority, issueRank, assignee, repo); err != nil {
+		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, route)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, key, input.Project, number, input.Title, parentRef, actorJSON, labels, priority, issueRank, assignee, repo, route); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

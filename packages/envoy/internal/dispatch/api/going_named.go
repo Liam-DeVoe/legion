@@ -37,17 +37,19 @@ const (
 // links to or moves beside, by the kind of item each names: an issue (every issue argument the
 // search lists, the issues one waits on and the two a rank moves it between), the project, an
 // ask, a comment, a message, a result or a priority an issue advances by its id, a document by
-// its id, slug or file name under its owner, the session a message goes to, and the repository a
-// source sync names or an issue points at. A priority id is a slug (priorityIDPattern), so the
-// words name one only where it is spelled as an id written short (goingNamesItem, goingIDOf); a
-// priority whose id is ordinary words the words never name, so an update stating it is an offer the
-// person picks. A repository is `owner/name`, which the words name only by writing it whole
-// (goingNamesRepo), so an automatic sync or an issue's repository runs only where the person typed
-// the repository.
+// its id, slug or file name under its owner, the session a message goes to and each target a
+// comment mentions (role:<name> or session:<id>), which the comment is delivered to, and the
+// repository a source sync names or an issue points at. A priority id is a slug
+// (priorityIDPattern), so the words name one only where it is spelled as an id written short
+// (goingNamesItem, goingIDOf); a priority whose id is ordinary words the words never name, so an
+// update stating it is an offer the person picks. A repository is `owner/name`, which the words
+// name only by writing it whole (goingNamesRepo), so an automatic sync or an issue's repository
+// runs only where the person typed the repository.
 var goingItemArguments = func() map[string]string {
 	named := map[string]string{
 		"project":    goingNamesProject,
 		"session":    goingNamesSession,
+		"mentions":   goingNamesSession,
 		"retract":    goingNamesItem,
 		"advances":   goingNamesItem,
 		"repo":       goingNamesRepo,

@@ -99,8 +99,9 @@ type Deps struct {
 	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
 	// from the words a person typed when those words match nothing it found
 	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
-	// DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that carries no label;
-	// NewIssueSession empty is an issue made with no conversation started on it.
+	// DISPATCH_NEW_ISSUE_SESSION), which a new-issue run's create carries (going_new_issue.go).
+	// NewIssueLabel empty is an issue that carries no label; NewIssueSession empty is an issue
+	// made with no route.
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string

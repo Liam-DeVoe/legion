@@ -327,10 +327,11 @@ type planChange struct {
 
 // proposePlan proposes the model's plan to the server by a plan call (agentwire.KindPlan), as
 // the step numbered step, and ends the run's turn: the server keeps the plan, whose rows wait for
-// the person, and the step is saved with it. A plan of no change, of a tool Dispatch has no spec
-// of, or one that needs a change it does not hold, is refused back to the model, and so is one
-// the server refuses: a change whose arguments its tool's schema refuses, or over an item the
-// person may not read.
+// the person, or, for a new-issue run, whose create the Enter that started the run approved, which
+// runs now (agentwire.PlanAnswer.Run), and the step is saved with it. A plan of no change, of a
+// tool Dispatch has no spec of, or one that needs a change it does not hold, is refused back to
+// the model, and so is one the server refuses: a change whose arguments its tool's schema refuses,
+// or over an item the person may not read.
 func (w *worker) proposePlan(ctx context.Context, step int, input json.RawMessage) (string, bool) {
 	var plan struct {
 		Summary string       `json:"summary"`
@@ -364,6 +365,9 @@ func (w *worker) proposePlan(ctx context.Context, step int, input json.RawMessag
 	}
 	w.plan.Store(&made)
 	w.proposed.Store(true)
+	if len(made.Run) > 0 {
+		return fmt.Sprintf("The plan is saved as plan %d, and the person approved it already: its %d changes run now.", made.Plan, len(made.Run)), false
+	}
 	return fmt.Sprintf("The plan is saved as plan %d: its %d changes wait for the person's approval.", made.Plan, len(made.Rows)), false
 }
 

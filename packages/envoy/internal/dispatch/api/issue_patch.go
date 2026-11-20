@@ -54,6 +54,20 @@ type updateIssueInput struct {
 	Actor            *model.Actor    `json:"actor"`
 }
 
+// checkIssueRoute refuses a route an issue cannot take, 400 ROUTE_INVALID: one that is neither
+// role:<name> nor session:<id> (model.ParseRoute). None, and a route written empty, which an
+// update clears the issue's route with, pass. An update (PATCH /api/v1/issues/{key}) and a create
+// (POST /api/v1/issues) hold a route to it alike.
+func checkIssueRoute(route *string) error {
+	if route == nil || *route == "" {
+		return nil
+	}
+	if _, err := model.ParseRoute(*route); err != nil {
+		return errorf(http.StatusBadRequest, "ROUTE_INVALID", "invalid route")
+	}
+	return nil
+}
+
 // issueExpectableFields are the fields of an issue a write back's condition may name
 // (goingCondition.Expect): those an update writes.
 var issueExpectableFields = map[string]bool{
@@ -238,11 +252,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if input.Route != nil && *input.Route != "" {
-		if _, err := model.ParseRoute(*input.Route); err != nil {
-			writeError(w, "ROUTE_INVALID", http.StatusBadRequest, "invalid route")
-			return
-		}
+	if err := checkIssueRoute(input.Route); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	var labels, labelsAdd []string
 	if input.Labels != nil && input.LabelsAdd != nil {

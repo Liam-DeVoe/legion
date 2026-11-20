@@ -11,6 +11,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -40,6 +41,23 @@ var goingClassesThatWait = map[goingWriteClass]bool{
 // links and of a claim, and a create with no text but a title.
 var goingAutoReviewClasses = map[goingWriteClass]bool{
 	goingClassField: true, goingClassLink: true, goingClassClaim: true, goingClassCreatePlain: true,
+}
+
+// goingRowClass is the class of a row of tool with arguments: its tool's class, except that an
+// issue's create that carries a spec is a create with text (goingClassCreateText), where one with
+// a title alone is a plain create (goingClassCreatePlain).
+func goingRowClass(tool string, arguments json.RawMessage) goingWriteClass {
+	class := goingWriteTools[tool].Class
+	if tool != goingIssueCreateTool {
+		return class
+	}
+	var create struct {
+		Spec string `json:"spec"`
+	}
+	if json.Unmarshal(arguments, &create) == nil && strings.TrimSpace(create.Spec) != "" {
+		return goingClassCreateText
+	}
+	return class
 }
 
 // The reasons a row waits for the person in both modes beside its class (goingRowShown.Waits):
@@ -178,8 +196,9 @@ func (s *server) goingRowEvent(ctx context.Context, tool string, prepared goingP
 	return &event, nil
 }
 
-// goingAutoReviewLets reports whether Auto-review may let a row of tool through that waits for
-// waits: its class is one goingAutoReviewClasses names, and it waits for nothing in both modes.
-func goingAutoReviewLets(tool string, waits []string) bool {
-	return goingAutoReviewClasses[goingWriteTools[tool].Class] && len(waits) == 0
+// goingAutoReviewLets reports whether Auto-review may let a row of tool with arguments through
+// that waits for waits: its class (goingRowClass) is one goingAutoReviewClasses names, and it waits
+// for nothing in both modes.
+func goingAutoReviewLets(tool string, arguments json.RawMessage, waits []string) bool {
+	return goingAutoReviewClasses[goingRowClass(tool, arguments)] && len(waits) == 0
 }

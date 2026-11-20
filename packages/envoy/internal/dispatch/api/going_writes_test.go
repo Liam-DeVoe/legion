@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -380,9 +381,11 @@ func goingRowCases(f goingRowFixtures) map[string]goingRowCase {
 		},
 		"dispatch_comment POST /api/v1/issues/{key}/comments": {arguments: map[string]any{
 			"issue": f.issue, "body": "Reads well.", "artifact": f.notesSlug, "quote": "The first line.",
+			"mentions": []any{"role:legion-reviewer"},
 		}},
 		"dispatch_comment POST /api/v1/artifacts/{id}/comments": {arguments: map[string]any{
 			"project": "DEMO", "artifact": f.guideSlug, "body": "Clear.", "quote": "Read this first.",
+			"mentions": []any{"session:s-guide", "role:legion-reviewer"},
 		}},
 		"dispatch_suggest POST /api/v1/issues/{key}/comments": {arguments: map[string]any{
 			"issue": f.issue, "quote": "says hello", "replace_with": "says hi",
@@ -499,6 +502,29 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 				_, _ = answer.ReadFrom(response.Body)
 				if response.StatusCode >= http.StatusMultipleChoices {
 					t.Fatalf("%s refused the call: status=%d body=%s (sent %v)", name, response.StatusCode, answer.String(), doer.sent)
+				}
+				if targets, mentions := row.arguments["mentions"].([]any); mentions {
+					// The comment the route stored mentions each target the call named.
+					var made struct {
+						ID string `json:"id"`
+					}
+					if err := json.Unmarshal(answer.Bytes(), &made); err != nil {
+						t.Fatalf("read the comment %s made: %v", name, err)
+					}
+					var stored []string
+					if err := rig.database.Pool.QueryRow(context.Background(), `
+						select coalesce(array_agg(target order by target), '{}') from comment_mentions where comment_id = $1::uuid`,
+						made.ID).Scan(&stored); err != nil {
+						t.Fatalf("read the mentions of comment %s: %v", made.ID, err)
+					}
+					want := make([]string, 0, len(targets))
+					for _, target := range targets {
+						want = append(want, target.(string))
+					}
+					slices.Sort(want)
+					if !slices.Equal(stored, want) {
+						t.Fatalf("the comment %s stored mentions %v, want %v", name, stored, want)
+					}
 				}
 				var writes []string
 				for _, sent := range doer.sent {

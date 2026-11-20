@@ -140,10 +140,11 @@ func (a *AgentListener) call(ctx context.Context, request agentwire.CallRequest)
 	}
 }
 
-// goingCallRun is the run a call is made for, as its row stands at the call.
+// goingCallRun is the run a call is made for, as its row stands at the call: its kind is
+// agentwire.RunNewIssue for a new-issue run, "" for a run of its person's words.
 type goingCallRun struct {
-	id, login, level string
-	used             agentwire.Budget
+	id, login, kind, level string
+	used                   agentwire.Budget
 }
 
 // runCall makes the call: it checks the run's lease, resolves the run's person from its grant,
@@ -325,8 +326,8 @@ func (a *AgentListener) callRun(ctx context.Context, request agentwire.CallReque
 	var state *string
 	var used []byte
 	err := a.s.deps.Store.Pool.QueryRow(ctx, `
-		select author_login, coalesce(level, ''), budget_used, lease_token::text, state from going_runs where id = $1::uuid
-	`, request.Run).Scan(&run.login, &run.level, &used, &token, &state)
+		select author_login, coalesce(kind, ''), coalesce(level, ''), budget_used, lease_token::text, state from going_runs where id = $1::uuid
+	`, request.Run).Scan(&run.login, &run.kind, &run.level, &used, &token, &state)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return goingCallRun{}, goingStaleLease(request.Run)
 	}
@@ -426,16 +427,16 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 	if err != nil {
 		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
 	}
-	var sendIssue string
+	var row goingPlanRowStored
 	if _, writes := a.s.going.Lookup(request.Tool); writes {
-		row, gated := a.rowGate(ctx, request, login, doer)
+		var gated *agentwire.Error
+		row, gated = a.rowGate(ctx, request, login, doer)
 		if gated != nil {
 			return agentwire.CallAnswer{}, gated
 		}
-		sendIssue = row.sendIssue()
 		defer func() { a.recordRow(ctx, request, answer, refusal) }()
 	}
-	specs, write, refusal := a.routeSends(ctx, request, arguments, doer, landed, sendIssue)
+	specs, write, refusal := a.routeSends(ctx, request, arguments, doer, landed, row)
 	if refusal != nil {
 		if last := goingLastLanded(landed); last != nil && refusal.Code == agentwire.CodeCallRefused {
 			// What the call's earlier try left is what the tool now refuses on: the call landed,
@@ -519,17 +520,21 @@ func goingCallAnswerOf(recorded *recordedAnswer) agentwire.CallAnswer {
 // (sendIssue), its translation's reads made through doer, and told what of its requests landed
 // before (landed). An upload whose row is sent over the document of its name (rowUpload) sheds the
 // create alone its translation carries and names the token of the version it replaces, so it lands
-// as that document's next version. A read tool sends one request (goingReadSends). Any other name
-// is refused UNKNOWN_TOOL.
+// as that document's next version. The create of a new-issue run carries the route its row's
+// approval names (newIssueRoute), which no argument of the tool holds. A read tool sends one
+// request (goingReadSends). Any other name is refused UNKNOWN_TOOL.
 func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRequest, arguments map[string]any, doer goingInProcess,
-	landed []*goingLandedRequest, sendIssue string,
+	landed []*goingLandedRequest, row goingPlanRowStored,
 ) ([]goingSend, bool, *agentwire.Error) {
 	if _, writes := a.s.going.Lookup(request.Tool); writes {
-		caller := GoingCaller{Catalogue: a.s.going, Doer: doer, knownSession: a.s.goingKnownSession, sendIssue: sendIssue,
+		caller := GoingCaller{Catalogue: a.s.going, Doer: doer, knownSession: a.s.goingKnownSession, sendIssue: row.sendIssue(),
 			resumeAfter: func(specs []goingSend) []goingWriteRequest { return goingLandedBefore(landed, specs) }}
 		prepared, err := caller.prepare(ctx, request.Tool, arguments)
 		if err != nil {
 			return nil, true, goingCallRefusal(request.Tool, err)
+		}
+		if route := row.newIssueRoute(); route != "" && prepared.call.body != nil {
+			prepared.call.body["route"] = route
 		}
 		if _, uploads := goingUploadNames[request.Tool]; uploads && request.Row != nil {
 			upload, refusal := a.rowUpload(ctx, request, prepared, caller.reader())
