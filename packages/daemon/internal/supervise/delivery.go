@@ -549,8 +549,11 @@ func pendingID(p *Delivery) string {
 // (replaceOwedTask) — runs that launch where it arrives, and drops or retires that delivery itself
 // before it does, by the same test and in the same order as here: the launch takes the ladder's
 // wait with the claim's timers (letGo), which is what makes the ladder's task replaceable, so the
-// claim reaching here then holds no delivery at all. A delivery whose take's turn has run is
-// retired below and runs no launch (runParkedLaunchNow says why).
+// claim reaching here then holds no delivery at all. So does a task over a delivery whose take's
+// turn has run on a claim in no turn: runParkedLaunchNow retires that delivery as the last case
+// below does, before the launch, which would otherwise take it back as a cut turn. Over a claim
+// that is working, such a delivery is retired below and the launch keeps its turn
+// (runParkedLaunchNow says why).
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	id, task := request.ID, request.Task
 	queued := m.given(request)
@@ -770,8 +773,10 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 }
 
 // retirePending drops the pending delivery and leaves its value to whoever writes the next one:
-// queue, for the task a newer one replaces, and replaceOwedTask, for the task a provider error
-// took back that a newer one replaces (retireTask, which every end of a delivery goes through).
+// queue, for the task a newer one replaces; replaceOwedTask, for the task a provider error took
+// back that a newer one replaces; and runParkedLaunchNow, for the task whose take's turn has run
+// that an operator's task replaces before the launch it runs (retireTask, which every end of a
+// delivery goes through).
 func (m *Machine) retirePending(ctx context.Context) error {
 	return m.retireTask(ctx, false)
 }

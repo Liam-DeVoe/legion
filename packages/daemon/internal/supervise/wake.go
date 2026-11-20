@@ -610,7 +610,7 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // no launch waits only because one does (judge). The next report of that process would charge
 // another launch failure, the death it already charged excepted (died).
 //
-// Three things it does not touch. A request the table refuses or ignores decides nothing, so it
+// Four things it does not touch. A request the table refuses or ignores decides nothing, so it
 // starts no launch either: the row is read here, before anything runs, exactly as Handle reads
 // it after. A task the row acts on but queue refuses decides nothing either, so it starts no
 // launch: that launch would replace a live process for a request the claim answers with nothing.
@@ -621,23 +621,21 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // is already pending" (queue, ErrDeliveryPending) behind exactly two pending deliveries: one a
 // take holds whose turn has not started, and an untaken one that the record still owes and that
 // no newer task replaces. The record is asked here whether it owes that untaken one, and the
-// row's queue asks it again before its refusal. And a claim holding a suspension is left to its
+// row's queue asks it again before its refusal. A claim holding a suspension is left to its
 // hold: the turn of such a claim ends the suspension rather than launching (wakeNow, endHeld),
 // which is not what a task asks for, and the task is queued and kept until the hold lifts
-// whichever process the claim is running (claimHold).
+// whichever process the claim is running (claimHold). And a take over a claim that is working is
+// left to the turn that runs, which the launch would cut, though queue takes the operator's task
+// over such a take whose turn has started (its last case), and that task waits for the launch's
+// turn.
 //
-// A delivery a take holds whose turn has run keeps the launch parked as well, though queue takes
-// the operator's task in its place: a launch run here would take such a task back as a cut turn
-// where no report has finished it (settle, interrupted), and queue would then refuse the
-// operator's task behind it.
-//
-// The pending deliveries the launch runs over are untaken ones the operator's task takes the
-// place of, of two kinds, decided in the order queue decides them. The first is a task the record
-// no longer owes (dropUnowed, the test a take makes before it drops): its issue has left the
-// phase it was queued for, it is an ask of an update round an older daemon queued, or it is the
-// daemon's own delivery of a relaunch's record that no longer tells. queue drops such a task and
-// queues the newer one in its place, so the claim takes an operator's task over it, a person is
-// waiting on a task this claim will work, and the launch runs for it. The drop is made here,
+// The pending deliveries the launch runs over are the ones the operator's task takes the place
+// of, of three kinds, decided in the order queue decides them. The first is an untaken task the
+// record no longer owes (dropUnowed, the test a take makes before it drops): its issue has left
+// the phase it was queued for, it is an ask of an update round an older daemon queued, or it is
+// the daemon's own delivery of a relaunch's record that no longer tells. queue drops such a task
+// and queues the newer one in its place, so the claim takes an operator's task over it, a person
+// is waiting on a task this claim will work, and the launch runs for it. The drop is made here,
 // before that launch, as queue makes it — the value deleted, under the take's drop line — so the
 // row's queue finds no delivery, and the operator's task carries the record's sentence in front
 // of itself where the record still tells (Delivery.message).
@@ -658,6 +656,15 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // (runWake): the row that follows queues the operator's task into a claim holding none, which is
 // where R2 leaves it either way.
 //
+// The third is a task a take holds whose turn has run, over a claim in no turn (ready or idle):
+// the take's turn is over and no report has finished the task. queue retires such a task and
+// queues the newer one in its place (its last case), so the claim takes an operator's task over
+// it, and the launch runs for it. The retirement is made here, before that launch, as queue makes
+// it, under a line of its own, so the row's queue finds no delivery. Left to the row it could not
+// be: where only a report finishes the task (endFrameFinishes), the launch would take it back as a
+// cut turn (settle, interrupted), and queue, reading the claim the launch leaves, would refuse the
+// operator's task behind the task taken back, which the next process would then run again.
+//
 // The launch takes no second token — the reservation was taken once, at the gate — so the wakes
 // behind it keep the turns they already hold, and the line it writes says the pacing did not
 // decide when it ran (wakeRan, runWake).
@@ -669,14 +676,23 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 		return nil
 	}
 	if pending := m.claim.Pending; pending != nil {
-		if pending.taken() {
+		switch {
+		case pending.awaitsTurn() || (pending.taken() && m.claim.State == StateWorking):
 			return nil
-		}
-		dropped, err := m.dropUnowed(ctx)
-		if err != nil {
-			return err
-		}
-		if !dropped {
+		case pending.taken():
+			m.log.Info("supervise: the pending task's turn has run, so the operator's task takes its place, and the launch parked over the claim's process runs for it",
+				"taken", pending.Number, "delivery", pending.ID)
+			if err := m.retirePending(ctx); err != nil {
+				return err
+			}
+		default:
+			dropped, err := m.dropUnowed(ctx)
+			if err != nil {
+				return err
+			}
+			if dropped {
+				break
+			}
 			owed, attempt := pending.ID, pending.ProviderErrorRetries
 			replaced, err := m.replaceOwedTask(ctx)
 			if err != nil || !replaced {
