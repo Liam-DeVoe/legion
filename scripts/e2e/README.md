@@ -3912,15 +3912,19 @@ its cluster is [`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s, `legion-controller
 | `cluster`, `agent-sandbox`, `gvisor` | as `burstable-kind.sh`'s, through the lib |
 | `image` | the worker image, pulled into the node's containerd by digest |
 | `store` | the CI's pinned pgvector Postgres on the kind network, migrated by the driver |
-| `sweep` | the checkout's driver, in a container on the kind network, reads the claims, stores the controller's claim `launching`, and launches the controller through the runtime's `Spawn` (`controller-launch`: its Sandbox, its `gvisor` pod and its volume claim on the API server); five `ReconcileOrphans` at grace 0 told the claims read before the launch each leave the Sandbox, its uid unchanged and not terminating, and its volume claim (`sweep-keeps-launched-controller`); with the claim stored `retired`, a sweep deletes the Sandbox, and the API server holds neither it nor its volume claim (`retired-controller-swept`); the `legion` namespace then holds no Sandbox or volume claim |
+| `sweep` | the checkout's driver, in a container on the kind network, writes the providers Secret, reads the claims, stores the controller's claim `launching`, and launches the controller through the runtime's `Spawn` (`controller-launch`: the driver's GitHub stand-in served the shared public leak check's tarball, at the tag the worker image pins (`LEGION_LEAK_CHECK_TAG`), to the read lease, which the launch installs in the pod before its start frame, so an image that pins no tag fails here; and its Sandbox, its `gvisor` pod and its volume claim on the API server); five `ReconcileOrphans` at grace 0 told the claims read before the launch each leave the Sandbox, its uid unchanged and not terminating, and its volume claim (`sweep-keeps-launched-controller`); with the claim stored `retired`, a sweep deletes the Sandbox, and the API server holds neither it nor its volume claim (`retired-controller-swept`); the `legion` namespace then holds no Sandbox or volume claim |
 | `negative-control` | the negative control's driver, on the same store and cluster, makes the same launch and sweep, and a sweep at grace 0 deletes the Sandbox of the controller whose claim the store holds `launching` (`reverted-sweep-deletes-launched-controller`) |
 
 What the proof stands in for lies outside the sweep:
 the controller's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the file are documentation placeholders);
 its App tokens are placeholders; and no repository is mapped, so its gh files name no owner.
 The claim the supervisor would store is written to the store by the driver, as the supervisor writes it before a launch begins.
-The store, the runtime's sweep and launch, Agent Sandbox's controller, its foreground deletion of the volume claim, and gVisor are the real ones.
-`controller_sweep_kind_test.go`, untagged, builds the proof's `legion.yaml` through the loader and its runtime through boot's factory and `sandbox.New` on every `go test`, so a contract change that refuses either fails CI, not the next live run.
+The providers Secret, which an operator keeps and every pod mounts under the file's `postgres` session store, is written by the driver before the launch, as an operator would, its `session_dsn_secret` key holding the store's own URL; the stub opens no session.
+GitHub is a stand-in in the driver's process, admitting only the read lease the placeholder App tokens mint, so no request of the proof leaves the machine:
+it answers the read of the leak check's index 404, as GitHub does before the index's first publish, and serves the check's tarball at every tag of the published shape, holding a stand-in check that answers `--help` as the real one does.
+The store, the runtime's sweep and launch, the daemon's read of the check and the pod's install of it, Agent Sandbox's controller, its foreground deletion of the volume claim, and gVisor are the real ones.
+`controller_sweep_kind_test.go`, untagged, on every `go test`: builds the proof's `legion.yaml` through the loader and its runtime through boot's factory and `sandbox.New`; reads the check from the GitHub stand-in through the daemon's own reader at a pinned tag and installs it as a pod's launcher does; and holds the providers Secret the driver writes to the keys the proof's pods mount.
+So a contract change that refuses any of them fails CI, not the next live run.
 `CONTROLLER_SWEEP_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript and, on a failure, what the cluster held.
 
 ## share-volumes-kind.sh
@@ -6956,7 +6960,8 @@ Each item below names a function, then what it does.
 
   creates the cluster `NAME`, its kubeconfig a file of `WORK` (`kind_kubeconfig`) and its context `kind-NAME` (`kind_context`);
   labels its one node (`kind_node`) `legion.dev/pool=legion`, the pool the runtime places every pod on;
-  creates the `legion` namespace and checks kind's `standard` storage class
+  creates the `legion` namespace and checks kind's `standard` storage class;
+  kind picks the API server's host port as one free when it looks, and on a busy host another socket can take it before docker binds it, so a create kind fails on a host port bind is made again, the cluster deleted by its name first, up to `kind_sandbox_create_tries` (3) tries, each retry named; a create that fails for any other reason ends the run, naming kind's last line (`lib/kind-sandbox.test.ts`)
 
 - `kind_k ARGS…`
 

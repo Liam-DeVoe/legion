@@ -9,7 +9,12 @@
 # (kind_kubeconfig) and the context kind-NAME (kind_context). Its one node (kind_node) is labelled
 # legion.dev/pool=legion, the pool the runtime places every pod on, and the cluster has the legion
 # namespace and kind's standard storage class. kind_k runs kubectl against that file and context
-# alone, so the caller's kubeconfig and its current context are never read.
+# alone, so the caller's kubeconfig and its current context are never read. kind picks the API
+# server's host port as one free when it looks, and on a busy host another socket can take it
+# before docker binds it, so a create kind fails on a host port bind is made again, the cluster
+# deleted by its name first, up to kind_sandbox_create_tries tries, each retry named by a note; a
+# create that fails for any other reason fails the run, naming kind's last line
+# (lib/kind-sandbox.test.ts).
 # kind_sandbox_install_agent_sandbox WORK applies Agent Sandbox's release manifest at the version
 # internal/runtime/sandbox speaks, pinned by sha256, and waits for its controller.
 # kind_sandbox_install_gvisor WORK installs gVisor's dated release, pinned by sha512, into the
@@ -31,6 +36,7 @@ kind_cluster=
 kind_context=
 kind_kubeconfig=
 kind_node=
+kind_sandbox_create_tries=3
 
 kind_agent_sandbox_url=https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.3/sandbox.yaml
 kind_agent_sandbox_sha256=725fafdabe6aac202a89dc57f1cfe0e2e92f3164c8c2bd343fffca52f7039d96
@@ -41,7 +47,19 @@ kind_k() { kubectl --kubeconfig "$kind_kubeconfig" --context "$kind_context" "$@
 
 kind_sandbox_create() {
   kind_cluster=$1 kind_context=kind-$1 kind_kubeconfig=$2/kubeconfig kind_node=$1-control-plane
-  "$kind_bin" create cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" --wait 180s
+  local try log bind
+  for ((try = 1; ; try++)); do
+    log=$2/kind-create-$try.log
+    if "$kind_bin" create cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" --wait 180s 2>&1 | tee "$log"; then
+      break
+    fi
+    bind=$(grep -m 1 -E 'failed to bind host port .*address already in use' "$log") ||
+      fail "kind could not create cluster $kind_cluster: $(grep -v '^[[:space:]]*$' "$log" | tail -n 1)"
+    [ "$try" -lt "$kind_sandbox_create_tries" ] ||
+      fail "kind could not create cluster $kind_cluster in $try tries, each failing on a host port bind; the last: $bind"
+    note "kind create cluster try $try of $kind_sandbox_create_tries failed on a host port another socket took ($bind); deleting cluster $kind_cluster and trying again"
+    "$kind_bin" delete cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig"
+  done
   kind_k label node "$kind_node" legion.dev/pool=legion
   kind_k create namespace legion
   kind_k get storageclass standard -o name

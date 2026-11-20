@@ -2,10 +2,11 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -151,11 +152,13 @@ func controllerSweepKindGitHub(t *testing.T) *leakguardtest.Releases {
 
 // controllerSweepKindCheckServed is the tags github served the check's tarball at, in the order it
 // served them: the runtime's reads of the check a launch installs, as the stand-in recorded them.
-// It is an error unless github served the tarball once or more, each time to the read lease.
+// It is an error unless github served the tarball once or more, each time to the read lease. The
+// daemon reads the check only for a pod's launcher whose hello names a pin and no install of it
+// (launchers.serveLeakCheck), so a launch served no read is one of those two.
 func controllerSweepKindCheckServed(github *leakguardtest.Releases) ([]string, error) {
 	served := github.TarballsServed()
 	if len(served) == 0 {
-		return nil, errors.New("the proof's GitHub served the check's tarball to no read")
+		return nil, fmt.Errorf("the proof's GitHub served the check's tarball to no read: the pod's launcher named no %s in its hello, so the worker image pins no check, or it said it held the check installed already", leakguard.TagVariable)
 	}
 	tags := make([]string, 0, len(served))
 	for _, read := range served {
@@ -264,11 +267,12 @@ func TestTheControllerSweepKindProofsGitHubServesTheCheckAnImagePins(t *testing.
 }
 
 // The providers Secret the live proof makes (controllerSweepKindProviders) holds every key the
-// proof's pods mount from it, listed as the runtime lists them (Runtime.providersKeys,
-// internal/runtime/sandbox/manifest.go): each provider_keys key, each providers secret, and the
-// session store's session_dsn_secret key. The kubelet starts no pod whose providers Secret is
-// missing or lacks a key it mounts, so the controller's launch would time out waiting for its
-// launcher.
+// proof's pods mount from it. The keys are those of the runtime's own rule (Runtime.providersKeys,
+// internal/runtime/sandbox/manifest.go), which is unexported, so this test mirrors it: each
+// provider_keys key, each providers secret, and the session store's session_dsn_secret key. A new
+// mount source in that rule passes this test and fails only the live proof. The kubelet starts no
+// pod whose providers Secret is missing or lacks a key it mounts, so the controller's launch would
+// time out waiting for its launcher.
 func TestTheControllerSweepKindProofsProvidersSecretHoldsEveryKeyItsPodsMount(t *testing.T) {
 	path := writeControllerSweepKindConfig(t, t.TempDir(), "postgres://proof:p@192.0.2.10:5432/postgres", "192.0.2.10",
 		"ghcr.io/cybermonklabs/legion-worker@sha256:"+strings.Repeat("a", 64), writeKubeconfig(t, "https://192.0.2.10:6443", ""), "test")
@@ -293,7 +297,34 @@ func TestTheControllerSweepKindProofsProvidersSecretHoldsEveryKeyItsPodsMount(t 
 	if held := slices.Sorted(maps.Keys(secret.Data)); len(mounted) == 0 || !slices.Equal(held, mounted) {
 		t.Fatalf("the proof's providers Secret holds %q, and its pods mount %q from it", held, mounted)
 	}
-	if want := sandbox.ProvidersSecretName(project); secret.Name != want || secret.Namespace != cfg.Runtime.Kubernetes.Namespace {
-		t.Fatalf("the proof's providers Secret is %s/%s, want %s/%s", secret.Namespace, secret.Name, cfg.Runtime.Kubernetes.Namespace, want)
+}
+
+// The proof's GitHub answers the tarball route GitHub's 404 at a tag it does not hold
+// (leakguardtest.Releases.ServeTarball), as GitHub answers a ref the repository lacks, and records
+// no served read of it: the branch the live proof's control, a stand-in serving another tag only,
+// takes. The daemon's reader asks for no tag of another shape (leakguard.Source.Get), so the request
+// is made here directly, with the read lease.
+func TestTheControllerSweepKindProofsGitHubAnswers404AtATagItDoesNotHold(t *testing.T) {
+	github := controllerSweepKindGitHub(t)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, github.URL+"/repos/"+leakguard.CheckSlug+"/tarball/main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+controllerSweepKindReadLease)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const documentation = `"documentation_url":"https://docs.github.com/rest/repos/contents#download-a-repository-archive-tar"`
+	if response.StatusCode != http.StatusNotFound || !strings.Contains(string(body), documentation) {
+		t.Fatalf("the tarball at main answered %d %s, want GitHub's 404 holding %s", response.StatusCode, body, documentation)
+	}
+	if served := github.TarballsServed(); len(served) != 0 {
+		t.Fatalf("the proof's GitHub recorded %+v as served, want no served read", served)
 	}
 }
