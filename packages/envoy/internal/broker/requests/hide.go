@@ -161,20 +161,34 @@ func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, facts ro
 // (namedOnGrant) — is answered nil and asks Dispatch nothing, as the session that holds a row is
 // answered nil by the session rule: the grant row names them, so they already know it exists, and
 // a revoke only takes access away, so neither a Dispatch outage nor their leaving the grant's
-// project keeps them from ending it. Anyone else is asked the rule (hideUnseenRow): pgx.ErrNoRows
-// for an id no grant has and for a grant they may not see, ErrProjectAccessUnavailable when
-// Dispatch could not say, and nil for a grant they may see, which mayRevoke then lets them end
-// only where its approver is record.AnyoneApprover. It reads the grant as GrantsForApprover lists
-// it (grantKey), so such a person revokes exactly the grants their own list may show them.
+// project keeps them from ending it. A person's pod that BROKER_POD_OPERATORS no longer maps acts
+// for no person (unmappedPersonPod), and names its exchange entry's project, not its operator's,
+// so its operator column names whom it once acted for, not a person the grant names: operatorOf
+// gives none for it. Anyone else is asked the rule (hideUnseenRow): pgx.ErrNoRows for an id no
+// grant has and for a grant they may not see, ErrProjectAccessUnavailable when Dispatch could not
+// say, and nil for a grant they may see, which mayRevoke then lets them end only where its
+// approver is record.AnyoneApprover or they are its operator. It reads the grant as
+// GrantsForApprover lists it (grantKey), so such a person revokes exactly the grants their own
+// list may show them.
 func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) error {
 	facts, err := m.readRowFacts(ctx, grantKey, grantID)
 	if err != nil {
 		return err
 	}
-	if named, _ := namedOnGrant(login, facts.approver, facts.holder.Operator); named {
+	if named, _ := namedOnGrant(login, facts.approver, m.operatorOf(facts.holder)); named {
 		return nil
 	}
 	return m.hideUnseenRow(ctx, "grant "+grantID, login, facts)
+}
+
+// operatorOf is the person the enrollment that holds a grant acts for, as the person rule's
+// exemption reads it (namedOnGrant): enr's operator, and nil for a person's pod that
+// BROKER_POD_OPERATORS no longer maps (unmappedPersonPod), which acts for no person.
+func (m *Machine) operatorOf(enr enrollmentRow) *string {
+	if m.unmappedPersonPod(enr) {
+		return nil
+	}
+	return enr.Operator
 }
 
 // HideRequestFromSession is the private-project rule a session's own routes read before their

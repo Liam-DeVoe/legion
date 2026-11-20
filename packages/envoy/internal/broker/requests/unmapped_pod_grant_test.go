@@ -1,0 +1,72 @@
+package requests
+
+import (
+	"errors"
+	"slices"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/record"
+)
+
+// TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant: the exemption that lets a grant's operator
+// list and end it whatever Dispatch answers (namedOnGrant) reads the person the enrollment that
+// holds it acts for (operatorOf), not the operator column alone. dave's pod enrolls while
+// BROKER_POD_OPERATORS maps its account to dave, so its row names dave as its operator. The same
+// account is also mapped by BROKER_EXCHANGE_ACCOUNTS to the private project PRIV for carol. Once
+// the setting drops the account, the pod acts for no person and names PRIV through that entry
+// (credentialProjects), and it is granted PRIV_HUMAN, which carol approves. dave is on no list of
+// PRIV, so the grant is hidden from him as from any outsider: it is not on his Live grants, and
+// his revoke answers as an unknown grant's does and ends nothing. carol, its approver, still lists
+// it.
+func TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant(t *testing.T) {
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: privProject, Person: insider}}, nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	m.Exchange = set
+	m.PodOperators = map[string]string{dave.account: dave.person}
+	pod, key := dave.enroll(t, m.Store, "pod-dave-unmapped")
+	delete(m.PodOperators, dave.account)
+
+	req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "after the setting dropped the account", "PRIV_HUMAN"), "", nil)
+	if err != nil || req.State != "pending" || req.RecordID == nil {
+		t.Fatalf("Create(PRIV_HUMAN) from the unmapped pod = %+v, %v; want it pending carol's approval", req, err)
+	}
+	dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, insider)
+	if err != nil || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision by %s = %+v, %v; want a grant", insider, dec, err)
+	}
+	grantID := dec.GrantID
+	var operator *string
+	if err := m.Store.Pool.QueryRow(t.Context(), `select e.operator from grants g join enrollments e on e.id=g.enrollment_id where g.id=$1`, grantID).Scan(&operator); err != nil || deref(operator) != dave.person {
+		t.Fatalf("the grant's enrollment names operator %q, %v; want %s, so the row only cannot decide it", deref(operator), err, dave.person)
+	}
+
+	listed := func(login string) bool {
+		t.Helper()
+		grants, err := m.GrantsForApprover(t.Context(), login)
+		if err != nil {
+			t.Fatalf("GrantsForApprover(%s): %v", login, err)
+		}
+		return slices.ContainsFunc(grants, func(g ApproverGrant) bool { return g.GrantID == grantID })
+	}
+	if !listed(insider) {
+		t.Errorf("carol, the grant's approver, does not list grant %s", grantID)
+	}
+	if listed(dave.person) {
+		t.Errorf("dave, on no list of PRIV, lists grant %s of the pod that no longer acts for him", grantID)
+	}
+	if err := m.RevokeByApprover(t.Context(), grantID, dave.person, record.HumanActor(dave.person)); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("dave's revoke of grant %s = %v; want the answer an unknown grant gets (pgx.ErrNoRows)", grantID, err)
+	}
+	var revoked bool
+	if err := m.Store.Pool.QueryRow(t.Context(), `select revoked_at is not null from grants where id=$1`, grantID).Scan(&revoked); err != nil || revoked {
+		t.Fatalf("grant %s revoked = %v, %v after dave's refused revoke; want it still live", grantID, revoked, err)
+	}
+}

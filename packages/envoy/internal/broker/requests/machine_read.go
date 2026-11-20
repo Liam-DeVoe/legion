@@ -1613,6 +1613,9 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 			} else {
 				ok, err := m.maySeeRecord(ctx, "record "+p.RecordID, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
 				switch {
+				case err != nil && ctx.Err() != nil:
+					// The caller went away: Dispatch was not left unanswering, so nothing is logged.
+					continue
 				case errors.Is(err, ErrProjectAccessUnavailable):
 					m.logRowUnanswered("pending "+p.RecordID, err, "list", "pending", "record", p.RecordID)
 					continue
@@ -1981,6 +1984,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	type seen struct {
 		sessionProjects []string
 		reason          string
+		operator        *string
 	}
 	var reads []seen
 	for rows.Next() {
@@ -1997,6 +2001,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 			current.Operator = &g.Enrollment.Operator
 		}
 		s.sessionProjects = m.credentialsProjects(asked, current)
+		s.operator = m.operatorOf(current)
 		g.Granted = policy.Approval
 		if g.RecordID == nil {
 			g.Granted = policy.Automatic
@@ -2009,17 +2014,20 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	}
 	rows.Close()
 	// A private project's grant is left off the list of everyone outside the project but its
-	// approver and its operator, read once the rows are closed so no call to Dispatch holds the
-	// pooled connection (maySeeRecord); a grant Dispatch cannot answer for is left off alone, as
-	// PendingForApprover leaves off a request.
+	// approver and its operator (operatorOf: none for a person's pod BROKER_POD_OPERATORS no longer
+	// maps), read once the rows are closed so no call to Dispatch holds the pooled connection
+	// (maySeeRecord); a grant Dispatch cannot answer for is left off alone, as PendingForApprover
+	// leaves off a request, and one left off because the caller went away is not logged.
 	visible := out[:0]
 	for i, g := range out {
-		if named, _ := namedOnGrant(login, &g.Approver, &g.Enrollment.Operator); named {
+		if named, _ := namedOnGrant(login, &g.Approver, reads[i].operator); named {
 			visible = append(visible, g)
 			continue
 		}
 		ok, err := m.maySeeRecord(ctx, "grant "+g.GrantID, login, g.Names, reads[i].sessionProjects, reads[i].reason)
 		switch {
+		case err != nil && ctx.Err() != nil:
+			// The caller went away: nothing is logged, and the grant is left off a list nobody reads.
 		case errors.Is(err, ErrProjectAccessUnavailable):
 			attrs := []any{"list", "grants", "grant", g.GrantID}
 			if g.RecordID != nil {
