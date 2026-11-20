@@ -253,12 +253,13 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // for the issue (reconcilePodUpdates, podReplacement).
 //
 // clock is the sweep's now and what a project's pause did to the issue's pod (roundClock), built
-// once for the issue: each round bound and each pause hold read below comes from it. Neither an
-// opening nor a late round's told mark is dated at that now: an opening is dated when it is made
-// (recordPodUpdateOpening), and a told mark when the round is told (tellUpdateStalled), since the
-// walk can wait before it reaches the issue. No round opens over a pod a hold stands on
-// (roundClock.held): the pause kept that pod for its stopped roles, and a round would ask them to
-// push work for a replacement while nothing of theirs runs.
+// once for the issue: each round bound the walk decides by and each pause hold read below comes
+// from it. Nothing the walk writes is dated at that now, since the walk can wait before it
+// reaches the issue: an opening is dated when it is made (recordPodUpdateOpening), a late round's
+// told mark when the round is told (tellUpdateStalled), and the bound an ask states when the ask
+// is written (askRound). No round opens over a pod a hold stands on (roundClock.held): the pause
+// kept that pod for its stopped roles, and a round would ask them to push work for a replacement
+// while nothing of theirs runs.
 func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string, group []supervise.Claim, sweep *podUpdateSweep, clock roundClock) *podReplacement {
 	slices.SortFunc(group, func(a, b supervise.Claim) int { return strings.Compare(string(a.Token), string(b.Token)) })
 	pod, split := groupPod(group)
@@ -563,8 +564,9 @@ func readRoundEnd(group []supervise.Claim, round string, clock roundClock) round
 // step of the flow takes this one value, never the moment and the holds apart.
 //
 // It is built once per reading of the claims: by the sweep for each issue, from the holds it read
-// once and its own now (reconcilePodUpdates, podPauseHolds); by the replacement the sweep leaves
-// for after its walk, from the same holds at the clock as it stands when that replacement is made
+// once and its own now (reconcilePodUpdates, podPauseHolds); by the ask, from the same holds at
+// the clock as the ask is written (askRound); by the replacement the sweep leaves for after its
+// walk, from the same holds at the clock as it stands when that replacement is made
 // (replacePodForRound); and by the last word, at the clock under the pod's launch turn
 // (replacementDue). It holds no bound of its own: roundBound reads the round's opening from the
 // group it is given, so each round it is asked of, one the sweep has just opened included
@@ -1513,11 +1515,14 @@ func (s *supervision) markOwedTold(ctx context.Context, byIssue map[string][]sup
 // can still end at notify.ErrNoHolder, and the claim is then asked again at a later sweep, as
 // above.
 //
-// The ask states the round's bound (roundClock.roundBound), read at the clock's now with the time
-// a project's pause held the pod. A round no claim of group records the opening of has no bound
-// to state, and its ask would state a wrong end, so the sweep logs an error and publishes
-// nothing. The one write of a round on a claim records its opening in the same statement
-// (supervise's openPodUpdate), so this is never expected.
+// The ask states the round's bound (roundClock.roundBound) with the time a project's pause held
+// the pod, read at the clock as the ask is written rather than at the sweep's now (clock): a hold
+// that stands counts to the moment it is read, and the walk can wait before it reaches this
+// issue, so read at the sweep's now the ask would state a bound earlier than the one the round
+// ends at. A round no claim of group records the opening of has no bound to state, and its ask
+// would state a wrong end, so the sweep logs an error and publishes nothing. The one write of a
+// round on a claim records its opening in the same statement (supervise's openPodUpdate), so this
+// is never expected.
 //
 // A deployment with no outbox (enqueue nil) publishes nothing. The round still runs: it records
 // itself on the claims, and its roles can answer it all the same. Nor does a round over the pod of
@@ -1544,7 +1549,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 			"issue", issue, "round", round, "roles", namesOf(asking))
 		return
 	}
-	bound := clock.roundBound(group, round)
+	bound := s.roundClockAt(s.plan.clock.Now(), clock.holds).roundBound(group, round)
 	if bound == nil {
 		s.log.Error("supervise: no claim of this update round records when the round opened, so its ask has no end to state; the ask is published to no role",
 			"issue", issue, "round", round, "roles", namesOf(asking))
