@@ -108,13 +108,18 @@ type StepEntry struct {
 	Starts int64
 }
 
-// OpenStep is the run of a step of issue that has no end yet, the run of the step the issue
-// stands in: each start of a step of an issue follows the end of the run before it (workflow's
-// startStep and endStep), so at most one is open, and of two the latest start is answered. It is
-// the zero StepEntry where no run is open: an issue that stands in no step, or whose step started
-// under an earlier release, which counts no start. An architect's request about the step an issue
-// stands in names the run its route read here, and the fact refuses it where another run stands
-// under the fact lock (sign_off, request_backward_move).
+// OpenStep is the run of a step of issue that has no end yet whose start wrote the latest moment,
+// a run whose start wrote none coming after every one that wrote one. A start of the step the
+// issue stands in is such a start: it first ends each run of the issue that is over (workflow's
+// startStep), then writes the moment now. An issue can have several runs open at once, since the
+// fact's settle ends each run when its own end rule holds (workflow's settleRuns): a run whose
+// place no step of its walk holds stays open beside the issue's current run until a settle of the
+// issue ends it (workflow's endOffWalk). A run the daemon's boot opened for a step that started
+// under an earlier release (OpenUncountedStep) is open as any other, and is answered with the
+// count its row holds: 0 where the place had no row. It is the zero StepEntry where no run is
+// open. An architect's request about the step an issue stands in names the run its route read
+// here, and the fact refuses it where another run stands under the fact lock (sign_off,
+// request_backward_move).
 func (s *Postgres) OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepEntry, error) {
 	var entry StepEntry
 	err := tx.QueryRow(ctx, `select task, kind, place, starts from step_starts where issue = $1 and run = 'open'

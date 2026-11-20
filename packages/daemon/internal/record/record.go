@@ -2035,8 +2035,8 @@ type Store interface {
 	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
 	// of the latest, unchanged: the zero StepStart where the place has no row.
 	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
-	// OpenStep is the run of a step of issue that has no end yet, the run of the step the issue
-	// stands in, and the zero StepEntry where none is open.
+	// OpenStep is the open run of a step of issue whose start wrote the latest moment, of the
+	// several an issue can have open (Postgres.OpenStep), and the zero StepEntry where none is open.
 	OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepEntry, error)
 	// EndStepStart marks the open run of place on issue ended and answers its start and true, in
 	// the transaction that writes the run's end (workflow's endRun); false where that run has its
