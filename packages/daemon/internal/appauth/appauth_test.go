@@ -282,10 +282,8 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tokens := New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
-		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
 	first, err := tokens.Token(context.Background(), Implement, "sjawhar")
 	if err != nil {
@@ -363,10 +361,8 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 		}
 	}))
 	defer server.Close()
-	tokens := New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
-		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 	if _, err := tokens.Token(context.Background(), Review, "acme"); err != nil {
 		t.Fatalf("first token: %v", err)
 	}
@@ -424,10 +420,8 @@ func TestForgetMakesTheNextTokenAndReadTokenMintAgain(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	tokens := New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
-		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 	ctx := context.Background()
 	mint := func(read bool) Lease {
 		t.Helper()
@@ -495,10 +489,8 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tokens := New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
-		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
 	read, err := tokens.ReadToken(context.Background(), Implement, "acme")
 	if err != nil {
@@ -898,7 +890,7 @@ func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 			defer server.Close()
 
 			var stderr bytes.Buffer
-			tokens := New(config.GitHubApps{Review: config.GitHubApp{AppID: "67890", PrivateKey: privatePEM}},
+			tokens := New(config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
 				Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now },
 					Stderr: &stderr, Log: slog.New(slog.NewJSONHandler(&stderr, nil))})
 			defer tokens.Close()
@@ -958,10 +950,8 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tokens := New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM, Installations: map[string]string{"sjawhar": "77"}},
-		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM, Installations: map[string]string{"sjawhar": "77"}},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
 	results := make(chan Lease, 2)
 	errs := make(chan error, 2)
@@ -1066,7 +1056,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}},
+			tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
 				Options{BaseURL: server.URL, HTTPClient: server.Client()})
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
@@ -1252,11 +1242,9 @@ func keyModeManager(t *testing.T, github *keyModeGitHub, now *time.Time, stderr 
 	t.Helper()
 	_, privatePEM := testAppKey(t)
 	server := github.serve(t)
-	tokens := New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
-		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return *now },
-		Stderr: stderr, Log: slog.New(slog.NewJSONHandler(stderr, nil))})
+	tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return *now },
+			Stderr: stderr, Log: slog.New(slog.NewJSONHandler(stderr, nil))})
 	t.Cleanup(tokens.Close)
 	return tokens
 }
@@ -1811,10 +1799,8 @@ func TestOverlappingInstallationReadsOfOneAppShareOneRead(t *testing.T) {
 		fmt.Fprint(w, `[{"id":77,"account":{"login":"Acme"}}]`)
 	}))
 	defer server.Close()
-	tokens := New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
-		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
 	answers := make(chan []string, 2)
 	read := func() {
@@ -1885,9 +1871,8 @@ func TestTheSharedInstallationReadOutlivesItsFirstCallersCancellation(t *testing
 			close(release)
 		}
 	}()
-	tokens := New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 	defer tokens.Close()
 
 	first, cancelFirst := context.WithCancel(context.Background())

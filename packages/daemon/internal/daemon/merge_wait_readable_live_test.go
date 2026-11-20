@@ -34,7 +34,7 @@
 // answering read. Dispatch is the board the package's whole-daemon live proofs share
 // (liveDispatch, in live_proof_test.go), and Envoy's listener the package's noticeListener. The
 // two Apps' tokens are workflowTokenRecorder's placeholders, which is also where the review App's
-// login comes from: appLoginsAtBoot asks the lease for it and gets `legion-review[bot]`, the
+// login comes from: appLoginAtBoot asks the lease for it and gets `legion-review[bot]`, the
 // reviewAppLogin this package already spells (pull_request_reads_test.go). No agent runs: the fake
 // runtime launches whatever claim a move starts, and the proof acts as no role. The three issues,
 // their pull requests and their slots are seeded through the store, as every daemon test seeds its

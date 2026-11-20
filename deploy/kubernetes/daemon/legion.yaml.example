@@ -245,9 +245,6 @@ github_apps:
   implement:
     app_id: "100001"
     private_key_command: cat ./implement-app.pem   # prints the App's PEM private key
-  review:
-    app_id: "100002"
-    private_key_command: cat ./review-app.pem
 # worker_backends:                     # a phase worker's role (planner, implementer, tester, reviewer,
 #   implementer: claude                # merger) on omp, the default, or claude: Claude Code under
 #                                      # `legion claude-bridge`, which runs under either runtime. In a pod,

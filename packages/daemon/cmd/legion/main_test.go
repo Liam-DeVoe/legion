@@ -654,8 +654,7 @@ projects:
   DEMO: {}
 github_apps:
   implement: { app_id: "1", private_key_command: %q }
-  review: { app_id: "2", private_key_command: %q }
-%s`, port, filepath.Join(dir, "state"), command, command, extra)
+%s`, port, filepath.Join(dir, "state"), command, extra)
 	path = filepath.Join(dir, "legion.yaml")
 	for name, contents := range map[string]string{path: body, filepath.Join(dir, "operator-token"): "operator-token\n", filepath.Join(dir, "dispatch-token"): "dispatch-token\n"} {
 		if err := os.WriteFile(name, []byte(contents), 0o600); err != nil {
@@ -709,7 +708,6 @@ postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
 operator_token_file: ./operator-token
 github_apps:
   implement: { app_id: "1", private_key: implement-test-key }
-  review: { app_id: "2", private_key: review-test-key }
 `
 
 // kubernetesCheckKeys are the same for a kubernetes legion.yaml: the keys every pod needs,
@@ -727,7 +725,6 @@ dispatch_token_file: ./dispatch-token
 nats_urls: [nats://nats.internal.example:4222]
 github_apps:
   implement: { app_id: "1", private_key_command: "exit 1" }
-  review: { app_id: "2", private_key_command: "exit 1" }
 `
 
 // kubernetesCheckRuntime is the `runtime.kubernetes` block those keys go with.
@@ -1246,7 +1243,6 @@ projects:
   DEMO: {}
 github_apps:
   implement: { app_id: "1", private_key_command: %q }
-  review: { app_id: "2", private_key_command: %q }
 runtime:
   kubernetes:
     namespace: legion
@@ -1254,7 +1250,7 @@ runtime:
     storage_class: gp2
     session_store: postgres
     session_dsn_secret: SESSION_DSN
-%s`, filepath.Join(dir, "state"), command, command, tc.runtime)
+%s`, filepath.Join(dir, "state"), command, tc.runtime)
 			config := filepath.Join(dir, "legion.yaml")
 			for name, contents := range map[string]string{config: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n"} {
 				if !filepath.IsAbs(name) {

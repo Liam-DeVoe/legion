@@ -25,22 +25,21 @@ import (
 const realGitHubProofEnabled = "LEGION_REAL_GITHUB"
 
 // TestRealGitHubCredentialSurface keeps the Stage 3 credential proof beside the real App it
-// drives: the implement App's token, rendered as the gh files the daemon writes
+// drives: the App's implementer token, rendered as the gh files the daemon writes
 // (internal/ghconfig), is whose login a plain gh reports, and a git clone through gh's own
-// credential helper reads those files. It acts as the implement App alone, since the review App
-// has no default credential, and reading that role would make every run here need the operator's
-// key command. It is the lower-level proof of the rendered files against real GitHub; the helper
-// a shared clone runs, `legion git-credential`, and the `legion gh` wrapper are proven against
-// the real gh and git in cmd/legion (TestRealGhAndGitSendTheTargetOwnersToken). It is
-// intentionally gated: CI has no Legion App keys, whereas the devbox command is a release gate.
+// credential helper reads those files. It is the lower-level proof of the rendered files against
+// real GitHub; the helper a shared clone runs, `legion git-credential`, and the `legion gh` wrapper
+// are proven against the real gh and git in cmd/legion (TestRealGhAndGitSendTheTargetOwnersToken).
+// It is intentionally gated: CI has no Legion App keys, whereas the devbox command is a release
+// gate.
 func TestRealGitHubCredentialSurface(t *testing.T) {
 	if os.Getenv(realGitHubProofEnabled) != "1" {
 		t.Skip("set LEGION_REAL_GITHUB=1 to run the real GitHub App credential proof")
 	}
-	apps := realGitHubApps(t)
+	app := realGitHubApp(t)
 
 	h := newHarness(t)
-	tokens := appauth.New(apps, appauth.Options{})
+	tokens := appauth.New(app, appauth.Options{})
 	h.handler = NewServer("127.0.0.1", 0, Options{
 		Steps:              config.DesignGateRootIssues.Steps(),
 		Supervisor:         h.supervisor,
@@ -54,8 +53,8 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 	}).Handler
 	gh := realGh(t)
 
-	// The implement App's lease, rendered as the role's gh files, is whose login the real gh
-	// reports. The review App is not minted here: realGitHubApps reads the implement role alone.
+	// The implementer's lease, rendered as the role's gh files, is whose login the real gh
+	// reports.
 	role := appauth.Implement
 	lease, err := tokens.Token(h.ctx, role, "sjawhar")
 	if err != nil {
@@ -189,14 +188,12 @@ check_github_apps implement`
 	return stderr, nil
 }
 
-// realGitHubApps is Legion's implement App: the lib's default, another deployment's through the
-// same two implement inputs the stage proofs read, the App's id and the secrets broker
-// github-app secret whose release the token command prints, as liveProofImplementApp reads them from the
-// lib, and the block it returns proved against GitHub before a proof acts as it. The review App
-// is left out: it has no default credential, so reading that role would make every run need the
-// operator's key command, and the proofs here act as the implement App alone. The daemon runs
-// the token command itself (appauth's token mode), so no key is resolved here.
-func realGitHubApps(t *testing.T) config.GitHubApps {
+// realGitHubApp is Legion's App: the lib's default, another deployment's through the same two
+// implement inputs the stage proofs read, the App's id and the secrets broker github-app secret
+// whose release the token command prints, as liveProofImplementApp reads them from the lib, and
+// the block it returns proved against GitHub before a proof acts as it. The daemon runs the token
+// command itself (appauth's token mode), so no key is resolved here.
+func realGitHubApp(t *testing.T) config.GitHubApp {
 	t.Helper()
 	// go test's result cache keys a test on the variables it looks up and the files it opens, and
 	// sees none of them through the bash child, so name them here: a changed input, lib or GET /app
@@ -217,15 +214,13 @@ func realGitHubApps(t *testing.T) config.GitHubApps {
 	if err != nil {
 		t.Fatal(err)
 	}
-	apps := config.GitHubApps{
-		Implement: config.GitHubApp{AppID: implement.id, TokenCommand: implement.tokenCommand},
-	}
-	notes, err := proveLiveProofApps(os.Environ(), t.TempDir(), apps.Implement)
+	app := config.GitHubApp{AppID: implement.id, TokenCommand: implement.tokenCommand}
+	notes, err := proveLiveProofApps(os.Environ(), t.TempDir(), app)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Log(notes)
-	return apps
+	return app
 }
 
 // TestLiveProofAppsReadTheLib proves liveProofImplementApp, ungated: with no input set it answers exactly
@@ -391,10 +386,8 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		apps := config.GitHubApps{
-			Implement: config.GitHubApp{AppID: implement.id, TokenCommand: implement.tokenCommand},
-		}
-		if _, err := proveLiveProofApps(append(with(), path, "STUB_KEEP="+kept), work, apps.Implement); err != nil {
+		app := config.GitHubApp{AppID: implement.id, TokenCommand: implement.tokenCommand}
+		if _, err := proveLiveProofApps(append(with(), path, "STUB_KEEP="+kept), work, app); err != nil {
 			t.Fatalf("a GitHub that agrees: %v", err)
 		}
 		if _, stderr, err := runGitHubAppsLib(githubAppsLib, with(), `set -euo pipefail
@@ -410,7 +403,7 @@ write_github_apps implement`, want); err != nil {
 		if len(got) == 0 || !bytes.Equal(got, lib) {
 			t.Errorf("the token check read\n%s\nwant the block the lib writes for the same Apps\n%s", got, lib)
 		}
-		if _, err := proveLiveProofApps(append(with(), path, "STUB_KEEP="+kept, "STUB_REFUSE=1"), t.TempDir(), apps.Implement); err == nil || !strings.Contains(err.Error(), "answered another id") {
+		if _, err := proveLiveProofApps(append(with(), path, "STUB_KEEP="+kept, "STUB_REFUSE=1"), t.TempDir(), app); err == nil || !strings.Contains(err.Error(), "answered another id") {
 			t.Errorf("a GitHub that refuses: err = %v, want the checker's refusal", err)
 		}
 	})

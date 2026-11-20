@@ -1052,12 +1052,6 @@
           "acme": "2002",
           "sjawhar": "2001"
         }
-      },
-      "review": {
-        "app_id": "1002",
-        "installations": {
-          "sjawhar": "2003"
-        }
       }
     },
     "linger_hours": 1.5,

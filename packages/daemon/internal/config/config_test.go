@@ -31,9 +31,6 @@ github_apps:
   implement:
     app_id: "1"
     private_key: implement-test-key
-  review:
-    app_id: "2"
-    private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
 `
 
@@ -55,9 +52,6 @@ github_apps:
   implement:
     app_id: "1"
     private_key: implement-test-key
-  review:
-    app_id: "2"
-    private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
 gates:
   design: [decisions, criteria]
@@ -75,9 +69,6 @@ github_apps:
   implement:
     app_id: "1"
     private_key: implement-test-key
-  review:
-    app_id: "2"
-    private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
 gates:
   design: []
@@ -95,9 +86,6 @@ github_apps:
   implement:
     app_id: "1"
     private_key: implement-test-key
-  review:
-    app_id: "2"
-    private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
 `
 
@@ -113,9 +101,6 @@ github_apps:
   implement:
     app_id: "1"
     private_key: implement-test-key
-  review:
-    app_id: "2"
-    private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
 gates:
   design: sometimes
@@ -133,9 +118,6 @@ github_apps:
   implement:
     app_id: "1"
     private_key: implement-test-key
-  review:
-    app_id: "2"
-    private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
 gates:
   design: [spec, criteria, spec]
@@ -229,19 +211,16 @@ func defaultsFor(port int) Config {
 		DispatchTokenFile:                       "/var/run/legion/DISPATCH_TOKEN",
 		Projects:                                map[string]Project{"DEMO": {ProductionCheck: claim.RoleTester}},
 		Gates:                                   Gates{Design: DesignGateRootIssues.Steps()},
-		GitHubApps: GitHubApps{
-			Implement: GitHubApp{AppID: "1", PrivateKey: "implement-test-key", Installations: map[string]string{}},
-			Review:    GitHubApp{AppID: "2", PrivateKey: "review-test-key", Installations: map[string]string{}},
-		},
-		Linger:               72 * time.Hour,
-		ProductionCheckBound: 336 * time.Hour,
-		PodUpdateGrace:       30 * time.Minute,
-		StalledTreeNotice:    6 * time.Hour,
-		WorkerSilence:        30 * time.Minute,
-		WorkerBackground:     4 * time.Hour,
-		ReviewRoundCap:       3,
-		ControllerLaunch:     ControllerLaunchOperator,
-		Hooks:                DefaultHooks(),
+		GitHubApp:                               GitHubApp{AppID: "1", PrivateKey: "implement-test-key", Installations: map[string]string{}},
+		Linger:                                  72 * time.Hour,
+		ProductionCheckBound:                    336 * time.Hour,
+		PodUpdateGrace:                          30 * time.Minute,
+		StalledTreeNotice:                       6 * time.Hour,
+		WorkerSilence:                           30 * time.Minute,
+		WorkerBackground:                        4 * time.Hour,
+		ReviewRoundCap:                          3,
+		ControllerLaunch:                        ControllerLaunchOperator,
+		Hooks:                                   DefaultHooks(),
 		// The worker stall-watch numbers this daemon's own environment sets, which noEnv sets
 		// none of: the plugin's own defaults, which the backstop's floor is computed from.
 		StallLimits: StallLimits{CallGrace: StallCallGrace, Step: StallStep},
@@ -349,8 +328,7 @@ func TestLoadReadsEveryStage3Key(t *testing.T) {
 		"dispatch_token_file: /var/run/legion/DISPATCH_TOKEN\n"+
 		"projects:\n  DEMO: {}\n"+
 		"gates:\n  design: root-issues\n"+
-		"github_apps:\n  implement:\n    app_id: \"1\"\n    private_key: implement-test-key\n"+
-		"  review:\n    app_id: \"2\"\n    private_key: review-test-key\n", `dispatch_url: https://dispatch.example
+		"github_apps:\n  implement:\n    app_id: \"1\"\n    private_key: implement-test-key\n", `dispatch_url: https://dispatch.example
 dispatch_token_file: tokens/DISPATCH_TOKEN
 projects:
   DEMO: {}
@@ -363,9 +341,6 @@ github_apps:
     app_id: "11"
     private_key: implement-key
     installations: { sjawhar: "101" }
-  review:
-    app_id: "22"
-    private_key: review-key
 linger_hours: 96
 production_check_hours: 48
 review_round_cap: 5
@@ -399,11 +374,8 @@ hooks:
 	if len(cfg.Gates.Design) != 0 {
 		t.Errorf("Gates.Design = %v, want no step for 'off'", cfg.Gates.Design)
 	}
-	if got := cfg.GitHubApps.Implement; got.AppID != "11" || got.PrivateKey != "implement-key" || got.Installations["sjawhar"] != "101" {
-		t.Errorf("implement app = %#v", got)
-	}
-	if cfg.GitHubApps.Review.AppID != "22" || cfg.GitHubApps.Review.PrivateKey != "review-key" {
-		t.Errorf("review app = %#v", cfg.GitHubApps.Review)
+	if got := cfg.GitHubApp; got.AppID != "11" || got.PrivateKey != "implement-key" || got.Installations["sjawhar"] != "101" {
+		t.Errorf("the App = %#v", got)
 	}
 	if cfg.Linger != 96*time.Hour || cfg.ProductionCheckBound != 48*time.Hour || cfg.ReviewRoundCap != 5 {
 		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h and 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
@@ -732,8 +704,8 @@ func TestLoadReadsPrivateKeyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.GitHubApps.Implement.PrivateKey != "command-key" {
-		t.Errorf("command key = %q, want command-key", cfg.GitHubApps.Implement.PrivateKey)
+	if cfg.GitHubApp.PrivateKey != "command-key" {
+		t.Errorf("command key = %q, want command-key", cfg.GitHubApp.PrivateKey)
 	}
 }
 
@@ -749,8 +721,8 @@ func TestLoadAcceptsPrivateKeyCommandWithUnpaddedBase64Output(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.GitHubApps.Implement.PrivateKey != privateKey {
-		t.Errorf("command key = %q, want unpadded fixture", cfg.GitHubApps.Implement.PrivateKey)
+	if cfg.GitHubApp.PrivateKey != privateKey {
+		t.Errorf("command key = %q, want unpadded fixture", cfg.GitHubApp.PrivateKey)
 	}
 }
 
@@ -878,28 +850,28 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: "github_apps is required",
 		},
 		{
-			name: "github_apps review is absent",
-			body: minimalFile + "github_apps: {implement: {app_id: \"1\", private_key: key}}\n",
-			want: "github_apps.review is required",
+			name: "github_apps names no App under implement",
+			body: minimalFile + "github_apps: {review: {app_id: \"2\", private_key: key}}\n",
+			want: "github_apps.implement is required",
 		},
 		{
 			name: "github app misses an identifier",
-			body: minimalFile + "github_apps: {implement: {private_key: key}, review: {app_id: \"2\", private_key: key}}\n",
+			body: minimalFile + "github_apps: {implement: {private_key: key}}\n",
 			want: "github_apps.implement is missing required fields: app_id",
 		},
 		{
 			name: "github app has no private key source",
-			body: minimalFile + "github_apps: {implement: {app_id: \"1\"}, review: {app_id: \"2\", private_key: key}}\n",
+			body: minimalFile + "github_apps: {implement: {app_id: \"1\"}}\n",
 			want: "github_apps.implement requires exactly one of private_key, private_key_command, private_key_secret, or token_command",
 		},
 		{
 			name: "github app has two private key sources",
-			body: minimalFile + "github_apps: {implement: {app_id: \"1\", private_key: key, private_key_command: \"printf key\"}, review: {app_id: \"2\", private_key: key}}\n",
+			body: minimalFile + "github_apps: {implement: {app_id: \"1\", private_key: key, private_key_command: \"printf key\"}}\n",
 			want: "github_apps.implement requires exactly one of private_key, private_key_command, private_key_secret, or token_command",
 		},
 		{
 			name: "github app secret is not a single key name",
-			body: minimalFile + "github_apps: {implement: {app_id: \"1\", private_key_secret: \"secrets get KEY\"}, review: {app_id: \"2\", private_key: key}}\n",
+			body: minimalFile + "github_apps: {implement: {app_id: \"1\", private_key_secret: \"secrets get KEY\"}}\n",
 			want: "github_apps.implement.private_key_secret must be a single secretsd key name (no whitespace)",
 		},
 		{
@@ -954,8 +926,8 @@ esac
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.GitHubApps.Implement.PrivateKey != privateKey {
-		t.Errorf("secret private key = %q, want decoded fixture", cfg.GitHubApps.Implement.PrivateKey)
+	if cfg.GitHubApp.PrivateKey != privateKey {
+		t.Errorf("secret private key = %q, want decoded fixture", cfg.GitHubApp.PrivateKey)
 	}
 	got, err := os.ReadFile(calls)
 	if err != nil {
@@ -973,12 +945,7 @@ func TestResolveGitHubAppsRefusesAgentTierPrivateKey(t *testing.T) {
 		t.Fatalf("write fake secrets: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	apps := GitHubApps{
-		Implement: GitHubApp{AppID: "1", PrivateKeySecret: "AGENT_APP_KEY"},
-		Review:    GitHubApp{AppID: "2", PrivateKey: "review-key"},
-	}
-
-	_, err := ResolveGitHubApps(apps)
+	_, err := ResolveGitHubApps(GitHubApp{AppID: "1", PrivateKeySecret: "AGENT_APP_KEY"})
 
 	if want := "App private key AGENT_APP_KEY is readable by agent-tier callers; move it to a daemon-only store"; err == nil || err.Error() != want {
 		t.Errorf("ResolveGitHubApps error = %v, want %q", err, want)
@@ -1752,7 +1719,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "dispatch_token_file", line: "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN", class: modelled},
 		{key: "projects", line: "projects: {DEMO: {}}", class: modelled},
 		{key: "gates", line: "gates: {design: off}", class: modelled},
-		{key: "github_apps", line: "github_apps: {implement: {app_id: \"1\", private_key: key}, review: {app_id: \"2\", private_key: key}}", class: modelled},
+		{key: "github_apps", line: "github_apps: {implement: {app_id: \"1\", private_key: key}}", class: modelled},
 		{key: "linger_hours", line: "linger_hours: 72", class: modelled},
 		{key: "production_check_hours", line: "production_check_hours: 336", class: modelled},
 		{key: "pod_update_grace_minutes", line: "pod_update_grace_minutes: 30", class: modelled},
@@ -1865,6 +1832,173 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 				if !strings.Contains(cfg.Warnings[0], want) {
 					t.Errorf("the warning %q does not say %q", cfg.Warnings[0], want)
 				}
+			}
+		})
+	}
+}
+
+// github_apps.review is a warned key (warnedKeys): one GitHub App serves every role, so a file
+// that still names a review App beside the implement App loads, the implement App is the App, and
+// the warnings hold the one line saying the setting changes nothing, in file order beside any other.
+// The review App's value is read for nothing, whatever its shape: a key command it names never runs,
+// and a value no App could take is no refusal. Only that one member is warned: another name under
+// github_apps, and a top-level key spelled `github_apps.review`, are refused as unknown keys.
+func TestGithubAppsReviewIsAWarnedKey(t *testing.T) {
+	const want = "setting github_apps.review changes nothing: one GitHub App serves every role; remove github_apps.review from legion.yaml"
+	withReview := func(review string) string {
+		return strings.Replace(minimalFile, "    private_key: implement-test-key\n",
+			"    private_key: implement-test-key\n  review: "+review+"\n", 1)
+	}
+	for _, tc := range []struct{ name, review string }{
+		{"today's review App", `{app_id: "2", private_key: review-test-key}`},
+		{"a review App whose key command would leave a mark and fail", `{app_id: "2", private_key_command: "touch MARKER; exit 1"}`},
+		{"an empty mapping", "{}"},
+		{"no value", ""},
+		{"a value no App could take", "nonsense"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "review-key-command-ran")
+			cfg, err := Load(writeConfigFile(t, withReview(strings.ReplaceAll(tc.review, "MARKER", marker))), noEnv)
+			if err != nil {
+				t.Fatalf("Load: %v, want the file loaded with a warning", err)
+			}
+			if !reflect.DeepEqual(cfg.Warnings, []string{want}) {
+				t.Errorf("Warnings = %#v, want the one line %q", cfg.Warnings, want)
+			}
+			if got := cfg.GitHubApp; got.AppID != "1" || got.PrivateKey != "implement-test-key" {
+				t.Errorf("the App = %#v, want the implement App", got)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Errorf("the review App's key command ran (stat %s: %v), want it never run", marker, err)
+			}
+		})
+	}
+	t.Run("beside another warned key, in file order", func(t *testing.T) {
+		cfg, err := Load(writeConfigFile(t, withReview("{}")+"max_fix_attempts: 3\n"), noEnv)
+		if wantBoth := []string{want, warning("max_fix_attempts")}; err != nil || !reflect.DeepEqual(cfg.Warnings, wantBoth) {
+			t.Errorf("Load = %#v, %v; want the warnings %#v", cfg.Warnings, err, wantBoth)
+		}
+	})
+	for _, tc := range []struct{ name, body, want string }{
+		{"another name under github_apps", strings.Replace(minimalFile, "    private_key: implement-test-key\n", "    private_key: implement-test-key\n  reviewer: {}\n", 1), "unknown key github_apps.reviewer"},
+		{"a top-level key spelled github_apps.review", minimalFile + "github_apps.review: {}\n", "unknown key github_apps.review"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Load(writeConfigFile(t, tc.body), noEnv); err == nil || err.Error() != tc.want {
+				t.Errorf("Load error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// verdict_repositories names the repositories the daemon writes `legion-verdict` on, each with its
+// optional CI reviewer and side reviews, in file order; a file that names none writes it on none.
+// A repeated repository, a name that is no repository and a CI reviewer that is no App's bot login
+// are each refused naming the entry, and so is an entry of any other shape.
+func TestVerdictRepositoriesAreRead(t *testing.T) {
+	t.Run("the entries, in file order", func(t *testing.T) {
+		cfg, err := Load(writeConfigFile(t, minimalFile+`verdict_repositories:
+  - repository: acme/widgets
+    side_reviews: true
+  - repository: acme/infra
+    ci_reviewer: example-ci-review[bot]
+    side_reviews: false
+  - repository: acme/scratch
+`), noEnv)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		want := []VerdictRepository{
+			{Repository: ghrepo.MustParse("acme/widgets"), SideReviews: true},
+			{Repository: ghrepo.MustParse("acme/infra"), CIReviewer: "example-ci-review[bot]"},
+			{Repository: ghrepo.MustParse("acme/scratch")},
+		}
+		if !reflect.DeepEqual(cfg.VerdictRepositories, want) {
+			t.Errorf("VerdictRepositories = %+v, want %+v", cfg.VerdictRepositories, want)
+		}
+		if len(cfg.Warnings) != 0 {
+			t.Errorf("Warnings = %#v, want none", cfg.Warnings)
+		}
+	})
+	t.Run("a file that names none", func(t *testing.T) {
+		for _, body := range []string{minimalFile, minimalFile + "verdict_repositories: []\n", minimalFile + "verdict_repositories:\n"} {
+			cfg, err := Load(writeConfigFile(t, body), noEnv)
+			if err != nil || len(cfg.VerdictRepositories) != 0 {
+				t.Errorf("Load of\n%s= %+v, %v; want no verdict repository", body, cfg.VerdictRepositories, err)
+			}
+		}
+	})
+	for _, tc := range []struct{ name, value, want string }{
+		{
+			name:  "a repeated repository",
+			value: "[{repository: acme/widgets}, {repository: Acme/Widgets, side_reviews: true}]",
+			want:  "verdict_repositories[1].repository names Acme/Widgets, as verdict_repositories[0] does: name each repository once",
+		},
+		{
+			name:  "an invalid repository name",
+			value: "[{repository: acme}]",
+			want:  `verdict_repositories[0].repository must be "owner/name" (got "acme")`,
+		},
+		{
+			name:  "a ci_reviewer without [bot]",
+			value: "[{repository: acme/infra, ci_reviewer: example-ci-review}]",
+			want:  `verdict_repositories[0].ci_reviewer "example-ci-review" must be a GitHub App's bot login: its slug, then [bot]`,
+		},
+		{
+			name:  "a ci_reviewer that is [bot] alone",
+			value: "[{repository: acme/infra, ci_reviewer: \"[bot]\"}]",
+			want:  `verdict_repositories[0].ci_reviewer "[bot]" must be a GitHub App's bot login: its slug, then [bot]`,
+		},
+		{
+			name:  "a ci_reviewer whose slug holds an underscore",
+			value: "[{repository: acme/infra, ci_reviewer: \"bad_name[bot]\"}]",
+			want:  `verdict_repositories[0].ci_reviewer "bad_name[bot]" must be a GitHub App's bot login: its slug, then [bot]`,
+		},
+		{
+			name:  "a ci_reviewer whose slug begins with a hyphen",
+			value: "[{repository: acme/infra, ci_reviewer: \"-reviewer[bot]\"}]",
+			want:  `verdict_repositories[0].ci_reviewer "-reviewer[bot]" must be a GitHub App's bot login: its slug, then [bot]`,
+		},
+		{
+			name:  "a ci_reviewer that names a team",
+			value: "[{repository: acme/infra, ci_reviewer: \"acme/reviewers[bot]\"}]",
+			want:  `verdict_repositories[0].ci_reviewer "acme/reviewers[bot]" must be a GitHub App's bot login: its slug, then [bot]`,
+		},
+		{
+			name:  "a blank ci_reviewer",
+			value: "[{repository: acme/infra, ci_reviewer: \"\"}]",
+			want:  "verdict_repositories[0].ci_reviewer must not be empty",
+		},
+		{
+			name:  "an entry with no repository",
+			value: "[{side_reviews: true}]",
+			want:  "verdict_repositories[0].repository is required: the repository the daemon writes legion-verdict on",
+		},
+		{
+			name:  "side_reviews that is not true or false",
+			value: "[{repository: acme/widgets, side_reviews: \"true\"}]",
+			want:  "verdict_repositories[0].side_reviews must be true or false",
+		},
+		{
+			name:  "a field no entry carries",
+			value: "[{repository: acme/widgets, reviewer: example-ci-review}]",
+			want:  "unknown key verdict_repositories[0].reviewer",
+		},
+		{
+			name:  "an entry that is not a mapping",
+			value: "[acme/widgets]",
+			want:  "verdict_repositories[0] must be a mapping",
+		},
+		{
+			name:  "a value that is not a list",
+			value: "{repository: acme/widgets}",
+			want:  "verdict_repositories must be an array",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfigFile(t, minimalFile+"verdict_repositories: "+tc.value+"\n"), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Errorf("Load error = %v, want %q", err, tc.want)
 			}
 		})
 	}

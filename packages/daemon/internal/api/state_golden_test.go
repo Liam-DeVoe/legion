@@ -99,13 +99,6 @@ github_apps:
       fixture
       -----END PRIVATE KEY-----
     installations: {sjawhar: "2001", acme: "2002"}
-  review:
-    app_id: "1002"
-    private_key: |
-      -----BEGIN PRIVATE KEY-----
-      fixture
-      -----END PRIVATE KEY-----
-    installations: {sjawhar: "2003"}
 linger_hours: 1.5
 production_check_hours: 240
 worker_silence_minutes: 45

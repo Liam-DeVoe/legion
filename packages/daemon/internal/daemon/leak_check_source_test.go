@@ -333,7 +333,7 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 					githubtest.Unexpected(t, w, r)
 				}
 			}})
-			tokens := appauth.New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: broker.command}},
+			tokens := appauth.New(config.GitHubApp{AppID: "12345", TokenCommand: broker.command},
 				appauth.Options{BaseURL: github.URL, HTTPClient: github.Client(), Stderr: io.Discard})
 
 			served, err := leakCheckSource(tokens, github.URL).Get(context.Background(), leakCheckTag)

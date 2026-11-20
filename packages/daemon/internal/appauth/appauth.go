@@ -180,12 +180,12 @@ type Options struct {
 // configured with a token_command is in token mode (tokencommand.go): the Manager holds no key and
 // signs no JWT for it, and every lease comes from the command's release.
 type Manager struct {
-	apps    config.GitHubApps
-	baseURL string
-	client  *http.Client
-	now     func() time.Time
-	stderr  io.Writer
-	log     *slog.Logger
+	githubApp config.GitHubApp
+	baseURL   string
+	client    *http.Client
+	now       func() time.Time
+	stderr    io.Writer
+	log       *slog.Logger
 
 	mu                sync.Mutex
 	leases            map[scope]Lease
@@ -261,7 +261,7 @@ var (
 
 // New makes an App token manager. Config.Load resolves command and secret key sources before
 // constructing this manager; callers using LoadForValidation must resolve them themselves.
-func New(apps config.GitHubApps, options Options) *Manager {
+func New(app config.GitHubApp, options Options) *Manager {
 	baseURL := strings.TrimRight(options.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
@@ -286,7 +286,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	return &Manager{
 		root:                 root,
 		stop:                 stop,
-		apps:                 apps,
+		githubApp:            app,
 		baseURL:              baseURL,
 		client:               client,
 		now:                  now,
@@ -549,12 +549,11 @@ func (m *Manager) mint(ctx context.Context, request mintRequest) (Lease, error) 
 	return lease, nil
 }
 
+// app is the App that mints for role: the one App, whichever role asks.
 func (m *Manager) app(role AppRole) (config.GitHubApp, error) {
 	switch role {
-	case Implement:
-		return m.apps.Implement, nil
-	case Review:
-		return m.apps.Review, nil
+	case Implement, Review:
+		return m.githubApp, nil
 	default:
 		return config.GitHubApp{}, fmt.Errorf("role_not_configured: %s", role)
 	}

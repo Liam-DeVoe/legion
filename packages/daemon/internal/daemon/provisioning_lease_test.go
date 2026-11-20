@@ -129,10 +129,8 @@ func provisioningStandIn(t *testing.T, installations ...provisioningInstallation
 			githubtest.Unexpected(t, w, r)
 		}
 	}})
-	github.tokens = appauth.New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "1", PrivateKey: privatePEM},
-		Review:    config.GitHubApp{AppID: "2", PrivateKey: privatePEM},
-	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
+	github.tokens = appauth.New(config.GitHubApp{AppID: "1", PrivateKey: privatePEM},
+		appauth.Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
 	return github
 }
 
