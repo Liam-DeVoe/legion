@@ -49,8 +49,8 @@ module() {
 # shapes <root> <name>: the module example.com/<name> holding one package of each shape the
 # check reads. Nothing in it links the stand-in yet; each case adds what it tests.
 #   internal/testpg   imports the stand-in, as internal/testpg does
-#   internal/rig      imports testpg, as internal/broker/brokertest does
-#   internal/client   imports nothing, as internal/broker/brokertest/podclient
+#   internal/rig      imports testpg, as internal/cipher/ciphertest does
+#   internal/client   imports nothing, as internal/cipher/ciphertest/podclient
 #   cmd/seed          a command on client
 #   internal/helper   a test helper that starts the test binary, as internal/stacktest does
 shapes() {

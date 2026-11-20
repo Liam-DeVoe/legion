@@ -9,8 +9,8 @@ every start, and a test binary that starts itself pays it at every start of its 
 Dispatch browser row that ran requestseed six times paid it six times, and cmd/legion's tests,
 which start their own binary 69 times in one test, ran out their package deadline on it. So no
 binary of that kind may link it. The fix is never a longer deadline: move what the binary needs
-out of the package that brings testcontainers in (internal/broker/brokertest/podclient is the
-precedent, split from the broker rig so requestseed would not link storetest's testpg), or drop
+out of the package that brings testcontainers in (internal/cipher/ciphertest/podclient is the
+precedent, split from the cipher rig so requestseed would not link storetest's testpg), or drop
 the import.
 
 What it checks, per Go module (packages/envoy and packages/daemon unless others are named):
@@ -344,7 +344,7 @@ def main(argv: list) -> int:
         print("testcontainers-go's package init reads every process on the machine at each start of a binary "
               "that links it, so a command, or a test binary that starts itself, must not link it. Move what the "
               "binary uses out of the package the chain goes through into one that imports no testcontainers "
-              "(internal/broker/brokertest/podclient is the precedent), or drop the import.")
+              "(internal/cipher/ciphertest/podclient is the precedent), or drop the import.")
     return 1 if refused or linked else 0
 
 
