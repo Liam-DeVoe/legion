@@ -748,8 +748,10 @@ function firstLineOptions(text: string): string[] {
   return shell === -1 ? [] : words.slice(shell + 1);
 }
 
-// A library of scripts/e2e/lib a script sources: `. "$root/scripts/e2e/lib/<name>.sh"`.
+// A library of scripts/e2e/lib a script sources: `. "$root/scripts/e2e/lib/<name>.sh"`, or a
+// library's sibling through its own location, `. "${BASH_SOURCE[0]%/*}/<name>.sh"`.
 const library = /\/lib\/([A-Za-z0-9_.-]+\.sh)["']?$/;
+const siblingLibrary = /\$\{BASH_SOURCE\[0\]%\/\*\}\/([A-Za-z0-9_.-]+\.sh)["']?$/;
 
 /** A list of one command. */
 export const alone = (c: Command): List => [{ pipelines: [{ negated: false, commands: [c] }] }];
@@ -816,7 +818,7 @@ export function eachCommand(
 export function sourcedLibrary(c: Command): string | undefined {
   if (c.k !== "simple" || c.words.length < 2) return undefined;
   if (c.words[0].text !== "." && c.words[0].text !== "source") return undefined;
-  const lib = library.exec(c.words[1].text);
+  const lib = library.exec(c.words[1].text) ?? siblingLibrary.exec(c.words[1].text);
   return lib === null ? undefined : `scripts/e2e/lib/${lib[1]}`;
 }
 

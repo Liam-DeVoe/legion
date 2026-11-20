@@ -1,250 +1,173 @@
-import { beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { command, rowMs, rowOf } from "@legion/test-fixtures/row-waits";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { ownGroup, untilRunning } from "./own-group";
+import { procRootOf } from "./proc-root";
 
-// lib/leftovers.sh: the one mark and the one removal of a shell stack's Postgres
-// (packages/dispatch/e2e/postgres-mark.ts), and refuse_leftovers, which names what else an earlier
-// run of a stage left. The image rows of packages/dispatch/e2e/__tests__/harness-postgres-leftover
-// .test.ts start real shell stacks' containers and remove them, and lib/sweep-order.test.ts runs
-// each driver's own file to hold it to the removal before its refusals and its creates; these rows
-// hold the removal to bun, and refuse_leftovers to its reading of container names and of the
-// moments a container was made and its owner started, with a `docker` of their own.
-
-const lib = join(import.meta.dir, "leftovers.sh");
+// refuse_leftovers (lib/leftovers.sh) is a stage driver's check that no earlier run of its stage left
+// a process running whose driver is gone: a process names its run by /tmp/<PREFIX>.<driver pid>. in
+// its command line, its environment or its working directory. It reads the processes of
+// `${proc_root:-/proc}`; each row points proc_root at a proc root of its own processes
+// (lib/proc-root.ts), so its time is its own and not the host's process count.
+const leftovers = join(import.meta.dir, "leftovers.sh");
 const dir = temporaryDirectory("leftovers-test");
+const skip = skipWithout("perl", "sleep", "find");
+const prefix = "legion-e2e-leftovers-test";
 
-/** What the next row waits for, which its limit is the sum of (`rowMs` of
- *  `@legion/test-fixtures/row-waits`): one bash that sources lib/leftovers.sh, a process of its
- *  own. */
-const theRemoval = command("a bash that runs the removal with no bun on PATH");
-const oneRemoval = [theRemoval];
-
-describe("the removal of the Postgres of dead stacks", () => {
-  test(
-    "a start with no bun on PATH fails with a line that names it",
-    () => {
-      rowOf(oneRemoval).charge(theRemoval);
-      const run = Bun.spawnSync(
-        [
-          "/bin/bash",
-          "-c",
-          `. ${JSON.stringify(lib)}; remove_leftover_postgres || echo "refused $?"`,
-        ],
-        { env: { PATH: "/nonexistent" } }
-      );
-      expect(run.stdout.toString()).toBe("refused 1\n");
-      expect(run.stderr.toString()).toContain("lib/leftovers.sh: bun is required");
-    },
-    rowMs(oneRemoval)
-  );
+const started: number[] = [];
+afterEach(() => {
+  for (const pid of started.splice(0)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
 });
-
-/** A `docker` that answers refuse_leftovers from a fixture: `ps` prints each line of
- *  $FAKE_PS_LINES, and `inspect -f {{.Created}}` the time of $FAKE_CREATED. */
-const fakeDocker = `#!/usr/bin/env bash
-case "$1" in
-  ps) printf '%s\\n' "$FAKE_PS_LINES" ;;
-  inspect) printf '%s\\n' "$FAKE_CREATED" ;;
-  *) exit 64 ;;
-esac
-`;
-
-/** A pid no process of this machine has: one this row started and waited for. */
-function deadPid(): number {
-  const child = Bun.spawnSync(["bash", "-c", "echo $$"]);
-  return Number(child.stdout.toString().trim());
+async function sleeper(
+  options: { cwd?: string; env?: Record<string, string>; argv?: string[] } = {}
+) {
+  const child = Bun.spawn(ownGroup(options.argv ?? ["sleep", "60"]), {
+    cwd: options.cwd ?? dir,
+    env: { PATH: process.env.PATH ?? "", ...(options.env ?? {}) },
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  started.push(child.pid);
+  await untilRunning(child.pid, options.argv?.[0] ?? "sleep");
+  return child.pid;
+}
+// A pid no process holds now: a process this row started and reaped, the driver of a run that is
+// gone.
+function goneDriver(): number {
+  const gone = Bun.spawnSync(["true"]);
+  return gone.pid;
+}
+// The rows read processes, not containers: refuse_leftovers asks `docker ps` for an earlier run's
+// containers first, so each row puts a docker first on PATH that lists none. It keeps the rows off
+// the host's containers, and lets them run where there is no docker at all (a Legion pod), where
+// the host's missing docker said `docker: command not found` on the stderr the rows hold empty.
+let noContainers = "";
+function dockerListingNone(): string {
+  if (noContainers === "") {
+    noContainers = mkdtempSync(join(dir, "docker-"));
+    writeFileSync(join(noContainers, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  return noContainers;
+}
+// check runs refuse_leftovers PREFIX over ROOT, with PATH's front directory BIN when given, and
+// answers its status and what its `fail` said (a driver's fail, here one that prints and returns).
+function check(root: string, bin = "") {
+  const ran = Bun.spawnSync(
+    [
+      "bash",
+      "-c",
+      `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\nrefuse_leftovers ${prefix}; echo "status $?"`,
+    ],
+    {
+      env: {
+        PATH: `${bin}${bin ? ":" : ""}${dockerListingNone()}:${process.env.PATH ?? ""}`,
+        proc_root: root,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    }
+  );
+  return { out: ran.stdout.toString(), err: ran.stderr.toString() };
 }
 
-describe("refuse_leftovers", () => {
-  const bin = join(dir, "bin");
-  beforeAll(() => {
-    mkdirSync(bin);
-    writeFileSync(join(bin, "docker"), fakeDocker);
-    chmodSync(join(bin, "docker"), 0o755);
-  });
-
-  // refuse_leftovers also reads every process of this PID namespace, with three child processes
-  // each, so a row's time grows with the machine's processes: 14 s alone on a dev box of 840,
-  // where Bun's default of 5 s a row stopped both rows before refuse_leftovers ended.
-  const walkBound = 120_000;
-
-  // refuse_leftovers PREFIX run with the fake docker, which dates every container `created`; the
-  // prefix is this row's, so no process of the machine carries its work directory. Answers the
-  // shell's exit status on its first line, then what it printed.
-  function refuse(prefix: string, lines: string[], created = new Date()) {
-    const run = Bun.spawnSync(
-      [
-        "bash",
-        "-c",
-        `. ${JSON.stringify(lib)}; fail() { echo "FAIL: $*"; exit 1; }; refuse_leftovers ${prefix}; echo passed`,
-      ],
-      {
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH ?? ""}`,
-          FAKE_PS_LINES: lines.join("\n"),
-          FAKE_CREATED: created.toISOString(),
-        },
+test.skipIf(skip)(
+  "names each process an earlier run left, by its command line, its environment or its working directory, and no process of a live run",
+  async () => {
+    const gone = goneDriver();
+    const runDir = mkdtempSync(`/tmp/${prefix}.${gone}.`);
+    const liveDir = mkdtempSync(`/tmp/${prefix}.${process.pid}.`);
+    try {
+      // A bash whose last argument is the run's directory, which it keeps in its command line.
+      const byArgs = await sleeper({ argv: ["bash", "-c", "sleep 60; :", "bash", runDir] });
+      const byEnv = await sleeper({ env: { RUN: `${runDir}/state` } });
+      const byCwd = await sleeper({ cwd: runDir });
+      const live = await sleeper({ cwd: liveDir });
+      const none = await sleeper();
+      const r = check(procRootOf(dir, [byArgs, byEnv, byCwd, live, none]));
+      expect(r.err).toBe("");
+      const said = r.out;
+      for (const pid of [byArgs, byEnv, byCwd]) expect(said).toContain(`process ${pid}, `);
+      for (const pid of [live, none]) expect(said).not.toContain(`process ${pid}, `);
+      expect(said).toEndWith("status 1\n");
+    } finally {
+      for (const pid of started.splice(0)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {}
       }
-    );
-    return `exit ${run.exitCode}\n${run.stdout.toString()}`;
-  }
-
-  test(
-    "a dead run's NATS container is refused under main's name and under the pid and random name; a marked Postgres is the removal's, and a live run's container is no leftover",
-    () => {
-      const prefix = `legion-e2erow${process.pid}`;
-      const dead = deadPid();
-      const live = process.pid;
-      const out = refuse(prefix, [
-        `${prefix}-nats-${dead}|`,
-        `${prefix}-nats-${dead}-0123456789abcdef|`,
-        `${prefix}-pg-${dead}-0123456789abcdef|{"owner":{"pid":${dead}}}`,
-        `${prefix}-nats-${live}-fedcba9876543210|`,
-      ]);
-      expect(out).toStartWith(
-        `exit 1\nFAIL: an earlier ${prefix} run whose driver is gone left these running:`
-      );
-      expect(out).toContain(
-        `container ${prefix}-nats-${dead} (docker rm -f -v ${prefix}-nats-${dead})`
-      );
-      expect(out).toContain(`container ${prefix}-nats-${dead}-0123456789abcdef (`);
-      expect(out).not.toContain(`${prefix}-pg-`);
-      expect(out).not.toContain(`${prefix}-nats-${live}-fedcba9876543210`);
-    },
-    walkBound
-  );
-
-  test(
-    "a run whose every container is a live run's, or marked, passes",
-    () => {
-      const prefix = `legion-e2erow${process.pid}`;
-      const out = refuse(prefix, [
-        `${prefix}-nats-${process.pid}-fedcba9876543210|`,
-        `${prefix}-pg-${deadPid()}|{"owner":null}`,
-      ]);
-      expect(out).toBe("exit 0\npassed\n");
-    },
-    walkBound
-  );
-
-  /** The fraction of a second past the whole second that btime, the boot's line of /proc/stat,
-   *  drops. */
-  function bootFraction(): number {
-    const boot = Date.now() / 1000 - Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
-    return boot - Math.floor(boot);
-  }
-
-  const btime = Number(/^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"))?.[1]);
-  const ticksPerSecond = Number(Bun.spawnSync(["getconf", "CLK_TCK"]).stdout.toString());
-
-  /** The tick since the boot that a reading of whole seconds since btime gives the moment `ms` of
-   *  the wall clock: the reading of a container's creation that refuse_leftovers must not make. */
-  const wholeSeconds = (ms: number) => (Math.floor(ms / 1000) - btime) * ticksPerSecond;
-
-  /** The tick since the boot in which the kernel dates a process's start (proc(5), stat field
-   *  22). */
-  function startTick(pid: number): number {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return Number(stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19]);
-  }
-
-  /** A live process of this row's, started at a moment of the wall clock whose fraction of a
-   *  second is in [from, to - 30 ms), with the moments, in milliseconds, before and after its
-   *  spawn, and whether whole seconds since btime misread the case the row makes of it
-   *  (`misread`, from the kernel's own tick of the start). Where that range is narrower than
-   *  50 ms the row has no start to wait for and says so (`window` false); where load moved the
-   *  start out of it, it starts another, up to 20 times. */
-  async function startedAt(
-    from: number,
-    to: number,
-    misread: (tick: number, before: number, after: number) => boolean
-  ) {
-    const window = to - 0.03 - from >= 0.05;
-    for (let tries = 1; ; tries++) {
-      // A real wait for a fraction of the wall clock's second: the fault is in how the kernel's
-      // ticks since the boot meet Docker's wall-clock creation and btime's whole second, and no
-      // fake timer moves /proc or the `date` that refuse_leftovers runs in its own bash.
-      while (
-        window &&
-        !((Date.now() % 1000) / 1000 >= from && (Date.now() % 1000) / 1000 < to - 0.03)
-      )
-        await Bun.sleep(5);
-      const before = Date.now();
-      const child = Bun.spawn(["sleep", "120"]);
-      const after = Date.now() + 1;
-      const read = misread(startTick(child.pid), before, after);
-      if (read || !window || tries === 20) return { child, before, after, window, misread: read };
-      child.kill();
+      Bun.spawnSync(["rm", "-rf", runDir, liveDir]);
     }
   }
+);
 
-  // Docker dates a container in nanoseconds and the kernel a process's start in ticks (10 ms):
-  // refuse_leftovers compares them at that precision. A driver that made its container in the same
-  // second it started, after a boot whose fraction of a second btime drops, read as younger than
-  // its container when the creation was read in whole seconds since btime, and its live run's
-  // container was refused. These rows start the driver in a tick of the boot's own wall-clock
-  // second after the boot's fraction, where that reading refuses it: from 20 ms past the fraction
-  // to 30 ms before the second ends. A boot in the last 100 ms of its second leaves no such range
-  // (at its last 10 ms no such start at all: whole seconds then date each container made in its
-  // owner's tick right), and there the row of the 50 ms below sets the case of that reading.
-  for (const [form, suffix] of [
-    ["<pid>", ""],
-    ["<pid>-<random>", "-fedcba9876543210"],
-  ] as const) {
-    test(
-      `a live run's container named ${form} and made in the tick its driver started is no leftover`,
-      async () => {
-        const started = await startedAt(
-          bootFraction() + 0.02,
-          1,
-          (tick, _before, after) => tick > wholeSeconds(after)
-        );
-        try {
-          const prefix = `legion-e2eyoung${process.pid}`;
-          const name = `${prefix}-nats-${started.child.pid}${suffix}`;
-          const out = refuse(prefix, [`${name}|`], new Date(started.after));
-          // Where the boot's second leaves a window, the row's case is one whole seconds misread.
-          expect({ out, caseSet: started.misread || !started.window }).toEqual({
-            out: "exit 0\npassed\n",
-            caseSet: true,
-          });
-        } finally {
-          started.child.kill();
-        }
-      },
-      walkBound
-    );
-  }
-
-  // The same reading dates a container made 50 ms before a later process of its pid started, in
-  // the same second and before the boot's fraction, at or after that start, so the dead run's
-  // container read as the live one's: this row starts that process from 70 ms into a second to
-  // 20 ms before the boot's fraction. A boot in the first 170 ms of its second leaves no such
-  // range, and there the two rows above set the case.
-  test(
-    "a container made 50 ms before the process that now has its pid started is that dead run's leftover",
-    async () => {
-      const started = await startedAt(
-        0.07,
-        bootFraction() - 0.02,
-        (tick, before) => tick <= wholeSeconds(before - 50)
+test.skipIf(skip)(
+  "starts no program for each process it reads: the working directories it needs are read by one find",
+  async () => {
+    // A tr, a readlink and a cat that record each call and then run the real one: a walk that ran
+    // one for each process says so, once a process, in the log.
+    const bin = mkdtempSync(join(dir, "bin-"));
+    const calls = join(bin, "calls");
+    writeFileSync(calls, "");
+    for (const tool of ["tr", "readlink", "cat"]) {
+      writeFileSync(
+        join(bin, tool),
+        `#!/bin/sh\nprintf '%s\\n' ${tool} >>'${calls}'\nexec /usr/bin/${tool} "$@"\n`,
+        { mode: 0o755 }
       );
-      try {
-        const prefix = `legion-e2elater${process.pid}`;
-        const name = `${prefix}-nats-${started.child.pid}-0123456789abcdef`;
-        const out = refuse(prefix, [`${name}|`], new Date(started.before - 50));
-        expect({
-          failed: out.startsWith("exit 1\nFAIL: "),
-          named: out.includes(`container ${name} (docker rm -f -v ${name})`),
-          caseSet: started.misread || !started.window,
-        }).toEqual({ failed: true, named: true, caseSet: true });
-      } finally {
-        started.child.kill();
-      }
-    },
-    walkBound
+    }
+    const pids: number[] = [];
+    for (let i = 0; i < 20; i++) pids.push(await sleeper());
+    const r = check(procRootOf(dir, pids), bin);
+    expect(r.err).toBe("");
+    expect(r.out).toBe("status 0\n");
+    expect(readFileSync(calls, "utf8")).toBe("");
+  }
+);
+
+test.skipIf(skip)("a proc root that lists no process is reported, and found no leftover", () => {
+  const empty = mkdtempSync(join(dir, "empty-"));
+  mkdirSync(join(empty, "not-a-pid"));
+  const r = check(empty);
+  expect(r.err).toBe("");
+  expect(r.out).toBe(
+    `refuse_leftovers: ${empty} lists no process, so whether an earlier ${prefix} run left processes running was not read\nstatus 2\n`
   );
 });
+
+// The working directories are read by one find, and a find that read nothing is no answer: one too
+// old for -files0-from (findutils before 4.9, which says so and exits 1) and one a signal ends are
+// each reported, naming the find's status and its complaint, with 2. The control is the find every
+// walk of a busy machine runs: it exits 1 for an entry of another user's process, which is no
+// complaint, so the check still answers.
+function findStub(body: string) {
+  const bin = mkdtempSync(join(dir, "find-"));
+  writeFileSync(join(bin, "find"), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  return bin;
+}
+test.skipIf(skip)(
+  "a find that fails, that a signal ends or that is too old for -files0-from is reported with 2, and one that meets only unreadable entries is not",
+  async () => {
+    const root = procRootOf(dir, [await sleeper()]);
+    const said = (bin: string) => check(root, bin);
+    const tooOld = said(findStub(`echo "find: unknown predicate \\\`-files0-from'" >&2\nexit 1`));
+    expect(tooOld).toEqual({
+      out: `refuse_leftovers: find exited 1 reading the working directories under ${root}: find: unknown predicate \`-files0-from'\nstatus 2\n`,
+      err: "",
+    });
+    const killed = said(findStub("kill -KILL $$"));
+    expect(killed).toEqual({
+      out: `refuse_leftovers: find exited 137 reading the working directories under ${root}: find ended with status 137 and printed nothing\nstatus 2\n`,
+      err: "",
+    });
+    const unreadable = said(
+      findStub(`/usr/bin/find "$@"\necho "find: '$proc_root/1/cwd': Permission denied" >&2\nexit 1`)
+    );
+    expect(unreadable).toEqual({ out: "status 0\n", err: "" });
+  }
+);

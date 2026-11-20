@@ -1066,6 +1066,7 @@ jobs:
               - 'scripts/e2e/lib/loopback-dsn.sh'
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'
+              - 'scripts/e2e/lib/process-tree.sh'
               - 'scripts/e2e/lib/built-from.sh'
               # The removal of the Postgres of each test stack that is gone, which the proof's start
               # runs through the Bun .github/actions/setup-bun installs (stage1-skeleton.sh:27),

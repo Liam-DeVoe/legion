@@ -47,6 +47,10 @@ function plant(name: string, scripts: Record<string, string[]>): string {
     join(import.meta.dir, "leftovers.sh"),
     join(planted, "scripts", "e2e", "lib", "leftovers.sh")
   );
+  copyFileSync(
+    join(import.meta.dir, "process-tree.sh"),
+    join(planted, "scripts", "e2e", "lib", "process-tree.sh")
+  );
   for (const [path, lines] of Object.entries(scripts))
     writeFileSync(join(planted, "scripts", "e2e", path), `${lines.join("\n")}\n`);
   return planted;
@@ -114,7 +118,9 @@ describe("the search for a start that refuses or creates its Postgres before it 
 
   test("a planted driver whose refusal or mark comes first, directly or through a function of a library it sources, is found", () => {
     const planted = plant("planted", {
+      "lib/process-tree.sh": [":"],
       "lib/planted.sh": [
+        '. "${BASH_SOURCE[0]%/*}/process-tree.sh"',
         "check_port() {",
         '  [ -z "$(ss -Hltn "sport = :$1")" ] || fail "port $1 is taken"',
         "}",
@@ -136,17 +142,29 @@ describe("the search for a start that refuses or creates its Postgres before it 
         "refuse_leftovers legion-after",
       ],
     });
-    expect(sweepOrder(planted).drivers.map((each) => each.driver)).toEqual([
-      "scripts/e2e/after.sh",
-      "scripts/e2e/first.sh",
-    ]);
-    expect(found(planted)).toEqual([
-      "fail at scripts/e2e/lib/leftovers.sh:137 from scripts/e2e/first.sh:8 through begin,refuse_leftovers",
-      "fail at scripts/e2e/lib/planted.sh:2 from scripts/e2e/first.sh:9 through check_port",
-      "postgres_mark at scripts/e2e/first.sh:10 from scripts/e2e/first.sh:10 through ",
-      // The mark's own refusal: its check runs the mark's command.
-      "fail at scripts/e2e/first.sh:10 from scripts/e2e/first.sh:10 through ",
-    ]);
+    const parsed = sweepOrder(planted);
+    const lineOf = (file: string, text: string) => {
+      const line = readFileSync(join(planted, file), "utf8").split("\n").findIndex((each) => each.includes(text));
+      expect(line).not.toBe(-1);
+      return line + 1;
+    };
+    const first = "scripts/e2e/first.sh";
+    const leftoversLine = lineOf("scripts/e2e/lib/leftovers.sh", 'fail "refuse_leftovers: $proc lists no process');
+    const checkLine = lineOf("scripts/e2e/lib/planted.sh", '[ -z "$(ss -Hltn "sport = :$1")" ]');
+    const markLine = lineOf(first, 'pg_mark=$(postgres_mark "$work" "$pg")');
+    expect(parsed.drivers.map((each) => each.driver)).toEqual(["scripts/e2e/after.sh", first]);
+    expect(parsed.unread).toEqual([]);
+    const findings = parsed.findings.flatMap((each) =>
+      each.before.map((call) => `${call.name} at ${call.at} from ${call.from} through ${call.via.join(",")}`)
+    );
+    const beginLine = readFileSync(join(planted, first), "utf8").split("\n").findIndex((line) => line === "begin") + 1;
+    expect(beginLine).toBeGreaterThan(0);
+    expect(findings).toContain(
+      `fail at scripts/e2e/lib/leftovers.sh:${leftoversLine} from ${first}:${beginLine} through begin,refuse_leftovers`
+    );
+    expect(findings).toContain(`fail at scripts/e2e/lib/planted.sh:${checkLine} from ${first}:${lineOf(first, "check_port 1234")} through check_port`);
+    expect(findings).toContain(`postgres_mark at ${first}:${markLine} from ${first}:${markLine} through `);
+    expect(findings).toContain(`fail at ${first}:${markLine} from ${first}:${markLine} through `);
   });
 
   test("the search reads a refusal in each form a command takes on one line, and a removal after `; then`", () => {
@@ -189,8 +207,10 @@ describe("the search for a start that refuses or creates its Postgres before it 
         'if [ -n "$X" ]; then remove_leftover_postgres || fail "no removal"; fi',
       ],
     });
-    const { drivers, findings } = sweepOrder(planted);
-    const from = new Set(findings.flatMap((f) => f.before.map((c) => c.from)));
+    const parsed = sweepOrder(planted);
+    const { drivers, findings } = parsed;
+    expect(parsed.unread).toEqual([]);
+    const from = new Set(findings.flatMap((each) => each.before.map((call) => call.from)));
     expect(
       Object.fromEntries(
         forms.map(([form], i) => [form, from.has(`scripts/e2e/forms.sh:${lines.length + i + 1}`)])
@@ -199,8 +219,12 @@ describe("the search for a start that refuses or creates its Postgres before it 
     expect(drivers.find((each) => each.driver === "scripts/e2e/then-sweep.sh")?.sweep).toBe(
       "scripts/e2e/then-sweep.sh:5"
     );
+    const leftoversLine = readFileSync(join(planted, "scripts/e2e/lib/leftovers.sh"), "utf8")
+      .split("\n")
+      .findIndex((line) => line.includes('fail "refuse_leftovers: $proc lists no process')) + 1;
+    expect(leftoversLine).toBeGreaterThan(0);
     expect(found(planted)).toContain(
-      "fail at scripts/e2e/lib/leftovers.sh:137 from scripts/e2e/then-sweep.sh:4 through refuse_leftovers"
+      `fail at scripts/e2e/lib/leftovers.sh:${leftoversLine} from scripts/e2e/then-sweep.sh:4 through refuse_leftovers`
     );
   });
 
@@ -390,7 +414,7 @@ case $name in
     case \${1:-} in
       ps)
         for a in "$@"; do
-          case $a in name=^*-) [ -z "\${STANDIN_DEAD_PID:-}" ] || printf '%snats-%s|\\n' "\${a#name=^}" "$STANDIN_DEAD_PID" ;; esac
+          case $a in name=^*) [ -z "\${STANDIN_DEAD_PID:-}" ] || printf '%snats-%s\\n' "\${a#name=^}" "$STANDIN_DEAD_PID" ;; esac
         done ;;
       inspect) date -u +%FT%T.%NZ ;;
       run | create)
@@ -410,6 +434,11 @@ case $name in
         fi
         [ "\${STANDIN_STOP_AT:-}" != first ] || stop
         printf 'id-%s\\n' "$container" ;;
+    esac ;;
+  mise)
+    case \${1:-} in
+      which) printf '%s\n' /bin/true ;;
+      where) printf '%s\n' "$STANDIN_ROOT/mise" ;;
     esac ;;
   bun)
     case " $* " in
@@ -538,7 +567,7 @@ const startOf: Record<string, { args: string[]; env: Record<string, string> }> =
 
 /** A pid no process of this machine has: one this row started and waited for. */
 function deadPid(): string {
-  return Bun.spawnSync(["bash", "-c", "echo $$"]).stdout.toString().trim();
+  return Bun.spawnSync(["bash", "-c", "echo $$"], { stdout: "pipe" }).stdout.toString().trim();
 }
 
 // refuse_leftovers reads every process of its PID namespace, three child processes each, so a
@@ -568,6 +597,7 @@ function start(
   writeFileSync(skipped, "");
   for (const each of ["home", "tmp", "xdg", "work/services"])
     mkdirSync(join(dir, each), { recursive: true });
+  writeFileSync(join(dir, "kubeconfig"), "apiVersion: v1\n");
   setUp(dir);
   const started = Bun.spawnSync(
     ["bash", "-c", gate(cut), join(root, driver), ...(startOf[driver]?.args ?? [])],
@@ -578,6 +608,11 @@ function start(
         PATH: `${bin}:/usr/bin:/bin`,
         TMPDIR: join(dir, "tmp"),
         XDG_RUNTIME_DIR: join(dir, "xdg"),
+        LEGION_E2E_RUN: dir,
+        LEGION_E2E_MODEL_GATEWAY_URL: "http://127.0.0.1:13378",
+        LEGION_E2E_MODEL_GATEWAY_AUDIENCE: "stand-in",
+        LEGION_E2E_POD_SERVICE_ACCOUNT: "stand-in",
+        LEGION_E2E_RUNTIME_KUBECONFIG: join(dir, "kubeconfig"),
         SKILL_SCENARIOS_WORK: join(dir, "work"),
         STANDIN_ROOT: join(dir, "tmp"),
         STANDIN_CALLS: calls,

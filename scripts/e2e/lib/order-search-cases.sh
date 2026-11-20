@@ -41,13 +41,15 @@ set -u
 # What one case may take at most, in seconds: two driver runs, the holder's start and the search.
 order_search_case_s=150
 
-# order_search_setup TREE: the tree whose search and lib/leftovers.sh the cases use; a scratch
-# directory of this run's own (mktemp -d), removed on exit, with the lock in it.
+# order_search_setup TREE: the tree whose search, lib/leftovers.sh and its process-tree.sh sibling
+# the cases use; a scratch directory of this run's own (mktemp -d), removed on exit, with the lock
+# in it.
 order_search_setup() {
   order_search_tree=${1:?usage: order_search_setup TREE}
   order_search=$order_search_tree/scripts/e2e/lib/sweep-order.ts
-  [ -r "$order_search" ] && [ -r "$order_search_tree/scripts/e2e/lib/leftovers.sh" ] || {
-    echo "UNKNOWN: no search or no leftovers.sh in $order_search_tree"
+  [ -r "$order_search" ] && [ -r "$order_search_tree/scripts/e2e/lib/leftovers.sh" ] &&
+    [ -r "$order_search_tree/scripts/e2e/lib/process-tree.sh" ] || {
+    echo "UNKNOWN: no search, leftovers.sh or process-tree.sh in $order_search_tree"
     exit 2
   }
   command -v bun >/dev/null || {
@@ -105,7 +107,7 @@ order_search_case() {
   local t=$order_search_work/$name line
   local lines=("$first")
   mkdir -p "$t/scripts/e2e/lib"
-  cp "$order_search_tree/scripts/e2e/lib/leftovers.sh" "$t/scripts/e2e/lib/"
+  cp "$order_search_tree/scripts/e2e/lib/leftovers.sh" "$order_search_tree/scripts/e2e/lib/process-tree.sh" "$t/scripts/e2e/lib/"
   if [ -n "$before" ]; then
     while IFS= read -r line; do lines+=("$line"); done <<<"$before"
   fi
