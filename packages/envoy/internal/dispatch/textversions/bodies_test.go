@@ -66,7 +66,7 @@ func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
 	}
 	if created.Body != want {
 		t.Fatalf("the comment.created version's body is %d bytes starting %q, want revision 1's %d blocks in their order, %d bytes starting %q",
-			len(created.Body), cutText(created.Body), len(texts), len(want), cutText(want))
+			len(created.Body), abridged(created.Body, 80), len(texts), len(want), abridged(want, 80))
 	}
 	if after := startedBy(t, got, edit); after.BodyFrom != bodyFromRow || after.Body != edited {
 		t.Fatalf("the comment.edited version holds %d bytes from %q, want the edited body's %d from %q",
@@ -127,6 +127,44 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 		}
 		requireKeptEventText(t, database, got, &logs, comment.id, firstEdit, long)
 	})
+}
+
+// TestACutEditThatKeepsTheBodyStartsNoVersion writes a comment longer than an event carries, and
+// a batch writes its comment.created version, whole from the comment's row. In a later batch, so
+// the comment's version is in the table and not in the batch, a comment.edited whose event cuts
+// the body writes the same body again. Its whole body, read from the row, equals the comment's
+// latest version's, so it starts no version, and the table keeps the one row.
+func TestACutEditThatKeepsTheBodyStartsNoVersion(t *testing.T) {
+	database := storetest.Open(t)
+	seedTheIssue(t, database)
+	broker := events.NewBroker()
+	long := longCommentBody()
+	comment := writeComment(t, database, broker, long, true)
+	var logs bytes.Buffer
+	first := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event))
+	if created := startedBy(t, first, comment.event); created.BodyFrom != bodyFromRow || created.Body != long {
+		t.Fatalf("the comment.created version holds %d bytes from %q, want the comment's %d from %q",
+			len(created.Body), created.BodyFrom, len(long), bodyFromRow)
+	}
+
+	edit := editComment(t, database, broker, comment.id, long)
+	edited := readLoggedEvents(t, database, edit)
+	if _, truncated := model.EventBody(long); !truncated {
+		t.Fatal("the body is one an event carries whole, which tests no cut")
+	}
+	got := decideAndWrite(t, database, &logs, edited)
+	if len(got.Versions) != 0 {
+		t.Fatalf("the cut comment.edited that keeps the body starts %d versions (the first from %q), want none",
+			len(got.Versions), got.Versions[0].BodyFrom)
+	}
+	var rows int
+	if err := database.Pool.QueryRow(t.Context(),
+		`select count(*) from search_text_versions where kind = 'comment' and id = $1`, comment.id).Scan(&rows); err != nil {
+		t.Fatalf("count the comment's rows: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("the comment has %d rows, want the one of its comment.created", rows)
+	}
 }
 
 // requireKeptEventText holds the version event starts of comment id, whose body was body when
@@ -353,7 +391,7 @@ func decideAndWrite(t *testing.T, database *store.Store, logs *bytes.Buffer, bat
 		t.Fatalf("begin the batch: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	got, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch)
+	got, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch)
 	if err != nil {
 		t.Fatalf("decide the versions: %v", err)
 	}
@@ -405,12 +443,4 @@ func loggedWarnings(t *testing.T, logs *bytes.Buffer) []map[string]string {
 		t.Fatalf("read the log: %v", err)
 	}
 	return warnings
-}
-
-// cutText is the first 80 bytes of text, for a failure message.
-func cutText(text string) string {
-	if len(text) <= 80 {
-		return text
-	}
-	return text[:80] + "..."
 }

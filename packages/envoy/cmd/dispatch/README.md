@@ -2612,7 +2612,7 @@ Its key is `(kind, id, event_seq)`, and a row is never updated: a new version is
 Neither table has a foreign key: a key locks the table it names, and a version is history that a later change to its item must not follow or refuse.
 It is a new-table migration: it holds only `create table` and `create index` on the two new tables, the release before it neither reads nor writes them, and its census answers `0`.
 No migration writes a row of either table.
-At production's counts the table and its indexes take about 1.9 GB and grow by 30 to 40 MB a day, which is above the census's 1 GiB limit.
+At production's counts the table and its indexes take about 2 GB (1.9 GB measured on real text, 2,134 MB on the keyed copy) and grow by 30 to 40 MB a day, which is above the census's 1 GiB limit.
 So once the table is filled, the census refuses a later migration that names it unless the census admits every statement of that migration.
 A change to its shape is a new table that the fill writes again.
 A later build that reads more event types reads the cursor row's `rules` to know which events to read again.

@@ -28,6 +28,14 @@ const (
 	bodyFromCut    = "cut"
 )
 
+// The kinds of item the keyword table holds, the values of search_text_versions.kind.
+const (
+	kindIssue   = "issue"
+	kindComment = "comment"
+	kindMessage = "message"
+	kindAsk     = "ask"
+)
+
 // versionRules holds the rule of each event type that can start a version (rules version 1).
 // Every other type is in unchangingTypes: TestEveryEventTypeIsSortedForTheKeywordFill holds each
 // member of contracts.DispatchEventTypes in exactly one of the two.
@@ -52,11 +60,11 @@ var versionRules = map[string]rule{
 	"issue.updated":    issueRetitled,
 	"issue.closed":     issueRetitled,
 	"artifact.version": primaryDocumentVersion,
-	"comment.created":  postVersion("comment", false),
-	"comment.answered": postVersion("comment", false),
-	"comment.edited":   postVersion("comment", true),
-	"message.created":  postVersion("message", false),
-	"message.answered": postVersion("message", false),
+	"comment.created":  postVersion(kindComment, false),
+	"comment.answered": postVersion(kindComment, false),
+	"comment.edited":   postVersion(kindComment, true),
+	"message.created":  postVersion(kindMessage, false),
+	"message.answered": postVersion(kindMessage, false),
 	"ask.opened":       askVersion,
 	"ask.edited":       askVersion,
 	"ask.answered":     askVersion,
@@ -125,12 +133,12 @@ type issuePayload struct {
 }
 
 // artifactVersionPayload is what the rules read of an artifact.version event's payload: the
-// document and the version the write made of it, with its size in bytes.
+// document and the version the write made of it.
 type artifactVersionPayload struct {
 	ArtifactID *string `json:"artifact_id"`
 	Version    *struct {
 		Number *int32 `json:"number"`
-		Size   int64  `json:"size"`
+		Size   int64  `json:"size"` // unread, but decoding it refuses a payload whose size is no integer
 	} `json:"version"`
 }
 
@@ -209,7 +217,7 @@ func issueCreated(e event, _ latestVersion) (version, bool, error) {
 	if p.Title == nil {
 		return version{}, false, missing("title")
 	}
-	v, err := newVersion(e, "issue", key, &key)
+	v, err := newVersion(e, kindIssue, key, &key)
 	if err != nil {
 		return version{}, false, err
 	}
@@ -237,11 +245,11 @@ func issueRetitled(e event, latest latestVersion) (version, bool, error) {
 	if p.Title == nil {
 		return version{}, false, missing("title")
 	}
-	prior := latest("issue", key)
+	prior := latest(kindIssue, key)
 	if prior != nil && prior.Body == *p.Title {
 		return version{}, false, nil
 	}
-	v, err := newVersion(e, "issue", key, &key)
+	v, err := newVersion(e, kindIssue, key, &key)
 	if err != nil {
 		return version{}, false, err
 	}
@@ -275,15 +283,15 @@ func primaryDocumentVersion(e event, latest latestVersion) (version, bool, error
 		return version{}, false, missing("version.number")
 	}
 	key := *e.IssueKey
-	prior := latest("issue", key)
+	prior := latest(kindIssue, key)
 	if prior != nil && prior.SpecArtifactID != nil && *prior.SpecArtifactID != *p.ArtifactID {
 		return version{}, false, nil
 	}
-	v, err := newVersion(e, "issue", key, &key)
+	v, err := newVersion(e, kindIssue, key, &key)
 	if err != nil {
 		return version{}, false, err
 	}
-	v.SpecArtifactID, v.SpecVersion, v.SpecSize = p.ArtifactID, p.Version.Number, p.Version.Size
+	v.SpecArtifactID, v.SpecVersion = p.ArtifactID, p.Version.Number
 	if prior != nil {
 		v.Text, v.Body, v.BodyFrom = prior.Text, prior.Body, prior.BodyFrom
 	}
@@ -308,7 +316,7 @@ func postVersion(kind string, onlyWhenChanged bool) rule {
 		if issueKey == nil {
 			issueKey = e.IssueKey
 		}
-		if kind == "message" && issueKey == nil {
+		if kind == kindMessage && issueKey == nil {
 			return version{}, false, nil
 		}
 		if p.Body == nil {
@@ -344,14 +352,14 @@ func askVersion(e event, latest latestVersion) (version, bool, error) {
 		return version{}, false, missing("question")
 	}
 	body := *p.Question + " " + askSearchSuffix(p.Options, p.Answer)
-	if prior := latest("ask", *p.ID); prior != nil && prior.Body == body {
+	if prior := latest(kindAsk, *p.ID); prior != nil && prior.Body == body {
 		return version{}, false, nil
 	}
 	issueKey := p.IssueKey
 	if issueKey == nil {
 		issueKey = e.IssueKey
 	}
-	v, err := newVersion(e, "ask", *p.ID, issueKey)
+	v, err := newVersion(e, kindAsk, *p.ID, issueKey)
 	if err != nil {
 		return version{}, false, err
 	}
@@ -479,11 +487,17 @@ type decided struct {
 //     title, the issue's present title (bodyFromRow). An artifact.version of an issue whose
 //     latest version names no primary document is held to artifacts.is_primary the same way.
 //
-// logger takes the warnings. An error names the event it met: a payload a rule cannot read
-// (errUnreadablePayload) or a statement that failed.
-func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events []event) (decided, error) {
+// logger takes the warnings. The first event whose payload a rule cannot read
+// (errUnreadablePayload) ends the events decided: the versions of the events before it are
+// decided and answered, with how many events those are, its index, and the error naming it; with
+// every event read, that count is len(events). Any other error, a statement that failed or events
+// out of id order, answers no version.
+func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events []event) (decided, int, error) {
 	// Each rule asks for the latest version of the item it decides: a first pass through the
-	// rules names those items, so the table's rows of all of them are read in one statement.
+	// rules names those items, so the table's rows of all of them are read in one statement. A
+	// post whose event cut its body names its item too, since complete compares the whole body
+	// with the item's latest version, which the rule does not ask for then. The first pass reads
+	// every field a rule can find missing, so it meets the first unreadable payload.
 	var items []item
 	asked := map[item]bool{}
 	record := func(kind, id string) *version {
@@ -493,19 +507,29 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 		}
 		return nil
 	}
+	read := len(events)
+	var unreadable error
 	for index, e := range events {
 		if index > 0 && e.ID <= events[index-1].ID {
-			return decided{}, fmt.Errorf("decide the keyword versions: event %d comes after event %d, out of id order", e.ID, events[index-1].ID)
+			return decided{}, 0, fmt.Errorf("decide the keyword versions: event %d comes after event %d, out of id order", e.ID, events[index-1].ID)
 		}
-		if apply, ok := versionRules[e.Type]; ok {
-			if _, _, err := apply(e, record); err != nil {
-				return decided{}, eventError(e, err)
-			}
+		apply, ok := versionRules[e.Type]
+		if !ok {
+			continue
+		}
+		v, started, err := apply(e, record)
+		if err != nil {
+			read, unreadable = index, eventError(e, err)
+			break
+		}
+		if started && v.BodyTruncated {
+			record(v.Kind, v.ID)
 		}
 	}
+	events = events[:read]
 	stored, err := latestVersions(ctx, tx, items)
 	if err != nil {
-		return decided{}, err
+		return decided{}, 0, err
 	}
 	d := &decider{tx: tx, logger: logger, stored: stored, batch: map[item]*version{}}
 	for _, e := range events {
@@ -515,14 +539,14 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 		}
 		v, started, err := apply(e, d.latest)
 		if err != nil {
-			return decided{}, eventError(e, err)
+			return decided{}, 0, eventError(e, err)
 		}
 		if !started {
 			continue
 		}
 		keep, err := d.complete(ctx, e, &v)
 		if err != nil {
-			return decided{}, eventError(e, err)
+			return decided{}, 0, eventError(e, err)
 		}
 		if !keep {
 			continue
@@ -531,9 +555,9 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 		d.batch[item{v.Kind, v.ID}] = &v
 	}
 	if err := d.warnFirstSpecVersions(ctx); err != nil {
-		return decided{}, err
+		return decided{}, 0, err
 	}
-	return d.out, nil
+	return d.out, read, unreadable
 }
 
 // eventError names the event err was met at.
@@ -571,7 +595,7 @@ func (d *decider) latest(kind, id string) *version {
 func (d *decider) complete(ctx context.Context, e event, v *version) (bool, error) {
 	prior := d.latest(v.Kind, v.ID)
 	switch v.Kind {
-	case "issue":
+	case kindIssue:
 		switch {
 		case e.Type == "issue.created":
 			if v.SpecVersion != nil {
@@ -586,7 +610,7 @@ func (d *decider) complete(ctx context.Context, e event, v *version) (bool, erro
 			}
 			return found && rows.primary != nil && *rows.primary == *v.SpecArtifactID, nil
 		}
-	case "comment", "message":
+	case kindComment, kindMessage:
 		if !v.BodyTruncated {
 			return true, nil
 		}
@@ -606,7 +630,7 @@ func (d *decider) seedIssue(ctx context.Context, e event, v *version) (bool, err
 		return false, err
 	}
 	if !found {
-		d.logger.Warn("search text versions fill: an issue event names an issue the log never created and the database does not hold; it starts no version",
+		d.logger.Warn("dispatch: the keyword fill met an issue event that names an issue the log never created and the database does not hold; it starts no version",
 			"issue", v.ID, "event_id", e.ID, "event_type", e.Type)
 		return false, nil
 	}
@@ -623,7 +647,7 @@ func (d *decider) seedIssue(ctx context.Context, e event, v *version) (bool, err
 			v.SpecVersion = rows.specVersion
 		}
 	}
-	d.logger.Warn("search text versions fill: the log holds no earlier version of the issue, so its version reads the issue's rows",
+	d.logger.Warn("dispatch: the keyword fill found no earlier version of the issue in the log, so its version reads the issue's rows",
 		"issue", v.ID, "event_id", e.ID, "event_type", e.Type, "body_from", v.BodyFrom)
 	return true, nil
 }
@@ -663,7 +687,7 @@ func readIssueRows(ctx context.Context, tx pgx.Tx, key string, at time.Time) (is
 // first source that holds it (decideVersions), or keeps the event's text, warns and counts it.
 func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
 	switch v.Kind {
-	case "comment":
+	case kindComment:
 		var body string
 		var editedAt *time.Time
 		err := d.tx.QueryRow(ctx, `select body, edited_at from public.comments where id = $1::uuid`, v.ID).Scan(&body, &editedAt)
@@ -684,7 +708,7 @@ func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
 				return nil
 			}
 		}
-	case "message":
+	case kindMessage:
 		var body string
 		err := d.tx.QueryRow(ctx, `select body from public.messages where id = $1::uuid`, v.ID).Scan(&body)
 		switch {
@@ -697,7 +721,7 @@ func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
 	}
 	v.BodyFrom = bodyFromCut
 	d.out.Cut++
-	d.logger.Warn("search text versions fill: no source holds the whole body its event cut, so the version keeps the event's text",
+	d.logger.Warn("dispatch: the keyword fill found no source that holds the whole body its event cut, so the version keeps the event's text",
 		"kind", v.Kind, "id", v.ID, "event_id", e.ID, "event_type", e.Type)
 	return nil
 }
@@ -783,7 +807,7 @@ func (d *decider) warnFirstSpecVersions(ctx context.Context) error {
 	for _, index := range d.firstSpecs {
 		v := d.out.Versions[index]
 		if at := made[*v.SpecArtifactID]; at == nil || !at.Equal(v.StartedAt) {
-			d.logger.Warn("search text versions fill: the issue's create did not write version 1 of its primary document, which the issue's first version holds all the same",
+			d.logger.Warn("dispatch: the keyword fill found that the issue's create did not write version 1 of its primary document, which the issue's first version holds all the same",
 				"issue", v.ID, "event_id", v.EventID, "artifact_id", *v.SpecArtifactID, "version_created_at", at, "event_created_at", v.StartedAt)
 		}
 	}
@@ -792,23 +816,23 @@ func (d *decider) warnFirstSpecVersions(ctx context.Context) error {
 
 // latestVersionsQuery reads, for each item ($1 its kinds and $2 its ids), its latest row in the
 // keyword table: the one with the greatest event_seq, read backwards through the primary key
-// (kind, id, event_seq), one probe for each item.
+// (kind, id, event_seq), one probe for each item. It reads the columns the rules compare and carry
+// forward alone.
 const latestVersionsQuery = `
-	select l.kind, l.id, l.issue_key, l.project_key, l.event_id, l.event_seq, l.started_at, l.body,
-	       l.body_from, l.spec_artifact_id::text, l.spec_version
+	select l.kind, l.id, l.body, l.body_from, l.spec_artifact_id::text, l.spec_version
 	  from unnest($1::text[], $2::text[]) as k (kind, id)
 	  cross join lateral (
-	        select v.kind, v.id, v.issue_key, v.project_key, v.event_id, v.event_seq, v.started_at,
-	               v.body, v.body_from, v.spec_artifact_id, v.spec_version
+	        select v.kind, v.id, v.body, v.body_from, v.spec_artifact_id, v.spec_version
 	          from public.search_text_versions v
 	         where v.kind = k.kind and v.id = k.id
 	         order by v.event_seq desc
 	         limit 1) l`
 
 // latestVersions reads the latest row in the keyword table of each of items, in tx: an item with
-// no row is not in the map. A version read from the table holds its body as its Body, and as its
-// Text where the body is the item's own text, which an ask's is not: an ask's body holds its
-// question, a space and ask_search_suffix of its options and answer.
+// no row is not in the map. A version read from the table holds its kind, its id, its body as its
+// Body, and as its Text where the body is the item's own text, which an ask's is not (an ask's
+// body holds its question, a space and ask_search_suffix of its options and answer), its BodyFrom
+// and its primary document version, and none of its other columns.
 func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*version, error) {
 	latest := make(map[item]*version, len(items))
 	if len(items) == 0 {
@@ -826,11 +850,10 @@ func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*ver
 	defer rows.Close()
 	for rows.Next() {
 		var v version
-		if err := rows.Scan(&v.Kind, &v.ID, &v.IssueKey, &v.ProjectKey, &v.EventID, &v.EventSeq, &v.StartedAt, &v.Body,
-			&v.BodyFrom, &v.SpecArtifactID, &v.SpecVersion); err != nil {
+		if err := rows.Scan(&v.Kind, &v.ID, &v.Body, &v.BodyFrom, &v.SpecArtifactID, &v.SpecVersion); err != nil {
 			return nil, fmt.Errorf("read the latest keyword versions of %d items: %w", len(items), err)
 		}
-		if v.Kind != "ask" {
+		if v.Kind != kindAsk {
 			v.Text = &v.Body
 		}
 		latest[item{v.Kind, v.ID}] = &v
@@ -888,7 +911,7 @@ func insertVersions(ctx context.Context, tx pgx.Tx, versions []version) error {
 	startedAts := make([]time.Time, n)
 	for index, v := range versions {
 		text := v.Body
-		if v.Kind == "ask" {
+		if v.Kind == kindAsk {
 			if v.Text == nil {
 				return fmt.Errorf("write the keyword version of ask %s at event %d: it holds no question", v.ID, v.EventID)
 			}

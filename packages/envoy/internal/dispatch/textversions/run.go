@@ -114,19 +114,12 @@ func Run(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-// runner is one process's fill under the hold: its Config, the filler its passes run, the holder
-// it takes the hold as, the line it logs of where the fill stands, and the clock that line is
-// timed by.
+// runner is one process's fill under the hold: its Config, the filler its passes run, whose
+// holder it takes the hold as and whose logger it logs to, and when it last logged where the fill
+// stands.
 type runner struct {
-	cfg    Config
-	fill   *filler
-	holder uuid.UUID
-	logger *slog.Logger
-	// retry is standbyRetry; options holdOptions.
-	retry   time.Duration
-	options duty.HoldOptions
-	// now is the clock caughtUp is timed by, and caughtUpAt when it last logged.
-	now        func() time.Time
+	cfg        Config
+	fill       *filler
 	caughtUpAt time.Time
 }
 
@@ -147,20 +140,11 @@ func newRunner(cfg Config) (*runner, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	holder := uuid.New()
 	fill := newFiller(cfg.Leases, cfg.Horizon)
 	fill.logger = logger
-	fill.holder, fill.holdName = holder, fillHoldName
+	fill.holder = uuid.New()
 	fill.pause = newPauser(cfg.Latency, logger).waitUntilFast
-	return &runner{
-		cfg:     cfg,
-		fill:    fill,
-		holder:  holder,
-		logger:  logger,
-		retry:   standbyRetry,
-		options: holdOptions,
-		now:     time.Now,
-	}, nil
+	return &runner{cfg: cfg, fill: fill}, nil
 }
 
 // The lines the hold logs.
@@ -185,13 +169,13 @@ func (r *runner) run(ctx context.Context) {
 		if hold == nil {
 			return
 		}
-		r.logger.Info(tookHoldMessage, "holder", r.holder)
+		r.fill.logger.Info(tookHoldMessage, "holder", r.fill.holder)
 		r.fillUnder(ctx, hold)
 		if ctx.Err() != nil {
 			r.release(hold)
 			return
 		}
-		r.logger.Warn(lostHoldMessage, "holder", r.holder)
+		r.fill.logger.Warn(lostHoldMessage, "holder", r.fill.holder)
 		// The renewal stops, and a row that still names this holder, lapsed or not, is freed,
 		// which is the state the next try for the hold reads.
 		r.end(hold)
@@ -202,7 +186,7 @@ func (r *runner) run(ctx context.Context) {
 // nil: at once, then each time cfg.Released is signalled and every retry. It says it stands by
 // once, at the first refusal.
 func (r *runner) standBy(ctx context.Context) *duty.Hold {
-	retry := time.NewTicker(r.retry)
+	retry := time.NewTicker(standbyRetry)
 	defer retry.Stop()
 	said := false
 	for {
@@ -212,10 +196,10 @@ func (r *runner) standBy(ctx context.Context) *duty.Hold {
 			return hold
 		case err != nil:
 			if ctx.Err() == nil {
-				r.logger.Error("dispatch: the keyword fill could not try for its hold", "holder", r.holder, "error", err)
+				r.fill.logger.Error("dispatch: the keyword fill could not try for its hold", "holder", r.fill.holder, "error", err)
 			}
 		case !said:
-			r.logger.Info(standingByMessage, "holder", r.holder)
+			r.fill.logger.Info(standingByMessage, "holder", r.fill.holder)
 			said = true
 		}
 		select {
@@ -229,9 +213,9 @@ func (r *runner) standBy(ctx context.Context) *duty.Hold {
 
 // tryHold takes the hold when no other holder holds it live, within one renewal interval.
 func (r *runner) tryHold(ctx context.Context) (*duty.Hold, error) {
-	bounded, cancel := context.WithTimeout(ctx, r.options.Renew)
+	bounded, cancel := context.WithTimeout(ctx, holdOptions.Renew)
 	defer cancel()
-	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.holder, r.options)
+	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.fill.holder, holdOptions)
 }
 
 // fillUnder runs the fill's passes under hold until ctx ends or the hold is lost: a pass at once,
@@ -264,7 +248,7 @@ func (r *runner) fillUnder(ctx context.Context, hold *duty.Hold) {
 		var due time.Duration
 		woken := true
 		if err != nil {
-			r.logger.Error("dispatch: the keyword fill's pass failed; it tries again", "retry_in", failWait, "error", err)
+			r.fill.logger.Error("dispatch: the keyword fill's pass failed; it tries again", "retry_in", failWait, "error", err)
 			due, woken = failWait, false
 			failWait = min(2*failWait, failRetryMax)
 		} else {
@@ -327,7 +311,7 @@ const caughtUpQuery = `select f.event_id, f.reach, (extract(epoch from now() - f
 // ids the cursor stands below the newest event. A fill with nothing to do runs no pass, and so
 // writes no line and sends no statement for it.
 func (r *runner) caughtUp(ctx context.Context) {
-	now := r.now()
+	now := time.Now()
 	if !r.caughtUpAt.IsZero() && now.Sub(r.caughtUpAt) < caughtUpEvery {
 		return
 	}
@@ -336,7 +320,7 @@ func (r *runner) caughtUp(ctx context.Context) {
 	var lagMillis *int64
 	if err := r.cfg.Leases.QueryRow(ctx, caughtUpQuery).Scan(&cursor, &reach, &lagMillis, &newest); err != nil {
 		if ctx.Err() == nil {
-			r.logger.Warn("dispatch: the keyword fill could not read where it stands", "error", err)
+			r.fill.logger.Warn("dispatch: the keyword fill could not read where it stands", "error", err)
 		}
 		return
 	}
@@ -345,7 +329,7 @@ func (r *runner) caughtUp(ctx context.Context) {
 	if reach != nil && lagMillis != nil {
 		attributes = append(attributes, "reach", *reach, "lag", time.Duration(*lagMillis)*time.Millisecond)
 	}
-	r.logger.Info(caughtUpMessage, attributes...)
+	r.fill.logger.Info(caughtUpMessage, attributes...)
 }
 
 // release ends the holder's hold as ctx ends, freeing it at once for a standby, and says so. A
@@ -358,7 +342,7 @@ func (r *runner) release(hold *duty.Hold) {
 	default:
 	}
 	if r.end(hold) {
-		r.logger.Info(releasedHoldMessage, "holder", r.holder)
+		r.fill.logger.Info(releasedHoldMessage, "holder", r.fill.holder)
 	}
 }
 
@@ -367,10 +351,10 @@ func (r *runner) release(hold *duty.Hold) {
 // one renewal interval, since it must reach the database when the process's context has ended.
 // It answers whether the release reached the database.
 func (r *runner) end(hold *duty.Hold) bool {
-	releasing, cancel := context.WithTimeout(context.Background(), r.options.Renew)
+	releasing, cancel := context.WithTimeout(context.Background(), holdOptions.Renew)
 	defer cancel()
 	if err := hold.Release(releasing); err != nil {
-		r.logger.Error("dispatch: the keyword fill could not release its hold", "holder", r.holder, "error", err)
+		r.fill.logger.Error("dispatch: the keyword fill could not release its hold", "holder", r.fill.holder, "error", err)
 		return false
 	}
 	return true

@@ -16,14 +16,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestThePauseFollowsTheAnswersReadsThisProcessServes holds the fill's pause to the pause rows of
-// the plan's state table, one row each. A row writes two events and runs a fill of one event a
-// batch, its pause the one a serving process sets (pauser.waitUntilFast) on answers reads a
-// sessionanswers.Latency records, on a fake clock that moves only where the row moves it and as
-// the paused fill waits. The row's reads before the fill, while its first batch runs and while it
-// is paused bring the state and the event the row names. The row reads each pause: how many
-// batches had begun when it paused, every one of them committed and none begun while it lasted;
-// how long it lasted; and the lines it logged among the batches'.
+// TestThePauseFollowsTheAnswersReadsThisProcessServes holds the fill's pause to each state the
+// fill is in, filling or paused, with the answers reads that move it or leave it, one row each. A
+// row writes two events and runs a fill of one event a batch, its pause the one a serving process
+// sets (pauser.waitUntilFast) on answers reads a sessionanswers.Latency records, on a fake clock
+// that moves only where the row moves it and as the paused fill waits. The row's reads before the
+// fill, while its first batch runs and while it is paused bring the state and the event the row
+// names. The row reads each pause: how many batches had begun when it paused, every one of them
+// committed and none begun while it lasted; how long it lasted; and the lines it logged among the
+// batches'.
 func TestThePauseFollowsTheAnswersReadsThisProcessServes(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -96,8 +97,8 @@ func TestThePauseFollowsTheAnswersReadsThisProcessServes(t *testing.T) {
 			pause.now = rig.clock
 			pending := row.whilePaused
 			pause.wait = func(ctx context.Context, d time.Duration) error {
-				if d != time.Second {
-					t.Errorf("the paused fill waited %v to ask again; want 1 s", d)
+				if d != pauseAskEvery {
+					t.Errorf("the paused fill waited %v to ask again; want pauseAskEvery, %v", d, pauseAskEvery)
 				}
 				if !rig.paused {
 					rig.paused, rig.pausedAt, rig.pausedAfter = true, rig.now, rig.begun

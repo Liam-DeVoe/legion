@@ -8616,9 +8616,10 @@ const keywordFillTakeOverWithin = 15*time.Second + 10*time.Second + 5*time.Secon
 const keywordFillIssue = "KWF-1"
 
 // A killed holder does not release its hold, so its hold lapses and the process that stood by takes
-// it and writes the events written since: within keywordFillTakeOverWithin of the kill, and well
-// inside R3's 60 s. Every batch before the kill is the first process's and every batch after is
-// the second's, and every event has exactly its row.
+// it and writes the events written since: within keywordFillTakeOverWithin of the kill, well inside
+// the 60 s bound from a holder's death to the rows of the events written after it. Every batch
+// before the kill is the first process's and every batch after is the second's, and every event
+// has exactly its row.
 func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T) {
 	database := storetest.Open(t)
 	seedKeywordFillIssue(t, database)
@@ -8636,7 +8637,7 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 	first.kill(t)
 	killed := time.Now()
 	after := writeKeywordFillComments(t, database, 50)
-	secondHolder := keywordFillHolder(t, second, keywordFillTakeOverWithin)
+	secondHolder := keywordFillHolder(t, second, keywordFillTakeOverWithin-time.Since(killed))
 	waitForKeywordRows(t, database, after, time.Minute-time.Since(killed))
 	t.Logf("the second process wrote the events written after the kill %v after it", time.Since(killed).Round(time.Millisecond))
 
@@ -8761,14 +8762,15 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 // seedKeywordFillIssue writes keywordFillIssue and its project.
 func seedKeywordFillIssue(t *testing.T, database *store.Store) {
 	t.Helper()
-	for _, statement := range []string{
-		`insert into projects (key, name, default_assignee) values ('KWF', 'Keyword fill', 'alice')`,
-		`insert into issues (key, project_key, number, title, created_by, rank)
-		 values ('KWF-1', 'KWF', 1, 'Rotate the signing keys', '{"kind":"user","id":"alice"}', 'A')`,
-	} {
-		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
-			t.Fatalf("seed the keyword fill's issue: %v", err)
-		}
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx,
+		`insert into projects (key, name, default_assignee) values ('KWF', 'Keyword fill', 'alice')`); err != nil {
+		t.Fatalf("seed the keyword fill's project: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ($1, 'KWF', 1, 'Rotate the signing keys', '{"kind":"user","id":"alice"}', 'A')`, keywordFillIssue); err != nil {
+		t.Fatalf("seed the keyword fill's issue: %v", err)
 	}
 }
 

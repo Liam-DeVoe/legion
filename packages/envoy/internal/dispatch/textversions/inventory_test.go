@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -112,7 +113,7 @@ func TestEveryProductionPayloadShapeGivesItsVersion(t *testing.T) {
 	for _, name := range names {
 		fixture := readFixtureEvent(t, name)
 		want := readExpectedVersion(t, name)
-		got, started, err := versionOf(fixture.event())
+		got, started, err := versionOf(event(fixture))
 		switch {
 		case errors.Is(err, errNoRule):
 			noRule = append(noRule, name)
@@ -133,6 +134,47 @@ func TestEveryProductionPayloadShapeGivesItsVersion(t *testing.T) {
 		t.Errorf("%d of the %d payload shapes of production's log have no rule:\n%s",
 			len(noRule), len(names), strings.Join(noRule, "\n"))
 	}
+}
+
+// captureScript is the script that captures this package's testdata.
+const captureScript = "testdata/capture.sh"
+
+// fillTypesLine is the one assignment of capture.sh's fill_types, the event types whose payload
+// shapes `capture.sh shapes` captures.
+var fillTypesLine = regexp.MustCompile(`(?m)^fill_types="([^"]*)"$`)
+
+// TestTheCaptureScriptCapturesEveryRuleType holds capture.sh's fill_types to the types a rule
+// reads (versionRules). The script cannot read Go, so it writes them out itself; a type a rule
+// reads that it left out would get no fixture under testdata/payloads, and
+// TestEveryProductionPayloadShapeGivesItsVersion would pass with that type's shapes untested.
+func TestTheCaptureScriptCapturesEveryRuleType(t *testing.T) {
+	script, err := os.ReadFile(captureScript)
+	if err != nil {
+		t.Fatalf("read %s: %v", captureScript, err)
+	}
+	want := strings.Join(ruleTypes, " ")
+	matches := fillTypesLine.FindAllStringSubmatch(string(script), -1)
+	if len(matches) != 1 {
+		t.Fatalf("%s assigns fill_types %d times; want one line fill_types=%q", captureScript, len(matches), want)
+	}
+	captured := strings.Fields(matches[0][1])
+	slices.Sort(captured)
+	if slices.Equal(captured, ruleTypes) {
+		return
+	}
+	var lacks, besides []string
+	for _, typ := range ruleTypes {
+		if !slices.Contains(captured, typ) {
+			lacks = append(lacks, typ)
+		}
+	}
+	for _, typ := range captured {
+		if _, ok := versionRules[typ]; !ok {
+			besides = append(besides, typ)
+		}
+	}
+	t.Errorf("%s's fill_types, sorted, is %q, which lacks %q of the types a rule reads and names %q besides; write fill_types=%q",
+		captureScript, strings.Join(captured, " "), lacks, besides, want)
 }
 
 // payloadFixtures names each captured event of testdata/payloads, <type>-<n> for
@@ -187,7 +229,8 @@ func fixtureOrder(name string) (string, int) {
 }
 
 // fixtureEvent is a captured event as GET /api/v1/events/log answers it: of its envelope, the
-// columns of the event's row the rules read, and its payload.
+// columns of the event's row the rules read, and its payload. Its fields are event's, in the same
+// order, so it converts to one.
 type fixtureEvent struct {
 	ID        int64           `json:"id"`
 	Type      string          `json:"type"`
@@ -196,18 +239,6 @@ type fixtureEvent struct {
 	Seq       int32           `json:"seq"`
 	CreatedAt time.Time       `json:"created_at"`
 	Payload   json.RawMessage `json:"payload"`
-}
-
-func (f fixtureEvent) event() event {
-	return event{
-		ID:        f.ID,
-		Type:      f.Type,
-		IssueKey:  f.IssueKey,
-		Project:   f.Project,
-		Seq:       f.Seq,
-		CreatedAt: f.CreatedAt,
-		Payload:   f.Payload,
-	}
 }
 
 func readFixtureEvent(t *testing.T, name string) fixtureEvent {
@@ -288,14 +319,15 @@ func (e expectedVersion) fields() [][2]string {
 	}
 }
 
-// differences names each field in which got differs from e, with both values cut to 200 bytes.
+// differences names each field in which got differs from e, with both values abridged to 200
+// bytes.
 func (e expectedVersion) differences(got expectedVersion) []string {
 	var differ []string
 	gotFields := got.fields()
 	for i, field := range e.fields() {
 		if field[1] != gotFields[i][1] {
 			differ = append(differ, fmt.Sprintf("%s is %s, and its payload gives %s",
-				field[0], cut(gotFields[i][1]), cut(field[1])))
+				field[0], abridged(gotFields[i][1], 200), abridged(field[1], 200)))
 		}
 	}
 	return differ
@@ -304,7 +336,7 @@ func (e expectedVersion) differences(got expectedVersion) []string {
 func (e expectedVersion) String() string {
 	parts := make([]string, 0, 9)
 	for _, field := range e.fields() {
-		parts = append(parts, field[0]+": "+cut(field[1]))
+		parts = append(parts, field[0]+": "+abridged(field[1], 200))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }
@@ -330,9 +362,11 @@ func canonicalRawJSON(raw json.RawMessage) string {
 	return canonicalJSON(value)
 }
 
-func cut(text string) string {
-	if len(text) <= 200 {
+// abridged is text for a failure message: its first length bytes, and "..." after them where
+// text is longer.
+func abridged(text string, length int) string {
+	if len(text) <= length {
 		return text
 	}
-	return text[:200] + "..."
+	return text[:length] + "..."
 }

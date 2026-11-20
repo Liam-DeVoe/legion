@@ -11,10 +11,12 @@ import (
 // pauseAskEvery is how often a paused fill asks again whether the answers reads are slow.
 const pauseAskEvery = time.Second
 
-// The lines a pause logs: one as it begins, one as it ends.
+// The lines a pause logs: one as it begins, one as it ends. Each names the threshold it holds to
+// by its attributes, slow_read (sessionanswers.SlowRead) and slow_within
+// (sessionanswers.SlowWithin), so its text stays the same when they change.
 const (
-	pausedMessage    = "dispatch: the keyword fill paused: an answers read took longer than 800 ms in the last 10 s, or has run longer than that"
-	continuesMessage = "dispatch: the keyword fill continues: no answers read has taken or run longer than 800 ms for 10 s"
+	pausedMessage    = "dispatch: the keyword fill paused: an answers read took longer than slow_read within the last slow_within, or has run longer than that"
+	continuesMessage = "dispatch: the keyword fill continues: no answers read has taken or run longer than slow_read for slow_within"
 )
 
 // pauser is the fill's pause (filler.pause), on the statistic of the answers reads this process
@@ -47,13 +49,14 @@ func (p pauser) waitUntilFast(ctx context.Context) error {
 	if !p.latency.Slow(paused) {
 		return nil
 	}
-	p.logger.Info(pausedMessage)
+	p.logger.Info(pausedMessage, "slow_read", sessionanswers.SlowRead, "slow_within", sessionanswers.SlowWithin)
 	for {
 		if err := p.wait(ctx, pauseAskEvery); err != nil {
 			return err
 		}
 		if now := p.now(); !p.latency.Slow(now) {
-			p.logger.Info(continuesMessage, "paused_ms", now.Sub(paused).Milliseconds())
+			p.logger.Info(continuesMessage, "paused_ms", now.Sub(paused).Milliseconds(),
+				"slow_read", sessionanswers.SlowRead, "slow_within", sessionanswers.SlowWithin)
 			return nil
 		}
 	}

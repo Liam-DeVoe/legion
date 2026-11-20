@@ -91,9 +91,9 @@ func scanTextVersionsCursor(row pgx.Row) (cursor int64, reach *time.Time, found 
 // is answered when it is at or before the greater of the two, and refused naming that reach
 // otherwise.
 //
-// It is called with a context that carries no cut: its statements read the fill's row,
-// public.events, pg_stat_activity and pg_locks, which decide whether a cut can be answered and are
-// no content of one, and they name each table of Dispatch's with its schema.
+// Its statements decide whether a cut can be answered, so they read the present tables and never
+// the database as it stood at a past time: the fill's row, public.events, pg_stat_activity and
+// pg_locks, each table of Dispatch's named with its schema.
 func (s *Store) TextVersionsAt(ctx context.Context, cut time.Time) (TextVersions, error) {
 	at := cut.Truncate(time.Microsecond)
 	_, stored, found, err := scanTextVersionsCursor(s.Pool.QueryRow(ctx, textVersionsCursorQuery))
@@ -191,6 +191,12 @@ select min(a.xact_start) filter (where a.backend_type = 'client backend'),
 // reach, and the oldest event above the cursor is not worth a read.
 const textVersionsFillWindow = 5000
 
+// textVersionsStartQuery is the reach's first statement: T0, the transaction's isolation, and
+// whether the cursor ($1) is at most textVersionsFillWindow ($2) ids behind the newest event and
+// at or below it, so a cursor outside the window reads no backend.
+const textVersionsStartQuery = `select clock_timestamp(), current_setting('transaction_isolation'),
+       coalesce((select max(id) from public.events), 0) between $1 and $1 + $2`
+
 // textVersionsUnwrittenQuery answers whether the cursor is at most textVersionsFillWindow ids
 // behind the newest event and at or below it, and then the oldest created_at of the events
 // above it, which the fill has not written. Both are read in one statement and so one snapshot,
@@ -211,13 +217,16 @@ select n.near,
 //
 // One computation, each step its own statement, in this order:
 //
-//  1. T0, clock_timestamp().
+//  1. T0, clock_timestamp(), with whether the cursor is in the window, at most 5,000 ids behind
+//     the newest event and at or below it (textVersionsStartQuery). Outside it no value is
+//     computed, and no later step runs.
 //  2. pg_stat_clear_snapshot(), so the next read of pg_stat_activity is fresh rather than the
 //     transaction's copy, then A, the oldest xact_start of another backend of this database that
 //     can write an event, and whether one is in a transaction whose start cannot be read
 //     (textVersionsOpenWritersQuery).
-//  3. In a later statement, with a snapshot of its own: B, the oldest created_at of the committed
-//     events above the cursor (textVersionsUnwrittenQuery).
+//  3. In a later statement, with a snapshot of its own: whether the cursor is still in the
+//     window, and B, the oldest created_at of the committed events above the cursor
+//     (textVersionsUnwrittenQuery).
 //  4. The reach: least(A, B, T0 − 1 s) − 1 µs.
 //
 // The order is what makes it safe. An event's created_at is the start of the transaction that
@@ -229,13 +238,17 @@ select n.near,
 func ComputeTextVersionsReach(ctx context.Context, tx pgx.Tx, cursor int64) (time.Time, bool, error) {
 	var t0 time.Time
 	var isolation string
-	if err := tx.QueryRow(ctx, `select clock_timestamp(), current_setting('transaction_isolation')`).Scan(&t0, &isolation); err != nil {
-		return time.Time{}, false, fmt.Errorf("compute the keyword table's reach: read the time: %w", err)
+	var near bool
+	if err := tx.QueryRow(ctx, textVersionsStartQuery, cursor, textVersionsFillWindow).Scan(&t0, &isolation, &near); err != nil {
+		return time.Time{}, false, fmt.Errorf("compute the keyword table's reach: read the time and the newest event: %w", err)
 	}
 	// Under a snapshot taken once per transaction, step 3 would read the events as they stood
 	// before step 2, and miss one committed between the two.
 	if isolation != "read committed" {
 		return time.Time{}, false, fmt.Errorf("compute the keyword table's reach: the transaction's isolation is %s, not read committed", isolation)
+	}
+	if !near {
+		return time.Time{}, false, nil
 	}
 	if _, err := tx.Exec(ctx, `select pg_stat_clear_snapshot()`); err != nil {
 		return time.Time{}, false, fmt.Errorf("compute the keyword table's reach: clear the activity snapshot: %w", err)
@@ -248,7 +261,6 @@ func ComputeTextVersionsReach(ctx context.Context, tx pgx.Tx, cursor int64) (tim
 	if unreadable {
 		return time.Time{}, false, nil
 	}
-	var near bool
 	var oldestUnwritten *time.Time
 	if err := tx.QueryRow(ctx, textVersionsUnwrittenQuery, cursor, textVersionsFillWindow).Scan(&near, &oldestUnwritten); err != nil {
 		return time.Time{}, false, fmt.Errorf("compute the keyword table's reach: read the events past the cursor: %w", err)

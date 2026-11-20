@@ -65,12 +65,13 @@ The reach is the latest time T such that every event whose `created_at` is at or
 This includes an event that a transaction still open will commit.
 `ComputeTextVersionsReach` computes the reach in a READ COMMITTED transaction, one statement at a time, in this order:
 
-1. T0, `clock_timestamp()`.
+1. T0, `clock_timestamp()`, and whether the cursor is at most 5,000 events behind the newest event and not past it.
+   When it is not, no value is computed and no later step runs.
 
 2. A, the oldest `xact_start` of another client backend of this database that can write an event.
    A backend can write an event when its login is a superuser, when its login or a role it is a member of has `INSERT` on `public.events`, or when its login is a role that the query cannot resolve.
 
-3. B, the oldest `created_at` of the events above the cursor, read in a later statement with its own snapshot.
+3. B, the oldest `created_at` of the events above the cursor, read in a later statement with its own snapshot, which checks the cursor against the newest event again.
 
 4. The reach: the earliest of A, B and T0 less 1 s, less 1 µs.
 

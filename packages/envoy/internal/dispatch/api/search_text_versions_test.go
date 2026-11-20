@@ -1,9 +1,7 @@
 package api
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -24,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestTheKeywordTableHoldsEachVersionOfEachItem writes, through the API, every kind of item the
@@ -66,10 +65,10 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 	history.keep("the issue is created with its primary document")
 	agentEdit(t, handler, issue.PrimaryArtifactID, 2, replaceOp("until Monday.", "until Tuesday, when the auditors sign."))
 	history.keep("a second version of the issue's primary document")
-	requireKeywordAnswer(t, "retitle the issue", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
+	wantStatus(t, "retitle the issue", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
 		map[string]any{"title": "Rotate the signing keys before the audit"}, "alice"), http.StatusOK)
 	history.keep("the issue's title changes")
-	requireKeywordAnswer(t, "move the issue's status", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
+	wantStatus(t, "move the issue's status", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
 		map[string]any{"status": "in_progress"}, "alice"), http.StatusOK)
 	unchanging := []int64{keywordLatestEvent(t, database, "issue.updated", issue.Key)}
 	history.keep("an issue.updated changes only the issue's status")
@@ -84,14 +83,14 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 	}))
 	settledCommentDeliveries(t, database, mentioned.ID)
 	history.keep("a comment that mentions a session")
-	callbackReply := decodeBody[model.Comment](t, requireKeywordAnswer(t, "reply through the delivery callback",
+	callbackReply := decodeBody[model.Comment](t, wantStatus(t, "reply through the delivery callback",
 		bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+mentioned.ID+"/reply", map[string]any{
 			"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "It ships at nine, the canary first.",
 		}), http.StatusCreated))
 	history.keep("the session's reply through the delivery callback")
 	requireEdit(t, "edit the comment", editCommentAs(t, handler, comment.ID, "The verifiers read the old key until Wednesday.", nil, nil))
 	history.keep("the comment's edit")
-	requireKeywordAnswer(t, "resolve the comment", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/resolve",
+	wantStatus(t, "resolve the comment", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/resolve",
 		map[string]any{}, "alice"), http.StatusOK)
 	unchanging = append(unchanging, keywordLatestEvent(t, database, "comment.resolved", issue.Key))
 	history.keep("the comment is resolved")
@@ -108,22 +107,22 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 	// restored: the answered block leaves the document, the ask's row holds settlement's retraction
 	// as a build before the present one wrote it (TestListMyAnswersCollapsesRestoredAnswerEvents),
 	// and the block comes back, which writes the answer back with an ask.answered marked restored.
-	requireKeywordAnswer(t, "write an ask block into the primary document", sessionRequest(t, handler, http.MethodPost,
+	wantStatus(t, "write an ask block into the primary document", sessionRequest(t, handler, http.MethodPost,
 		"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 			"actor": sessionActor(), "ops": []map[string]string{{"op": "insert", "after": "end", "markdown": transportAsk}},
 		}), http.StatusOK)
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "decision", "Which transport?")
 	askID := blockAskID(t, handler, issue.Key, "decision")
 	history.keep("an ask")
-	requireKeywordAnswer(t, "edit the ask", sessionRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+askID, map[string]any{
+	wantStatus(t, "edit the ask", sessionRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+askID, map[string]any{
 		"question": "Which transport ships first?", "actor": sessionActor(),
 	}), http.StatusOK)
 	history.keep("the ask's edit")
-	requireKeywordAnswer(t, "answer the ask", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
+	wantStatus(t, "answer the ask", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
 		"selected": []string{"REST"}, "text": "REST first; gRPC after the audit.", "expected_edited_at": readBlockAsk(t, handler, askID).EditedAt,
 	}, "alice"), http.StatusOK)
 	history.keep("the ask's answer")
-	requireKeywordAnswer(t, "delete the answered ask's block", dispatchRequest(t, handler, http.MethodPost,
+	wantStatus(t, "delete the answered ask's block", dispatchRequest(t, handler, http.MethodPost,
 		"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 			"ops": []map[string]string{{"op": "delete", "block": "decision"}},
 		}, "bob"), http.StatusOK)
@@ -142,7 +141,7 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 		 where id = $1`, askID); err != nil {
 		t.Fatalf("write the retraction an older build's settlement wrote: %v", err)
 	}
-	requireKeywordAnswer(t, "write the answered ask's block back", dispatchRequest(t, handler, http.MethodPost,
+	wantStatus(t, "write the answered ask's block back", dispatchRequest(t, handler, http.MethodPost,
 		"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 			"ops": []map[string]string{{"op": "insert", "after": "end", "markdown": strings.Replace(transportAsk,
 				"Which transport?", "Which transport ships first?", 1)}},
@@ -161,11 +160,11 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 
 	// A comment and an ask on a project document, which belong to no issue.
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n\nPage the on-call engineer first.\n")
-	documentComment := decodeBody[model.Comment](t, requireKeywordAnswer(t, "comment on the project document",
+	documentComment := decodeBody[model.Comment](t, wantStatus(t, "comment on the project document",
 		dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/comments",
 			map[string]any{"body": "Name the pager rotation here."}, "alice"), http.StatusCreated))
 	history.keep("a comment on a project document")
-	documentAsk := decodeBody[model.Ask](t, requireKeywordAnswer(t, "ask on the project document",
+	documentAsk := decodeBody[model.Ask](t, wantStatus(t, "ask on the project document",
 		sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/asks",
 			map[string]any{"question": "Who owns the pager rotation?", "actor": sessionActor()}), http.StatusCreated))
 	history.keep("an ask on a project document")
@@ -174,7 +173,7 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 	}
 
 	// A message with no issue, a session's direct message, which the table leaves out.
-	direct := decodeBody[model.Message](t, requireKeywordAnswer(t, "message the session with no issue",
+	direct := decodeBody[model.Message](t, wantStatus(t, "message the session with no issue",
 		dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",
 			map[string]any{"body": "The pager rotation moves to Thursday.", "delivery": "btw"}, "alice"), http.StatusCreated))
 	if direct.IssueKey != nil {
@@ -204,7 +203,7 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 	if err := a.QueryRow(ctx, `select now(), pg_backend_pid()`).Scan(&aStarted, &aBackend); err != nil {
 		t.Fatalf("begin transaction A: %v", err)
 	}
-	edited := decodeBody[model.Comment](t, requireKeywordAnswer(t, "B edits the comment",
+	edited := decodeBody[model.Comment](t, wantStatus(t, "B edits the comment",
 		editCommentAs(t, handler, pair.ID, "The canary takes the first two regions.", nil, nil), http.StatusOK))
 	history.keepInside("inside A's window, after B's commit", aBackend)
 	const aBody = "The canary takes every region at once."
@@ -308,8 +307,7 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 	}
 
 	// Every event has its rows.
-	newest := keywordNewestEvent(t, filled.database)
-	fill.wake()
+	newest := lastEventID(t, filled.database)
 	keywordAwaitCursor(t, filled.database, newest, time.Minute, fill.wake)
 	fill.stop(t)
 	requireKeywordSeededRows(t, filled.database, backlog)
@@ -375,11 +373,11 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	batchesWhenSlow := len(fill.lines(t, keywordBatchLine))
 	fill.awaitLine(t, keywordPausedLine, 30*time.Second)
 	var batchesBeforePause int
-	for _, line := range fill.lines(t, "") {
-		if strings.HasPrefix(line.Msg, keywordPausedLine) {
+	for _, msg := range fill.lines(t, "") {
+		if strings.HasPrefix(msg, keywordPausedLine) {
 			break
 		}
-		if strings.HasPrefix(line.Msg, keywordBatchLine) {
+		if strings.HasPrefix(msg, keywordBatchLine) {
 			batchesBeforePause++
 		}
 	}
@@ -449,7 +447,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	keywordAwaitCursor(t, server.database, keywordNewestEvent(t, server.database), 2*time.Minute, fill.wake)
+	keywordAwaitCursor(t, server.database, lastEventID(t, server.database), 2*time.Minute, fill.wake)
 	requireKeywordSeededRows(t, server.database, backlog)
 	var underLock int
 	if err := server.database.Pool.QueryRow(t.Context(), `
@@ -527,23 +525,25 @@ type keywordHistory struct {
 // and every item's search column and text as they stand then (keywordHistory.read).
 func (h *keywordHistory) keep(step string) {
 	h.t.Helper()
-	h.keepAt(step, false, nil)
+	h.keepAt(step, nil)
 }
 
 // keepInside keeps a time as keep does while the transaction of backend is open, inside its
 // window, which no other kept time falls in.
 func (h *keywordHistory) keepInside(step string, backend int32) {
 	h.t.Helper()
-	h.keepAt(step, true, []int32{backend})
+	h.keepAt(step, []int32{backend})
 }
 
-func (h *keywordHistory) keepAt(step string, inside bool, open []int32) {
+// keepAt keeps a time as keep does while the transactions of the backends open may be open: a
+// time inside their window when open names any.
+func (h *keywordHistory) keepAt(step string, open []int32) {
 	h.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		kept, quiet := h.read(open)
 		if quiet {
-			kept.step, kept.inside = step, inside
+			kept.step, kept.inside = step, len(open) > 0
 			h.kept = append(h.kept, kept)
 			return
 		}
@@ -766,19 +766,19 @@ func (h *keywordHistory) check(fail func(string, ...any), index int, key keyword
 			}
 		}
 	}
-	if key.kind == "issue" && (!keywordSameText(v.specArtifact, item.spec) || !keywordSameNumber(v.specVersion, item.specVersion)) {
+	if key.kind == "issue" && (!keywordSame(v.specArtifact, item.spec) || !keywordSame(v.specVersion, item.specVersion)) {
 		fail("after %s: issue %s's version (event %d) names document %v version %v; the issue held %v version %v",
-			kept.step, key.id, v.eventID, keywordText(v.specArtifact), keywordNumber(v.specVersion), keywordText(item.spec), keywordNumber(item.specVersion))
+			kept.step, key.id, v.eventID, keywordValue(v.specArtifact), keywordValue(v.specVersion), keywordValue(item.spec), keywordValue(item.specVersion))
 	}
 	switch {
 	case v.eventType == "":
 		fail("after %s: %s %s's version names event %d, which the log does not hold", kept.step, key.kind, key.id, v.eventID)
 	case v.eventItem != key.id:
 		fail("after %s: %s %s's version names event %d (%s), an event of %s", kept.step, key.kind, key.id, v.eventID, v.eventType, v.eventItem)
-	case v.eventSeqOf != v.eventSeq || !v.eventAt.Equal(v.startedAt) || !keywordSameText(v.eventIssue, v.issueKey) || v.eventProject != v.projectKey:
+	case v.eventSeqOf != v.eventSeq || !v.eventAt.Equal(v.startedAt) || !keywordSame(v.eventIssue, v.issueKey) || v.eventProject != v.projectKey:
 		fail("after %s: %s %s's version holds seq %d, start %s, issue %v and project %q; its event %d (%s) has seq %d, created_at %s, issue %v and project %q",
-			kept.step, key.kind, key.id, v.eventSeq, v.startedAt.Format(time.RFC3339Nano), keywordText(v.issueKey), v.projectKey,
-			v.eventID, v.eventType, v.eventSeqOf, v.eventAt.Format(time.RFC3339Nano), keywordText(v.eventIssue), v.eventProject)
+			kept.step, key.kind, key.id, v.eventSeq, v.startedAt.Format(time.RFC3339Nano), keywordValue(v.issueKey), v.projectKey,
+			v.eventID, v.eventType, v.eventSeqOf, v.eventAt.Format(time.RFC3339Nano), keywordValue(v.eventIssue), v.eventProject)
 	}
 }
 
@@ -934,22 +934,13 @@ func keywordExcerpt(text string) string {
 	return text
 }
 
-func keywordSameText(a, b *string) bool {
+// keywordSame is whether a and b are both nil or point to equal values.
+func keywordSame[T comparable](a, b *T) bool {
 	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
-func keywordSameNumber(a, b *int32) bool {
-	return (a == nil) == (b == nil) && (a == nil || *a == *b)
-}
-
-func keywordText(value *string) any {
-	if value == nil {
-		return nil
-	}
-	return *value
-}
-
-func keywordNumber(value *int32) any {
+// keywordValue is the value value points to, for a failure message, and nil for none.
+func keywordValue[T any](value *T) any {
 	if value == nil {
 		return nil
 	}
@@ -966,15 +957,6 @@ func keywordLongBody(word string) string {
 		paragraphs[index] = strings.TrimSpace(strings.Repeat(sentence, 11000/len(sentence)+1))
 	}
 	return strings.Join(paragraphs, "\n\n")
-}
-
-// requireKeywordAnswer fails unless response answered status, and answers it.
-func requireKeywordAnswer(t *testing.T, step string, response *httptest.ResponseRecorder, status int) *httptest.ResponseRecorder {
-	t.Helper()
-	if response.Code != status {
-		t.Fatalf("%s: status=%d body=%s, want %d", step, response.Code, response.Body.String(), status)
-	}
-	return response
 }
 
 // keywordLatestEvent is the id of issue's latest event of eventType.
@@ -1092,28 +1074,16 @@ const (
 	keywordContinuesLine = "dispatch: the keyword fill continues:"
 )
 
-// keywordLine is what the tests read of one line the fill logged.
-type keywordLine struct {
-	Msg    string `json:"msg"`
-	Cursor int64  `json:"cursor"`
-}
-
-// lines is the lines the fill logged whose message starts with prefix, in order.
-func (f *keywordFill) lines(t *testing.T, prefix string) []keywordLine {
+// lines is the messages of the lines the fill logged that start with prefix, in order.
+func (f *keywordFill) lines(t *testing.T, prefix string) []string {
 	t.Helper()
-	var lines []keywordLine
-	scanner := bufio.NewScanner(strings.NewReader(f.logs.String()))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for scanner.Scan() {
-		var line keywordLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			t.Fatalf("read the fill's line %q: %v", scanner.Text(), err)
-		}
-		if strings.HasPrefix(line.Msg, prefix) {
-			lines = append(lines, line)
+	var messages []string
+	for _, line := range logtest.JSONLines(t, f.logs.String()) {
+		if message, _ := line["msg"].(string); strings.HasPrefix(message, prefix) {
+			messages = append(messages, message)
 		}
 	}
-	return lines
+	return messages
 }
 
 // awaitBatches waits until the fill has logged n batches.
@@ -1149,16 +1119,6 @@ func keywordCursor(t *testing.T, database *store.Store) int64 {
 		t.Fatalf("read the keyword fill's cursor: %v", err)
 	}
 	return cursor
-}
-
-// keywordNewestEvent is the newest event's id.
-func keywordNewestEvent(t *testing.T, database *store.Store) int64 {
-	t.Helper()
-	var newest int64
-	if err := database.Pool.QueryRow(t.Context(), `select coalesce(max(id), 0) from events`).Scan(&newest); err != nil {
-		t.Fatalf("read the newest event: %v", err)
-	}
-	return newest
 }
 
 // keywordAwaitCursor waits until the fill's cursor reaches id, waking the fill each second.
@@ -1374,7 +1334,7 @@ func keywordRound(t *testing.T, server keywordServer, round int, wake func()) []
 	h := server.handler
 	answer("POST /api/v1/projects", dispatchRequest(t, h, http.MethodPost, "/api/v1/projects",
 		map[string]string{"key": project, "name": "Load " + project}, "alice"), true)
-	created := requireKeywordAnswer(t, "create the round's issue", answer("POST /api/v1/issues", dispatchRequest(t, h, http.MethodPost,
+	created := wantStatus(t, "create the round's issue", answer("POST /api/v1/issues", dispatchRequest(t, h, http.MethodPost,
 		"/api/v1/issues", map[string]string{
 			"project": project, "title": fmt.Sprintf("Rotate the signing keys of round %d", round),
 			"spec": fmt.Sprintf("# Round %d\n\nThe verifiers read the old key until the audit.\n", round),
@@ -1384,14 +1344,14 @@ func keywordRound(t *testing.T, server keywordServer, round int, wake func()) []
 	}](t, created).Key
 	answer("GET /api/v1/issues/{key}", dispatchRequest(t, h, http.MethodGet, "/api/v1/issues/"+issue, nil, "alice"), false)
 
-	comment := decodeBody[model.Comment](t, requireKeywordAnswer(t, "comment on the round's issue", answer("POST /api/v1/issues/{key}/comments",
+	comment := decodeBody[model.Comment](t, wantStatus(t, "comment on the round's issue", answer("POST /api/v1/issues/{key}/comments",
 		dispatchRequest(t, h, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
 			map[string]any{"body": fmt.Sprintf("Round %d: the verifiers read the old key until Monday.", round)}, "alice"), true), http.StatusCreated))
 	answer("PATCH /api/v1/comments/{id}", dispatchRequest(t, h, http.MethodPatch, "/api/v1/comments/"+comment.ID,
 		map[string]any{"body": fmt.Sprintf("Round %d: the verifiers read the old key until Tuesday.", round)}, "alice"), true)
 	answer("GET /api/v1/comments/{id}", dispatchRequest(t, h, http.MethodGet, "/api/v1/comments/"+comment.ID, nil, "alice"), false)
 
-	ask := decodeBody[model.Ask](t, requireKeywordAnswer(t, "ask on the round's issue", answer("POST /api/v1/issues/{key}/asks",
+	ask := decodeBody[model.Ask](t, wantStatus(t, "ask on the round's issue", answer("POST /api/v1/issues/{key}/asks",
 		sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
 			"question": fmt.Sprintf("Rotate round %d's keys now?", round),
 			"options":  []map[string]string{{"label": "Rotate now"}, {"label": "Wait a week"}},

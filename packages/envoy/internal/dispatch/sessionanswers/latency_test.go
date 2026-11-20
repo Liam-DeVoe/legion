@@ -38,10 +38,10 @@ func TestEveryAnswersReadThatEndedRunsNoLonger(t *testing.T) {
 	close(stop)
 	<-asked
 	ended := time.Now()
-	if latency.Slow(ended.Add(SlowRead + time.Millisecond)) {
-		t.Fatalf("%d reads that each ended at once left a read running, or one slow, past %v", readers*reads, SlowRead)
-	}
 	if len(latency.running) != 0 {
 		t.Fatalf("%d reads that each ended left %d running", readers*reads, len(latency.running))
+	}
+	if latency.Slow(ended.Add(SlowRead + time.Millisecond)) {
+		t.Fatalf("%d reads that each ended at once left one slow past %v", readers*reads, SlowRead)
 	}
 }

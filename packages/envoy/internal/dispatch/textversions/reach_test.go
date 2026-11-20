@@ -15,11 +15,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent (check c-reach, case a): transaction A
-// writes an event and stays open while B's later event commits. The horizon stands below A's
-// event, so a pass of the fill writes neither, and the reach it stores and the reach a read
-// computes stay before A's start; once A commits and before the fill writes its event they still
-// do. Once the fill runs, the reach passes both starts and both events have their rows.
+// TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent holds the reach before the start of a
+// transaction that wrote an event and is still open: transaction A writes an event and stays open
+// while B's later event commits. The horizon stands below A's event, so a pass of the fill writes
+// neither, and the reach it stores and the reach a read computes stay before A's start; once A
+// commits and before the fill writes its event they still do. Once the fill runs, the reach passes
+// both starts and both events have their rows.
 func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
@@ -45,12 +46,13 @@ func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 	awaitReachPast(t, database, aStart, b.startedAt)
 }
 
-// TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing (check c-reach, case b):
-// transaction A begins and has written nothing while B's event commits, and the fill writes B's
-// event, which the horizon passes since A holds no transaction id. The reach stays before A's
-// start all the same, since A can still write an event that carries it; once A writes one and
-// commits, and before the fill writes it, the reach still does. Once the fill runs, the reach
-// passes both starts and both events have their rows.
+// TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing holds the reach before the start
+// of an open transaction that has written no event yet: transaction A begins and has written
+// nothing while B's event commits, and the fill writes B's event, which the horizon passes since
+// A holds no transaction id. The reach stays before A's start all the same, since A can still
+// write an event that carries it; once A writes one and commits, and before the fill writes it,
+// the reach still does. Once the fill runs, the reach passes both starts and both events have
+// their rows.
 func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T) {
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
@@ -74,7 +76,8 @@ func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T)
 	awaitReachPast(t, database, aStart, b.startedAt)
 }
 
-// TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten (check c-reach, case c): A begins
+// TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten holds the reach before the start of a
+// committed event the fill has not written, though the cursor stands past a later one: A begins
 // first and B second, B's event commits, and then A's, which draws the later id and carries the
 // earlier start. A batch up to the horizon a pass read before A committed writes B's event and
 // not A's, so the cursor stands past an event whose start is later than A's; the reach it stores

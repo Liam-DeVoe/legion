@@ -13,10 +13,13 @@ import (
 // searchTextVersionsVersion creates the keyword table and its fill's cursor row's table.
 const searchTextVersionsVersion = 20261120021308
 
-// textVersionsLiteral is the literal a cut is written into the relation as, spelled here rather
-// than read from the code under test.
+// textVersionsTestLayout is the layout a cut is written in, to the microsecond in UTC, spelled
+// here rather than read from the code under test.
+const textVersionsTestLayout = "2006-01-02T15:04:05.000000Z"
+
+// textVersionsLiteral is the literal a cut is written into the relation as.
 func textVersionsLiteral(cut time.Time) string {
-	return "'" + cut.UTC().Format("2006-01-02T15:04:05.000000Z") + "'::timestamptz"
+	return "'" + cut.UTC().Format(textVersionsTestLayout) + "'::timestamptz"
 }
 
 // A foreign key locks the table it names, and every table a keyword version names holds rows, so
@@ -161,10 +164,7 @@ func TestTheKeywordRelationAnswersTheContractColumns(t *testing.T) {
 // probed is a version's start, the microsecond before it, or a time past every start.
 func TestTheKeywordRelationGivesOneVersionPerItemAtEachTime(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := migratedEmptyStore(t)
 	base := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 	// Starts fall on odd microseconds, so a cut written to the second, or rounded, would read
 	// the microsecond before a start as the start itself.
@@ -254,10 +254,7 @@ func TestTheKeywordRelationGivesOneVersionPerItemAtEachTime(t *testing.T) {
 // comment's versions in the item index costs as little as any other plan.
 func TestTheKeywordRelationUsesItsIndexes(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := migratedEmptyStore(t)
 	if _, err := store.Pool.Exec(ctx, `
 		with items as (
 		  select k.kind, n.item,
@@ -312,10 +309,7 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := migratedEmptyStore(t)
 	reach := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	past := reach.Add(time.Microsecond)
 
@@ -356,8 +350,8 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 	if !refusal.Reached || !refusal.Reach.Equal(reach) || !refusal.Cut.Equal(past) {
 		t.Fatalf("the refusal = %+v, want the cut %s refused at the reach %s", *refusal, past, reach)
 	}
-	if got, want := refusal.Error(), "the keyword table's fill has reached "+reach.Format("2006-01-02T15:04:05.000000Z")+
-		", before the cut "+past.Format("2006-01-02T15:04:05.000000Z"); got != want {
+	if got, want := refusal.Error(), "the keyword table's fill has reached "+reach.Format(textVersionsTestLayout)+
+		", before the cut "+past.Format(textVersionsTestLayout); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 
