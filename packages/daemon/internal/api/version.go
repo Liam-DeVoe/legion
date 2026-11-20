@@ -2464,6 +2464,48 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
 // 191: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
@@ -2501,30 +2543,35 @@ package api
 // `issue`, `pause`, `heldAt` and `claims` (api.PauseHeldPodView), beside the `pause` that stands
 // where one does, and records, stops and deletes nothing; while a release runs (its record neither
 // finished nor ended by a boot, store.ProjectRelease.Runs), both doors' pause answer 409
-// `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The number is the lowest
-// above main's 188 that no other open pull request declared at 2026-11-20T10:26:20Z: main reached
-// 188 with #4543 (its entry above), which the forward merge that brought in 1c7c8253 brought, and
-// a reading of `const DaemonAPIVersion` at the head of every open pull request that changes this
-// file then found 188 declared by #4581 too and every number from 189 to 190 declared by another
-// open pull request, 189 by #3831, #4592 and #4596 and 190 by #4493 and #4578, and none declaring
-// 191, so this change took 191. A pod at main's 188, or at a number another open pull request
-// declares below 191, runs a plugin that does not know this release's shapes, so it is served the
-// state without `projectRelease`. This change first took 150, the lowest free number at the
-// forward merge of 2026-11-15, then 157 once main reached 151, then 159 once three other heads had
-// taken 157, then 161 once #4175 declared 159 as well and #3519 took 160, then 163 once #4173
-// declared 161 as well and three heads took 162, which held at the forward merge that brought in
-// c70a8022 with main at 160, then 171 once main reached 168 (#4488's entry above) at the forward
-// merge that brought in b2cf98a0: `.github/scripts/check-daemon-api-contract.sh`, run as
-// ci.yaml's lint job runs it on this pull request, refused 168 at 2026-11-19T18:36:14Z naming 171,
-// when #4065 declared 169 and #2230, #4173, #4180 and #4193 declared 170, and a reading of every
-// open head (2026-11-19T18:36:50Z to 18:41:40Z) found 171 declared by none. 171 held at the
-// forward merge that brought in 506395be with main still at 168. Then 180, the lowest above main's
-// 168 that no other open pull request declared at 2026-11-19T22:35:55Z: the check passed 171
-// then, but a reading of every open head that changes this file (2026-11-19T22:27Z to 22:35:55Z)
-// found 171 declared by #2230 and #4065 too and every number from 169 to 179 declared by another
-// open pull request. 180 stayed above main's 178 (#4115's entry above) at the forward merges that
-// brought in c7e1cbd5 (#4115), bafd3618, 13af9401 and 2610675b. Read the base's own number and
-// every open head again at the next merge rather than from this entry, as
+// `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The number is the lowest above
+// main's 188 that no other open pull request declared at 2026-11-20T10:26:20Z: main reached 188
+// with #4543 (its entry above), which the forward merge that brought in 1c7c8253 brought, and a
+// reading of `const DaemonAPIVersion` at the head of every open pull request that changes this file
+// then found 188 declared by #4581 too and every number from 189 to 190 declared by another open
+// pull request, 189 by #3831, #4592 and #4596 and 190 by #4493 and #4578, and none declaring 191,
+// so this change took 191. 191 stayed above main's 188 at the forward merges that brought in
+// 5570d0ac and f3252759, and above main's 189 (#4581's entry above) at the one that brought in
+// a4cd4949, though a reading of every open head that changes this file made between
+// 2026-11-20T16:32:50Z and 16:37:44Z found 191 declared by #2230, #4495 and #4573 as well, each
+// after 10:26:20Z: whichever of these pull requests merges after another takes the next free
+// number. A pod at main's 189, or at a number another open pull request declares below 191, runs a
+// plugin that does not know this release's shapes, so it is served the state without
+// `projectRelease`. This change first took 150, the lowest free number at the forward merge of
+// 2026-11-15, then 157 once main reached 151, then 159 once three other heads had taken 157, then
+// 161 once #4175 declared 159 as well and #3519 took 160, then 163 once #4173 declared 161 as well
+// and three heads took 162, which held at the forward merge that brought in c70a8022 with main at
+// 160, then 171 once main reached 168 (#4488's entry above) at the forward merge that brought in
+// b2cf98a0: `.github/scripts/check-daemon-api-contract.sh`, run as ci.yaml's lint job runs it on
+// this pull request, refused 168 at 2026-11-19T18:36:14Z naming 171, when #4065 declared 169 and
+// #2230, #4173, #4180 and #4193 declared 170, and a reading of every open head
+// (2026-11-19T18:36:50Z to 18:41:40Z) found 171 declared by none. 171 held at the forward merge
+// that brought in 506395be with main still at 168. Then 180, the lowest above main's 168 that no
+// other open pull request declared at 2026-11-19T22:35:55Z: the check passed 171 then, but a
+// reading of every open head that changes this file (2026-11-19T22:27Z to 22:35:55Z) found 171
+// declared by #2230 and #4065 too and every number from 169 to 179 declared by another open pull
+// request. 180 stayed above main's 178 (#4115's entry above) at the forward merges that brought in
+// c7e1cbd5 (#4115), bafd3618, 13af9401 and 2610675b. Read the base's own number and every open head
+// again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 const DaemonAPIVersion = 191
