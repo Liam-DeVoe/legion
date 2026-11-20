@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -30,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // loadOptions is what the flags say, and the roots read out of the file --ca names. Every mode
@@ -150,9 +153,9 @@ func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 		return nil, err
 	}
 	if answer.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(answer.Body, 300))
+		refused, _ := redact.ReadAnswer(answer, 300)
 		conn.Close()
-		return nil, fmt.Errorf("the CONNECT answered %d %s", answer.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("the CONNECT answered %d %s", answer.StatusCode, refused.Words())
 	}
 	return conn, nil
 }
@@ -199,7 +202,7 @@ func (o *loadOptions) call(timeout time.Duration) error {
 		return err
 	}
 	defer answer.Body.Close()
-	if _, err := io.Copy(io.Discard, answer.Body); err != nil {
+	if _, err := io.Copy(io.Discard, redact.StreamAnswer(answer, math.MaxInt64)); err != nil {
 		return err
 	}
 	if answer.StatusCode != http.StatusOK {
@@ -329,7 +332,7 @@ func (o *loadOptions) upload(stdout io.Writer) {
 		o.say(stdout, map[string]any{"error": err.Error(), "seconds": time.Since(at).Seconds()})
 		return
 	}
-	read, _ := io.Copy(io.Discard, answer.Body)
+	read, _ := io.Copy(io.Discard, redact.StreamAnswer(answer, math.MaxInt64))
 	o.say(stdout, map[string]any{"status": answer.StatusCode, "sent": len(body), "answer_bytes": read,
 		"seconds": time.Since(at).Seconds()})
 }
@@ -349,14 +352,14 @@ func (o *loadOptions) gapMode(stdout io.Writer) {
 		o.say(stdout, map[string]any{"error": "the first event: " + err.Error()})
 		return
 	}
-	_, _ = io.Copy(io.Discard, first.Body)
+	_, _ = io.Copy(io.Discard, redact.StreamAnswer(first, math.MaxInt64))
 	time.Sleep(time.Duration(o.gap) * time.Second)
 	second, err := o.ask(conn, reader, "GET", "/second-event", nil, "")
 	if err != nil {
 		o.say(stdout, map[string]any{"first": first.StatusCode, "second_error": err.Error(), "gap": o.gap})
 		return
 	}
-	_, _ = io.Copy(io.Discard, second.Body)
+	_, _ = io.Copy(io.Discard, redact.StreamAnswer(second, math.MaxInt64))
 	o.say(stdout, map[string]any{"first": first.StatusCode, "second": second.StatusCode, "gap": o.gap})
 }
 
@@ -386,8 +389,8 @@ func (o *loadOptions) upgrade(stdout io.Writer) {
 			result["frames"] = strings.TrimSpace(line)
 		}
 	} else {
-		body, _ := io.ReadAll(io.LimitReader(answer.Body, 200))
-		result["body"] = strings.TrimSpace(string(body))
+		refused, _ := redact.ReadAnswer(answer, 200)
+		result["body"] = refused.Words().String()
 	}
 	o.say(stdout, result)
 }

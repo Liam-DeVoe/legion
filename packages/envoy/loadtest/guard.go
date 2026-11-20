@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -23,6 +22,8 @@ import (
 	"unicode"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/loadtest/listenerclient"
 )
 
@@ -722,14 +723,14 @@ func checkStack(ctx context.Context, e endpoints) error {
 		return fmt.Errorf("guard: dispatch check failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("guard: dispatch check failed: GET %s/api/v1/projects with the stack's agent token answered %d %s", redactURL(e.dispatch), status, trunc(body))
+		return fmt.Errorf("guard: dispatch check failed: GET %s/api/v1/projects with the stack's agent token answered %d %s", redactURL(e.dispatch), status, trunc([]byte(body.Words().String())))
 	}
 	status, body, err = (&listenerclient.Client{URL: e.listener, Token: e.listenerToken, HTTP: client}).Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("guard: listener check failed: GET %s%s with the stack's listener token answered %d %s", redactURL(e.listener), listenerclient.SessionsRoute, status, trunc(body))
+		return fmt.Errorf("guard: listener check failed: GET %s%s with the stack's listener token answered %d %s", redactURL(e.listener), listenerclient.SessionsRoute, status, trunc([]byte(body.Words().String())))
 	}
 	other := make([]byte, 16)
 	_, _ = rand.Read(other)
@@ -758,7 +759,7 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 		err = fmt.Errorf("GET %s/varz answered %d", redactURL(monURL), status)
 	}
 	if err == nil {
-		err = json.Unmarshal(body, &varz)
+		err = body.Decode(&varz)
 	}
 	if err != nil {
 		return fmt.Errorf("guard: nats check failed: %w", err)
@@ -769,10 +770,10 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 	return nil
 }
 
-func guardGet(ctx context.Context, client *http.Client, url, bearer string) (int, []byte, error) {
+func guardGet(ctx context.Context, client *http.Client, url, bearer string) (int, redact.Answer, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, redact.Answer{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	if bearer != "" {
@@ -780,9 +781,12 @@ func guardGet(ctx context.Context, client *http.Client, url, bearer string) (int
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, redact.Answer{}, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := redact.ReadAnswer(resp, 1<<20)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		err = nil
+	}
 	return resp.StatusCode, body, err
 }

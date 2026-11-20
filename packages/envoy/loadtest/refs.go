@@ -288,10 +288,10 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 				}
 				res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+t.issue+"/artifacts", who{}, body, refTargetKey(t.n, v+1))
 				if res.err != nil || res.status != http.StatusCreated {
-					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, trunc(res.body), res.err)
+					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, res.text(), res.err)
 				}
 				if artifactID = idOf(res.body); artifactID == "" {
-					return fmt.Errorf("write %s version %d on %s: no artifact id in %s", name, v+1, t.issue, trunc(res.body))
+					return fmt.Errorf("write %s version %d on %s: no artifact id in %s", name, v+1, t.issue, res.text())
 				}
 				if n := written.Add(1); n%refProgressEvery == 0 {
 					log.Printf("seed-refs: %d/%d versions, %d targets done, %s", n, total, done.Load(), time.Since(start).Round(time.Second))
@@ -313,13 +313,13 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 func refDocumentToken(ctx context.Context, a *api, artifactID string) (string, error) {
 	res := a.callRetry(ctx, "GET", "/api/v1/artifacts/"+artifactID+"/text", who{}, nil)
 	if res.err != nil || res.status != http.StatusOK {
-		return "", fmt.Errorf("read %s before its next version: %d %s %v, want 200", artifactID, res.status, trunc(res.body), res.err)
+		return "", fmt.Errorf("read %s before its next version: %d %s %v, want 200", artifactID, res.status, res.text(), res.err)
 	}
 	var doc struct {
 		Token string `json:"token"`
 	}
-	if err := json.Unmarshal(res.body, &doc); err != nil || doc.Token == "" {
-		return "", fmt.Errorf("read %s before its next version: no document token in %s (%v)", artifactID, trunc(res.body), err)
+	if err := res.answer.Decode(&doc); err != nil || doc.Token == "" {
+		return "", fmt.Errorf("read %s before its next version: no document token in %s (%v)", artifactID, res.text(), err)
 	}
 	return doc.Token, nil
 }
@@ -347,7 +347,7 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 			body := map[string]any{"name": refSourceName, "content": b.String(), "actor": refWriter(0)}
 			res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+key+"/artifacts", who{}, body, refSourceKey(key))
 			if res.err != nil || res.status != http.StatusCreated {
-				return fmt.Errorf("write %s on %s: %d %s %v, want 201", refSourceName, key, res.status, trunc(res.body), res.err)
+				return fmt.Errorf("write %s on %s: %d %s %v, want 201", refSourceName, key, res.status, res.text(), res.err)
 			}
 			return nil
 		})
@@ -401,10 +401,10 @@ func refsShape(ctx context.Context, a *api, sf seedFile) error {
 		}
 		res := a.callRetry(ctx, "GET", "/api/v1/issues/"+is.Key+"/references", who{}, nil)
 		if !res.ok() {
-			return fmt.Errorf("references of %s: %d %s %v", is.Key, res.status, trunc(res.body), res.err)
+			return fmt.Errorf("references of %s: %d %s %v", is.Key, res.status, res.text(), res.err)
 		}
 		var answer refsAnswer
-		if err := json.Unmarshal(res.body, &answer); err != nil {
+		if err := res.answer.Decode(&answer); err != nil {
 			return fmt.Errorf("references of %s: %w", is.Key, err)
 		}
 		seen := map[string]bool{}

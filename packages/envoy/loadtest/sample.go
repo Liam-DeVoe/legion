@@ -19,6 +19,8 @@ import (
 
 	"github.com/google/pprof/profile"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // clkTck is the kernel's USER_HZ, the unit of /proc/<pid>/stat CPU times.
@@ -571,7 +573,9 @@ func (s *sampler) all() []sample {
 
 var shortClient = &http.Client{Timeout: 10 * time.Second}
 
-// getOK GETs url with client, until ctx ends; an answer other than 200 is an error.
+// getOK GETs url with client, until ctx ends; an answer other than 200 is an error, its words
+// printed as the rule reads them. A 200's body is data the caller samples (redact.StreamAnswer),
+// which closing the stream closes.
 func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -582,11 +586,11 @@ func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser,
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		refused, _ := redact.ReadAnswer(resp, 4096)
 		resp.Body.Close()
-		return nil, fmt.Errorf("GET %s answered %d %s", redactURL(url), resp.StatusCode, trunc(b))
+		return nil, fmt.Errorf("GET %s answered %d %s", redactURL(url), resp.StatusCode, trunc([]byte(refused.Words().String())))
 	}
-	return resp.Body, nil
+	return redact.StreamAnswer(resp, answerLimit), nil
 }
 
 // goroutineCounts reads Dispatch's goroutine total and how many wait in pgx's pool Acquire
@@ -715,8 +719,8 @@ func natsJsz(mon string) map[string]float64 {
 			Errors float64 `json:"errors"`
 		} `json:"api"`
 	}
-	b, _ := io.ReadAll(resp.Body)
-	if json.Unmarshal(b, &v) != nil {
+	read, err := redact.ReadAnswer(resp, answerLimit)
+	if err != nil || read.Decode(&v) != nil {
 		return nil
 	}
 	return map[string]float64{"js_streams": v.Streams, "js_consumers": v.Consumers, "js_messages": v.Messages, "js_api_total": v.API.Total, "js_api_errors": v.API.Errors}

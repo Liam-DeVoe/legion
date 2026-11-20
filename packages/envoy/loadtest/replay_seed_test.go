@@ -100,7 +100,7 @@ func TestIDOfAndErrorCode(t *testing.T) {
 			t.Errorf("idOf(%s) = %q, want %q", body, got, want)
 		}
 	}
-	if !(callResult{status: 400, body: []byte(`{"code":"ANCHOR_MISSING","error":"synthetic"}`)}).errorCode().Equal("ANCHOR_MISSING") || !(callResult{status: 400, body: []byte("not json")}).errorCode().IsEmpty() {
+	if !resultOf(400, `{"code":"ANCHOR_MISSING","error":"synthetic"}`).errorCode().Equal("ANCHOR_MISSING") || !resultOf(400, "not json").errorCode().IsEmpty() {
 		t.Fatal("errorCode")
 	}
 }

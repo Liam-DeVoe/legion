@@ -384,7 +384,7 @@ func TestSummarizeRequestsCodesAndTolerated(t *testing.T) {
 	if e.Failures != 4 || e.Tolerated != 0 || !maps.Equal(e.Codes, want) || s.OK2xx != 1 {
 		t.Fatalf("edit: %+v, ok_2xx %d", e, s.OK2xx)
 	}
-	if code := (callResult{status: 400, body: []byte(`{"error":"x","code":"INVALID_OP"}`)}).errorCode(); !code.Equal("INVALID_OP") {
+	if code := resultOf(400, `{"error":"x","code":"INVALID_OP"}`).errorCode(); !code.Equal("INVALID_OP") {
 		t.Fatalf("errorCode %q", code)
 	}
 }
