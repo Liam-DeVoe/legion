@@ -9,7 +9,10 @@ body: |-
   and `POST /v1/operator/grants/{id}/revoke` answer `404 NOT_FOUND` where a person-approved grant
   answered `403 NOT_APPROVER`, and where a grant the model judge approved in anyone's stead was
   ended: such a judged grant is ended only by a person who may see it. A grant's approver and its
-  session's operator still list it on Live grants and end it, whatever project it touches. A
+  session's operator still list it on Live grants and end it, whatever project it touches; the
+  operator of a person's pod that `BROKER_POD_OPERATORS` no longer maps is not its operator here,
+  since the pod acts for no person, so a grant of a private project they are not on is hidden from
+  them as from anyone outside it. A
   record signed for another broker address now answers such a person `404` from the dismissal and
   the approval page too, where the dismissal answered `500` and the page `503`. While Dispatch
   cannot say whether the person may see the record or grant, the decide routes, the dismissal and
