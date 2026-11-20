@@ -4534,8 +4534,9 @@ done
 pass "the stop of the disk watcher kills and waits for every process of its act below the watcher -- the kubectl under timeout in the watcher's own shell and in a command substitution, and a kubectl of 16 threads until each thread of it has gone and its port is free -- and names each"
 
 # A read that fails is no answer. step_gone of a step shell whose start it could not read -- here
-# proc_start fails for that shell's pid, as it does for a shell with no file descriptor to spare --
-# answers 2, which its callers name and poll on, rather than calling the step gone; run_command_alive
+# proc_start_into, the reader it uses, fails for that shell's pid, as it does for a shell with no
+# file descriptor to spare -- answers 2, which its callers name and poll on, rather than calling the
+# step gone; run_command_alive, which reads through proc_start,
 # keeps the file of a command whose start it could not read, or whose file it could not read, and
 # counts the run alive. The same shell read as it is answers 1 and keeps the run alive, and a run
 # directory that has gone is a gone step (0).
@@ -4554,6 +4555,11 @@ bash -c '
   echo "read: step_gone $rc"
   ! run_command_alive || echo "read: the run is alive"
   eval "orig_$(declare -f proc_start)"
+  eval "orig_$(declare -f proc_start_into)"
+  proc_start_into() {
+    [ "$2" != "$self" ] || return 1
+    orig_proc_start_into "$1" "$2"
+  }
   proc_start() {
     [ "$1" != "$self" ] || return 1
     orig_proc_start "$1"
@@ -4564,6 +4570,7 @@ bash -c '
   ! run_command_alive || echo "start unread: the run is alive"
   [ ! -f "$file" ] || echo "start unread: the file is kept"
   eval "$(declare -f orig_proc_start | sed 1s/orig_proc_start/proc_start/)"
+  eval "$(declare -f orig_proc_start_into | sed 1s/orig_proc_start_into/proc_start_into/)"
   chmod 000 "$file"
   if { : <"$file"; } 2>/dev/null; then
     echo "file unread: not made, this user reads a file of mode 000"
