@@ -465,15 +465,19 @@ func TestReplyBlocksAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 	}
 }
 
-// A private issue is no descendant another person reads, and neither is an issue under it. Its
-// author reads both.
+// A private issue is no descendant another person reads at any depth, and neither is an issue
+// under it; its author reads them all. CORE-2, a child of CORE-1, holds the walk's first step to
+// that, and CORE-5, under the public CORE-4, holds every step below the first.
 func TestIssueDescendantsAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	for _, issue := range []struct {
 		key, parent string
 		number      int
-	}{{"CORE-2", "CORE-1", 2}, {"CORE-3", "CORE-2", 3}} {
+	}{
+		{"CORE-2", "CORE-1", 2}, {"CORE-3", "CORE-2", 3},
+		{"CORE-4", "CORE-1", 4}, {"CORE-5", "CORE-4", 5}, {"CORE-6", "CORE-5", 6},
+	} {
 		if _, err := tx.Exec(ctx, `
 			insert into issues (key, project_key, number, title, created_by, rank, parent_key)
 			values ($1, 'CORE', $2, 'A child', '{"kind":"user","id":"alice"}', 'U', $3)
@@ -482,11 +486,15 @@ func TestIssueDescendantsAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *tes
 		}
 	}
 	reserveForAuthor(t, tx, "issue", "CORE-2")
+	reserveForAuthor(t, tx, "issue", "CORE-5")
 
 	for _, read := range []struct {
 		who  model.Actor
 		want []string
-	}{{privateReader, []string{}}, {privateAuthor, []string{"CORE-2", "CORE-3"}}} {
+	}{
+		{privateReader, []string{"CORE-4"}},
+		{privateAuthor, []string{"CORE-2", "CORE-3", "CORE-4", "CORE-5", "CORE-6"}},
+	} {
 		got, err := IssueDescendants(ctx, tx, read.who, "CORE-1")
 		if err != nil {
 			t.Fatalf("read the descendants of CORE-1 as %s: %v", read.who.ID, err)
