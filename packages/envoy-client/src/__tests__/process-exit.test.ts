@@ -52,8 +52,9 @@ test("a process ended by exitProcess first writes out everything queued on stdou
 // `Bun.spawn`'s own stdout is a socket with a 212,992-byte buffer, which the MiB above passes; a
 // one-page pipe read late is the reader a loaded machine gives a hook or a `$(...)`.
 describe.skipIf(noPython)("through a one-page pipe read late", () => {
+  const write = `process.stdout.write("x".repeat(${BYTES - 1}) + "\\n");`;
+
   test("exitProcess hands the reader every byte, where process.exit hands it one page", async () => {
-    const write = `process.stdout.write("x".repeat(${BYTES - 1}) + "\\n");`;
     // The child's timer is a handle nothing will use, as in the row above: the child cannot end by
     // itself, so the drain is exitProcess's alone.
     const drained = await readThroughLatePipe([
@@ -70,13 +71,30 @@ describe.skipIf(noPython)("through a one-page pipe read late", () => {
     expect(cut.stdout.length).toBeLessThan(BYTES);
   }, 60_000);
 
+  test("a write made after exitProcess cannot cut what came before, and a reader gone still ends the wait at once", async () => {
+    // The late write comes in the same turn as the call, so it lands inside the wait however late
+    // the child starts; the timer holds the child past this test's limit, so only the wait ends it.
+    const late = `import { exitProcess } from ${helper}; ${write} setTimeout(() => undefined, 120_000); const exited = exitProcess(3); process.stdout.write("late\\n", (error) => process.stderr.write(String(error?.code))); await exited;`;
+    const whole = await readThroughLatePipe([process.execPath, "-e", late]);
+    expect(whole.exitCode).toBe(3);
+    expect(whole.stdout.length).toBe(BYTES);
+    // A reader that closed its end: EPIPE ends the wait, and the late write changes nothing.
+    const gone = Bun.spawnSync(
+      ["bash", "-c", 'set -o pipefail; "$0" -e "$1" | true', process.execPath, late],
+      { stderr: "pipe", timeout: 30_000 }
+    );
+    expect(gone.exitCode).toBe(3);
+  }, 60_000);
+
   test("writeOut answers true once the reader took every byte, and false when the reader is gone", async () => {
     const script = (then: string) =>
       `import { writeOut } from ${helper}; const whole = await writeOut(process.stdout, "x".repeat(${BYTES - 1}) + "\\n"); ${then}`;
+    // The child exits the moment writeOut answers: an answer that came before the late reader took
+    // every byte would drop what Bun still held, so the reader's count holds the answer's timing.
     const taken = await readThroughLatePipe([
       process.execPath,
       "-e",
-      script("process.exitCode = whole ? 0 : 9;"),
+      script("process.exit(whole ? 0 : 9);"),
     ]);
     expect(taken.exitCode).toBe(0);
     expect(taken.stdout.length).toBe(BYTES);

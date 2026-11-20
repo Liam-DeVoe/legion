@@ -82,6 +82,37 @@ describe.skipIf(noPython)("the Codex PostToolUse hook through a one-page pipe re
     expect(readdirSync(join(inbox, "claimed"))).toEqual([])
   }, 30_000)
 
+  // The case above ends by itself once its write is taken, and a natural end drains the write
+  // anyway, so it cannot see when the hook settled. Here Codex never reads: it kills the hook at
+  // its timeout, as it does, while the pipe is full and the hook is mid-write. A hook that moved
+  // what it took into taken/ before Codex had every byte would leave it there, and lose it.
+  test("killed mid-write, its pipe full, leaves none of what it took in taken/, and the next hook hands Codex all of it", async () => {
+    const pluginData = await scratch()
+    const inbox = await sixWaiting(pluginData)
+    const hook = {
+      env: { PATH: process.env["PATH"], PLUGIN_DATA: pluginData },
+      stdin: JSON.stringify({ session_id: SESSION }),
+    }
+    const killed = await readThroughLatePipe([process.execPath, toolHook], {
+      ...hook,
+      killWhenFullMs: 2_000,
+    })
+    expect(killed.killedWhenFull).toBe(true)
+    expect(messagesIn(join(inbox, "taken"))).toHaveLength(0)
+    expect(messagesIn(join(inbox, "waiting"))).toHaveLength(0)
+    const holders = readdirSync(join(inbox, "claimed"))
+    expect(holders).toHaveLength(1)
+    expect(messagesIn(join(inbox, "claimed", holders[0] as string))).toHaveLength(6)
+    const next = await readThroughLatePipe([process.execPath, toolHook], hook)
+    expect(next.exitCode).toBe(0)
+    const context = contextOf(next.stdout)
+    for (let message = 1; message <= 6; message++) {
+      expect(context).toContain(`message ${message} line 19 `)
+    }
+    expect(messagesIn(join(inbox, "taken"))).toHaveLength(6)
+    expect(readdirSync(join(inbox, "claimed"))).toEqual([])
+  }, 30_000)
+
   test("with Codex's end of the pipe closed, puts every message it took back to wait", async () => {
     const pluginData = await scratch()
     const inbox = await sixWaiting(pluginData)
