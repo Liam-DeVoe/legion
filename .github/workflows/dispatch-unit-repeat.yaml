@@ -95,8 +95,8 @@ name: Dispatch unit suite repeated
 on:
   schedule:
     # Saturday 09:23 UTC, hours from every other schedule of this repository:
-    # dispatch-browser-nightly.yaml's 02:17 and 13:41 daily, e2e.yaml's 04:41 daily and
-    # codeql.yaml's 04:17 on Tuesdays. Nine legs start at once, and a nightly starting beside them
+    # dispatch-browser-nightly.yaml's 02:17 daily and codeql.yaml's 04:17 on Tuesdays. Nine legs
+    # start at once, and a nightly starting beside them
     # would queue with them for the account's runners. Off the hour, as codeql.yaml's cron is.
     - cron: "23 9 * * 6"
   workflow_dispatch:
