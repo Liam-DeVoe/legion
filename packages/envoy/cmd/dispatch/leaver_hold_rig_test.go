@@ -226,6 +226,54 @@ func startLeaverMetadataServer(t *testing.T, google *oidctest.Issuer, key *oidct
 	t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(server.URL, "http://"))
 }
 
+// withMembershipPass runs Dispatch's maintenance sweep as main runs it under a Google rule
+// (api.RunMaintenanceSweep, every api.MaintenanceSweepInterval, under its lease), from the moment
+// the router is built until the test ends, with sweeps in place of its delivery sweep, so a test
+// sets how long a run's other sweeps take, and with the membership pass last, the rig's own
+// (membershipPass), told of each claim attempt through observe. The first run comes one interval
+// after the router is built, as in a process that has just started.
+func withMembershipPass(sweeps func(context.Context) error, observe func(identity.MembershipPassEvent)) leaverOption {
+	return func(c *leaverConfig) {
+		c.built = append(c.built, func(t *testing.T, r *leaverRig) {
+			leases := storetest.Leases(t, r.outside.database.Pool)
+			ctx, cancel := context.WithCancel(context.Background())
+			stopped := make(chan struct{})
+			go func() {
+				defer close(stopped)
+				api.RunMaintenanceSweep(ctx, r.outside.database.Pool, api.MaintenanceSweepInterval, leases, sweeps,
+					r.outside.boot.PrivateProjects, r.membershipPass(observe).Run)
+			}()
+			// Stopped before the databases are dropped, which cleanups registered before this one do.
+			t.Cleanup(func() {
+				cancel()
+				<-stopped
+			})
+		})
+	}
+}
+
+// withPersonAccessDelay makes each of Dispatch's GET /v1/person-access asks of the broker, which a
+// sign-out and the membership pass's check of a signed-out row make, wait the nanoseconds d holds
+// before it is carried to the broker, or until Dispatch hangs up, when it is carried nowhere.
+func withPersonAccessDelay(d *atomic.Int64) leaverOption {
+	return func(c *leaverConfig) {
+		c.toBroker = append(c.toBroker, func(_ *testing.T, _ *leaverRig, next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if wait := time.Duration(d.Load()); wait > 0 && req.Method == http.MethodGet && req.URL.Path == "/v1/person-access" {
+					timer := time.NewTimer(wait)
+					defer timer.Stop()
+					select {
+					case <-timer.C:
+					case <-req.Context().Done():
+						return
+					}
+				}
+				next.ServeHTTP(w, req)
+			})
+		})
+	}
+}
+
 // leaverPerson is one person's credentials.
 type leaverPerson struct {
 	email string
