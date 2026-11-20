@@ -30,7 +30,7 @@ import (
 // an owner it does not name keeps the stand's own map.
 func TestTheInstallationPermissionsFlagSetsWhatAnInstallationHolds(t *testing.T) {
 	out := startStands(t, "--dir", t.TempDir(),
-		"--github-owner", "acme-org=7", "--github-owner", "ada=8", "--github-owner", "Ada=9",
+		"--installation", "acme-org=7", "--installation", "ada=8", "--installation", "Ada=9",
 		"--installation-permissions", "acme-org=contents:read,administration:read",
 		"--installation-permissions", "ada=")
 	github := out.Stands[standGitHub].URL
@@ -65,7 +65,7 @@ func TestTheInstallationPermissionsFlagSetsWhatAnInstallationHolds(t *testing.T)
 }
 
 // TestTheInstallationPermissionsFlagRefusesWhatItCannotRead: each malformed value, an owner
-// named twice, and an owner no --github-owner installs the App on are usage errors, exit 2, each
+// named twice, and an owner no --installation installs the App on are usage errors, exit 2, each
 // naming what it refuses, before any stand is served.
 func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 	binary := buildStands(t)
@@ -80,7 +80,7 @@ func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 		{"a permission no App permission is named", []string{"--installation-permissions", "acme-org=Contents:read"}, `"Contents" is no permission's name`},
 		{"a permission named twice", []string{"--installation-permissions", "acme-org=contents:read,contents:write"}, "names contents twice"},
 		{"an owner named twice", []string{"--installation-permissions", "acme-org=contents:read", "--installation-permissions", "acme-org=issues:read"}, "names acme-org twice"},
-		{"an owner the App is not installed on", []string{"--installation-permissions", "other-org=contents:read"}, "other-org, on which no --github-owner installs the App"},
+		{"an owner the App is not installed on", []string{"--installation-permissions", "other-org=contents:read"}, "other-org, on which no --installation installs the App"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -108,7 +108,7 @@ func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 // authority, which is where a command behind the proxy reaches them, and the tokens are minted
 // at the plain github stand, where the broker's minter mints them: one stand-in serves both.
 func TestTheGitHubStandsRoutesAnswerByWhatATokenHolds(t *testing.T) {
-	out := startStands(t, "--dir", t.TempDir(), "--github-owner", "acme-org=7", "--github-owner", "ada=8",
+	out := startStands(t, "--dir", t.TempDir(), "--installation", "acme-org=7", "--installation", "ada=8",
 		"--installation-permissions", "acme-org=metadata:read,administration:read,organization_administration:read,statuses:write")
 	plain := out.Stands[standGitHub].URL
 	if len(out.GitHubCommitSHA) != 40 {
