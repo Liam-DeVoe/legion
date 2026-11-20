@@ -560,28 +560,32 @@ var projections = []projection{{
 	edgeProjection(refs.TupleShaped+edgeSuffix, refs.TupleShaped,
 		"graph_edges' shaped: the row side is every shaped edge graph_edges answers out of a block or ask node not"+
 			" gone, read node by node, as the triple of that node, shaped and its far end, against every shaped tuple"+
-			" a live block or ask node states now", refs.BlockNodeKind, graphstore.KindAsk),
+			" a live block or ask node states now", "", "", refs.BlockNodeKind, graphstore.KindAsk),
 	edgeProjection(refs.TupleFromAsk+edgeSuffix, refs.TupleFromAsk,
 		"graph_edges' from_ask: the row side is every from_ask edge graph_edges answers out of a block node not"+
 			" gone, read node by node, as the triple of that node, from_ask and its ask, against every from_ask a"+
-			" live block node states now", refs.BlockNodeKind),
+			" live block node states now", "", "", refs.BlockNodeKind),
 	edgeProjection(graphstore.TupleDecidedBy+edgeSuffix, graphstore.TupleDecidedBy,
 		"graph_edges' decided_by: the row side is every decided_by edge graph_edges answers out of a block node"+
 			" not gone, read node by node, as the triple of that node, decided_by and its person or session, against"+
-			" every decided_by a live block node states now", refs.BlockNodeKind),
+			" every decided_by a live block node states now", "", "", refs.BlockNodeKind),
 	edgeProjection(graphstore.TupleFollowedBy+edgeSuffix, graphstore.TupleFollowedBy,
 		"graph_edges' followed_by: the row side is every followed_by edge graph_edges answers out of an ask node"+
 			" not gone, read node by node, as the triple of that node, followed_by and its session, against every"+
-			" followed_by a live ask node states now", graphstore.KindAsk),
+			" followed_by a live ask node states now, an edge the old arm answers from an unmarked row aside",
+		followerRowUnmarked, `
+		select count(*) from ask_followers f where octet_length(f.session_id) > `+addressBound, graphstore.KindAsk),
 	edgeProjection("ask_parent"+edgeSuffix, graphstore.TupleOwnedBy,
 		"graph_edges' half of an ask's placement, its owned_by: the row side is every owned_by edge graph_edges"+
 			" answers out of an ask node not gone, read node by node, as the triple of that node, owned_by and the"+
 			" document owning it, against every owned_by a live ask node states now; no arm of graph_edges answers"+
-			" an ask's part_of, which ask_parent holds against asks alone", graphstore.KindAsk),
+			" an ask's part_of, which ask_parent holds against asks alone; an edge the old arm answers from an unmarked"+
+			" row aside", askRowUnmarked, askPastBound, graphstore.KindAsk),
 	edgeProjection("ask_anchor"+edgeSuffix, graphstore.TupleAnchoredTo,
 		"graph_edges' anchor of an ask: the row side is every anchored_to edge graph_edges answers out of an ask"+
 			" node not gone, read node by node, as the triple of that node, anchored_to and its document, against"+
-			" every anchored_to a live ask node states now", graphstore.KindAsk),
+			" every anchored_to a live ask node states now, an edge the old arm answers from an unmarked row aside",
+		askRowUnmarked, askPastBound, graphstore.KindAsk),
 }
 
 // addressBound is the store's address bound (graphstore.MaxAddressBytes) as a statement spells
@@ -756,27 +760,44 @@ const edgeSuffix = "_edge"
 // followed_by. No arm answers a reading's part_of or an ask's part_of (the tuple arm answers a
 // block's in_document, as its part_of to its document), so the parent of a reading has no kind
 // here, and an ask's placement is held by its owned_by alone (ask_parent_edge).
-func edgeProjection(name, kind, note string, holders ...string) projection {
+//
+// unmarked is a predicate over the node n and its edge that holds where an old arm answers the
+// edge from a row that names no node - an asks or ask_followers row a process of the release
+// before wrote, or one the ask's writer leaves unmarked on purpose because a document it names is
+// past the store's bound, while it writes the ask's node all the same - and is empty for a kind no
+// old arm answers that way. Such an edge is no row here, as such a row is no row of the ask kinds
+// (unmarked_rows, addresses_past_bound); pastBound is the class the ask kinds count beside it.
+func edgeProjection(name, kind, note, unmarked, pastBound string, holders ...string) projection {
 	return projection{
 		name: name, nodeKind: strings.Join(holders, ", "), table: "graph_edges", note: note, emptyAgrees: true,
-		rows:   graphEdgesOut(kind, holders...),
-		tuples: heldTuples(`t.kind = '`+kind+`'`, holders...),
+		rows:      graphEdgesOut(kind, unmarked, holders...),
+		tuples:    heldTuples(`t.kind = '`+kind+`'`, holders...),
+		pastBound: pastBound,
 	}
 }
+
+// askRowUnmarked and followerRowUnmarked are edgeProjection's unmarked predicates of the ask's
+// own relations and of its followers: the asks row of the node, or the ask_followers row of the
+// node and the edge's session, names no node, so the view answers the edge from its old arm. Each
+// probes the index graph_edges' old arms are probed through (asks_id_text, ask_followers_ask_id_text).
+const (
+	askRowUnmarked      = `exists (select 1 from asks k where k.id::text = n.id and k.node_kind is null)`
+	followerRowUnmarked = `exists (select 1 from ask_followers f
+		where f.ask_id::text = n.id and f.session_id = edge.to_id and f.node_kind is null)`
+)
 
 // graphEdgesOut is the row side of an edgeProjection kind: every edge of kind graph_edges answers
 // out of a node of one of holders that is not gone - the nodes its tuple arm answers out of -
 // read node by node, the view probed with the node's kind and id, as refs.Edges probes it with
-// both bound. The probe ends in `offset 0`, the fence the view's own probes take: without it the
-// planner pulls the probe up into the join, and an arm that is a subquery - the tuple arm's
-// newest tuple of each triple - takes the node's kind and id as a filter over every tuple of that
-// kind rather than as the keys of its index, read again for each node. Fenced, each arm keys its
-// own index with the node's kind and id. An edge an old arm answers out of a row whose ask the
-// store holds no node of yet is no row of this read: it is an unmarked asks or ask_followers row,
-// which the ask kinds count as unmarked_rows. Every other edge the view answers is one, an old
-// arm's out of a node the store holds included.
-func graphEdgesOut(kind string, holders ...string) string {
-	return `
+// both bound, but an edge unmarked (a predicate over n and edge, empty for none) says an old arm
+// answers from a row that names no node. The probe ends in `offset 0`, the fence the view's own
+// probes take: without it the planner pulls the probe up into the join, and an arm that is a
+// subquery - the tuple arm's newest tuple of each triple - takes the node's kind and id as a
+// filter over every tuple of that kind rather than as the keys of its index, read again for each
+// node. Fenced, each arm keys its own index with the node's kind and id. An edge an old arm
+// answers out of a row whose ask the store holds no node of yet is no row of this read either.
+func graphEdgesOut(kind, unmarked string, holders ...string) string {
+	read := `
 		select 'graph_edges ' || n.kind || ':' || n.id, n.kind, n.id, edge.kind, edge.to_kind, edge.to_id
 		from graph_nodes n
 		cross join lateral (
@@ -785,6 +806,11 @@ func graphEdgesOut(kind string, holders ...string) string {
 			offset 0
 		) edge
 		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state <> '` + graphstore.StateGone + `'`
+	if unmarked != "" {
+		read += `
+		  and not ` + unmarked
+	}
+	return read
 }
 
 // askDocuments are the three documents an asks row k names, joined as the ask's writer reads
