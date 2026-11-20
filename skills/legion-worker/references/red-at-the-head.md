@@ -1,7 +1,7 @@
 # A red check at the head of the pull request
 
 Part of `skill://legion-worker`. Read it when a check is red at the head of the issue's pull
-request and a phase of that issue is open. Every path it cites is in cybermonklabs/legion.
+request and you hold `reviewing` or `implementing`. Every path it cites is in cybermonklabs/legion.
 The runs that show what GitHub answers here: <https://cybermonklabs.github.io/legion/legion/checks-and-re-runs/>.
 
 A red the change did not make costs the tree a whole lap today: an implementing round, a new CI
@@ -11,13 +11,14 @@ clears such a red where it stands. It writes the failure down in a handoff recor
 
 ## Who may re-run
 
-- The holder of the issue's phase presses the re-run: the tester in `testing`, the reviewer in
-  `reviewing`, the implementer in `implementing`.
+- The holders of the re-run are the reviewer in `reviewing` and the implementer while it holds
+  `implementing`.
+- The tester presses nothing: it reads no CI, and a red at the head does not end its round.
 - The reviewer neither waits for a check the base does not require nor re-runs it for the approval,
   as `skill://legion-worker/references/merge-gate.md` says. It approves over such a red the change
   did not make and names the red in its `redAtTheHead` record and its review body, and nowhere else:
   with no re-run, nothing shows the test fails at random, so the red is no occurrence for the
-  census. The tester and the implementer still re-run such a red once.
+  census. The implementer still re-runs such a red once.
 - The merger, the architect in `accepting` and an implementer that runs retro re-run nothing. The
   merger's `failed_checks` ejection rule is in its role prompt.
 - A role that is told of a red whose phase it does not hold re-runs nothing.
@@ -58,17 +59,17 @@ the first press, since a refusal while the run reads `completed` can mean anothe
 started an attempt.
 
 The record is a handoff record of the role's own phase, written with
-`dispatch handoff-write --issue <issue> --phase <implement|test|review> --body-file <file>` before the
+`dispatch handoff-write --issue <issue> --phase <implement|review> --body-file <file>` before the
 `gh run rerun` call, never after it. Its body carries the field `redAtTheHead`, a list with one
 entry per red, each entry naming all eight facts above. That record is a version of its own: the
 role writes the phase's full record later, with `redAtTheHead` in it again, and `handoff_complete`
 reports the newest version. A re-run pressed before Dispatch has recorded the first version loses
 the failure, which is what this page exists to keep.
 
-The reviewer writes that handoff record before the re-run as every other role does, and repeats
+The reviewer writes that handoff record before the re-run as the implementer does, and repeats
 it in the body of the one review it submits at the end of the round, since the reviewer's one
 review ends its round. No file under `packages/daemon/internal/prompts/roles/` names that
-field. This page is where the implementer, the tester and the reviewer read it.
+field. This page is where the implementer and the reviewer read it.
 
 ## Which red is the change's
 
@@ -241,10 +242,10 @@ failure, as *Red again* above says, never an external cause.
 In both cases a further run of the lane meets the same defect, so no re-run ends it. The role
 records the external cause in the same record this page already asks for — the lane, the error,
 the head, and the change it waits on — tells the architect, and ends its round where it stands: a
-tester completes its phase with a failing verdict, and a reviewer submits the `REQUEST_CHANGES`
-naming the red, since that is how a reviewer's round ends. It waits for nothing here. The fix is
-another tree's: it reaches this head only through a forward merge. A role that waits holds its phase
-and its pod for that, and the architect, who arranges it, has not seen the record.
+reviewer submits the `REQUEST_CHANGES` naming the red, since that is how a reviewer's round ends.
+It waits for nothing here. The fix is another tree's: it reaches this head only through a forward
+merge. A role that waits holds its phase and its pod for that, and the architect, who arranges it,
+has not seen the record.
 
 No role pushes a commit to make a new head for its own sake, and no role patches another tree's
 file to clear its own lane. The work waits until the repository's default branch carries the

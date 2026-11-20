@@ -6,6 +6,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   brokenSharedDatabaseRules,
+  CI_CHECKS,
   censusFaults,
   FINDING_ASKS,
   MERGE_GATE,
@@ -13,6 +14,7 @@ import {
   RED_AT_THE_HEAD,
   redAtTheHeadFaults,
   retiredWorkerLifecycleClaims,
+  testerCiCheckFaults,
   WORKER_SKILL,
   WORKER_TOOLS,
 } from "./skills-guard";
@@ -41,4 +43,8 @@ test("the re-run rule's page says who presses it, and the skill, the merge gate 
 
 test("the controller's census acts on a test re-run green only where no open issue tracks it", () => {
   expect(censusFaults(readFileSync(FINDING_ASKS, "utf8"))).toEqual([]);
+});
+
+test("the `ci_check` reference has the tester neither read nor record a check CI proves", () => {
+  expect(testerCiCheckFaults(readFileSync(CI_CHECKS, "utf8"))).toEqual([]);
 });

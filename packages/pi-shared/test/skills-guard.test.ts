@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { anchors, headingText, retiredRerunProhibitions } from "./skills-guard";
+import {
+  anchors,
+  headingText,
+  retiredRerunProhibitions,
+  retiredTesterCiReads,
+} from "./skills-guard";
 
 // The heading parse behind `anchors`, which decides whether a `skill://<name>/<path>#anchor` link
 // resolves. It stands in for `/^#{1,6}\s+(.+?)\s*#*$/`, an expression quadratic in a line's
@@ -69,12 +74,15 @@ test("a heading line of 200,000 trailing spaces is parsed, not scanned once per 
 // retired wording starts below the page's first line, so a hit names the line that wording starts
 // on rather than the first line of the file.
 
-/** What `retiredRerunProhibitions` reports over a root that holds `page` alone, as `page.md`. */
-function reported(page: readonly string[]): string[] {
+/** What `rule` — `retiredRerunProhibitions` unless named — reports over a root holding `page` alone, as `page.md`. */
+function reported(
+  page: readonly string[],
+  rule: (roots: readonly string[]) => string[] = retiredRerunProhibitions
+): string[] {
   const root = mkdtempSync(path.join(os.tmpdir(), "retired-rerun-"));
   try {
     writeFileSync(path.join(root, "page.md"), `${page.join("\n")}\n`);
-    return retiredRerunProhibitions([root]);
+    return rule([root]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -295,7 +303,7 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
   [
     'a ban of the re-run of a check that failed, "Never re-run a check that failed."',
     [
-      "The tester reads the head's checks on GitHub before any verdict.",
+      "The reviewer reads the head's checks on GitHub before it approves.",
       "Never re-run a",
       "check that failed.",
     ],
@@ -304,7 +312,7 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
   [
     'a ban of the re-run of a lane, "Never re-run a lane that failed on itself."',
     [
-      "The tester reads the head's checks on GitHub before any verdict.",
+      "The reviewer reads the head's checks on GitHub before it approves.",
       "Never re-run a lane",
       "that failed on itself.",
     ],
@@ -319,7 +327,7 @@ test.each(retired)("%s is reported at the line it starts on", (_source, page, li
 // Each sentence the trees keep near the words of a retired one, which a pattern too wide would
 // refuse, in the words of the file that carries it and the text around it shortened. The sentences
 // no tree carries are the send-back limited by `only`, which the merge-queue pattern's lookahead
-// lets through, the tester's re-run of a check the base does not require, which holds no
+// lets through, the implementer's re-run of a check the base does not require, which holds no
 // approval, and the last three, which a docs page, a runbook and the merger's prompt could
 // plausibly say: the lane and reviewer patterns refused each until INFRA-1303's review round 3.
 const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
@@ -401,19 +409,20 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     ],
   ],
   [
-    'tester.md\'s "do not run in your own pod what CI runs for you"',
+    'tester.md\'s "you do not run in your own pod what CI runs for you"',
     [
-      "Read CI for everything static, on GitHub at the head you tested and written down nowhere for a",
-      "later step to trust, except a `ci_check` job; do not run in your own",
+      "Let CI do its job: your job is to boot and run the app's real workflows like a user would. You",
+      "read no check run, re-run no CI and wait on no CI: lint, types, the unit and integration suites",
+      "and every other lane are CI's work, and you do not run in your own",
       "pod what CI runs for you.",
     ],
   ],
   [
-    "envoy/SKILL.md's \"The role that holds the issue's phase waits this way on the re-run\"",
+    'a holder\'s wait in the Envoy skill, "waits this way on the re-run"',
     [
-      "- The role that holds the issue's phase waits this way on the re-run of a red at the head,",
-      "  which `skill://legion-worker/references/red-at-the-head.md` decides. Otherwise a Legion",
-      "  worker pushes and completes its phase, and the daemon reads CI for it.",
+      "- The reviewer in `reviewing` or the implementer while it holds `implementing` waits this way on",
+      "  the re-run of a red at the head, which `skill://legion-worker/references/red-at-the-head.md`",
+      "  decides. Otherwise a Legion worker pushes and completes its phase, and the daemon reads CI for it.",
     ],
   ],
   [
@@ -442,50 +451,49 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     ],
   ],
   [
-    'tester.md\'s "you wait for none of them but that re-run"',
+    'reviewer.md\'s "You wait for none of them but the three"',
     [
-      "The round goes on when the re-run is green. A lane GitHub shows `queued` or `in progress` is",
-      "read as such, and you wait for none of them but that re-run.",
+      "You wait for none of them but the three `skill://legion-worker/references/red-at-the-head.md`",
+      "gives you: the run that holds a red, until it ends; your one re-run; and a red the counted set",
+      "does not yet report `completed`, however you learned of it.",
     ],
   ],
   [
-    'pr-body.md\'s "the tester waits for none of them but the re-run"',
+    'pr-body.md\'s "the tester lets CI do its job"',
     [
-      "  and integration suites are CI's, read there and recorded for no later step, except a",
-      "  `ci_check` job. A lane GitHub shows `queued` or `in progress` is read as such, and the tester",
-      "  waits for none of them but the re-run `skill://legion-worker/references/red-at-the-head.md`",
-      "  gives it, since the reviewer reads the head's checks before it approves.",
+      "  catch. Lint, types and the unit and integration suites are CI's: the tester lets CI do its",
+      "  job, boots and runs the app's real workflows like a user would, and reads no check run,",
+      "  re-runs no CI and waits on no CI, since the reviewer reads the head's checks before it approves.",
     ],
   ],
   [
-    "worker-common.md's \"only the role that holds the issue's phase re-runs one the change did not make\"",
+    'worker-common.md\'s "only the reviewer in `reviewing` or the implementer while it holds `implementing` re-runs one"',
     [
-      "A red check is information, not a verdict: only the role that holds the issue's phase re-runs",
-      "one the change did not make, once at that head and after it records the failure in a handoff",
-      "record of its own phase with `dispatch handoff-write` — the tester",
-      "in `testing`, the reviewer in `reviewing` or the implementer while it holds `implementing`,",
-      "never the merger — a red the change made is the implementer's to fix, and whether the pull",
-      "request merges is GitHub's.",
+      "A red check is information, not a verdict: only the reviewer in `reviewing` or the implementer",
+      "while it holds `implementing` re-runs one the change did not make, once at that head and after",
+      "it records the failure in a handoff record of its own phase with `dispatch handoff-write`. The",
+      "tester presses nothing, and the merger and an implementer that runs retro re-run",
+      "nothing (`skill://legion-worker/references/red-at-the-head.md`).",
     ],
   ],
   [
     'troubleshooting.md\'s "re-runs a check that failed on itself once at that head"',
     [
-      "  issue's current phase and the implementer, and judges none of them. The tester in `testing`,",
-      "  the reviewer in `reviewing` or the implementer while it holds `implementing` re-runs a check",
-      "  that failed on itself once at that head, after it records the failure in a handoff record of",
-      "  its phase (`dispatch handoff-write`), and no other role re-runs one; the implementer fixes",
-      "  code that is at fault; and GitHub holds the merge.",
+      "  the issue's current phase and the implementer, and judges none of them. The reviewer in",
+      "  `reviewing` or the implementer while it holds `implementing` re-runs a check that failed on",
+      "  itself once at that head, after it records the failure in a handoff record of its phase",
+      "  (`dispatch handoff-write`), and no other role re-runs one: the tester reads no CI. The",
+      "  implementer fixes code that is at fault, and GitHub holds the merge.",
     ],
   ],
   [
-    "concepts.md's \"A red is for the role that holds the issue's phase to act on\"",
+    'concepts.md\'s "A red is for the reviewer in `reviewing` or the implementer while it holds `implementing` to act on"',
     [
-      "  and the implementer whose code the checks ran on, and moves the issue nowhere. A red is for",
-      "  the role that holds the issue's phase to act on — the tester in `testing`, the reviewer in",
-      "  `reviewing` or the implementer while it holds `implementing` re-runs a check that failed on",
-      "  itself once at that head, the implementer fixes code that is at fault, and a check still running",
-      "  is waited for — and for GitHub to hold the merge over.",
+      "  names no pull request. A red is for the reviewer in `reviewing` or the implementer while it holds",
+      "  `implementing` to act on — either re-runs a check that failed on itself once at that head, the",
+      "  tester, the merger and an implementer that runs retro re-run nothing, the implementer fixes code",
+      "  that is at fault, and a check still running is waited for — and for GitHub to hold the merge",
+      "  over.",
     ],
   ],
   [
@@ -505,11 +513,11 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     ],
   ],
   [
-    'implementer.md\'s "never wait for CI"',
+    'implementer.md\'s "never wait for CI, except for the one re-run"',
     [
-      "Push, then complete: never wait for CI. Run your role's fast local checks before the push, then",
-      "push and call `handoff_complete`. Never wait for, watch or poll the pull request's remote CI —",
-      "no `gh run watch`, no `gh pr checks --watch`.",
+      "Push, then complete: never wait for CI, except for the one re-run of a red the change did not",
+      "make, which you wait for as `skill://legion-worker/references/red-at-the-head.md` says. Never",
+      "wait for, watch or poll the pull request's remote CI — no `gh run watch`, no `gh pr checks --watch`.",
     ],
   ],
   [
@@ -539,15 +547,15 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
       "  require nor re-runs it for the approval, as `skill://legion-worker/references/merge-gate.md` says.",
       "  It approves over such a red the change did not make and names the red in its `redAtTheHead`",
       "  record and its review body, and nowhere else: with no re-run, nothing shows the test fails at",
-      "  random, so the red is no occurrence for the census. The tester and the implementer still",
-      "  re-run such a red once.",
+      "  random, so the red is no occurrence for the census. The implementer still re-runs such a red",
+      "  once.",
     ],
   ],
   [
-    "a tester's re-run of a check the base does not require, which holds no approval",
+    "an implementer's re-run of a check the base does not require, which holds no approval",
     [
       "The reviewer approves over a red the change did not make on a check the base does not require.",
-      "The tester re-runs a red on a check the base",
+      "The implementer re-runs a red on a check the base",
       "does not require once.",
     ],
   ],
@@ -569,11 +577,238 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     'the merger\'s prompt, "You re-run nothing: …"',
     [
       "A red check at the head is not yours to act on. You re-run",
-      "nothing: the role that holds the issue's phase does.",
+      "nothing: the reviewer in `reviewing` or the implementer while it holds `implementing` does.",
     ],
   ],
 ];
 
 test.each(kept)("%s is not reported", (_source, page) => {
   expect(reported(page)).toEqual([]);
+});
+
+// The tester's sentences INFRA-1303 retired when the tester came to read no CI
+// (`retiredTesterCiReads`, Sami's decision on
+// dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3), each in the words of the file
+// that carried it, the text around it shortened, and the line its pattern's first matched word
+// stands on. As above, each row is found by one pattern alone, so a row whose pattern is taken out
+// of the guard reports nothing and fails.
+const retiredTesterReads: readonly (readonly [
+  source: string,
+  page: readonly string[],
+  line: number,
+])[] = [
+  [
+    'tester.md\'s "read CI for everything static", as main has it',
+    [
+      "Judge whether the implementer's tests would catch the ways it breaks. Record what you ran and",
+      "what you observed, and read CI for everything",
+      "static — lint, types, the unit and integration suites and every other lane are CI's work, read",
+      "on GitHub at the head you tested and written down nowhere for a later step to trust.",
+    ],
+    2,
+  ],
+  [
+    'concepts.md\'s "reads CI for everything static"',
+    [
+      "| `reviewing` | reviewer | Reviews the pull request. | review App |",
+      "| `testing` | tester | Runs the changed surface for real, tries to break it, and reads CI for everything static; reports `pass` or `fail`. | review App |",
+    ],
+    2,
+  ],
+  [
+    "pr-body.md's \"are CI's, read on GitHub at the head\"",
+    [
+      "- The tester tries to break the changed surface and writes the red test for a way no test would",
+      "  catch. Lint, types and the unit and integration suites are CI's,",
+      "  read on GitHub at the head.",
+    ],
+    2,
+  ],
+  [
+    "tester.md's \"Read the head's checks on GitHub before any verdict\"",
+    [
+      "Record what you ran and what you observed.",
+      "Read the head's checks on GitHub before any verdict, whether or not a check of the issue",
+      "carries `ci_check`.",
+    ],
+    2,
+  ],
+  [
+    "tester.md's \"The role that holds the issue's phase re-runs a red at the head\"",
+    [
+      "Record what you ran and what you observed. The role that holds the issue's",
+      "phase re-runs a red at the head of the pull request that the change did not cause.",
+    ],
+    1,
+  ],
+  [
+    "red-at-the-head.md's \"The holder of the issue's phase presses the re-run: the tester in `testing`\"",
+    [
+      "## Who may re-run",
+      "",
+      "- The holder of the issue's phase presses the re-run: the tester in `testing`, the reviewer in",
+      "  `reviewing`, the implementer in `implementing`.",
+    ],
+    3,
+  ],
+  [
+    'worker-common.md\'s "That role is the tester in `testing`, the reviewer in `reviewing`"',
+    [
+      "A red check is information, not a verdict. That role is the tester",
+      "in `testing`, the reviewer in `reviewing` or the implementer while it holds `implementing`.",
+    ],
+    1,
+  ],
+  [
+    "pr-body.md's \"is the tester's to re-run once\"",
+    [
+      "  read on GitHub at the head of the pull request. A red at the head that the change did not make is",
+      "  the tester's to re-run once.",
+    ],
+    2,
+  ],
+  [
+    'red-at-the-head.md\'s "The tester and the implementer still re-run such a red once."',
+    [
+      "  with no re-run, nothing shows the test fails at random, so the red is no occurrence for the",
+      "  census. The tester and the implementer still re-run such a red once.",
+    ],
+    2,
+  ],
+  [
+    "pr-body.md's \"by the role that holds the issue's phase\"",
+    [
+      "- A red check that failed on its own is re-run once with `gh run rerun <run-id> --failed`, by the",
+      "  role that holds the issue's phase and after it records the failure, and its settlement waited",
+      "  for as `skill://envoy` says (it waits again on a re-run still queued or in progress).",
+    ],
+    2,
+  ],
+  [
+    'tester.md\'s "you wait for none of them but three"',
+    [
+      "The round goes on when the re-run is green. A lane GitHub shows `queued` or `in progress` is read",
+      "as such, and you wait for none of them but three: the run that holds a red, until it ends; that",
+      "re-run; and a red the counted set does not yet report `completed`.",
+    ],
+    2,
+  ],
+  [
+    'tester.md\'s "you wait for none of them but that re-run"',
+    [
+      "The round goes on when the re-run is green. A lane GitHub shows `queued` or `in progress` is",
+      "read as such, and you wait for none of them but that re-run.",
+    ],
+    2,
+  ],
+  [
+    'pr-body.md\'s "The tester waits on CI for nothing but what that page gives it"',
+    [
+      "  holds the rule. The tester",
+      "  waits on CI for nothing but what that page gives it: the run that holds a red, until it ends.",
+    ],
+    1,
+  ],
+  [
+    'pr-body.md\'s "however the tester learned of it"',
+    [
+      "  the re-run; and a red the counted set does not yet report `completed`, however the tester",
+      "  learned of it.",
+    ],
+    1,
+  ],
+  [
+    'ci-checks.md\'s "A `ci_check` check goes in `failures`"',
+    [
+      "- The tester runs and records only the checks with no `ci_check`. A `ci_check` check goes in",
+      "  `failures` only when its derived result is a fail, or its run concluded `skipped`, `neutral` or",
+      "  `cancelled`.",
+    ],
+    1,
+  ],
+];
+
+test.each(retiredTesterReads)("%s is reported at the line it starts on", (_source, page, line) => {
+  expect(reported(page, retiredTesterCiReads)).toEqual([`page.md:${line}`]);
+});
+
+// Each sentence the trees keep beside the tester's retired ones, which a pattern too wide would
+// refuse: the sentences that replaced them, the reviewer's own read and wait, and the sentences that
+// keep a `ci_check` check CI's.
+const keptBesideTesterReads: readonly (readonly [source: string, page: readonly string[]])[] = [
+  [
+    'tester.md\'s "Let CI do its job"',
+    [
+      "Record what you ran and what you observed. Let CI do its job: your job is to boot and run the",
+      "app's real workflows like a user would. You read no check run, re-run no CI and wait on no CI:",
+      "lint, types, the unit and integration suites and every other lane are CI's work, and you do not",
+      "run in your own pod what CI runs for you. A red check at the head of the pull request ends no",
+      "round of yours, since your verdict is on the issue's checks and the surface you drove.",
+    ],
+  ],
+  [
+    "pr-body.md's \"are CI's: the tester lets CI do its job\"",
+    [
+      "  catch. Lint, types and the unit and integration suites are CI's: the tester lets CI do its",
+      "  job, boots and runs the app's real workflows like a user would, and reads no check run,",
+      "  re-runs no CI and waits on no CI, since the reviewer reads the head's checks before it approves.",
+    ],
+  ],
+  [
+    'red-at-the-head.md\'s "The holders of the re-run are the reviewer in `reviewing`"',
+    [
+      "- The holders of the re-run are the reviewer in `reviewing` and the implementer while it holds",
+      "  `implementing`.",
+      "- The tester presses nothing: it reads no CI, and a red at the head does not end its round.",
+      "- A role that is told of a red whose phase it does not hold re-runs nothing.",
+    ],
+  ],
+  [
+    "worker-common.md's \"One role holds the issue's phase at a time\"",
+    [
+      "One role holds the issue's phase at a time, and every role that has a session may work beside",
+      "it. A reviewer reads each push as it lands, and a tester re-runs nothing.",
+    ],
+  ],
+  [
+    'reviewer.md\'s "You wait for none of them but the three"',
+    [
+      "You wait for none of them but the three `skill://legion-worker/references/red-at-the-head.md`",
+      "gives you: the run that holds a red, until it ends; your one re-run; and a red the counted set",
+      "does not yet report `completed`, however you learned of it.",
+    ],
+  ],
+  [
+    "concepts.md's \"The reviewer reads the head's checks on GitHub itself before it approves\"",
+    [
+      "  needs its merge forward now (below), and never re-implements. The reviewer reads the",
+      "  head's checks on GitHub itself before it approves, and the architect before it accepts.",
+    ],
+  ],
+  [
+    "tester.md's and the tester's role part's \"is CI's\"",
+    [
+      "A check CI runs is recorded from CI's job at the head: a check carrying `ci_check` is CI's, and",
+      "its result is the one derived from that job's run. A check carrying `ci_check` is CI's: that",
+      "read shows its one derived result.",
+    ],
+  ],
+  [
+    "ci-checks.md's \"It neither reads nor records a `ci_check` check's derived result\"",
+    [
+      "- The tester runs and records only the checks with no `ci_check`. It neither reads nor records a",
+      "  `ci_check` check's derived result, which is CI's: the reviewer reads it before it approves.",
+    ],
+  ],
+  [
+    'pr-body.md\'s "After a forward merge, the tester reruns each check the merge can reach"',
+    [
+      "- After a forward merge, the tester reruns each check the merge can reach and records each other",
+      "  check with no `ci_check` at the new head unrun.",
+    ],
+  ],
+];
+
+test.each(keptBesideTesterReads)("%s is not reported", (_source, page) => {
+  expect(reported(page, retiredTesterCiReads)).toEqual([]);
 });

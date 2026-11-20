@@ -355,10 +355,12 @@ const LANE_QUALIFIER = String.raw`(?:CI\s+|required\s+|test\s+)?`;
  * The prohibition INFRA-1303 retired from the tester's evidence rule
  * (skills/legion-worker/references/pr-body.md): "no CI lane is rerun as evidence", and the same
  * sentence in the active voice, "never re-run a CI lane as evidence", which the tester's prompt
- * part carried beside it. A red at the head that the change did not make is now the phase
- * holder's to re-run once (`skill://legion-worker/references/red-at-the-head.md`), so a file that
- * still forbids the re-run of a lane costs the tree a whole lap for a failure its code never
- * caused.
+ * part carried beside it. Both stood beside a read of CI the tester no longer makes
+ * (`RETIRED_TESTER_CI_READS`, below), and a red at the head that the change did not make is now
+ * the reviewer's in `reviewing` and the implementer's while it holds `implementing` to re-run once
+ * (`skill://legion-worker/references/red-at-the-head.md`), so a file that still forbids the
+ * re-run of a lane, read by either of them, costs the tree a whole lap for a failure its code
+ * never caused.
  *
  * Three shapes, each with its subject enumerated rather than left open. The passive: a lane noun
  * under a universal negative (`no`, `neither`) as the subject of the re-run, with nothing between
@@ -395,13 +397,15 @@ const NO_LANE_IS_RERUN = new RegExp(
 /**
  * The prohibition INFRA-1303 retired from the tester's prompt part
  * (packages/daemon/internal/prompts/roles/core/tester.md): "rerun none of them yourself", said of
- * the CI lanes the tester has just been told to read on GitHub. The tester holds `testing`, so
- * the head's one re-run is its to press (`skill://legion-worker/references/red-at-the-head.md`),
- * and a tester told to re-run none of them reads that rule as written for somebody else.
+ * the CI lanes the tester had just been told to read on GitHub. The tester reads no CI now
+ * (`RETIRED_TESTER_CI_READS`), so the sentence has no lanes left to be said of, and the head's one
+ * re-run is the reviewer's in `reviewing` and the implementer's while it holds `implementing`
+ * (`skill://legion-worker/references/red-at-the-head.md`): either of them, told to re-run none of
+ * them, reads that rule as written for somebody else.
  *
  * The object is enumerated — `them`, `these`, `those`, or the lane nouns themselves — rather than
  * left open, and the verb must be a re-run, never a bare `run`. That is what lets the sentence
- * the prompt keeps in its place pass: "do not run in your own pod what CI runs for you", which
+ * the prompt keeps in its place pass: "you do not run in your own pod what CI runs for you", which
  * forbids the local run and says nothing of the re-run.
  */
 const RERUN_NONE_OF_THEM_YOURSELF = new RegExp(
@@ -436,14 +440,16 @@ const REVIEWER_RERUNS_NOTHING =
 /**
  * The prohibition INFRA-1303 retired from the Envoy skill (skills/envoy/SKILL.md): "A Legion
  * implementer waits this way only on a re-run of a red check its task names.", which gave the
- * wait to one role and to one red. Every phase holder waits that way now, on the red the counted
- * set carries (`skill://legion-worker/references/red-at-the-head.md`), so the sentence names the
- * wrong role and the wrong red. The `@sjawhar/pi-envoy` partition stages that file and none of
- * the three files above, so without this pattern a forward merge could restore the sentence
- * there and every guard would stay green.
+ * wait to one role and to one red. The reviewer in `reviewing` waits that way now as the
+ * implementer does while it holds `implementing`, on the red the counted set carries
+ * (`skill://legion-worker/references/red-at-the-head.md`), so the sentence names too few roles
+ * and the wrong red. The `@sjawhar/pi-envoy` partition stages that file and none of the three
+ * files above, so without this pattern a forward merge could restore the sentence there and every
+ * guard would stay green.
  *
- * The subject is the implementer and the limiting word is `only`, so the sentence that replaced
- * it passes: "The role that holds the issue's phase waits this way on the re-run …".
+ * The subject is the implementer and the limiting word is `only`, so a sentence that names both
+ * holders passes: "The reviewer in `reviewing` or the implementer while it holds `implementing`
+ * waits this way on the re-run …".
  */
 const ONLY_THE_IMPLEMENTER_WAITS = /\ba Legion implementer waits this way only\b/i;
 
@@ -476,16 +482,19 @@ const FIRST_EJECTION_GOES_BACK =
  * (packages/daemon/internal/prompts/roles/core/tester.md): "A lane still running is read as
  * running; never wait for it.", which the tester's evidence rule
  * (skills/legion-worker/references/pr-body.md) carried as "A lane GitHub shows `queued` or `in
- * progress` is read as such: the tester never waits for it". The tester holds `testing`, so the
- * re-run of a red at the head is its own to press and its own to wait on
- * (`skill://legion-worker/references/red-at-the-head.md`), and a tester told never to wait for a
- * running lane reads the one wait that page gives it as forbidden.
+ * progress` is read as such: the tester never waits for it". Both read the running lane, a read
+ * of CI the tester no longer makes (`RETIRED_TESTER_CI_READS`), and the re-run of a red at the
+ * head is the reviewer's in `reviewing` and the implementer's while it holds `implementing`, each
+ * its own to press and its own to wait on (`skill://legion-worker/references/red-at-the-head.md`),
+ * so either of them, told never to wait for a running lane, reads the one wait that page gives it
+ * as forbidden.
  *
  * The subject is a lane noun — `lane`, `check`, `suite`, `job` — in a running state — `running`,
  * `queued`, `in progress` — and the ban is `never wait(s) for it` or `them` in the same sentence.
- * The sentences that replaced it keep a wait and so pass: "you wait for none of them but that
- * re-run" (tester.md) and "the tester waits for none of them but the re-run …" (pr-body.md). So
- * does the implementer's "never wait for CI", which names no running lane and no `it`.
+ * The sentences kept beside it keep a wait and so pass: the reviewer's "You wait for none of them
+ * but the three `skill://legion-worker/references/red-at-the-head.md` gives you" and "One
+ * `queued` or `in_progress`: wait." (go/reviewer.md). So do the implementer's "never wait for CI"
+ * and the tester's "wait on no CI", which name no running lane and no `it`.
  */
 const NO_WAIT_FOR_A_RUNNING_LANE = new RegExp(
   String.raw`\b${LANE}s?\b[^.]{0,60}?\b(?:running|queued|in[\s_]progress)\b[^.]{0,60}?\bnever\s+waits?\s+for\s+(?:it|them)\b`,
@@ -506,10 +515,11 @@ const NO_WAIT_FOR_A_RUNNING_LANE = new RegExp(
  *
  * The shape is a list of alternatives that starts with the re-run: the bare word `re-run`, a comma
  * within 40 characters, a second choice (`have`, `fix`, `wait`, `leave`), then `or` and a third.
- * `\bre-?run\b` does not match `re-runs`, which is what lets the sentences that replaced them
- * pass: "the tester in `testing`, the reviewer in `reviewing` or the implementer while it holds
- * `implementing` re-runs a check that failed on itself once at that head, the implementer fixes
- * code that is at fault, and a check still running is waited for" (concepts.md).
+ * `\bre-?run\b` does not match `re-runs`, which is what lets the sentence that replaced them pass:
+ * "either re-runs a check that failed on itself once at that head, the tester, the merger and an
+ * implementer that runs retro re-run nothing, the implementer fixes code that is at fault, and a
+ * check still running is waited for" (concepts.md), whose bare `re-run nothing,` has no choice
+ * after its comma.
  */
 const RERUN_AMONG_THE_CHOICES =
   /\bre-?run\b[^,.;]{0,40},\s+(?:have|fix|wait|leave)\w*\b[^.;]{0,60}?,?\s+or\s+(?:have|fix|wait|leave)\w*\b/i;
@@ -520,9 +530,10 @@ const RERUN_AMONG_THE_CHOICES =
  * and the concepts page's "A red is for those roles to decide on". The daemon tells the architect,
  * the phase's worker and the implementer, and only one of them holds the phase.
  *
- * The plural `roles` and the told or reached roles are what it reads, so the singular that replaced
- * the concepts page's sentence passes: "A red is for the role that holds the issue's phase to act
- * on", and so does "the daemon names the checks GitHub reported and judges none of them".
+ * The plural `roles` and the told or reached roles are what it reads, so the sentence that
+ * replaced the concepts page's passes: "A red is for the reviewer in `reviewing` or the
+ * implementer while it holds `implementing` to act on", and so does "the daemon names the checks
+ * GitHub reported and judges none of them".
  */
 const DECISION_FOR_THE_ROLES_TOLD =
   /\b(?:decision|decide)\b[^.]{0,20}?\b(?:for|to)\s+the\s+roles\s+(?:it|they)\s+(?:told|reached)\b|\bfor\s+(?:the|those)\s+roles\b[^.]{0,30}?\bto\s+decide\b/i;
@@ -547,8 +558,8 @@ const DECISION_FOR_THE_ROLES_TOLD =
  * the base does not require nor re-runs it for the approval" and the overlay's "A check the base
  * does not require you neither wait for nor re-run for the approval", whose re-run a `nor` negates;
  * the overlay's "a red the change did not cause, on a check the base requires, is yours to re-run
- * once", whose check is a required one; and "The tester re-runs a red on a check the base does not
- * require once.", which holds no approval, since the tester and the implementer keep that re-run.
+ * once", whose check is a required one; and "The implementer re-runs a red on a check the base
+ * does not require once.", which holds no approval, since the implementer keeps that re-run.
  * The first lookahead puts the hit where one of the three words starts, so a hit names the line
  * of the sentence's first such word. The negation is a lookbehind, which Bun's JavaScriptCore runs.
  */
@@ -598,16 +609,126 @@ const RETIRED_RERUN_PROHIBITIONS = [
  * daemon prompt parts at once, and a forward merge keeps both sides of a deletion in silence, so
  * the rule is written over whole partitions rather than over the files it cleared: another file
  * that acquires one fails here too.
- *
- * Each prohibition is matched against the whitespace-collapsed text (`collapsed`), the collapse the
- * prose pins read too, because these files are wrapped and a prohibition can cross a line
- * wherever it stands. The hit's offset is mapped back through `collapsedOffsets`, whose
- * per-character map is built once for a file that holds a hit and not at all for any other, to
- * the line a reader opens: the line where the prohibition's first word stands. One hit per
- * prohibition per file: the patterns carry no `g` flag, so a file that says it twice is named
- * once and reads the same after the first is fixed.
  */
 export function retiredRerunProhibitions(roots: readonly string[]): string[] {
+  return retiredRuleHits(roots, RETIRED_RERUN_PROHIBITIONS);
+}
+
+/*
+ * The tester's read of CI, which INFRA-1303 retired on Sami's decision
+ * (dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3: "let CI do its job, your job is
+ * to boot and run the app's real workflows like a user would"). The tester reads no check run,
+ * re-runs no CI and waits on no CI, and a red at the head ends no round of its; the re-run is the
+ * reviewer's in `reviewing` and the implementer's while it holds `implementing`
+ * (`skill://legion-worker/references/red-at-the-head.md`). Each pattern below is one shape of the
+ * tester's retired sentences. A tester that reads one again fails its round on a red the change
+ * never made, which is the lap INFRA-1303 is about.
+ */
+
+/**
+ * The read of the static lanes: main's tester prompt part's "read CI for everything static — lint,
+ * types, the unit and integration suites and every other lane are CI's work, read on GitHub at the
+ * head you tested", the concepts page's "reads CI for everything static", and the pull-request
+ * body reference's "Lint, types and the unit and integration suites are CI's, read on GitHub at the
+ * head" (main's "are CI's: read them on GitHub at the head"). Two shapes: `read(s) CI for
+ * everything static`, and the lanes called CI's (`CI's`, `CI's work`) with a comma or a colon and
+ * then `read` at once. The sentences that keep a `ci_check` check CI's pass, since no `read`
+ * follows at once: "A check carrying `ci_check` is CI's: that read shows its one derived result"
+ * (the tester's role part) and "a check carrying `ci_check` is CI's, and its result …" (its core).
+ * So do the sentences that replaced the read: "every other lane are CI's work, and you do not run
+ * in your own pod what CI runs for you" (the core) and "are CI's: the tester lets CI do its job"
+ * (pr-body.md).
+ */
+const TESTER_READS_THE_STATIC_LANES =
+  /\breads?\s+CI\s+for\s+everything\s+static\b|\bCI's(?:\s+work)?[,:]\s+read\b/i;
+
+/**
+ * The read of the head's checks before a verdict: the tester's prompt part's "Read the head's
+ * checks on GitHub before any verdict, whether or not a check of the issue carries `ci_check`",
+ * and the pull-request body reference's "The tester reads the head's checks on GitHub before any
+ * verdict". A verdict is the tester's word, so the reviewer's read passes: "The reviewer reads the
+ * head's checks on GitHub itself before it approves" (concepts.md).
+ */
+const HEADS_CHECKS_BEFORE_ANY_VERDICT =
+  /\breads?\s+the\s+head's\s+checks\b[^.]{0,30}?\bbefore\s+any\s+verdict\b/i;
+
+/**
+ * The tester as a holder of the re-run. Four shapes: the three-holder list that opened with it,
+ * "the tester in `testing`, the reviewer in `reviewing` …" (the red-at-the-head page, the worker
+ * prompt part, the concepts and troubleshooting pages); the pull-request body reference's "is the
+ * tester's to re-run once"; the page's "The tester and the implementer still re-run such a red
+ * once"; and the holder named by the phase alone, `the role that holds the issue's phase` or `the
+ * holder of the issue's phase`, with a re-run later in its sentence, which the tester read as its
+ * own while it held `testing`: the tester's prompt part's "The role that holds the issue's phase
+ * re-runs a red at the head", the page's "The holder of the issue's phase presses the re-run",
+ * pr-body.md's "re-run once … by the role that holds the issue's phase" and the architect's prompt
+ * part's "the role that holds the issue's phase re-runs a red the change did not make once". The
+ * sentences that replaced them name the two holders and pass: "The holders of the re-run are the
+ * reviewer in `reviewing` and the implementer while it holds `implementing`." and "The tester
+ * presses nothing" (the page, the worker prompt part). So does the worker prompt part's "One role
+ * holds the issue's phase at a time", which names no holder of a re-run.
+ */
+const THE_TESTER_HOLDS_THE_RERUN =
+  /\btester\s+in\s+`?testing`?\s*,\s+the\s+reviewer\b|\bthe\s+tester's\s+to\s+re-?run\b|\bthe\s+tester\s+and\s+the\s+implementer\s+still\s+re-?run\b|\b(?:role\s+that\s+holds|holder\s+of)\s+the\s+issue's\s+phase\b(?=[^.]*?\bre-?runs?\b)/i;
+
+/**
+ * The tester's waits on CI: the tester's prompt part's "you wait for none of them but three: the
+ * run that holds a red, until it ends; that re-run; and a red the counted set does not yet report
+ * `completed`, however you learned of it", and its earlier "you wait for none of them but that
+ * re-run"; the pull-request body reference's "The tester waits on CI for nothing but what that
+ * page gives it", its earlier "the tester waits for none of them but the re-run", and its "however
+ * the tester learned of it". The reviewer's wait passes, since its list is "the three" the page
+ * gives it: "You wait for none of them but the three
+ * `skill://legion-worker/references/red-at-the-head.md` gives you" (go/reviewer.md). So does the
+ * tester's "wait on no CI".
+ */
+const THE_TESTER_WAITS_ON_CI =
+  /\bthe\s+tester\s+waits?\b[^.]{0,40}?\bbut\b|\byou\s+wait\s+for\s+none\s+of\s+them\s+but\s+(?:three|that\s+re-?run)\b|\bhowever\s+the\s+tester\s+learned\b/i;
+
+/**
+ * The tester's verdict on a check CI proves: the worker skill's `ci_check` reference's "A
+ * `ci_check` check goes in `failures` only when its derived result is a fail, or its run concluded
+ * `skipped`, `neutral` or `cancelled`", a line of the tester's. A derived result is CI's, and the
+ * reviewer reads it before it approves (the architect, 2026-11-20), so a tester that puts one in
+ * its `failures` fails its round on CI. The subject is a `ci_check` check and the verb `goes in
+ * failures`, so the sentence that replaced it passes: "It neither reads nor records a `ci_check`
+ * check's derived result, which is CI's".
+ */
+const CI_CHECK_IN_THE_TESTERS_FAILURES = /\bci_check`?\s+check\s+goes\s+in\s+`?failures\b/i;
+
+/** The tester's five retired shapes, in the order they are written above. */
+const RETIRED_TESTER_CI_READS = [
+  TESTER_READS_THE_STATIC_LANES,
+  HEADS_CHECKS_BEFORE_ANY_VERDICT,
+  THE_TESTER_HOLDS_THE_RERUN,
+  THE_TESTER_WAITS_ON_CI,
+  CI_CHECK_IN_THE_TESTERS_FAILURES,
+];
+
+/**
+ * Every place in the Markdown files under `roots` that still tells the tester to read CI, gives it
+ * the re-run of a red at the head, has it wait on CI, or has it judge a check CI proves, each as
+ * one `<file>:<line>`. The sentences were deleted from skill files, daemon prompt parts and docs
+ * pages at once, and a forward merge keeps both sides of a deletion in silence, so this rule too is
+ * written over whole partitions.
+ */
+export function retiredTesterCiReads(roots: readonly string[]): string[] {
+  return retiredRuleHits(roots, RETIRED_TESTER_CI_READS);
+}
+
+/**
+ * Every place in the Markdown files under `roots` that one of `rules` matches, each as one
+ * `<file>:<line>`.
+ *
+ * Each rule is matched against the whitespace-collapsed text (`collapsed`), the collapse the prose
+ * pins read too, because these files are wrapped and a retired sentence can cross a line wherever
+ * it stands. The hit's offset is mapped back through `collapsedOffsets`, whose per-character map
+ * is built once for a file that holds a hit and not at all for any other, to the line a reader
+ * opens: the line where the sentence's first matched word stands. One hit per rule per file: the
+ * patterns carry no `g` flag, so a file that says it twice is named once and reads the same after
+ * the first is fixed.
+ */
+function retiredRuleHits(roots: readonly string[], rules: readonly RegExp[]): string[] {
   return roots.flatMap((root) =>
     files(root)
       .filter((file) => file.endsWith(".md"))
@@ -621,8 +742,8 @@ export function retiredRerunProhibitions(roots: readonly string[]): string[] {
           ? path.relative(REPO_ROOT, file)
           : path.relative(root, file);
         let offsets: number[] | undefined;
-        return RETIRED_RERUN_PROHIBITIONS.flatMap((prohibition) => {
-          const found = text.match(prohibition);
+        return rules.flatMap((rule) => {
+          const found = text.match(rule);
           if (found?.index === undefined) return [];
           offsets ??= collapsedOffsets(markdown);
           return [`${name}:${markdown.slice(0, offsets[found.index]).split("\n").length}`];
@@ -651,8 +772,11 @@ export const RED_AT_THE_HEAD = path.join(
  */
 export const MERGE_GATE = path.join(REPO_ROOT, "skills/legion-worker/references/merge-gate.md");
 
-/** The pull-request body reference, which points at that page twice. */
+/** The pull-request body reference, which points at that page. */
 export const PR_BODY = path.join(REPO_ROOT, "skills/legion-worker/references/pr-body.md");
+
+/** The worker skill's reference for a check CI proves, which says what the tester does with one. */
+export const CI_CHECKS = path.join(REPO_ROOT, "skills/legion-worker/references/ci-checks.md");
 
 /** The controller's reference for a finding, which holds its census of a test a role re-ran green. */
 export const FINDING_ASKS = path.join(
@@ -781,15 +905,26 @@ export function brokenSharedDatabaseRules(markdown: string): string[] {
 }
 
 /**
- * The sentence of `## Who may re-run` that carries INFRA-1303's rule, pinned whole and literally.
- * A reader who lost it would believe the re-run belongs to whoever notices the red: the merger,
- * the architect in `accepting`, an implementer in retro, or a role merely told of a red in a
- * phase it does not hold — each of which the three sentences beside it refuse. The grant is what
- * the page exists for; the sentences that deny the re-run read as a list of exceptions to
+ * The sentence of `## Who may re-run` that carries INFRA-1303's rule, pinned whole and literally:
+ * the reviewer in `reviewing` and the implementer while it holds `implementing`, since the tester
+ * reads no CI (Sami's decision, dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3).
+ * A reader who lost it would believe the re-run belongs to whoever notices the red: the tester,
+ * the merger, the architect in `accepting`, an implementer in retro, or a role merely told of a
+ * red in a phase it does not hold — each of which the sentences beside it refuse. The grant is
+ * what the page exists for; the sentences that deny the re-run read as a list of exceptions to
  * nothing once it is gone.
  */
-const PHASE_HOLDER_PRESSES_THE_RERUN =
-  "The holder of the issue's phase presses the re-run: the tester in `testing`, the reviewer in `reviewing`, the implementer in `implementing`.";
+const TWO_HOLDERS_PRESS_THE_RERUN =
+  "The holders of the re-run are the reviewer in `reviewing` and the implementer while it holds `implementing`.";
+
+/**
+ * The sentence of `## Who may re-run` that keeps the tester out of it, pinned whole and literally.
+ * The daemon names every check of a settlement to the worker of the issue's current phase, the
+ * tester in `testing` among them, so a tester that lost this sentence and read the page would
+ * take a red it was told of for one it must press or fail its round on.
+ */
+const TESTER_PRESSES_NOTHING =
+  "The tester presses nothing: it reads no CI, and a red at the head does not end its round.";
 
 /**
  * The sentence of `## Who may re-run` that limits the reviewer's re-run, pinned whole and
@@ -905,46 +1040,44 @@ const A_FAILING_TEST_IS_NO_EXTERNAL_CAUSE =
   "A failing test is never the second case, whatever package holds it: one that is not the change's takes the one re-run on its first red, and on its second red it is the round's failure, as *Red again* above says, never an external cause.";
 
 /**
- * The four pointers to the page, each pinned whole and literally: the worker skill's own
- * References line, which is how a role reaches the page at all; the merge gate's; and the two in
- * the pull-request body reference — the one in `## Never waiting on CI`, beside the phase
- * holder's one re-run, and the one in the tester's evidence bullet, where the prohibition this
- * change retired used to stand. A reference is reached only through a link from somewhere a role
- * reads, so a lost pointer leaves the rule shipped and unread: the role goes on from the text
+ * The three pointers to the page, each pinned whole and literally: the worker skill's own
+ * References line, which is how a role reaches the page at all, and which sends only the two
+ * holders there; the merge gate's; and the pull-request body reference's in `## Never waiting on
+ * CI`, beside the holders' one re-run. A reference is reached only through a link from somewhere a
+ * role reads, so a lost pointer leaves the rule shipped and unread: the role goes on from the text
  * around the gap, which tells it to finish its round on a red the change never made.
  */
 const SKILL_LINKS_THE_PAGE =
-  "A check red at the head of the pull request, in the phase you hold: `skill://legion-worker/references/red-at-the-head.md`.";
+  "A check red at the head of the pull request, while you hold `reviewing` or `implementing`: `skill://legion-worker/references/red-at-the-head.md`.";
 const MERGE_GATE_POINTS_AT_THE_PAGE =
   "A required check that is red at the head is a different case, which `skill://legion-worker/references/red-at-the-head.md` decides.";
 const NEVER_WAITING_POINTS_AT_THE_PAGE =
   "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: which red is the change's, which a pass in the role's own pod does not move; that the counted set must report the check before any re-run, however the role learned of the red; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.";
-const TESTER_EVIDENCE_POINTS_AT_THE_PAGE =
-  "A red at the head that the change did not make is the tester's to re-run once, and `skill://legion-worker/references/red-at-the-head.md` holds the rule.";
-const TESTER_READS_THE_HEAD =
-  "The tester reads the head's checks on GitHub before any verdict, whether or not a check of the issue carries `ci_check`.";
 
 /**
- * The same rulings where the tester reads them outside the page, each pinned whole and literally:
- * the tester's evidence bullet, whose wait is for a red the counted set does not report however
- * the tester learned of it, and whose red is the change's by the page's reading, whatever a run in
- * the tester's own pod shows; and the re-run in `## Never waiting on CI`, whose wait has the
- * page's bound where no settlement comes.
+ * The same rulings where a role reads them outside the page, each pinned whole and literally: the
+ * re-run in `## Never waiting on CI`, whose holders are the page's two and whose wait has the
+ * page's bound where no settlement comes; and the tester's evidence bullet, which has the tester
+ * let CI do its job in Sami's words (dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3).
+ * The tester's own pins that bullet carried until then — that it reads the head's checks before
+ * any verdict, re-runs a red the change did not make, waits on that re-run, and keeps a local pass
+ * from moving the page's reading — went with the rule they pinned, and `retiredTesterCiReads`
+ * refuses their sentences.
  */
-const TESTER_WAITS_HOWEVER_IT_LEARNED =
-  "and a red the counted set does not yet report `completed`, however the tester learned of it,";
-const TESTER_LOCAL_PASS_MOVES_NOTHING =
-  "That page's *Which red is the change's* decides whose red it is, and a pass in the tester's own pod does not move it.";
+const NEVER_WAITING_NAMES_THE_HOLDERS =
+  "by the reviewer in `reviewing` or the implementer while it holds `implementing`, after it records the failure";
 const RERUN_WAIT_IS_BOUNDED =
   "(where no settlement comes, the bound is the phase reminder or the daemon's backstop: it reads the counted set once then, and waits again on a re-run still queued or in progress)";
+const TESTER_LETS_CI_DO_ITS_JOB =
+  "the tester lets CI do its job, boots and runs the app's real workflows like a user would, and reads no check run, re-runs no CI and waits on no CI";
 
 /**
  * What the four files INFRA-1303 wrote or changed get wrong about a red at the head: the worker
  * skill (`WORKER_SKILL`), the page that holds the rule (`RED_AT_THE_HEAD`), the merge gate
  * (`MERGE_GATE`) and the pull-request body reference (`PR_BODY`), each read by its caller. These
  * pins alone hold the change's positive half; the prohibitions it retired are refused across
- * whole partitions by `retiredRerunProhibitions`, so nothing here carries a retired claim of its
- * own.
+ * whole partitions by `retiredRerunProhibitions` and `retiredTesterCiReads`, so nothing here
+ * carries a retired claim of its own.
  */
 export function redAtTheHeadFaults(pages: {
   workerSkill: string;
@@ -957,7 +1090,7 @@ export function redAtTheHeadFaults(pages: {
       {
         sentence: SKILL_LINKS_THE_PAGE,
         because:
-          "a reference the skill does not link is a page no role opens, and a read by path stops at 300 lines",
+          "a reference the skill does not link is a page no role opens, and a read by path stops at 300 lines; one that sends every phase there sends the tester to a red that is not its own",
       },
     ]),
     ...missingSentenceFaults(
@@ -965,9 +1098,14 @@ export function redAtTheHeadFaults(pages: {
       pages.redAtTheHead,
       [
         {
-          sentence: PHASE_HOLDER_PRESSES_THE_RERUN,
+          sentence: TWO_HOLDERS_PRESS_THE_RERUN,
           because:
             "a page that grants the re-run to nobody leaves every role that reads a red free to press it",
+        },
+        {
+          sentence: TESTER_PRESSES_NOTHING,
+          because:
+            "a tester told of a red at the head presses it, or fails its round on it, for a red the change never made",
         },
         {
           sentence: REVIEWER_LEAVES_AN_UNREQUIRED_CHECK,
@@ -1070,28 +1208,19 @@ export function redAtTheHeadFaults(pages: {
           "a role reading `## Never waiting on CI` reaches the spent-re-run test and the reading of whose red it is only through this pointer",
       },
       {
-        sentence: TESTER_EVIDENCE_POINTS_AT_THE_PAGE,
+        sentence: NEVER_WAITING_NAMES_THE_HOLDERS,
         because:
-          "a tester reading its evidence rule reaches the re-run rule only through this pointer",
-      },
-      {
-        sentence: TESTER_READS_THE_HEAD,
-        because:
-          "a tester whose issue has no `ci_check` check read 'by hand it drives only the changed behaviour' beside 'except a `ci_check` job' as no CI to read, and passed a red head it never saw",
-      },
-      {
-        sentence: TESTER_WAITS_HOWEVER_IT_LEARNED,
-        because:
-          "a tester that read a failed job off the run's own status presses while the counted set does not report it",
-      },
-      {
-        sentence: TESTER_LOCAL_PASS_MOVES_NOTHING,
-        because: "a tester whose test passes in its own pod re-runs a red the change made",
+          "a role reading `## Never waiting on CI` takes the re-run for the phase's, and the tester in `testing` presses it",
       },
       {
         sentence: RERUN_WAIT_IS_BOUNDED,
         because:
           "a role whose settlement never comes waits forever, or judges a lane still running at the reminder",
+      },
+      {
+        sentence: TESTER_LETS_CI_DO_ITS_JOB,
+        because:
+          "a tester reading its evidence rule without it reads CI again, and fails its round on a red the change never made",
       },
     ]),
   ];
@@ -1120,6 +1249,30 @@ export function censusFaults(markdown: string): string[] {
       sentence: CONTROLLER_ACTS_ON_AN_UNTRACKED_TEST,
       because:
         "a controller that acts on every green re-run comments the occurrence a second time on the issue the role already commented",
+    },
+  ]);
+}
+
+/**
+ * The tester's line of `## What each role does`, pinned whole and literally. A `ci_check` check's
+ * result is the one Dispatch derives from its CI run, and Dispatch refuses any role's result for
+ * it (`409 CHECK_PROVED_BY_CI`); the reviewer reads it before it approves. The line told the
+ * tester to put such a check in its `failures` on a failed derived result until the tester came to
+ * read no CI (the architect, 2026-11-20, on Sami's decision
+ * dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3), so a tester that lost this
+ * line fails its round on CI again.
+ */
+const TESTER_LEAVES_A_CI_CHECK_TO_CI =
+  "The tester runs and records only the checks with no `ci_check`. It neither reads nor records a `ci_check` check's derived result, which is CI's: the reviewer reads it before it approves.";
+
+/** What `markdown` — skills/legion-worker/references/ci-checks.md — gets wrong about the tester. */
+export function testerCiCheckFaults(markdown: string): string[] {
+  const file = "skills/legion-worker/references/ci-checks.md";
+  return missingSentenceFaults(file, markdown, [
+    {
+      sentence: TESTER_LEAVES_A_CI_CHECK_TO_CI,
+      because:
+        "a tester that reads a `ci_check` check's derived result puts a red of CI's in its failures and fails its round on it",
     },
   ]);
 }
