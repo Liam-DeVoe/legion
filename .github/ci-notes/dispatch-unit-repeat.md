@@ -52,7 +52,7 @@ holds.
 | Lane | Legs whose Bun ended by itself | Legs stopped before Bun ended | Slowest | Old step budget |
 | --- | --- | --- | --- | --- |
 | web | 29, 726 to 1,954 s | 16, by the budget at 972 or 973 s, estimated at most 1,133 s | 1,954 s, run 44759854373, round 1 | 16 minutes |
-| web-cold | 43, 94 to 158 s; 9 of them past the budget, so their steps failed with no row failed | 2, by the budget at 132 and 133 s | 158 s, run 44751677485, round 1 | 2 minutes |
+| web-cold | 43, 94 to 158 s; 9 of them past the budget, so their steps failed with no row failed | 2, both by the budget at 132 s | 158 s, run 44751677485, round 1 | 2 minutes |
 | harness | 44, 1,075 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,496 s, run 44759866208, round 2 | 30 minutes |
 
 The web lane grew within the day: main's `a8067fcd51` (11:41Z) added
@@ -118,35 +118,85 @@ own deadline comes first, inside its budget, and the tool is told of it:
   preload appends a line to `<out>/progress.jsonl` as each worker loads a test file, and as each
   run of the file and each row of the run begins and ends.
 - On the SIGTERM the tool reads that file first, and which of its workers are alive. Then it passes
-  the signal on to Bun, and kills Bun 10 s later if Bun has not ended (Bun 1.4.4 ended 0.08 s after
-  a SIGTERM with a worker spinning in a row that never yields).
-- Once Bun has ended, for each file a live worker was in, the tool runs that file alone under the
-  leg's seed with the preload failing every row before its body, which prints the file's rows by
-  name in the order the seed runs them (measured against the order the bodies ran in, under five
-  seeds). That run is killed at 20 s.
+  the signal on to `bun run`, which passes it on to Bun's test process. Bun runs in a process group
+  of its own (`detached`), and the tool kills that group whole if Bun has not ended by the end of
+  its grace after the stop, and again once it has ended, so that no worker outlives the tool.
+- Once Bun has ended, for each file a live worker was in that had begun a row, the tool runs that
+  file alone under the leg's seed with the preload failing every row before its body, which prints
+  the file's rows by name in the order the seed runs them (measured against the order the bodies
+  ran in, under five seeds). That run still runs the file's own code and hooks, so it runs in a
+  process group of its own too, which the tool kills whole at the end of its bound, and again once
+  it has ended.
 - The report, the step summary and one `::error` for each such file name the file, the run of it
   and the row of that run by its place and its name, and give the command that runs the file again
-  in that order. The tool exits 1, and `<out>/progress.jsonl` stays in the leg's artifact.
+  in that order. The report also says how Bun and each names run ended against their bounds. The
+  tool exits 1, and `<out>/progress.jsonl` stays in the leg's artifact.
 
 A stopped leg's error then reads, for a planted row that spins for ever in a copy of the package:
 
 ```text
-::error file=packages/dispatch/e2e/__tests__/planted.test.ts,title=Running when the leg was stopped::e2e/__tests__/planted.test.ts: in row 3, "planted spins", of run 1 of 2, 9.6 s since it began, when SIGTERM stopped the leg after 9.8 s (seed 2743885038). Run it again from packages/dispatch: bun run test:harness e2e/__tests__/planted.test.ts --seed=2743885038
+::error file=packages/dispatch/e2e/__tests__/planted.test.ts,title=Running when the leg was stopped::e2e/__tests__/planted.test.ts: in row 1, "planted spins", or a hook after it, of run 1 of 2, 8.7 s since it began, when SIGTERM stopped the leg after 9.0 s (seed 2563570073). Run it again from packages/dispatch: bun run test:harness e2e/__tests__/planted.test.ts --seed=2563570073
 ```
 
 That reading is the step's own `run:` text with the harness leg's values, two reruns and a 10 s
 deadline, over that copy, under a 40 s `timeout` that stands in for GitHub's step budget: the leg
-ended after 11 s and named the row. The workflow before this deadline, at main `1c7c825367`, ran
+ended after 12 s and named the row. The seed is drawn afresh for each run, so the row's place
+moves with it. The workflow before this deadline, at main `1c7c825367` and at `5570d0acd2`, ran
 the same copy to the whole 40 s and printed no error and no report. `unit-repeat.test.ts` drives
 the same stop through the tool on every change to it.
 
-What a stop cannot name. A file whose run had not begun is named as being in its own code, which
-Bun runs again for each run of it; a file between two rows is named with the row that ended last;
-and where the run that reads a file's names fails or reaches its 20 s, the row is named by its
-place alone and the report says why its name was not read. A file of a worker that was gone at
-the stop is not named as running. Bun's junit file gives a `(worker crashed)` testcase to each
-file whose results it had not taken in when the stop came: the file in hand, and also, measured
-on 2026-11-20, a file whose worker had ended its rows and exited a moment before. That testcase
-cannot tell a worker that crashed before the stop from one the stop ended, so after a stop the
-report lists each such file as one whose results Bun did not report, in the stop's own failure,
-and makes no failing row of it.
+What a stop cannot name, and what it names with care:
+
+- A file whose run had not begun is named as being in its own code, which Bun runs again for each
+  run of it, and one whose run had begun and no row of it as being in a `beforeAll` hook.
+- A row's `end` is written by the preload's `afterEach`, which Bun 1.4.4 runs after the file's own
+  `afterEach` hooks and which a throwing one of them skips (both measured on 2026-11-20). So in a
+  file that runs one row at a time, a row counts as ended when the next row of its run begins, and
+  the last row begun with no `end` is named as "row N, or a hook after it". A file whose rows have
+  all ended is named with the row that ended last, as being after it, in a hook or the code around
+  its rows.
+- A file that runs its rows at once (its source names `.concurrent`) is named with how many rows
+  had begun and not ended, and no single row, since a `start` there says nothing of the rows
+  beside it.
+- Where the run that reads a file's names fails or reaches its bound, the row is named by its
+  place alone and the report says why its name was not read.
+- A file of a worker that was gone at the stop is not named as running. Bun's junit file gives a
+  `(worker crashed)` testcase to each file whose results it had not taken in when the stop came:
+  the file in hand, and also, measured on 2026-11-20, a file whose worker had ended its rows and
+  exited a moment before. That testcase cannot tell a worker that crashed before the stop from one
+  the stop ended, so after a stop the report lists each such file as one whose results Bun did not
+  report, in the stop's own failure, and makes no failing row of it.
+
+### The two bounds of a stop
+
+A stop has two bounds of its own, each a hang guard that decides no verdict:
+
+- the grace, how long Bun gets to end after the stop, before the tool kills its group: 10 s;
+- the names bound, how long a run that reads a file's names gets, before the tool kills its group:
+  20 s.
+
+A caller sets them with `DISPATCH_UNIT_REPEAT_STOP_GRACE_MS` and
+`DISPATCH_UNIT_REPEAT_NAMES_BOUND_MS`, as `unit-repeat.test.ts`'s stop rows do, so that neither
+decides a row's verdict. Each default is at least three times the largest reading of its kind.
+
+The readings were taken on 2026-11-20, from 19:42Z to 19:58Z, on the dev box, at its own load of
+383 to 671. They come from nine legs, three of each lane, each in this tree's
+`packages/dispatch`. Each leg ran `timeout --foreground --signal=TERM <deadline> bun run
+test:repeat --lane <lane>` with the matrix's reruns, on 4 CPUs (`taskset`) with 8 busy loops on
+those CPUs. The deadline was 90 s for web, 60 s for web-cold and 150 s for harness, so each leg was
+stopped with 3 or 4 files running. Both bounds were set to 10 minutes, so that no bound cut a
+reading short.
+
+| Lane | Bun's end after the stop, ms | Each names run, ms |
+| --- | --- | --- |
+| web | 423, 636, 421 | 1,461, 1,550, 1,929, 1,629; 1,011, 1,922, 1,842, 1,556; 1,164, 1,324, 1,744, 2,191 |
+| web-cold | 147, 86, 180 | 2,031, 2,017, 1,283; 1,278, 2,746, 1,325; 1,436, 3,743, 2,132 |
+| harness | 745, 966, 683 | 509, 267, 268; 519, 344, 4,178; 106, 57, 83, 375 |
+
+- **The grace:** Bun ended at most 966 ms after the stop. 3 × 966 ms is 2.9 s, and the grace is
+  10 s.
+- **The names bound:** a names run took at most 4,178 ms, with 3 or 4 running at once. 3 × 4,178 ms
+  is 12.5 s, and the bound is 20 s.
+- **Inside the kill-after:** the grace, the names bound and the 2 s the tool gives a pipe to close
+  come to 32 s, inside the 60 s that the step's `timeout --kill-after` gives the tool after the
+  stop.

@@ -5,16 +5,20 @@
  *  Where `DISPATCH_UNIT_REPEAT_PROGRESS` names a file, each line it appends there is one JSON
  *  object: an `event`, the `load` it belongs to, and `at`, the time in milliseconds since the
  *  epoch. The `load` event also carries `file`, the test file's path from the directory Bun runs
- *  in, as the junit file writes it, and `pid`, the worker that runs it. Bun 1.4.4 runs this file
- *  once for each test file a worker loads, and not again for a rerun of it
+ *  in, as the junit file writes it; `pid`, the worker that runs it; and `atOnce`, whether the
+ *  file's source names `.concurrent`, so that it may run its rows at once. Bun 1.4.4 runs this
+ *  file once for each test file a worker loads, and not again for a rerun of it
  *  (web/src/__tests__/hold-lazy-loads.ts measured the same of its own preload), so one `load`
  *  covers every rerun of its file:
  *
  *  - `load`: the worker began the file;
  *  - `run`: a run of the file began, before the file's own `beforeAll` hooks (this file's hooks
  *    are registered before the test file's own, and Bun runs them first);
- *  - `start` and `end`: a row began, before the file's own `beforeEach` hooks, and ended, after
- *    its own `afterEach` hooks;
+ *  - `start`: a row began, before the file's own `beforeEach` hooks;
+ *  - `end`: a row ended, after the file's own `afterEach` hooks. A throwing `afterEach` of the
+ *    file skips it (both measured on Bun 1.4.4 on 2026-11-20), so a missing `end` does not show
+ *    that a row is still running: the reader in e2e/tools/unit-repeat.ts counts a row of a file
+ *    that runs one row at a time as ended when the next one starts;
  *  - `done`: the run ended, after the file's own `afterAll` hooks.
  *
  *  Every line is one `appendFileSync` of under 200 bytes, so lines the workers write at once do
@@ -28,7 +32,7 @@
  *  nothing and registers no hook.
  */
 import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
 
 const progress = process.env.DISPATCH_UNIT_REPEAT_PROGRESS;
@@ -49,6 +53,7 @@ if (process.env.DISPATCH_UNIT_REPEAT_NAMES_ONLY === "1") {
       at: Date.now(),
       file: relative(process.cwd(), Bun.main),
       pid: process.pid,
+      atOnce: /\.concurrent\b/.test(readFileSync(Bun.main, "utf8")),
     })}\n`
   );
   beforeAll(() => write("run"));
