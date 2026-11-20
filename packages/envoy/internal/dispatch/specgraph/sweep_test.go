@@ -797,17 +797,17 @@ func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte,
 		change := changed[name]
 		file, held := fsys[name]
 		if !held {
-			t.Fatalf("the sweep changed %s at %s, and the scenario holds no file of that name", name, treePointer(change.place))
+			t.Fatalf("the sweep changed %s at %q, and the scenario holds no file of that name", name, treePointer(change.place))
 		}
 		var got any
 		if err := json.Unmarshal(file.Data, &got); err != nil {
-			t.Fatalf("the sweep changed %s at %s, and the file is no JSON: %v", name, treePointer(change.place), err)
+			t.Fatalf("the sweep changed %s at %q, and the file is no JSON: %v", name, treePointer(change.place), err)
 		}
 		want := change.on(t, fileTree(t, base, name))
 		if at, differ := treeDiff(got, want, nil); differ {
 			x, xHeld := treeAt(got, at)
 			w, wHeld := treeAt(want, at)
-			t.Fatalf("the sweep changed %s at %s, and the file differs from that change at %s: it holds %s there (held %t), where it should hold %s (held %t)",
+			t.Fatalf("the sweep changed %s at %q, and the file differs from that change at %q: it holds %s there (held %t), where it should hold %s (held %t)",
 				name, treePointer(change.place), treePointer(at), encodeTree(t, x), xHeld, encodeTree(t, w), wHeld)
 		}
 	}
@@ -884,7 +884,7 @@ func (c treeChange) on(t *testing.T, v any) any {
 			}
 		}
 	}
-	t.Fatalf("the sweep means a change at %s, where the base holds no member or element", treePointer(c.place))
+	t.Fatalf("the sweep means a change at %q, where the base holds no member or element", treePointer(c.place))
 	return nil
 }
 
