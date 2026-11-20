@@ -20,7 +20,7 @@ It is a `DispatchGatewayError`, whose `fromDispatch` is false.
 Its message names the method and the URL with its query, and leaves out a user and a password that the URL may carry.
 The bearer is a header, so no message names it.
 The message then names the status and the reason phrase, a one-line plain-text excerpt of the body, and what asking again can do.
-The excerpt drops scripts, styles and tags, and it reads at most the first 64 KiB of the body, in linear time.
+The excerpt drops scripts, styles and tags, and it reads at most the body's first 65,536 characters (`EXCERPT_SCAN_LIMIT` in `excerpt.ts`), in linear time.
 In the excerpt and in the reason phrase, the client redacts the value after `Authorization:` or `Bearer`.
 It also redacts each run of 8 or more characters of its own bearer and of each token it presented lately (`SentTokens`), and a shorter token only whole.
 So a copy of a token that is cut short, split by markup or overlapped by another copy leaves no piece behind.
@@ -47,14 +47,14 @@ Dispatch's API routes answer no request with a 3xx, so a 3xx is a refusal of wha
 It is a `DispatchGatewayError`, whatever its body is.
 Its message names the request as for any gateway's answer, then the status, the reason phrase and the origin that the redirect points at: `answered 302 (a redirect to <origin>, which this client does not follow)`.
 That origin is the scheme and the host of the `Location`, with a port that is not the scheme's own (`redirectOrigin` in `excerpt.ts`).
-The message holds nothing of the target's path, query, fragment or user.
+That origin holds nothing of the target's path, query, fragment or user.
 It names the body as it names any gateway's body: one plain-text line, every token the client presented redacted.
 The `/healthz` probe reads no 3xx as Dispatch's word, and reads no body of one.
 
 The listener's client refuses a redirect the same way.
 An `EnvoyApiError` of a 3xx names the method, the URL without its user and password, the status and the origin (`transport.ts`).
-It names nothing of the body.
-The pool identity of `@legion/broker-client` names a 3xx of the security token service by its status alone, as `HTTP <status>`.
+It then names the body as one plain-text line, every token the client presented redacted, unless the body is the listener's own error JSON, whose error it names.
+The pool identity of `@legion/broker-client` names a 3xx of the security token service by its status, as `HTTP <status>`, with the Google error code that a JSON body names (`googleErrorCode`).
 The GitHub Actions identity, of `@legion/broker-client` and of the Go broker client, follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
 
 ## A path value that names nothing
@@ -82,7 +82,7 @@ Where the call saw the keyed layer judge the write, the message says that Dispat
 It then says to read the write back before you send it again, because a new command sends it under a new key.
 Otherwise it says to check whether the write took effect before you send it again.
 
-A write that ends with no answer at all is a `DispatchWriteUnsettledError` too, and its message names the request.
+A write that ends with no answer at all once an attempt may have landed is a `DispatchWriteUnsettledError` too, and its message names the request.
 The client cut off its last attempt for silence ("made no progress for 20 s, so it was cut off").
 Or the call's deadline ended it, while an attempt was out or after one that may have reached Dispatch.
 The message then says that the write "had no definitive answer when its deadline ended it".
@@ -100,11 +100,11 @@ It is the stored result, a replay, a landed answer, or the handler's refusal.
 An echoed 401 is no verdict, because it can come after the handler committed.
 `422 KEY_REUSED` is no verdict either, because it says only that this request did not run.
 A no-route answer, Dispatch's check of the token, a dead token or a credential that could not present proves nothing of the earlier attempt.
-The client throws the caller's own cancellation as it is.
+The client throws the caller's own cancellation as it is only before anything of the write may have landed; after that, the cancellation is the `last` of a `DispatchWriteUnsettledError` that says the caller stopped the write with no definitive answer.
 
 `writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown.
 It does for a `DispatchWriteUnsettledError`, for a gateway's answer with `mayHaveReachedDispatch`, and for Dispatch's own 5xx.
-It also does for a transport failure after an attempt that may have reached Dispatch, which the client throws as it is.
+It also does for a transport failure after an attempt that may have reached Dispatch, which the client throws as a `DispatchWriteUnsettledError` with that failure as its `last`.
 A connection that never opened reached nothing: the host refused it, its name did not resolve, or no route reached the host.
 A request that Dispatch's check of its broker token turned away before any handler ran reached nothing too.
 Those answers are `429 BROKER_TOKEN_RATE_LIMITED` and `503 BROKER_UNAVAILABLE` (`tokenNotChecked`).

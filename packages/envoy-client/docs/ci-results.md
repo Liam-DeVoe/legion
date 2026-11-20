@@ -36,9 +36,10 @@ proxy's page, a server that is not Dispatch, a proxy or a cache that answers one
 another's, or a proxy that drops the header, so the result may be stored, and a second run is safe.
 [`write-answers.md`](write-answers.md) gives these rules for every write. No request of the command
 follows a redirect, the request for the runner's OIDC token included: a redirect is a refusal of
-whatever answered. The line of a redirect from Dispatch's place names the origin that the redirect
-points at, its scheme and host, never its path or query, and the body as one line with every token
-the command presented redacted. The runner's endpoint's line names the status alone, and nothing of
+whatever answered. The line of a redirect from Dispatch's place names the origin that its
+`Location` points at, its scheme and host, never that target's path or query, and then the body as
+one line with every token the command presented redacted, as any other body that is not Dispatch's
+is named. The runner's endpoint's line names the status alone, and nothing of
 the body. The command exits 1. A write that reached Dispatch with no answer that says whether it
 stored the result (`writeOutcomeUnknown`) prints `{"write_outcome_unknown":"<code>"}`, the code of
 its last failure such as `ECONNRESET`, `HTTP_200` or `TimeoutError`, and exits 1: the result may be
@@ -55,8 +56,10 @@ and the call asks again no sooner (`TradeRetryingError.retry`); Dispatch's answe
 after their `Retry-After`, or a second. The whole call has one bound, 60 s from its start: one
 timeout, made where the call starts, is the signal every await of it runs under, its waits on the
 runner's token request and the broker's trade included (`ResultBound`); the trade itself runs under
-its own 30 s bound. The write client's deadline is that signal, its asks again under the key and
-the command's rounds start no later than 7 s before its end, a reserve greater than the 5 s
+its own 30 s bound. The write client is given that timeout as its `signal` and the same 60 s as its
+own deadline (`deadlineMs`), from which it gives each credential presentation its time less the
+request's reserve; its asks again under the key and the command's rounds start no later than 7 s
+before the bound ends, a reserve greater than the 5 s
 Dispatch's check of a token waits on the broker, and a call turned away until then prints which
 turned it away with the last answer, its code named, and exits 1, with no `write_outcome_unknown`:
 only an attempt that may have reached a handler prints that line. An attempt the deadline ends

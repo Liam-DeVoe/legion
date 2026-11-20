@@ -661,17 +661,18 @@ with no attempt started more than 55 s after the first (`inFlightWithinMs`), unt
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
 its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
 repeat sends its whole body again. No attempt of any write starts more than 55 s after the client
-was made, since its 60 s deadline counts from there; a caller with a bound of its own hands the
-client that bound's one timeout as `deadline`, and an `inFlightWithinMs` inside it, as `dispatch
-result --project` does. The client hands its signal to the credential for each request
-(`RequestCredential.headers`' `signal`), so the request's wait on a broker credential's trade ends
-at the same deadline; the trade itself runs under its own 30 s bound, and goes on for every other
-request that shares it. The numbers come from the 3,612 `dispatch`
+was made, since its 60 s deadline counts from there; a caller with a bound of its own names that
+bound as the client's `deadlineMs`, with its timeout as `signal` and an `inFlightWithinMs` inside
+it, as `dispatch result --project` does. The client gives the credential for each request
+(`RequestCredential.headers`' `signal`) its own deadline less the request's reserve, so the
+request's wait on a broker credential's trade ends inside that bound; the trade itself runs under
+its own 30 s bound, and goes on for every other request that shares it. The numbers come from the
+3,612 `dispatch`
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
 that. How a write ends is one transition table (`write-outcome.ts`, `writeStep`), and the write
-loop (`#write`) decides nothing else. A write is in one of two states: nothing sent, or may have
+loop (`#sendWrite`) decides nothing else. A write is in one of two states: nothing sent, or may have
 landed. An attempt may have landed when it got a 5xx or `409 KEY_IN_FLIGHT`, was cut off for
 silence (an upload's included), failed in transport after it went out (a reset after Dispatch
 read it), its answer's body broke off or was ended by the deadline or the caller's stop, or it was
@@ -681,7 +682,7 @@ body is read whole. From "may have landed", only such a 2xx or a refusal Dispatc
 judged for the key (the key echoed back) settles the write. A 2xx that is no answer of Dispatch's
 settles nothing from either state: one whose body is empty or not typed JSON (a captive portal's
 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205), whatever the process knows,
-and one that carries no key back from a Dispatch this process knows runs the keyed layer. Every
+and one that carries no key back, or another request's key, whatever the process knows. Every
 other end — a 3xx, a page something in Dispatch's place wrote, a refusal Dispatch's auth made
 before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`, a second `401
 BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
