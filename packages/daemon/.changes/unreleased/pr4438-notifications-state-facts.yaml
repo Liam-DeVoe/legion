@@ -9,11 +9,13 @@ body: |-
   status in state `failure` or `error` (`not_passed_statuses`), and count the checks and statuses
   that passed. A text about a person's act carries the person's words, up to 4,000 UTF-16 units of
   one act or 1,000 of each of several, in a block of its own after the facts; the intake keeps those
-  words on the rows the texts are built from (migration
-  `20261118092930_person_words`). A notice is published with its kind's urgency, and a `low` text
-  wakes no released pod. Of the role messages to a role whose pod is released, only a `low` one is
-  left unpublished; a `med` one, such as a design gate's move, is published and wakes the role. A
-  text that a project's pause held, a `low` one too, launches its reader at the resume, and the
-  pause's two notices to the controller (`project-paused`, `project-resumed`) are records on the
-  list. A rollback past this release is a roll forward (docs/kubernetes.md, "Rolling back the
-  release that carries a person's words in the daemon's texts").
+  words on the rows the texts are built from (migration `20261118092930_person_words`). A notice is
+  published with its kind's urgency, and a `low` text wakes no released pod. Of the role messages to
+  a role whose pod is released, only a `low` one is left unpublished; a `med` one, such as a design
+  gate's move, is published and wakes the role. A text that a project's pause held, a `low` one too,
+  launches its reader at the resume, and the pause's two notices to the controller
+  (`project-paused`, `project-resumed`) are records on the list. The update ask names its
+  background-work step (`background_work`) and states when an answer brings the round's end forward
+  (`every_answer_brings_it_forward: when_no_turn_or_background_work`). A rollback past this release
+  is a roll forward (docs/kubernetes.md, "Rolling back the release that carries a person's words in
+  the daemon's texts").
