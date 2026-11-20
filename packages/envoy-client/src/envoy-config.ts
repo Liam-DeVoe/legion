@@ -352,7 +352,41 @@ const processGlobal = globalThis as typeof globalThis & {
 const commandOutcomes: Map<string, KeptOutcome> = processGlobal[COMMAND_OUTCOMES] ?? new Map();
 processGlobal[COMMAND_OUTCOMES] = commandOutcomes;
 
+/** The signals that end a process, which `watchStopSignals` holds while a `!` command runs. */
+const stopSignals = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
+
+/** Whether this process has armed `watchStopSignals`, kept on `globalThis` as COMMAND_OUTCOMES is:
+ * two bundles of this module in one process, each with a listener of its own, would each read the
+ * other's as a host's and neither would end the process. */
+const STOP_WATCH: unique symbol = Symbol.for("legion.envoy-config.stop-watch.v1");
+const stopWatchGlobal = globalThis as typeof globalThis & { [STOP_WATCH]?: true };
+
+/** Arms, once per process, a listener for each of `stopSignals`, for the `!` commands it runs. A
+ * command runs in a session of its own and is waited for synchronously (`runCommand`), so nothing
+ * of this process runs while it does, and no signal sent to this process reaches it: without a
+ * listener, a Ctrl-C, a SIGTERM, a closing terminal's SIGHUP or its quit key's SIGQUIT would end
+ * this process by its default action at once, and the command and whatever it started would run
+ * on with nothing left to end them, neither the timeout, which this process enforces, nor the kill
+ * of the command's group that follows the wait. With a listener the signal waits until the wait is
+ * over: the command has then exited or been killed at COMMAND_TIMEOUT_MS, its group has been
+ * killed, and the listener ends this process with the signal's own default action, sent again once
+ * the listener is off. A repeat in that time is held the same way and changes nothing. Where another
+ * listener of this process answers the same signal, such as a host's own, this one leaves the
+ * signal to it. Outside a command the listener ends the process as the default action would have,
+ * one turn of the event loop later. */
+function watchStopSignals(): void {
+  if (stopWatchGlobal[STOP_WATCH]) return;
+  stopWatchGlobal[STOP_WATCH] = true;
+  const onStopSignal = (signal: NodeJS.Signals) => {
+    if (process.listenerCount(signal) > 1) return;
+    process.off(signal, onStopSignal);
+    process.kill(process.pid, signal);
+  };
+  for (const signal of stopSignals) process.on(signal, onStopSignal);
+}
+
 function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): CommandOutcome {
+  watchStopSignals();
   const childEnv: Record<string, string> = {};
   for (const [name, variable] of Object.entries(env)) {
     if (variable !== undefined) childEnv[name] = variable;

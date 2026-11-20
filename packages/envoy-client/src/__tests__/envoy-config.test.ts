@@ -11,7 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -1335,6 +1335,90 @@ describe("a ! command in envoy.json", () => {
     expect(envoySettings(env, config)).toMatchObject({ enabled: false, error: null });
     expect(existsSync(runs)).toBe(false);
   });
+});
+
+// A signal to the process that reads envoy.json while a `!` command runs: a Ctrl-C, a SIGTERM, a
+// closing terminal's SIGHUP, its quit key's SIGQUIT, and a second signal right after the first.
+// The command runs in a session of its own and is waited for synchronously, so the signal reaches
+// the reader alone, and its default action would end the reader there and leave the command's
+// group running, with nothing left to kill it. The reader instead holds the signal until the
+// command has exited and its group has been killed, and then ends by a signal it was sent: two
+// held at once are handed on in the kernel's order, not the order they came. The command leaves
+// `sleep 279` in its group, a command line no other test of this repository has,
+// and exits 2 s later. The reader is a bun script of its own under a shell that sets the core size
+// to 0, so a SIGQUIT that met its default action would write no core into the tree.
+describe("a ! command in envoy.json on a signal", () => {
+  const seconds = "279";
+  const sleepRuns = (pid: number) => {
+    try {
+      return (
+        readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ") ===
+        `sleep ${seconds}`
+      );
+    } catch {
+      return false;
+    }
+  };
+  /** Reads `holds` every 50 ms until it answers true, up to `ms`: a state another process reaches
+   * raises no event this row can await. */
+  const until = async (holds: () => boolean, ms: number) => {
+    for (const deadline = performance.now() + ms; !holds(); await Bun.sleep(50)) {
+      if (performance.now() > deadline) return false;
+    }
+    return true;
+  };
+  for (const signals of [
+    ["SIGINT"],
+    ["SIGTERM"],
+    ["SIGHUP"],
+    ["SIGQUIT"],
+    ["SIGINT", "SIGHUP"],
+    ["SIGTERM", "SIGQUIT"],
+  ] as const) {
+    test(`a ${signals.join(" and then a ")} kills what the command started and then ends the reader by it`, async () => {
+      const home = tempDir();
+      const pidFile = path.join(home, "sleep.pid");
+      const file = writeFile(path.join(home, "envoy.json"), {
+        dispatch: {
+          ...dispatchOn,
+          token: `!sleep ${seconds} & echo $! > ${pidFile}; sleep 2; echo ${fixtureSecret("signal")}`,
+        },
+      });
+      const reader = writeFile(
+        path.join(home, "reader.ts"),
+        `import { dispatchSettings } from ${JSON.stringify(path.join(import.meta.dir, "../dispatch-config"))};
+import { readEnvoyConfig } from ${JSON.stringify(path.join(import.meta.dir, "../envoy-config"))};
+const env = { HOME: process.env.HOME, PATH: process.env.PATH };
+dispatchSettings(env, readEnvoyConfig(${JSON.stringify(file)}, env, { cwd: ${JSON.stringify(home)} }));
+`
+      );
+      const run = Bun.spawn(
+        ["/bin/sh", "-c", 'ulimit -c 0 && exec "$@"', "sh", process.execPath, reader],
+        { env: commandEnvironment(home), stdout: "pipe", stderr: "pipe" }
+      );
+      let pid = 0;
+      try {
+        const ran = () => {
+          pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : 0;
+          return sleepRuns(pid);
+        };
+        expect(await until(ran, 10_000), "the ! command never ran").toBe(true);
+        for (const signal of signals) run.kill(signal);
+        const [stderr, code] = await Promise.all([new Response(run.stderr).text(), run.exited]);
+        expect(
+          await until(() => !sleepRuns(pid), 5_000),
+          `the command's sleep (pid ${pid}) still runs after the reader ended (exit ${code}, signal ${run.signalCode}): ${stderr}`
+        ).toBe(true);
+        expect(
+          signals.map((signal) => 128 + osConstants.signals[signal]),
+          `the reader ended with ${code}, by no signal it was sent: ${stderr}`
+        ).toContain(code);
+      } finally {
+        if (pid !== 0 && sleepRuns(pid)) process.kill(pid, "SIGKILL");
+        if (run.exitCode === null) run.kill("SIGKILL");
+      }
+    }, 30_000);
+  }
 });
 
 describe("a checkout's .envoy/envoy.json", () => {
