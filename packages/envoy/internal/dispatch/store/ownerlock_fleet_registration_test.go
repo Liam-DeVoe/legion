@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the bound on an earlier
@@ -30,6 +31,8 @@ const registrationGateBound = 5 * time.Second
 func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
+	answered, cancel := testdeadline.Answered(t, ctx)
+	defer cancel()
 	mine := registerFleetProcess(t, s, OwnerLockProtocol, 0)
 	holder, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -75,8 +78,8 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 		if err != nil {
 			t.Fatalf("this build's heartbeat after %s was refused: %v", registration.name, err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("this build's heartbeat did not go through within 5s of %s's refusal", registration.name)
+	case <-answered.Done():
+		t.Fatalf("this build's heartbeat did not go through before the test's deadline, after %s's refusal", registration.name)
 	}
 	if hasLegacyMark(t, s) {
 		t.Errorf("%s was refused and the earlier build's mark is stamped, want none", registration.name)
@@ -104,8 +107,8 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 		if err != nil {
 			t.Fatalf("%s after the transaction it waited for committed: %v", publish.name, err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s did not end within 10s of the commit of the transaction it waited for", publish.name)
+	case <-answered.Done():
+		t.Fatalf("%s did not end before the test's deadline, after the commit of the transaction it waited for", publish.name)
 	}
 	if !hasLegacyMark(t, s) {
 		t.Errorf("%s went through and the earlier build's mark is not stamped", publish.name)

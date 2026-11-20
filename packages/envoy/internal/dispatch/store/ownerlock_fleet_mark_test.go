@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the earlier build's mark, as
@@ -99,7 +101,7 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				wrote <- err
 			}()
 			ended := false
-			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(5 * time.Millisecond) {
 				select {
 				case err := <-wrote:
 					if err != nil {
@@ -122,7 +124,7 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatal("the earlier build's write neither went through nor queued behind this build's write within 10s")
+					t.Fatal("the earlier build's write neither went through nor queued behind this build's write before the test's deadline")
 				}
 			}
 			if _, err := writer.Exec(ctx, ownerLock, OwnerLockNamespace, issue.LockKey()); err != nil {
@@ -138,13 +140,15 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !ended {
+				answered, cancel := testdeadline.Answered(t, ctx)
+				defer cancel()
 				select {
 				case err := <-wrote:
 					if err != nil {
 						t.Fatalf("the earlier build's write after this build's committed: %v", err)
 					}
-				case <-time.After(10 * time.Second):
-					t.Fatal("the earlier build's write did not end within 10s of this build's commit")
+				case <-answered.Done():
+					t.Fatal("the earlier build's write did not end before the test's deadline, after this build's commit")
 				}
 			}
 			if got := ownerSeqs(t, s, []Owner{issue})[issue]; got != seq+2 {

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // CountLockWaits counts the sessions of database waiting on a lock whose statement matches the LIKE
@@ -46,15 +47,15 @@ func OwnerLockWaiters(t testing.TB, database *store.Store) (waiting, holdingXid 
 	return waiting, holdingXid
 }
 
-// AwaitOwnerLockWaiter waits up to ten seconds for a backend to wait on an owner lock
-// (OwnerLockWaiters) and answers how many of the waiters hold a transaction id. It returns the
-// call's answer and true when the call under test answers on answered before any backend waited,
-// as WaitForQueuedBehind does: such a call never waited for the lock the test holds, and the
-// caller fails with what it answered. what names that call, for the failure when the ten seconds
-// pass first.
+// AwaitOwnerLockWaiter waits, as long as the test's deadline leaves (testdeadline.StartupBound),
+// for a backend to wait on an owner lock (OwnerLockWaiters) and answers how many of the waiters
+// hold a transaction id. It returns the call's answer and true when the call under test answers
+// on answered before any backend waited, as WaitForQueuedBehind does: such a call never waited for
+// the lock the test holds, and the caller fails with what it answered. what names that call, for
+// the failure when the test's deadline comes first.
 func AwaitOwnerLockWaiter[T any](t testing.TB, database *store.Store, what string, answered <-chan T) (T, bool, int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		select {
 		case early := <-answered:
@@ -66,7 +67,7 @@ func AwaitOwnerLockWaiter[T any](t testing.TB, database *store.Store, what strin
 			return none, false, holdingXid
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s never waited on an owner lock within 10s", what)
+			t.Fatalf("%s never waited on an owner lock before the test's deadline", what)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -92,7 +93,9 @@ const waitingBehindHolder = `
 // exhausted. It reads pg_locks, not pg_stat_activity, whose view is frozen for the rest of a
 // transaction once read. It counts every backend behind the holder, a background document
 // settlement's among them; a test that must know the call under test is the one waiting watches
-// that call's backend instead (QueuedBehind).
+// that call's backend instead (QueuedBehind). A caller that only needs the backends queued, and
+// fails when fewer came, passes testdeadline.StartupBound(t) as within; a fixed within is for a
+// count the test judges at that moment, such as one that must stay below want.
 func WaitForLockWaiters(t testing.TB, holder pgx.Tx, want int, within time.Duration) int {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -126,7 +129,8 @@ func QueuedBehind(ctx context.Context, holder pgx.Tx, pid uint32) (bool, error) 
 // test runs on, to queue behind a lock holder's transaction owns (QueuedBehind), polling through
 // holder's own connection. It returns the call's answer and true if the call answers on answered
 // before its backend has queued: such a call never waited on the lock, and the caller fails with
-// what it answered. It fails the test if within passes first.
+// what it answered. It fails the test if within passes first. A caller passes
+// testdeadline.StartupBound(t) as within unless within is the time the test claims.
 func WaitForQueuedBehind[T any](t testing.TB, holder pgx.Tx, pid uint32, answered <-chan T, within time.Duration) (T, bool) {
 	t.Helper()
 	ctx := context.Background()
@@ -157,7 +161,8 @@ func WaitForQueuedBehind[T any](t testing.TB, holder pgx.Tx, pid uint32, answere
 // that session's backend process id, or 0 if none did. It is for a call under test that runs in
 // another process, whose connection a test cannot give a pool of its own: the statement names
 // the call's backend, and a session queued behind the same lock with any other statement is
-// never taken for it. It reads pg_stat_activity through the pool, a fresh view on each read.
+// never taken for it. It reads pg_stat_activity through the pool, a fresh view on each read. A
+// caller that fails when no session queued passes testdeadline.StartupBound(t) as within.
 func WaitForStatementBehind(t testing.TB, database *store.Store, holder pgx.Tx, statement string, within time.Duration) uint32 {
 	t.Helper()
 	ctx := context.Background()
