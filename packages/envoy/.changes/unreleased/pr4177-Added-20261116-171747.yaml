@@ -13,6 +13,10 @@ body: |-
     A claim, the actor who parked an issue, a route's holder and a `legion-<project>-…` role name no session, person or project their reader may not see, in the issue read, the listing, the children, the priority faults, the ask reads and a claim's 409; a delivery to a role of a private project its sender does not see answers as a role no session holds.
 
     `PUT /api/v1/me/issues/{key}/state` for a key no issue holds, or an issue its caller may not see, answers 404 NOT_FOUND; it answered 500 for a key no issue holds, which was a defect.
+
+    A follow (`PUT /api/v1/asks/{id}/followers/{session_id}`) and a session group create or edit naming a session its writer may not see answer 404 SESSION_NOT_FOUND, as a session nobody holds does, the rule a session's own rows already keep; while a project is private a session nobody holds is hidden too, so both answer alike. With no private project, a full member's follow and group writes answer as before.
+
+    On the Access tab, a refused switch to private says what the owner can do and offers no Retry, and a switch to public asks the owner to confirm it first.
 time: 2026-11-16T17:17:47.264285777Z
 custom:
     Issue: pr4177

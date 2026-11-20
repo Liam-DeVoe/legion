@@ -50,6 +50,9 @@ type messageRead struct {
 	Unread bool `json:"unread,omitempty"`
 }
 
+// createMessage is POST /api/v1/issues/{key}/messages. A reply names its parent in in_reply_to, a
+// message of that issue its writer may read (access.MessageClause, in createStoredMessage's parent
+// read); any other id answers 400 MESSAGE_INPUT, as an id no message holds does.
 func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
@@ -105,8 +108,11 @@ type createAgentMessageInput struct {
 }
 
 // createAgentMessage is POST /api/v1/agents/{session_id}/messages: a person's send to one session.
-// A send under an Idempotency-Key commits its message as the key's recovery point, and a repeat is
-// answered from it (replayAgentMessage).
+// A reply names its parent in in_reply_to: an issue-less message whose thread root targets that
+// same session and that its writer may read (access.MessageClause), so a direct message of a
+// conversation the writer may not read answers as an id no message holds (400 MESSAGE_INPUT
+// otherwise). A send under an Idempotency-Key commits its message as the key's recovery point, and
+// a repeat is answered from it (replayAgentMessage).
 func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
