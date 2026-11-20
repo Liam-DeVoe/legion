@@ -327,9 +327,10 @@ func (w *window) pinToSend() error {
 // reconnect attempt, the dial and the handshake (v1.53.1 doReconnect, nats.go:3458-3485), up to the
 // attempt's connect timeout (connectTimeout), or the hub's authorization timeout while its auth
 // service holds the CONNECT. A call kept waiting longer is answered as a reconnect in progress: an
-// intake's stop goes on without it (internal/dispatch/delivery). On a box loaded enough to keep such
-// a call waiting this long, the caller answers a loss it need not have, which costs it what a loss
-// costs and holds it no longer.
+// intake's stop goes on without it (internal/dispatch/delivery), and a read of a connection's state
+// that a caller's ctx bounds is answered as one once ctx has ended too (readWithin). On a box loaded
+// enough to keep such a call waiting this long, the caller answers a loss it need not have, which
+// costs it what a loss costs and holds it no longer.
 const ConnLockWait = 100 * time.Millisecond
 
 // current reports whether the window's connection is still in the life the window pinned: nats.go
@@ -480,7 +481,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 			if tick := w.client.beforeRequestFlush; tick != nil {
 				tick()
 			}
-			flushed <- confirmFlushed(w.conn, subject, before, deadline)
+			flushed <- confirmFlushed(context.Background(), w.conn, subject, before, deadline)
 		}()
 		// denied is the server's refusal of this very send, as the connection recorded it under
 		// the subject (deniedPublish). It is the only evidence of a denial the flush cannot name:

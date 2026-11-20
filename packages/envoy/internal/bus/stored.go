@@ -287,9 +287,12 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // (storedMessage), so it is the one place their errors are named when NATS is reconnecting. A
 // request made while nats.go connects or reconnects the connection waits for it within ctx
 // (ensureConnWithContext), and a ctx that ends first is
-// `bus: NATS is reconnecting: context deadline exceeded`, with nothing sent. Any error the request
-// returns once it is made, while the connection reports that state, is
-// `bus: NATS is reconnecting` (namedOn), with nats.go's error kept in the chain.
+// `bus: NATS is reconnecting: context deadline exceeded`, with nothing sent. So is a request made
+// while nats.go holds its connection lock through a reconnect's handshake: the wait reads the
+// connection's state within ctx (readWithin), and ends at ctx's end. Any error the request returns
+// once it is made, while the connection reports that state, or while a read of that state within
+// ctx has not answered, is `bus: NATS is reconnecting` (namedOn), with nats.go's error kept in the
+// chain.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -301,7 +304,7 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 	}
 	conn := c.Connection()
 	reply, err := c.requestConfirmedOn(ctx, conn, subject, data)
-	return reply, namedOn(conn, err)
+	return reply, namedOn(ctx, conn, err)
 }
 
 // requestConfirmedOn is requestConfirmed's request on conn, once conn can take it. Its error is

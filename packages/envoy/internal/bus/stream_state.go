@@ -70,7 +70,7 @@ func (r *streamRead) wait(ctx context.Context) (sessionStreamState, error) {
 	case <-r.done:
 		return r.state, r.err
 	case <-ctx.Done():
-		return sessionStreamState{}, namedOn(r.client.Connection(), ctx.Err())
+		return sessionStreamState{}, namedOn(ctx, r.client.Connection(), ctx.Err())
 	}
 }
 

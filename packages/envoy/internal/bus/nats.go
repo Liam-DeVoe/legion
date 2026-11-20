@@ -1583,6 +1583,13 @@ const reconnectRecheck = time.Second
 // close before then, so a caller waits for that first connection as for a reconnect, and nothing
 // here dials beside nats.go before it; a connection dialled later to replace a closed one is an
 // ordinary one, connected before it is installed.
+//
+// Each read of the connection's status waits for nats.go's connection lock, which nats.go holds
+// through a reconnect's dial and handshake, up to the attempt's connect timeout (connectTimeout,
+// 5 s). So each read is made within ctx (readWithin). A wait made during a handshake ends at ctx's
+// end too, with the same ErrReconnecting, and not when the attempt ends. A ctx that can never end
+// (ensureConn) reads at once on the caller's goroutine, and waits for the lock as long as nats.go
+// holds it.
 func (c *Client) ensureConnWithContext(ctx context.Context) error {
 	for {
 		c.mu.Lock()
@@ -1591,15 +1598,26 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		// lands between the read and the wait below closes the channel the wait is on.
 		changed := c.connChangedLocked()
 		c.mu.Unlock()
+		// One read of conn's status, made within ctx (readWithin): the read waits for nats.go's
+		// connection lock, which nats.go holds through a reconnect's dial and handshake. A read that
+		// has not answered when ctx ends is a wait for a connection nats.go is reconnecting, and it
+		// ends as one (reconnectWaitEnded).
+		var status nats.Status
+		if conn != nil {
+			var answered bool
+			if status, answered = readWithin(ctx, conn.Status); !answered {
+				return reconnectWaitEnded(ctx)
+			}
+		}
 		// A live connection serves even a stopped client: deliveries still in their handlers during
 		// Drain publish their forwards and exceptions through it.
-		if conn != nil && (conn.IsConnected() || conn.IsDraining()) {
+		if conn != nil && (status == nats.CONNECTED || status == nats.DRAINING_SUBS || status == nats.DRAINING_PUBS) {
 			return nil
 		}
 		if c.stopped() {
 			return errStopped
 		}
-		if conn != nil && !conn.IsClosed() {
+		if conn != nil && status != nats.CLOSED {
 			c.reconnectWaits.Add(1)
 			if c.reconnectWaitTick != nil {
 				c.reconnectWaitTick()

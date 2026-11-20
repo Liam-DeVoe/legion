@@ -542,6 +542,15 @@ func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
 // connection that drops again after the wait refuses the call itself, which a KeyValue call names
 // ErrReconnecting (kvAnswer).
 //
+// The wait and endedUnsent read conn's state, and each read waits for nats.go's connection lock,
+// which nats.go holds through a reconnect's dial and handshake. So each read is made on a goroutine
+// of its own and waited for within ctx (readWithin). A call made during a handshake waits for the
+// connection as a call made between two attempts does: when ctx ends first, it starts no call, and
+// its err is the same ErrReconnecting, at ctx's end. Each read is given ConnLockWait however soon
+// ctx ends, so a connection whose lock is free gives the answers above under any ctx, and a call
+// made during a handshake under a ctx that ends sooner answers once ConnLockWait has passed. A read
+// left running when Bounded returns ends when nats.go lets the lock go, and changes nothing.
+//
 // A start's waits on the cluster pass a nil conn (sentAgain, limitedRead, updateStream and the
 // stream ensure's migrate and purge): their requests go through a JetStream context that names a
 // send nats.go refuses while it reconnects (namedRequests), so such a send fails at once as

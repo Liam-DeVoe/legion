@@ -122,8 +122,9 @@ func namedJetStream(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamCon
 	return namedRequests{JetStreamContext: js, conn: conn}
 }
 
-// named is err, a request's answer, named by the state of the context's connection (namedOn).
-func (j namedRequests) named(err error) error { return namedOn(j.conn, err) }
+// named is err, a request's answer, named by the state of the context's connection (namedOn). A
+// legacy context's request takes no context, so the state is read at once on this goroutine.
+func (j namedRequests) named(err error) error { return namedOn(context.Background(), j.conn, err) }
 
 // namedOn is err, the answer of a request made on conn, as the ErrReconnecting it is when the
 // request was made while nats.go connects or reconnects conn: nats.go's refusal of its send
@@ -144,11 +145,21 @@ func (j namedRequests) named(err error) error { return namedOn(j.conn, err) }
 // (ensureConnWithContext), so only a Client built as a struct literal, as a test builds one,
 // holds none. Every legacy context's conn is the connection it was built on or handed with.
 //
+// The read of conn's state waits for nats.go's connection lock, so it is made within ctx
+// (readWithin). A read that has not answered by then was made while nats.go holds the lock through
+// a reconnect's handshake, and err is named the ErrReconnecting it is, as for a read that answers
+// that nats.go reconnects conn. A caller whose request took a ctx passes it: requestConfirmed, and
+// streamRead.wait, which names ctx's own end. A legacy JetStream context's request takes none, so
+// named passes context.Background(), and the read is made at once on the caller's goroutine.
+//
 // It is the one rule every place that names a request's error follows: a legacy JetStream context
 // (namedRequests), a request this package builds itself (Client.requestConfirmed), and a call
 // that waits for such a request another call made (streamRead.wait).
-func namedOn(conn *nats.Conn, err error) error {
-	if err == nil || errors.Is(err, ErrReconnecting) || conn == nil || !connecting(conn) {
+func namedOn(ctx context.Context, conn *nats.Conn, err error) error {
+	if err == nil || errors.Is(err, ErrReconnecting) || conn == nil {
+		return Reconnecting(err)
+	}
+	if reconnecting, answered := readWithin(ctx, func() bool { return connecting(conn) }); answered && !reconnecting {
 		return Reconnecting(err)
 	}
 	return reconnectingSend{refusal: err}
@@ -228,8 +239,15 @@ func reconnectWaitEnded(ctx context.Context) error {
 // ctx ended (reconnectWaitEnded), since the send could not have gone then either and its caller
 // is told why; and ctx's own error otherwise. A nil conn is no connection to wait for, and gives
 // ctx's own error.
+//
+// The read of conn's state waits for nats.go's connection lock, so it is made through readWithin.
+// ctx has ended, so the read gets ConnLockWait. When the read has not answered by then, nats.go
+// holds the lock through a reconnect's handshake, and endedUnsent gives reconnectWaitEnded.
 func endedUnsent(ctx context.Context, conn *nats.Conn) error {
-	if conn != nil && connecting(conn) {
+	if conn == nil {
+		return ctx.Err()
+	}
+	if reconnecting, answered := readWithin(ctx, func() bool { return connecting(conn) }); !answered || reconnecting {
 		return reconnectWaitEnded(ctx)
 	}
 	return ctx.Err()
@@ -242,11 +260,36 @@ func endedUnsent(ctx context.Context, conn *nats.Conn) error {
 // connection again at each of its status events (nats.Conn.StatusChanged) and at least every
 // reconnectRecheck, as ensureConnWithContext's wait does, rather than polling.
 //
+// Each read of conn's state, and each registration and removal of the status listener, waits for
+// nats.go's connection lock. nats.go holds that lock through a reconnect's dial and handshake, up
+// to the attempt's connect timeout (connectTimeout, 5 s). So the wait runs on a goroutine of its
+// own, and awaitConnected waits for it only within ctx (readWithin). When ctx ends while the wait
+// is still in one of those calls, nats.go is reconnecting conn, and awaitConnected returns
+// reconnectWaitEnded. When ctx ends less than ConnLockWait after the start, awaitConnected waits
+// until ConnLockWait has passed: a connection whose lock is free answers in that time.
+//
 // It is ensureConnWithContext's wait for one connection alone. It is for a send on a handle that
 // holds only its connection, a KV bucket's (Bounded): such a handle cannot dial a replacement,
 // and the client that owns the connection does that.
 func awaitConnected(ctx context.Context, conn *nats.Conn) error {
-	for conn != nil && connecting(conn) {
+	if conn == nil {
+		return nil
+	}
+	err, answered := readWithin(ctx, func() error { return waitWhileConnecting(ctx, conn) })
+	if !answered {
+		return reconnectWaitEnded(ctx)
+	}
+	return err
+}
+
+// waitWhileConnecting is awaitConnected's wait, on the goroutine readWithin starts. It removes each
+// status listener it registers before it returns. When awaitConnected has returned without its
+// answer, it goes on until nats.go lets its connection lock go, then finds ctx ended and returns.
+func waitWhileConnecting(ctx context.Context, conn *nats.Conn) error {
+	for connecting(conn) {
+		if ctx.Err() != nil {
+			return reconnectWaitEnded(ctx)
+		}
 		// The listener is registered before the status is read again, so a connect that lands in
 		// between is either read here or sent to the listener.
 		changed := conn.StatusChanged(nats.CONNECTED, nats.CLOSED)
@@ -269,8 +312,62 @@ func awaitConnected(ctx context.Context, conn *nats.Conn) error {
 	return nil
 }
 
+// readWithin runs read, a call that waits for nats.go's connection lock, on a goroutine of its own,
+// and waits for its answer until ctx ends. answered is false when read has not answered by then.
+// nats.go holds that lock for microseconds to read or write a frame, and through a whole reconnect
+// attempt, its dial and its handshake, up to the attempt's connect timeout (connectTimeout, 5 s).
+// So each caller takes a read that has not answered when ctx ends for one made during a
+// reconnect's handshake, and answers as for a reconnect. A write to a slow socket also holds the
+// lock, for as long as the write takes, and a read that such a write keeps waiting past ctx is
+// answered the same way: nothing tells the two apart without the lock.
+//
+// It is the one rule for every read of a connection's state that a caller's ctx bounds: Bounded's
+// (awaitConnected, endedUnsent), the client's wait for a connection (ensureConnWithContext), a
+// core publish's reads before and after its send (publishConfirmed, confirmPublished), and the
+// read that names a request's error (namedOn).
+//
+// The wait lasts at least ConnLockWait from the start, whatever ctx does. A read with the lock free
+// answers in that time, so a ctx that has ended already, or that ends a moment after the start,
+// still gets the read's answer. A ctx that can never end (context.Background) bounds nothing:
+// read is then made on the caller's goroutine, as it would be without readWithin.
+//
+// A read that has not answered in time is left running, since nothing stops a wait for nats.go's
+// lock: it goes on until nats.go lets the lock go. Its answer goes to a channel with room for one,
+// which nothing reads then. So the goroutine never blocks on its send, and it writes nothing that
+// its caller reads after readWithin has returned.
+func readWithin[T any](ctx context.Context, read func() T) (value T, answered bool) {
+	if ctx.Done() == nil {
+		return read(), true
+	}
+	began := time.Now()
+	answer := make(chan T, 1)
+	go func() { answer <- read() }()
+	select {
+	case value = <-answer:
+		return value, true
+	case <-ctx.Done():
+	}
+	if rest := ConnLockWait - time.Since(began); rest > 0 {
+		floor := time.NewTimer(rest)
+		defer floor.Stop()
+		select {
+		case value = <-answer:
+			return value, true
+		case <-floor.C:
+		}
+	}
+	// select picks at random among ready cases, so an answer that came with the end is read here.
+	select {
+	case value = <-answer:
+		return value, true
+	default:
+		return value, false
+	}
+}
+
 // connecting reports whether nats.go is connecting conn for the first time or reconnecting it: the
-// states in which it refuses every publish (nats.ErrReconnectBufExceeded).
+// states in which it refuses every publish (nats.ErrReconnectBufExceeded). It reads conn's status,
+// which waits for nats.go's connection lock (readWithin says when it is held).
 func connecting(conn *nats.Conn) bool {
 	switch conn.Status() {
 	case nats.CONNECTED, nats.DRAINING_SUBS, nats.DRAINING_PUBS, nats.CLOSED:

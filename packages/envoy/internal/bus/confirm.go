@@ -27,12 +27,20 @@ var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted"
 
 // publishConfirmed publishes msg on conn with publish, flushes within ctx's deadline, and confirms
 // the server accepted it (confirmPublished). A nil error means the server accepted the publish;
-// otherwise the error is a window already spent (errWindowElapsed), nats.go's refusal before
-// sending (refused), a flush that failed or ran out of the window, ErrPublishDenied, or one
-// wrapping ErrPublishUnconfirmed. publish is conn.PublishMsg, bound to the same conn: every caller
-// reads its connection once and passes it and its PublishMsg, so publish publishes on the
-// connection observe and confirmPublished judge. It is a parameter so a test can make the server's
-// answer arrive before publish returns, which is the case the state read before it exists for.
+// otherwise the error is a window already spent (errWindowElapsed), a read of conn's state before
+// the publish that ctx ended (reconnectWaitEnded), nats.go's refusal before sending (refused), a
+// flush that failed or ran out of the window, ErrPublishDenied, or one wrapping
+// ErrPublishUnconfirmed. publish is conn.PublishMsg, bound to the same conn: every caller reads its
+// connection once and passes it and its PublishMsg, so publish publishes on the connection observe
+// and confirmPublished judge. It is a parameter so a test can make the server's answer arrive
+// before publish returns, which is the case the state read before it exists for.
+//
+// Both reads of conn's state wait for nats.go's connection lock, which nats.go holds through a
+// reconnect's dial and handshake, so each is made within ctx (observeWithin). A read before the
+// publish that has not answered when ctx ends is a send made while nats.go reconnects conn: nothing
+// is published, and the error is ErrReconnecting with ctx's error, as a wait for the connection
+// that ctx ended gives (ensureConnWithContext). A read after the flush that has not answered is
+// answered as confirmPublished answers a reconnect.
 //
 // A ctx that has ended - cancelled, or its deadline spent - is refused before publish is called,
 // never after: a core publish is on its way to the subject the moment publish returns, so
@@ -52,16 +60,20 @@ func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nat
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)
 	}
-	before := observe(conn)
+	before, answered := observeWithin(ctx, conn)
+	if !answered {
+		return reconnectWaitEnded(ctx)
+	}
 	if err := publish(msg); err != nil {
 		return c.refused(err, len(msg.Data))
 	}
-	return confirmFlushed(conn, msg.Subject, before, deadline)
+	return confirmFlushed(ctx, conn, msg.Subject, before, deadline)
 }
 
 // confirmFlushed flushes conn within deadline and confirms that the server accepted the core
-// publish to subject made on it after before was observed (confirmPublished).
-func confirmFlushed(conn *nats.Conn, subject string, before connState, deadline time.Time) error {
+// publish to subject made on it after before was observed (confirmPublished), reading conn's state
+// within ctx.
+func confirmFlushed(ctx context.Context, conn *nats.Conn, subject string, before connState, deadline time.Time) error {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return errWindowElapsed(subject)
@@ -69,7 +81,7 @@ func confirmFlushed(conn *nats.Conn, subject string, before connState, deadline 
 	if err := conn.FlushTimeout(remaining); err != nil {
 		return fmt.Errorf("bus: flush publish to %q: %w", subject, err)
 	}
-	return confirmPublished(conn, subject, before)
+	return confirmPublished(ctx, conn, subject, before)
 }
 
 // errWindowElapsed is the error of a core publish to subject whose window ran out before it could
@@ -95,6 +107,12 @@ func observe(conn *nats.Conn) connState {
 	lastError := conn.LastError()
 	connected := conn.IsConnected()
 	return connState{lastError: lastError, connected: connected, reconnects: conn.Stats().Reconnects}
+}
+
+// observeWithin is observe, made within ctx (readWithin), since each of its reads waits for
+// nats.go's connection lock. answered is false when the reads have not answered when ctx ends.
+func observeWithin(ctx context.Context, conn *nats.Conn) (connState, bool) {
+	return readWithin(ctx, func() connState { return observe(conn) })
 }
 
 // confirmPublished reports whether a core publish to subject, made after before was observed and
@@ -124,6 +142,12 @@ func observe(conn *nats.Conn) connState {
 // counts a draining connection as connected, so a publish during Drain still confirms, and a
 // closed one as not.
 //
+// The reads after the flush are made within ctx (observeWithin). Reads that have not answered when
+// ctx ends were made while nats.go holds its connection lock through a reconnect's handshake, and
+// fail the publish as unconfirmed, as a read that finds the connection not connected does. A
+// window's request passes context.Background(): its flush runs beside the wait for the answer, and
+// nothing waits for the flush's reads (window.request).
+//
 // One change goes unseen: the last error set to a shared nats.go value (ErrSlowConsumer,
 // ErrMaxSubscriptionsExceeded), then this publish's violation, then that same value again, all
 // between the two observations. nats.go exposes no error counter to tell that from no change. Both
@@ -135,9 +159,9 @@ func observe(conn *nats.Conn) connState {
 // comes near; every other subscription keeps nats.go's defaults (500,000 messages, 64 MiB per
 // subscription), at which one that falls far enough behind to report a slow consumer, twice around
 // one publish, is rare. So it is accepted.
-func confirmPublished(conn *nats.Conn, subject string, before connState) error {
-	after := observe(conn)
-	if !after.connected || after.reconnects != before.reconnects {
+func confirmPublished(ctx context.Context, conn *nats.Conn, subject string, before connState) error {
+	after, answered := observeWithin(ctx, conn)
+	if !answered || !after.connected || after.reconnects != before.reconnects {
 		return fmt.Errorf("bus: %w: NATS disconnected during the publish to %q", ErrPublishUnconfirmed, subject)
 	}
 	if sameError(after.lastError, before.lastError) {
