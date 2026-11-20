@@ -1096,7 +1096,7 @@ test("an operator's claim carries what the daemon last saw its agent do", () => 
 // and a held issue says which phase its hold stopped, beside the reason the hold may have. The
 // state golden carries LEGION-210, held from implementing after its implementer failed, and the
 // forget-session golden carries the operator's shape of the same record. A claim that never
-// failed carries no `failure`, a backfilled one carries no `at`, and a word the seven do not
+// failed carries no `failure`, a backfilled one carries no `at`, and a word the eight do not
 // name is refused rather than read.
 test("a failed claim carries its cause", () => {
   const state = fixture("state.json") as {
@@ -1133,7 +1133,7 @@ test("a failed claim carries its cause", () => {
   expect(parsed?.workers.implementer?.claim.failure).toEqual(record);
 
   // A failure the migration backfilled carries no moment, and the record outlives the claim's
-  // retirement; a cause outside the seven words, or a held phase outside the workflow's, is
+  // retirement; a cause outside the eight words, or a held phase outside the workflow's, is
   // refused.
   failed.failure = {
     cause: "unrecorded",
@@ -1254,7 +1254,7 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(JSON.stringify(parsed)).toContain('"task"');
   expect(JSON.stringify(withoutUnseen)).not.toContain('"task"');
 
-  // A cause outside the seven words, a linger that is no instant and an empty key in the chain
+  // A cause outside the eight words, a linger that is no instant and an empty key in the chain
   // are each refused rather than read.
   failed.pendingCause = "exploded";
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
