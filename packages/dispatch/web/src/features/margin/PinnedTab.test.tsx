@@ -1,12 +1,19 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { correction, correctionFeed } from "../../__tests__/correction-feed";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { api } from "../../api/client";
-import type { DispatchEvent } from "../../api/types";
+import { useEventFeed } from "../../api/event-feed";
+import { whoAmIQuery } from "../../api/queries";
+import type { Comment, DispatchEvent, MessageWithTrees } from "../../api/types";
+import { comment as commentFixture } from "./margin-fixture";
 import { PinnedTab } from "./PinnedTab";
+import { type MarginOwner, type MarkPlacement, useMarginItems } from "./useMarginItems";
 
 const messageEvent: DispatchEvent = {
   actor: { id: "alice", kind: "user" },
@@ -312,5 +319,226 @@ test("a pinned message event of a post edited and then deleted reads as deleted,
     expect(card?.textContent).not.toContain("edited");
   } finally {
     view.unmount();
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. The Pinned
+// tab draws its cards from the margin's own reads - a pinned comment from the issue's comments, a
+// pinned message from its own read, a pinned event from the issue's events - and says nothing
+// when a refetch of one fails: each keeps what it held, so a post's correction writes its own
+// facts into every read the cache holds (`markCorrectedPost`). After refetches that all fail,
+// each card of a corrected post reads as edited, then as deleted, with no word of its body.
+
+const PINNED_COMMENT = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f";
+const PINNED_MESSAGE = "3d4e5f6a-7b8c-4d9e-8f1a-2b3c4d5e6f7a";
+const MARGIN_OWNER: MarginOwner = { key: "CORE-1", kind: "issue" };
+const NO_PLACEMENTS: ReadonlyMap<string, MarkPlacement> = new Map();
+const ALICE = { id: "alice", kind: "user" } as const;
+
+const pinnedComment: Comment = {
+  ...commentFixture,
+  anchor: null,
+  body: "Hold the deploy.",
+  id: PINNED_COMMENT,
+};
+const pinnedMessage: MessageWithTrees = {
+  author: ALICE,
+  body: "Ship on Friday.",
+  broadcast_id: null,
+  created_at: "2026-09-10T00:00:00Z",
+  deliveries: [],
+  id: PINNED_MESSAGE,
+  in_reply_to: null,
+  issue_key: "CORE-1",
+  reply_block: null,
+  target: null,
+  ...messageCorrectionFields(),
+};
+
+/** The margin's Pinned tab on CORE-1 with the page's event feed beside it, holding `pins` (each
+ *  `<kind>:<id>`, as the reader's state records a pin) and answering `events` for the pinned
+ *  events; each card is an `article`. Every read the tab draws from fails once `fail` is called. */
+function openPinnedTab(pins: readonly string[], events: readonly DispatchEvent[]) {
+  let failing = false;
+  const refusing =
+    <T,>(answer: T) =>
+    async (): Promise<T> => {
+      if (failing) throw new Error("the margin's read failed");
+      return answer;
+    };
+  const stubs = [
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    spyOn(api, "getMyState").mockResolvedValue({
+      "CORE-1": {
+        dismissed: pins.map((pin) => `pinned_items:${pin}`),
+        last_read_seq: 0,
+        pinned: false,
+        seq: 1,
+      },
+    }),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listComments").mockImplementation(refusing([pinnedComment])),
+    spyOn(api, "getMessage").mockImplementation(refusing({ message: pinnedMessage, replies: [] })),
+    spyOn(api, "getIssueEvents").mockImplementation(refusing([...events])),
+  ];
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const feed = correctionFeed(client);
+  function Page(): ReactNode {
+    useEventFeed();
+    const items = useMarginItems(
+      MARGIN_OWNER,
+      "pinned",
+      undefined,
+      NO_PLACEMENTS,
+      NO_PLACEMENTS,
+      undefined
+    );
+    return (
+      <PinnedTab
+        conversations={items.pinnedConversations}
+        events={items.pinned}
+        onUnpin={() => {}}
+        onUnpinConversation={() => {}}
+        pinnedIds={items.pinnedIds}
+      />
+    );
+  }
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <Page />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    /** The text of each card, in the tab's order. */
+    cards: () => [...view.container.querySelectorAll("article")].map((card) => card.textContent),
+    deliver: feed.deliver,
+    fail: () => {
+      feed.start();
+      failing = true;
+    },
+    restore: () => {
+      view.unmount();
+      feed.restore();
+      client.clear();
+      for (const stub of stubs) stub.mockRestore();
+    },
+  };
+}
+
+test("a pinned comment's and message's cards whose refetch fails read as edited, then deleted", async () => {
+  const tab = openPinnedTab([`comment:${PINNED_COMMENT}`, `message:${PINNED_MESSAGE}`], []);
+  try {
+    await waitFor(() =>
+      expect(tab.cards()).toEqual([
+        expect.stringContaining("Hold the deploy."),
+        expect.stringContaining("Ship on Friday."),
+      ])
+    );
+    tab.fail();
+
+    await tab.deliver(correction("comment", PINNED_COMMENT, true), [["comments"]]);
+    await tab.deliver(correction("message", PINNED_MESSAGE, true), [["issue-messages"]]);
+    expect(tab.cards()).toEqual([
+      expect.stringMatching(/^Hold the deploy\.alice · .+ · edited$/),
+      expect.stringMatching(/^Ship on Friday\.alice · .+ · edited$/),
+    ]);
+
+    await tab.deliver(correction("comment", PINNED_COMMENT, false), [["comments"]]);
+    await tab.deliver(correction("message", PINNED_MESSAGE, false), [["issue-messages"]]);
+    await waitFor(() =>
+      expect(tab.cards()).toEqual([
+        expect.stringMatching(/^Deleted by alice.*alice · [^·]+$/),
+        expect.stringMatching(/^Deleted by alice.*alice · [^·]+$/),
+      ])
+    );
+  } finally {
+    tab.restore();
+  }
+});
+
+test("a pinned comment's and message's events whose refetch fails read as edited, then deleted", async () => {
+  const commentCreated: Extract<DispatchEvent, { type: "comment.created" }> = {
+    actor: ALICE,
+    created_at: "2026-09-10T00:00:00Z",
+    id: 11,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      anchor: null,
+      answers: null,
+      artifact_id: null,
+      artifact_name: "",
+      ask_id: null,
+      author: ALICE,
+      body: "Hold the deploy.",
+      created_at: "2026-09-10T00:00:00Z",
+      deleted_at: null,
+      deleted_by: null,
+      deliveries: [],
+      edited_at: null,
+      id: PINNED_COMMENT,
+      issue_key: "CORE-1",
+      mentions: [],
+      reply_block: null,
+      reply_to: null,
+      resolved: false,
+      resolved_at: null,
+      resolved_by: null,
+      suggestion: null,
+      turn: null,
+    },
+    seq: 11,
+    type: "comment.created",
+  };
+  const messageCreated: Extract<DispatchEvent, { type: "message.created" }> = {
+    actor: ALICE,
+    created_at: "2026-09-10T00:01:00Z",
+    id: 12,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      author: ALICE,
+      body: "Ship on Friday.",
+      broadcast_id: null,
+      created_at: "2026-09-10T00:01:00Z",
+      deliveries: [],
+      id: PINNED_MESSAGE,
+      in_reply_to: null,
+      issue_key: "CORE-1",
+      reply_block: null,
+      target: null,
+    },
+    seq: 12,
+    type: "message.created",
+  };
+  const tab = openPinnedTab(["event:11", "event:12"], [commentCreated, messageCreated]);
+  try {
+    await waitFor(() =>
+      expect(tab.cards()).toEqual(["Hold the deploy.alice", "Ship on Friday.alice"])
+    );
+    tab.fail();
+
+    await tab.deliver(correction("comment", PINNED_COMMENT, true), [["events"]]);
+    await tab.deliver(correction("message", PINNED_MESSAGE, true), [["events"]]);
+    expect(tab.cards()).toEqual([
+      "Hold the deploy.alice · edited",
+      "Ship on Friday.alice · edited",
+    ]);
+
+    await tab.deliver(correction("comment", PINNED_COMMENT, false), [["events"]]);
+    await tab.deliver(correction("message", PINNED_MESSAGE, false), [["events"]]);
+    await waitFor(() =>
+      expect(tab.cards()).toEqual([
+        expect.stringMatching(/^Deleted by alice.*alice$/),
+        expect.stringMatching(/^Deleted by alice.*alice$/),
+      ])
+    );
+  } finally {
+    tab.restore();
   }
 });

@@ -10,10 +10,15 @@ import {
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
+import { correction, correctionFeed, DELETION, EDITED_AT } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
-import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { graphNode, graphNodeFields } from "../../__tests__/graph-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
+import { useEventFeed } from "../../api/event-feed";
+import { whoAmIQuery } from "../../api/queries";
 import type { GraphReferences, IssueReferenceSummary } from "../../api/types";
+import { comment as commentFixture } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import {
   blockQuery,
@@ -21,9 +26,11 @@ import {
   issueSummaryQuery,
   messageQuery,
   prefetchReference,
+  useReferenceLabel,
   useReferenceTarget,
   watchPicturePath,
 } from "./reference-target";
+import type { DispatchReferenceRoute } from "./routes";
 
 // A block reference's title is the plain words of the tree its graph read carries, which the
 // fixtures below build with the shared engine.
@@ -505,6 +512,150 @@ test("a reference answers the edit and the deletion of the post it names, or who
     gone.unmount();
     deleted.unmount();
     edited.unmount();
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. A hover
+// card, a link's label and an unfurl card read a post's own read, or a block's graph read, and
+// keep what it answered through any failure, so a post's correction writes its own facts into
+// each read the cache holds (`markCorrectedPost`). After refetches that all fail, a comment, a
+// message and a block of the comment read as edited, then as deleted, and none gives a word of
+// what it said.
+const CITED_COMMENT = "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+const CITED_MESSAGE = "1b2c3d4e-5f6a-4b7c-9d8e-9f0a1b2c3d4e";
+const CITATIONS = {
+  block: { block: { id: "b2" }, id: CITED_COMMENT, key: "CORE-1", kind: "comment" },
+  comment: { id: CITED_COMMENT, key: "CORE-1", kind: "comment" },
+  message: { id: CITED_MESSAGE, key: "CORE-1", kind: "message" },
+} satisfies Record<string, DispatchReferenceRoute>;
+
+/** What a link to `route` and its cards read: the target's marks, the words the link writes and
+ *  the title it is drawn with. */
+function useCitation(route: DispatchReferenceRoute) {
+  const target = useReferenceTarget(route, { text: false });
+  const { deleted, edited, title } = target;
+  return { deleted, edited, label: useReferenceLabel(route, target).text, title };
+}
+
+test("a post's reference whose refetch fails after its edit and delete reads as edited, then deleted", async () => {
+  let failing = false;
+  const refuse = () => Promise.reject(new Error("the read failed"));
+  const getComment = spyOn(api, "getComment").mockImplementation(() =>
+    failing
+      ? refuse()
+      : Promise.resolve({
+          comment: { ...commentFixture, body: "Hold the deploy.", id: CITED_COMMENT },
+          replies: [],
+        })
+  );
+  const getMessage = spyOn(api, "getMessage").mockImplementation(() =>
+    failing
+      ? refuse()
+      : Promise.resolve({
+          message: {
+            author: { id: "alice", kind: "user" },
+            body: "Ship on Friday.",
+            broadcast_id: null,
+            created_at: "2026-11-19T00:00:00Z",
+            deliveries: [],
+            id: CITED_MESSAGE,
+            in_reply_to: null,
+            issue_key: "CORE-1",
+            reply_block: null,
+            target: null,
+            ...messageCorrectionFields(),
+          },
+          replies: [],
+        })
+  );
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() =>
+    failing
+      ? refuse()
+      : Promise.resolve({
+          edges: [],
+          node: graphNode({
+            block_id: "b2",
+            id: `comment/${CITED_COMMENT}#b2`,
+            kind: "block",
+            parent: { id: CITED_COMMENT, kind: "comment" },
+            text: "Beta as written.",
+            text_tree: displayTree("Beta as written."),
+          }),
+        })
+  );
+  restore = () => {
+    getComment.mockRestore();
+    getMessage.mockRestore();
+    getReferences.mockRestore();
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const feed = correctionFeed(queryClient);
+  const hook = renderHook(
+    () => {
+      useEventFeed();
+      return {
+        block: useCitation(CITATIONS.block),
+        comment: useCitation(CITATIONS.comment),
+        message: useCitation(CITATIONS.message),
+      };
+    },
+    {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client: queryClient }, children),
+    }
+  );
+  const commentReads = [["comment"], ["references", "to"]];
+  const edited = (words: string) => ({
+    deleted: null,
+    edited: EDITED_AT,
+    label: `${words} · edited`,
+    title: words,
+  });
+  const deleted = (label: string | undefined) => ({
+    deleted: { at: DELETION.deleted_at, by: DELETION.deleted_by },
+    edited: EDITED_AT,
+    label,
+    title: "",
+  });
+
+  try {
+    await waitFor(() =>
+      expect([
+        hook.result.current.comment.label,
+        hook.result.current.message.label,
+        hook.result.current.block.label,
+      ]).toEqual(["Hold the deploy.", "Ship on Friday.", "Beta as written."])
+    );
+    feed.start();
+    failing = true;
+
+    await feed.deliver(correction("comment", CITED_COMMENT, true), commentReads);
+    await feed.deliver(correction("message", CITED_MESSAGE, true), [["issue-message"]]);
+    expect(hook.result.current).toEqual({
+      block: edited("Beta as written."),
+      comment: edited("Hold the deploy."),
+      message: edited("Ship on Friday."),
+    });
+
+    await feed.deliver(correction("comment", CITED_COMMENT, false), commentReads);
+    await feed.deliver(correction("message", CITED_MESSAGE, false), [["issue-message"]]);
+    // A link to a block of a deleted post keeps the words its author wrote (`useReferenceLabel`).
+    await waitFor(() =>
+      expect(hook.result.current).toEqual({
+        block: deleted(undefined),
+        comment: deleted("Deleted by alice"),
+        message: deleted("Deleted by alice"),
+      })
+    );
+  } finally {
+    hook.unmount();
+    feed.restore();
+    queryClient.clear();
   }
 });
 

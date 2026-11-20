@@ -12,9 +12,11 @@ import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
+import { correction, correctionFeed } from "../../__tests__/correction-feed";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
+import { useEventFeed } from "../../api/event-feed";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -152,6 +154,8 @@ interface RenderPaletteOptions {
   entries?: string[];
   index?: number;
   onClose?: () => void;
+  /** The cache the palette reads, for a row that holds it before the palette renders. */
+  queryClient?: QueryClient;
 }
 
 function renderPalette({
@@ -159,8 +163,8 @@ function renderPalette({
   entries = ["/"],
   index,
   onClose = () => {},
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 }: RenderPaletteOptions = {}): { queryClient: QueryClient; unmount: () => void } {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
@@ -301,6 +305,64 @@ test("a deleted post's hit draws the deleted line where its snippet would be", a
     search.mockRestore();
     view.unmount();
     view.queryClient.clear();
+  }
+});
+
+/** The page's event feed, mounted beside the palette as the shell mounts it. */
+function EventFeed(): ReactNode {
+  useEventFeed();
+  return null;
+}
+
+// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. The bar
+// says a search failed only while it holds no answer, so a refetch that fails behind a held one
+// leaves its hits on screen: a post's correction writes its own facts into every answer the cache
+// holds (`markCorrectedPost`). The post's hit carries the edited mark once its author edits it,
+// and once they delete it the deleted line, with no word of its snippet, in both tiers' answers.
+test("a post's hit whose refetch fails after its edit and delete carries the edited mark, then the deleted line", async () => {
+  const user = userOnFakeClock();
+  const id = "f6a7b8c9-d0e1-4f2a-8b3c-4d5e6f7a8b9c";
+  const hit: SearchResult = {
+    href: `/issues/LEGION-2/comments/${id}`,
+    id,
+    kind: "comment",
+    owner: { key: "LEGION-2", kind: "issue", status: "todo", title: "Navigation instruments" },
+    rank: 2,
+    snippet: "The <mark>astrolabe</mark> was recalibrated.",
+  };
+  const standing = results[2] as SearchResult;
+  let failing = false;
+  const search = spyOn(api, "search").mockImplementation(async () => {
+    if (failing) throw new Error("503");
+    return searchAnswer([hit, standing]);
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const feed = correctionFeed(queryClient, { fakeClock: true });
+  const view = renderPalette({ control: <EventFeed />, queryClient });
+  const option = (result: SearchResult) => document.getElementById(optionId(result));
+
+  try {
+    await searchFor(user, "astrolabe");
+    // The pause's search answers too, so the bar holds both tiers' answers and draws the second.
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(option(hit)?.textContent).toContain("recalibrated"));
+    feed.start();
+    failing = true;
+
+    await feed.deliver(correction("comment", id, true), [["search"]]);
+    expect(option(hit)?.textContent).toContain("comment · edited");
+
+    await feed.deliver(correction("comment", id, false), [["search"]]);
+    expect(option(hit)?.querySelector("[data-post-deleted]")?.textContent).toContain(
+      "Deleted by alice"
+    );
+    expect(option(hit)?.textContent).not.toContain("recalibrated");
+    expect(option(standing)?.textContent).toContain("Discuss the astrolabe diagram.");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    feed.restore();
+    queryClient.clear();
   }
 });
 

@@ -6,13 +6,13 @@ import {
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
-import { type PostDeletion, postDeletion } from "../features/refs/post-marks";
 
-import { askThreadsIssue, correctedPostAddresses, eventRefreshTargets } from "./event-refresh";
+import { markCorrectedPost } from "./corrected-post";
+import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
-import { inboxQuery, type ReferenceTargetsAnswer } from "./queries";
+import { inboxQuery } from "./queries";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
-import type { AuthenticatedUser, DispatchEvent, EventType, ReferenceTarget } from "./types";
+import type { AuthenticatedUser, DispatchEvent, EventType } from "./types";
 
 const knownEventTypes: Record<EventType, true> = {
   "project.created": true,
@@ -124,86 +124,6 @@ export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent
       pages: [[event, ...first], ...current.pages.slice(1)],
     };
   });
-}
-
-/**
- * Writes a post's correction into every names read the cache holds
- * (`["reference-targets", <addresses>]`), on each member that names the post or a block of it
- * (`correctedPostAddresses`), as GET /api/v1/reference-targets answers a corrected post. A
- * delete's member names the post with no words (`name: ""`) beside the delete's mark,
- * `deleted_at` and `deleted_by` from the event, and a block of the post is gone, with no words
- * and no tree, beside the same mark. An edit's member, and each of its blocks', carries the
- * edit's time (`edited_at`), and its words stay those of the answer until a read gives the new
- * ones. The event refreshes the same reads (`eventRefreshTargets`), whose answer replaces this;
- * a refetch that fails keeps the answer it would have replaced, which without this would go on
- * naming a deleted post by its words, and an edited one without its mark.
- *
- * A member the read answered ambiguous or gone names no post, and is left as it is. So is every
- * read that holds no such member, or no answer yet: its updater answers `undefined`, which
- * writes nothing, where an answer written back unchanged would still count as a new one and
- * clear the read's stale mark. A delete's event carries the delete's time, as every one this
- * server writes does; one that carried none would have no mark to write, and writes nothing.
- */
-export function markCorrectedPost(queryClient: QueryClient, event: DispatchEvent): void {
-  const names = correctedPostAddresses(event);
-  if (names === undefined) {
-    return;
-  }
-  let mark: (target: ReferenceTarget) => ReferenceTarget;
-  switch (event.type) {
-    case "comment.deleted":
-    case "message.deleted": {
-      const deleted = postDeletion(event.payload);
-      if (deleted === null) {
-        return;
-      }
-      mark = (target) => deletedTarget(target, deleted);
-      break;
-    }
-    case "comment.edited":
-    case "message.edited": {
-      const editedAt = event.payload.edited_at;
-      if (editedAt === undefined || editedAt === null) {
-        return;
-      }
-      mark = (target) => ({ ...target, edited_at: editedAt });
-      break;
-    }
-    default:
-      return;
-  }
-  const corrected = (target: ReferenceTarget) =>
-    target.ambiguous !== true && !target.gone && names(target.ref);
-  queryClient.setQueriesData<ReferenceTargetsAnswer>(
-    { queryKey: ["reference-targets"] },
-    (answer) => {
-      const first = answer?.targets.findIndex(corrected) ?? -1;
-      if (answer === undefined || first === -1) {
-        return undefined;
-      }
-      return {
-        ...answer,
-        targets: answer.targets.map((target, at) =>
-          at === first || (at > first && corrected(target)) ? mark(target) : target
-        ),
-      };
-    }
-  );
-}
-
-/** `target`, a member naming a post or a block of it, as the reference-targets read answers it
- *  once the post is deleted: the post's member named `""`, the body the delete cleared, and a
- *  block's gone, since the delete takes every block out of the post, with no words and no tree;
- *  either carries the delete's mark, and the time of an edit before it as it stood. */
-function deletedTarget(target: ReferenceTarget, deleted: PostDeletion): ReferenceTarget {
-  const { deleted_by: _by, text_tree: _tree, ...kept } = target;
-  return {
-    ...kept,
-    deleted_at: deleted.at,
-    ...(deleted.by === null ? {} : { deleted_by: deleted.by }),
-    gone: target.kind === "block",
-    name: "",
-  };
 }
 
 // Leading window for a burst: a cold-start replay or a flurry of events on one issue is handed to
@@ -419,7 +339,7 @@ export function useEventFeed({
         try {
           prependEventToLog(queryClient, event);
           // Written now, ahead of the batch's refresh, whose stale mark a write would clear: a
-          // names read whose refetch fails keeps the answer this marks.
+          // read of the post whose refetch fails keeps the answer this marks.
           markCorrectedPost(queryClient, event);
           const targets = eventRefreshTargets(
             event,

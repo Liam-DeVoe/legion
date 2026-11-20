@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 
-import { markCorrectedPost } from "./event-feed";
+import { markCorrectedPost } from "./corrected-post";
 import { eventRefreshTargets } from "./event-refresh";
 import { referenceTargetsQuery } from "./queries";
 import { refreshQueries } from "./query-refresh";
