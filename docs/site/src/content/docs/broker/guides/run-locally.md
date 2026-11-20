@@ -599,7 +599,7 @@ what the stand's installation holds left out: `issues`, which the installation h
 
 `packages/envoy/scripts/dev-airlock.sh` starts the whole airlock, in a stack of its own. It runs
 `dev-broker.sh` first, for Postgres, `dev-oidc-issuer` and the binaries, and then adds what the
-airlock needs: `cmd/dev-airlock-stands`, which serves the stand-in services and records every
+airlock needs: `cmd/dev-proxy-stands`, which serves the stand-in services and records every
 request each one is sent; a profiles file (`BROKER_PROFILES_FILE`), each secret a profile of its
 own name with a proxy block, and a fake secrets file that
 name the same secrets; two broker processes on one database, each with an API port and a proxy
@@ -717,7 +717,7 @@ this script started, drops its database and prints the workdir it kept.
 ## Let the judge decide a request
 
 The stack of the first section runs no model judge. The airlock stack runs one, on both broker
-processes. Three more stand-ins of `cmd/dev-airlock-stands` serve it: a model endpoint, a
+processes. Three more stand-ins of `cmd/dev-proxy-stands` serve it: a model endpoint, a
 Dispatch holding one open issue, one done one and one answered ask, and a Compute Engine metadata
 server, where the broker mints the identity token it presents to the model. Its profiles file
 says who decides each human-tier secret, in each profile's proxy block:
@@ -793,7 +793,7 @@ Manager and KMS. The broker reads that file again on every call it makes to it, 
 how you write a secret here.
 
 The airlock's proxy, its profiles, its decision and its swap are the real ones too, and so is each
-broker process the airlock stack runs. Five more things stand in there. `cmd/dev-airlock-stands`
+broker process the airlock stack runs. Five more things stand in there. `cmd/dev-proxy-stands`
 plays every host a proxy block binds: S and T, which answer one line and record what they were sent,
 the GitHub and Google endpoints a `github-app` and a `google-login` secret mint at, the Microsoft
 token endpoint the `azure` kind exchanges at, which also plays the resource host that token is
