@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -111,9 +112,9 @@ func LinkedPullRequests(ctx context.Context, q refs.Queryer, issueKey string) ([
 	return linked, nil
 }
 
-// HeadOfChangedLink is one stored pull request whose own URL a change of an issue's links added
-// or removed (LinksChanged): the key of its row, its URL, and whether the change took the pull
-// request from the issue at once (Uncredited).
+// HeadOfChangedLink is one stored pull request a change of an issue's links named (LinksChanged):
+// the key of its row, its URL, and whether the change took the pull request from the issue at
+// once (Uncredited).
 type HeadOfChangedLink struct {
 	Repo       string
 	Number     int
@@ -135,12 +136,14 @@ func (head HeadOfChangedLink) AttributionEvent(issueKey string) model.Event {
 	}
 }
 
-// linksChangedQuery is LinksChanged's statement. The inner select locks each row whose URL a
-// changed link names before it reads whether the change took the row's issue away, so a writer of
-// the same row waits for this transaction rather than having its issue read before its write and
-// overwritten after it. No index serves `lower(url)`: a change of an issue's links is a person's
-// edit, rare beside the reads of the table, and one scan of a row per pull request Dispatch has
-// seen costs that edit a few milliseconds.
+// linksChangedQuery is LinksChanged's statement: $1 the issue, $2 the lowercased URLs of the
+// links the change added or removed, and $3 whether it removed a link to a GitHub issue
+// (githubIssueLink). The inner select locks each row the change names before it reads whether
+// the change took the row's issue away, so a writer of the same row waits for this transaction
+// rather than having its issue read before its write and overwritten after it. No index serves
+// `lower(url)`: a change of an issue's links is a person's edit, rare beside the reads of the
+// table, and one scan of a row per pull request Dispatch has seen costs that edit a few
+// milliseconds; the rows an issue link named are read through pull_request_heads_issue_head.
 var linksChangedQuery = `
 	update pull_request_heads h set
 		attribution_rule = 0,
@@ -148,33 +151,51 @@ var linksChangedQuery = `
 		attribution_source = case when o.gone then '` + string(sourceNone) + `' else h.attribution_source end
 	from (
 		select p.repo, p.number,
-			p.issue_key is not distinct from $1::text and p.attribution_source = '` + string(sourceExternalLink) + `'
-				and not exists (
+			p.issue_key is not distinct from $1::text and (
+				p.attribution_source = '` + string(sourceExternalLink) + `' and not exists (
 					select 1 from issue_external_links l where l.issue_key = $1 and lower(l.url) = lower(p.url)
-				) as gone
+				)
+				or p.attribution_source = '` + string(sourceGitHubIssueLink) + `' and $3::boolean
+			) as gone
 		from pull_request_heads p
 		where lower(p.url) = any($2::text[])
-		for no key update
+			or ($3::boolean and p.issue_key = $1 and p.attribution_source = '` + string(sourceGitHubIssueLink) + `')
+		for no key update of p
 	) o
 	where h.repo = o.repo and h.number = o.number
 	returning h.repo, h.number, h.url, o.gone`
 
+// githubIssueLink is a link to a GitHub issue in the one form a citation the attribution reads
+// takes (citedIssues: https://github.com/<owner>/<repo>/issues/<n>), lowercased, as the
+// attribution compares a link with a citation.
+var githubIssueLink = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/issues/[0-9]+$`)
+
+// linksOfIssueQuery is every link of the issue $1, lowercased: the links after the change, which
+// LinksChanged tells a removed link from an added one by.
+const linksOfIssueQuery = `select lower(url) from issue_external_links where issue_key = $1`
+
 // LinksChanged is what a change of issueKey's external links does to the stored pull requests
-// whose own URL a link it added or removed names, urls being those links' URLs, run in the
-// transaction that writes the links, after the write (api/issue_patch.go). A link of a pull
-// request's own URL is the attribution's first source, held in any repository (attributionHeldFor,
-// R19 of the spec of several open pull requests), so a pull request is the issue's while the
-// issue links it, and its stored issue was judged with links it no longer has. It answers each
+// those links decide the issue of, urls being the URLs of the links it added or removed, run in
+// the transaction that writes the links, after the write (api/issue_patch.go). It answers each
 // such pull request, for the caller to read again from GitHub at once (RefreshPullRequestHead).
 //
-// A pull request whose issue was issueKey by the link this change removed is that issue's no
+// Two sources of the attribution are links of the issue (attributionCandidates): first, the link
+// of a pull request's own URL, held in any repository (attributionHeldFor, R19 of the spec of
+// several open pull requests), so a pull request is the issue's while the issue links it; second,
+// the link of a GitHub issue the pull request's body cites. So the change names the pull requests
+// whose own URL a link it added or removed is, and, where it removed a link to a GitHub issue,
+// every pull request whose issue was issueKey by a citation: the body that cites is on no stored
+// row, so the change cannot tell which link a citation named, and it takes them all to be read
+// again rather than leave one with a link it no longer has.
+//
+// A pull request whose issue was issueKey by a link this change removed is that issue's no
 // longer, at once: the row is credited to nobody in this transaction, so no read of the issue's
 // results counts its head after the change commits, and the caller appends the move on the issue
 // (HeadOfChangedLink.AttributionEvent). Which issue its other sources give it is the read's to
 // say: the body and the commit messages are on no stored row, so only GitHub's answer can judge
-// it. A pull request the change linked keeps its stored issue until that read: whether its head
-// is in a fork, which gives it no issue, linked or not (headAttribution), is on no stored row
-// either.
+// it, and a citation of a GitHub issue the issue still links gives it back to the issue there. A
+// pull request the change linked keeps its stored issue until that read: whether its head is in
+// a fork, which gives it no issue, linked or not (headAttribution), is on no stored row either.
 //
 // Each such row's attribution_rule is set to 0, a rule older than every rule that judges a row
 // now, so the reconcile judges the row again on its own where the caller's read did not answer or
@@ -190,7 +211,18 @@ func LinksChanged(ctx context.Context, q refs.Queryer, issueKey string, urls []s
 	for _, url := range urls {
 		lowered = append(lowered, strings.ToLower(url))
 	}
-	rows, err := q.Query(ctx, linksChangedQuery, issueKey, lowered)
+	links, err := q.Query(ctx, linksOfIssueQuery, issueKey)
+	if err != nil {
+		return nil, fmt.Errorf("read the links of %s: %w", issueKey, err)
+	}
+	linked, err := pgx.CollectRows(links, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the links of %s: %w", issueKey, err)
+	}
+	removedIssueLink := slices.ContainsFunc(lowered, func(url string) bool {
+		return githubIssueLink.MatchString(url) && !slices.Contains(linked, url)
+	})
+	rows, err := q.Query(ctx, linksChangedQuery, issueKey, lowered, removedIssueLink)
 	if err != nil {
 		return nil, fmt.Errorf("judge again the pull requests whose links of %s changed: %w", issueKey, err)
 	}

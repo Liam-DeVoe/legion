@@ -26,13 +26,13 @@ import (
 // no issue's, linked or not. The file builds at a commit before the PATCH judged a linked pull
 // request again, and fails there on its own assertion.
 
-// changedLinkPull is one pull request changedLinkGitHub answers: its title, head branch, the
+// changedLinkPull is one pull request changedLinkGitHub answers: its title, body, head branch, the
 // repository its head branch is in, its head commit, and whether it merged. A refused one is
 // answered with the 403 GitHub refuses an installation token a resource with, which is no rate
 // limit: GitHub says nothing of it.
 type changedLinkPull struct {
-	title, headRef, headRepo, sha string
-	merged, refused               bool
+	title, body, headRef, headRepo, sha string
+	merged, refused                     bool
 }
 
 // changedLinkGitHub is GitHub for the pull requests a change of an issue's links names: each
@@ -90,10 +90,10 @@ func changedLinkServer(t *testing.T, github *changedLinkGitHub) (http.Handler, *
 		if pull.merged {
 			state, mergedAt = "closed", `"2026-11-16T00:00:00Z"`
 		}
-		fmt.Fprintf(w, `{"number":%s,"title":%q,"body":"","html_url":"https://github.com/%s/pull/%s",
+		fmt.Fprintf(w, `{"number":%s,"title":%q,"body":%q,"html_url":"https://github.com/%s/pull/%s",
 			"state":%q,"merged":%t,"merged_at":%s,"updated_at":"2026-11-16T00:00:00Z",
 			"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}`,
-			number, pull.title, repo, number, state, pull.merged, mergedAt, pull.headRef, pull.sha, pull.headRepo)
+			number, pull.title, pull.body, repo, number, state, pull.merged, mergedAt, pull.headRef, pull.sha, pull.headRepo)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
@@ -106,20 +106,20 @@ func changedLinkServer(t *testing.T, github *changedLinkGitHub) (http.Handler, *
 	return handler, database
 }
 
-// storeToolsMerge stores acme/tools#number merged at sha, with the issue the attribution gave it
-// when a writer last judged it (nil for nobody) and the source that named it, as a read of GitHub
-// before the test leaves the row.
-func storeToolsMerge(t *testing.T, database *store.Store, number int, sha string, issue *string, source string) {
+// storeMerge stores repo#number merged at sha, with the issue the attribution gave it when a
+// writer last judged it (nil for nobody) and the source that named it, as a read of GitHub before
+// the test leaves the row.
+func storeMerge(t *testing.T, database *store.Store, repo string, number int, sha string, issue *string, source string) {
 	t.Helper()
 	eventAt := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
 	read := time.Now().Add(-time.Minute)
 	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
-		Repo: "acme/tools", Number: number, HeadSHA: sha, HeadRef: "work/deploy-job", BaseRef: "main",
+		Repo: repo, Number: number, HeadSHA: sha, HeadRef: "work/deploy-job", BaseRef: "main",
 		State: "merged", IssueKey: issue, AttributionSource: source, AttributionComplete: true,
-		Title: "Move the deploy job", URL: "https://github.com/acme/tools/pull/" + strconv.Itoa(number),
+		Title: "Move the deploy job", URL: "https://github.com/" + repo + "/pull/" + strconv.Itoa(number),
 		EventAt: &eventAt, CheckedAt: &read,
 	}); err != nil {
-		t.Fatalf("store the merged head of acme/tools#%d: %v", number, err)
+		t.Fatalf("store the merged head of %s#%d: %v", repo, number, err)
 	}
 }
 
@@ -140,16 +140,16 @@ func headNumbersOf(t *testing.T, database *store.Store, issue string) []int {
 }
 
 // attributionMovesOf counts the issue.pull_request_attribution_changed events on issue that move
-// acme/tools#number away from it.
-func attributionMovesOf(t *testing.T, database *store.Store, issue string, number int) int {
+// repo#number away from it.
+func attributionMovesOf(t *testing.T, database *store.Store, issue, repo string, number int) int {
 	t.Helper()
 	var count int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from events
-		where issue_key = $1 and type = $2 and payload->>'repo' = 'acme/tools'
-			and (payload->>'number')::int = $3 and payload->>'from' = $1 and payload->>'to' is null
-	`, issue, delivery.AttributionEventType, number).Scan(&count); err != nil {
-		t.Fatalf("count the moves of acme/tools#%d off %s: %v", number, issue, err)
+		where issue_key = $1 and type = $2 and payload->>'repo' = $3
+			and (payload->>'number')::int = $4 and payload->>'from' = $1 and payload->>'to' is null
+	`, issue, delivery.AttributionEventType, repo, number).Scan(&count); err != nil {
+		t.Fatalf("count the moves of %s#%d off %s: %v", repo, number, issue, err)
 	}
 	return count
 }
@@ -181,9 +181,9 @@ func TestRemovingALinkTakesThePullRequestFromTheIssueAtOnce(t *testing.T) {
 	linkPullRequests(t, handler, issue.Key, removedURL, keptURL, refusedURL)
 	// The three merged pull requests as the attribution leaves them once a writer judged them:
 	// the issue's, by its links.
-	storeToolsMerge(t, database, 12, removedHead, &issue.Key, "external_link")
-	storeToolsMerge(t, database, 13, keptHead, &issue.Key, "external_link")
-	storeToolsMerge(t, database, 16, refusedHead, &issue.Key, "external_link")
+	storeMerge(t, database, "acme/tools", 12, removedHead, &issue.Key, "external_link")
+	storeMerge(t, database, "acme/tools", 13, keptHead, &issue.Key, "external_link")
+	storeMerge(t, database, "acme/tools", 16, refusedHead, &issue.Key, "external_link")
 	if heads := headNumbersOf(t, database, issue.Key); !slices.Equal(heads, []int{12, 13, 16}) {
 		t.Fatalf("the heads of %s while it links #12, #13 and #16 = %v, want [12 13 16]", issue.Key, heads)
 	}
@@ -195,7 +195,7 @@ func TestRemovingALinkTakesThePullRequestFromTheIssueAtOnce(t *testing.T) {
 			issue.Key, heads)
 	}
 	for _, number := range []int{12, 16} {
-		if moves := attributionMovesOf(t, database, issue.Key, number); moves != 1 {
+		if moves := attributionMovesOf(t, database, issue.Key, "acme/tools", number); moves != 1 {
 			t.Fatalf("%s's timeline holds %d moves of acme/tools#%d off it, want 1", issue.Key, moves, number)
 		}
 	}
@@ -225,13 +225,71 @@ func TestLinkingAMergedPullRequestMakesItTheIssuesAtOnce(t *testing.T) {
 	}}
 	handler, database := changedLinkServer(t, github)
 	issue := issueInRepository(t, handler, "RELA", "acme/widgets", "Work linked after its merge")
-	storeToolsMerge(t, database, 14, ownHead, nil, "none")
-	storeToolsMerge(t, database, 15, forkHead, nil, "none")
+	storeMerge(t, database, "acme/tools", 14, ownHead, nil, "none")
+	storeMerge(t, database, "acme/tools", 15, forkHead, nil, "none")
 
 	linkPullRequests(t, handler, issue.Key,
 		"https://github.com/acme/tools/pull/14", "https://github.com/acme/tools/pull/15")
 
 	if heads := headNumbersOf(t, database, issue.Key); !slices.Equal(heads, []int{14}) {
 		t.Fatalf("the heads of %s once it links acme/tools#14 and the fork's #15 = %v, want [14]", issue.Key, heads)
+	}
+}
+
+// The attribution's second source is a link of the issue too: a pull request whose body cites a
+// GitHub issue the issue links is the issue's, where the issue resolves to the pull request's
+// repository. Removing that link takes the pull request from the issue at the removal, merged or
+// not, and the move is on the issue's timeline; before, the issue kept it until a read of the
+// pull request, never for a merged one. No stored row says which GitHub issue a body cites, so
+// every pull request the issue held by a citation is taken and read again from GitHub at once: one
+// whose body cites a GitHub issue the issue still links is the issue's again, and the removal
+// stands where GitHub says nothing of the pull request. A pull request the issue holds by another
+// source is left as it is, and GitHub is not asked about it.
+func TestRemovingAnIssueLinkTakesThePullRequestsItGaveAtOnce(t *testing.T) {
+	const (
+		removedLink = "https://github.com/acme/widgets/issues/71"
+		keptLink    = "https://github.com/acme/widgets/issues/82"
+		citedHead   = "31a31a31a31a31a31a31a31a31a31a31a31a31a1"
+		keptHead    = "32b32b32b32b32b32b32b32b32b32b32b32b32b1"
+		branchHead  = "33c33c33c33c33c33c33c33c33c33c33c33c33c1"
+		refusedHead = "34d34d34d34d34d34d34d34d34d34d34d34d34d1"
+	)
+	github := &changedLinkGitHub{pulls: map[string]changedLinkPull{
+		"acme/widgets#31": {title: "Move the deploy job", body: "Fixes #71.", headRef: "work/deploy-job", headRepo: "acme/widgets", sha: citedHead, merged: true},
+		"acme/widgets#32": {title: "Move the build job", body: "Follows #82.", headRef: "work/build-job", headRepo: "acme/widgets", sha: keptHead, merged: true},
+		"acme/widgets#34": {refused: true},
+	}}
+	handler, database := changedLinkServer(t, github)
+	issue := issueInRepository(t, handler, "RELC", "acme/widgets", "Work its GitHub issues name")
+	linkPullRequests(t, handler, issue.Key, removedLink, keptLink)
+	// Four merged pull requests of the issue's own repository as the attribution leaves them: #31,
+	// #32 and #34 the issue's because each body cites a GitHub issue it links, #33 the issue's by
+	// its branch.
+	storeMerge(t, database, "acme/widgets", 31, citedHead, &issue.Key, "github_issue_link")
+	storeMerge(t, database, "acme/widgets", 32, keptHead, &issue.Key, "github_issue_link")
+	storeMerge(t, database, "acme/widgets", 33, branchHead, &issue.Key, "branch")
+	storeMerge(t, database, "acme/widgets", 34, refusedHead, &issue.Key, "github_issue_link")
+	if heads := headNumbersOf(t, database, issue.Key); !slices.Equal(heads, []int{31, 32, 33, 34}) {
+		t.Fatalf("the heads of %s while it links both GitHub issues = %v, want [31 32 33 34]", issue.Key, heads)
+	}
+
+	linkPullRequests(t, handler, issue.Key, keptLink)
+
+	if heads := headNumbersOf(t, database, issue.Key); !slices.Equal(heads, []int{32, 33}) {
+		t.Fatalf("the heads of %s once its link to acme/widgets/issues/71 is removed = %v, want [32 33]: #31 and #34 were the issue's by a link it no longer has",
+			issue.Key, heads)
+	}
+	for _, number := range []int{31, 34} {
+		if moves := attributionMovesOf(t, database, issue.Key, "acme/widgets", number); moves != 1 {
+			t.Fatalf("%s's timeline holds %d moves of acme/widgets#%d off it, want 1", issue.Key, moves, number)
+		}
+	}
+	for _, pull := range []string{"acme/widgets#31", "acme/widgets#32", "acme/widgets#34"} {
+		if reads := github.readsOf(pull); reads != 1 {
+			t.Fatalf("GitHub was asked for %s %d times after the link was removed, want once", pull, reads)
+		}
+	}
+	if reads := github.readsOf("acme/widgets#33"); reads != 0 {
+		t.Fatalf("GitHub was asked for acme/widgets#33 %d times, want none: no link gave it the issue", reads)
 	}
 }

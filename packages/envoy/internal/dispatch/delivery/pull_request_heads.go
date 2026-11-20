@@ -36,9 +36,9 @@ import (
 // once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which takes every open row read longer than five minutes ago and every merged row the rule
 // this build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
-// ListStalePullRequestHeads). A change of an issue's links takes a pull request it no longer
-// links from it at once, and has the reconcile judge again each pull request whose URL the change
-// named (LinksChanged), which the issue PATCH also reads again from GitHub at once.
+// ListStalePullRequestHeads). A change of an issue's links takes a pull request from the issue at
+// once where the link that gave it is gone, and has the reconcile judge again each pull request
+// the change named (LinksChanged), which the issue PATCH also reads again from GitHub at once.
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it

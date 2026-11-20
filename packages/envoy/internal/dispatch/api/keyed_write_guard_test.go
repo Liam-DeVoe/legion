@@ -54,6 +54,12 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
+	// The pull requests a change of an issue's links named, read again from GitHub and stored after
+	// the PATCH's own transaction committed and marked the request's key, as the read-through above
+	// is. The rows are keyed (repo, number) and hold what GitHub says, so a repeat writes exactly
+	// the same rows; a failure is only logged, and the reconcile judges each row on its own pass,
+	// since the transaction marked it (delivery.LinksChanged).
+	"api.server.readHeadsOfChangedLinks": "stores what GitHub says about the pull requests a link change named, after the PATCH marked its key",
 	// The pool itself: its statement methods are what the guard looks for at their call sites.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",

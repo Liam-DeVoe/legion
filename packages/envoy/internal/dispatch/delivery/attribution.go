@@ -58,10 +58,11 @@ import (
 // walk visits them all in turn.
 //
 // A pull_request_heads row stores none of those inputs, so it is judged again only from a read of
-// GitHub (pull_request_heads.go). The link of a pull request's own URL names that row, so a change
-// of an issue's links judges each row whose URL it added or removed again at once: it takes a pull
-// request the issue no longer links from the issue in the transaction of the change, and the
-// issue PATCH reads each such pull request again from GitHub after it (LinksChanged).
+// GitHub (pull_request_heads.go). So a change of an issue's links judges again at once each row
+// whose own URL a link it added or removed names, and, where it removed a link to a GitHub issue,
+// each row the issue held by a citation: it takes a pull request from the issue in the
+// transaction of the change where the link that gave it is gone, and the issue PATCH reads each
+// such pull request again from GitHub after it (LinksChanged).
 
 // AttributionRuleVersion names the rule this build judges a pull request by: the first
 // candidate, of the five sources above, that is held to the pull request.
@@ -73,8 +74,8 @@ import (
 // first. 2 is the order above, with the two links and the head branch over the title and the
 // body. 3 holds the issue's own link to a pull request's URL in any repository (R19 of the spec
 // of several open pull requests), so a pull request an issue links in another repository is that
-// issue's. A change of the links that name a row's own URL sets its rule to 0 too, since the rule
-// that judged it judged links the row no longer has (LinksChanged).
+// issue's. A change of an issue's links that LinksChanged names a row for sets its rule to 0 too,
+// since the rule that judged it judged links the row no longer has.
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
 // stored. Nothing else revisits one — an open row comes round every five minutes, but a merged
