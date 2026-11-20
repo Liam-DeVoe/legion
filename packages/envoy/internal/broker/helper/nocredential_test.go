@@ -245,56 +245,116 @@ func TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential(t *testi
 // session is still enrolling; a register reply for that session is OK either way and carries
 // NO_CREDENTIAL in the same case. Every enrollment this fake broker sees fails, so the session
 // never enrolls and the credential alone decides the answer.
+//
+// The broker refuses the credential (401 LAUNCHER_INVALID) on one enroll, and two are out by
+// then: the session's own, which the login woke, and the row's enroll-session-key. Each row sets
+// which of the two the refusal meets. Either way the helper holds no credential once it has
+// handled the refusal. The session key's enroll drops the credential before its own reply. The
+// session's enroll drops it on the enroll loop's goroutine, which can be after that reply, so
+// that row holds the drop until the reply is back and then waits for the drop.
 func TestSignAnswersNoCredentialWhileTheHelperHoldsNone(t *testing.T) {
-	r := newRig(t, "")
-	r.fake.mu.Lock()
-	r.fake.failFirst = failAlways
-	r.fake.mu.Unlock()
-	if reg := r.call(t, Request{Op: "register"}); !reg.OK {
-		t.Fatalf("register: %+v", reg)
-	}
-	signs := []Request{
-		{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"},
-		{Op: "sign-request", Secrets: []string{"DEEL_API_KEY"}, Reason: "x"},
-	}
-	expect := func(when, code string) {
-		t.Helper()
-		for _, req := range signs {
-			resp := r.call(t, req)
-			if resp.OK || resp.Code != code {
-				t.Fatalf("%s, %s: %+v; want %s", when, req.Op, resp, code)
+	for _, row := range []struct {
+		name string
+		// sessionRefused: the refusal meets the session's own enroll, and the session key's
+		// enroll then meets the fake's 503 (an unknown outcome).
+		sessionRefused bool
+		keyCode        string
+	}{
+		{"the session key's enroll is refused", false, CodeEnrollFailed},
+		{"the session's own enroll is refused", true, CodeEnrollUnknown},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t, "")
+			b := r.srv.Broker
+			// Once hold is set, the next drop that reaches dropOutsideRefresh closes held and waits
+			// for letDrop. No goroutine of the helper can drop a credential before the login below.
+			held := make(chan struct{})
+			letDrop, releaseDrop := testGate(t)
+			var hold atomic.Bool
+			b.testBeforeDrop = func() {
+				if hold.CompareAndSwap(true, false) {
+					close(held)
+					<-letDrop
+				}
 			}
-			if code == CodeNoCredential && resp.Error != noCredentialMsg {
-				t.Fatalf("%s, %s: error %q; want %q", when, req.Op, resp.Error, noCredentialMsg)
+			r.fake.mu.Lock()
+			r.fake.failFirst = failAlways
+			r.fake.mu.Unlock()
+			if reg := r.call(t, Request{Op: "register"}); !reg.OK {
+				t.Fatalf("register: %+v", reg)
 			}
-		}
-		regCode := ""
-		if code == CodeNoCredential {
-			regCode = CodeNoCredential
-		}
-		reg := r.call(t, Request{Op: "register"})
-		if !reg.OK || reg.State != "enrolling" || reg.Code != regCode || (regCode != "" && reg.Error != noCredentialMsg) {
-			t.Fatalf("%s, register: %+v; want OK, enrolling, code %q", when, reg, regCode)
-		}
-	}
+			signs := []Request{
+				{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"},
+				{Op: "sign-request", Secrets: []string{"DEEL_API_KEY"}, Reason: "x"},
+			}
+			expect := func(when, code string) {
+				t.Helper()
+				for _, req := range signs {
+					resp := r.call(t, req)
+					if resp.OK || resp.Code != code {
+						t.Fatalf("%s, %s: %+v; want %s", when, req.Op, resp, code)
+					}
+					if code == CodeNoCredential && resp.Error != noCredentialMsg {
+						t.Fatalf("%s, %s: error %q; want %q", when, req.Op, resp.Error, noCredentialMsg)
+					}
+				}
+				regCode := ""
+				if code == CodeNoCredential {
+					regCode = CodeNoCredential
+				}
+				reg := r.call(t, Request{Op: "register"})
+				if !reg.OK || reg.State != "enrolling" || reg.Code != regCode || (regCode != "" && reg.Error != noCredentialMsg) {
+					t.Fatalf("%s, register: %+v; want OK, enrolling, code %q", when, reg, regCode)
+				}
+			}
 
-	expect("before any login", CodeNoCredential)
-	r.login(t)
-	expect("logged in, still enrolling", CodeNotEnrolled)
+			expect("before any login", CodeNoCredential)
+			// Before the login the session's attempts fail in the helper and reach no broker. The
+			// login wakes its enroll loop, and the enroll it sends then waits at the gate.
+			gate, open := testGate(t)
+			r.fake.mu.Lock()
+			r.fake.enrollGate = gate
+			r.fake.mu.Unlock()
+			r.login(t)
+			waitFor(t, func() bool {
+				r.fake.mu.Lock()
+				defer r.fake.mu.Unlock()
+				return r.fake.enrollArrivals == 1
+			})
+			expect("logged in, still enrolling", CodeNotEnrolled)
 
-	// The broker refuses the credential (401 LAUNCHER_INVALID) on the next enroll, the session
-	// key's or the session's own loop's, whichever comes first; either way the helper holds none
-	// afterwards.
-	r.fake.mu.Lock()
-	r.fake.enrollUnauthorizedNext = 1
-	r.fake.mu.Unlock()
-	if key := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}); key.OK {
-		t.Fatalf("enroll-session-key with a refused credential: %+v", key)
+			// The gate holds the session's enroll alone: the enroll-session-key below passes it.
+			r.fake.mu.Lock()
+			r.fake.enrollGate, r.fake.enrollUnauthorizedNext = nil, 1
+			r.fake.mu.Unlock()
+			if row.sessionRefused {
+				// The session's enroll meets the refusal, and its drop waits at the hook, so the
+				// enroll-session-key below still signs with the credential and meets the 503.
+				hold.Store(true)
+				open()
+				waitFor(t, func() bool {
+					select {
+					case <-held:
+						return true
+					default:
+						return false
+					}
+				})
+			}
+			if key := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}); key.OK || key.Code != row.keyCode {
+				t.Fatalf("enroll-session-key beside a refused credential: %+v; want %s", key, row.keyCode)
+			}
+			if row.sessionRefused {
+				// The reply came back while the loop's drop waited. Let the drop go, and wait for it.
+				releaseDrop()
+				waitFor(t, func() bool { return !b.HasCredential() })
+			} else if b.HasCredential() {
+				t.Fatal("a refused credential must be cleared before the reply to the enroll it refused")
+			}
+			open() // in the first row the session's enroll goes on now, and meets the fake's 503
+			expect("after the broker refused the credential", CodeNoCredential)
+		})
 	}
-	if r.srv.Broker.HasCredential() {
-		t.Fatal("a refused credential must be cleared")
-	}
-	expect("after the broker refused the credential", CodeNoCredential)
 }
 
 // TestARegisterWaitWaitsForAConfirmationThatNeedsNoCredential: a renew of an inherited enrollment
