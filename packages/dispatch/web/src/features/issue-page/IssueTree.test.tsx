@@ -5642,9 +5642,10 @@ test(", from a row under the zoom's root places the root's row alone, not the ro
 // the line drawn for that zoom holds no crumb of the node pressed, and a zoom out to the issue
 // draws no line - and the browser dropped the focus to the page's body, at 1440 by 900 and at
 // 390 by 664 px alike. A press on a crumb leaves the focus where it was, as one on a row's fold
-// control does: on the row the reader is on, which the zoom out keeps drawn, and which the zoom
-// places as it places the row `,` leaves the focus on. happy-dom lays nothing out, so the reply's
-// row is given a box below the window once each press has started, moved by each scroll.
+// control does: on the row the reader is on, which the press keeps drawn by unfolding the path
+// down to it, and which the zoom places as it places the row `,` leaves the focus on. happy-dom
+// lays nothing out, so the reply's row is given a box below the window once each press has
+// started, moved by each scroll.
 test("a press on a crumb zooms out with the focus left on the row the reader is on, and brings that row on screen", async () => {
   const user = userEvent.setup();
   let scrolledTo = 0;
@@ -5723,6 +5724,135 @@ test("a press on a crumb zooms out with the focus left on the row the reader is 
       expect(
         scrolled,
         `at ${width} px the zoom out to the issue left the reply's row off screen`
+      ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
+      view.unmount();
+    }
+  } finally {
+    boxes.mockRestore();
+    scrolled.mockRestore();
+  }
+});
+
+// The zoom out a crumb's press makes draws open only what something opened: the node the zoom
+// was rooted at is drawn open as the zoom's own row, and folded once the tree is rooted above it
+// unless the reader, the frontier, an address or a filter opened it, and a comment is on no
+// frontier. `.` on a comment opens only the path above it, so a press on the issue's crumb from
+// that comment's reply drew the comment folded, the reply's row nowhere, and the focus went to
+// the row drawn at the reply's place, the second comment's; a press on the thread's crumb from a
+// reply under the reply `.` zoomed into did the same a level down. The press unfolds the path
+// down to the row the reader is on, at both widths, so that row is drawn, keeps the focus, and is
+// placed by the zoom. happy-dom lays nothing out, so that row is given a box below the window
+// once each press has started, moved by each scroll.
+test("a press on a crumb keeps the row the reader is on drawn and focused where the zoom out folds the branch above it", async () => {
+  const user = userEvent.setup();
+  let scrolledTo = 0;
+  // The row given a box and where it stands down the page, 40 px tall, its bullet 8 px into it:
+  // undefined until a press has started. Every other element is given no box, which reads as
+  // whole on screen.
+  let placed: { readonly id: string; readonly top: number } | undefined;
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const row = this.closest<HTMLElement>("[data-node-row]");
+    if (placed === undefined || row?.dataset.nodeId !== placed.id) return new DOMRect();
+    if (this === row) return new DOMRect(0, placed.top - scrolledTo, 800, 40);
+    return this.matches("[data-node-bullet]")
+      ? new DOMRect(0, placed.top + 8 - scrolledTo, 18, 24)
+      : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(((options: ScrollToOptions) => {
+    scrolledTo += options.top ?? 0;
+  }) as typeof window.scrollBy);
+  try {
+    for (const width of [1440, 390]) {
+      setViewport(width);
+      placed = undefined;
+      // Two comments, the first with a reply under it, and that reply with a reply of its own.
+      const view = renderTree(
+        node({
+          children: [
+            node({
+              children: [
+                node({
+                  children: [node({ id: "comment-1b", text: "Under the reply.", type: "comment" })],
+                  id: "comment-1a",
+                  text: "Under the first.",
+                  type: "comment",
+                }),
+              ],
+              id: "comment-1",
+              text: "The first words.",
+              type: "comment",
+            }),
+            node({ id: "comment-2", text: "The second words.", type: "comment" }),
+          ],
+          id: KEY,
+          type: "issue",
+        })
+      );
+      const { container } = view;
+      // A press on the crumb of `id`, from whose start the row of `on` stands 2,000 px below the
+      // window's foot, where the zoom its click makes draws it; the zoom takes the crumb away.
+      const press = async (id: string, on: string) => {
+        const crumb = container.querySelector<HTMLElement>(`[data-crumb="${id}"]`);
+        if (crumb === null) throw new Error(`at ${width} px the crumb of ${id} is not drawn`);
+        await user.pointer({ keys: "[MouseLeft>]", target: crumb });
+        scrolled.mockClear();
+        placed = { id: on, top: scrolledTo + window.innerHeight + 2000 };
+        await user.pointer({ keys: "[/MouseLeft]" });
+        await waitFor(() =>
+          expect(
+            crumb.isConnected,
+            `at ${width} px the press on ${id}'s crumb zoomed nowhere`
+          ).toBe(false)
+        );
+      };
+      await waitFor(() => expect(focusedRow(container), `at ${width} px`).toBe("comment-1"));
+
+      // `.` on the first comment, which opens the path above it alone, then `j` to its reply.
+      await user.keyboard(".");
+      await waitFor(() =>
+        expect(container.querySelector(`[data-crumb="${KEY}"]`), `at ${width} px`).not.toBeNull()
+      );
+      await user.keyboard("j");
+      await waitFor(() => expect(focusedRow(container), `at ${width} px`).toBe("comment-1a"));
+      await press(KEY, "comment-1a");
+      expect(container.querySelector("[data-crumb]"), `at ${width} px`).toBeNull();
+      expect(
+        focusedRow(container),
+        `at ${width} px the press on the issue's crumb took the focus off the reply's row`
+      ).toBe("comment-1a");
+      expect(
+        rowsFor(container, "comment-1a"),
+        `at ${width} px the zoom out to the issue drew the reply's row nowhere`
+      ).toHaveLength(1);
+      // Its foot is brought 8 px clear of the screen's (`identity-block.ts`'s `bringOnScreen`).
+      expect(
+        scrolled,
+        `at ${width} px the zoom out to the issue left the reply's row off screen`
+      ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
+
+      // `.` on the reply, which opens the first comment above it, then `j` to the reply under it:
+      // the thread's crumb zooms out to the first comment, the reply drawn there as its child.
+      await user.keyboard(".");
+      await waitFor(() =>
+        expect(container.querySelector('[data-crumb="comment-1"]'), `at ${width} px`).not.toBeNull()
+      );
+      await user.keyboard("j");
+      await waitFor(() => expect(focusedRow(container), `at ${width} px`).toBe("comment-1b"));
+      await press("comment-1", "comment-1b");
+      expect(container.querySelector(`[data-crumb="${KEY}"]`), `at ${width} px`).not.toBeNull();
+      expect(
+        focusedRow(container),
+        `at ${width} px the press on the thread's crumb took the focus off the reply's reply`
+      ).toBe("comment-1b");
+      expect(
+        rowsFor(container, "comment-1b"),
+        `at ${width} px the zoom out to the thread drew the reply's reply nowhere`
+      ).toHaveLength(1);
+      expect(
+        scrolled,
+        `at ${width} px the zoom out to the thread left the reply's reply off screen`
       ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
       view.unmount();
     }

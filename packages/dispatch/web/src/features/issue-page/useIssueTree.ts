@@ -141,13 +141,12 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
 const NO_MORE_TARGETS: { readonly targets: readonly ReferenceTarget[] } = { targets: [] };
 
 /**
- * The last value given other than undefined: the answer a names read gave last - its own while
- * it holds one, and the last one it held while its read under a new set of addresses is out or
- * has failed - or the set of addresses the names read was last given (`askedFor`). TanStack's
- * `placeholderData` would hold that answer only while the read is out: a read under a new key
- * that fails holds no data, where a refetch that fails under the same key keeps its own. The ref
- * is written during render only with the value given in that render, so it never stands over a
- * newer one: a read that holds an answer is drawn from it.
+ * The answer a names read gave last: its own while it holds one, and the last one it held while
+ * its read under a new set of addresses is out or has failed. TanStack's `placeholderData` would
+ * hold that answer only while the read is out: a read under a new key that fails holds no data,
+ * where a refetch that fails under the same key keeps its own. The ref is written during render
+ * only with the answer the read holds in that render, so it never stands over a newer one: a read
+ * that holds an answer is drawn from it.
  */
 function useLastAnswer<T>(answer: T | undefined): T | undefined {
   const last = useRef(answer);
@@ -353,11 +352,12 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   //
   // The gate shuts again while a read that holds no answer runs again - a failed read's Retry,
   // window focus or an event's refresh of it, which TanStack puts back in `pending` - and the
-  // names read keeps the set it was last given until the gate opens: moved to the set of none,
-  // which is no read, a names read that stands failed would stand failed no more, and its line
-  // would leave the page with the focus its Retry held and say its failure again on coming back.
-  // Kept, the line says that read's own state while another read runs: its failures, whether it
-  // runs again, and a Retry that asks it again. Until the gate first opens the set is none.
+  // names read keeps the set it was last given until the gate opens, by the same `useLastAnswer`,
+  // which holds the last value given other than undefined: moved to the set of none, which is no
+  // read, a names read that stands failed would stand failed no more, and its line would leave
+  // the page with the focus its Retry held and say its failure again on coming back. Kept, the
+  // line says that read's own state while another read runs: its failures, whether it runs
+  // again, and a Retry that asks it again. Until the gate first opens the set is none.
   const askedFor = useLastAnswer(treeRead ? refs : undefined) ?? [];
   const targets = useQuery({
     ...referenceTargetsQuery(askedFor),
