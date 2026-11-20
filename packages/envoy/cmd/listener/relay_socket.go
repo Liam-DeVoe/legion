@@ -49,6 +49,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -122,6 +123,25 @@ const (
 	relayErrBadFrame          = "bad_frame"
 )
 
+// relaySocketCheckBuild is a test build's check interval, as time.ParseDuration reads it, which a
+// test that runs the listener's binary sets with -ldflags "-X main.relaySocketCheckBuild=1s" so a
+// socket's token is asked about again within a second (relay_socket_live_test.go). It is empty in
+// every other build, whose sockets check every relaySocketCheckDefault.
+var relaySocketCheckBuild string
+
+// relaySocketCheckInterval is relaySocketCheckBuild when a build set it, and relaySocketCheckDefault
+// otherwise. A build that set it to anything but a positive duration is a broken build, and stops.
+func relaySocketCheckInterval() time.Duration {
+	if relaySocketCheckBuild == "" {
+		return relaySocketCheckDefault
+	}
+	every, err := time.ParseDuration(relaySocketCheckBuild)
+	if err != nil || every <= 0 {
+		panic("main.relaySocketCheckBuild is " + strconv.Quote(relaySocketCheckBuild) + ", which is no positive duration")
+	}
+	return every
+}
+
 // relaySockets is an edge listener's relay sockets: the route that opens them and every one this
 // replica holds open, so a stop closes each with 1012.
 type relaySockets struct {
@@ -160,7 +180,7 @@ func newRelaySockets(client *bus.Client, brokers *brokerTokens, edgeProjects []s
 			// none as it likes.
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
-		relaySocketCheckEvery: relaySocketCheckDefault,
+		relaySocketCheckEvery: relaySocketCheckInterval(),
 		now:                   time.Now,
 		open:                  map[string]map[*relaySocket]struct{}{},
 	}

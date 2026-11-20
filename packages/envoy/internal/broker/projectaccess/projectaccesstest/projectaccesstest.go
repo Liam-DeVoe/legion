@@ -49,10 +49,11 @@ type Server struct {
 	// Account reads Token, as brokertoken.AccountToken reads a projected token from its file.
 	Account StaticAccount
 
-	rows   map[string]Row
 	people map[string]string
 
+	// mu guards rows, calls and down: rows because SetRow changes one while the stand-in serves.
 	mu    sync.Mutex
+	rows  map[string]Row
 	calls int
 	down  bool
 }
@@ -103,6 +104,15 @@ func (s *Server) SetDown(down bool) {
 	s.down = down
 }
 
+// SetRow holds project key as row from now on, as a project's access list changes in Dispatch: a
+// person dropped from Listed no longer sees a private project. The row is copied.
+func (s *Server) SetRow(key string, row Row) {
+	row.Listed = slices.Clone(row.Listed)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows[key] = row
+}
+
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls++
@@ -130,7 +140,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"person": person, "member_kind": s.kind(person)})
 	case strings.HasPrefix(r.URL.Path, projectPath):
 		key := strings.TrimPrefix(r.URL.Path, projectPath)
+		s.mu.Lock()
 		row, held := s.rows[key]
+		s.mu.Unlock()
 		if !held || strings.Contains(key, "/") {
 			writeJSON(w, http.StatusNotFound, map[string]any{"code": "PROJECT_NOT_FOUND", "error": "no such project"})
 			return

@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -144,9 +145,11 @@ type Rig struct {
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease    time.Duration
-	maxConns int
-	minters  map[string]requests.Minter
+	lease          time.Duration
+	maxConns       int
+	minters        map[string]requests.Minter
+	accessLifetime time.Duration
+	projectAccess  projectaccess.Access
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -168,6 +171,19 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
+// WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
+// exchanged one's alike, as BROKER_ACCESS_TOKEN_SECONDS sets it; fifteen minutes by default.
+func WithAccessLifetime(d time.Duration) Option {
+	return func(c *rigConfig) { c.accessLifetime = d }
+}
+
+// WithProjectAccess holds every token exchange to what access answers about the projects its
+// token names, as BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch; by default the broker
+// checks no project, and so refuses every trade that names one.
+func WithProjectAccess(access projectaccess.Access) Option {
+	return func(c *rigConfig) { c.projectAccess = access }
+}
+
 // NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
 // request from any session makes an approval request to her, and TEST_AUTO_SECRET, agent-tier,
 // which her own sessions get at once. It wires a real pod verifier (a local OIDC issuer trusted by
@@ -179,7 +195,7 @@ func WithMinters(minters map[string]requests.Minter) Option {
 // (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
-	config := rigConfig{lease: time.Hour}
+	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
 	for _, option := range options {
 		option(&config)
 	}
@@ -238,7 +254,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := NewOAuthProvider(t, st, issuer)
+	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -304,6 +320,13 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
+	return newOAuthProvider(t, st, issuer, 15*time.Minute, nil)
+}
+
+// newOAuthProvider is NewOAuthProvider whose access tokens live accessLifetime and whose trades
+// are held to what access answers, nil for no project check.
+func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, accessLifetime time.Duration, access projectaccess.Access) *oauth.Provider {
+	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
 	secret, err := oauthStore.Secret(context.Background())
@@ -330,12 +353,13 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
 	provider, err := oauth.New(oauth.Config{
-		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute,
+		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
 			Policy:     policy,
 			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
 			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
+			Projects:   access,
 		},
 	}, oauthStore)
 	if err != nil {

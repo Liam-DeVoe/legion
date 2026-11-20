@@ -154,9 +154,9 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	}
 }
 
-// edgeAnswer is the broker's answer about a token traded for session acting for the rig's person,
-// listing projects and expiring after life: what an outside agent's access token is.
-func edgeAnswer(session, jkt string, life time.Duration, projects ...string) brokertoken.Introspection {
+// relaySocketAnswer is the broker's answer about a token traded for session acting for the rig's
+// person, listing projects and expiring after life: what an outside agent's access token is.
+func relaySocketAnswer(session, jkt string, life time.Duration, projects ...string) brokertoken.Introspection {
 	return brokertoken.Introspection{
 		Active:       true,
 		Session:      session,
@@ -197,7 +197,7 @@ func (rig *relaySocketRig) dialAs(t *testing.T, session string, header http.Head
 func (rig *relaySocketRig) open(t *testing.T, session string) (*relaySocketClient, string) {
 	t.Helper()
 	token := "access-token-of-" + session + "-" + t.Name()
-	rig.broker.Says(token, edgeAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
+	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
 	return rig.openWith(t, session, token), token
 }
 
@@ -544,15 +544,15 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 			}},
 		{name: "its projects grew a project the edge does not serve", life: time.Hour, want: &refused,
 			later: func(rig *relaySocketRig, session, token string) {
-				rig.broker.Says(token, edgeAnswer(session, rig.caller.JKT(), time.Hour, relaySocketOtherProject, relaySocketProject))
+				rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketOtherProject, relaySocketProject))
 			}},
 		{name: "its projects became another the edge serves", edge: []string{relaySocketOtherProject, relaySocketProject}, life: time.Hour, want: &refused,
 			later: func(rig *relaySocketRig, session, token string) {
-				rig.broker.Says(token, edgeAnswer(session, rig.caller.JKT(), time.Hour, relaySocketOtherProject))
+				rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketOtherProject))
 			}},
 		{name: "its session changed", life: time.Hour, want: &refused,
 			later: func(rig *relaySocketRig, session, token string) {
-				rig.broker.Says(token, edgeAnswer("ses_another", rig.caller.JKT(), time.Hour, relaySocketProject))
+				rig.broker.Says(token, relaySocketAnswer("ses_another", rig.caller.JKT(), time.Hour, relaySocketProject))
 			}},
 		{name: "the broker cannot be asked", life: time.Hour, want: &outcome{websocket.CloseTryAgainLater, relaySocketReasonBrokerUnavailable},
 			later: func(rig *relaySocketRig, session, token string) {
@@ -569,7 +569,7 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 			rig := newRelaySocketRig(t, options...)
 			const session = "ses_edge_checked"
 			token := "access-token-of-a-checked-socket"
-			rig.broker.Says(token, edgeAnswer(session, rig.caller.JKT(), row.life, relaySocketProject))
+			rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), row.life, relaySocketProject))
 			client := rig.openWith(t, session, token)
 			client.stillOpen(5*relaySocketTestCheck, "before the answer changed")
 
@@ -593,7 +593,7 @@ func TestAnOpenSocketsReopenIsRefused503WhileTheBrokerCannotBeAsked(t *testing.T
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_broker_down"
 	token := "access-token-while-the-broker-is-down"
-	rig.broker.Says(token, edgeAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
+	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
 	rig.broker.Server.Close()
 	_, response, err := rig.dialAs(t, session, rig.upgradeHeader(t, session, token), relaySubprotocol)
 	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
@@ -609,7 +609,7 @@ func TestARelaySocketUpgradeIsRefusedAsTheWireSays(t *testing.T) {
 	rig := newRelaySocketRig(t)
 	const session, other = "ses_edge_upgrade", "ses_not_the_tokens"
 	token := "access-token-of-the-upgrading-session"
-	rig.broker.Says(token, edgeAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
+	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
 
 	_, response, err := rig.dialAs(t, other, rig.upgradeHeader(t, other, token), relaySubprotocol)
 	if err == nil || response == nil || response.StatusCode != http.StatusForbidden {

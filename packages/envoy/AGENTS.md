@@ -5273,6 +5273,11 @@ The code is `cmd/listener/relay_socket.go`.
   A frame unanswered at a close is sent again by the owning relay, which hears no receipt for it and restarts at the ack floor after its receipt wait and its pause (`relayReceiptWait`, `relayPauseFirst`), or at the session's next registration, so a reopen loses nothing.
   The reader takes a client that sends no frame and no pong for three ticks, and never under 10 s, for gone.
 
+- **Tests.**
+  `cmd/listener/relay_socket_test.go` drives the socket in one process, over the in-process server, with brokertokentest's stand-in as the broker.
+  `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) drives two `envoy-listener` processes in edge mode against `testnats.HubImage`, whose only users are the two replicas' (`natsgrant.Edge`) and Dispatch's (`natsgrant.Dispatch`), and the real broker of `internal/broker/brokertest`, with 30 s tokens (`brokertest.WithAccessLifetime`) and its project check answered by `projectaccesstest` (`brokertest.WithProjectAccess`, `projectaccesstest.Server.SetRow`); each row also requires that the server refused nothing.
+  That binary is built with `-ldflags "-X main.relaySocketCheckBuild=1s"`, which checks every second instead of every 20 s; a build that does not set it checks every 20 s.
+
 ## Session consumers
 
 **The rule.**
