@@ -984,7 +984,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 // nothing, so it queues nothing and sends no batch.
 func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
-	applyArtifacts := queueArtifactDetails(batch, artifacts)
+	applyArtifacts := queueArtifactDetails(ctx, batch, artifacts)
 	applyAsks := queueAskDetails(ctx, batch, asks)
 	if batch.Len() == 0 {
 		return nil

@@ -36,7 +36,9 @@ const (
 	// E, for a document version.
 	reasonNoToken = "Dispatch stored this version with no document token. All such versions are from before 2026-11-03."
 	// E, for a block id.
-	reasonUntypedBlockID = "No event records the id of an untyped block of a version that document_indexed_versions does not hold."
+	reasonUntypedBlockID = "A stored document version records the id of a typed block only. " +
+		"The block index gives the id of an untyped block only for a version that document_indexed_versions holds, " +
+		"and only where no other block of that version has the same text. It gives no id of a table row or a table cell."
 	// E, for a check of the Verification document.
 	reasonUnindexedVersion = "No event records this field for a version that document_indexed_versions does not hold."
 	// P
@@ -64,10 +66,11 @@ const (
 // do not give (decision 5): the delivery mode and the session of a delivery attempt and the text
 // of the block that a reply names (commentFields, messageFields), the route's status reason of an
 // ask's reach (routeReachFields), each reply of an ask's thread (commentFields), the documents of
-// an approval request in the inbox (askFields), and the place of an anchored block. A route that
-// the plan lists with no field has an empty list. A past-time answer names a member in the
-// Dispatch-As-Of-Absent header only when it leaves that member out, and it names only members
-// this table holds for its route (ValidAbsent).
+// an approval request in the inbox (askFields), the place of an anchored block, and of the blocks
+// that the text route gives, the anchored counts and the ids of a table's rows and cells, which
+// the block routes leave out too (blockFields). A route that the plan lists with no field has an
+// empty list. A past-time answer names a member in the Dispatch-As-Of-Absent header only when it
+// leaves that member out, and it names only members this table holds for its route (ValidAbsent).
 var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/issues/{key}": {
 		{"/route_status", reasonLiveness},
@@ -127,15 +130,12 @@ var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/projects/{key}/artifacts/{slug}":      documentFields(""),
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": documentFields(""),
 	"GET /api/v1/artifacts/{id}":                       documentFields(""),
-	// ?blocks=true gives the blocks.
-	"GET /api/v1/artifacts/{id}/text": {
+	// ?blocks=true gives the blocks, each as the block routes give it.
+	"GET /api/v1/artifacts/{id}/text": slices.Concat([]AbsentField{
 		{"/token", reasonNoToken},
-		{"/blocks/*/token", reasonNoEvent},
-		{"/blocks/*/embedding", reasonNoEvent},
-		{"/blocks/*/id", reasonUntypedBlockID},
-	},
-	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks":   blockFields(),
-	"GET /api/v1/projects/{key}/artifacts/{slug}/blocks": blockFields(),
+	}, blockFields("/blocks/*")),
+	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks":   blockFields("/*"),
+	"GET /api/v1/projects/{key}/artifacts/{slug}/blocks": blockFields("/*"),
 	"GET /api/v1/artifacts/{id}/versions/{number}":       {},
 
 	"GET /api/v1/issues/{key}/results": {
@@ -244,15 +244,16 @@ func documentFields(prefix string) []AbsentField {
 	}
 }
 
-// blockFields are the fields of a block of the two block routes.
-func blockFields() []AbsentField {
+// blockFields are the fields of each block at prefix: of the two block routes' blocks, and of the
+// blocks the text route gives.
+func blockFields(prefix string) []AbsentField {
 	return []AbsentField{
-		{"/*/token", reasonNoEvent},
-		{"/*/embedding", reasonNoEvent},
-		{"/*/id", reasonUntypedBlockID},
-		{"/*/table/rows/*/id", reasonUntypedBlockID},
-		{"/*/table/rows/*/cells/*/id", reasonUntypedBlockID},
-		{"/*/references", reasonGraph},
+		{prefix + "/token", reasonNoEvent},
+		{prefix + "/embedding", reasonNoEvent},
+		{prefix + "/id", reasonUntypedBlockID},
+		{prefix + "/table/rows/*/id", reasonUntypedBlockID},
+		{prefix + "/table/rows/*/cells/*/id", reasonUntypedBlockID},
+		{prefix + "/references", reasonGraph},
 	}
 }
 

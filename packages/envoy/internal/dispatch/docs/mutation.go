@@ -1271,6 +1271,20 @@ func documentBlocks(tree *pmdoc.Node) (string, []model.ArtifactBlock, error) {
 	return rendered.markdown, rendered.blocks, nil
 }
 
+// VersionBlocks is the blocks of markdown, the stored rendering of a document version, read back
+// (pmdoc.ParseRendering) and rendered once (documentBlocks): the canonical markdown of that tree,
+// and the blocks whose byte ranges index into it. The markdown names the id of a typed block only,
+// so the parse makes a new id for each other block, which no reader knows, and each block's token
+// is of the tree that holds those ids. A read of a document at a past time reads its version so
+// (api's artifactBlocksAtTheCut), since the live document holds the present only.
+func VersionBlocks(markdown string) (string, []model.ArtifactBlock, error) {
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		return "", nil, documentSchemaError(err)
+	}
+	return documentBlocks(tree)
+}
+
 // renderDocumentTree validates tree once, refusing it as pmdoc.TableRows does, and reads it
 // thereafter without validating it again: its markdown, its blocks and its document token come
 // from that one reading.

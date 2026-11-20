@@ -1326,6 +1326,11 @@ type ArtifactApproval struct {
 	// is the request's own list (AskApprovalDocument), carried to the reader of a document
 	// rather than copied into a shape of its own.
 	Documents []AskApprovalDocument `json:"documents,omitempty"`
+	// DocumentsUnknown is set by a read of the approval at a past time, where the open request
+	// was written before requests held their documents: a migration filled them with no event,
+	// so no record at that time gives them, and the read leaves Documents out and names it
+	// absent. It is never sent.
+	DocumentsUnknown bool `json:"-"`
 }
 
 // ArtifactReviewEventPayload is the payload of artifact.approved and

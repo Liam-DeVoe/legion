@@ -49,8 +49,9 @@ func refuseListingFilterAtCut(w http.ResponseWriter, r *http.Request) bool {
 // keeps no history), which readIssue does not read at a cut, and the members of an explicit
 // component attachment, which the present component model splits (an attachment of another mode
 // holds no member). Progress follows decision 9 (tasksAtTheCut). The documents leave out the
-// documents of an approval request whose newest event at the cut holds none (reason B), and the
-// open asks what the records at the cut do not give of them (leaveOutPastAskFields).
+// documents of an approval request whose newest event at the cut holds none (reason B,
+// approvalAtTheCut), and the open asks what the records at the cut do not give of them
+// (leaveOutPastAskFields).
 func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail) error {
 	leaveOut(ctx, "/design_gates", "/referenced_by_count")
 	if read.Route != nil {
@@ -73,25 +74,12 @@ func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail) error {
 	for index := range read.OpenAsks {
 		asks[index] = read.OpenAsks[index].Ask
 	}
-	for index, artifact := range read.Artifacts {
-		if artifact.Approval != nil && namesApprovalWithNoDocuments(asks, artifact.ID) {
-			leaveOut(ctx, "/artifacts/"+strconv.Itoa(index)+"/approval/documents")
+	for index := range read.Artifacts {
+		if approval := read.Artifacts[index].Approval; approval != nil {
+			approvalAtTheCut(ctx, &approval.ArtifactApproval, "/artifacts/"+strconv.Itoa(index))
 		}
 	}
 	return s.leaveOutPastAskFields(ctx, asks, elementsOf("/open_asks"))
-}
-
-// namesApprovalWithNoDocuments reports whether one of asks is an approval request on the document
-// artifactID whose state at the cut names no document: a request written before approval requests
-// held their documents, which a migration filled with no event (reason B). The document's approval
-// then cannot say which documents the request covered.
-func namesApprovalWithNoDocuments(asks []model.Ask, artifactID string) bool {
-	for _, ask := range asks {
-		if ask.Approval != nil && len(ask.Approval.Documents) == 0 && ask.Approval.ArtifactID == artifactID {
-			return true
-		}
-	}
-	return false
 }
 
 // issueSummariesAtTheCut completes the listing at the cut ctx carries, each issue at the place
