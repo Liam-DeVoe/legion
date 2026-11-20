@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -160,6 +161,30 @@ func TestDomainMembershipEndsTheSessionWhenTheRefreshedAccountNoLongerQualifies(
 		}
 		assertSessionEnded(t, rig)
 	})
+}
+
+// A refresh Google refuses from a slow token endpoint still ends the sign-in when one request fits
+// the refresh's bound, in a process that restarted since the person signed in: its code flow is
+// new, so the refused refresh is that flow's first grant, and only the style the discovery
+// document names makes it one request. A client that guessed would ask by HTTP Basic and, refused,
+// again in the form, as nothing has taught it the style. The endpoint waits a tenth of a second
+// more than half of refreshTimeout before each answer, so the second answer could never come in
+// time, and the sign-in of a person Google refused would be kept. One request leaves 2.4 s of the
+// ten seconds oidc gives a request: this row's margin under load.
+func TestDomainMembershipEndsTheSignInASlowTokenEndpointRefusesAfterARestart(t *testing.T) {
+	rig := newDomainMembershipRig(t)
+	rig.membership.SignIn = oidc.NewCodeFlow(rig.issuer.URL(), "dispatch-client", "dispatch-secret", memberDomain)
+	rig.issuer.RevokeGrants()
+	rig.issuer.DelayToken(refreshTimeout/2 + 100*time.Millisecond)
+	rig.now = rig.now.Add(2 * time.Hour)
+	before := len(rig.issuer.TokenRequests())
+	if err := rig.membership.Confirm(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("Confirm: err = %v (token requests %q), want ErrNoIdentity", err, rig.issuer.TokenRequests()[before:])
+	}
+	if got := rig.issuer.TokenRequests()[before:]; !slices.Equal(got, []string{"client_secret_basic"}) {
+		t.Fatalf("the refused refresh's token requests = %q, want one, by HTTP Basic", got)
+	}
+	assertSessionEnded(t, rig)
 }
 
 // A row whose refresh token no domain sign-in recorded holds no subject to compare: the domain rule
