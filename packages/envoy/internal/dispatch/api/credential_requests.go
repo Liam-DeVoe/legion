@@ -44,12 +44,12 @@ import (
 // browser alone (withinProjectScope for the writes, withinReadScope for the read): the lookup of a
 // machine login by the code its machine shows and that login's approve and deny, and the list of
 // their machine logins and the revoke of one. Each handler then holds the member to a machine login
-// of their own (ownMachineLogin for a pending one, ownMachineLogins for an issued one). Through their
-// personal token or a person-scope broker token a restricted member is refused every one of them 403
-// RESTRICTED_MEMBER (refuseDeploymentWrite for the writes, restrictedOwnLoginRefusal for the read),
-// and through their agent's named token, which holds no scope, 403 OAUTH_SCOPE_REQUIRED
-// (gateRouteScopes, which runs first), so no agent of theirs decides, lists or ends any credential,
-// their own machine's included.
+// of their own (ownMachineLogin for a pending one, ownMachineLogins for an issued one). Through a
+// token a restricted member is refused every one of them: 403 OAUTH_SCOPE_REQUIRED where the token
+// lacks the row's scopes (gateRouteScopes, which runs first), as their agent's named token holds
+// none, and 403 RESTRICTED_MEMBER otherwise (refuseDeploymentWrite for the writes,
+// restrictedOwnLoginRefusal for the read), so no agent of theirs decides, lists or ends any
+// credential, their own machine's included.
 var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/credential-requests/machine-lookup": true,
 	"POST /api/v1/credential-requests/{id}/approve":   true,

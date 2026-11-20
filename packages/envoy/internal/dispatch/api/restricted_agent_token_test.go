@@ -188,14 +188,18 @@ func (r restrictedTokenRig) presenting(t *testing.T, machine machineLogin, token
 // login at her browser through Dispatch, which reaches the broker; her machine trades its token
 // for a session's naming ACC, and the broker answers a token of the named scope listing exactly
 // ACC that lives at most exchange.RestrictedLifetime. Presented to Dispatch, that token acts for
-// erin in ACC, and
-// it neither mints a personal token (POST /api/v1/me/agent-tokens) nor approves a machine login,
-// each 403 OAUTH_SCOPE_REQUIRED, the login staying pending. Her browser approve of carol's pending
-// machine login is 403 RESTRICTED_MEMBER and leaves it pending.
+// erin in ACC, and holds no scope of a person's own: it reads no person-scope route (GET
+// /api/v1/inbox), mints no personal token (POST /api/v1/me/agent-tokens) and approves no machine
+// login, each 403 OAUTH_SCOPE_REQUIRED, the login staying pending. Her browser approve of carol's
+// pending machine login is 403 RESTRICTED_MEMBER and leaves it pending.
 //
 // The control runs on the same rig: carol, a full member, approves her own login at her browser;
-// her machine's trade, naming no project, is the person scope; and with that token the mint
-// answers 201 and the approve of carol's second machine login answers 200.
+// her machine's trade, naming no project, is the person scope, and with that token GET
+// /api/v1/inbox answers 200, so erin's refusal there is her token's scope and not the rig's; and
+// carol's personal token mints a token (201) and approves her second machine login (200), so the
+// rig mints and approves for a credential that holds the approve scope. A broker token acting for
+// its person is no such credential wherever Dispatch gives it no approve scope, so the control
+// asks neither of it.
 //
 // Controls: mint the person scope for a restricted member's trade, and the first row fails naming
 // the scope; refuse a restricted member's browser decision as before, and erin's approve of her
@@ -233,6 +237,10 @@ func TestARestrictedMembersAgentTokenIsNamedAndNeitherMintsNorApproves(t *testin
 		!strings.Contains(minted.Body.String(), `"code":"OAUTH_SCOPE_REQUIRED"`) {
 		t.Errorf("POST /api/v1/me/agent-tokens under erin's agent's token = %d %s, want 403 OAUTH_SCOPE_REQUIRED", minted.Code, minted.Body.String())
 	}
+	if read := r.presenting(t, erins, token, http.MethodGet, "/api/v1/inbox", nil); read.Code != http.StatusForbidden ||
+		!strings.Contains(read.Body.String(), `"code":"OAUTH_SCOPE_REQUIRED"`) {
+		t.Errorf("GET /api/v1/inbox under erin's agent's token = %d %s, want 403 OAUTH_SCOPE_REQUIRED", read.Code, read.Body.String())
+	}
 	second := r.startLogin(t, accessErin, "erin-desktop")
 	secondRecord, _ := r.recordOf(t, accessErin, second)
 	if decided := r.presenting(t, erins, token, http.MethodPost, "/api/v1/credential-requests/"+secondRecord+"/approve", map[string]any{"code": second.device.UserCode}); decided.Code != http.StatusForbidden ||
@@ -264,13 +272,21 @@ func TestARestrictedMembersAgentTokenIsNamedAndNeitherMintsNorApproves(t *testin
 	if answer := r.introspect(t, carolsToken); !answer.Active || answer.ProjectScope != brokertoken.ProjectScopePerson || answer.Projects != nil {
 		t.Fatalf("carol's agent's token introspects as %+v, want a live token of project scope %s naming no project", answer, brokertoken.ProjectScopePerson)
 	}
-	if minted := r.presenting(t, carols, carolsToken, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "minted by carol's agent"}); minted.Code != http.StatusCreated {
-		t.Errorf("POST /api/v1/me/agent-tokens under carol's agent's token = %d %s, want 201", minted.Code, minted.Body.String())
+	if read := r.presenting(t, carols, carolsToken, http.MethodGet, "/api/v1/inbox", nil); read.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/inbox under carol's agent's token = %d %s, want 200", read.Code, read.Body.String())
+	}
+	minted := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "carol's token"}, accessCarol)
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("carol mints a personal token at her browser: %d %s", minted.Code, minted.Body.String())
+	}
+	personal := decodeBody[agentTokenResponse](t, minted).Token
+	if again := agentRequest(t, r.dispatch, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "minted by carol's token"}, personal); again.Code != http.StatusCreated {
+		t.Errorf("POST /api/v1/me/agent-tokens under carol's personal token = %d %s, want 201", again.Code, again.Body.String())
 	}
 	carolsSecond := r.startLogin(t, accessCarol, "carol-desktop")
 	carolsSecondRecord, _ := r.recordOf(t, accessCarol, carolsSecond)
-	if decided := r.presenting(t, carols, carolsToken, http.MethodPost, "/api/v1/credential-requests/"+carolsSecondRecord+"/approve", map[string]any{"code": carolsSecond.device.UserCode}); decided.Code != http.StatusOK {
-		t.Errorf("an approve of carol's second machine login under carol's agent's token = %d %s, want 200", decided.Code, decided.Body.String())
+	if decided := agentRequest(t, r.dispatch, http.MethodPost, "/api/v1/credential-requests/"+carolsSecondRecord+"/approve", map[string]any{"code": carolsSecond.device.UserCode}, personal); decided.Code != http.StatusOK {
+		t.Errorf("an approve of carol's second machine login under carol's personal token = %d %s, want 200", decided.Code, decided.Body.String())
 	}
 }
 

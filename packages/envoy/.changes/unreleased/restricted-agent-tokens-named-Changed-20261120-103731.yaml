@@ -8,9 +8,10 @@ body: |-
   `GET /api/v1/machine-logins` and `POST /api/v1/machine-logins/{id}/revoke` serve them too, at
   their browser: the list answers their own machine logins and no service's, and the revoke ends
   only one of those.
-  Every other record, a shared one included, and every decision through their personal token or a
-  person-scope broker token stays `403 RESTRICTED_MEMBER`, and their agent's `named` token, which
-  holds no scope, is `403 OAUTH_SCOPE_REQUIRED`; the broker is asked to decide nothing. A broker
+  Every other record, a shared one included, stays `403 RESTRICTED_MEMBER`, and every decision
+  through a token of theirs is refused: `403 OAUTH_SCOPE_REQUIRED` from a token that lacks the
+  route's scopes, their agent's `named` token among them, and `403 RESTRICTED_MEMBER` from any
+  other; the broker is asked to decide nothing. A broker
   token of project scope `named` that records the credential a person made, the account it was
   approved by or when it was made, is held to that account as a `person` token is; an operator
   entry's, which records neither, is held to none, as before. Taking a restricted member off a

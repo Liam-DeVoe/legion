@@ -98,12 +98,14 @@ func TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins(t *testing.T)
 
 // TestARestrictedMembersTokensListAndRevokeNoMachineLogin: the list and the revoke of a restricted
 // member's own machine logins are their browser's alone. erin's personal token, and a broker token
-// acting for her, are each 403 RESTRICTED_MEMBER on GET /api/v1/machine-logins and on the revoke of
-// her own login, and no call reaches the broker; her browser is answered, so the refusal is the
-// tokens'.
+// acting for her, are each refused GET /api/v1/machine-logins and the revoke of her own login, and
+// no call reaches the broker; her browser is answered, so the refusal is the tokens'. Each refusal
+// is the one the token's own scopes give (tokenRefusal): 403 RESTRICTED_MEMBER from a token that
+// holds the row's scopes, 403 OAUTH_SCOPE_REQUIRED from one that does not, whichever scopes a
+// broker token acting for its person is given.
 //
-// Control: let any credential of a restricted member through (atBrowser answering true), and both
-// tokens are answered, each named.
+// Control: let any credential of a restricted member through (atBrowser answering true), and each
+// token that holds the row's scopes is answered, named.
 func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := brokertokentest.NewStubBroker(t)
@@ -125,18 +127,25 @@ func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	answer := liveNamedToken(caller.jkt)
 	answer.Person, answer.ProjectScope, answer.Projects = accessErin, brokertoken.ProjectScopePerson, nil
 	stub.Says(erinsBrokerToken, answer)
+	brokerWhoami := httptest.NewRecorder()
+	served.ServeHTTP(brokerWhoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))
+	held := map[string][]string{
+		"her personal token":            heldScopes(t, agentRequest(t, served, http.MethodGet, "/api/v1/whoami", nil, personal)),
+		"a broker token acting for her": heldScopes(t, brokerWhoami),
+	}
 
-	for _, call := range []struct{ method, path string }{
-		{http.MethodGet, "/api/v1/machine-logins"},
-		{http.MethodPost, "/api/v1/machine-logins/cred-erin/revoke"},
+	for _, call := range []struct{ method, path, pattern string }{
+		{http.MethodGet, "/api/v1/machine-logins", "/api/v1/machine-logins"},
+		{http.MethodPost, "/api/v1/machine-logins/cred-erin/revoke", "/api/v1/machine-logins/{id}/revoke"},
 	} {
 		rig.routes = nil
 		byToken := agentRequest(t, served, call.method, call.path, nil, personal)
 		byBroker := httptest.NewRecorder()
 		served.ServeHTTP(byBroker, caller.presenting(t, call.method, call.path, erinsBrokerToken, nil))
 		for credential, response := range map[string]*httptest.ResponseRecorder{"her personal token": byToken, "a broker token acting for her": byBroker} {
-			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"RESTRICTED_MEMBER"`) {
-				t.Errorf("%s %s with %s = %d %s, want 403 RESTRICTED_MEMBER", call.method, call.path, credential, response.Code, response.Body.String())
+			want := tokenRefusal(call.method, call.pattern, held[credential])
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+want+`"`) {
+				t.Errorf("%s %s with %s = %d %s, want 403 %s", call.method, call.path, credential, response.Code, response.Body.String(), want)
 			}
 		}
 		if len(rig.routes) != 0 {

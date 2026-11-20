@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -50,6 +52,34 @@ func (rig *fakeBrokerRig) revokes() []string {
 	return slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") })
 }
 
+// tokenRefusal is the code a restricted member's token is refused with on the row method pattern
+// of restrictedOwnLoginRoutes, read from the scopes Dispatch gives the token rather than assumed:
+// 403 OAUTH_SCOPE_REQUIRED when the token lacks a scope the row needs (routeScopes), which the
+// scope gate answers before any other check, and 403 RESTRICTED_MEMBER otherwise. held is the
+// token's scopes as GET /api/v1/whoami answers them (heldScopes), so a row holds whatever scopes a
+// broker token acting for its person is given.
+func tokenRefusal(method, pattern string, held []string) string {
+	for _, scope := range routeScopes[method+" "+pattern] {
+		if !slices.Contains(held, scope) {
+			return codeScopeRequired
+		}
+	}
+	return codeRestrictedMember
+}
+
+// heldScopes is the scopes Dispatch gives a credential, read from whoami, its answer to
+// GET /api/v1/whoami.
+func heldScopes(t *testing.T, whoami *httptest.ResponseRecorder) []string {
+	t.Helper()
+	var who struct {
+		Scopes []string `json:"scopes"`
+	}
+	if whoami.Code != http.StatusOK || json.Unmarshal(whoami.Body.Bytes(), &who) != nil {
+		t.Fatalf("GET /api/v1/whoami = %d %s, want 200 and the credential's scopes", whoami.Code, whoami.Body.String())
+	}
+	return who.Scopes
+}
+
 // TestARestrictedMemberNeverDecidesACredentialRequest holds the gate a broker token rests on. The
 // secrets broker names a machine login's token after the approver Dispatch sends on its approve
 // route, on Dispatch's word (TestDecisionsNameTheCallerNeverTheBrowsersApprover; the broker's
@@ -61,19 +91,21 @@ func (rig *fakeBrokerRig) revokes() []string {
 // machine login, one whose approver is that member and which names no service. Dispatch looks it up
 // by the code the member typed and relays the approve or the deny of that record alone; that is how
 // an outside person approves the device login of their own agents, whose tokens the broker then
-// holds to one project. Every other decision of theirs is 403 RESTRICTED_MEMBER and reaches the
-// broker as no decision: another person's machine login, a shared record (approver anyone: a
-// service's machine login, a shared secret's request), a record other than the one their code
-// names, the lookup of any of those, every decision through their personal token or a broker token,
-// their own login's included, and a dismissal. A full member's decision reaches the broker as it
-// always has, so the rig can see a call.
+// holds to one project. Every other decision of theirs is refused and reaches the broker as no
+// decision: another person's machine login, a shared record (approver anyone: a service's machine
+// login, a shared secret's request), a record other than the one their code names, the lookup of
+// any of those, and a dismissal, each 403 RESTRICTED_MEMBER; and every decision through their
+// personal token or a broker token, their own login's included, 403 RESTRICTED_MEMBER from a token
+// that holds the route's scopes and 403 OAUTH_SCOPE_REQUIRED from one that does not
+// (tokenRefusal), whichever scopes a broker token acting for its person is given. A full member's
+// decision reaches the broker as it always has, so the rig can see a call.
 //
 // Controls, each run once: drop every clause but the record id's, and the rows of alice's, the
 // service's and the shared records fail; drop the approver comparison alone, and alice's row fails;
 // drop the service clause alone, and the row of the service's login naming erin fails; drop the
 // kind clause alone, and the row of her own secret's request fails; let any credential of a
 // restricted member past withinProjectScope (atBrowser answering true), and the rows of her
-// personal token and her broker token fail.
+// personal token fail, and those of her broker token where it holds the approve scope.
 func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := brokertokentest.NewStubBroker(t)
@@ -86,16 +118,20 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	}
 	const lookup = "POST /v1/machine-logins/lookup"
 	code := map[string]any{"code": "ABCD-1234"}
-	refused := func(response *httptest.ResponseRecorder, call string, decisionsBefore int) {
+	refusedWith := func(response *httptest.ResponseRecorder, call string, decisionsBefore int, want string) {
 		t.Helper()
 		body := response.Body.String()
-		if response.Code != http.StatusForbidden || !strings.Contains(body, `"code":"RESTRICTED_MEMBER"`) || rig.decisions() != decisionsBefore {
-			t.Errorf("%s as %s answered %d %s and %d decisions reached the broker, want 403 RESTRICTED_MEMBER and none",
-				call, accessErin, response.Code, body, rig.decisions()-decisionsBefore)
+		if response.Code != http.StatusForbidden || !strings.Contains(body, `"code":"`+want+`"`) || rig.decisions() != decisionsBefore {
+			t.Errorf("%s as %s answered %d %s and %d decisions reached the broker, want 403 %s and none",
+				call, accessErin, response.Code, body, rig.decisions()-decisionsBefore, want)
 		}
 		if strings.Contains(body, "record_id") {
 			t.Errorf("%s as %s answered %s, which carries the record's facts", call, accessErin, body)
 		}
+	}
+	refused := func(response *httptest.ResponseRecorder, call string, decisionsBefore int) {
+		t.Helper()
+		refusedWith(response, call, decisionsBefore, codeRestrictedMember)
 	}
 
 	for _, record := range []struct {
@@ -135,13 +171,20 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	answer := liveNamedToken(caller.jkt)
 	answer.Person, answer.ProjectScope, answer.Projects = accessErin, brokertoken.ProjectScopePerson, nil
 	stub.Says(erinsBrokerToken, answer)
+	whoami := httptest.NewRecorder()
+	served.ServeHTTP(whoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))
+	held := heldScopes(t, whoami)
+	if !slices.Contains(held, model.ScopePerson) {
+		t.Fatalf("the broker token acting as erin holds %v, want the person scope", held)
+	}
 	for _, action := range []string{"approve", "deny"} {
 		path := "/api/v1/credential-requests/rec-erin/" + action
 		before := rig.decisions()
 		refused(agentRequest(t, served, http.MethodPost, path, code, personal), action+" of her own login with her personal token", before)
 		byBroker := httptest.NewRecorder()
 		served.ServeHTTP(byBroker, caller.presenting(t, http.MethodPost, path, erinsBrokerToken, code))
-		refused(byBroker, action+" of her own login with a broker token acting as her", before)
+		refusedWith(byBroker, action+" of her own login with a broker token acting as her", before,
+			tokenRefusal(http.MethodPost, "/api/v1/credential-requests/{id}/"+action, held))
 	}
 
 	for _, action := range []string{"approve", "deny"} {
