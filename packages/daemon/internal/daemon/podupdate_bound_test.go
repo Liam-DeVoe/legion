@@ -2,8 +2,9 @@ package daemon
 
 // The round's bound (dispatch://INFRA-2981 R2, R3, R5, R6, R8): a round ends as soon as every
 // claim it waits for has answered (each claim with a session but a failed one and one that has
-// left the round's pod) and no turn runs, and at its bound — pod_update_grace_minutes after it
-// opened — whatever its roles said. An operator's suspension is the one wait the bound does not
+// left the round's pod), no turn runs and no claim's activity report holds it (roundEnd.holding,
+// dispatch://INFRA-4203 R1), and at its bound — pod_update_grace_minutes after it opened —
+// whatever its roles said. An operator's suspension is the one wait the bound does not
 // step over, and the controller is told only of a round something holds past its bound, once, at
 // the bound. Each test moves the rig's held clock to the moment it decides at, and names that
 // moment in what it asserts.
@@ -308,7 +309,8 @@ func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *te
 // Both claims answer, and the operator suspends the tester after its answer. The suspension holds
 // the pod past the bound. Once the operator resumes the tester, the pod is replaced, and the
 // answers end the round: the bound is past, but no claim the round waits for is unanswered
-// (waitingClaims) and no turn runs, so the bound did not end it. The R8 line
+// (waitingClaims), no turn runs and no claim's activity report holds the round, so the bound did
+// not end it. The R8 line
 // `supervise pod update replaced at the bound` says that the bound ended a round, and the
 // production check greps it, so it must not be written here. The line that every replacement
 // writes is written, with atTheBound false.
@@ -331,6 +333,8 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheAnswersEndARoundPastItsBound(t *te
 	}
 
 	rig.resumeInPod(claim.RoleTester)
+	// The resumed process sends its first report, that nothing runs, as Oh My Pi does after a launch.
+	rig.reportsNothingRunning(claim.RoleTester)
 	rig.awaitReplacement(1, "once the operator resumed the tester, past the bound, with every claim answered")
 
 	replaced := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
@@ -741,9 +745,10 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 // keeps the tester's answer and starts every member's clock at the deploy. So over the first
 // sweeps an ask reaches the implementer alone, once, with the end at the deploy plus
 // pod_update_grace_minutes: the tester has answered and the planner is failed, and the round asks
-// neither. Nothing is replaced while the implementer has not answered. Once it answers, and with no
-// turn running, a sweep replaces the pod, still before the new bound, because the tester's answer
-// from before the deploy counts and the failed planner is waited for by no one.
+// neither. Nothing is replaced while the implementer has not answered. Once it answers, with no
+// turn running and no claim's activity report holding the round, a sweep replaces the pod, still
+// before the new bound, because the tester's answer from before the deploy counts and the failed
+// planner is waited for by no one.
 //
 // What the check counts is what reached each role: every row the sweeps queued is run through the
 // role-message lane, which publishes an ask under the claim's own machine and reads the rule there

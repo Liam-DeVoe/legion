@@ -431,9 +431,11 @@ type Claim struct {
 	// the daemon's contract the per-claim round of a claim whose plugin is behind this daemon. A
 	// round ends when what it was opened over is replaced. The daemon asks each role of the
 	// round but a failed one and one that has left the round's pod (OwesUpdateAsk), and replaces
-	// the pod once every asked role has answered and no turn runs, or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered, an operator's suspension excepted.
-	// Work that a role did not push goes with the disk the replacement deletes.
+	// the pod once every asked role has answered, no turn runs and no claim's activity report
+	// holds it (internal/daemon's roundEnd.holding), or at the round's bound
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// suspension excepted. Work that a role did not push goes with the disk the replacement
+	// deletes.
 	UpdateRound string
 	// UpdateReasons is what the round was opened for, as the daemon found the drift: the task's
 	// text and the operator's reading of why this pod is being replaced.
@@ -965,9 +967,9 @@ type Deps struct {
 	// and never charged for its stale registration (staleRegistration): the relaunch would keep
 	// the pod, bring the same plugin back and charge the claim toward failed, and a failed claim
 	// cannot push its work. Such a claim is left running, and the update round over its pod is
-	// what carries it: its role is asked like any other (OwesUpdateAsk), on its own Envoy topic
-	// (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
-	// (internal/daemon's refreshStalePlugins).
+	// what carries it: its role is asked the steps of UpdateTask like any other (OwesUpdateAsk), on
+	// its own Envoy topic (internal/daemon's openPodUpdate), and the replacement brings it up on a
+	// new image (internal/daemon's refreshStalePlugins).
 	NoPluginInstall func(c Claim) bool
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
 	// agent took the work the daemon gave it. The workflow decides what a root still owes its

@@ -79,8 +79,9 @@ type Settings struct {
 	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
 	// a pod's update round waits, after it opens, for every role in the pod but a failed one and
 	// one that has left the round's pod. An answer from each role it waits for ends the round
-	// before the bound once no turn runs (internal/daemon's waitingClaims), and no answer holds
-	// the round past it. It is a decimal so a live proof can drive the bound inside one run.
+	// before the bound once no turn runs and no claim's activity report holds it
+	// (internal/daemon's waitingClaims, roundEnd.holding), and no answer, turn or background work
+	// holds the round past it. It is a decimal so a live proof can drive the bound inside one run.
 	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
 	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
 	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the

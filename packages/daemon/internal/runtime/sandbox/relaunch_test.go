@@ -708,7 +708,8 @@ const nextImage = "ghcr.io/cybermonklabs/legion-worker@sha256:2e2e2e2e0000000000
 // drifted pod a round covers is kept by every launch into it (INFRA-484, roundCovers): replacing
 // it there would end every role's turn in it and delete the issue's disk with everything unpushed
 // on it, so the pod is left to its update round, which first has every worker in it but a failed
-// one and one that has left the round's pod push its work.
+// one and one that has left the round's pod do the steps of its update message
+// (supervise.UpdateTask).
 // The controller's pod is covered by no round — nobody in it holds an issue workspace, so there is
 // nobody to task — and is replaced by its next launch as it always was
 // (TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted holds that for every key of a pod's

@@ -31,7 +31,8 @@ const (
 	IdleHoldPluginContract
 	// IdleHoldUpdateRound: an update round of the pod is open on a live claim of it, so the pod
 	// is already being replaced and the replacement is waiting for each worker in it but a
-	// failed one and one that has left the round's pod to push.
+	// failed one and one that has left the round's pod to do the steps of the update message
+	// (supervise.UpdateTask).
 	IdleHoldUpdateRound
 	// IdleHoldInTurn: a claim of the pod has a process in a turn, starting or stopping, or one
 	// whose launch is not yet known.
@@ -234,12 +235,13 @@ type IdleDecision struct {
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()
 //     is): such a pod is already being replaced, and the replacement waits until every role in
 //     it but a failed one and one that has left the round's pod has answered the update
-//     message, or until the round's bound. A release that deleted the pod under that wait
-//     would leave the round to read its own pod as one that went, and to tell the issue that
-//     the workers which had not answered lost what they had not pushed. A claim's own plugin
-//     round is not this condition's: that claim speaks a contract other than this daemon's,
-//     which the condition above already holds the pod for, and such a round keeps the pod and
-//     the disk anyway;
+//     message, no turn runs and no claim's activity report holds it (internal/daemon's
+//     roundEnd.holding), or until the round's bound. A release that deleted the pod under that
+//     wait would leave the round to read its own pod as one that went, and to tell the issue
+//     that the workers which had not answered lost what they had not pushed. A claim's own
+//     plugin round is not this condition's: that claim speaks a contract other than this
+//     daemon's, which the condition above already holds the pod for, and such a round keeps the
+//     pod and the disk anyway;
 //
 //   - no claim of the pod has a process in a turn, starting or stopping, or whose launch is not
 //     yet known. Failed, retired and already suspended claims stay as they are and hold nothing;
@@ -317,10 +319,10 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 		if !c.Live() {
 			continue
 		}
-		if !c.Reported() {
+		switch claim.ReadSessionWork(c.ActivityAt, c.LastTurnAt, c.ActivityBackground) {
+		case claim.WorkUnreported:
 			return IdleDecision{Hold: IdleHoldUnreported}
-		}
-		if c.ActivityBackground {
+		case claim.WorkRunning:
 			return IdleDecision{Hold: IdleHoldBackgroundWork, HoldKinds: c.ActivityKinds}
 		}
 	}

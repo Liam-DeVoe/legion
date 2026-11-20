@@ -12,8 +12,9 @@ import (
 // signal and the head the worker reports (supervise.PodUpdateSignalled); the round's own sweep is
 // what acts on it. An answer only brings the round's end forward: the round ends early once every
 // claim it waits for has answered (each claim with a session but a failed one and one that has
-// left the round's pod) and no turn runs, and at its bound (pod_update_grace_minutes) it ends
-// whatever the claims answered.
+// left the round's pod), no turn runs and no claim's activity report holds it (internal/daemon's
+// roundEnd.holding), and at its bound (pod_update_grace_minutes) it ends whatever the claims
+// answered and whatever runs.
 //
 // `round` is required, and is the round the worker answers for, as the ask it read named it: the
 // machine takes the answer only for the round its claim stands in, and refuses one naming any
