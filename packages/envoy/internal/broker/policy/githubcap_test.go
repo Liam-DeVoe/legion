@@ -39,6 +39,23 @@ func TestACappedSecretListingAProjectsPodsIsServed(t *testing.T) {
 	}
 }
 
+// TestALegacyKindBesideTypeIsIgnored: a capped secret written with `kind: github-app-capped` beside
+// `type: github-app`, so that a broker reading only `kind` refuses it as type-unknown, is served
+// by this broker as the github-app secret its `type` names, with its cap.
+func TestALegacyKindBesideTypeIsIgnored(t *testing.T) {
+	s := cappedApp()
+	s.Tags[policy.LegacyTypeTag] = "github-app-capped"
+	set := policytest.Current(t, secrets.NewLocal(s), "legion-daemon").Get()
+	served, ok := set.Secrets["CAPPED_APP"]
+	if !ok || served.Type() != policy.TypeGitHubApp || served.GitHubPermissions != "checks:write" {
+		t.Fatalf("CAPPED_APP = %+v (served %t, refused %v); want the capped github-app secret", served, ok, set.Refused)
+	}
+	s.Tags = map[string]string{policy.TagOwner: "legion-daemon", policy.TagTier: policy.TierAgent, policy.LegacyTypeTag: "github-app-capped"}
+	if refusal := policytest.Current(t, secrets.NewLocal(s), "legion-daemon").Get().Refused[policytest.ID("CAPPED_APP")]; refusal.Reason != policy.ReasonTypeUnknown {
+		t.Fatalf("the same secret with no type tag refused %q, want %s: the control that the kind is read", refusal.Reason, policy.ReasonTypeUnknown)
+	}
+}
+
 // TestAProjectRequesterEntryServesThatProjectsPodsAlone: legion-daemon/OSSV names the pods of the
 // legion-daemon service whose project is OSSV and nobody else: an INFRA pod of the same service, a
 // pod of it with no project, an OSSV pod of another service, a person's session and a requester
