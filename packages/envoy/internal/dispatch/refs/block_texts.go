@@ -78,10 +78,9 @@ func CurrentBlockText(ctx context.Context, q Queryer, artifactID, blockID string
 
 // blockTextOwners is, as an SQL array over the uuid parameter document, the keys
 // document_block_texts holds a document's blocks' text rows under: the document itself, and,
-// for a document converted into an issue room, the room's tree artifact, under which the room's
-// index writes them at the document's own version numbers (IndexBlocks), so one numbering runs
-// across both keys.
+// for a document converted into an issue room, the room's tree artifact (DocumentRoomSQL), under
+// which the room's index writes them at the document's own version numbers (IndexBlocks), so one
+// numbering runs across both keys.
 func blockTextOwners(document string) string {
-	return `array[` + document + `::uuid, coalesce((select moved.room from document_rooms moved where moved.artifact_id = ` +
-		document + `::uuid), ` + document + `::uuid)]`
+	return `array[` + document + `::uuid, ` + DocumentRoomSQL(document+`::uuid`) + `]`
 }

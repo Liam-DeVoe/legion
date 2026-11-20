@@ -1431,6 +1431,10 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 	var held []string
 	var owed bool
 	var markedAt *time.Time
+	// The documents of the room are those its layout holds (roomLayoutSQL): a retired document's
+	// fragment is none of them. Its mark counts beside theirs, and goes with theirs below, since
+	// no pass indexes it again: the room's passes keep its blocks as its retirement left them
+	// (refs.PlanBlocks).
 	if err := tx.QueryRow(queued, `
 		with marked as (
 			select b.version is null or b.store_owed_at is not null as owed
@@ -1439,7 +1443,8 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 			   or b.artifact_id in (select d.artifact_id from document_rooms d where d.room = $1::uuid)
 		)
 		select `+roomRevisionSQL("$1::uuid")+`,
-		       array(select d.artifact_id::text from document_rooms d where d.room = $1::uuid order by 1),
+		       array(select d.artifact_id::text from document_rooms d join artifacts a on a.id = d.artifact_id
+		             where d.room = $1::uuid and a.retired_at is null order by 1),
 		       coalesce((select bool_or(marked.owed) from marked), false),
 		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = $1::uuid)
 	`, room).Scan(&revision, &held, &owed, &markedAt); err != nil {
@@ -1509,11 +1514,13 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		}
 	}
 	// A document of the room holding no version is no part of the pass's fence, which cleared the
-	// marks of every document it indexed: its own mark goes here, so no mark of the room is left.
+	// marks of every document it indexed, and neither is a retired document of the room: each one's
+	// own mark goes here, so no mark of the room is left.
 	if err := writeExec(queued, tx, fmt.Sprintf("clear the marks of room %s", room), `
 		update document_block_versions set version = coalesce(version, 0), store_owed_at = null
-		where artifact_id = any($1::uuid[]) and (version is null or store_owed_at is not null)
-	`, documents); err != nil {
+		where (artifact_id = any($1::uuid[]) or artifact_id in (select d.artifact_id from document_rooms d where d.room = $2::uuid))
+		  and (version is null or store_owed_at is not null)
+	`, documents, room); err != nil {
 		return false, false, false, err
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {

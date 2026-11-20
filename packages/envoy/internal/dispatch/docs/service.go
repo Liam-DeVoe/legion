@@ -3610,14 +3610,18 @@ type documentRoom struct {
 }
 
 // roomLayoutSQL is, as SQL over the uuid expression room, an issue's tree, the documents the room
-// holds a fragment of - every document whose document_rooms row names room - as a text array in
-// the order the room renders them (roomLayout): verification-md, plan-md, the spec, then every
-// other document in the order it was created. Every read of a room's layout reads it here, so the
-// layout a room loaded and the one a settlement reads again compare element for element.
+// holds a fragment of - every document whose document_rooms row names room and that is not
+// retired - as a text array in the order the room renders them (roomLayout): verification-md,
+// plan-md, the spec, then every other document in the order it was created. Every read of a room's
+// layout reads it here, so the layout a room loaded and the one a settlement reads again compare
+// element for element. A retired document (RetireDocument) takes no new text, so its fragment
+// leaves the room's layout: the room reloads without it (AnnounceDocumentRooms), and nothing typed
+// into it is reconciled, versioned or indexed, while the room's block index keeps the blocks it
+// recorded of the document as the retirement left them (refs.PlanBlocks).
 func roomLayoutSQL(room string) string {
 	return `array(
 			select d.id::text from document_rooms held join artifacts d on d.id = held.artifact_id
-			where held.room = ` + room + `
+			where held.room = ` + room + ` and d.retired_at is null
 			order by ` + roomLayoutRankSQL(refs.DocumentBandSQL("d")) + `, d.created_at, d.id)`
 }
 
@@ -3642,7 +3646,7 @@ var joinedRoomLayoutStatement = `
 			select d.id::text as id, ` + roomLayoutRankSQL(refs.DocumentBandSQL("d")) + ` as rank,
 				false as joining, d.created_at as at
 			from document_rooms held join artifacts d on d.id = held.artifact_id
-			where held.room = $1::uuid
+			where held.room = $1::uuid and d.retired_at is null
 			union all
 			select joining.id, ` + roomLayoutRankSQL("joining.band") + `, true, null
 			from unnest($2::text[], $3::text[]) as joining(id, band)

@@ -220,6 +220,16 @@ func roomBlockRowSQL(tree, block string) string {
 		  and room_block.block_id = ` + block + `)`
 }
 
+// retiredDocumentSQL is true while the document the uuid SQL expression document names is retired
+// (artifacts.retired_at), and false for a null document. Over the document of a block of an issue
+// room (roomBlockRowSQL, RoomBlockDocumentSQL), which is null for a block of no room, it is true of
+// a block of a retired document of the room: that document's fragment leaves the room's layout
+// (docs' roomLayoutSQL), and the room's passes keep its blocks as its retirement left them
+// (BlockIndexing.retained).
+func retiredDocumentSQL(document string) string {
+	return `exists (select 1 from artifacts retired where retired.id = ` + document + ` and retired.retired_at is not null)`
+}
+
 // RoomBlockDocumentSQL is the document whose fragment of the issue room under the tree artifact
 // tree (SQL text answering a uuid) holds, or last held, the block block (SQL text), as SQL text
 // answering a uuid, null where none is on record: the document its issue_room_blocks row names
@@ -2110,11 +2120,15 @@ func (b *BlockIndexing) planRoomBlocks(
 		ids, documents = append(ids, block.ID), append(documents, ownerOf(block))
 	}
 	// ids is every block the room holds now, past the bound or not: the rows of every other block
-	// go (queueRoomBlocks).
+	// go (queueRoomBlocks), but those of the blocks the pass retains, a retired document's, which
+	// keep the document they name.
 	b.room, b.roomIDs, b.roomDocuments = true, ids, documents
-	standing := make(map[string]string, len(ids))
+	standing := make(map[string]string, len(ids)+len(b.retained))
 	for index, id := range ids {
 		standing[id] = documents[index]
+	}
+	for _, id := range b.retained {
+		standing[id] = indexed.blocks[id].document
 	}
 	if len(ids) == 0 {
 		return nil, standing, nil
@@ -2210,15 +2224,17 @@ func (b *BlockIndexing) planRoomBlocks(
 }
 
 // queueRoomBlocks queues the room's record planRoomBlocks planned: the delete of the row of every
-// block the room no longer holds, then the document of each block it holds, written where it moved
-// or is new. A pass over a document that is not an issue's tree queues nothing.
+// block the room no longer holds, but a block the pass retains (BlockIndexing.retained), then the
+// document of each block it holds, written where it moved or is new. A pass over a document that
+// is not an issue's tree queues nothing.
 func (b BlockIndexing) queueRoomBlocks(batch *store.WriteBatch) {
 	if !b.room {
 		return
 	}
 	batch.Queue(fmt.Sprintf("delete the room blocks version of %s no longer holds", b.artifactID), `
 		delete from issue_room_blocks r where r.tree_artifact_id = $1::uuid and not (r.block_id = any($2::text[]))
-	`, b.artifactID, b.roomIDs)
+		  and not (r.block_id = any(coalesce($3::text[], '{}')))
+	`, b.artifactID, b.roomIDs, b.retained)
 	if len(b.roomIDs) == 0 {
 		return
 	}

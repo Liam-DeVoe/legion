@@ -49,9 +49,11 @@ var retirementEvents = events.NewBroker()
 //
 // It takes no new text after it: every process closes its room of the document once tx commits,
 // through the announcement a removal sends (AnnounceDocumentRemoved), and for a document of an
-// issue room the issue's room as well (AnnounceDocumentRooms), whose settlement versions the
-// retired document's fragment no more; a socket that comes back is refused (ServeHTTP), and api
-// refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED.
+// issue room the issue's room as well (AnnounceDocumentRooms), whose layout leaves a retired
+// document out (roomLayoutSQL): the room reloads without its fragment, so nothing typed into that
+// fragment is reconciled, versioned or indexed, and the room's block index keeps the blocks it
+// recorded of the document as they stood (refs.PlanBlocks). A socket that comes back is refused
+// (ServeHTTP), and api refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED.
 //
 // No version is written, so the approval is not left behind a later version as a write leaves
 // one: the approval read answers a retired document's approval stale (api's applyApprovals), and
@@ -133,8 +135,7 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	}
 	// A converted document is edited in its issue's room, which no removal of the document's own
 	// name closes: every process closes that room too, whose sockets reconnect, the document's
-	// own refused, and whose settlement versions the retired document's fragment no more
-	// (roomFragments).
+	// own refused, and which loads again without the retired document's fragment (roomLayoutSQL).
 	room, err := roomOf(ctx, tx, artifactID)
 	if err != nil {
 		return Retirement{}, err
@@ -151,19 +152,20 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 // the document artifactID, stored at refKey (spec requirement r-constraint-risk): nobody runs a
 // retired document's checks, so no risk stays prevented by one, as the index pass retracts each
 // prevented_by at a block a version drops (refs' retractGonePointers), through the same read
-// (refs.PreventionRetractions). The blocks are those the document's document_blocks rows name,
-// which a retirement keeps; a block a version dropped took its pointers with it then. A
-// constrained_by out of a requirement of the document stays: what the requirement was held to is
-// the record of the document, which stays readable. Each retraction is dated at and signed by
-// actor, the retirement's own time and writer, and rides with the facts the retirement states
-// under its document.retired event (writeRetiredNode, graphstore.Caused), in the retirement's
-// transaction.
+// (refs.PreventionRetractions). The blocks are those the document's document_blocks rows name, read
+// where the block index keys them (refs.DocumentRoomBlocksSQL: under the issue room's tree for a
+// document of an issue room), which a retirement keeps; a block a version dropped took its pointers
+// with it then. A constrained_by out of a requirement of the document stays: what the requirement
+// was held to is the record of the document, which stays readable. Each retraction is dated at and
+// signed by actor, the retirement's own time and writer, and rides with the facts the retirement
+// states under its document.retired event (writeRetiredNode, graphstore.Caused), in the
+// retirement's transaction.
 //
 // It logs how many it retracts, with the document's address, and answers the number to no reader:
 // the risk a check covered may be one only its author may see, and a count served beside the
 // document would tell another reader it is there.
 func retiredPreventions(ctx context.Context, tx pgx.Tx, artifactID, refKey string, at time.Time, actor model.Actor) ([]graphstore.Tuple, error) {
-	retracted, err := refs.PreventionRetractions(ctx, tx, `array(select held.node_id from document_blocks held where held.artifact_id = $1::uuid)`,
+	retracted, err := refs.PreventionRetractions(ctx, tx, `array(select held.node_id from document_blocks held where `+refs.DocumentRoomBlocksSQL("held", "$1::uuid")+`)`,
 		[]any{artifactID}, at, actor, graphstore.NoEvent)
 	if err != nil {
 		return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)

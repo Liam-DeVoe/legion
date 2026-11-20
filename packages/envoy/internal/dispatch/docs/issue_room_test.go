@@ -1565,3 +1565,132 @@ func TestARetiredDocumentOfAnIssueRoomClosesTheRoomAndTakesNoVersion(t *testing.
 		t.Errorf("the spec stands at version %d holding %q, want version 2 holding the words typed into its fragment", number, markdown)
 	}
 }
+
+// A retired document of an issue room leaves the room (roomLayoutSQL): the room's layout names no
+// fragment of it, the room reloads without one, and a paragraph a peer of the room types into the
+// retired Verification document's fragment is versioned and indexed under no document, while the
+// spec's fragment typed beside it is versioned and indexed. The room's block index keeps what it
+// recorded of the retired document's blocks before the retirement - their rows, their record in the
+// room, their texts and their nodes - as they stood (refs.PlanBlocks).
+func TestARetiredDocumentLeavesItsIssueRoomAndKeepsItsIndex(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	runRoomSync(t, newRoomSync(service))
+	room := createIssueRoom(t, database, 1)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	// settle sends peer's write into the room and settles the room once the update is stored.
+	settle := func(peer *docstest.Peer, write func(*crdt.Transaction)) {
+		t.Helper()
+		stored := roomUpdateCount(t, database, room.tree)
+		if _, err := peer.Send(write); err != nil {
+			t.Fatalf("type into the room: %v", err)
+		}
+		waitForStoredUpdates(t, database, room.tree, stored)
+		if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
+			t.Fatalf("wait for the room's appends: %v", err)
+		}
+		if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
+			t.Fatalf("settle the issue's room: %v", err)
+		}
+	}
+	// retiredIndex is what the room's block index holds of the Verification document's blocks:
+	// each block's room record, row, texts and node state, one line a block.
+	retiredIndex := func() []string {
+		t.Helper()
+		rows, err := database.Pool.Query(ctx, `
+			select r.block_id || ' row=' || coalesce(b.text_sha256 || '@' || b.changed_version, 'none')
+			       || ' texts=' || coalesce((select string_agg(x.version || ':' || coalesce(x.text, '<none>'), ',' order by x.version)
+			                                 from document_block_texts x where x.artifact_id = r.tree_artifact_id and x.block_id = r.block_id), '')
+			       || ' node=' || coalesce((select n.state from graph_nodes n where n.kind = 'block' and n.id = tree.ref_key || '#' || r.block_id), 'none')
+			from issue_room_blocks r
+			join artifacts tree on tree.id = r.tree_artifact_id
+			left join document_blocks b on b.artifact_id = r.tree_artifact_id and b.block_id = r.block_id
+			where r.tree_artifact_id = $1 and r.document_id = $2
+			order by r.block_id`, room.tree, room.verification)
+		if err != nil {
+			t.Fatalf("read the room's index of the Verification document: %v", err)
+		}
+		held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the room's index of the Verification document: %v", err)
+		}
+		return held
+	}
+	before := connectPeer(t, server.URL, room.spec, "alice")
+	if err := before.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatal(err)
+	}
+	settle(before, writeParagraph(before.Doc, room.verification, "The check the retirement keeps."))
+	kept := retiredIndex()
+	if len(kept) != 1 || !strings.Contains(kept[0], "node=live") {
+		t.Fatalf("before the retirement the room indexes %v of the Verification document, want its one block, live", kept)
+	}
+	func() {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
+			t.Fatalf("retire the Verification document: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the retirement: %v", err)
+		}
+	}()
+	select {
+	case <-before.Ended:
+	case <-time.After(roomWait(t)):
+		t.Fatalf("the spec's socket on the issue's room is still open %v after the Verification document's retirement, want the room closed", roomWait(t))
+	}
+	if layout, err := readRoomLayout(ctx, database.Pool, room.tree); err != nil || slices.Contains(layout, room.verification) {
+		t.Errorf("after the retirement the room's layout is %v (%v), want no fragment of the retired Verification document %s", layout, err, room.verification)
+	}
+
+	peer := connectPeer(t, server.URL, room.spec, "alice")
+	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatal(err)
+	}
+	if live := service.srv.GetDoc(room.tree); live == nil || slices.Contains(service.layoutOf(live), room.verification) {
+		t.Errorf("the room reloaded after the retirement holds the fragments of %v, want none of the retired Verification document %s",
+			service.layoutOf(live), room.verification)
+	}
+	retired, own := writeParagraph(peer.Doc, room.verification, "Typed after the retirement."), writeParagraph(peer.Doc, room.spec, "The spec's own words.")
+	settle(peer, func(txn *crdt.Transaction) {
+		retired(txn)
+		own(txn)
+	})
+	latest := func(document string) (int, string) {
+		t.Helper()
+		var number int
+		var markdown string
+		if err := database.Pool.QueryRow(ctx, `
+			select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1`, document).Scan(&number, &markdown); err != nil {
+			t.Fatalf("read the latest version of %s: %v", document, err)
+		}
+		return number, markdown
+	}
+	if number, markdown := latest(room.verification); number != 2 || markdown != "The check the retirement keeps.\n" {
+		t.Errorf("the retired Verification document stands at version %d holding %q, want the version 2 it held at its retirement", number, markdown)
+	}
+	if number, markdown := latest(room.spec); number != 2 || markdown != "The spec's own words.\n" {
+		t.Errorf("the spec stands at version %d holding %q, want version 2 holding the words typed into its fragment", number, markdown)
+	}
+	var typed, ownWords int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from document_blocks where artifact_id = $1 and excerpt like 'Typed after the retirement%')
+		     + (select count(*) from document_block_texts where artifact_id = $1 and text like '%Typed after the retirement%')
+		     + (select count(*) from issue_room_blocks r join document_blocks b on b.artifact_id = r.tree_artifact_id and b.block_id = r.block_id
+		        where r.tree_artifact_id = $1 and b.excerpt like 'Typed after the retirement%'),
+		       (select count(*) from document_blocks where artifact_id = $1 and excerpt like 'The spec''s own words%')
+	`, room.tree).Scan(&typed, &ownWords); err != nil {
+		t.Fatalf("read the room's index: %v", err)
+	}
+	if typed != 0 || ownWords != 1 {
+		t.Errorf("the room indexes %d row(s) of the paragraph typed into the retired fragment and %d block(s) of the spec's own words, want none and one", typed, ownWords)
+	}
+	if got := retiredIndex(); !slices.Equal(got, kept) {
+		t.Errorf("after the retirement the room indexes the Verification document's blocks as\n%v\nwant them as the retirement left them:\n%v", got, kept)
+	}
+}

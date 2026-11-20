@@ -836,10 +836,12 @@ func (c *pointerCheck) readInvocations() pointerRead {
 // that document and whether it is retired (artifacts.retired_at, docs.RetireDocument), read off
 // its document_blocks row by node_id, the block's address that every row carries, through that
 // column's hash index (document_blocks_node_id, migration 0121), and the primary key of the
-// artifacts row it names. It is not read by node_kind and node_address: a row written before the
-// store's backfill, one a pod of the previous release writes during a roll, and one past the
-// store's address bound leave both null, and its block is still the requirement or the check it
-// is. A block no document holds - a finding of a lens, a block a version removed - answers none,
+// artifacts row of the block's document: the document the issue_room_blocks row of a block of an
+// issue room names, whose row is keyed by the room's tree artifact, else the row's own artifact,
+// as refs.BlockDocumentSQL reads it. It is not read by node_kind and node_address: a row written
+// before the store's backfill, one a pod of the previous release writes during a roll, and one past
+// the store's address bound leave both null, and its block is still the requirement or the check
+// it is. A block no document holds - a finding of a lens, a block a version removed - answers none,
 // and no rule that names a block type lets it through. A document no project holds, an agent
 // conversation's file, answers no project. A retired document keeps its document_blocks rows, so
 // its checks are read, and refused, for what they are. A write that asserts a prevented_by reads
@@ -849,7 +851,10 @@ func (c *pointerCheck) readBlocks() pointerRead {
 	return pointerRead{
 		what: "read the types of the blocks a pointer names",
 		sql: `select d.node_id, d.type, a.project_key, a.retired_at is not null
-			from document_blocks d join artifacts a on a.id = d.artifact_id
+			from document_blocks d join artifacts a on a.id = coalesce((
+				select room_block.document_id from issue_room_blocks room_block
+				where room_block.tree_artifact_id = d.artifact_id and block_id_key(room_block.block_id) = block_id_key(d.block_id)
+				  and room_block.block_id = d.block_id), d.artifact_id)
 			where d.node_id = any($1::text[])`,
 		args: []any{c.blocks},
 		fill: func(rows pgx.Rows) error {

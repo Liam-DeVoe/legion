@@ -115,7 +115,7 @@ func indexedBlockNode(t *testing.T, database *store.Store, documentID, block str
 	var node string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select d.node_id from document_blocks d
-		where d.artifact_id = coalesce((select moved.room from document_rooms moved where moved.artifact_id = $1::uuid), $1::uuid)
+		where d.artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`
 		  and d.block_id = $2
 	`, documentID, block).Scan(&node); err != nil {
 		t.Fatalf("read the indexed node of block %s of %s: %v", block, documentID, err)

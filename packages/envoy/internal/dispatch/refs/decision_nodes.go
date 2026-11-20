@@ -1040,20 +1040,24 @@ func (d DecisionIndexing) heldRooms(index BlockIndex) map[string]string {
 // own node (graph_tuples_as_of_in) and those its block_refs rows name, which is where the typed-node
 // pass above the deferral bound places them; and the readings whose current part_of is one of
 // those decisions or an ask whose block the document holds. A node outside the document - the
-// reading of a copy of one of its asks on another document - is no node of it. The read is the
-// plan's, in its write's read phase.
+// reading of a copy of one of its asks on another document - is no node of it, and neither is a
+// block of a retired document of an issue room, nor an ask of one, which the room's passes keep as
+// the retirement left them (BlockIndexing.retained). The read is the plan's, in its write's read
+// phase.
 func unheldTypedNodes(ctx context.Context, q Queryer, artifactID string, document IndexedVersion, versionAt time.Time, blocks []model.ArtifactBlock, supertags map[string]string) ([]graphstore.Node, error) {
 	refKey := document.RefKey
 	rows, err := q.Query(ctx, `
 		with candidates as (
 			select d.node_address as id from document_blocks d
 			where d.artifact_id = $1::uuid and d.node_kind = $3 and d.type = any($4::text[])
+			  and not `+retiredDocumentSQL(roomBlockRowSQL("d.artifact_id", "d.block_id"))+`
 			union
 			select part.from_id from (`+graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
 		`t.to_kind = 'artifact' and t.to_id = $2 and t.kind = '`+graphstore.TuplePartOf+`'`)+`) part
 			where part.asserted and part.from_kind = $3
 			union
 			select r.node_address from block_refs r where r.artifact_id = $1::uuid and r.node_kind = $3
+			  and not `+retiredDocumentSQL(roomBlockRowSQL("r.artifact_id", "r.block_id"))+`
 		),
 		typed as (
 			select node.id, node.supertag from candidates c
@@ -1067,6 +1071,7 @@ func unheldTypedNodes(ctx context.Context, q Queryer, artifactID string, documen
 			select $3::text as kind, id from typed where supertag = $6
 			union all
 			select $7::text, q.id::text from asks q where q.block_artifact_id = $1::uuid
+			  and not `+retiredDocumentSQL(RoomBlockDocumentSQL("q.block_artifact_id", "q.block_id"))+`
 		)
 		select id, supertag from typed
 		union

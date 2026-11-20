@@ -325,6 +325,52 @@ func TestTheCopiesOfAnAskAreFoundByItsBlockIDAsWritten(t *testing.T) {
 	}
 }
 
+// A document of an issue room holds its own ask under its blocks' ids, keyed by the room's tree
+// (createAskBlock), so it is no copy of another document's ask under the same id: the spec of a
+// converted issue holding the ask of its block #shared is not among the copies of an ask under
+// #shared that another document of the issue holds, while a third document of the issue holding
+// that block with no ask of its own is.
+func TestARoomDocumentHoldingItsOwnAskIsNoCopyOfAnotherDocumentsAsk(t *testing.T) {
+	database := storetest.Open(t)
+	room := createIssueRoom(t, database, 1)
+	ctx := context.Background()
+	id := "shared"
+	block := ":::ask{" + pmdoc.TypedBlockIDAttribute(id) + " urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
+	if _, err := database.Pool.Exec(ctx, `
+		with version as (
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1::uuid, 2, $3, '[{"kind":"user","id":"alice"}]')
+		), held as (
+			insert into issue_room_blocks (tree_artifact_id, block_id, document_id) values ($2::uuid, $4, $1::uuid)
+		)
+		insert into asks (issue_key, author, question, block_id, block_artifact_id)
+		values ($5, '{"kind":"user","id":"alice"}', 'Which region?', $4, $2::uuid)
+	`, room.spec, room.tree, "Context\n\n"+block, id, room.issue); err != nil {
+		t.Fatalf("write the spec's ask block and its ask, keyed by the issue room: %v", err)
+	}
+	source := createIssueDocument(t, database, 1, "Source\n\n"+block)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into asks (issue_key, author, question, block_id, block_artifact_id)
+		values ($1, '{"kind":"user","id":"alice"}', 'Which region?', $2, $3::uuid)
+	`, room.issue, id, source); err != nil {
+		t.Fatalf("write the source document's own ask: %v", err)
+	}
+	copied := createIssueDocument(t, database, 1, "Copy\n\n"+block)
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	found, err := copiesOf(ctx, tx, documentAsks{artifactID: source, owner: artifactOwner{IssueKey: &room.issue}, asks: []model.Ask{{BlockID: &id}}})
+	if err != nil {
+		t.Fatalf("copiesOf: %v", err)
+	}
+	if !slices.Equal(found, []string{copied}) {
+		t.Fatalf("copies of the source's ask under %q = %v, want only the copy %s and not the spec %s, which holds the room's own ask of that block",
+			id, found, copied, room.spec)
+	}
+}
+
 // openAsksUnder is the documents holding an open ask under blockID, in the test's own database.
 func openAsksUnder(t *testing.T, service *Service, blockID string) []string {
 	t.Helper()

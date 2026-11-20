@@ -518,6 +518,12 @@ type BlockIndexing struct {
 	// stated is what the pass states in the node and tuple store, held for the event that causes
 	// the write (graphstore.Uncaused).
 	stated graphstore.Uncaused
+	// retained are the blocks of a retired document of the issue room the pass indexes that no
+	// fragment of the room holds now, in id order (storedBlock.retired): a retired document's
+	// fragment leaves its room's layout (docs' roomLayoutSQL), so no version of the room renders
+	// its blocks again, and the pass keeps each one's row, text, links, room record and node as the
+	// retirement left them rather than dropping them (docs.RetireDocument keeps them).
+	retained []string
 }
 
 // versionOf is the version block blockID records: that of the document whose fragment of an
@@ -536,6 +542,12 @@ func (b BlockIndexing) versionOf(blockID string) Version {
 	}
 	_, newest := b.versions.Newest(b.artifactID)
 	return newest
+}
+
+// retains says the pass keeps block blockID as the retirement of its document left it (retained).
+func (b BlockIndexing) retains(blockID string) bool {
+	_, found := slices.BinarySearch(b.retained, blockID)
+	return found
 }
 
 // PlanBlocks plans the block index of artifactID at versions, against index, what the document's
@@ -868,6 +880,16 @@ func PlanBlocks(
 		indexing.excerpts = append(indexing.excerpts, text.HeadRunes(body, BlockExcerptRunes))
 		indexing.textIDs, indexing.texts = append(indexing.textIDs, block.ID), append(indexing.texts, &body)
 	}
+	// A block of a retired document of an issue room that no fragment of the room holds now is no
+	// block this version dropped: the pass keeps it as the retirement left it (retained).
+	for id, block := range stored {
+		if block.retired {
+			held[id] = block
+			indexing.retained = append(indexing.retained, id)
+			delete(stored, id)
+		}
+	}
+	slices.Sort(indexing.retained)
 	// In id order, so the rows this pass writes and the facts it states come in an order a
 	// reader of the log can predict, which a map's iteration would not give.
 	indexing.deleted = slices.Sorted(maps.Keys(stored))
@@ -1220,7 +1242,8 @@ func unwritten(nodes, written []graphstore.Node) []graphstore.Node {
 //
 // A scope (BlockIndexing.scope) limits the rows the reconcile drops to those it reaches: every
 // other link the index holds is held as it stands, whatever the pairs hold, so a pass that read
-// only its own ties drops nothing it did not read.
+// only its own ties drops nothing it did not read. So is every link of a block the pass retains,
+// one of a retired document of the issue room (BlockIndexing.retained).
 //
 // A pair inserted is dated at the version its block records, and a pair dropped retracted at that
 // version's time (BlockIndexing.versionOf): the one version a pass over a document indexes, and
@@ -1239,7 +1262,7 @@ func (b *BlockIndexing) planBlockRefs(ctx context.Context, q Queryer, index Bloc
 		if _, still := written[link.key()]; still {
 			continue
 		}
-		if !b.scope.reaches(link.blockPair) {
+		if !b.scope.reaches(link.blockPair) || b.retains(link.blockID) {
 			kept = append(kept, link)
 			continue
 		}
@@ -2147,14 +2170,16 @@ func BlockTextSum(body string) string {
 
 // storedBlock is what the document's index already holds of one block: the sha256 of its text,
 // when its document_blocks row was written, which is the time a membership of the document is
-// dated from (TupleInDocument), the node that row names, "" for a row that names none, and the
+// dated from (TupleInDocument), the node that row names, "" for a row that names none, the
 // document the block is a block of (BlockDocumentSQL), whose version a block the version drops
-// records.
+// records, and whether that document is a retired document of the issue room whose tree artifact
+// keys the row, whose blocks a pass over the room keeps as they stand (BlockIndexing.retained).
 type storedBlock struct {
 	sum      string
 	joined   time.Time
 	node     string
 	document string
+	retired  bool
 }
 
 // namedNode is the node a block's row names once a pass has written or placed it: its address
@@ -2218,15 +2243,17 @@ func heldSupertags(ctx context.Context, q Queryer, refKey string, ids []string) 
 // document's rows the plan takes, because the pass writes a node and a membership for every row
 // that names none (PlanBlocks) and a second read of the same rows would cost a scan of the
 // document for every version. The document of each block is BlockDocumentSQL's, read as a join on
-// the room's rows (none for a document that is its own room) rather than a probe a row.
+// the room's rows (none for a document that is its own room) rather than a probe a row, and so is
+// whether that document is a retired document of the room (storedBlock.retired).
 func storedBlocks(ctx context.Context, q Queryer, artifactID string) (map[string]storedBlock, error) {
 	rows, err := q.Query(ctx, `
 		select d.block_id, d.text_sha256, d.created_at,
 		       case when d.node_kind is not null then coalesce(d.node_address, '') else '' end,
-		       coalesce(r.document_id, d.artifact_id)::text
+		       coalesce(r.document_id, d.artifact_id)::text, retired.id is not null
 		from document_blocks d
 		left join (select block_id, document_id from issue_room_blocks where tree_artifact_id = $1) r
 		       on r.block_id = d.block_id
+		left join artifacts retired on retired.id = r.document_id and retired.id <> $1 and retired.retired_at is not null
 		where d.artifact_id = $1
 	`, artifactID)
 	if err != nil {
@@ -2237,7 +2264,7 @@ func storedBlocks(ctx context.Context, q Queryer, artifactID string) (map[string
 	for rows.Next() {
 		var id string
 		var held storedBlock
-		if err := rows.Scan(&id, &held.sum, &held.joined, &held.node, &held.document); err != nil {
+		if err := rows.Scan(&id, &held.sum, &held.joined, &held.node, &held.document, &held.retired); err != nil {
 			return nil, fmt.Errorf("scan a block of %s: %w", artifactID, err)
 		}
 		stored[id] = held
@@ -2427,13 +2454,15 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 	if b.scope != nil {
 		scopeKinds, scopeBlocks = b.scope.kinds, b.scope.blocks
 	}
+	// The rows of a block the pass retains stay as they stand (BlockIndexing.retained).
 	batch.Queue(fmt.Sprintf("delete the block mentions version %d of %s dropped", b.version, b.artifactID), `
 		delete from block_refs r
 		where r.artifact_id = $1 and not exists (
 			select 1 from unnest($2::text[], $3::text[], $4::text[], $5::text[]) as p (block_id, kind, to_kind, to_id)
 			where p.block_id = r.block_id and p.kind = r.kind and p.to_kind = r.to_kind and p.to_id = r.to_id)
 		  and ($6::text[] is null or (r.kind = any($6::text[]) and r.block_id = any($7::text[])))
-	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, scopeKinds, scopeBlocks)
+		  and not (r.block_id = any(coalesce($8::text[], '{}')))
+	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, scopeKinds, scopeBlocks, b.retained)
 	if len(pairs) == 0 {
 		return
 	}

@@ -283,7 +283,9 @@ func copiedAskSourcesQuery(owner artifactOwner) (string, string) {
 // owedCopiesQuery reads owner's other documents, $2 being the document settled or its room as
 // copiedAskSourcesQuery binds it, whose latest version holds an ask block opener of the pairs ($1
 // block id, $4 LIKE pattern for its opener) with no ask of its own under that id, read through
-// asks_block_id_unique as copiedAskSourcesQuery reads it, and returns the value it binds as $3. No
+// asks_block_id_unique as copiedAskSourcesQuery reads it, and returns the value it binds as $3. A
+// document's own ask is keyed by the room it is edited in (refs.DocumentRoomSQL): the document
+// itself, or, for a document of an issue room, the room's tree artifact (createAskBlock). No
 // document of the room $2 is edited in is another (refs.DocumentRoomSQL), as copiedAskSourcesQuery
 // reads none: an issue room's fragments hold its asks' own blocks, under ids unique across the
 // room, and a settlement of that room is what clears a pending row of any of them. The ask is
@@ -304,7 +306,7 @@ func owedCopiesQuery(owner artifactOwner) (string, string) {
 			select 1 from unnest($1::text[], $4::text[]) as copied(block_id, pattern)
 			where latest.markdown like copied.pattern and (
 				select 1 from asks a
-				where a.block_artifact_id = d.id and block_id_key(a.block_id) = block_id_key(copied.block_id)
+				where a.block_artifact_id = ` + refs.DocumentRoomSQL("d.id") + ` and block_id_key(a.block_id) = block_id_key(copied.block_id)
 					and a.block_id = copied.block_id
 				limit 1
 			) is null
