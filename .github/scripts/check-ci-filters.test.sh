@@ -4246,4 +4246,130 @@ run_check "$root"
 check "refuses the library's curl once the fake is no longer first on PATH" \
   "$(contains "$out" "in scripts/lib/consumers.sh, which scripts/consumers_test.sh runs, runs \`curl\`")"
 
+# Rule gaps with no site in the tree, each a row: a package runner that fetches without --yes and
+# the runners of the other installers, flock as a wrapper, and a relative path read from the
+# directory a subshell's `cd` moved to, which the rule once refused.
+echo "case: rule 22 refuses the package runners that fetch and flock's command, and reads a subshell's directory"
+root=$(fixture network-runners)
+cat > "$root/bun.lock" <<'LOCK'
+{
+  "lockfileVersion": 1,
+  "packages": {
+    "eslint": ["eslint@9.0.0", "", { "bin": { "eslint": "bin/eslint.js" } }, ""],
+    "typescript": ["typescript@5.0.0", "", { "bin": { "tsc": "bin/tsc" } }, ""],
+  }
+}
+LOCK
+git -C "$root" add bun.lock
+lint_steps "$root" \
+  "npx without --yes" "npx cowsay hello" \
+  "npx of a version" "npx eslint@9.1.0 --version" \
+  "bunx" "bunx cowsay hello" \
+  "bun x" "bun x cowsay hello" \
+  "npm exec" "npm exec -- cowsay hello" \
+  "pnpm dlx" "pnpm dlx cowsay hello" \
+  "pipx run" "pipx run black --check ." \
+  "flock" "flock /tmp/apt.lock apt-get update" \
+  "flock -c" "flock -w 10 /tmp/apt.lock -c 'apt-get update'" \
+  "npx of a held package" "npx eslint ." \
+  "bunx of a held bin" "bunx tsc --noEmit" \
+  "npx --no" "npx --no cowsay" \
+  "a subshell's relative path" "(cd packages/widget && ../../.github/scripts/network-install.sh bun -- bun install --frozen-lockfile)"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names npx without --yes" "$(refused_in "npx without --yes" "npx")"
+check "names npx of a version" "$(refused_in "npx of a version" "npx")"
+check "names bunx" "$(refused_in "bunx" "bunx")"
+check "names bun x" "$(refused_in "bun x" "bun x")"
+check "names npm exec" "$(refused_in "npm exec" "npm exec")"
+check "names pnpm dlx" "$(refused_in "pnpm dlx" "pnpm dlx")"
+check "names pipx run" "$(refused_in "pipx run" "pipx run")"
+check "names the install flock runs" "$(refused_in "flock" "apt-get update")"
+check "names the install flock's -c runs" "$(refused_in "flock -c" "apt-get update")"
+check "passes a runner of a package or a bin a lockfile holds" \
+  "$(is "$(contains "$out" "in step \"npx of a held package\"\|in step \"bunx of a held bin\"")" false)"
+check "passes a runner told not to fetch" "$(is "$(contains "$out" "in step \"npx --no\"")" false)"
+check "passes the wrapper by its path from the subshell's directory" \
+  "$(is "$(contains "$out" "in step \"a subshell's relative path\"")" false)"
+
+# A docker run's image is its first word no option takes, never any word that names a pulled image;
+# a variable the text builds of options alone (visual-run.sh's forwarded variables) expands to
+# those options, and a variable of any other value is the image.
+echo "case: rule 22 refuses the builds it cannot read, and reads a docker run's image by its own word"
+root=$(fixture network-docker-words)
+lint_steps "$root" \
+  "Pull the tool" ".github/scripts/network-install.sh docker -- docker pull ghcr.io/example/tool:1" \
+  "compose build" "docker compose -f compose.yaml build" \
+  "buildx bake" "docker buildx bake -f docker-bake.hcl" \
+  "the pulled image as an argument" "docker run --rm ghcr.io/example/other:1 echo ghcr.io/example/tool:1" \
+  "options a variable holds" $'opts=""\nfor name in A B; do opts="$opts -e $name"; done\ndocker run --rm $opts ghcr.io/example/tool:1 true' \
+  "options a variable holds, then another image" $'more=""\nfor name in A B; do more="$more -e $name"; done\ndocker run --rm $more ghcr.io/example/other:1 true' \
+  "an image a variable holds" $'image=ghcr.io/example/other:1\ndocker run --rm $image ghcr.io/example/tool:1'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names docker compose build, which it cannot read" \
+  "$(contains "$out" "runs \`docker compose -f compose.yaml build\` in step \"compose build\": a build whose Dockerfiles a compose or bake file names")"
+check "names docker buildx bake, which it cannot read" \
+  "$(contains "$out" "runs \`docker buildx bake -f docker-bake.hcl\` in step \"buildx bake\": a build whose Dockerfiles a compose or bake file names")"
+check "names a run whose pulled image is an argument alone" "$(refused_in "the pulled image as an argument" "docker run")"
+check "passes the pulled image after options a variable holds" \
+  "$(is "$(contains "$out" "in step \"options a variable holds\":")" false)"
+check "names another image after options a variable holds" \
+  "$(refused_in "options a variable holds, then another image" "docker run")"
+check "names a run whose image a variable holds" "$(refused_in "an image a variable holds" "docker run")"
+
+# The runner pulls a step's `uses: docker://` image in its set-up of the job, with no bound of its
+# own; a builder pulls an image a COPY --from or a RUN --mount from= names the same way; and
+# BuildKit's ADD of a URL fetches it with no bound.
+echo "case: rule 22 counts a docker:// step's pull and a builder's pulls of the images a COPY or a mount names, and refuses an ADD of a URL"
+root=$(fixture network-runner-pull)
+replace "$root/.github/workflows/ci.yaml" $'    runs-on: ubuntu-24.04\n    steps:\n      - name: Lint everything' \
+  $'    runs-on: ubuntu-24.04\n    timeout-minutes: 2\n    steps:\n      - name: Run an action image\n        uses: docker://ghcr.io/example/action:1\n      - name: Lint everything'
+run_check "$root"
+check "counts the runner's pull of the docker:// step's image against the job's limit" \
+  "$(contains "$out" "job lint of .github/workflows/ci.yaml has timeout-minutes 2, 120 s, and the runner's own pulls of its service and container images before its first step take 180 s, 180 s each (ghcr.io/example/action:1)")"
+root=$(fixture network-builder-pulls)
+mkdir -p "$root/docker"
+cat > "$root/docker/tool.Dockerfile" <<'DOCKERFILE'
+FROM scratch
+COPY --from=ghcr.io/example/tool:1 /tool /tool
+RUN --mount=type=bind,from=ghcr.io/example/cache:1,target=/cache true
+ADD https://example.com/tool.tar.gz /tool.tar.gz
+DOCKERFILE
+replace "$root/.github/workflows/ci.yaml" $'      - name: Lint everything\n' \
+  $'      - name: Build the tool\n        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0\n        with:\n          context: .\n          file: docker/tool.Dockerfile\n      - name: Lint everything\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts the builder's pulls of the images a COPY --from and a RUN --mount from= name" \
+  "$(contains "$out" "builds docker/tool.Dockerfile in step \"Build the tool\", whose builder pulls and wrapped installs can take 360 s")"
+check "names the ADD of a URL" \
+  "$(contains "$out" "builds docker/tool.Dockerfile in step \"Build the tool\", whose ADD at line 4 fetches https://example.com/tool.tar.gz with no bound of its own")"
+
+# A fake is the fake of the command the test runs under its PATH alone: the same test's other
+# script, run without that PATH, reaches the real command.
+echo "case: rule 22 gives a test's fake only to the script the test runs under that PATH"
+root=$(fixture network-fake-each)
+mkdir -p "$root/scripts"
+printf '#!/usr/bin/env bash\ndocker run --rm "$IMAGE" true\n' > "$root/scripts/faked.sh"
+printf '#!/usr/bin/env bash\ndocker run --rm "$IMAGE" true\n' > "$root/scripts/real.sh"
+cat > "$root/scripts/both_test.sh" <<'SH'
+#!/usr/bin/env bash
+bin=$(mktemp -d)
+cat >"$bin/docker" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$bin/docker"
+PATH="$bin:$PATH" IMAGE=example "$(dirname "$0")/faked.sh"
+IMAGE=example "$(dirname "$0")/real.sh"
+SH
+chmod +x "$root/scripts/faked.sh" "$root/scripts/real.sh" "$root/scripts/both_test.sh"
+lint_steps "$root" "Test both" "scripts/both_test.sh"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the docker run of the script the test runs without the fake" \
+  "$(contains "$out" "in scripts/real.sh, which scripts/both_test.sh runs, runs \`docker run\`")"
+check "passes the docker run of the script it runs under the fake" \
+  "$(is "$(contains "$out" "in scripts/faked.sh, which")" false)"
+
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"
