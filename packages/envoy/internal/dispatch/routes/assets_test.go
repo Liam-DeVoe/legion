@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeAssetStore answers from assets, or with err, and records every key it is asked for.
@@ -686,12 +687,31 @@ func TestStaticHandlerWritesNoResponseWhenTheClientCancelsWhileTheStoreReads(t *
 
 	handler, appContext := newTestRouter(t)
 	appContext.WebDistDir = t.TempDir()
-	appContext.AssetStore = latentStore{delay: 300 * time.Millisecond, object: []byte("console.log('lib')")}
+	store := gatedStore{object: []byte("console.log('lib')"), reading: make(chan struct{}, 2), release: make(chan struct{})}
+	appContext.AssetStore = store
+	var releaseOnce sync.Once
+	releaseStore := func() { releaseOnce.Do(func() { close(store.release) }) }
+	t.Cleanup(releaseStore)
 	navigatedAway, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(20*time.Millisecond, cancel)
+	defer cancel()
 
-	handler.ServeHTTP(&neverWrittenResponseWriter{t: t, header: http.Header{}},
-		httptest.NewRequest(http.MethodGet, "/assets/lib.js", nil).WithContext(navigatedAway))
+	// The handler runs off the test goroutine, so a handler that waits for the read its client
+	// left fails the row by name below rather than hanging it; what it wrote is read once it has
+	// returned.
+	answered := &answerRecorder{header: http.Header{}}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		handler.ServeHTTP(answered, httptest.NewRequest(http.MethodGet, "/assets/lib.js", nil).WithContext(navigatedAway))
+	}()
+	// The client goes away once the store is reading the object, and the read is held until the
+	// request has returned, so the cancel lands inside the read on every run.
+	testwait.Receive(t, "the store's read of the chunk to begin", store.reading)
+	cancel()
+	testwait.Receive(t, "the request whose client went away to return while the store still reads", served)
+	if answered.status != 0 || answered.body.Len() != 0 {
+		t.Fatalf("client gone while the store read: status %d and body %q written, want no response", answered.status, answered.body.String())
+	}
 
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
 		var record struct {
@@ -701,11 +721,50 @@ func TestStaticHandlerWritesNoResponseWhenTheClientCancelsWhileTheStoreReads(t *
 			t.Fatalf("client gone while the store read: a %s was logged, want none; log %q", record.Level, logs.String())
 		}
 	}
+	releaseStore()
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/assets/lib.js", nil))
 	if recorder.Code != http.StatusOK || recorder.Body.String() != "console.log('lib')" {
 		t.Fatalf("the next request: status %d body %q, want 200 with the object", recorder.Code, recorder.Body.String())
 	}
+}
+
+// gatedStore answers as latentStore does, with a gate for its delay: each read reports on reading
+// as it begins and holds until release is closed or its context ends, so a row acts once the store
+// is reading rather than after a span that only stands for it.
+type gatedStore struct {
+	object  []byte
+	reading chan struct{}
+	release chan struct{}
+}
+
+func (s gatedStore) GetAsset(ctx context.Context, _ string) ([]byte, error) {
+	s.reading <- struct{}{}
+	select {
+	case <-s.release:
+		return s.object, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// answerRecorder records what a handler wrote, for a row that runs the handler off the test
+// goroutine and reads the record on it once the handler has returned.
+type answerRecorder struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (w *answerRecorder) Header() http.Header { return w.header }
+
+func (w *answerRecorder) WriteHeader(status int) { w.status = status }
+
+func (w *answerRecorder) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(p)
 }
 
 // blockingStore holds every read until release is closed, then answers a key under

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -233,6 +236,42 @@ func TestTheFleetsBuildIsAnnouncedOnceEachTimeItChanges(t *testing.T) {
 	announcer.pass(ctx)
 	requireEnvelopes(t, database, publisher, c2, c1)
 	requireFleetCommit(t, announcer, c1)
+}
+
+// An Announcer writes AnnouncerPassed at Debug for each pass, numbered from 1 in its life, with
+// what the pass found and the fleet's commit as the pass left it, so a test that runs the real
+// binary counts a process's passes from its log: the first pass announces c1 and publishes it, and
+// the second finds nothing unpublished.
+func TestAnAnnouncerLogsEachPassAtDebug(t *testing.T) {
+	var logged logtest.Buffer
+	logtest.SetDefault(t, slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	database := storetest.Open(t)
+	announcer := New(Deps{Pool: database.Pool, Publisher: &recordingPublisher{}})
+	register(t, database, c1)
+	announcer.pass(context.Background())
+	announcer.pass(context.Background())
+
+	var passes []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == AnnouncerPassed {
+			passes = append(passes, record)
+		}
+	}
+	want := []map[string]any{
+		{"level": "DEBUG", "pass": float64(1), "found": passPublished, "fleet": c1},
+		{"level": "DEBUG", "pass": float64(2), "found": passNothingUnpublished, "fleet": c1},
+	}
+	if len(passes) != len(want) {
+		t.Fatalf("the announcer logged %d passes, want %d: %v", len(passes), len(want), passes)
+	}
+	for i, fields := range want {
+		for key, value := range fields {
+			if passes[i][key] != value {
+				t.Fatalf("the announcer logged pass %d as %v, want %s = %v", i+1, passes[i], key, value)
+			}
+		}
+	}
 }
 
 // A build nothing stamped names nothing, so a fleet any of whose live processes carries no commit

@@ -7,6 +7,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // One process serves each period. Two Reconcilers stand for the two processes a deployment runs,
@@ -118,7 +119,9 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 	)
 	h.github.rateLimitNext(checkRunsPath)
 
+	passStart := time.Now()
 	h.pass()
+	passTook := time.Since(passStart)
 
 	lines := h.lines("ci reconcile pass")
 	if len(lines) != 1 {
@@ -142,10 +145,37 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 		t.Fatalf("the pass line's rate_limit_until is not RFC3339: %v", err)
 	}
 	// The stand-in's own answer resets at a whole second it records, and GitHub's wait is that
-	// reset less the moment githubapp read the answer, which the pass adds back to its own
-	// reading: the line says the reset itself, to the second it carries.
+	// reset less the moment githubapp read the answer, which the pass adds back to its own later
+	// reading (stopAt): the line says the reset, moved on by the gap between those two readings of
+	// the wall clock and cut to the second. Both readings fall inside the pass, so the line's
+	// moment is the reset or later by no more than the pass took, however long that was.
 	reset := h.github.lastReset()
-	if !until.Equal(reset) {
-		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset at %s", until, reset)
+	if until.Before(reset) || until.After(reset.Add(passTook)) {
+		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset at %s, or later by no more than the pass took, %s", until, reset, passTook)
 	}
+}
+
+// A pass is bound at the PassTimeout its caller sets, the interval cmd/dispatch's loop runs it on,
+// and at Interval only where the caller sets none (Reconciler.bound): the pass arms its bound that
+// far from its start on its clock, and ends there. The row sets half an Interval, so a pass bound
+// at Interval whatever its caller set arms its bound elsewhere.
+func TestAPassIsBoundAtThePassTimeoutItsCallerSets(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	pull := head(1)
+	h.listHeads(pull)
+	h.github.refuseChecks(gitHubRepository, pull.sha)
+	h.github.hold(runsOf(pull))
+	h.reconciler.PassTimeout = Interval / 2
+
+	began := h.clock.Now()
+	ended := h.startPass(h.ctx)
+	held := testwait.Next(t, "the pass to reach the read GitHub holds past its bound", &h.github.held, func(string) bool { return true })
+	armed := h.clock.AwaitArmed(t, "the pass's bound", 1)
+	if want := began.Add(h.reconciler.PassTimeout); len(armed) != 1 || !armed[0].Equal(want) {
+		t.Fatalf("the pass held at %s armed %v, want its bound alone at %s, its PassTimeout (%s) from its start", held, armed, want, h.reconciler.PassTimeout)
+	}
+	h.clock.Set(armed[0])
+	testwait.Receive(t, "the pass to end on its bound", ended)
+	h.github.release(runsOf(pull))
 }

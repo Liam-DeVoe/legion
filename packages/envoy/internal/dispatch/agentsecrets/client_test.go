@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -367,20 +368,24 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 			_, _ = w.Write([]byte(body))
 		}))
 		defer server.Close()
-		client := New(server.URL, tokenFile(t, "account-token"))
+		// The window runs on a fake the row moves, so the second ask is inside it however long the
+		// first took, and the window lapses at deviceGrantTTL and not before.
+		fake := clocktest.New(time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC))
+		client := New(server.URL, tokenFile(t, "account-token"), WithClock(fake))
 
 		if !client.ServesDeviceGrant(context.Background()) {
 			t.Fatalf("the first ask answered false, want true: the document names the device code")
 		}
+		fake.Advance(deviceGrantTTL - time.Nanosecond)
 		if !client.ServesDeviceGrant(context.Background()) || reads != 1 {
-			t.Fatalf("the broker was read %d times for two asks, want 1", reads)
+			t.Fatalf("the broker was read %d times for two asks inside deviceGrantTTL, want 1", reads)
 		}
 
-		// The window run out, as it does seconds later in a live process.
+		// The window runs out, as it does seconds later in a live process.
 		body = withoutDevice
-		client.deviceGrant.until = time.Now().Add(-time.Second)
+		fake.Advance(time.Nanosecond)
 		if client.ServesDeviceGrant(context.Background()) {
-			t.Fatalf("a lapsed answer was kept, want the document read again")
+			t.Fatalf("an answer deviceGrantTTL old was kept, want the document read again")
 		}
 		if reads != 2 {
 			t.Fatalf("the broker was read %d times, want 2", reads)

@@ -100,6 +100,11 @@ type Deps struct {
 	// itself rather than through embeddings_enqueue, so no notification announces what it makes
 	// pending, and Run's scan loop wakes on this instead. Nil for a caller that builds Deps itself.
 	enqueued chan struct{}
+	// scanWaiting, when not nil, is told each time Run's scan loop is about to wait
+	// (duty.WokenLoop.Waiting): at is the moment the loop's timer is armed for, and ok false when
+	// the loop rests, with nothing owed and nothing due. Nil in production; a test reads through
+	// it the due time the loop armed and the rest it reaches once its work is done.
+	scanWaiting func(at time.Time, ok bool)
 }
 
 // clock is what Deps' waits and ages run on: Clock, or the real clock.
@@ -209,9 +214,10 @@ func Run(ctx context.Context, deps Deps) {
 		wg.Go(func() { relayWakes(ctx, deps) })
 	}
 	duty.RunWoken(scanCtx, duty.WokenLoop{
-		Wake:   wake,
-		MinGap: retryInterval,
-		Pass:   func(ctx context.Context) time.Time { return scanPass(ctx, deps) },
+		Wake:    wake,
+		MinGap:  retryInterval,
+		Waiting: deps.scanWaiting,
+		Pass:    func(ctx context.Context) time.Time { return scanPass(ctx, deps) },
 	})
 }
 

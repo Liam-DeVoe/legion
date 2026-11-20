@@ -114,10 +114,7 @@ func newHarness(t *testing.T) *harness {
 func openState(tb testing.TB) bus.KeyValue {
 	tb.Helper()
 	_, natsURL := testnats.Start(tb)
-	nc, err := natsgo.Connect(natsURL)
-	if err != nil {
-		tb.Fatalf("connect NATS: %v", err)
-	}
+	nc := testnats.Connect(tb, natsURL)
 	tb.Cleanup(nc.Close)
 	js, err := nc.JetStream(testnats.MaxWait(tb))
 	if err != nil {

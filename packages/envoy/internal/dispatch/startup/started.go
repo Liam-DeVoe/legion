@@ -110,7 +110,29 @@ type Announcer struct {
 	// clock is Deps.Clock, the real clock when that is nil.
 	clock clock.Clock
 	fleet atomic.Pointer[string]
+	// passes counts the passes made (pass, AnnouncerPassed's pass).
+	passes atomic.Uint64
 }
+
+// AnnouncerPassed is the line an Announcer writes at Debug for each pass it makes (pass), so a test
+// can count a process's passes from its log; production's handler, at Info, leaves it out. Its
+// fields are pass, the pass's number in this Announcer's life, from 1; found, what the pass found:
+// passAnnounceFailed, passNothingUnpublished, passPublished or passPublishFailed; and fleet, the
+// latest announcement's commit as the pass left it (FleetCommit), or "" while there is none.
+const AnnouncerPassed = "dispatch: the fleet's build announcer made a pass"
+
+// What an announcer pass found (AnnouncerPassed's found).
+const (
+	// passAnnounceFailed: the announcing transaction failed, so the pass published what it could.
+	passAnnounceFailed = "announce failed"
+	// passNothingUnpublished: every announcement was published, so the pass published nothing.
+	passNothingUnpublished = "nothing unpublished"
+	// passPublished: an announcement awaited publishing, and the publish ended without an error
+	// (it publishes nothing while the publisher is down or another process holds the lock).
+	passPublished = "published"
+	// passPublishFailed: an announcement awaited publishing, and the publish failed.
+	passPublishFailed = "publish failed"
+)
 
 // New returns an Announcer over deps; nothing runs until Run.
 func New(deps Deps) *Announcer {
@@ -147,8 +169,21 @@ func (a *Announcer) Run(ctx context.Context) {
 	}
 }
 
-// pass is one pass of Run.
+// pass is one pass of Run. It writes AnnouncerPassed.
 func (a *Announcer) pass(ctx context.Context) {
+	found := a.announceAndPublish(ctx)
+	n := a.passes.Add(1)
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		fleet := ""
+		if commit := a.fleet.Load(); commit != nil {
+			fleet = *commit
+		}
+		slog.Debug(AnnouncerPassed, "pass", n, "found", found, "fleet", fleet)
+	}
+}
+
+// announceAndPublish is pass's work, and answers what it found.
+func (a *Announcer) announceAndPublish(ctx context.Context) string {
 	unpublished, err := a.announce(ctx)
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: announce the server fleet's build", "error", err)
@@ -156,11 +191,21 @@ func (a *Announcer) pass(ctx context.Context) {
 	// A fleet with nothing to publish costs no publishing transaction each Interval. A pass whose
 	// announce failed cannot tell, so it tries.
 	if !unpublished && err == nil {
-		return
+		return passNothingUnpublished
 	}
-	if err := a.publish(ctx); err != nil && ctx.Err() == nil {
-		slog.Warn("dispatch: publish the server fleet's build; the next pass retries", "error", err)
+	found := passPublished
+	if err != nil {
+		found = passAnnounceFailed
 	}
+	if err := a.publish(ctx); err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("dispatch: publish the server fleet's build; the next pass retries", "error", err)
+		}
+		if found == passPublished {
+			found = passPublishFailed
+		}
+	}
+	return found
 }
 
 // announce reads the latest announcement and, holding announceLock, inserts a new one when every

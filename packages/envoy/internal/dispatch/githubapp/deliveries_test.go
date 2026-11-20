@@ -122,7 +122,11 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 			`{"oid":"abc","checkSuites":{"pageInfo":{"hasNextPage":false},"nodes":[{"databaseId":1,"checkRuns":` +
 			`{"pageInfo":{"hasNextPage":false},"nodes":[{"databaseId":2,"name":` + name + `}]}}]}}}]}}]}}}}`
 	}
-	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
+	// The reset is whole seconds, and the reader judges it against its own reading of the clock,
+	// which the subtest brackets between two of its own: a reset case's wait is the reset less a
+	// moment inside that bracket, however long the machine took to get there.
+	resetAt := time.Unix(time.Now().Add(90*time.Second).Unix(), 0)
+	reset := strconv.FormatInt(resetAt.Unix(), 10)
 	cases := []struct {
 		name      string
 		status    int
@@ -130,7 +134,10 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 		body      string
 		limited   bool
 		secondary bool
+		// wait is the limit's wait, or for a case read from the reset (fromReset) none: its wait
+		// is the reset less the reader's own present.
 		wait      time.Duration
+		fromReset bool
 	}{{
 		name:   "a check run named for the limit is a repository's data",
 		status: http.StatusOK,
@@ -151,19 +158,19 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 		secondary: true,
 		wait:      time.Minute,
 	}, {
-		name:    "an errors entry of type RATE_LIMITED",
-		status:  http.StatusOK,
-		header:  http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}},
-		body:    `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`,
-		limited: true,
-		wait:    90 * time.Second,
+		name:      "an errors entry of type RATE_LIMITED",
+		status:    http.StatusOK,
+		header:    http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}},
+		body:      `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`,
+		limited:   true,
+		fromReset: true,
 	}, {
-		name:    "the request that spent the last point",
-		status:  http.StatusOK,
-		header:  http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}},
-		body:    dataNamed(`"ci-ok"`),
-		limited: true,
-		wait:    90 * time.Second,
+		name:      "the request that spent the last point",
+		status:    http.StatusOK,
+		header:    http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}},
+		body:      dataNamed(`"ci-ok"`),
+		limited:   true,
+		fromReset: true,
 	}, {
 		name:      "a retry-after at 200",
 		status:    http.StatusOK,
@@ -173,12 +180,12 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 		secondary: true,
 		wait:      time.Minute,
 	}, {
-		name:    "a 403 with no requests remaining",
-		status:  http.StatusForbidden,
-		header:  http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}},
-		body:    `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`,
-		limited: true,
-		wait:    90 * time.Second,
+		name:      "a 403 with no requests remaining",
+		status:    http.StatusForbidden,
+		header:    http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}},
+		body:      `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`,
+		limited:   true,
+		fromReset: true,
 	}, {
 		name:      "a 403 with the secondary wording alone",
 		status:    http.StatusForbidden,
@@ -225,7 +232,9 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 			if header == nil {
 				header = http.Header{}
 			}
+			before := time.Now()
 			limited, secondary := githubapp.GraphQLRateLimit(want.status, header, []byte(want.body))
+			after := time.Now()
 			if (limited != nil) != want.limited {
 				t.Fatalf("the answer read as limited = %v (%v), want %v", limited != nil, limited, want.limited)
 			}
@@ -235,8 +244,11 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 			if secondary != want.secondary {
 				t.Errorf("the limit read as secondary = %v, want %v: the scope it is recorded under is which of the two it is", secondary, want.secondary)
 			}
-			// The reset cases are read from a timestamp, which is a second old by now.
-			if limited.Wait > want.wait || limited.Wait < want.wait-2*time.Second {
+			if want.fromReset {
+				if earliest, latest := max(resetAt.Sub(after), 0), max(resetAt.Sub(before), 0); limited.Wait < earliest || limited.Wait > latest {
+					t.Errorf("the limit asks for %s, want the reset %s less the reader's present, %s to %s", limited.Wait, resetAt, earliest, latest)
+				}
+			} else if limited.Wait != want.wait {
 				t.Errorf("the limit asks for %s, want GitHub's own %s", limited.Wait, want.wait)
 			}
 		})
@@ -289,31 +301,41 @@ func TestRateLimitBoundsTheWaitGitHubNames(t *testing.T) {
 	exhausted := func(reset string) http.Header {
 		return http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}}
 	}
+	// The reset is whole seconds, and rateLimitWait reads it against its own clock: the row with a
+	// reset ahead (resetAt) takes its bounds from a bracket of two of the subtest's own readings
+	// around that read, so its wait is the reset less a moment inside the bracket however long the
+	// machine took to get there.
+	resetAt := time.Unix(now.Add(90*time.Second).Unix(), 0)
 	rows := []struct {
 		name     string
 		header   http.Header
 		min, max time.Duration
+		resetAt  time.Time
 	}{
-		{"a Retry-After of 9999999999 seconds", http.Header{"Retry-After": {"9999999999"}}, time.Hour, time.Hour},
-		{"an X-RateLimit-Reset of math.MaxInt64 with no requests left", exhausted(strconv.FormatInt(math.MaxInt64, 10)), time.Hour, time.Hour},
-		{"a Retry-After of two hours", http.Header{"Retry-After": {"7200"}}, time.Hour, time.Hour},
-		{"a negative Retry-After", http.Header{"Retry-After": {"-30"}}, 0, 0},
-		{"an X-RateLimit-Reset an hour past with no requests left", exhausted(strconv.FormatInt(now.Add(-time.Hour).Unix(), 10)), 0, 0},
-		{"a Retry-After of 30 seconds", http.Header{"Retry-After": {"30"}}, 30 * time.Second, 30 * time.Second},
-		// The reset is whole seconds, and rateLimitWait reads it against its own clock a moment
-		// later, so the wait is up to two seconds short of the 90 it names.
-		{"an X-RateLimit-Reset 90 seconds out with no requests left", exhausted(strconv.FormatInt(now.Add(90*time.Second).Unix(), 10)), 88 * time.Second, 90 * time.Second},
+		{"a Retry-After of 9999999999 seconds", http.Header{"Retry-After": {"9999999999"}}, time.Hour, time.Hour, time.Time{}},
+		{"an X-RateLimit-Reset of math.MaxInt64 with no requests left", exhausted(strconv.FormatInt(math.MaxInt64, 10)), time.Hour, time.Hour, time.Time{}},
+		{"a Retry-After of two hours", http.Header{"Retry-After": {"7200"}}, time.Hour, time.Hour, time.Time{}},
+		{"a negative Retry-After", http.Header{"Retry-After": {"-30"}}, 0, 0, time.Time{}},
+		{"an X-RateLimit-Reset an hour past with no requests left", exhausted(strconv.FormatInt(now.Add(-time.Hour).Unix(), 10)), 0, 0, time.Time{}},
+		{"a Retry-After of 30 seconds", http.Header{"Retry-After": {"30"}}, 30 * time.Second, 30 * time.Second, time.Time{}},
+		{"an X-RateLimit-Reset 90 seconds out with no requests left", exhausted(strconv.FormatInt(resetAt.Unix(), 10)), 0, 0, resetAt},
 	}
 	driven := 0
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
+			before := time.Now()
 			limited := githubapp.RateLimit(http.StatusTooManyRequests, row.header, nil)
+			after := time.Now()
 			if limited == nil {
 				t.Fatal("a 429 read as no rate limit")
 			}
-			if limited.Wait < row.min || limited.Wait > row.max {
-				t.Errorf("the limit asks for %s, want %s to %s", limited.Wait, row.min, row.max)
+			lowest, highest := row.min, row.max
+			if !row.resetAt.IsZero() {
+				lowest, highest = max(row.resetAt.Sub(after), 0), max(row.resetAt.Sub(before), 0)
+			}
+			if limited.Wait < lowest || limited.Wait > highest {
+				t.Errorf("the limit asks for %s, want %s to %s", limited.Wait, lowest, highest)
 			}
 		})
 	}

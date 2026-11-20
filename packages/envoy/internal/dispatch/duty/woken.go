@@ -37,6 +37,14 @@ type WokenLoop struct {
 	// held attempt's retry wait): clock.Real when nil, and a test's clocktest.Fake, which moves
 	// the loop past a gap or a due time only when the test moves it.
 	Clock clock.Clock
+	// Waiting, when not nil, is told each time the loop is about to wait: at is the moment its one
+	// timer is armed for, and ok is false when nothing is owed or due, so the loop holds no timer
+	// and waits for a wake alone - its rest. Before it reports a rest it takes a wake already
+	// waiting, as its wait would at once, so a rest it reports is one that only a wake sent after
+	// the report ends. It runs on the loop's goroutine, which waits for it. Nil in production: a
+	// test reads through it where the loop's timer stands and when the loop rests, where it would
+	// otherwise time how long the loop's work stops.
+	Waiting func(at time.Time, ok bool)
 	// Pass does the work, on the loop's goroutine, and returns when the loop next needs to run
 	// with no wake - an attempt's retry time, a claim's expiry - or the zero time for never.
 	// Each pass's answer replaces the last one's, and a due time is held to MinGap like a wake.
@@ -88,7 +96,8 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 	}()
 	for {
 		var fire <-chan time.Time
-		if at, ok := nextAttempt(owed, due, notBefore); ok {
+		at, ok := nextAttempt(owed, due, notBefore)
+		if ok {
 			switch {
 			case timer == nil:
 				timer = c.NewTimer(at.Sub(c.Now()))
@@ -99,6 +108,17 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 		} else if !armed.IsZero() {
 			timer.Stop()
 			armed = time.Time{}
+		}
+		if l.Waiting != nil {
+			if !ok {
+				select {
+				case <-l.Wake:
+					owed = true
+					continue
+				default:
+				}
+			}
+			l.Waiting(at, ok)
 		}
 		select {
 		case <-ctx.Done():

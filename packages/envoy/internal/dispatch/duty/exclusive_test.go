@@ -207,14 +207,18 @@ func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
 	ctx := context.Background()
 	const name = "webhook-redelivery"
 	const period = time.Hour
+	// Both processes' ticks are due at one moment, as two processes' ticks inside one period are:
+	// two readings of the clock could straddle a period's boundary, where the second process's
+	// pass is rightly its own.
+	due := time.Now()
 
 	ran := false
-	if !duty.Exclusive(ctx, leases, name, time.Now(), period, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(ctx, leases, name, due, period, func(context.Context) { ran = true }) || !ran {
 		t.Fatal("the first process's pass did not run")
 	}
 
 	otherRan := false
-	if duty.Exclusive(ctx, otherLeases, name, time.Now(), period, func(context.Context) { otherRan = true }) {
+	if duty.Exclusive(ctx, otherLeases, name, due, period, func(context.Context) { otherRan = true }) {
 		t.Error("the second process took the pass inside a period the first one had served")
 	}
 	if otherRan {
@@ -224,7 +228,7 @@ func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
 	// The recorded pass moved back is the period having run out, which no test waits an hour
 	// for: the repository's other claim rows age their row the same way rather than sleeping.
 	movePassBack(t, database, name, 2*period)
-	if !duty.Exclusive(ctx, otherLeases, name, time.Now(), period, func(context.Context) { otherRan = true }) || !otherRan {
+	if !duty.Exclusive(ctx, otherLeases, name, due, period, func(context.Context) { otherRan = true }) || !otherRan {
 		t.Error("no pass ran once the recorded one was older than the period")
 	}
 }

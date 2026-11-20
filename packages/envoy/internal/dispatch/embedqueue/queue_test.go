@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1520,6 +1521,72 @@ func runHub(t *testing.T, hub *pglisten.Hub) {
 	})
 }
 
+// scanWaits records each wait of Run's scan loop (Deps.scanWaiting), with what the row reads
+// beside it as the loop reports it: the statements counter has counted on the queue's traced pool
+// so far, and the moment on clock, the queue's own (Deps.Clock). Either may be nil, which reads
+// as no statements and the zero time.
+type scanWaits struct {
+	counter *storetest.StatementCounter
+	clock   *clocktest.Fake
+	mu      sync.Mutex
+	waits   []scanWait
+}
+
+// scanWait is one wait of Run's scan loop: at is the moment its timer is armed for, and armed is
+// false for a rest; statements and now are what scanWaits read as the loop reported it.
+type scanWait struct {
+	at         time.Time
+	armed      bool
+	statements int64
+	now        time.Time
+}
+
+// report is the hook Run's scan loop reports each wait through (Deps.scanWaiting).
+func (w *scanWaits) report(at time.Time, armed bool) {
+	wait := scanWait{at: at, armed: armed}
+	if w.counter != nil {
+		wait.statements = w.counter.Count()
+	}
+	if w.clock != nil {
+		wait.now = w.clock.Now()
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.waits = append(w.waits, wait)
+}
+
+// all is every wait reported so far, in order.
+func (w *scanWaits) all() []scanWait {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.waits)
+}
+
+// awaitIdle waits until Run, on fake from start, has gone idle: its coverage loop waits for its
+// next identity recheck, armed identityRecheckInterval or more past start, so its pass has ended
+// (no other wait of the queue's is armed that far); and its scan loop's latest wait is a rest,
+// reported once the traced pool had counted more than after statements. The loop takes a wake
+// already waiting before it reports a rest (duty.WokenLoop.Waiting), and in the rows that call
+// this nothing else is left to wake it once the coverage pass has ended: that pass changes no
+// row there, so it signals no scan (Deps.signalEnqueued), and the queue's other wake is the row's
+// own hub. So such a rest lasts until the row acts. Its count is not the pool's latest: the
+// coverage pass may still be making statements when the scan loop rests.
+func (w *scanWaits) awaitIdle(t *testing.T, what string, fake *clocktest.Fake, start time.Time, after int64) {
+	t.Helper()
+	recheck := start.Add(identityRecheckInterval)
+	testwait.Until(t, what, func() (string, bool) {
+		armed := fake.Armed()
+		ended := slices.ContainsFunc(armed, func(at time.Time) bool { return !at.Before(recheck) })
+		var latest scanWait
+		waits := w.all()
+		if len(waits) > 0 {
+			latest = waits[len(waits)-1]
+		}
+		return fmt.Sprintf("the coverage loop's recheck armed: %t (armed %v); the scan loop's latest wait %+v of %d", ended, armed, latest, len(waits)),
+			ended && len(waits) > 0 && !latest.armed && latest.statements > after
+	})
+}
+
 // insertCommentWithWindow writes a comment on issueKey and the one window the block-index
 // tick's window arm writes for it (refs.WriteItemWindows), which is what enqueues it now that
 // the comment's own write-time trigger is gone.
@@ -1536,30 +1603,38 @@ func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 
 // Once Run has embedded what was pending at boot and its coverage pass has run, nothing
 // changes, so Run makes no statement between one identity recheck and the next: no scan timer,
-// no due time, no further pass. The window is longer than the 5-second period the scan ticker
-// ran at before, and far shorter than identityRecheckInterval, which this test leaves at its
-// ten minutes.
+// no due time, no further pass. The row reads that Run has gone idle rather than timing it: its
+// scan loop reports its rest (Deps.scanWaiting), and its coverage loop's wait for the next
+// recheck is armed on the queue's clock, a fake the row never moves, so that recheck never comes.
+// The window is longer than the 5-second period the scan ticker ran at before.
 func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "IDLE", "IDLE-1", "Enqueued by its trigger")
 	insertCommentWithWindow(t, database.Pool, "IDLE-1", "A comment its indexer windowed")
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity)})
+	fake := clocktest.Held()
+	start := fake.Now()
+	waits := &scanWaits{counter: counter}
+	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
 	eventually(t, "both items current", func() bool {
 		items, current, _, _, _ := coverage(t, database, configuredIdentity)
 		return items == 2 && current == 2
 	})
-	storetest.AwaitQuiet(t, counter, time.Second, "Run going idle after its boot drain and pass shows only as statements that stop: it writes no state saying so, it does real Postgres I/O, which synctest cannot hold, and no later action of the test's orders against its idle")
+	waits.awaitIdle(t, "Run idle once its boot drain and its coverage pass are done", fake, start, 0)
 	storetest.RequireNoStatements(t, counter, 7*time.Second, "Run with nothing pending and nothing changing",
-		"a statement no timer makes shows only by not coming: Run keeps no state of a timer it does not have, does real Postgres I/O, which synctest cannot hold, and no later action's effect orders against a statement a timer would make")
+		"a statement nothing in Run is armed to make shows only by not coming: the scan loop's rest and the coverage loop's one armed recheck say no timer of theirs is pending, not that nothing else in Run makes one; it does real Postgres I/O, which synctest cannot hold, and no later action's effect orders against a statement nothing asked for")
 }
 
 // A write's notification wakes the idle queue, through a real pglisten.Hub on WakeChannel: the
 // window of a comment written once the queue has drained, and once the scan the hub's catch-up
-// signal after its LISTEN earned has run, is embedded within 6 seconds, and nothing else would
-// have scanned for it. embeddings_enqueue_window announces on the same channel as
-// embeddings_enqueue, so a window wakes the queue exactly as a whole-text row did.
+// signal after its LISTEN earned has run, is embedded on that notification, and nothing else
+// would have scanned for it: the idle scan loop arms no timer, and the queue's own clock, which
+// times the coverage loop's recheck, is a fake the row never moves, so a wake that is lost leaves
+// the comment pending until the shared wait gives up. The row reads each idle it waits for, the
+// scan loop's rest (Deps.scanWaiting) and the coverage loop's armed recheck, rather than timing
+// it. embeddings_enqueue_window announces on the same channel as embeddings_enqueue, so a window
+// wakes the queue exactly as a whole-text row did.
 func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "NTFY", "NTFY-1", "Written before the queue started")
@@ -1569,18 +1644,20 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	hub.OnConnected(sync.OnceFunc(func() { close(connected) }))
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity), Wake: wake})
+	fake := clocktest.Held()
+	start := fake.Now()
+	waits := &scanWaits{counter: counter}
+	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity), Wake: wake, Clock: fake, scanWaiting: waits.report})
 	eventually(t, "NTFY-1 embedded at boot", func() bool { return pendingCount(t, database) == 0 })
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, "the queue shows it has finished its boot drain and pass only as statements that stop: it writes no state saying so, does real Postgres I/O, which synctest cannot hold, and the hub's connection below is the later action this wait clears the way for")
+	waits.awaitIdle(t, "the queue idle once its boot drain and its coverage pass are done", fake, start, 0)
 	drained := counter.Count()
 
 	// The hub connects only now, so the catch-up signal its LISTEN earns, and the scan that
-	// signal wakes, both come after the count above: that scan's own statements are what says
-	// it has run, and they are waited for rather than timed.
+	// signal wakes, both come after the count above: that scan's own statements, and the scan
+	// loop's rest after them, are what say it has run.
 	runHub(t, hub)
 	testwait.Receive(t, "the hub to connect and listen", connected)
-	eventually(t, "the scan the hub's catch-up signal earns", func() bool { return counter.Count() > drained })
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, "the idle queue shows it has finished its catch-up scan only as statements that stop: it writes no state saying so, does real Postgres I/O, which synctest cannot hold, and the notification below is the later action this wait clears the way for")
+	waits.awaitIdle(t, "the queue idle again once the scan the hub's catch-up signal earns has run", fake, start, drained)
 
 	insertCommentWithWindow(t, database.Pool, "NTFY-1", "Written while the queue is idle")
 	if got := pendingCount(t, database); got != 1 {
@@ -1598,14 +1675,29 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 // the pass comes at the lapse rather than later is the two halves' own rows: scanPass answers the
 // claim's lapse exactly (TestScanPassReturnsWhenThePendingRowsFallDue), and RunWoken fires one
 // pass at the due time a pass answered (duty's TestADueTimeAPassReturnsFiresOnce). Here the embed
-// must come no sooner than the lapse, on the database's clock that both stamps are read on.
+// must come no sooner than the lapse, on the database's clock that both stamps are read on, and
+// every timer the scan loop arms (Deps.scanWaiting) no later than Run's bound, read on the queue's
+// clock: so a due time delayed between scanPass and the loop fails the row.
 func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "CLAM", "CLAM-1", "Claimed by a process that crashed")
+	// The other process's scan claims the row until claimWindow past its own transaction's now(),
+	// which falls between two readings of the database's clock around it: the row reads that
+	// claim before it moves it, so a scan that claimed for less, or for more, fails here.
+	before := databaseNow(t, database)
 	claimed, _, err := scanPending(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)})
+	after := databaseNow(t, database)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("the other process's claim = %v, %v; want CLAM-1", claimed, err)
+	}
+	var claimedUntil time.Time
+	if err := database.Pool.QueryRow(ctx, `select next_attempt_at from embeddings where id = 'CLAM-1'`).Scan(&claimedUntil); err != nil {
+		t.Fatalf("read the other process's claim: %v", err)
+	}
+	if claimedUntil.Before(before.Add(claimWindow)) || claimedUntil.After(after.Add(claimWindow)) {
+		t.Fatalf("the other process's scan claimed CLAM-1 until %s, want claimWindow (%s) past its own now(), between %s and %s",
+			claimedUntil, claimWindow, before.Add(claimWindow), after.Add(claimWindow))
 	}
 	// As if most of claimWindow had already passed since that claim.
 	var lapses time.Time
@@ -1614,7 +1706,9 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 		returning next_attempt_at`).Scan(&lapses); err != nil {
 		t.Fatalf("move the claim's lapse: %v", err)
 	}
-	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: clocktest.Held()})
+	fake := clocktest.Held()
+	waits := &scanWaits{clock: fake}
+	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
 	embeddedAt := testwait.Until(t, "CLAM-1 embedded", func() (time.Time, bool) {
 		var at *time.Time
 		if err := database.Pool.QueryRow(ctx, `select embedded_at from embeddings where id = 'CLAM-1'`).Scan(&at); err != nil {
@@ -1627,6 +1721,21 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 	})
 	if embeddedAt.Before(lapses) {
 		t.Errorf("CLAM-1 embedded at %v, before its claim lapsed at %v", embeddedAt, lapses)
+	}
+	// The pass that embedded CLAM-1 is one the scan loop's timer fired, armed at a wait it
+	// reported. Run bounds every such moment: a pass answers the claim's lapse, or retryInterval
+	// past its own end on the queue's clock where that is later (scanPass), and the loop arms that,
+	// or retryInterval past its last pass's start after a wake (WokenLoop.MinGap). So no wait may
+	// be armed past the lapse and past retryInterval after the queue's clock as the loop reports it.
+	for i, wait := range waits.all() {
+		bound := lapses
+		if floor := wait.now.Add(retryInterval); floor.After(bound) {
+			bound = floor
+		}
+		if wait.armed && wait.at.After(bound) {
+			t.Errorf("the scan loop's wait %d armed its timer for %v, past CLAM-1's claim lapse at %v and past retryInterval (%s) after the queue's clock at that wait, %v",
+				i, wait.at, lapses, retryInterval, wait.now)
+		}
 	}
 }
 

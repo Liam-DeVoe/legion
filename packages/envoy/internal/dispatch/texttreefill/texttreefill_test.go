@@ -479,6 +479,14 @@ func fillSeededCorpus(t *testing.T) seededFill {
 		t.Fatalf("the pass took %d texts in %d batches and finished=%v, want %d and true",
 			done.texts, done.batches, done.finished, texts)
 	}
+	// The pass's work, counted in every run where the timing lane reads its rate: each batch but
+	// the last takes at least fillBatch texts and pays the batch's two candidate scans, so a pass
+	// over texts stored texts makes at most texts/fillBatch + 1 batches. A pass that took smaller
+	// batches pays those scans more often, which is the cost the timing row's projection grows by.
+	if most := texts/fillBatch + 1; done.batches > most {
+		t.Fatalf("the pass took the %d texts in %d batches, want at most %d: each batch but the last takes %d",
+			texts, done.batches, most, fillBatch)
+	}
 
 	scanned := time.Now()
 	if _, err := headMoments(ctx, fill, time.Now()); err != nil {
