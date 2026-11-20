@@ -1925,9 +1925,11 @@ type ApproverGrant struct {
 // the pod it enrolled acts for no person. That is a pod whose login carried no person
 // (enrollments.operator), and a person's pod that BROKER_POD_OPERATORS no longer maps to the
 // person its login carried (operatorOf). Without this a pod could take a shared agent-tier secret
-// and nobody would see it. Every signed-in person sees these, as every signed-in person already
-// lists and revokes the service login behind them, which no person approved
-// (enroll.Service.LiveCredentials, record.MayDecide). The sentinel record.AnyoneApprover and an
+// and nobody would see it. Every signed-in person the person rule shows such a grant to sees it.
+// Who may end it is a separate rule, the machine login's: a service's login every signed-in person
+// lists and revokes, which no person approved (enroll.Service.LiveCredentials, record.MayDecide),
+// while a person's pod login is the person's BROKER_POD_OPERATORS maps the account to now, and
+// theirs alone to revoke, whatever the grant names. The sentinel record.AnyoneApprover and an
 // empty login are no signed-in person and list nothing. No row that already belongs to somebody
 // moves: a grant with a person's approver, or on a person's own session (a mapped person's pod
 // included), is listed for that person and no one else, exactly as before.

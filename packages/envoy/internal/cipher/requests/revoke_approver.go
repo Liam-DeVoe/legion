@@ -102,10 +102,11 @@ const revokeJudgeAttempts = 3
 // decide on the old holder. Once the lock is held, nothing moves the grant off that enrollment
 // until this transaction ends. The transaction asks for READ COMMITTED by name, so a changed
 // default level cannot hand the later reads the first statement's snapshot. Under REPEATABLE READ
-// the lock wait itself would still be granted, since an adoption only locks the rows it waits on
-// and updates none of them; the later read would then see the grant as it was before the move,
-// and only the grant's update would fail, with a serialization error (40001), so the revoke would
-// fail closed rather than decide on the old holder.
+// the revoke fails closed either way rather than decide on the old holder: where the adoption it
+// waited on updated a locked row (it clears dormant_since on a dormant predecessor), the lock
+// statement itself ends in a serialization error (40001); where it only locked them, the lock is
+// granted, the later read sees the grant as it was before the move, and the grant's update ends in
+// that error.
 // TestARevokeWaitingOnAnAdoptionDecidesOnWhereTheAdoptionLeftTheGrant holds the named level on a
 // pool whose transactions default to REPEATABLE READ.
 //
@@ -201,10 +202,13 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 //
 // That is the spelling enroll.adopt's session rule (ofThisSession) matches a successor of the
 // same principal by, and narrower than the rule: it also matches the principals of paired
-// accounts and a pod's legacy rows. Those spellings are a pod's alone, and no pod withholds, so
-// the narrower set misses nothing a withhold needs: a service's pod acts for no person, and a
-// person's pod enrols with no session name, so it locks itself alone. For every holder whose
-// revoke withholds, a person's session, the two sets are the same, and so is the session lock's
+// accounts and a pod's legacy rows. Those spellings are a pod's alone, and no pod that names a
+// session follows a principal and withholds too, so the narrower set misses nothing a withhold
+// needs: a service's pod, the one pod that names and carries a session, acts for no person, so
+// its revoke never withholds; and a mapped person's pod, whose operator's revoke does withhold,
+// enrols with no session name and no carry principal (a person's pod login), so it locks and
+// withholds on itself alone and no session of it is adopted. For every holder that withholds
+// across a session, a person's session, the two sets are the same, and so is the session lock's
 // key, the session name and the carry principal, which adopt takes for the enrollment it makes.
 //
 // The session name and principal are read first and unlocked: both are written when the

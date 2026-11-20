@@ -1158,7 +1158,7 @@ behind the airlock is the exception: the broker releases a placeholder for it an
 
 A grant ends when its lifetime runs out, when its session revokes it (`agent-secrets revoke`, or
 `agent-secrets grant revoke` run inside the session), when
-its approver or its enrollment's operator revokes it in Dispatch or from one of their machines
+its approver or the person its session acts for revokes it in Dispatch or from one of their machines
 (`agent-secrets grant revoke`), and when the enrollment holding it ends for good: a person's revoke
 of the machine login or the sign-in behind it, or the carry window closing on an enrollment the
 box's end left dormant.
