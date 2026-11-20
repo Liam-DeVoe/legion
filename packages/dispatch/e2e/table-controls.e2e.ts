@@ -5651,6 +5651,76 @@ test("a pinned card unpinned on another device while its Unpin holds the focus h
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
+// SLOW(>=2s): the search bar and its Filter panel opened twice, for a typed date and a set one.
+// INFRA-3135, round 19 (the tester's, measured in builds Jobs infra-3135-r19h and -r19dt at
+// 89072a56): the search bar's Filter panel draws its Updated since box only while no date is set
+// (`SearchPalette.tsx`), so the reader's own date takes the focused box away. The architect's
+// ruling of 2026-11-19: a change on a date box is the reader's press, and the focus walks back to
+// the control before the box, Author, as it did at 90fa8211. At 89072a56 it does only where the
+// engine fires `change` before the page drops the box: Chromium, for a typed date. Firefox fires
+// `input` alone as the last digit completes the date, and Playwright's fill(), the value set
+// without keys as assistive technology sets it, fires `input` and then `change` on a box the page
+// has already dropped on that `input`. So the rescue sees no press, reads the loss as one the
+// reader did not cause, passes over Author, which takes typed text, and lands on Status: for a
+// set date in Chromium, Firefox and WebKit, and for a typed one in Firefox. WebKit's date box
+// takes no typed date from Playwright's keys, so the typed case is not read there. A focused
+// control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit`
+// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("a date the reader gives the search bar's Updated since is their press, so the focus walks back to Author @firefox @webkit", async ({
+  browserName,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  await createIssue({ project: "CORE", title: "Harbour lights" });
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const wrong: string[] = [];
+  for (const how of ["typed", "set"] as const) {
+    if (how === "typed" && browserName === "webkit") continue;
+    await page.goto("/");
+    await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+    await page.keyboard.press("Control+k");
+    const bar = page.getByRole("dialog", { name: "Search" });
+    await expect(bar).toBeVisible();
+    await page.keyboard.type("Harbour");
+    await control(controlRow(bar), CONTROL.panelTrigger).click();
+    const filters = page.getByRole("dialog", { name: "Filter" });
+    const since = filters.getByLabel("Updated since");
+    await expect(since).toBeVisible();
+    const day = await page.evaluate(() => {
+      const next = new Date();
+      next.setDate(next.getDate() + 1);
+      const pad = (value: number) => String(value).padStart(2, "0");
+      return {
+        iso: `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}`,
+        typed: `${pad(next.getMonth() + 1)}${pad(next.getDate())}${next.getFullYear()}`,
+      };
+    });
+    if (how === "typed") {
+      await since.focus();
+      await page.keyboard.type(day.typed);
+    } else {
+      await since.fill(day.iso);
+    }
+    await expect(since).toHaveCount(0);
+    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const field = active as HTMLInputElement | null;
+      return (
+        field?.labels?.[0]?.textContent?.trim() ||
+        active?.getAttribute("aria-label") ||
+        `${active?.tagName.toLowerCase()} "${active?.textContent?.trim().slice(0, 40)}"`
+      );
+    });
+    if (holder !== "Author") wrong.push(`a ${how} date: the focus is on ${holder}, not Author`);
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
 // SLOW(>=2s): three priorities and two asks seeded, and two pages opened.
 // INFRA-3135's review round 1, follow-up F5: the display menu replaced the Priorities page's
 // grouping select, where `j` and `k` did nothing, with radios, which take no text, so `j` on one
