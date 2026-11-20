@@ -230,9 +230,9 @@ func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
 	})
 	t.Run("the head with no pass is last", func(t *testing.T) {
 		rig := newCIJobRig(t)
-		writeHead(t, rig.database, ciJobRepository, 70, eachHeadH3, "open", rig.issue)
+		writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
 		writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)
-		writeHead(t, rig.database, ciJobRepository, 72, eachHeadH1, "open", rig.issue)
+		writeHead(t, rig.database, ciJobRepository, 72, eachHeadH3, "open", rig.issue)
 		eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH3)
 		eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH2)
 		check := eachHeadRead(t, rig.handler, rig.issue, "k1", "")

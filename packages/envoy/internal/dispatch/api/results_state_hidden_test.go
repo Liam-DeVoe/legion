@@ -93,6 +93,12 @@ func TestTheHiddenStateAnswerIsTheAnswerLessTheComputedState(t *testing.T) {
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
 	rig.github.listings.set(ciJobHead, completedRun(81, ciJobName, "success"))
 	jobRecorded(t, "the CI job's result", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
+	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", ciJobHead)
+	fail := eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "fail", ciJobHead)
+	if response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/results/"+fail+"/retract",
+		map[string]any{"reason": "Recorded against the wrong build."}, "alice"); response.Code != http.StatusCreated && response.Code != http.StatusOK {
+		t.Fatalf("retract %s: status=%d body=%s", fail, response.Code, response.Body.String())
+	}
 
 	handler, issue := rig.handler, rig.issue
 	shown := hiddenStateRead(t, handler, issue)
