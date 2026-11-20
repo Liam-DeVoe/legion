@@ -679,6 +679,14 @@ func tomlString(value string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
 }
 
+// jjString is name as a jj string literal, the form every jj argument here takes a bookmark name
+// in: jj parses a bookmark argument, a `--branch` and a bookmark list's name pattern (`exact:`
+// selects how a pattern matches, not that its text is literal) and a revset symbol as expressions,
+// so a bare `release#stable` fails to parse and a bare `release|stable` matches `release` or
+// `stable`. Quoted, every name git accepts is the one name it is. jj's string literal escapes `\`
+// and `"` as a TOML basic string does.
+func jjString(name string) string { return tomlString(name) }
+
 // runCommand runs argv with the runner's own slow-command budget: run is nil-checked before
 // run.Timeout() is ever read, so a nil Runner always returns the error below rather than a panic.
 func runCommand(ctx context.Context, run Runner, argv []string, env []string, dir string) (Result, error) {

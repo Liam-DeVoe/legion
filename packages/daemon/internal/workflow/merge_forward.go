@@ -10,7 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/jjmerge"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -373,8 +372,8 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 	if pending {
 		next = awaitedMergeForward(pr, again)
 	} else {
-		next = fmt.Sprintf("Pull request #%d stands at head %s now. Read how the merge resolved its conflict, against git's own merge of its parents, with `%s`, do the phase's work at head %s, then %s; this completion changed nothing",
-			pr.Number, pr.HeadSHA, jjmerge.Comparison(landed), pr.HeadSHA, again)
+		next = fmt.Sprintf("Pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s`, do the phase's work at head %s, then %s; this completion changed nothing",
+			pr.Number, pr.HeadSHA, landed, pr.HeadSHA, again)
 	}
 	return refused("HANDOFF_HEAD_MERGED_FORWARD", fmt.Sprintf("the %s's completion of phase %s of %s %s. %s", role, reported, issue.Key, clause, next)), true
 }
