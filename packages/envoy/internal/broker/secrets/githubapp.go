@@ -117,6 +117,34 @@ func cut(profile, held map[string]string) (asked map[string]string, leftOut []st
 	return asked, leftOut
 }
 
+// grantedPermission is the permission GitHub grants with every installation token, at read,
+// whatever its request named, and which every installation it lists holds; every GitHub profile
+// names it (policy.ParseProfiles).
+const grantedPermission = "metadata"
+
+// emptyCut reports whether asked, the cut of profile's permissions to what an installation holds,
+// leaves the token nothing the profile is for: no permission at all, or metadata alone of a
+// profile that names more. Every installation GitHub lists holds metadata, so a cut that keeps it
+// alone is the empty cut GitHub's own listings give, and minting it would release a token that
+// does none of what the profile asks, after the check before an approval had let a person be
+// asked for it. A profile that names metadata alone asks for nothing more, and its cut is whole.
+func emptyCut(profile, asked map[string]string) bool {
+	_, kept := asked[grantedPermission]
+	return len(asked) == 0 || (kept && len(asked) == 1 && len(profile) > 1)
+}
+
+// lacked is the profile's permissions an empty cut, asked, left out, for its refusal: each
+// permission the profile names that the cut does not keep.
+func lacked(profile, asked map[string]string) map[string]string {
+	left := make(map[string]string, len(profile))
+	for permission, level := range profile {
+		if _, kept := asked[permission]; !kept {
+			left[permission] = level
+		}
+	}
+	return left
+}
+
 // accessTokensBody is GitHub's access_tokens body asking for permissions on repositories, the
 // names of the scope's repositories of the one account the token is for (nil for every
 // repository the installation reaches). Mint never sends it with no permissions
@@ -484,19 +512,21 @@ type installationMint struct {
 // Each token request names the profile's permissions cut to what that installation holds (cut),
 // so GitHub never grants a permission the request did not name, and the scope's repositories of
 // that installation's account alone, by name, as GitHub's body takes them (repositoriesOf); the
-// release names each entry the cut left out (Minted.LeftOut). A cut that leaves no permission
-// refuses the release (ErrMintEmptyCut) before any token request, for every account, since GitHub
-// answers a request naming none with every permission the installation holds. Mint releases a
-// token only when GitHub's answer holds no more than the request asked (heldBy), for every
-// profile; a token it refuses so it revokes at GitHub first, and it sends GitHub the revoke of a
-// token it minted and will not hand over: one GitHub answered in a form it cannot use
-// (giveBackUnusable), and on a failed release the tokens of the installations it minted for before
-// the failure (revokeUnreleased). A revoke GitHub does not confirm is logged, and its token stays
-// live until it lapses. The release is today's JSON of installations, or, for a value-token
-// profile, the bare token of its one account (GitHubScope.refusal refuses more), which is refused
-// (ErrMintNarrowingRefused) before any token request where the App has more than one installation
-// on that account, logins that differ only in case: a token minted for each would leave all but
-// the one released live with nobody holding them.
+// release names each entry the cut left out (Minted.LeftOut). A cut that leaves no permission, or
+// metadata alone of a profile that names more (emptyCut), refuses the release (ErrMintEmptyCut)
+// before any token request, for every account, since GitHub answers a request naming none with
+// every permission the installation holds, and a token of metadata alone does nothing the
+// profile is for. Mint releases a token only when GitHub's answer holds no more than the request
+// asked (heldBy), for every profile; a token it refuses so it revokes at GitHub first, and it
+// sends GitHub the revoke of a token it minted and will not hand over: one GitHub answered in a
+// form it cannot use (giveBackUnusable), and on a failed release the tokens of the installations
+// it minted for before the failure (revokeUnreleased). A revoke GitHub does not confirm is
+// logged, and its token stays live until it lapses. The release is today's JSON of
+// installations, or, for a value-token profile, the bare token of its one account
+// (GitHubScope.refusal refuses more), which is refused (ErrMintNarrowingRefused) before any token
+// request where the App has more than one installation on that account, logins that differ only
+// in case: a token minted for each would leave all but the one released live with nobody holding
+// them.
 //
 // With req.Check it finds out whether that release could be served without serving it, and it
 // releases no token: it makes the release's calls in the same order, but for a token request
@@ -567,8 +597,8 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 			continue
 		}
 		asked, leftOut := cut(scope.Permissions, installation.Permissions)
-		if len(asked) == 0 {
-			return Minted{}, fmt.Errorf("%w: github app %s: its installation on %s holds none of %s", ErrMintEmptyCut, secret.AppID, owner, permissionWords(scope.Permissions))
+		if emptyCut(scope.Permissions, asked) {
+			return Minted{}, fmt.Errorf("%w: github app %s: its installation on %s holds none of %s", ErrMintEmptyCut, secret.AppID, owner, permissionWords(lacked(scope.Permissions, asked)))
 		}
 		each = append(each, installationMint{installation: installation, owner: owner, account: account, repositories: scope.repositoriesOf(account), asked: asked, leftOut: leftOut})
 	}

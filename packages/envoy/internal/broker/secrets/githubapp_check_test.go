@@ -73,10 +73,10 @@ func errorText(err error) string {
 // release answered. A token a check minted is dead by the time it returns: the stand-in forgets
 // a token it revoked, so the read a released token is spent at is refused with it. A scope whose
 // account the App has no installation on, and one whose permissions the installation holds none
-// of, are refused from the installations listing alone, before any token request, as the two
-// refusals the broker refuses a request for besides GitHub's 422 (secrets.ErrMintNoInstallation
-// and secrets.ErrMintEmptyCut). A check that carries no scope is a programming error, refused
-// before GitHub is asked anything.
+// of but metadata, are refused from the installations listing alone, before any token request,
+// as the two refusals the broker refuses a request for besides GitHub's 422
+// (secrets.ErrMintNoInstallation and secrets.ErrMintEmptyCut). A check that carries no scope is
+// a programming error, refused before GitHub is asked anything.
 func TestAGitHubAppCheckOfAProfileBeforeApprovalReleasesNoToken(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -92,9 +92,10 @@ func TestAGitHubAppCheckOfAProfileBeforeApprovalReleasesNoToken(t *testing.T) {
 	leanWithIssues := readScope("ada")
 	leanWithIssues.Repositories = []string{"ada/lean"}
 	leanWithIssues.Permissions = map[string]string{"contents": "read", "issues": "write", "metadata": "read"}
-	// administration is a permission the stand-in's installation does not hold at all.
+	// administration is a permission the stand-in's installation does not hold at all, so the cut
+	// keeps metadata alone, which every installation holds: an empty cut.
 	noneHeld := readScope("ada")
-	noneHeld.Permissions = map[string]string{"administration": "write"}
+	noneHeld.Permissions = map[string]string{"administration": "write", "metadata": "read"}
 	const (
 		installations = "GET /app/installations"
 		tokenRequest  = "POST /app/installations/2/access_tokens"
@@ -171,7 +172,7 @@ func TestAGitHubAppCheckOfAProfileBeforeApprovalReleasesNoToken(t *testing.T) {
 			checkCalls:   []string{installations},
 		},
 		{
-			name:         "a scope whose permissions the installation holds none of",
+			name:         "a scope whose permissions the installation holds none of but metadata",
 			scope:        noneHeld,
 			answer:       airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensOrdinary},
 			class:        "narrowing",

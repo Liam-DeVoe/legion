@@ -28,8 +28,9 @@
 #   - p2: DEMO_GITHUB_APP's token request names its permissions cut to what the installation
 #     holds; the broker logs one line for each entry the cut left out, and the values answer
 #     names the same entries (github_left_out); DEMO_GITHUB_APP_CASE_PAIR, whose installations
-#     hold nothing, is refused PROFILE_MINT_REFUSED with no token request to GitHub; and a token
-#     wider than the request is refused MINT_FAILED, runs nothing, and is given back.
+#     hold none of its permissions but metadata, is refused PROFILE_MINT_REFUSED with no token
+#     request to GitHub; and a token wider than the request is refused MINT_FAILED, runs nothing,
+#     and is given back.
 #   - p3: DEMO_GITHUB_READ's child holds a placeholder, which GitHub refuses when the child sends
 #     it straight there, and its call through the proxy reaches GitHub with a token GitHub minted,
 #     asked for with the profile's permissions cut; a POST, which the proxy block does not allow,
@@ -136,9 +137,10 @@ fi
 # What the App's installations hold for this run: acme-org's holds the reads the profiles ask for
 # but attestations, holds contents and pull requests at read alone, issues and statuses at write,
 # administration and members but not organization_administration, and no workflows; ada's and
-# Ada's hold nothing, so any profile of theirs is an empty cut. Each profile's expected cut below
-# is read off this map and the stack's profiles file (dev-broker.sh).
-INSTALLATION_PERMISSIONS="acme-org=actions:read,checks:read,contents:read,issues:write,metadata:read,pull_requests:read,statuses:write,administration:read,members:read ada= Ada="
+# Ada's hold metadata alone, as an installation GitHub lists holds at the least, so any profile of
+# theirs that asks for more is an empty cut. Each profile's expected cut below is read off this
+# map and the stack's profiles file (dev-broker.sh).
+INSTALLATION_PERMISSIONS="acme-org=actions:read,checks:read,contents:read,issues:write,metadata:read,pull_requests:read,statuses:write,administration:read,members:read ada=metadata:read Ada=metadata:read"
 # DEMO_GITHUB_APP asks for contents, pull requests, statuses and workflows at write and issues and
 # metadata at read; READ asks for eight reads; ADMIN_READ for those and administration, members and
 # organization_administration.
@@ -484,7 +486,7 @@ p2_case_status="$STATUS"
 p2_case_output="$OUTPUT"
 p2_case_child="$CHILD_OUT"
 p2_case_after="$(case_token_requests)"
-judge "p2 $DEV_BROKER_GITHUB_CASE_SECRET, whose installations hold none of its permissions, is refused and runs nothing (agent-secrets exited $p2_case_status)" \
+judge "p2 $DEV_BROKER_GITHUB_CASE_SECRET, whose installations hold none of its permissions but metadata, is refused and runs nothing (agent-secrets exited $p2_case_status)" \
 	failed_without_running "$p2_case_status" "$p2_case_child"
 judge "p2 that empty cut is refused PROFILE_MINT_REFUSED (agent-secrets said: $p2_case_output)" \
 	holds PROFILE_MINT_REFUSED "$p2_case_output"

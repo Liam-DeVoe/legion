@@ -279,17 +279,21 @@ func TestAProfileMintAsksForItsPermissionsCutToTheInstallation(t *testing.T) {
 }
 
 // TestAnEmptyCutRefusesWithNoRequestToGitHub: a profile whose permissions the installation holds
-// none of is refused as the caller's scope (ErrMintNarrowingRefused) before any token request,
-// since a request naming no permissions is one GitHub answers with every permission the
-// installation holds. Where the scope names two accounts and one of them leaves an empty cut, no
-// token is asked for either, so nothing is minted that the release would then hand to nobody.
+// none of but metadata is refused as the caller's scope (ErrMintEmptyCut, inside
+// ErrMintNarrowingRefused) before any token request, naming the account and the permissions it
+// lacks. Every installation GitHub lists holds metadata at read, which every GitHub profile names,
+// so the installation here holds that alone, the shape GitHub lists: a cut that kept it would mint
+// a token that does nothing the profile is for, and a request naming no permissions at all is one
+// GitHub answers with every permission the installation holds. Where the scope names two accounts
+// and one of them leaves an empty cut, no token is asked for either, so nothing is minted that the
+// release would then hand to nobody.
 func TestAnEmptyCutRefusesWithNoRequestToGitHub(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	github := newProfileGitHub(t)
-	github.setHeld("2", map[string]string{"issues": "write"})
+	github.setHeld("2", map[string]string{"metadata": "read"})
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
 	value := githubAppValue(t, "123456", key)
 
@@ -303,8 +307,9 @@ func TestAnEmptyCutRefusesWithNoRequestToGitHub(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			github.take()
 			minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: readScope(tc.accounts...)})
-			if minted.Value != "" || !errors.Is(err, secrets.ErrMintNarrowingRefused) || !strings.Contains(err.Error(), "ada") || !strings.Contains(err.Error(), "contents") {
-				t.Fatalf("Mint with an empty cut = %q, %v; want ErrMintNarrowingRefused naming the account and the permissions it asked for", minted.Value, err)
+			if minted.Value != "" || !errors.Is(err, secrets.ErrMintEmptyCut) || !errors.Is(err, secrets.ErrMintNarrowingRefused) ||
+				!strings.Contains(err.Error(), "installation on ada holds none of contents: read") {
+				t.Fatalf("Mint with a cut of metadata alone = %q, %v; want ErrMintEmptyCut naming the account and the permission it lacks", minted.Value, err)
 			}
 			if _, tokens := github.take(); len(tokens) != 0 {
 				t.Fatalf("token requests %+v for an empty cut, want none", tokens)
@@ -313,6 +318,34 @@ func TestAnEmptyCutRefusesWithNoRequestToGitHub(t *testing.T) {
 				t.Fatalf("revokes %q for an empty cut, want none", revoked)
 			}
 		})
+	}
+}
+
+// TestAProfileOfMetadataAloneMintsOnAnInstallationOfMetadataAlone: the empty cut is a profile
+// that asks for more than metadata and gets metadata alone. A profile that names metadata alone
+// asks for nothing the installation lacks, so its token is asked for, naming metadata, and
+// released, with nothing left out.
+func TestAProfileOfMetadataAloneMintsOnAnInstallationOfMetadataAlone(t *testing.T) {
+	key, err := testAppKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	github := newProfileGitHub(t)
+	github.setHeld("2", map[string]string{"metadata": "read"})
+	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
+	scope := readScope("ada")
+	scope.Permissions = map[string]string{"metadata": "read"}
+
+	minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: scope})
+	if err != nil || minted.LeftOut != nil {
+		t.Fatalf("Mint of a profile of metadata alone = LeftOut %v, %v; want it minted with nothing left out", minted.LeftOut, err)
+	}
+	var got mintedGitHubApp
+	if err := json.Unmarshal([]byte(minted.Value), &got); err != nil || got.Installations["ada"].Token != "token-2" || len(got.Installations) != 1 {
+		t.Fatalf("Mint value = %q (%v), want ada's installation alone", minted.Value, err)
+	}
+	if _, tokens := github.take(); len(tokens) != 1 || tokens[0].body != `{"permissions":{"metadata":"read"}}` {
+		t.Fatalf("token requests = %+v, want one naming metadata at read", tokens)
 	}
 }
 
