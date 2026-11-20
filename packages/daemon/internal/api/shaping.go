@@ -849,7 +849,7 @@ const quietTimeContract = 111
 const shapedAnswersContract = 193
 
 // claimOperationsContract is the daemon contract the claim door's four operations and the
-// controller's pod update arrived at (version.go's 200): `POST /legion/v1/claims/stop`, `retry`,
+// controller's pod update arrived at (version.go's 203): `POST /legion/v1/claims/stop`, `retry`,
 // `suspend` and `resume`, which answer ClaimOperationResponse (AnswerClaimOperation), and
 // `POST /legion/v1/issues/pod-update`, which answers PodUpdateResponse (AnswerPodUpdate). Each
 // answer arrived whole with its routes, so no contract below this one records either, no caller
@@ -859,7 +859,7 @@ const shapedAnswersContract = 193
 // It is a literal of its own and never DaemonAPIVersion, as shapedAnswersContract is: a later
 // contract moves that constant, and the contract these answers arrived at stays where it is. It
 // moves only with the number of the change that added the routes (#4065).
-const claimOperationsContract = 200
+const claimOperationsContract = 203
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
