@@ -10,6 +10,7 @@ import {
   quoteBodyText,
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
+import { useQuoteInDocument } from "../doc/quote-in-document";
 import { SendStoppedError } from "../writes/keyed-write";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
 import { useHeldSend, useHeldSends } from "./held-sends";
@@ -100,6 +101,25 @@ export function DraftOffer({
       </div>
     </div>
   );
+}
+
+/** The line an offered draft is led by: the kind it was written as, where the compose is of
+ *  another, and the words it was written for, while the page's text of the document still holds
+ *  them (`useQuoteInDocument`); otherwise it says they are no longer in the document and draws
+ *  none of them, since words a delete took out are a deleted post's. */
+function OfferedDraftLead({
+  kind,
+  offered,
+}: {
+  readonly kind: ComposerKind;
+  readonly offered: OfferedDraft;
+}): ReactNode {
+  const held = useQuoteInDocument(offered.anchor);
+  const asKind =
+    offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`;
+  return held
+    ? `You wrote this draft${asKind} for other words: “${offered.anchor.quote}”. It is kept here:`
+    : `You wrote this draft${asKind} for other words, which are no longer in the document. It is kept here:`;
 }
 
 /**
@@ -218,7 +238,7 @@ export function KeptDraftOffers({
         <DraftOffer
           body={offered.draft.body}
           drop={{ label: "Discard my draft", press: onDropOffered }}
-          lead={`You wrote this draft${offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`} for other words: “${offered.anchor.quote}”. It is kept here:`}
+          lead={<OfferedDraftLead kind={kind} offered={offered} />}
           note={offered.note}
           replacement={offered.draft.replacement}
           take={

@@ -17,6 +17,7 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import type { AwayDraft } from "../conversation/unsent-drafts";
 import { type OfferedDraft, stoppedOfferOf } from "../conversation/useKeptDrafts";
+import { useQuoteInDocument } from "../doc/quote-in-document";
 import { AskCard } from "../inbox/AskCard";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
@@ -165,6 +166,20 @@ export function MarginComposerSlot({
   );
 }
 
+/** The line a draft the margin kept is led by: the kind it was written as, and the words it was
+ *  written for, while the page's text of the document still holds them (`useQuoteInDocument`);
+ *  otherwise it says they are no longer in the document and draws none of them, since words a
+ *  delete took out are a deleted post's. */
+function KeptDraftLead({ away }: { away: AwayDraft & { anchor: ComposerAnchor } }): ReactNode {
+  const held = useQuoteInDocument(away.anchor);
+  const asKind =
+    away.kind === undefined || away.kind === "comment" ? "" : ` as ${KIND_WORDS[away.kind]},`;
+  const words = held
+    ? `for the words “${away.anchor.quote}”`
+    : "for words that are no longer in the document";
+  return `You wrote this draft${asKind} ${words}. It is kept here, and offered in the next compose you open on this document:`;
+}
+
 /**
  * What the margin's compose kept for words of the open document (`AwayDraft.anchor`), while no
  * compose is open on it (`useMarginSheet`'s `keptDrafts`). A reload, a sign-in after a lapse and
@@ -193,7 +208,7 @@ export function MarginKeptDrafts({
           body={away.draft.body}
           drop={{ label: "Discard my draft", press: () => onDiscard(away) }}
           key={`${away.anchor.mark_id ?? ""}:${away.anchor.occurrence ?? ""}:${away.anchor.quote}`}
-          lead={`You wrote this draft${away.kind === undefined || away.kind === "comment" ? "" : ` as ${KIND_WORDS[away.kind]},`} for the words “${away.anchor.quote}”. It is kept here, and offered in the next compose you open on this document:`}
+          lead={<KeptDraftLead away={away} />}
           replacement={away.draft.replacement}
         />
       ))}

@@ -67,6 +67,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus } from "../artifacts/ArtifactUpload";
+import { useQuoteInDocument } from "../doc/quote-in-document";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
@@ -368,6 +369,25 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
         description: option.description ?? "",
         label: option.label,
       }));
+}
+
+/** The words of the document a margin compose is about, above its field: the quote, while the
+ *  page's text of the document still holds it, and otherwise a line saying it no longer does
+ *  (`useQuoteInDocument`), since words a delete took out are a deleted post's. The draft and its
+ *  controls stay as they are. */
+function ComposerQuote({ anchor }: { anchor: ComposerAnchor }): ReactNode {
+  if (!useQuoteInDocument(anchor)) {
+    return (
+      <p className={`text-sm ${textMutedOnSurfaceMuted}`} data-composer-quote-gone="">
+        The words this draft was for are no longer in the document.
+      </p>
+    );
+  }
+  return (
+    <blockquote className={`border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}>
+      {anchor.quote}
+    </blockquote>
+  );
 }
 
 interface MentionComposerProps {
@@ -1291,11 +1311,7 @@ export function MentionComposer({
           )}
         </div>
       )}
-      {compact || anchor === undefined ? null : (
-        <blockquote className={`border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}>
-          {anchor.quote}
-        </blockquote>
-      )}
+      {compact || anchor === undefined ? null : <ComposerQuote anchor={anchor} />}
       {onKindChange !== undefined && edit === undefined && owner.kind !== "session" && !closed ? (
         <>
           <fieldset className="flex gap-1">
