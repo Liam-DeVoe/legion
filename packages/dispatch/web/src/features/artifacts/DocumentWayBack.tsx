@@ -8,6 +8,7 @@ import {
   isArtifactNotFound,
   removedEvenIfGone,
 } from "../../api/client";
+import { useReadBound } from "../../api/read-bound";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -200,10 +201,11 @@ export function correctionIsOffered(artifact: Artifact): boolean {
  * nothing names, and refuses every other one with a sentence that names the test it failed, which
  * is shown here, where the person pressed.
  *
- * It holds the removal it made - `Removing…`, a refusal and its Retry - so it is drawn for one
- * document alone, and each host keys it by the document: the issue's document list keys the row
- * it sits in (`ArtifactRow`), and the page's header, which the issue's page draws for one
- * document after another, keys the control itself (`ArtifactHeader`).
+ * It holds the removal it made - `Removing…`, a refusal and its Retry, and why the list read after
+ * it has not settled - so it is drawn for one document alone, and each host keys it by the
+ * document: the issue's document list keys the row it sits in (`ArtifactRow`), and the page's
+ * header, which the issue's page draws for one document after another, keys the control itself
+ * (`ArtifactHeader`).
  *
  * `onRemoved` is the host's own way back from the page of a document that has gone, handed the
  * document the removal was of. It is called when the removal lands, by when the reader may have
@@ -220,6 +222,7 @@ export function RemoveDocument({
 }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
+  const [unread, holdThrough] = useReadBound();
   const remove = useKeyedWrite({
     inline: true,
     // The press carries the document it removes: the indicator names it, and the route takes its
@@ -234,14 +237,17 @@ export function RemoveDocument({
     onSettled: () => submitGuard.release(),
     // Pending, and the button held, through the read of the document list that takes the row
     // away, so the press is still the cause of the row's going (`causedByReader`). That read
-    // settles either way, and a failed one lets the button go.
+    // settles either way, and a failed one lets the button go. A read that has not settled by the
+    // query's own timeout - one paused while the browser is offline - lets it go then, and the
+    // row says why the list is not read yet (`holdThrough`).
     onSuccess: (_result, removed) => {
       const list = refreshArtifact(queryClient, removed);
       onRemoved?.(removed);
-      return list;
+      return holdThrough(list);
     },
   });
-  // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`).
+  // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`). A list
+  // read that has not settled is said in the words the Artifacts tab says for one that failed.
   const problem = remove.isError
     ? endedStopped(remove)
       ? stoppedWriteNote(`the removal of “${(remove.variables ?? artifact).name}”`, "made", {
@@ -250,7 +256,9 @@ export function RemoveDocument({
           stopped: remove.error,
         })
       : apiErrorMessage(remove.error, "Could not remove the document.")
-    : undefined;
+    : unread === undefined
+      ? undefined
+      : `Could not load artifacts. ${unread}.`;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">

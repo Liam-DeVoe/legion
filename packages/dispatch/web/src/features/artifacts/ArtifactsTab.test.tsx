@@ -1,12 +1,15 @@
-import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { expect, jest, spyOn, test } from "bun:test";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { Artifact, ArtifactUploadResponse, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
@@ -67,7 +70,11 @@ function renderTab(
   references: IssueReferences | Error = noReferences,
   isClosed = false,
   /** The query the tab is opened at, as a reload or a shared link hands it over. */
-  search = ""
+  search = "",
+  /** The query client the tab reads through, a plain one unless the case needs the app's own. */
+  queryClient: QueryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  })
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
   const getIssueReferences = spyOn(api, "getIssueReferences");
@@ -76,9 +83,6 @@ function renderTab(
   } else {
     getIssueReferences.mockResolvedValue(references);
   }
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
   const view = render(
     <MemoryRouter
       initialEntries={[`${buildIssuePath({ key: "CORE-1", kind: "artifacts" })}${search}`]}
@@ -690,6 +694,74 @@ test("a refused removal shows the server's sentence on the row", async () => {
     expect(screen.getByTestId("artifact-design-notes")).not.toBeNull();
   } finally {
     view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// `DispatchQueryClient` answers the invalidation of the idle document list after a removal with
+// the list's own fetch, which TanStack pauses while the browser is offline, and no request
+// deadline runs while a fetch is paused. So Remove's hold through that read has a timer of its
+// own, the query's timeout: a row's Remove whose removal landed offline is free again then, and
+// the row says the list is not read yet and why. Once the network returns, the list is read and
+// the row goes.
+test("offline, a row's Remove whose removal landed is free again at the list read's timeout, and the row says why", async () => {
+  const online = onlineManager.isOnline();
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { getIssueReferences, listArtifacts, view } = renderTab(
+    [notes],
+    noReferences,
+    false,
+    "",
+    queryClient
+  );
+  // The removal's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const removal = Promise.withResolvers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
+    listArtifacts.mockResolvedValue([]);
+    return removal.promise;
+  });
+  const row = await screen.findByTestId("artifact-design-notes");
+  const remove = within(row).getByRole("button", { name: "Remove" });
+  const reads = listArtifacts.mock.calls.length;
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    onlineManager.setOnline(false);
+    await user.click(remove);
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(1);
+    removal.resolve();
+    await tick(1_000);
+    expect(queryClient.getQueryState(["artifacts", "CORE-1"])?.fetchStatus).toBe("paused");
+    expect(remove.textContent).toBe("Removing…");
+    expect(remove).toBeDisabled();
+
+    // The removal landed within the second before, which is when the hold's timer started.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(remove.textContent).toBe("Removing…");
+
+    await tick(2_000);
+    expect(remove.textContent).toBe("Remove");
+    expect(remove).not.toBeDisabled();
+    expect(listArtifacts.mock.calls.length).toBe(reads);
+    expect(within(row).getByRole("alert").textContent).toBe(
+      "Could not load artifacts. Dispatch could not be reached."
+    );
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+    expect(screen.queryByTestId("artifact-design-notes")).toBeNull();
+  } finally {
+    // The tab and its reads go before the network returns, so no read paused offline goes on.
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
     deleteArtifact.mockRestore();

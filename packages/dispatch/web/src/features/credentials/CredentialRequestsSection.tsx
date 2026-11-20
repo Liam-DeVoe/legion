@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
+import { useReadBound } from "../../api/read-bound";
 import type { CredentialPendingRow } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { LabelPill } from "../../components/Pill";
@@ -98,6 +99,7 @@ function PendingRowLine({ row }: { row: CredentialPendingRow }): ReactNode {
 function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
+  const [unread, holdThrough] = useReadBound();
   const label =
     `Dismiss expired ${requestKindLabel(row).toLowerCase()} ${requestIdentifiers(row)}`.trimEnd();
   // The row shows a refused dismissal itself, under its own line. The press carries the request
@@ -111,8 +113,11 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
     },
     onSettled: () => submitGuard.release(),
     // Pending, and Dismiss held, through the read of the list that takes the row away. That read
-    // settles either way, and a failed one lets the button go.
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: credentialPendingQuery().queryKey }),
+    // settles either way, and a failed one lets the button go. A read that has not settled by the
+    // query's own timeout - one paused while the browser is offline - lets it go then, and the row
+    // says why the list is not read yet (`holdThrough`).
+    onSuccess: () =>
+      holdThrough(queryClient.invalidateQueries({ queryKey: credentialPendingQuery().queryKey })),
     method: "POST",
     write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
   });
@@ -152,6 +157,11 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
               })
             : apiErrorMessage(dismiss.error, "Could not dismiss this request.")}
         </p>
+      ) : null}
+      {/* A list read that has not settled is said as the section says a list that failed to
+          load, in the same line. */}
+      {!dismiss.isError && unread !== undefined ? (
+        <p className={dangerText}>Couldn't load credential requests. {unread}.</p>
       ) : null}
     </>
   );

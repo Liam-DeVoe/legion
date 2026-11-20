@@ -1,16 +1,17 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { DeliverySettings } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -34,11 +35,13 @@ const record: DeliverySettings = {
   updated_by: { id: "alice@example.com", kind: "user" },
 };
 
-/** The form as the Settings page draws it, reading its record; `rescued` draws it in the shell's
- *  main content with the page's focus rescue mounted on it (`RescuedMain`), as the app shell
- *  mounts it. */
-function renderForm(rescued = false) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** The form as the Settings page draws it, reading its record through `queryClient`, a plain
+ *  client unless the case needs the app's own; `rescued` draws it in the shell's main content with
+ *  the page's focus rescue mounted on it (`RescuedMain`), as the app shell mounts it. */
+function renderForm(
+  rescued = false,
+  queryClient: QueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   render(
     <QueryClientProvider client={queryClient}>
       {rescued ? (
@@ -396,6 +399,63 @@ test("Save keeps the focus once the read draws the stored record, and no field t
   } finally {
     restoreFocus();
     cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// `DispatchQueryClient` answers the invalidation of the idle record after a save with the
+// record's own fetch, which TanStack pauses while the browser is offline, and no request deadline
+// runs while a fetch is paused. So Save's hold through that read has a timer of its own, the
+// query's timeout: Save whose save landed offline is enabled again then, and the form says the
+// record is not read yet and why. Once the network returns, the record is read and the note goes.
+test("offline, Save whose save landed is enabled again at the record read's timeout, and the form says why", async () => {
+  const online = onlineManager.isOnline();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  // The save's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const saved = Promise.withResolvers<DeliverySettings>();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockImplementation(
+    () => saved.promise
+  );
+  const queryClient = renderForm(
+    false,
+    new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } })
+  );
+  await screen.findByDisplayValue("acme/widgets");
+  const save = screen.getByRole("button", { name: "Save delivery settings" });
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    onlineManager.setOnline(false);
+    await user.click(save);
+    await tick(0);
+    expect(putDeliverySettings).toHaveBeenCalledTimes(1);
+    saved.resolve({ ...record, updated_at: "2026-10-08T09:00:00Z" });
+    await tick(1_000);
+    expect(queryClient.getQueryState(deliverySettingsQuery().queryKey)?.fetchStatus).toBe("paused");
+    expect(save).toBeDisabled();
+
+    // The save landed within the second before, which is when the hold's timer started.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(save).toBeDisabled();
+
+    await tick(2_000);
+    expect(save).not.toBeDisabled();
+    expect(getDeliverySettings).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Couldn't load the delivery settings. Dispatch could not be reached."
+    );
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+    expect(getDeliverySettings).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    // The form and its reads go before the network returns, so no read paused offline goes on.
+    cleanup();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
     getDeliverySettings.mockRestore();
     putDeliverySettings.mockRestore();
   }

@@ -22,9 +22,11 @@ import {
   ApiError,
   api,
   NetworkError,
+  REQUEST_DEADLINE_MS,
   RequestTimeoutError,
 } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Agent,
   BroadcastCreated,
@@ -217,6 +219,7 @@ function renderAgents({
   listedAgents = agents,
   issues = [],
   messages = [],
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 }: {
   agentState?: UserAgentStates;
   /** The inbox read's answer, or a promise a test resolves itself to hold that read out. */
@@ -225,6 +228,8 @@ function renderAgents({
   listedAgents?: Agent[];
   issues?: IssueSummary[];
   messages?: MessageRead[];
+  /** The query client the page reads through, a plain one unless the case needs the app's own. */
+  queryClient?: QueryClient;
 } = {}) {
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
@@ -321,7 +326,6 @@ function renderAgents({
     served[session] = state;
     return state;
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={queryClient}>
@@ -1729,6 +1733,136 @@ test("Agents retain targeted-message retries and attempt history", async () => {
     );
   } finally {
     page.view.unmount();
+    page.restore();
+  }
+});
+
+/** A failed attempt of the message `id`, in `delivery`'s mode, to the Planner. */
+function failedAttempt(id: string, delivery: MessageDeliveryMode): MessageDelivery {
+  return {
+    ...messageDeliveryFields(),
+    attempt: 1,
+    created_at: recentAttemptAt,
+    delivery,
+    envelope_id: null,
+    error: "no live session planner-session",
+    message_id: id,
+    reply_id: null,
+    session_id: "planner-session",
+    state: "failed",
+  };
+}
+
+// `DispatchQueryClient` answers the invalidation of the idle conversation after a delivery retry
+// with the conversation's own fetch, which TanStack pauses while the browser is offline, and no
+// request deadline runs while a fetch is paused. So the retry's hold through that read has a
+// timer of its own, the query's timeout: Retry and the mode change, held while the retry is out,
+// are enabled again then, and the conversation says it is not read yet and why. Once the network
+// returns, the conversation is read and the note goes. A message's retry row and a reply's are
+// two writes of their own, each held through the same read.
+test.each([
+  {
+    exchange: {
+      message: message("Can this ship?", { deliveries: [failedAttempt("message-1", "btw")] }),
+      replies: [],
+    },
+    instead: "Use Send instead",
+    mode: "btw",
+    retried: "message-1",
+    which: "message's",
+  },
+  {
+    exchange: {
+      // The session's answer takes the message's own retry row away, so only the reply's is drawn.
+      message: message("Can this ship?"),
+      replies: [
+        message("Looking into it.", {
+          author: { id: "planner-session", kind: "session" },
+          id: "message-2",
+          in_reply_to: "message-1",
+        }),
+        message("Any update?", {
+          deliveries: [failedAttempt("message-3", "steer")],
+          id: "message-3",
+          in_reply_to: "message-1",
+        }),
+      ],
+    },
+    instead: "Use BTW instead",
+    mode: "steer",
+    retried: "message-3",
+    which: "reply's",
+  },
+] as const)("offline, a $which delivery Retry that landed lets Retry and the mode change go at the conversation read's timeout, saying why", async ({
+  exchange,
+  instead: insteadName,
+  mode,
+  retried,
+}) => {
+  const online = onlineManager.isOnline();
+  const user = userEvent.setup();
+  const steerCapableAgents = agents.map((candidate) =>
+    candidate.session_id === "planner-session"
+      ? { ...candidate, capabilities: [...candidate.capabilities, "steer"] }
+      : candidate
+  );
+  const page = renderAgents({
+    listedAgents: steerCapableAgents,
+    messages: [{ message: exchange.message, replies: [...exchange.replies] }],
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  // The retry's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const delivered = Promise.withResolvers<MessageDelivery>();
+  page.createMessageDelivery.mockImplementation(() => delivered.promise);
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const retry = await within(planner).findByRole("button", { name: "Retry" });
+    const instead = within(planner).getByRole("button", { name: insteadName });
+    const reads = page.listAgentMessages.mock.calls.length;
+    jest.useFakeTimers();
+    const onClock = userOnFakeClock();
+    onlineManager.setOnline(false);
+    await onClock.click(retry);
+    await tick(0);
+    expect(page.createMessageDelivery).toHaveBeenCalledWith(retried, mode, keyedAttempt);
+    delivered.resolve({
+      ...failedAttempt(retried, mode),
+      attempt: 2,
+      envelope_id: "envelope-2",
+      error: null,
+      state: "sent",
+    });
+    await tick(1_000);
+    expect(
+      page.queryClient.getQueryState(["agents", "planner-session", "messages"])?.fetchStatus
+    ).toBe("paused");
+    expect(retry).toBeDisabled();
+    expect(instead).toBeDisabled();
+
+    // The retry landed within the second before, which is when the hold's timer started.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(retry).toBeDisabled();
+
+    await tick(2_000);
+    expect(retry).not.toBeDisabled();
+    expect(instead).not.toBeDisabled();
+    expect(page.listAgentMessages.mock.calls.length).toBe(reads);
+    expect(within(planner).getByText(/^Could not load this conversation\./).textContent).toBe(
+      "Could not load this conversation. Dispatch could not be reached."
+    );
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+    expect(page.listAgentMessages.mock.calls.length).toBeGreaterThan(reads);
+    expect(within(planner).queryByText(/^Could not load this conversation\./)).toBeNull();
+  } finally {
+    // The page and its reads go before the network returns, so no read paused offline goes on.
+    page.view.unmount();
+    page.queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
     page.restore();
   }
 });

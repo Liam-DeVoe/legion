@@ -4,6 +4,7 @@ import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { api, apiErrorMessage } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
+import { useReadBound } from "../../api/read-bound";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -165,8 +166,9 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
  *  form's place once its snapshot comes - until the caller replaces the form
  *  (`useHoldUntilDrawn`). The form and its Save stay the same elements through the read, so the
  *  page's rescue gives the focus back to Save once it is enabled again; a form the caller replaces
- *  goes while Save is held, so its going is still the press's doing (`causedByReader`). A refusal
- *  lets them go at once, with its reason under the form. */
+ *  goes while Save is held, so its going is still the press's doing (`causedByReader`). A record
+ *  read that has not settled by the query's own timeout lets them go then, with the reason under
+ *  the form (`useReadBound`). A refusal lets them go at once, with its reason under the form. */
 function DeliverySettingsFields({
   record,
   replacedByCaller,
@@ -191,6 +193,7 @@ function DeliverySettingsFields({
   // The write time of the record the newest press was made over.
   const [pressedOver, setPressedOver] = useState(version);
   const [drawing, holdUntilDrawn] = useHoldUntilDrawn(version);
+  const [unread, holdThrough] = useReadBound();
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -200,7 +203,10 @@ function DeliverySettingsFields({
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
       if (replacedByCaller) holdUntilDrawn();
-      // Pending through the record's own read, which a caller holding the record has none of.
+      // Pending through the record's own read, which a caller holding the record has none of. A
+      // read that has not settled by the query's own timeout - one paused while the browser is
+      // offline - lets Save go then, and the form says why the record is not read yet
+      // (`holdThrough`).
       const read = queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
       // A live view learns of the save from Dispatch, as a delta, or as the snapshot a page that
       // had none (DELIVERY_NOT_CONFIGURED) is answered once a configuration exists.
@@ -208,7 +214,7 @@ function DeliverySettingsFields({
         queryKey: ["delivery"],
         predicate: (query) => !isLiveQuery(query),
       });
-      return read;
+      return holdThrough(read);
     },
   });
   const held = save.isPending || drawing;
@@ -395,7 +401,13 @@ function DeliverySettingsFields({
             }
           />
         </div>
-      ) : null}
+      ) : unread === undefined ? null : (
+        <div className="mt-4">
+          {/* A read of the record that has not settled is said in the words the form says for a
+              read of it that failed. */}
+          <QueryError message={`Couldn't load the delivery settings. ${unread}.`} />
+        </div>
+      )}
     </>
   );
 }

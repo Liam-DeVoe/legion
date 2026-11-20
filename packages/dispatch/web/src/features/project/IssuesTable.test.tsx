@@ -1,14 +1,17 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { pickNamed } from "../../__tests__/list-picks";
 import { installResizeObserver } from "../../__tests__/scroll-box";
-import { ApiError, api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { readLayout } from "../../components/table-storage";
 import { readSelectedIssues } from "../search/bar-scope";
@@ -92,17 +95,24 @@ afterEach(() => {
 /** Draws the List over `issues`. `full` answers the listing that holds the closed issues, and
  *  `open` the one that holds the open ones alone, in place of `issues` itself; `rescued` draws the
  *  List in the shell's main content with the page's focus rescue mounted (`RescuedMain`), after a
- *  link that stands for the shell's navigation; `props` is what a caller other than the project
- *  page passes: a listing of its own, the priorities' titles and the prefix its view is written
- *  under. */
+ *  link that stands for the shell's navigation; `client` is the query client the List reads
+ *  through, a plain one unless the case needs the app's own; `props` is what a caller other than
+ *  the project page passes: a listing of its own, the priorities' titles and the prefix its view
+ *  is written under. */
 function table(
   issues: IssueSummary[],
   search = "",
   {
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
     full,
     open,
     rescued = false,
-  }: { full?: Promise<IssueSummary[]>; open?: Promise<IssueSummary[]>; rescued?: boolean } = {},
+  }: {
+    client?: QueryClient;
+    full?: Promise<IssueSummary[]>;
+    open?: Promise<IssueSummary[]>;
+    rescued?: boolean;
+  } = {},
   props: {
     listing?: IssueListing;
     priorityTitles?: ReadonlyMap<string, string>;
@@ -146,7 +156,6 @@ function table(
         : (descriptor?.get?.call(this) ?? 0);
     },
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", login: "alice", kind: "user" });
   const list = <IssuesTable listing={{ project: "CORE" }} {...props} />;
   const view = render(
@@ -2106,6 +2115,73 @@ test("a row's Start next that Dispatch refuses is free again before the list rea
       name: "Start next",
     })
   ).not.toHaveAttribute("aria-disabled");
+});
+
+// `DispatchQueryClient` answers the invalidation of the idle list after an action with the list's
+// own fetch, which TanStack pauses while the browser is offline, and no request deadline runs
+// while a fetch is paused. So the List's hold through that read has a timer of its own, the
+// query's timeout: a row's Start next whose write landed offline is free again then, and the
+// notice says, after what the action did, that the list is not read yet and why. Once the network
+// returns, the list is read and the notice says what the action did alone.
+test("offline, a row's Start next whose write landed is free again at the list read's timeout, and the notice says why", async () => {
+  const online = onlineManager.isOnline();
+  // The write's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const answer = Promise.withResolvers<Issue>();
+  const send = spyOn(api, "send").mockImplementation(() => answer.promise as never);
+  restores.push(() => send.mockRestore());
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { listing } = table(
+    [
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "C" }),
+    ],
+    "",
+    { client }
+  );
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const startNext = within(row).getByRole("button", { name: "Start next" });
+  const reads = listing.mock.calls.length;
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    onlineManager.setOnline(false);
+    act(() => startNext.focus());
+    await user.keyboard("{Enter}");
+    await tick(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    answer.resolve(savedIssue("CORE-2"));
+    await tick(1_000);
+    expect(
+      client
+        .getQueryCache()
+        .findAll({ queryKey: ["issues"] })
+        .some((query) => query.state.fetchStatus === "paused")
+    ).toBe(true);
+    expect(startNext).toHaveAttribute("aria-disabled", "true");
+
+    // The write landed within the second before, which is when the hold's timer started.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(startNext).toHaveAttribute("aria-disabled", "true");
+
+    await tick(2_000);
+    expect(startNext).not.toHaveAttribute("aria-disabled");
+    expect(listing.mock.calls.length).toBe(reads);
+    expect(screen.getByRole("alert").textContent).toBe(
+      "CORE-2 “Work CORE-2” now starts next. Could not load issues. Dispatch could not be reached."
+    );
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+    expect(listing.mock.calls.length).toBeGreaterThan(reads);
+    expect(screen.getByText("CORE-2 “Work CORE-2” now starts next.")).toHaveAttribute(
+      "role",
+      "status"
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    onlineManager.setOnline(online);
+    realClock();
+  }
 });
 
 // A notice's button that takes the notice away hands the focus on, never to the page's body
