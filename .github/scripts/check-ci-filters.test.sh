@@ -4048,4 +4048,29 @@ run_check "$root"
 check "refuses the docker run once the fake is no longer first on PATH" \
   "$(contains "$out" "in scripts/deploy.sh, which scripts/deploy_test.sh runs, runs \`docker run\`")"
 
+echo "case: rule 22 takes a fake a test puts first on PATH through env -u, for a library the test sources"
+root=$(fixture network-fake-sourced)
+mkdir -p "$root/scripts/lib"
+printf 'consume() {\n  curl -sS https://example.com/api\n}\n' > "$root/scripts/lib/consumers.sh"
+cat > "$root/scripts/consumers_test.sh" <<'SH'
+#!/usr/bin/env bash
+here=$(cd "$(dirname "$0")" && pwd)
+source "$here/lib/consumers.sh"
+mkdir -p "$TMPDIR/fake-bin"
+cat >"$TMPDIR/fake-bin/curl" <<'EOF'
+#!/bin/sh
+echo 200
+EOF
+chmod +x "$TMPDIR/fake-bin/curl"
+env -u BASH_ENV PATH="$TMPDIR/fake-bin:$PATH" bash -c 'source "$1"; consume' consumers "$here/lib/consumers.sh"
+SH
+chmod +x "$root/scripts/consumers_test.sh"
+lint_steps "$root" "Test the consumers" "scripts/consumers_test.sh"
+run_check "$root"
+check "passes the fake's curl in the library the test sources" "$(is "$status" 0)"
+replace "$root/scripts/consumers_test.sh" 'PATH="$TMPDIR/fake-bin:$PATH"' 'PATH="$PATH:$TMPDIR/fake-bin"'
+run_check "$root"
+check "refuses the library's curl once the fake is no longer first on PATH" \
+  "$(contains "$out" "in scripts/lib/consumers.sh, which scripts/consumers_test.sh runs, runs \`curl\`")"
+
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"
