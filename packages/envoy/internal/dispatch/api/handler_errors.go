@@ -128,7 +128,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, apiErr.code, apiErr.status, apiErr.message)
 		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
 		if apiErr.status == http.StatusInternalServerError {
-			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
+			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", docs.LoggedError(err))
 		}
 		return
 	}
@@ -255,16 +255,18 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	}
 	// A tree outside the schema that the document holds answers 409 with its one message, the same
 	// on every route whatever the route wrapped it in (docs.OutsideSchemaError). Any other schema
-	// refusal is a tree an operation produced, which is the server's fault.
+	// refusal is a tree an operation produced, which is the server's fault. Either line logs the
+	// refusal by its class (docs.RefusalClass), never the error: its chain carries the document's
+	// text and whatever the request wrapped it in, the caller's own identity among it.
 	if documentCode == codeDocSchema {
 		var outside *docs.OutsideSchemaError
 		if errors.As(err, &outside) {
 			writeError(w, documentCode, http.StatusConflict, outside.Error())
-			slog.Warn("dispatch: API document outside Proof schema", "error", err)
+			slog.Warn("dispatch: API document outside Proof schema", "error", docs.RefusalClass(err))
 			return
 		}
 		writeError(w, documentCode, http.StatusInternalServerError, err.Error())
-		slog.Error("dispatch: API document outside Proof schema", "error", err)
+		slog.Error("dispatch: API document outside Proof schema", "error", docs.RefusalClass(err))
 		return
 	}
 	if errors.Is(err, docs.ErrIssueClosed) {
@@ -276,7 +278,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
-	slog.Error("dispatch: API handler failed", "error", err)
+	slog.Error("dispatch: API handler failed", "error", docs.LoggedError(err))
 }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading

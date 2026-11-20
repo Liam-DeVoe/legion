@@ -647,7 +647,7 @@ func skipUnreadableVersion(artifactID string, number int, err error) error {
 		return err
 	}
 	slog.Warn("dispatch: skip carrying an approval over a document version outside the Proof schema",
-		"room", artifactID, "version", number, "error", err)
+		"room", artifactID, "version", number, "error", LoggedError(err))
 	return nil
 }
 
