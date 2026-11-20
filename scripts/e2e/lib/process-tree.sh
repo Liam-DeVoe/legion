@@ -89,28 +89,23 @@ proc_parent() { proc_stat_field "$1" 4 ppid; }
 proc_group() { proc_stat_field "$1" 5 pgid; }
 # proc_start PID prints PID's start time, field 22 of /proc/PID/stat: clock ticks since boot, which
 # the kernel sets once, at the fork, and exec keeps, so a pid and its start name one process even
-# once the kernel has given the pid to another. It prints nothing for a process that is gone: a
-# zombie whose task directory lists no thread but its main one, which runs nothing any more and
-# holds nothing but its pid. A zombie main thread with another thread still listed is a process
-# still there (process_start, lib/wait-gone.sh, reads it the same way): a Go program's or Bun's
-# other threads keep its port, its descriptors and its memory until the last of them exits, and
-# freeze_if still signals it. A host with no /proc asks ps for the start as a date (lstart).
+# once the kernel has given the pid to another. It is process_start's reading of the host's /proc
+# (lib/wait-gone.sh, the one reader of a start, whichever /proc a test points the waits at): it
+# prints nothing for a process that is gone, a zombie whose task directory lists no thread but its
+# main one, which runs nothing any more and holds nothing but its pid, and for a stat that cannot be
+# read. A zombie main thread with another thread still listed is a process still there: a Go
+# program's or Bun's other threads keep its port, its descriptors and its memory until the last of
+# them exits, and freeze_if still signals it. A host with no /proc asks ps for the start as a date
+# (lstart).
 proc_start() {
-  local stat=
-  local -a fields tasks
+  local wait_gone_proc=/proc start=
   if [ ! -d /proc/self ]; then
     [ "$(proc_stat_field "$1" 3 state)" != Z ] || return 0
     proc_stat_field "$1" 22 lstart
     return 0
   fi
-  { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
-  [ -n "$stat" ] || return 0
-  read -r -a fields <<<"${stat##*) }"
-  if [ "${fields[0]}" = Z ]; then
-    tasks=("/proc/$1/task/"*)
-    [ "${#tasks[@]}" -gt 1 ] || return 0
-  fi
-  printf '%s\n' "${fields[19]}"
+  process_start "$1" start || return 0
+  printf '%s\n' "$start"
 }
 
 # proc_unreadable WHO WHAT prints "WHO: /proc has no self, so WHAT" and succeeds when this host's
@@ -222,7 +217,9 @@ record_pid_file() {
 # itself, since a child of PID, or any process that inherited the socket, keeps the port after PID
 # is gone. A pid with no recorded start is a caller's bug: it is named and not signalled. A pid
 # recorded `gone` (started_at), an empty PID and one signalable refuses are not signalled either;
-# the TARGETs are waited for all the same. Returns 0 once PID is gone and every TARGET free; 1 when
+# the TARGETs are waited for all the same, until DEADLINE, and one still held then is named as
+# waited for since the call by a stop that sent no signal (`… after its SIGKILL, sent to no process
+# (no target was one)`, stop_gone). Returns 0 once PID is gone and every TARGET free; 1 when
 # one is still there at DEADLINE, named on stderr. A caller whose next step needs PID gone fails
 # there; a teardown goes on (`stop_pid PID || true`, or a cleanup under `set +e`), since a failed
 # cleanup must never obscure the check that failed.
@@ -638,10 +635,13 @@ marked_processes() {
 # table, would meet it. It prints why and fails with 2 when the run's processes could not be read,
 # having signalled nothing, and fails with 2 after its signals when a process's tree below it could
 # not be read (proc_children); it fails with 1, naming each, when one it ended is still there 10 s
-# after its SIGKILL.
+# after its SIGKILL. It leaves the pid of each one still there then in the array stop_marked_left
+# (empty when none is), for its caller to name in its own terms (stop_box_login_run).
+stop_marked_left=()
 stop_marked_processes() {
   local dir=$1 grace=${2:-0} pairs pid start i entry status=0 found held=0 killed_at
   local -a sent=() alive=() below=() killed=()
+  stop_marked_left=()
   pairs=$(marked_processes "$dir") || {
     echo "stop_marked_processes: stopped no process of the run under $dir, since none could be named" >&2
     return 2
@@ -670,13 +670,19 @@ stop_marked_processes() {
     pairs=
     [ "${#alive[@]}" = 0 ] || pairs=$(printf '%s\n' "${alive[@]}")
   fi
+  # Each wait leaves what is still there at its deadline in wait_gone_left (lib/wait-gone.sh); a
+  # wait given no pid runs no read, so the array is emptied before each.
+  wait_gone_left=()
   kill_held "$dir" "${run_marks[@]}" <<<"$pairs" || held=$?
+  stop_marked_left=(${wait_gone_left[@]+"${wait_gone_left[@]}"})
   [ "$held" = 0 ] || [ "$status" = 2 ] || status=$held
   killed_at=${EPOCHREALTIME//[!0-9]/}
   for entry in ${below[@]+"${below[@]}"}; do
     ! freeze_if "${entry%% *}" "${entry#* }" KILL || killed+=("${entry%% *}")
   done
+  wait_gone_left=()
   killed_gone "$killed_at" ${killed[@]+"${killed[@]}"} || [ "$status" = 2 ] || status=1
+  stop_marked_left+=(${wait_gone_left[@]+"${wait_gone_left[@]}"})
   return "$status"
 }
 

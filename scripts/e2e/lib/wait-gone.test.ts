@@ -246,22 +246,58 @@ function freshDir(name: string) {
   return made;
 }
 
+// The lines of Stage 4b's script that stop or signal the daemon's pid, or clear it, other than
+// through stop_daemon_ports, each as `LINE: TEXT`. Every stop of the daemon goes through that one
+// function, which waits for the daemon's ports too: a stop of the pid alone leaves its ports to
+// whatever reads them next, the daemon's next start or the next run's ports_free on the fixed ports
+// 13372 and 13373. A read of the pid (`kill -0`, ss's `pid=`) stops nothing. A line that clears
+// daemon_pid follows that stop (on the line before it, or on its own), or is the declaration before
+// the daemon's first start: any other leaves cleanup's stop of the daemon nothing to stop.
+function daemonStopsElsewhere(script: string): string[] {
+  const signals =
+    /\b(?:stop_pid|stop_gone|kill_gone|killed_gone|kill_held|stop_tree|kill_frozen|freeze_if|signal_recorded|signal_group|kill(?! -0\b))\b[^;&|\n]*\$\{?daemon_pid\b/;
+  const clears = /(?:^|[;&|]\s*)daemon_pid=\s*(?:$|;)/;
+  const found: string[] = [];
+  let inside = false;
+  let started = false;
+  let previous = "";
+  script.split("\n").forEach((line, i) => {
+    const code = line.replace(/^\s*#.*$/, "").trim();
+    if (/^stop_daemon_ports\(\) \{/.test(code)) inside = true;
+    const signalled = !inside && signals.test(code);
+    const cleared =
+      started && clears.test(code) && !/\bstop_daemon_ports\b/.test(`${previous}\n${code}`);
+    if (signalled || cleared) found.push(`${i + 1}: ${code}`);
+    if (/\bdaemon_pid=\$!/.test(code)) started = true;
+    if (inside && code === "}") inside = false;
+    if (code) previous = code;
+  });
+  return found;
+}
+
 describe("wait_gone and kill_gone", () => {
-  test("a sleep given SIGTERM is gone at once: the wait returns within a read of its exit", () => {
-    // An observer reads the sleep's /proc entry in a loop of builtins alone, and writes the moment
-    // it reads it gone (no entry, or a zombie): its exit. wait_gone reads its targets every 100 ms,
-    // so it returns within one read of that moment; the bound gives the box's scheduling 900 ms more,
-    // where a wait that slept seconds between reads would return seconds late.
-    const r = bash(`gone=$(mktemp -u "$DIR/gone.XXXXXX")
-sleep 30 & s=$!; started+=("$s")
+  test("a process that leaves 0.3 s after its SIGTERM is waited for, and the wait returns within a read of its exit", () => {
+    // The stand-in ends 0.3 s after its SIGTERM, so it is still there at the wait's first read and
+    // the wait must read it again: a sleep that took SIGTERM at once was often gone at that first
+    // read, and a wait that slept seconds between reads then passed. An observer reads the
+    // stand-in's /proc entry in a loop of builtins alone, and writes the moment it reads it gone (no
+    // entry, or a zombie): its exit. wait_gone reads its targets every 100 ms, so it returns within
+    // one read of that moment; the bound gives the box's scheduling 900 ms more, where a wait that
+    // slept seconds between reads would return seconds late.
+    const r = bash(`gone=$(mktemp -u "$DIR/gone.XXXXXX") ready=$(mktemp -u "$DIR/ready.XXXXXX")
+bash -c 'trap "sleep 0.3; exit 0" TERM; : >"$1"; while :; do sleep 0.05; done' stand-in "$ready" & s=$!; started+=("$s")
+until [ -e "$ready" ]; do sleep 0.01; done
 ( while { read -r st <"/proc/$s/stat"; } 2>/dev/null && [[ \${st##*) } != Z* ]]; do :; done
   echo "$(now_ms)" >"$gone" ) &
+echo "sent_ms=$(now_ms)"
 kill_gone TERM "$END" "$s"; echo "rc=$?"
 echo "returned_ms=$(now_ms)"
 wait "$!"
 echo "gone_ms=$(<"$gone")"`);
     const v = values(r.stdout);
     expect(v.rc).toBe("0");
+    // It outlived its SIGTERM by its drain, so the wait read it at least twice.
+    expect(Number(v.gone_ms) - Number(v.sent_ms)).toBeGreaterThanOrEqual(250);
     expect(Number(v.returned_ms) - Number(v.gone_ms)).toBeLessThan(1000);
   });
 
@@ -318,6 +354,24 @@ start=$(now_ms)
 kill_gone TERM "$END" "-$g"; echo "rc=$?"
 echo "ms=$(($(now_ms) - start))"
 kill -0 -- "-$g" 2>/dev/null && echo still=yes`);
+    const v = values(r.stdout);
+    expect(v.rc).toBe("0");
+    expect(v.still).toBeUndefined();
+    expect(Number(v.ms)).toBeGreaterThanOrEqual(1500);
+  });
+
+  test("a process group whose leader leaves at once on SIGTERM while another member drains for 2 s is gone, every member, when the wait returns", () => {
+    // The member that leaves late is not the group's leader, as a service's child that keeps its
+    // port outlives the shell that started it: a wait that read the leader alone would return as
+    // the leader goes, with the group still holding that member and what it holds.
+    const r = bash(`ready=$(mktemp -u "$DIR/member.XXXXXX")
+setsid bash -c 'bash -c "trap \\"sleep 2; exit 0\\" TERM; : >\\"\\$1\\"; while :; do sleep 0.1; done" member "$1" & trap "exit 0" TERM; while :; do sleep 0.1; done' leader "$ready" & g=$!; started+=("$g")
+until [ "$(awk '{print $5}' "/proc/$g/stat" 2>/dev/null)" = "$g" ] && [ -e "$ready" ]; do sleep 0.05; done
+start=$(now_ms)
+kill_gone TERM "$END" "-$g"; echo "rc=$?"
+echo "ms=$(($(now_ms) - start))"
+kill -0 -- "-$g" 2>/dev/null && echo still=yes
+builtin kill -KILL -- "-$g" 2>/dev/null`);
     const v = values(r.stdout);
     expect(v.rc).toBe("0");
     expect(v.still).toBeUndefined();
@@ -588,7 +642,6 @@ echo "ended_ms=$(now_ms)"; echo "deadline=$deadline"; echo "pid=$h"`);
 // process writes, the process table, a lock).
 describe("each stop of the scripts, then the step that needs the process gone", () => {
   const stage4b = scriptFunctions(join(e2e, "stage4b-sandbox-tree.sh"));
-  const stage2 = scriptFunctions(join(e2e, "stage2-tmux-supervision.sh"));
   const verifiers = scriptFunctions(join(e2e, "verifiers-staging-token.sh"));
   const stage1 = scriptFunctions(join(e2e, "stage1-skeleton.sh"));
   const rig = `root=$ROOT work=$WORK evidence=$WORK timeout_hook=
@@ -627,8 +680,16 @@ listening "$h_port" && echo listening=yes`
     expect(v.rc).toBe("1");
     expect(Number(v.ended_ms)).toBeGreaterThanOrEqual(Number(v.deadline) * 1000);
     expect(v.listening).toBe("yes");
+    // It names the wait as one that sent no signal, and times it from the call, which it waited
+    // out to the deadline, not from the deadline itself.
     expect(r.stderr).toMatch(
-      new RegExp(`^port ${v.port} is still listened on \\(.*\\) at its deadline`, "m")
+      new RegExp(
+        `^port ${v.port} is still listened on \\(.*\\) at its deadline, [0-9]+\\.[0-9] s after its SIGKILL, sent to no process \\(no target was one\\)$`,
+        "m"
+      )
+    );
+    expect(Number(/at its deadline, ([0-9]+\.[0-9]) s after/.exec(r.stderr)?.[1])).toBeGreaterThan(
+      0
     );
   });
 
@@ -671,6 +732,33 @@ echo free=yes`,
       { WORK: work }
     );
     expect(r.stdout).toBe("free=yes\n");
+  });
+
+  test("port: every stop of Stage 4b's daemon goes through stop_daemon_ports, and no other line signals the daemon's pid or clears it", () => {
+    // restart_stop (restart_daemon's, and each check's own restart in the body of the script), the
+    // hygiene check's stop and cleanup's: daemonStopsElsewhere reads every line of the script, so
+    // a stop written inline at a call site is read as a function's is.
+    const script = readFileSync(join(e2e, "stage4b-sandbox-tree.sh"), "utf8");
+    expect(daemonStopsElsewhere(script)).toEqual([]);
+    // The search finds what it is there for: an inline restart that stops the pid alone, and a
+    // hygiene stop that signals it and then clears it.
+    const hygiene =
+      /^stop_daemon_ports \|\| fail "the daemon \(pid \$daemon_pid\) did not stop or its ports are still held \(named above\); the teardown would race it"$/m;
+    expect(script).toMatch(/^restart_stop$/m);
+    expect(script).toMatch(hygiene);
+    const planted = script
+      .replace(
+        /^restart_stop$/m,
+        'stop_pid "$daemon_pid" || fail "the daemon did not stop"; daemon_pid='
+      )
+      .replace(hygiene, 'kill -TERM "$daemon_pid"');
+    expect(daemonStopsElsewhere(planted)).toEqual([
+      expect.stringMatching(
+        /^[0-9]+: stop_pid "\$daemon_pid" \|\| fail "the daemon did not stop"; daemon_pid=$/
+      ),
+      expect.stringMatching(/^[0-9]+: kill -TERM "\$daemon_pid"$/),
+      expect.stringMatching(/^[0-9]+: daemon_pid=$/),
+    ]);
   });
 
   test("process table: lib/process-tree.sh's stop_pid, which Stage 2's cleanup runs, of a daemon that drains for a second on SIGTERM, then the next run's refuse_leftovers reads the table", () => {
@@ -767,28 +855,119 @@ echo "took_ms=$(cat "$D/took" 2>/dev/null)"`,
     expect(Number(v.took_ms)).toBeGreaterThanOrEqual(Number(v.gone_ms));
   });
 
-  test("lock: a pane SIGKILL has not ended is waited for to the deadline and named, never left holding the lock unsaid", () => {
+  test("lock: a pane SIGKILL has not ended is waited for to the deadline and named, and the run keeps its lock: a second run is refused while the pane runs", () => {
+    // The pane holds no copy of the run's descriptor, as a tmux pane holds none, and SIGKILL does
+    // not end it (drop_kill), so the sweep fails with it still there; a run that gave up its lock
+    // then would let a second run start beside the pane. Each trial is one run, a subshell: the
+    // second runs its transcript as the stages do (transcript_to after the lock, then the mark),
+    // whose tee holds none of the run's descriptors (lib/transcript.sh), so in both the run's own
+    // descriptor is what keeps the second run out.
+    const d = freshDir("lock-kept");
+    const r = bash(
+      `${boxLogin}
+. "$ROOT/scripts/e2e/lib/transcript.sh"
+for t in plain transcript; do
+  (
+    mkdir -p "$D/$t"
+    box_login_lock_file=$D/$t/lock
+    take_box_login_lock || exit 1
+    [ "$t" = plain ] || transcript_to "$D/$t/transcript.log"
+    export LEGION_E2E_RUN=$D/$t
+    eval "holder pane term=ignore $box_login_lock_fd>&-"
+    echo "$pane" >"$D/$t.pid"
+    proc_root=$(own_proc_root "$pane")
+    drop_kill "$pane"
+    start=$(now_ms)
+    stop_box_login_run "$D/$t" 2>"$D/$t.err"; echo "$?" >"$D/$t.rc"
+    echo "$(($(now_ms) - start))" >"$D/$t.ms"
+    if next_run_takes_lock "$D/$t/lock"; then echo took; else echo refused; fi >"$D/$t.next"
+    builtin kill -0 "$pane" 2>/dev/null && echo running >"$D/$t.pane"
+    builtin kill -KILL "$pane"
+  )
+  echo "\${t}_rc=$(<"$D/$t.rc")"; echo "\${t}_ms=$(<"$D/$t.ms")"; echo "\${t}_pid=$(<"$D/$t.pid")"
+  echo "\${t}_next=$(<"$D/$t.next")"; echo "\${t}_pane=$(cat "$D/$t.pane" 2>/dev/null)"
+done`,
+      { D: d }
+    );
+    const v = values(r.stdout);
+    for (const t of ["plain", "transcript"]) {
+      const said = readFileSync(join(d, `${t}.err`), "utf8");
+      expect([t, v[`${t}_rc`], v[`${t}_next`], v[`${t}_pane`]]).toEqual([
+        t,
+        "1",
+        "refused",
+        "running",
+      ]);
+      expect(Number(v[`${t}_ms`])).toBeGreaterThanOrEqual(10_000);
+      expect(said).toMatch(
+        new RegExp(`^${standIn(v[`${t}_pid`])} is still in the process table at its deadline`, "m")
+      );
+      // One line names what the run could not stop, and that it keeps the lock.
+      expect(said.split("\n").filter((line) => line.startsWith("stop_box_login_run:"))).toEqual([
+        expect.stringMatching(
+          new RegExp(
+            `^stop_box_login_run: the run keeps its lock ${d}/${t}/lock until this shell exits, since it could not stop ${standIn(v[`${t}_pid`])}$`
+          )
+        ),
+      ]);
+    }
+  });
+
+  test("lock: a process that inherited the run's descriptor and carries no mark of the run, so no sweep ends it, is waited for to the lock's deadline and named, never left holding the lock unsaid", () => {
+    // It is started with the run's mark emptied in its environment, as a process the run started
+    // before it marked itself is; the sweep reads it and finds no process of the run.
     const d = freshDir("lock-stays");
     const r = bash(
       `${boxLogin}
 run_as "$D/run"
 take_box_login_lock || exit 1
-holder pane term=ignore
-proc_root=$(own_proc_root "$pane")
-drop_kill "$pane"
+LEGION_E2E_RUN= holder stray term=ignore
+proc_root=$(own_proc_root "$stray")
 start=$(now_ms)
 stop_box_login_run "$D/run"; echo "rc=$?"
 echo "ms=$(($(now_ms) - start))"
-echo "pid=$pane"`,
+next_run_takes_lock "$D/run/lock" && echo next=took || echo next=refused`,
       { D: d }
     );
     const v = values(r.stdout);
-    expect(v.rc).toBe("1");
-    expect(Number(v.ms)).toBeGreaterThanOrEqual(10_000);
-    expect(r.stderr).toMatch(
-      new RegExp(`^${standIn(v.pid)} is still in the process table at its deadline`, "m")
-    );
+    expect([v.rc, v.next]).toEqual(["1", "refused"]);
+    // The lock's deadline is 10 s from the close in whole seconds ($((EPOCHSECONDS + 10))).
+    expect(Number(v.ms)).toBeGreaterThanOrEqual(9_000);
     expect(r.stderr).toContain(`lock ${d}/run/lock is still held at its deadline`);
+    expect(r.stderr).not.toContain("stop_box_login_run: the run keeps its lock");
+  });
+
+  test("lock: a run whose transcript runs, as every stage's does, gives up its lock at its teardown, and the next run takes it while the run's transcript still writes", () => {
+    // The stages take the lock, start the transcript (transcript_to, lib/transcript.sh) and then
+    // mark the run. The tee carries no mark and outlives every sweep by design, so it must hold no
+    // copy of the run's descriptor: one it held would keep the lock until the driver's last line,
+    // and the teardown's wait for the lock to be free would fail on every run, at its deadline.
+    const d = freshDir("lock-transcript");
+    const r = bash(
+      `${boxLogin}
+. "$ROOT/scripts/e2e/lib/transcript.sh"
+(
+  mkdir -p "$D/run"
+  box_login_lock_file=$D/run/lock
+  take_box_login_lock || exit 1
+  transcript_to "$D/run/transcript.log"
+  export LEGION_E2E_RUN=$D/run
+  holder pane term=default
+  proc_root=$(own_proc_root "$pane")
+  start=$(now_ms)
+  stop_box_login_run "$D/run" 2>"$D/err"; echo "$?" >"$D/rc"
+  echo "$(($(now_ms) - start))" >"$D/ms"
+  if next_run_takes_lock "$D/run/lock"; then echo took; else echo refused; fi >"$D/next"
+  echo "the run's last line"
+)
+for _ in $(seq 1 600); do grep -q "the run's last line" "$D/run/transcript.log" && break; sleep 0.05; done
+echo "rc=$(<"$D/rc")"; echo "ms=$(<"$D/ms")"; echo "next=$(<"$D/next")"
+grep -q "the run's last line" "$D/run/transcript.log" && echo transcript=kept`,
+      { D: d }
+    );
+    const v = values(r.stdout);
+    expect([v.rc, v.next, v.transcript]).toEqual(["0", "took", "kept"]);
+    expect(Number(v.ms)).toBeLessThan(10_000);
   });
 
   test("directory: the verifiers proof's cleanup of a Dispatch that drains into $work for 2 s, then the next run's rm -rf", () => {
@@ -831,6 +1010,40 @@ cleanup`,
       { WORK: work }
     );
     expect(r.stdout).toContain("serving\nshutdown-complete\n");
+  });
+
+  test("process table: the temporal evaluation's stop_dev_server of a server SIGKILL has not ended returns at its deadline, naming it, and never waits on it unbounded", () => {
+    // run.sh reaps the dev server, its shell's child, only once stop_gone has seen it gone: a bare
+    // `wait` on one still there would block past every bound, and the experiments after it with
+    // it. The stop runs in a subshell that the case waits on for 60 s, so a stop that blocks is
+    // read as hung rather than holding the case to its own timeout.
+    const temporal = scriptFunctions(
+      join(root, "docs", "research", "temporal-evaluation-2026-11", "run.sh")
+    );
+    const d = freshDir("temporal");
+    const r = bash(
+      `${temporal("stop_dev_server")}
+(
+  holder server_pid term=ignore
+  echo "$server_pid" >"$D/pid"
+  drop_kill "$server_pid"
+  start=$(now_ms)
+  stop_dev_server; echo "$?" >"$D/rc"
+  echo "$(($(now_ms) - start))" >"$D/ms"
+) 2>"$D/err" & runner=$!
+wait_gone "$((EPOCHSECONDS + 60))" "$runner" || echo hung=yes
+builtin kill -KILL "$runner" 2>/dev/null
+builtin kill -KILL "$(<"$D/pid")" 2>/dev/null
+echo "rc=$(cat "$D/rc" 2>/dev/null)"; echo "ms=$(cat "$D/ms" 2>/dev/null)"; echo "pid=$(<"$D/pid")"`,
+      { D: d }
+    );
+    const v = values(r.stdout);
+    expect([v.hung, v.rc]).toEqual([undefined, "1"]);
+    // stop_gone's deadline is 20 s from the call, in whole seconds.
+    expect(Number(v.ms)).toBeGreaterThanOrEqual(19_000);
+    expect(readFileSync(join(d, "err"), "utf8")).toMatch(
+      new RegExp(`^${standIn(v.pid)} is still in the process table at its deadline`, "m")
+    );
   });
 
   test("process table: Stage 3's sweep of a run's process with threads and memory, then its read of the table and the next run's", () => {

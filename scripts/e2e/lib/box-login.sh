@@ -65,20 +65,37 @@ box_login_stop_grace=10
 # no mark of the run would keep from the next run unseen. A tmux pane holds no copy of the
 # descriptor (the tmux server does, and the sweep ends it), so the lock alone could not tell that
 # the panes were gone: the order is what keeps the next run out. A second run that takes the lock in
-# the moment between the close and that read is read as a holder still there and named. Returns
-# stop_marked_processes's status when it is not 0 (2 when the run's processes could not be read, 1
-# when one is still there, each named), else 1 when the lock is still held at its deadline (named),
-# else 0.
+# the moment between the close and that read is read as a holder still there and named.
+#
+# A sweep that fails, with a process of the run still there at its deadline or the run's processes
+# not all read, gives up nothing: the run keeps its descriptor, so a second box-login run is refused
+# naming this shell for as long as it lives, and it prints one line naming each process it could not
+# stop (stop_marked_left) and returns the sweep's status. A pane still there holds no copy of the
+# descriptor, so a close then would let a second run start beside it.
+#
+# Returns stop_marked_processes's status when it is not 0 (2 when the run's processes could not be
+# read, 1 when one is still there, each named), else 1 when the lock is still held at its deadline
+# (named), else 0.
 stop_box_login_run() {
-  local status=0 closed
+  local status=0 closed pid command kept='' why=''
   stop_marked_processes "$1" "$box_login_stop_grace" || status=$?
   [ -n "${box_login_lock_fd:-}" ] || return "$status"
+  if [ "$status" != 0 ]; then
+    for pid in ${stop_marked_left[@]+"${stop_marked_left[@]}"}; do
+      command=$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline") || command=
+      kept+="${kept:+, }pid $pid (${command% })"
+    done
+    [ -z "$kept" ] || why="it could not stop $kept"
+    [ "$status" != 2 ] || why+="${why:+, and }it could not read every process of the run (named above)"
+    echo "stop_box_login_run: the run keeps its lock $box_login_lock_file until this shell exits, since ${why:-a process of the run is still there (named above)}" >&2
+    return "$status"
+  fi
   exec {box_login_lock_fd}>&-
   box_login_lock_fd=
   closed=${EPOCHREALTIME//[!0-9]/}
   if ! wait_gone "$((EPOCHSECONDS + 10))" "lock:$box_login_lock_file"; then
     wait_gone_name "close of the run's own descriptor" "$closed"
-    [ "$status" != 0 ] || status=1
+    status=1
   fi
   return "$status"
 }

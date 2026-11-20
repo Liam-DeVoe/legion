@@ -248,6 +248,9 @@ interface FakeProc {
   // The pids its main thread's task/<pid>/children lists, as a Linux /proc lists a process's
   // children; a process with none of this field has no children file, as a sandbox's procfs may.
   children?: number[];
+  // The pids each of its other threads' task/<tid>/children lists: a child is listed under the
+  // thread that forked it, and a Go role-init forks from whichever thread runs the call.
+  threads?: Record<number, number[]>;
 }
 function fakeProc(name: string, procs: FakeProc[]): string {
   const root = join(dir, `proc-${name}`);
@@ -257,12 +260,11 @@ function fakeProc(name: string, procs: FakeProc[]): string {
     writeFileSync(join(d, "cmdline"), `${p.argv.join("\0")}\0`);
     writeFileSync(join(d, "status"), `Name:\t${p.argv[0]}\nPid:\t${p.pid}\nPPid:\t${p.ppid}\n`);
     writeFileSync(join(d, "stat"), `${p.pid} (${p.argv[0]}) S ${p.ppid} ${p.pgrp ?? p.pid} 0\n`);
-    if (p.children) {
-      mkdirSync(join(d, "task", String(p.pid)), { recursive: true });
-      writeFileSync(
-        join(d, "task", String(p.pid), "children"),
-        p.children.map((c) => `${c} `).join("")
-      );
+    const lists: [string, number[]][] = Object.entries(p.threads ?? {});
+    if (p.children) lists.unshift([String(p.pid), p.children]);
+    for (const [tid, children] of lists) {
+      mkdirSync(join(d, "task", tid), { recursive: true });
+      writeFileSync(join(d, "task", tid, "children"), children.map((c) => `${c} `).join(""));
     }
   }
   return root;
@@ -579,6 +581,22 @@ describe("role_kill_sh reads the proc root it is given", () => {
       },
       { pid: 7, ppid: 5, argv: ["legion", "worker-shim"] },
       { pid: 17, ppid: 5, argv: ["legion", "worker-shim"] },
+    ]);
+    const run = runSnippet(def, 'sh -c "$role_kill_sh" role-kill 5', root);
+    expect(run).toEqual({ out: "kill -s KILL -- -7", err: "", code: 0 });
+  });
+
+  test("a worker-shim the role-init forked from a thread other than its main one is its child: every thread's children file is read", () => {
+    // The main thread's file lists nothing; thread 8's lists the shim it forked.
+    const root = fakeProc("kill-thread-child", [
+      {
+        pid: 5,
+        ppid: 1,
+        argv: ["legion", "launcher", "role-init", "--role", "planner"],
+        children: [],
+        threads: { 8: [7] },
+      },
+      { pid: 7, ppid: 5, argv: ["legion", "worker-shim"] },
     ]);
     const run = runSnippet(def, 'sh -c "$role_kill_sh" role-kill 5', root);
     expect(run).toEqual({ out: "kill -s KILL -- -7", err: "", code: 0 });

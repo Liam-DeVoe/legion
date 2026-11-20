@@ -152,7 +152,9 @@ _wait_gone_deadline() {
 # records a pid with its start time can tell later whether the pid still names that process. The
 # command name, field 2, is parenthesised and may hold spaces, a `) ` or a newline, since a process
 # names itself, so the stat is read whole (to its end, not its first line) and cut after its last
-# `) `; the fields after it hold none of those.
+# `) `; the fields after it hold none of those. It is the one reader of a start and of this rule:
+# lib/process-tree.sh's proc_start and lib/leftovers.sh's leftover_started read through it, each
+# with wait_gone_proc set to the host's /proc for its own call.
 process_start() {
   local _wgr_stat=
   local -a _wgr_tasks
@@ -189,7 +191,9 @@ _wait_gone_kill() {
 
 # _wait_gone_send SIGNAL TARGET... sends SIGNAL with wait_gone_signal to each TARGET that is a pid or
 # a process group, the one rule kill_gone and stop_gone share: a port or a lock is waited for, never
-# signalled, and an empty TARGET is skipped. It sends nothing when no TARGET is a process.
+# signalled, and an empty TARGET is skipped. It sends nothing when no TARGET is a process. It sets
+# wait_gone_sent to SIG<SIGNAL> when it sent one, and to `SIG<SIGNAL>, sent to no process (no target
+# was one)` when it sent none, the words wait_gone_name names the time since the call with.
 _wait_gone_send() {
   local _wgs_signal=$1 _wgs_target
   shift
@@ -200,26 +204,30 @@ _wait_gone_send() {
       *) _wgs_processes+=("$_wgs_target") ;;
     esac
   done
-  [ "${#_wgs_processes[@]}" = 0 ] || "$wait_gone_signal" "$_wgs_signal" "${_wgs_processes[@]}"
+  wait_gone_sent="SIG$_wgs_signal, sent to no process (no target was one)"
+  [ "${#_wgs_processes[@]}" -gt 0 ] || return 0
+  wait_gone_sent=SIG$_wgs_signal
+  "$wait_gone_signal" "$_wgs_signal" "${_wgs_processes[@]}"
 }
 
 # kill_gone SIGNAL DEADLINE TARGET... sends SIGNAL to every TARGET that is a pid or a process group
 # (_wait_gone_send), waits until DEADLINE for every TARGET to be gone (wait_gone), the ports and
 # locks among them free, and returns 0 once they are. Each one still there at DEADLINE is named on
 # stderr with its command line (or what holds the port), the deadline and the time since the signal
-# (wait_gone_name), and it returns 1; 2 for a DEADLINE wait_gone refuses. A caller whose next step
-# needs the targets gone fails when it returns 1; a cleanup that goes on whatever it finds adds
-# `|| true` and says why.
+# (wait_gone_name), which says so when no TARGET was a process and so no signal went; and it
+# returns 1; 2 for a DEADLINE wait_gone refuses. A caller whose next step needs the targets gone
+# fails when it returns 1; a cleanup that goes on whatever it finds adds `|| true` and says why.
 kill_gone() {
-  local _kg_signal=$1 _kg_deadline=$2 _kg_deadline_us _kg_sent _kg_status
+  local _kg_signal=$1 _kg_deadline=$2 _kg_deadline_us _kg_sent _kg_status _kg_what
   shift 2
   _wait_gone_deadline kill_gone "$_kg_deadline" _kg_deadline_us || return 2
   _kg_sent=${EPOCHREALTIME//[!0-9]/}
   _wait_gone_send "$_kg_signal" "$@"
+  _kg_what=$wait_gone_sent
   wait_gone "$_kg_deadline" "$@" && return 0
   _kg_status=$?
   [ "$_kg_status" = 1 ] || return "$_kg_status"
-  wait_gone_name "SIG$_kg_signal" "$_kg_sent"
+  wait_gone_name "$_kg_what" "$_kg_sent"
   return 1
 }
 
@@ -229,6 +237,8 @@ kill_gone() {
 # free); then SIGKILL to the processes still there and a wait for every TARGET until DEADLINE
 # (kill_gone), so the two waits share the caller's one bound. A process in the middle of a write (a
 # pane's token refresh, a server's drain) gets the whole grace to finish before anything is killed.
+# With no TARGET a process (lib/process-tree.sh's stop_pid of an empty PID with its ports), it
+# signals nothing and waits for the ports and locks until DEADLINE, as kill_gone names such a wait.
 # Returns 0 once every TARGET is gone, 0 too when none is given; 1 when one is still there at
 # DEADLINE, named on stderr as kill_gone names it; 2 for a DEADLINE wait_gone refuses.
 stop_gone() {
@@ -238,6 +248,10 @@ stop_gone() {
   _sg_term_end=$((${EPOCHREALTIME//[!0-9]/} + _sg_grace * 1000000))
   [ "$_sg_term_end" -le "$_sg_deadline_us" ] || _sg_term_end=$_sg_deadline_us
   _wait_gone_send TERM "$@"
+  if [ "$wait_gone_sent" != SIGTERM ]; then
+    kill_gone KILL "$_sg_deadline" "$@"
+    return
+  fi
   wait_gone "${_sg_term_end:0:-6}.${_sg_term_end: -6}" "$@" && return 0
   kill_gone KILL "$_sg_deadline" "${wait_gone_left[@]}"
 }

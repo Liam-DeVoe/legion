@@ -6214,13 +6214,14 @@ Sourced, never run; Stage 2 and Stage 3 source it first.
 . "$root/scripts/e2e/lib/box-login.sh"
 take_box_login_lock || { echo "FAIL setup: another box-login proof is running on this box (the holder is named above)" >&2; exit 1; }
 …
-stop_marked_processes "$work" "$box_login_stop_grace"   # in the teardown (lib/process-tree.sh)
+stop_box_login_run "$work"   # in the teardown, once the run's services are stopped
 unlink_box_login_db "$profile_agent"
 ```
 
 `take_box_login_lock` takes a non-blocking `flock` on one fixed file per operator uid, `/tmp/legion-e2e-box-login.<uid>.lock` (`box_login_lock_file`), whatever `XDG_RUNTIME_DIR` or `TMPDIR` says, so every box-login run of that operator meets the same lock.
 The stages take it before they make a work or evidence directory.
-The lock stays on a file descriptor of the calling shell for its whole life, and of every process it starts that keeps the descriptor, so a pane a run leaves behind still holds it.
+The lock stays on a file descriptor of the calling shell for its whole life, and of every process it starts that keeps the descriptor, so a daemon or tmux server a run leaves behind still holds it.
+The run's transcript `tee`, which outlives every sweep by design, keeps none of the shell's descriptors ([`lib/transcript.sh`](#libtranscriptsh)).
 A taken lock fails at once, naming the holder the file records:
 `another box-login proof holds <file>: pid <pid> (<command>); one box-login proof runs at a time`, or that the pid has exited and a process it started still holds the lock.
 Every pane of a box-login run shares the operator's login database; one run at a time keeps the load on that login bounded and each run's evidence its own.
@@ -6228,6 +6229,8 @@ Every pane of a box-login run shares the operator's login database; one run at a
 `stop_box_login_run DIR` is a box-login run's teardown of its processes: [`stop_marked_processes`](#libprocess-treesh) `DIR` with `box_login_stop_grace` (10), SIGTERM to each of the run's marked processes and up to that many seconds for them to go before any SIGKILL, then a wait until each is gone, so a pane in the middle of a token refresh can write the rotated token back before it goes.
 Only once every one is gone does it close the run's own lock descriptor (`take_box_login_lock` left it open), so a second box-login run is refused until the first run's last process has gone: a tmux pane holds no copy of the descriptor, so the lock alone cannot tell that the panes are gone.
 It then waits up to 10 s for the lock itself to be free (`lock:FILE`, [`lib/wait-gone.sh`](#libwait-gonesh)), which a process that inherited the descriptor and carries no mark of the run would keep from the next run, and returns 1 naming what is still there.
+A sweep that fails, with a process of the run still there at its deadline or the run's processes not all read, gives up nothing: the run keeps its descriptor, so a second box-login run is refused naming the run's shell for as long as it lives, and `stop_box_login_run` prints one line naming each process it could not stop and returns the sweep's status:
+`stop_box_login_run: the run keeps its lock <file> until this shell exits, since it could not stop pid <pid> (<command>), …`.
 `unlink_box_login_db
 AGENT_DIR` removes `AGENT_DIR/agent.db` when it is a symlink, the link itself and never what it names;
 the stages call it once the run's processes are gone, since a process that opened the database again after the link went would make a fresh database of its own in the profile.
@@ -6337,6 +6340,9 @@ the `tee` opens `FILE` in a process of its own, whose failure no caller sees, so
 
 - The `tee` must outlive the run's sweeps, which end every process that carries the run's mark ([`marked_processes`](#libprocess-treesh)).
   A caller marks its run (`export LEGION_E2E_RUN=$work`) after `transcript_to`, so the `tee`, which takes the caller's environment as it stands at the call, carries no mark, whatever `FILE` and the caller's working directory are.
+
+- The `tee` keeps none of the caller's descriptors but its stdin, stdout and stderr: it closes every other one it inherited before it execs `tee`, which opens `FILE` itself.
+  A box-login run's lock ([`lib/box-login.sh`](#libbox-loginsh)), which the stages take before `transcript_to`, stays held while any process keeps its descriptor, so a `tee` that kept it would hold the lock until the driver's last line, and the run's own wait for the lock to be free would always fail.
 
 `lib/transcript.test.ts` (`bun test scripts/e2e/lib`) sources the helper under `set -euo pipefail` and runs two lines after it, one on standard output and one on standard error:
 a file it can open takes both, which still reach the reader, and a file whose directory does not exist, or a directory in its place, ends the run before its line on standard output, naming the file.
@@ -6579,6 +6585,7 @@ A walk or a read that cannot see the processes it reads says why and fails with 
   `marked_processes` refuses an empty DIR and a run that has not marked itself.
   `stop_marked_processes` stops each through `freeze_if`, so a pid that passed to another process since gets no signal, and then ends it with everything under it (`kill_frozen`), so a child that cleared its environment goes with it; with GRACE it gives each SIGTERM and GRACE seconds first, and what each had started, its children read while it was stopped for the TERM and theirs under running parents, each parent held to its start (`proc_descendants`), is ended by its own start time if it outlives the process that started it.
   Then it waits until 10 s after its SIGKILLs for every process it ended to be gone ([`lib/wait-gone.sh`](#libwait-gonesh)), since a process SIGKILL has not finished ending still holds its port, its descriptors and its working directory, and the next run's `refuse_leftovers` or the checkpoint's own read of the table would meet it; it fails with 1, naming each, when one is still there then, and with 2 when the run's processes or a tree below one could not be read.
+  It leaves the pid of each one still there then in the array `stop_marked_left`, which [`stop_box_login_run`](#libbox-loginsh) names in the one line it prints when it keeps its lock.
   Every stage proof's sweep is this one, and a start that clears its environment (`env -i`) names `LEGION_E2E_RUN` itself.
   A fork of the driver that execs nothing, a background subshell or function such as a `pane_watcher`, carries the driver's environment from the driver's own exec, without the mark, so no sweep sees it: each is stopped by the pid it had when it started (the list is in `run_marks`'s comment)
 
