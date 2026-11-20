@@ -1,8 +1,9 @@
 // Package projectaccess is the broker's one client of Dispatch's project-access routes: whether a
-// project is private, whether a person may see it, and what kind of member a person is. Dispatch
-// decides all three — the owner, the access list, a group's members, the full and restricted
-// members — and the broker asks rather than keeps a copy, so a decision here is the one Dispatch
-// would make for that person's own read.
+// project is private, whether a person may see it, what kind of member a person is, and which
+// projects are private with the Slack channels each one's owner named. Dispatch decides all of it
+// — the owner, the access list, a group's members, the full and restricted members — and the
+// broker asks rather than keeps a copy, so a decision here is the one Dispatch would make for that
+// person's own read.
 //
 // Every answer is plain data. The rule every caller of this package keeps is that no answer is
 // asked for inside a database transaction, inside policy.Set.Evaluate, or while a row lock or an
@@ -10,13 +11,14 @@
 // Dispatch that is slow to answer holds no lock and no pooled connection of the broker's. The
 // token exchange asks before it opens its transaction (internal/cipher/oauth, exchangeGrant).
 //
-// Answers are cached CacheTTL per project and person and per person, aged from before each
-// question was sent, which bounds how long a person removed from a project's access list goes on
-// passing a check here; Visible and States ask again for an answer that aged past it while a list
-// was read, a caller holding answers across further reads ages them again where it decides
-// (Stale), a question asked under Fresh skips the cache, and a slower answer never replaces one to
-// a question asked later. A failure to reach Dispatch is never cached and is never an answer: each
-// caller decides what an outage means for its own check.
+// Answers are cached CacheTTL per project and person, per person, and for the list of private
+// projects, aged from before each question was sent, which bounds how long a person removed from a
+// project's access list goes on passing a check here; Visible and States ask again for an answer
+// that aged past it while a list was read, a caller holding answers across further reads ages them
+// again where it decides (Stale), a question asked under Fresh skips the cache, PrivateProjectsFresh
+// never reads or writes it, and a slower answer never replaces one to a question asked later. A
+// failure to reach Dispatch is never cached and is never an answer: each caller decides what an
+// outage means for its own check.
 package projectaccess
 
 import (
@@ -30,6 +32,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -55,19 +58,27 @@ const CacheTTL = 30 * time.Second
 // requestTimeout bounds one call to Dispatch, the dial included.
 const requestTimeout = 10 * time.Second
 
-// maxAnswerBytes caps the answer read from Dispatch. An answer is a handful of short fields and a
-// list of repositories, so anything larger is not Dispatch's and is refused rather than held.
+// maxAnswerBytes caps the answer read from Dispatch about one project or one person. Such an
+// answer is a handful of short fields and a list of repositories, so anything larger is not
+// Dispatch's and is refused rather than held.
 const maxAnswerBytes = 64 << 10
+
+// maxPrivateProjectsBytes caps the answer read of every private project at once
+// (PrivateProjects). An entry is a key, at most 16 channel ids and a time, a few hundred bytes, so
+// 1 MiB holds thousands of private projects; a larger answer is refused as any oversized one is,
+// and every caller treats it as a list it could not read, never a shorter one.
+const maxPrivateProjectsBytes = 1 << 20
 
 // maxCached bounds how many answers are kept at once, so a caller naming project keys at random
 // cannot grow the cache without bound. An answer that does not fit is not kept, which costs that
 // question a call to Dispatch and nothing else.
 const maxCached = 4096
 
-// The paths of Dispatch's two routes.
+// The paths of Dispatch's three routes.
 const (
-	projectPath = "/api/v1/access/projects/"
-	personPath  = "/api/v1/access/person"
+	projectPath         = "/api/v1/access/projects/"
+	personPath          = "/api/v1/access/person"
+	privateProjectsPath = "/api/v1/access/private-projects"
 	// projectNotFoundCode is the code Dispatch's project route answers a project it does not
 	// hold with, beside its 404; a 404 with any other code is no answer about a project.
 	projectNotFoundCode = "PROJECT_NOT_FOUND"
@@ -194,6 +205,38 @@ type Access interface {
 	States(ctx context.Context, projects []string) (map[string]Answer, error)
 }
 
+// PrivateProject is one entry of Dispatch's list of every private project: the project's key, the
+// Slack channel ids its owner named, and when that list last changed.
+type PrivateProject struct {
+	// Key is the project's key.
+	Key string
+	// SlackChannels are the channel ids the project's owner named, sorted, empty for a project
+	// naming none.
+	SlackChannels []string
+	// SlackChannelsPresent is whether the entry carried slack_channels at all. PrivateProjects
+	// keeps an entry that carries none, false here, so its caller can name the project whose
+	// channels it could not read and fail closed on it; PrivateProjectsFresh refuses the whole
+	// answer instead, so every entry it answers has it true.
+	SlackChannelsPresent bool
+	// SlackChannelsChangedAt is when Dispatch last changed SlackChannels, a change of the list or
+	// the project's switch to private, and zero while Dispatch answers null for a list never
+	// changed.
+	SlackChannelsChangedAt time.Time
+}
+
+// PrivateLister is the broker's read of every private project at once, and whether any answer
+// this process read called a project private. It sits beside Access rather than in it, so Access
+// and every fake of it are unchanged; *Client answers both.
+type PrivateLister interface {
+	// PrivateProjects is every private project, from the cache while it is younger than CacheTTL.
+	PrivateProjects(ctx context.Context) ([]PrivateProject, error)
+	// PrivateProjectsFresh is every private project as Dispatch answers now: it neither reads nor
+	// writes the cache, and keeps no last good answer to fall back on.
+	PrivateProjectsFresh(ctx context.Context) ([]PrivateProject, error)
+	// SawPrivate reports whether any answer this process read called a project private.
+	SawPrivate() bool
+}
+
 // Client asks Dispatch's routes at one base URL, presenting the broker's own account token.
 type Client struct {
 	base    string
@@ -204,6 +247,12 @@ type Client struct {
 	mu      sync.Mutex
 	answers map[accessKey]cachedAnswer
 	kinds   map[string]cachedKind
+	// private is the last list of private projects PrivateProjects kept, nil before the first.
+	private *cachedPrivate
+
+	// sawPrivate is SawPrivate's answer: set once, by the first answer that calls a project
+	// private, and never cleared.
+	sawPrivate atomic.Bool
 }
 
 type accessKey struct{ project, person string }
@@ -217,6 +266,11 @@ type cachedAnswer struct {
 type cachedKind struct {
 	kind string
 	at   time.Time
+}
+
+type cachedPrivate struct {
+	projects []PrivateProject
+	at       time.Time
 }
 
 // New is a client of Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
@@ -282,7 +336,7 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 		Answer
 		SlackChannels *[]string `json:"slack_channels"`
 	}
-	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, &wire)
+	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, maxAnswerBytes, &wire)
 	switch {
 	case err != nil:
 		return Answer{}, err
@@ -295,6 +349,9 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	// read it as public, which is what a missing field would otherwise decode to beside Private.
 	if !answer.Public() && !answer.Private() {
 		return Answer{}, fmt.Errorf("%w: %q for %s", ErrUnknownVisibility, answer.Visibility, project)
+	}
+	if answer.Private() {
+		c.sawPrivate.Store(true)
 	}
 	if wire.SlackChannels != nil {
 		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
@@ -322,7 +379,7 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	var answer struct {
 		MemberKind string `json:"member_kind"`
 	}
-	status, err := c.get(ctx, personPath, url.Values{"person": {person}}, &answer)
+	status, err := c.get(ctx, personPath, url.Values{"person": {person}}, maxAnswerBytes, &answer)
 	if err != nil {
 		return "", err
 	}
@@ -382,6 +439,110 @@ func (c *Client) States(ctx context.Context, projects []string) (map[string]Answ
 	return states, nil
 }
 
+// PrivateProjects is every private project Dispatch holds, with the Slack channels each one's
+// owner named, from the cache while the list it kept is younger than CacheTTL, aged from before
+// its question was sent. It never answers a short list: a 401 or a 403 is ErrBrokerRefused, and
+// any other status but 200, a 404 of any code included, an answer it cannot decode, one with no
+// projects key, a null projects, a projects that is not an array and an entry with no key are each
+// an error, never kept and never an empty list, so every caller treats them as a list it could
+// not read. Only "projects": [] is the empty list. An entry with no slack_channels key is kept,
+// SlackChannelsPresent false, for the caller to fail closed on by name.
+func (c *Client) PrivateProjects(ctx context.Context) ([]PrivateProject, error) {
+	c.mu.Lock()
+	held := c.private
+	c.mu.Unlock()
+	if held != nil && c.now().Sub(held.at) < CacheTTL {
+		return held.projects, nil
+	}
+	asked := c.now()
+	projects, err := c.readPrivateProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.private == nil || c.private.at.Before(asked) {
+		c.private = &cachedPrivate{projects: projects, at: asked}
+	}
+	c.mu.Unlock()
+	return projects, nil
+}
+
+// PrivateProjectsFresh is every private project as Dispatch answers it now: the request and the
+// failure rules of PrivateProjects, and one more, an entry with no slack_channels key, which
+// refuses the whole answer. It neither reads nor writes PrivateProjects' cache and keeps no last
+// good answer to fall back on, so each call asks Dispatch once and a failed call is an error,
+// never an older list. It is for a reader that must see a project the moment it turns private,
+// which an answer up to CacheTTL old could miss.
+func (c *Client) PrivateProjectsFresh(ctx context.Context) ([]PrivateProject, error) {
+	projects, err := c.readPrivateProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, project := range projects {
+		if !project.SlackChannelsPresent {
+			return nil, fmt.Errorf("projectaccess: dispatch's answer to %s lists %s with no slack_channels", privateProjectsPath, project.Key)
+		}
+	}
+	return projects, nil
+}
+
+// SawPrivate reports whether any answer this process read from Dispatch called a project
+// private: an Access answer whose visibility is private, or a PrivateProjects or
+// PrivateProjectsFresh answer that lists one. It is never cleared, and a restart starts it false.
+func (c *Client) SawPrivate() bool { return c.sawPrivate.Load() }
+
+// readPrivateProjects asks Dispatch's private-projects route once. The answer is decoded with
+// projects held raw, and refused unless that value opens a JSON array before the array itself is
+// decoded: a missing key and a null would otherwise decode to the same nil a [] does, and a list
+// read short is the one answer no caller can tell from the truth.
+func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, error) {
+	var wire struct {
+		Projects json.RawMessage `json:"projects"`
+	}
+	status, err := c.get(ctx, privateProjectsPath, nil, maxPrivateProjectsBytes, &wire)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		// get answers a 404 carrying PROJECT_NOT_FOUND as a status, the project route's answer
+		// about one project; this route names no project, so that 404 is no list either.
+		return nil, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q, which is no list of private projects", privateProjectsPath, status, projectNotFoundCode)
+	}
+	raw := bytes.TrimSpace(wire.Projects)
+	switch {
+	case len(raw) == 0:
+		return nil, fmt.Errorf("projectaccess: dispatch's answer to %s carries no projects key", privateProjectsPath)
+	case raw[0] != '[':
+		return nil, fmt.Errorf("projectaccess: dispatch's answer to %s carries projects %.64s, which is not a list", privateProjectsPath, raw)
+	}
+	var entries []struct {
+		Project                string     `json:"project"`
+		SlackChannels          *[]string  `json:"slack_channels"`
+		SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", privateProjectsPath, err)
+	}
+	projects := make([]PrivateProject, 0, len(entries))
+	for i, entry := range entries {
+		if entry.Project == "" {
+			return nil, fmt.Errorf("projectaccess: dispatch's answer to %s lists an entry with no project key, at %d", privateProjectsPath, i)
+		}
+		project := PrivateProject{Key: entry.Project}
+		if entry.SlackChannels != nil {
+			project.SlackChannels, project.SlackChannelsPresent = *entry.SlackChannels, true
+		}
+		if entry.SlackChannelsChangedAt != nil {
+			project.SlackChannelsChangedAt = *entry.SlackChannelsChangedAt
+		}
+		projects = append(projects, project)
+	}
+	if len(projects) > 0 {
+		c.sawPrivate.Store(true)
+	}
+	return projects, nil
+}
+
 func (c *Client) cachedAnswer(key accessKey) (cachedAnswer, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -423,18 +584,18 @@ func (c *Client) sweepLocked() {
 	}
 }
 
-// get asks one route and decodes a 200 into into. An account token it cannot read is
-// ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE, asked nothing: the broker's own
-// credential is broken, not Dispatch. A 401 or a 403 is ErrBrokerRefused too, Dispatch refusing
-// that token, decided by the status alone before any of the body is read: a body cut short or
-// past the bound only leaves the error without the code it names, and never turns the refusal
-// into a failure to ask, which a caller mints through. A 404 is an answer, returned as its status
-// with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's project route
-// answers a project it does not hold with; any other 404 (a Dispatch that does not serve the
-// route, a wrong path behind an ingress) is a failure naming its code. Every other status, a
-// transport failure and a body it could not read or decode are errors naming what failed and
-// never the token.
-func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
+// get asks one route and decodes a 200 into into, reading at most limit bytes of the answer. An
+// account token it cannot read is ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE, asked
+// nothing: the broker's own credential is broken, not Dispatch. A 401 or a 403 is ErrBrokerRefused
+// too, Dispatch refusing that token, decided by the status alone before any of the body is read: a
+// body cut short or past the bound only leaves the error without the code it names, and never
+// turns the refusal into a failure to ask, which a caller mints through. A 404 is an answer,
+// returned as its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code
+// Dispatch's project route answers a project it does not hold with; any other 404 (a Dispatch
+// that does not serve the route, a wrong path behind an ingress) is a failure naming its code.
+// Every other status, a transport failure and a body it could not read or decode are errors naming
+// what failed and never the token.
+func (c *Client) get(ctx context.Context, path string, query url.Values, limit int64, into any) (int, error) {
 	bearer, err := c.account.Read()
 	if err != nil {
 		return 0, fmt.Errorf("%w: BROKER_PROJECT_ACCESS_TOKEN_FILE could not be read: %w", ErrBrokerRefused, err)
@@ -459,12 +620,12 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusalCode(response.Body))
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxAnswerBytes+1))
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
 		return 0, fmt.Errorf("projectaccess: read dispatch's answer: %w", err)
 	}
-	if len(body) > maxAnswerBytes {
-		return 0, fmt.Errorf("projectaccess: dispatch's answer to %s is over %d bytes", path, maxAnswerBytes)
+	if int64(len(body)) > limit {
+		return 0, fmt.Errorf("projectaccess: dispatch's answer to %s is over %d bytes", path, limit)
 	}
 	switch response.StatusCode {
 	case http.StatusOK:

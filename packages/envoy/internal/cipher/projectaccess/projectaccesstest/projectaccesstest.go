@@ -1,9 +1,10 @@
-// Package projectaccesstest is a stand-in for Dispatch's two project-access routes, the ones the
-// broker's projectaccess client asks: whether a person may see a project, and what kind of member
-// a person is. It answers from rows a test gives it, holds every caller to the one bearer it
-// mints, counts the calls it answers, and can be made to fail, so a test can show what the broker
-// does when Dispatch cannot be reached. It is an ordinary package rather than a _test.go file so
-// every broker package's tests, and the real binary's, can serve it.
+// Package projectaccesstest is a stand-in for Dispatch's three project-access routes, the ones
+// the broker's projectaccess client asks: whether a person may see a project, what kind of member
+// a person is, and every private project with its Slack channels. It answers from rows a test
+// gives it, holds every caller to the one bearer it mints, counts the calls it answers, and can be
+// made to fail, so a test can show what the broker does when Dispatch cannot be reached. It is an
+// ordinary package rather than a _test.go file so every broker package's tests, and the real
+// binary's, can serve it.
 //
 // It spells the wire on its own, field by field, rather than encoding the client's own type: a
 // client that read a field under a name Dispatch does not send would then disagree with this
@@ -20,12 +21,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
-// The paths of Dispatch's two project-access routes, as projectaccess asks them.
+// The paths of Dispatch's three project-access routes, as projectaccess asks them.
 const (
-	projectPath = "/api/v1/access/projects/"
-	personPath  = "/api/v1/access/person"
+	projectPath         = "/api/v1/access/projects/"
+	personPath          = "/api/v1/access/person"
+	privateProjectsPath = "/api/v1/access/private-projects"
 )
 
 // Row is one project as Dispatch holds it: whether it is public or private, its owner, the
@@ -47,6 +50,10 @@ type Row struct {
 	// OmitSlackChannels makes this project's answer carry no slack_channels key, the shape a
 	// Dispatch from before #t-a-31 answers.
 	OmitSlackChannels bool
+	// SlackChannelsChangedAt is when the owner last changed SlackChannels, or the project turned
+	// private, as Dispatch answers it in slack_channels_changed_at; zero answers null, a list
+	// never changed.
+	SlackChannelsChangedAt time.Time
 }
 
 // Server is the stand-in: URL is its base, Token the one bearer it takes, and Account that bearer
@@ -150,6 +157,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"person": person, "member_kind": s.kind(person)})
+	case r.URL.Path == privateProjectsPath:
+		writeJSON(w, http.StatusOK, map[string]any{"projects": s.privateProjects()})
 	case strings.HasPrefix(r.URL.Path, projectPath):
 		key := strings.TrimPrefix(r.URL.Path, projectPath)
 		s.mu.Lock()
@@ -173,16 +182,53 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			"repositories": repositories,
 		}
 		if !row.OmitSlackChannels {
-			channels := row.SlackChannels
-			if channels == nil {
-				channels = []string{}
-			}
-			answer["slack_channels"] = channels
+			answer["slack_channels"] = channelsOf(row)
 		}
+		answer["slack_channels_changed_at"] = changedAtOf(row)
 		writeJSON(w, http.StatusOK, answer)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "NOT_FOUND", "error": r.URL.Path})
 	}
+}
+
+// privateProjects is the private-projects route's list: every private row, in key order, each
+// with its channels and when they changed, and the channels left out for a row that omits them.
+func (s *Server) privateProjects() []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.rows))
+	for key, row := range s.rows {
+		if row.Visibility == "private" {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	projects := make([]map[string]any, 0, len(keys))
+	for _, key := range keys {
+		row := s.rows[key]
+		project := map[string]any{"project": key, "slack_channels_changed_at": changedAtOf(row)}
+		if !row.OmitSlackChannels {
+			project["slack_channels"] = channelsOf(row)
+		}
+		projects = append(projects, project)
+	}
+	return projects
+}
+
+// channelsOf is row's slack_channels as Dispatch spells it: never null, [] for none.
+func channelsOf(row Row) []string {
+	if row.SlackChannels == nil {
+		return []string{}
+	}
+	return row.SlackChannels
+}
+
+// changedAtOf is row's slack_channels_changed_at as Dispatch spells it: null for a zero time.
+func changedAtOf(row Row) any {
+	if row.SlackChannelsChangedAt.IsZero() {
+		return nil
+	}
+	return row.SlackChannelsChangedAt.UTC()
 }
 
 // kind is a login's member kind, "none" for a login the stand-in does not hold or no login at all.
