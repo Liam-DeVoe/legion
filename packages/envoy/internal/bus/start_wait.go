@@ -218,12 +218,16 @@ func unansweredUntil(sends int, last, ended error) error {
 // rounds. Three times 209 ms is 627 ms.
 //
 // The limit decides no result. Each read the server leaves unanswered doubles the next one's
-// limit, up to RequestTimeout (readLimit.lost), so a server that answers slower than the
-// measurement is waited for at the caller's own wait after a few reads, and only the start's hang
-// guard ends the wait. Each read the server answers sets the next one's limit to three times that
-// read's own time, the same sizing, and never under this one (readLimit.answered): lost reads early
-// in a run of reads do not make a lost read later in it cost more, and a server that answers every
-// read late keeps a limit above its delay, so no read of it is cut and read again.
+// limit, up to limitCeiling (readLimit.lost), so a server that answers slower than the
+// measurement is waited for after a few reads, and only the start's hang guard ends the wait.
+// Each read the server answers sets the next one's limit to three times that read's own time, the
+// same sizing, and never under this one (readLimit.answered): lost reads early in a run of reads
+// do not make a lost read later in it cost more, and a server that answers every read late keeps
+// a limit above its delay, so no read of it is cut and read again. While a read waits past this
+// limit for its answer, a copy of it goes out every firstReadLimit, and the first answer of any
+// ends the wait (limitedRead): a member drops a read while the stream's leader it needs is gone,
+// so a read waited out to its doubled limit held the start up to that whole limit after the
+// leader was back.
 const firstReadLimit = 630 * time.Millisecond
 
 // firstReadLimitKey is the context key a test that counts a start's requests sets its first read
@@ -249,31 +253,29 @@ func firstReadLimitOf(ctx context.Context) time.Duration {
 // one after the other, never two at once. A read made under a context that carries no run, such as
 // a keeper pass's, starts a run of its own (readLimitOf). The same type keeps a run of writes
 // beside it (writeLimitOf), learnt from the answers to writes alone. most is the longest limit
-// the run grows to: RequestTimeout, the caller's own JetStream wait, for a run of reads (readRun),
-// and writeLimitCeiling for a run of writes (writeRun).
+// the run grows to: limitCeiling, or first when a test set a longer first limit.
 type readLimit struct {
 	first, limit, most time.Duration
 }
 
 // readRun is a new run of reads, and writeRun a new run of writes, each starting at first and
-// growing to at most its ceiling, never below first.
+// growing to at most limitCeiling, never below first.
 func readRun(first time.Duration) *readLimit {
-	return &readLimit{first: first, limit: first, most: max(first, RequestTimeout)}
+	return &readLimit{first: first, limit: first, most: max(first, limitCeiling)}
 }
 
 func writeRun(first time.Duration) *readLimit {
-	return &readLimit{first: first, limit: first, most: max(first, writeLimitCeiling)}
+	return &readLimit{first: first, limit: first, most: max(first, limitCeiling)}
 }
 
-// writeLimitCeiling is the longest a run of writes' limit grows to (writeRun): nats-server's
-// longest election timeout, maxElectionTimeoutDefault, 9 s (v2.15.1 server/raft.go:318). The
-// limit spaces the sends of a write the server may still be working on, so that a write it
-// answers slowly is not sent again on top of itself, and the longest such a write waits is an
-// election of the group that answers it, the metadata group or the stream's own: a follower that
-// has heard no leader for its election timeout, at most this one, campaigns. A write still
-// unanswered after that was dropped rather than slowed (limitedWrite), and spacing its next send
-// further guards nothing.
-const writeLimitCeiling = 9 * time.Second
+// limitCeiling is the longest the limit of a run of reads or of writes grows to: nats-server's
+// longest election timeout, maxElectionTimeoutDefault, 9 s (v2.15.1 server/raft.go:318). A limit
+// grows so that a request the server answers slowly is not cut and sent again on top of itself,
+// and the longest such a request waits is an election of the group that answers it, the metadata
+// group or the stream's own: a follower that has heard no leader for its election timeout, at most
+// this one, campaigns. A request still unanswered after that was dropped rather than slowed, and a
+// longer limit guards nothing: it only holds the start that much longer once the leader is back.
+const limitCeiling = 9 * time.Second
 
 // readLimitKey is the context key of the run of reads withReadLimit puts in a context, and
 // writeLimitKey the key of the run of writes it puts beside it.
@@ -312,7 +314,7 @@ func readLimitOf(ctx context.Context) *readLimit {
 // server/jetstream_cluster.go), none of which a read waits on. So a write's limit is learnt from
 // the server's answers to writes, by the read limit's rules: it starts at the first read limit,
 // each write the server answers sets the next to three times that write's own time, and each
-// write it leaves unanswered within the limit doubles the next, up to writeLimitCeiling. A server
+// write it leaves unanswered within the limit doubles the next, up to limitCeiling. A server
 // that answers writes later than the first limit while it answers reads at once then has each
 // write sent again only after a limit twice the last, where a write limit that a read's answer set
 // back sent it again after every read (TestAWriteTheServerAnswersLaterThanItsReadsIsSentAgainOnlyAfterItsOwnLimit).
@@ -362,17 +364,74 @@ func (r *readLimit) came(sent time.Time, answered bool, err error) {
 // whose line saying the request is sent again (warning) the send writes as it starts, and the
 // reads of a wait on a stream (awaitStream), which write none. A write made from a read is sent
 // through limitedWrite.
+//
+// While the read waits past the first limit of its run, a limit that doubled because reads drew
+// no answer, a copy of it goes out every first limit, and the first answer of any copy, the
+// server's refusal included, is the read's answer, set into the run by that copy's own time. A
+// member drops a read while the leader that answers it is gone (jsStreamInfoRequest, v2.15.1
+// server/jetstream_api.go:2100-2134), so a read sent then was waited out to its doubled limit and
+// held the start up to that whole limit after the leader was back, 9.58 s after an absence of
+// 10 s; a copy sent after the leader is back is answered at once, so the read lands within one
+// copy of the leader's return (TestAReadTheLeaderDroppedLandsWithinOneCopyOfItsReturn). A copy is
+// as safe as the send again readAgain makes: a read changes nothing, and an equal create is
+// deduplicated (readAgain). Each copy writes its own line (sendAgain.copy). A server that answers
+// every read late is still waited for up to the limit: no copy cuts the read, and the run learns
+// the delay from the answer that comes.
 func limitedRead[T any](ctx context.Context, limit *readLimit, warning sendAgain, read func() (T, error)) (value T, wait time.Duration, answered bool, err error) {
 	wait = limit.limit
 	readCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	sent := time.Now()
-	value, answered, err = Bounded(readCtx, func() (T, error) {
-		warning.write()
-		return read()
-	})
-	limit.came(sent, answered, err)
-	return value, wait, answered, err
+	type answer struct {
+		value    T
+		answered bool
+		err      error
+		sent     time.Time
+	}
+	answers := make(chan answer, 2*int(wait/limit.first)+4)
+	send := func(announce func()) {
+		sent := time.Now()
+		go func() {
+			value, answered, err := Bounded(readCtx, func() (T, error) {
+				announce()
+				return read()
+			})
+			answers <- answer{value: value, answered: answered, err: err, sent: sent}
+		}()
+	}
+	send(warning.write)
+	var copies <-chan time.Time
+	if wait > limit.first {
+		ticker := time.NewTicker(limit.first)
+		defer ticker.Stop()
+		copies = ticker.C
+	}
+	inFlight, copied := 1, 0
+	for {
+		select {
+		case got := <-answers:
+			inFlight--
+			switch {
+			case !got.answered:
+				limit.lost()
+				return value, wait, false, got.err
+			case !unanswered(got.err) || copies == nil && inFlight == 0:
+				limit.came(got.sent, true, got.err)
+				return got.value, wait, true, got.err
+			}
+		case <-readCtx.Done():
+			// The limit or ctx ended, every send answered as unanswered or one still in flight,
+			// which Bounded then abandons.
+			limit.lost()
+			return value, wait, false, readCtx.Err()
+		case <-copies:
+			if readCtx.Err() == nil {
+				copied++
+				n := copied
+				send(func() { warning.copy(n) })
+				inFlight++
+			}
+		}
+	}
 }
 
 // limitedWrite is one send of write, a write made from a read (a stream's update, updateStream; a
@@ -405,7 +464,7 @@ func limitedRead[T any](ctx context.Context, limit *readLimit, warning sendAgain
 // does (processJSAPIRoutedRequests), reads as a leader gone, so the next read it answers sends
 // the write again before its limit: the late landing of the send that cut leaves is the window of
 // every cut send (updateStream). A leader that comes back between a send and its first read is
-// not seen to have gone, so that send waits its whole limit, at most writeLimitCeiling. So does
+// not seen to have gone, so that send waits its whole limit, at most limitCeiling. So does
 // every send on a connection whose grant refuses the leader's read.
 func limitedWrite[T any](ctx context.Context, writes *readLimit, period time.Duration, leader writeLeader, write func() (T, error)) (value T, answered bool, err error) {
 	wait := writes.limit
@@ -592,7 +651,7 @@ func readAgain[T any](ctx context.Context, request string, limit *readLimit, rea
 	var last T
 	var lastErr error
 	for sends := 1; ; sends++ {
-		var warning sendAgain
+		warning := sendAgain{request: request}
 		if sends > 1 {
 			if ended := pause(ctx, bucketAppliedInterval); ended != nil {
 				return last, unansweredUntil(sends-1, lastErr, ended)
@@ -625,8 +684,10 @@ func readAgain[T any](ctx context.Context, request string, limit *readLimit, rea
 // and nothing readAgain changes later, its last error among them, reaches the line
 // (TestAReadAgainWarningKeepsTheErrorOfItsPreviousSend). No function literal of readAgain reads a
 // variable readAgain sets again, so no send of it can read the caller's error late either
-// (TestReadAgainHandsItsSendsNothingItSetsAgain). The zero value is no line: the first send of a
-// request, and every read of a wait on a stream (awaitStream).
+// (TestReadAgainHandsItsSendsNothingItSetsAgain). A line with no sends before it, sent 0, is no
+// line: the first send of a request. A copy of a send waiting past its run's first limit
+// (limitedRead) writes a line of its own (copy). The zero value names no request and writes
+// neither, as every read of a wait on a stream does (awaitStream).
 type sendAgain struct {
 	request  string
 	sent     int
@@ -640,4 +701,14 @@ func (w sendAgain) write() {
 	}
 	slog.Warn("envoy nats stream request unanswered; sending it again",
 		slog.String("request", w.request), slog.Int("sent", w.sent), slog.String("error", w.previous.Error()))
+}
+
+// copy writes the line that says the send is unanswered past its run's first limit and the
+// n-th copy of it goes out, when the send names a request.
+func (w sendAgain) copy(n int) {
+	if w.request == "" {
+		return
+	}
+	slog.Warn("envoy nats stream request unanswered past its first read limit; sending a copy",
+		slog.String("request", w.request), slog.Int("copy", n))
 }

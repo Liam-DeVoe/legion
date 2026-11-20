@@ -27,11 +27,12 @@ import (
 // names the lookup, the sends that drew no answer and the guard, rather than hanging the program's
 // start for as long as the server stays silent. The guard is shortened here (ensureKeyValue), to
 // two seconds: each lookup is a read, waited for up to its read limit (firstReadLimit, then twice
-// that) and sent again, so the guard passes during the third send and cuts it (Bounded). Each
-// lookup the server left unanswered while the guard had time left is followed by a WARN line that
-// says it is sent again, and the lookup that follows it; the one the guard cut is followed by
-// neither, so the lines are one fewer than the lookups, and the error names the limit of a lookup
-// that reached it, not of the one the guard cut.
+// that) and sent again, so the guard passes during the third send and cuts it (Bounded); a send
+// waiting past the first limit is copied every first limit besides (limitedRead). Each lookup but
+// the first goes out behind a WARN line, one that says the lookup is sent again or one that says
+// a copy of it goes out, and the lookup the guard cut is followed by neither, so the lines are one
+// fewer than the lookups, and the error names the limit of a lookup that reached it, not of the
+// one the guard cut.
 func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 	logs := captureLogs(t)
 	const bucket = "envoy_unanswered_never"
@@ -48,7 +49,8 @@ func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 			t.Fatalf("a start whose lookup the server never answers = %v, want it to name %q", err, want)
 		}
 	}
-	warns := logs.recordsWithMsg(t, "envoy nats stream request unanswered; sending it again")
+	warns := append(logs.recordsWithMsg(t, "envoy nats stream request unanswered; sending it again"),
+		logs.recordsWithMsg(t, "envoy nats stream request unanswered past its first read limit; sending a copy")...)
 	// The lookup the guard cut was sent before the guard passed; wait for it to reach the relay.
 	testwait.Holds(time.Second, testwait.Poll, func() bool { return relay.sent() > len(warns) })
 	sends := relay.sent()
@@ -56,7 +58,7 @@ func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 		t.Fatalf("lookups sent = %d, want the lookup sent again after its read limit", sends)
 	}
 	if len(warns) != sends-1 {
-		t.Fatalf("the start logged %d lines that a lookup is sent again for %d lookups sent, want %d: each line is followed by a lookup, and the lookup the hang guard cut by none", len(warns), sends, sends-1)
+		t.Fatalf("the start logged %d lines that a lookup is sent again or copied for %d lookups sent, want %d: each line is followed by a lookup, and the lookup the hang guard cut by none", len(warns), sends, sends-1)
 	}
 	match := regexp.MustCompile(`no answer within ([0-9.]+[a-zµ]+)`).FindStringSubmatch(err.Error())
 	if match == nil {
