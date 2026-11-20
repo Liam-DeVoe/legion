@@ -54,13 +54,13 @@ func editTree(t *testing.T, fsys fstest.MapFS, name string, change func(any) any
 }
 
 // filesRead fails the test unless fsys, which a writer of a sweep made from a copy of base, holds
-// what the sweep means it to hold, which the caller gives apart from the writer's call: each file of
-// written with its bytes, or no such file where they are nil, which takes the file out; each JSON
-// file of changed as the tree of the base's file with its one change (treeChange.on), as the reader
-// decodes it, compared whole; each other file of base with the base's bytes; and no other file. So
-// a writer that writes under another file name, writes another value, writes it at another place
-// or under another key, or changes another place or another file too, fails by name.
-func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte, changed map[string]treeChange) {
+// what the sweep means it to hold: each file of written with its bytes, or no such file where they
+// are nil, which takes the file out; each JSON file of changed, as encoding/json/v2 decodes it into
+// any, as its meant tree (treeChange.meant), which the caller builds before the writer runs,
+// compared whole; each other file of base with the base's bytes; and no other file. So a writer
+// that writes under another file name, writes another value, writes it at another place or under
+// another key, or changes another place or another file too, fails by name.
+func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte, changed map[string]meantTree) {
 	t.Helper()
 	meant := map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(written)) {
@@ -77,21 +77,20 @@ func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte,
 	}
 	for _, name := range slices.Sorted(maps.Keys(changed)) {
 		meant[name] = true
-		change := changed[name]
+		want := changed[name]
 		file, held := fsys[name]
 		if !held {
-			t.Fatalf("the sweep changed %s at %q, and the scenario holds no file of that name", name, treePointer(change.place))
+			t.Fatalf("the sweep changed %s at %q, and the scenario holds no file of that name", name, want.at)
 		}
 		var got any
 		if err := json.Unmarshal(file.Data, &got); err != nil {
-			t.Fatalf("the sweep changed %s at %q, and the file is no JSON: %v", name, treePointer(change.place), err)
+			t.Fatalf("the sweep changed %s at %q, and the file is no JSON: %v", name, want.at, err)
 		}
-		want := change.on(t, fileTree(t, base, name))
-		if at, differ := treeDiff(got, want, nil); differ {
+		if at, differ := treeDiff(got, want.tree, nil); differ {
 			x, xHeld := treeAt(got, at)
-			w, wHeld := treeAt(want, at)
+			w, wHeld := treeAt(want.tree, at)
 			t.Fatalf("the sweep changed %s at %q, and the file differs from that change at %q: it holds %s there (held %t), where it should hold %s (held %t)",
-				name, treePointer(change.place), treePointer(at), encodeTree(t, x), xHeld, encodeTree(t, w), wHeld)
+				name, want.at, treePointer(at), encodeTree(t, x), xHeld, encodeTree(t, w), wHeld)
 		}
 	}
 	names := slices.Sorted(maps.Keys(meant))
@@ -111,19 +110,37 @@ func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte,
 }
 
 // treeChange is one change of a JSON tree as a sweep means it, which the sweep gives apart from the
-// writer that makes it, for the read back of the write (filesRead): at place, the value value, null
-// for nil; or, with out, the member or element taken out; or, with renamed, the member under the
-// name that value holds.
+// writer that makes it, for the read back of the write (treeChange.meant, filesRead): at place, the
+// value value, null for nil; or, with out, the member or element taken out; or, with renamed, the
+// member under the name that value holds.
 type treeChange struct {
 	place        []string
 	value        any
 	out, renamed bool
 }
 
+// meantTree is a JSON file as a sweep means a write to leave it (treeChange.meant): the tree, and the
+// JSON pointer of the place of the change, for the lines of a failure.
+type meantTree struct {
+	at   string
+	tree any
+}
+
+// meant is the JSON file name of base with the change c (on), and the pointer of c's place. It holds
+// no object of c: the tree is decoded anew from the base's bytes, c's value is copied through its
+// JSON text (a renamed key is a string), and its place is kept as its pointer, so a writer that is
+// handed c's value or place, and changes it after meant returns, changes no part of what its write
+// is read back against (changedFile).
+func (c treeChange) meant(t *testing.T, base fstest.MapFS, name string) meantTree {
+	t.Helper()
+	return meantTree{at: treePointer(c.place), tree: c.on(t, fileTree(t, base, name))}
+}
+
 // on is the JSON tree v, which the caller decoded for it alone, with the change c made in place, its
-// value as the reader decodes it (a number as a float64). It shares no code of the package with the
-// writers of the sweeps (treeWith, treeChanged and treeRenamed, which copy the tree on the path that
-// they change), so that a writer that also writes at another place fails the read back.
+// value as encoding/json/v2 decodes it into any (a number as a float64). It shares no code of the
+// package with the writers of the sweeps (treeWith, treeChanged and treeRenamed, which copy the tree
+// on the path that they change), so that a writer that also writes at another place fails the read
+// back.
 func (c treeChange) on(t *testing.T, v any) any {
 	t.Helper()
 	if !c.renamed {
@@ -215,14 +232,17 @@ func treeDiff(a, b any, at []string) ([]string, bool) {
 	return at, !reflect.DeepEqual(a, b)
 }
 
-// changedFile is a copy of base with the JSON file name written as the tree written, which a writer
-// of a sweep made, read back against want, the change that the sweep means, which the caller gives
-// apart from the writer's call (filesRead).
-func changedFile(t *testing.T, base fstest.MapFS, name string, written any, want treeChange) fstest.MapFS {
+// changedFile is a copy of base with the JSON file name written as the tree that write, a writer of a
+// sweep, gives, read back against want, the change that the sweep means, which the caller gives
+// apart from the writer's call (filesRead). It builds the meant tree from want before it calls
+// write, so a writer that changes the value or the place that it shares with want changes no part
+// of what its tree is read back against.
+func changedFile(t *testing.T, base fstest.MapFS, name string, want treeChange, write func() any) fstest.MapFS {
 	t.Helper()
+	meant := want.meant(t, base, name)
 	fsys := maps.Clone(base)
-	fsys[name] = &fstest.MapFile{Data: encodeTree(t, written)}
-	filesRead(t, base, fsys, nil, map[string]treeChange{name: want})
+	fsys[name] = &fstest.MapFile{Data: encodeTree(t, write())}
+	filesRead(t, base, fsys, nil, map[string]meantTree{name: meant})
 	return fsys
 }
 

@@ -373,9 +373,12 @@ func parentOf(pointer string) string { return pointer[:max(strings.LastIndexByte
 // A member marked nonzero, present or one of is refused, where the same element with the member
 // reads otherwise; one marked zero reads as the same element with the member at its zero value, the
 // reading that its reason states. A member of a one of mark is refused too beside the other member.
-// Each file that the test writes is read back whole, as the base's tree with the element at its
-// pointer, with each other file unchanged (filesRead), so that a writer that writes another element,
-// at another place or in another file, or changes another place of the file too, fails by name.
+// Each file that the test writes is read back whole, as the base's tree with the element that the
+// test's edit makes at its pointer, which the read back takes as JSON before the writer runs
+// (changedFile), with each other file unchanged, so that a writer that writes another element, at
+// another place or in another file, changes another place of the file too, or changes the element
+// that it is handed, fails by name. The element is the edit's own, so a fault of the edit is in what
+// the read back takes too; the readings that each mark states catch it.
 func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 	t.Parallel()
 	base := memberScenario(t)
@@ -447,7 +450,7 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 					if at != "" {
 						place = strings.Split(at[1:], "/")
 					}
-					return changedFile(t, base, name, withJSONAt(v, at, x), treeChange{place: place, value: x})
+					return changedFile(t, base, name, treeChange{place: place, value: x}, func() any { return withJSONAt(v, at, x) })
 				}
 				for _, alone := range []bool{false, true} {
 					where := fmt.Sprintf("%s %s of %s %s, %s", name, m.name, typ.Name(), e.pointer, map[bool]string{false: "beside " + objectsPointer(objects, beside), true: "alone"}[alone])
