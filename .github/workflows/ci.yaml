@@ -4650,6 +4650,8 @@ jobs:
               # internal/broker/judge/model.go mints the account token it reads Dispatch with
               # through brokertoken.
               - 'packages/envoy/internal/brokertoken/*'
+              # cmd/broker's tests read the golden narrowed answers through brokertokentest.
+              - 'packages/envoy/internal/brokertoken/brokertokentest/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
