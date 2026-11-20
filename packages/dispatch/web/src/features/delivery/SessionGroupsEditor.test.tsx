@@ -455,6 +455,35 @@ test("a member's Remove, gone with its member, hands the focus to the next membe
   }
 });
 
+// Delete group of the only group takes the Groups section away with its card, so the rescue walks
+// the focus back through the dialog. The control before the lost place is the "New group name"
+// box, which takes typed text: the walk passes over it, so the reader's next key is typed into no
+// field they never chose, and lands on the control before it, the last session's live link.
+test("Delete group of the only group walks the focus back past the New group name box", async () => {
+  const user = userEvent.setup();
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
+  const restoreFocus = emulateChromiumFocusFixup();
+  const editor = renderEditor([crew], { rescued: true });
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    const deleting = within(group).getByRole("button", {
+      name: "Delete group",
+    }) as HTMLButtonElement;
+    await user.click(deleting);
+    await landAndDraw(deleting, [], editor);
+
+    const reviewer = screen.getByRole("link", { name: "Open live conversation with Reviewer" });
+    await waitFor(() => expect(reviewer).toHaveFocus());
+    await afterRescue();
+    expect(document.activeElement).toBe(reviewer);
+    expect(screen.getByLabelText("New group name")).not.toHaveFocus();
+  } finally {
+    restoreFocus();
+    cleanup();
+    remove.mockRestore();
+  }
+});
+
 // Each member is an agent linked to its live conversation; one no pull request of the window
 // names has no stored title, so it reads by its short id.
 test("group members link to their live conversations, an untitled one by its short id", () => {

@@ -1,5 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
@@ -268,6 +269,83 @@ test("a control an update disabled gets no focus back when it is enabled after t
   }
 });
 
+/** The main content holding Before, an answer box - a `<textarea>` named Answer - and After. */
+function answerBox(): HTMLTextAreaElement {
+  const { main } = mainOf("Before");
+  const answer = document.createElement("textarea");
+  answer.setAttribute("aria-label", "Answer");
+  main.append(answer);
+  buttonIn(main, "After");
+  return answer;
+}
+
+// (bu) The control an update disabled, with no press of the reader's, gets the focus back only
+// while no press of theirs has come since the loss. A key the reader presses on the page is one,
+// and ends the rescue's wait as a pointer press does (p): after `j`, `k` and `j` on the page, the
+// answer box enabled again within the wait takes nothing back. The focus stays on the page, the
+// reader's next key is typed into nothing, and nothing scrolls.
+test("a control an update disabled gets no focus back once the reader has pressed keys on the page", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const answer = answerBox();
+      answer.focus();
+      // Chromium fires the `focusout` just after the disable; happy-dom blurs no disabled control,
+      // so here it comes just before it.
+      answer.blur();
+      answer.disabled = true;
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      for (const key of ["j", "k", "j"]) keyOnPage(key);
+      answer.disabled = false;
+      await settled();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(answer).not.toHaveFocus();
+      await userEvent.setup().keyboard("x");
+      expect(answer.value).toBe("");
+    });
+  });
+});
+
+// (bv) A control an update hides, with no press of the reader's, and shows again before the
+// rescue's check is the control that held the focus coming back while the focus is still on the
+// page: it gets the focus back, focused with no scroll.
+test("a control an update hides and shows again before the rescue's check gets the focus back, scrolling nothing", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const answer = answerBox();
+      answer.focus();
+      const focus = spyOn(answer, "focus");
+      // The update hides the box under the focus, and its `focusout` comes once it is hidden.
+      answer.hidden = true;
+      answer.blur();
+      answer.hidden = false;
+      await settled();
+      expect(answer).toHaveFocus();
+      expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+    });
+  });
+});
+
+// (bw) So for (bv) once the reader has pressed a key between: `j` on the page while the box is
+// hidden is a press of theirs, which ends the rescue's check, and the box shown again takes
+// nothing back. The focus stays on the page, and nothing scrolls.
+test("a control an update hides and shows again gets no focus back once the reader has pressed a key between", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const answer = answerBox();
+      answer.focus();
+      answer.hidden = true;
+      answer.blur();
+      keyOnPage("j");
+      answer.hidden = false;
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(answer).not.toHaveFocus();
+    });
+  });
+});
+
 // (d) A modal dialog an update closes, with no press of the reader's, over an opener held disabled
 // leaves the focus on the page: neither the opener's place in the main content under the dialog
 // nor any control there is the reader's pick, and no other modal is open to take it.
@@ -354,6 +432,14 @@ function pointerPress(element: Element): void {
 /** The reader's Enter on `element`: its `keydown`, by which the rescue notes the press. */
 function enterPress(element: Element): void {
   element.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+}
+
+/** The reader's `key` pressed on the page itself, the focus on the body: its `keydown`, by which
+ *  the rescue notes a press, and its `keyup`. */
+function keyOnPage(key: string): void {
+  for (const type of ["keydown", "keyup"]) {
+    document.body.dispatchEvent(new KeyboardEvent(type, { bubbles: true, key }));
+  }
 }
 
 /** Each way a case presses a control, by its name: Enter, and a pointer press. */
@@ -1897,6 +1983,83 @@ test("a sibling moved into a pressed control's place is nothing new there, so th
   }
 });
 
+// (bz) A caused walk-back (ak) passes over every control that takes typed text (`takesText`):
+// the reader never chose that field, and their next key would be typed into it, as Delete group on
+// the delivery editor's only group walked back to its "New group name" box. Delete pressed after a
+// Title box lands on the control before that box; where a Note box now stands at Delete's place,
+// the walk passes over it too. By Enter, with Chromium's `focusout` and without.
+test("a caused walk-back passes over the text boxes at and before the lost place to the nearest control that takes no text", async () => {
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const noteAfter of [false, true]) {
+    for (const withFocusout of [true, false]) {
+      const after = noteAfter ? "a Note box" : "nothing";
+      const named = `${after} after Delete, ${withFocusout ? "with" : "without"} a focusout`;
+      await withRescue(async () => {
+        const { main } = mainOf("Before");
+        const title = document.createElement("input");
+        title.setAttribute("aria-label", "Title");
+        main.append(title);
+        const pressed = buttonIn(main, "Delete");
+        if (noteAfter) {
+          const note = document.createElement("textarea");
+          note.setAttribute("aria-label", "Note");
+          main.append(note);
+        }
+        pressed.focus();
+        enterPress(pressed);
+        if (withFocusout) lose(pressed);
+        else pressed.remove();
+        await settled();
+        landed[named] = document.activeElement === document.body ? "the page" : focusedName();
+      });
+      belongs[named] = "Before";
+    }
+  }
+  expect(landed).toEqual(belongs);
+});
+
+// (ca) Where only controls that take typed text stand before the lost place, the caused walk-back
+// of (bz) offers nothing, and the region's own stop takes the focus, as it does where nothing at
+// all stands before it: the main content, behind its Search box and a Note box, and a modal
+// dialog, behind the same two. By Enter, with Chromium's `focusout` and without.
+test("a caused walk-back with only text boxes before the lost place lands on the region's own stop", async () => {
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const inDialog of [false, true]) {
+    for (const withFocusout of [true, false]) {
+      const where = inDialog ? "a modal dialog" : "the main content";
+      const named = `in ${where}, ${withFocusout ? "with" : "without"} a focusout`;
+      await withRescue(async () => {
+        const { main } = mainOf();
+        const region = inDialog ? modalOf().dialog : main;
+        const search = document.createElement("input");
+        search.type = "search";
+        search.setAttribute("aria-label", "Search");
+        const note = document.createElement("textarea");
+        note.setAttribute("aria-label", "Note");
+        region.append(search, note);
+        const pressed = buttonIn(region, "Delete");
+        pressed.focus();
+        enterPress(pressed);
+        if (withFocusout) lose(pressed);
+        else pressed.remove();
+        await settled();
+        landed[named] =
+          document.activeElement === region
+            ? "the region's own stop"
+            : document.activeElement === document.body
+              ? "the page"
+              : focusedName();
+      });
+      belongs[named] = "the region's own stop";
+    }
+  }
+  expect(landed).toEqual(belongs);
+});
+
 /** The sidebar's pinned agents (`PinnedAgentRow`), in a list at the end of `parent`: one `<li>`
  *  per name, a row by its element alone, holding a link named for the agent and then its
  *  `Unpin <name> from the sidebar` button, save for the names in `withoutUnpin`, whose rows hold
@@ -2505,6 +2668,112 @@ test("a character typed with AltGr or Option in a text field makes no press, so 
   }
 });
 
+/** Each key that acts on the page rather than on a text field's text, by its name: the key, the
+ *  modifiers held with it, and the field it is pressed in - a `<textarea>`, save for Enter, which
+ *  acts only in a single-line `<input>`. */
+const ACTING_KEYS: readonly {
+  held: readonly string[];
+  key: string;
+  name: string;
+  tag: "input" | "textarea";
+}[] = [
+  { held: [], key: "Escape", name: "Escape", tag: "textarea" },
+  { held: [], key: "Tab", name: "Tab", tag: "textarea" },
+  { held: [], key: "Enter", name: "Enter in a single-line input", tag: "input" },
+  { held: ["Control"], key: "Enter", name: "Ctrl+Enter", tag: "textarea" },
+  { held: ["Meta"], key: "Enter", name: "Meta+Enter", tag: "textarea" },
+  { held: ["Alt"], key: "Enter", name: "Alt+Enter", tag: "textarea" },
+];
+
+// (bx) In a field that takes typed text, a key that acts on the page rather than on the text is a
+// press of the reader's (`isPress`): Escape, Tab, Enter in a single-line `<input>`, which commits
+// it, and a key held with Ctrl, Meta or Alt that types no character, a shortcut such as Ctrl+Enter
+// that sends. So the field's removal at that key's release is a loss the reader caused, and the
+// focus walks back to the control before the field, where a loss they did not cause leaves it on
+// the page (bi). Escape's own task is the reader leaving the field (`leaving`), so each removal
+// comes a frame and a task after the key, at its release, which keeps the press live as a click's
+// release does (`noteRelease`). With Chromium's `focusout` and with none.
+test("in a text field, Escape, Tab, Enter in a single-line input and a key held with Ctrl, Meta or Alt that types no character are the reader's press, so the field's removal walks back to the control before it", async () => {
+  // Where the focus went for each key, with Chromium's `focusout` and with none.
+  const landed: Record<string, string | null> = {};
+  const walkedBack: Record<string, string> = {};
+  for (const { held, key, name, tag } of ACTING_KEYS) {
+    for (const withFocusout of [true, false]) {
+      const named = `${name}, ${withFocusout ? "with" : "without"} a focusout`;
+      await withRescue(async () => {
+        const { main } = mainOf("Before");
+        const field = document.createElement(tag);
+        field.setAttribute("aria-label", "Note");
+        main.append(field);
+        field.focus();
+        const down = new KeyboardEvent("keydown", {
+          altKey: held.includes("Alt"),
+          bubbles: true,
+          code: key,
+          ctrlKey: held.includes("Control"),
+          key,
+          metaKey: held.includes("Meta"),
+        });
+        // The modifiers it holds, as a browser answers, as in (bj).
+        Object.defineProperty(down, "getModifierState", {
+          value: (modifier: string) => held.includes(modifier),
+        });
+        field.dispatchEvent(down);
+        await settled();
+        field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, code: key, key }));
+        if (withFocusout) lose(field);
+        else field.remove();
+        await settled();
+        landed[named] = document.activeElement === document.body ? "the page" : focusedName();
+      });
+      walkedBack[named] = "Before";
+    }
+  }
+  expect(landed).toEqual(walkedBack);
+});
+
+/** The rescue's longest wait for an animation frame before it goes on without one
+ *  (`focus-place.ts`'s `FRAME_WAIT_MS`). */
+const FRAME_WAIT_MS = 100;
+
+// (by) A press of the reader's is the cause of a loss for a frame and a task after it (ah, aq), or
+// for 100 ms and a task where no frame comes, as WebKit can hold a page's frames back (r). With
+// the frames held back, a removal 1 ms short of 100 ms after the reader's Enter on Second is a loss
+// they caused, and the focus walks to Third, now at its place; a removal 100 ms and a task after
+// the Enter is a loss they did not cause, and the focus stays on the page.
+test("with the page's frames held back, a removal within 100 ms and a task of the reader's press is a loss they caused, and one after that is not", async () => {
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+  jest.useFakeTimers();
+  try {
+    // Where each removal left the focus, and where it belongs.
+    const landed: Record<string, string | null> = {};
+    const belongs: Record<string, string> = {};
+    const cases = [
+      { after: FRAME_WAIT_MS - 1, landing: "Third", name: "1 ms short of 100 ms after the press" },
+      { after: FRAME_WAIT_MS, landing: "the page", name: "100 ms and a task after the press" },
+    ];
+    for (const { after, landing, name } of cases) {
+      await withRescue(async () => {
+        const second = mainOf("First", "Second", "Third").buttons[1] as HTMLButtonElement;
+        second.focus();
+        enterPress(second);
+        jest.advanceTimersByTime(after);
+        jest.advanceTimersByTime(0);
+        lose(second);
+        // The rescue's check, 100 ms and a task after the loss, with no frame.
+        jest.advanceTimersByTime(FRAME_WAIT_MS);
+        jest.advanceTimersByTime(0);
+        landed[name] = document.activeElement === document.body ? "the page" : focusedName();
+      });
+      belongs[name] = landing;
+    }
+    expect(landed).toEqual(belongs);
+  } finally {
+    jest.useRealTimers();
+    frames.mockRestore();
+  }
+});
+
 // (bk) A date box fires its `change` at the reader's pick - in its picker, or with the digit that
 // completes the date - and not on blur, as a text field does, so that change is a press of theirs
 // (`isPress`). INFRA-3135, round 18 (the tester's): the search bar's Filter panel draws its
@@ -2512,7 +2781,10 @@ test("a character typed with AltGr or Option in a text field makes no press, so 
 // focused box away. At e9ed2743 the rescue reads that as a loss the reader did not cause, passes
 // over the Author box before it and lands on the Status trigger, in Chromium, Firefox and WebKit
 // at 1440 and 390 px (builds Job infra-3135-r18xh); at 90fa8211 the focus goes to the Author box,
-// the nearest control before the date box, as a loss the reader caused does in (u).
+// the nearest control before the date box, as a loss the reader caused does in (u). A caused
+// walk-back now passes over a control that takes typed text (bz), so it passes over the Author box
+// and lands on the Status trigger; a loss the reader did not cause leaves the focus on the page
+// (bp), so the landing still tells the two apart.
 test("a date picked in a date box is the reader's press, so the box's removal walks back to the control before it", async () => {
   for (const typed of [false, true]) {
     for (const withFocusout of [true, false]) {
@@ -2544,8 +2816,8 @@ test("a date picked in a date box is the reader's press, so the box's removal wa
         if (withFocusout) lose(since);
         else since.remove();
         await settled();
-        expect(author).toHaveFocus();
-        expect(status).not.toHaveFocus();
+        expect(status).toHaveFocus();
+        expect(author).not.toHaveFocus();
       });
     }
   }
@@ -2558,7 +2830,9 @@ test("a date picked in a date box is the reader's press, so the box's removal wa
 // technology sets it - fires `input`, then `change` on the box the page has already taken away,
 // which no listener of the page hears. The date is the reader's all the same, so the box's
 // removal walks back to the control before it, as in (bk); at 89072a56 the rescue reads it as a
-// loss the reader did not cause and lands on Status.
+// loss the reader did not cause and lands on Status. The walk-back now passes over the Author box,
+// which takes typed text (bz), and lands on Status too; a loss the reader did not cause now leaves
+// the focus on the page (bp), so the landing still tells the two apart.
 test("a date box dropped at its input, before any change, is the reader's press all the same", async () => {
   for (const typed of [false, true]) {
     for (const withFocusout of [true, false]) {
@@ -2589,8 +2863,8 @@ test("a date box dropped at its input, before any change, is the reader's press 
         // The `change` that follows reaches a box no longer in the page.
         since.dispatchEvent(new Event("change", { bubbles: true }));
         await settled();
-        expect(author).toHaveFocus();
-        expect(status).not.toHaveFocus();
+        expect(status).toHaveFocus();
+        expect(author).not.toHaveFocus();
       });
     }
   }
@@ -2615,7 +2889,7 @@ const TEXT_ENTRY_KINDS = [
 // url, tel, password or number, a `<textarea>`, a content-editable element. So in the Filter panel
 // of (bk), the field an update takes away at its `input`, before any `change`, is a loss the reader
 // did not cause: the focus stays on the page, as it did before the page had a rescue, and nothing
-// scrolls - where the date box of (bo), whose `input` is a pick, walks back to the Author box.
+// scrolls - where the date box of (bo), whose `input` is a pick, walks back to the Status trigger.
 // With Chromium's `focusout` and with none.
 test("an input on a field that takes typed text is no press, so the field taken away at it leaves the focus on the page", async () => {
   // Where the loss left the focus for each kind: on the page or not, and whether anything scrolled.
@@ -2688,8 +2962,9 @@ function focusedName(): string | null {
 // makes that change a press of theirs (`isPress`): a `<select>`, a checkbox, a radio, a file, range
 // or color input, and each date and time box, which takes typed text all the same. So in the Filter
 // panel of (bk), the control's removal in the task of that `change` alone - with no `input` before
-// it, which makes a press of its own (bo) - is a loss the reader caused: the focus walks back to
-// the Author box before it, as in (bk), and does not pass over it to the Status trigger.
+// it, which makes a press of its own (bo) - is a loss the reader caused: the focus walks back past
+// the Author box, which takes typed text (bz), to the Status trigger before it, as in (bk), where
+// a loss the reader did not cause would leave it on the page (bm).
 test("a change on a control that fires it at the reader's pick is their press, so the control's removal walks back to the control before it", async () => {
   const kinds = [
     "select",
@@ -2719,7 +2994,7 @@ test("a change on a control that fires it at the reader's pick is their press, s
         await settled();
         landed[named] = focusedName();
       });
-      walkedBack[named] = "Author";
+      walkedBack[named] = "Status";
     }
   }
   expect(landed).toEqual(walkedBack);
