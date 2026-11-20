@@ -17,9 +17,10 @@ import { ROW_SELECTOR } from "./row-marker";
  * first control, else on the control now at its place or the nearest one before it. A loss they
  * did not cause leaves the focus on the body, as the page did before it had a rescue, and scrolls
  * nothing; only an open modal dialog takes the focus then, as its own stop (`leaveUncaused`). The
- * one such loss the focus leaves the body for outside a modal is a control the page disabled or
- * hid that is drawn and enabled again within the rescue's wait, while the focus is still on the
- * body: that control gets it back. A loss of a control the reader had scrolled out of their sight
+ * one such loss the focus leaves the body for outside a modal is a control that comes back while
+ * the focus is still on the body: one the page disabled and enabled again within the rescue's
+ * wait, or one it hid and drew again by the rescue's first check, a frame and a task after the
+ * loss. That control gets it back. A loss of a control the reader had scrolled out of their sight
  * scrolls nothing and focuses no control (`outOfSight`): the focus stays on the body, except in a
  * dialog or a panel, which takes it itself, for a loss the reader caused, and in an open modal
  * dialog, whose own stop takes it, for one they did not (`leaveUnseen`).
@@ -692,10 +693,10 @@ function landOnDialog(dialog: HTMLElement): void {
  *  not, and their next key would act on it or be typed into it. The one exception is an open
  *  modal dialog (`openModal`), which takes the focus itself as its own stop (`landOnDialog`),
  *  since a focus that leaves an open modal reaches the page behind it. Outside a modal, the one
- *  loss the reader did not cause that the focus leaves the body for is a control the page
- *  disabled or hid and then drew and enabled again, which gets the focus back while it is still
- *  on the body and within the rescue's wait (`useFocusRescue`'s `check` and `wait`): the very
- *  control that held it, back where it was. */
+ *  loss the reader did not cause that the focus leaves the body for is a control that comes back
+ *  while the focus is still on the body - disabled and enabled again within the rescue's wait
+ *  (`useFocusRescue`'s `wait`), or hidden and drawn again by its first check (`check`) - which
+ *  gets the focus back: the very control that held it, back where it was. */
 function leaveUncaused(region: Element): void {
   const modal = openModal(region);
   if (modal !== null) landOnDialog(modal);
@@ -1093,8 +1094,9 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * body that closes, the reader's Escape, their click on the page or their Enter that commits a
  * field, and a control they had scrolled out of their sight; and for every loss they did not
  * cause (`leaveUncaused`), as the page did before it had a rescue, save in an open modal dialog,
- * whose own stop takes the focus, and save a control the page disabled or hid that is drawn and
- * enabled again within the rescue's wait, which gets the focus back.
+ * whose own stop takes the focus, and save a control that comes back while the focus is still on
+ * the body - enabled again within the rescue's wait, or drawn again by its first check - which
+ * gets the focus back.
  *
  * Every element that takes the focus is noted as it does (`focusin`), with its region - the
  * dialog or panel holding it (`DIALOG`), modal or not, else the shell's main content (`main`),
