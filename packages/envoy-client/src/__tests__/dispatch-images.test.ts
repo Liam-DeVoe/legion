@@ -5,7 +5,11 @@ import * as path from "node:path";
 import { DISPATCH_BLOCK_UNITS, DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
-import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
+import {
+  type DispatchToolResult,
+  type ExecuteDispatchToolInput,
+  executeDispatchTool as executeTool,
+} from "../dispatch-execute";
 import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 import {
   forgetShownPictures,
@@ -15,6 +19,13 @@ import {
 } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
 import { ToolInputError } from "../tool-input-errors";
+import { withWhoamiAnswered } from "./whoami-stand-in";
+
+/** The executor, with whoami answered for a read command (`withWhoamiAnswered`): the stand-ins
+ *  below answer the reads each test is about. */
+function executeDispatchTool(input: ExecuteDispatchToolInput): Promise<DispatchToolResult> {
+  return executeTool(withWhoamiAnswered(input));
+}
 
 const config = {
   enabled: true,

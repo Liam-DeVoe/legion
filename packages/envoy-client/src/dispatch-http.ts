@@ -81,6 +81,8 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  DISPATCH_AS_OF_ABSENT_HEADER,
+  DISPATCH_AS_OF_HEADER,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -92,6 +94,7 @@ import {
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_RETRY_DELAYS_MS,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  parseAsOfAbsent,
   retriesUnderKey,
   retryNoRoute,
   type Sleep,
@@ -365,6 +368,40 @@ export class DispatchUnreachableError extends Error {
     readonly reachedNothing: boolean
   ) {
     super(message);
+  }
+}
+
+/**
+ * A read of a route that answers `as_of` (the plan's kind "answers", dispatch://INFRA-4620): the
+ * one way this client sends a cut. `asOf` is the cut, an RFC 3339 time, and the read sends it as
+ * `as_of`. Dispatch then answers as the records stood at the cut, names the cut in
+ * `Dispatch-As-Of`, and names in `Dispatch-As-Of-Absent` each field the records at the cut cannot
+ * give. `absent` is told those fields, as the JSON Pointers the header names, when it names any.
+ * A read with no `asOf` is the read of the present, as before.
+ */
+export interface AsOfRead {
+  readonly asOf?: string | undefined;
+  absent?(pointers: readonly string[]): void;
+}
+
+/**
+ * An answer to a read that sent `as_of` with no `Dispatch-As-Of` header. A Dispatch older than
+ * `as_of` ignores the parameter and answers the present, so the answer is not the read at the cut
+ * and nothing of it is used (decision 4 of dispatch://INFRA-4620).
+ */
+export class AsOfNotAnswered extends Error {
+  override readonly name = "AsOfNotAnswered";
+
+  constructor(
+    /** The request as it was sent: its method and path. */
+    readonly route: string,
+    readonly cut: string
+  ) {
+    super(
+      `${route} was asked as of ${cut}, and its answer has no ${DISPATCH_AS_OF_HEADER} header: ` +
+        "this Dispatch server is older than as_of, so it ignored the cut and answered the " +
+        "present. Nothing of that answer was used."
+    );
   }
 }
 
@@ -1138,9 +1175,10 @@ export class DispatchClient {
     return { ...answer.payload, created: answer.status === 201 };
   }
 
-  /** Resolves an existing native key or external reference without creating an issue. */
-  async resolveIssue(issueReference: string): Promise<string> {
-    return this.#resolveIssue(issueReference);
+  /** Resolves an existing native key or external reference without creating an issue; with
+   *  `asOf`, by the external links the issue held at that cut. */
+  async resolveIssue(issueReference: string, read: AsOfRead = {}): Promise<string> {
+    return this.#resolveIssue(issueReference, read);
   }
 
   /**
@@ -1151,14 +1189,19 @@ export class DispatchClient {
    */
   async listIssuePage(
     options: ListIssuesOptions,
-    page: IssuePageRequest
+    page: IssuePageRequest,
+    read: AsOfRead = {}
   ): Promise<IssueSummaryPage> {
     const path = ["api", "v1", "issues"];
     const query = { ...options, limit: page.limit, offset: page.offset };
-    const answer: unknown = await this.#json("GET", path, undefined, query);
+    const answer: unknown = await this.#read(path, query, read);
     const refusal = whyNotAPage(answer);
     if (refusal === undefined) return answer as IssueSummaryPage;
-    const url = requestForText(this.#baseUrl, this.#url(path, query), DISPATCH_URL_SETTING);
+    const url = requestForText(
+      this.#baseUrl,
+      this.#url(path, query, read.asOf),
+      DISPATCH_URL_SETTING
+    );
     throw new Error(
       `GET ${url} asked for a page ({issues, total, limit, offset}) and got ${refusal}`
     );
@@ -1173,20 +1216,28 @@ export class DispatchClient {
    * array is refused, naming what arrived: a page here means a Dispatch that still pages a request
    * carrying no paging parameters.
    */
-  async listAllIssues(options: ListIssuesOptions): Promise<IssueSummary[]> {
+  async listAllIssues(options: ListIssuesOptions, read: AsOfRead = {}): Promise<IssueSummary[]> {
     const path = ["api", "v1", "issues"];
     const query = { ...options };
-    const answer: unknown = await this.#json("GET", path, undefined, query);
+    const answer: unknown = await this.#read(path, query, read);
     if (Array.isArray(answer)) return answer as IssueSummary[];
-    const url = requestForText(this.#baseUrl, this.#url(path, query), DISPATCH_URL_SETTING);
+    const url = requestForText(
+      this.#baseUrl,
+      this.#url(path, query, read.asOf),
+      DISPATCH_URL_SETTING
+    );
     throw new Error(`GET ${url} asked for the unpaged listing and got ${whyNotAnArray(answer)}.`);
   }
 
   /** `GET /api/v1/issues/{key}/artifacts`: every document and file the issue holds, each with
    *  its versions, which is what `dispatch artifact` reads to refuse a name the issue already
    *  holds. */
-  async listIssueArtifacts(issue: string): Promise<Artifact[]> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"]);
+  async listIssueArtifacts(issue: string, read: AsOfRead = {}): Promise<Artifact[]> {
+    return this.#read(
+      ["api", "v1", "issues", await this.#resolveIssue(issue, read), "artifacts"],
+      undefined,
+      read
+    );
   }
 
   /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
@@ -1202,12 +1253,15 @@ export class DispatchClient {
     return answer.markdown;
   }
 
-  async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {
-    return this.#json(
-      "GET",
+  async listProjectArtifacts(
+    project: string,
+    unlinked = false,
+    read: AsOfRead = {}
+  ): Promise<Artifact[]> {
+    return this.#read(
       ["api", "v1", "projects", project, "artifacts"],
-      undefined,
-      unlinked ? { unlinked: "true" } : undefined
+      unlinked ? { unlinked: "true" } : undefined,
+      read
     );
   }
 
@@ -1225,8 +1279,8 @@ export class DispatchClient {
     return this.#upload(["api", "v1", "projects", project, "artifacts"], input, key);
   }
 
-  async getProjectArtifact(project: string, slug: string): Promise<Artifact> {
-    return this.#json("GET", ["api", "v1", "projects", project, "artifacts", slug]);
+  async getProjectArtifact(project: string, slug: string, read: AsOfRead = {}): Promise<Artifact> {
+    return this.#read(["api", "v1", "projects", project, "artifacts", slug], undefined, read);
   }
 
   /** `POST /api/v1/agents/{session_id}/artifacts`: an upload owned by an agent's conversation on
@@ -1239,30 +1293,32 @@ export class DispatchClient {
     return this.#upload(["api", "v1", "agents", sessionId, "artifacts"], input);
   }
 
-  async getAgentArtifact(sessionId: string, slug: string): Promise<Artifact> {
-    return this.#json("GET", ["api", "v1", "agents", sessionId, "artifacts", slug]);
+  async getAgentArtifact(sessionId: string, slug: string, read: AsOfRead = {}): Promise<Artifact> {
+    return this.#read(["api", "v1", "agents", sessionId, "artifacts", slug], undefined, read);
   }
 
-  async getIssueArtifact(issue: string, slug: string): Promise<Artifact> {
-    return this.#json("GET", [
-      "api",
-      "v1",
-      "issues",
-      await this.#resolveIssue(issue),
-      "artifacts",
-      slug,
-    ]);
+  async getIssueArtifact(issue: string, slug: string, read: AsOfRead = {}): Promise<Artifact> {
+    return this.#read(
+      ["api", "v1", "issues", await this.#resolveIssue(issue, read), "artifacts", slug],
+      undefined,
+      read
+    );
   }
 
   /** `GET /api/v1/search`, or `GET /api/v1/search/results` for a request carrying a member a
    *  Dispatch released before that route would drop (`everyBuildReadsSearch`), which such a
-   *  build refuses rather than answering unnarrowed. */
-  async search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
+   *  build refuses rather than answering unnarrowed. `as_of` is such a member: a search at a cut
+   *  goes to `GET /api/v1/search/results`. */
+  async search(
+    query: string,
+    options: SearchOptions = {},
+    read: AsOfRead = {}
+  ): Promise<SearchResponse> {
     const request = { q: query, ...options };
-    const path = everyBuildReadsSearch(request)
+    const path = everyBuildReadsSearch({ ...request, as_of: read.asOf })
       ? ["api", "v1", "search"]
       : ["api", "v1", "search", "results"];
-    return this.#json("GET", path, undefined, request);
+    return this.#read(path, request, read);
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
@@ -1272,8 +1328,12 @@ export class DispatchClient {
     return this.#writingNothing(["api", "v1", "projects", project, "related"], input);
   }
 
-  async getIssue(issue: string): Promise<IssueDetails> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue)]);
+  async getIssue(issue: string, read: AsOfRead = {}): Promise<IssueDetails> {
+    return this.#read(
+      ["api", "v1", "issues", await this.#resolveIssue(issue, read)],
+      undefined,
+      read
+    );
   }
 
   /** `PATCH /api/v1/issues/{key}`: the server replaces every field the body names. */
@@ -1312,23 +1372,28 @@ export class DispatchClient {
   async getIssueEvents(
     issue: string,
     after = 0,
-    limit = ISSUE_EVENTS_PAGE_MAX
+    limit = ISSUE_EVENTS_PAGE_MAX,
+    read: AsOfRead = {}
   ): Promise<DispatchEvent[]> {
-    return this.#json(
-      "GET",
-      ["api", "v1", "issues", await this.#resolveIssue(issue), "events"],
-      undefined,
-      { after, limit }
+    return this.#read(
+      ["api", "v1", "issues", await this.#resolveIssue(issue, read), "events"],
+      { after, limit },
+      read
     );
   }
 
   /** The issue and its newest `options.events` events (every one for `"all"`), oldest first, up
    *  to the issue's `last_seq` as read. An issue's events are numbered 1 to `last_seq`, so the
    *  newest N are the N after `last_seq - N`, read a page of at most `ISSUE_EVENTS_PAGE_MAX` at a
-   *  time, and an event written after the issue was read is left to the next read. */
-  async read(issueReference: string, options: IssueReadOptions = {}): Promise<IssueRead> {
-    const issueKey = await this.#resolveIssue(issueReference);
-    const issue = await this.getIssue(issueKey);
+   *  time, and an event written after the issue was read is left to the next read. With `read`'s
+   *  cut, the issue and every page are read at that cut. */
+  async read(
+    issueReference: string,
+    options: IssueReadOptions = {},
+    read: AsOfRead = {}
+  ): Promise<IssueRead> {
+    const issueKey = await this.#resolveIssue(issueReference, read);
+    const issue = await this.getIssue(issueKey, read);
     const requested = options.events;
     const count =
       requested === undefined
@@ -1340,7 +1405,7 @@ export class DispatchClient {
     let after = Math.max(0, issue.last_seq - count);
     while (events.length < count) {
       const limit = Math.min(ISSUE_EVENTS_PAGE_MAX, count - events.length);
-      const page = await this.getIssueEvents(issueKey, after, limit);
+      const page = await this.getIssueEvents(issueKey, after, limit, read);
       events.push(...page);
       const last = page.at(-1);
       // A short page is the end of the issue's events; a full one ends the read once it holds
@@ -1364,16 +1429,21 @@ export class DispatchClient {
     );
   }
 
-  async openAsks(sessionID: string, since?: string): Promise<OpenAsksResponse> {
-    return this.#json("GET", ["api", "v1", "asks", "open"], undefined, {
-      author_session: sessionID,
-      ...(since === undefined ? {} : { since }),
-    });
+  async openAsks(
+    sessionID: string,
+    since?: string,
+    read: AsOfRead = {}
+  ): Promise<OpenAsksResponse> {
+    return this.#read(
+      ["api", "v1", "asks", "open"],
+      { author_session: sessionID, ...(since === undefined ? {} : { since }) },
+      read
+    );
   }
 
   /** Every open ask on a project's issues and documents (issue- or document-owned), oldest first. */
-  async openAsksForProject(project: string): Promise<OpenAsksResponse> {
-    return this.#json("GET", ["api", "v1", "asks", "open"], undefined, { project });
+  async openAsksForProject(project: string, read: AsOfRead = {}): Promise<OpenAsksResponse> {
+    return this.#read(["api", "v1", "asks", "open"], { project }, read);
   }
 
   /** `GET /api/v1/priorities`: every live priority in rank order with the work under it, and the
@@ -1394,16 +1464,16 @@ export class DispatchClient {
       readonly since?: string;
       readonly maxChars?: number;
       readonly signal?: AbortSignal;
-    } = {}
+    } = {},
+    read: AsOfRead = {}
   ): Promise<SessionAnswersResponse> {
-    return this.#json(
-      "GET",
+    return this.#read(
       ["api", "v1", "agents", sessionID, "answers"],
-      undefined,
       {
         ...(options.since === undefined ? {} : { since: options.since }),
         ...(options.maxChars === undefined ? {} : { max_chars: options.maxChars }),
       },
+      read,
       options.signal
     );
   }
@@ -1431,8 +1501,8 @@ export class DispatchClient {
    *  handed to them, and the asks on the issues assigned to them that nobody has handed on —
    *  which is what the Inbox page shows by default. The route reads the caller's own `person`
    *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
-  async inbox(assignee: string): Promise<InboxRow[]> {
-    return this.#json("GET", ["api", "v1", "inbox"], undefined, { assignee });
+  async inbox(assignee: string, read: AsOfRead = {}): Promise<InboxRow[]> {
+    return this.#read(["api", "v1", "inbox"], { assignee }, read);
   }
 
   /** `GET /api/v1/me/replies?kind=reply,agent`: every unread thread the caller's Inbox lists —
@@ -1673,12 +1743,11 @@ export class DispatchClient {
    *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
    *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
    *  proves, at the issue's newest pull request head as on every read. */
-  async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
-    return this.#json(
-      "GET",
-      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
-      undefined,
-      at === undefined ? undefined : { at }
+  async issueResults(issue: string, at?: string, read: AsOfRead = {}): Promise<IssueCheckResults> {
+    return this.#read(
+      ["api", "v1", "issues", await this.#resolveIssue(issue, read), "results"],
+      at === undefined ? undefined : { at },
+      read
     );
   }
 
@@ -1709,21 +1778,27 @@ export class DispatchClient {
   }
 
   /** Every ask on an issue (all states unless narrowed). */
-  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
-    return this.#json(
-      "GET",
-      ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
-      undefined,
-      state === undefined ? undefined : { state }
+  async listIssueAsks(
+    issue: string,
+    state?: "all" | "open" | "answered",
+    read: AsOfRead = {}
+  ): Promise<AskWithTrees[]> {
+    return this.#read(
+      ["api", "v1", "issues", await this.#resolveIssue(issue, read), "asks"],
+      state === undefined ? undefined : { state },
+      read
     );
   }
 
-  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
-    return this.#json(
-      "GET",
+  async getArtifactAsks(
+    id: string,
+    state?: "all" | "open" | "answered",
+    read: AsOfRead = {}
+  ): Promise<AskWithTrees[]> {
+    return this.#read(
       ["api", "v1", "artifacts", id, "asks"],
-      undefined,
-      state === undefined ? undefined : { state }
+      state === undefined ? undefined : { state },
+      read
     );
   }
 
@@ -1749,8 +1824,8 @@ export class DispatchClient {
     );
   }
 
-  async getArtifactComments(id: string): Promise<Comment[]> {
-    return this.#json("GET", ["api", "v1", "artifacts", id, "comments"]);
+  async getArtifactComments(id: string, read: AsOfRead = {}): Promise<Comment[]> {
+    return this.#read(["api", "v1", "artifacts", id, "comments"], undefined, read);
   }
 
   async artifactComment(
@@ -1835,15 +1910,12 @@ export class DispatchClient {
     );
   }
 
-  async getMessage(issue: string, id: string): Promise<MessageRead> {
-    return this.#json("GET", [
-      "api",
-      "v1",
-      "issues",
-      await this.#resolveIssue(issue),
-      "messages",
-      id,
-    ]);
+  async getMessage(issue: string, id: string, read: AsOfRead = {}): Promise<MessageRead> {
+    return this.#read(
+      ["api", "v1", "issues", await this.#resolveIssue(issue, read), "messages", id],
+      undefined,
+      read
+    );
   }
 
   /** `GET /api/v1/messages/{id}`: the conversation a message belongs to, by any message id in
@@ -1852,12 +1924,11 @@ export class DispatchClient {
    *  threads a session may read is the route's rule (`GET /api/v1` describes it). A caller with
    *  no session of its own names none, as `messageHistory` does: a thread on an issue follows
    *  the issue's rule, and a direct one is then refused (400 SESSION_REQUIRED). */
-  async getMessageThread(id: string, session?: string): Promise<MessageRead> {
-    return this.#json(
-      "GET",
+  async getMessageThread(id: string, session?: string, read: AsOfRead = {}): Promise<MessageRead> {
+    return this.#read(
       ["api", "v1", "messages", id],
-      undefined,
-      session === undefined ? undefined : { session }
+      session === undefined ? undefined : { session },
+      read
     );
   }
 
@@ -1881,20 +1952,27 @@ export class DispatchClient {
    *  mark and no body once it is deleted. It is read under
    *  `GET /api/v1/messages/{id}`'s rule, so the session goes in the query as `messageBlocks`
    *  sends it. */
-  async messageHistory(id: string, session?: string): Promise<PostHistoryRead> {
-    return this.#json(
-      "GET",
+  async messageHistory(
+    id: string,
+    session?: string,
+    read: AsOfRead = {}
+  ): Promise<PostHistoryRead> {
+    return this.#read(
       ["api", "v1", "messages", id, "history"],
-      undefined,
-      session === undefined ? undefined : { session }
+      session === undefined ? undefined : { session },
+      read
     );
   }
 
   /** `GET /api/v1/issues/{key}/messages`: the issue's message threads, each root with its
    *  replies. It is read to resolve a `dispatch://KEY/message/<id>` reference whose id is a
    *  prefix; a reference carrying a full id needs no listing. */
-  async issueMessages(issue: string): Promise<MessageRead[]> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "messages"]);
+  async issueMessages(issue: string, read: AsOfRead = {}): Promise<MessageRead[]> {
+    return this.#read(
+      ["api", "v1", "issues", await this.#resolveIssue(issue, read), "messages"],
+      undefined,
+      read
+    );
   }
 
   /** `POST /api/v1/messages/{id}/deliveries/{attempt}/accept`: this session records that it took
@@ -1929,34 +2007,52 @@ export class DispatchClient {
     );
   }
 
-  async getArtifact(id: string): Promise<Artifact> {
-    return this.#json("GET", ["api", "v1", "artifacts", id]);
+  async getArtifact(id: string, read: AsOfRead = {}): Promise<Artifact> {
+    return this.#read(["api", "v1", "artifacts", id], undefined, read);
   }
 
-  async docRead(id: string): Promise<ArtifactText>;
-  async docRead(id: string, version: number): Promise<ArtifactVersionText>;
-  async docRead(id: string, version?: number): Promise<ArtifactText | ArtifactVersionText>;
-  async docRead(id: string, version?: number): Promise<ArtifactText | ArtifactVersionText> {
+  async docRead(id: string, version?: undefined, read?: AsOfRead): Promise<ArtifactText>;
+  async docRead(id: string, version: number, read?: AsOfRead): Promise<ArtifactVersionText>;
+  async docRead(
+    id: string,
+    version?: number,
+    read?: AsOfRead
+  ): Promise<ArtifactText | ArtifactVersionText>;
+  async docRead(
+    id: string,
+    version?: number,
+    read: AsOfRead = {}
+  ): Promise<ArtifactText | ArtifactVersionText> {
     return version === undefined
-      ? this.#json("GET", ["api", "v1", "artifacts", id, "text"])
-      : this.#json("GET", ["api", "v1", "artifacts", id, "versions", String(version)]);
+      ? this.#read(["api", "v1", "artifacts", id, "text"], undefined, read)
+      : this.#read(["api", "v1", "artifacts", id, "versions", String(version)], undefined, read);
   }
 
   /** `GET /api/v1/artifacts/{id}/text?blocks=true`: the live document's markdown, its token, its
    *  version and its blocks in one answer, every part of it rendered from the one tree, so a write
    *  by another session between two reads cannot leave the blocks indexing markdown they were not
-   *  computed over. A Dispatch older than the parameter answers the text without `blocks`. */
-  async docReadWithBlocks(id: string): Promise<ArtifactText> {
-    return this.#json("GET", ["api", "v1", "artifacts", id, "text"], undefined, { blocks: true });
+   *  computed over. A Dispatch older than the parameter answers the text without `blocks`. With
+   *  `asOf`, the version that stood at that cut and its blocks. */
+  async docReadWithBlocks(id: string, read: AsOfRead = {}): Promise<ArtifactText> {
+    return this.#read(["api", "v1", "artifacts", id, "text"], { blocks: true }, read);
   }
 
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`
    * answers a file with its bytes under its own MIME type, never a JSON envelope. */
-  async fileVersion(id: string, version: number): Promise<ArtifactFileVersion> {
-    const url = this.#url(["api", "v1", "artifacts", id, "versions", String(version)]);
+  async fileVersion(
+    id: string,
+    version: number,
+    read: AsOfRead = {}
+  ): Promise<ArtifactFileVersion> {
+    const url = this.#url(
+      ["api", "v1", "artifacts", id, "versions", String(version)],
+      undefined,
+      read.asOf
+    );
     return this.#noRoute(async () => {
       const response = await this.#send("GET", url, undefined, "*/*");
       if (!response.ok) return this.#response<never>("GET", url, response);
+      this.#answeredAtCut(url, response, read);
       return {
         mime: response.headers.get("Content-Type") ?? "application/octet-stream",
         bytes: new Uint8Array(await response.arrayBuffer()),
@@ -1970,13 +2066,25 @@ export class DispatchClient {
 
   /** `GET /api/v1/issues/{key}/artifacts/{slug}/blocks`: the blocks of one issue document named
    *  by its slug (`spec` for the issue's spec), with no read of the issue to resolve its id. */
-  async issueArtifactBlocks(issue: string, slug: string): Promise<ArtifactBlock[]> {
-    return this.#json("GET", ["api", "v1", "issues", issue, "artifacts", slug, "blocks"]);
+  async issueArtifactBlocks(
+    issue: string,
+    slug: string,
+    read: AsOfRead = {}
+  ): Promise<ArtifactBlock[]> {
+    return this.#read(["api", "v1", "issues", issue, "artifacts", slug, "blocks"], undefined, read);
   }
 
   /** `GET /api/v1/projects/{key}/artifacts/{slug}/blocks`: the same for a project document. */
-  async projectArtifactBlocks(project: string, slug: string): Promise<ArtifactBlock[]> {
-    return this.#json("GET", ["api", "v1", "projects", project, "artifacts", slug, "blocks"]);
+  async projectArtifactBlocks(
+    project: string,
+    slug: string,
+    read: AsOfRead = {}
+  ): Promise<ArtifactBlock[]> {
+    return this.#read(
+      ["api", "v1", "projects", project, "artifacts", slug, "blocks"],
+      undefined,
+      read
+    );
   }
 
   /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks, with
@@ -2028,16 +2136,21 @@ export class DispatchClient {
     return this.#json("POST", ["api", "v1", "artifacts", id, "versions"], input);
   }
 
-  async getArtifactEvents(id: string, after = 0, limit = 200): Promise<DispatchEvent[]> {
-    return this.#json("GET", ["api", "v1", "artifacts", id, "events"], undefined, { after, limit });
+  async getArtifactEvents(
+    id: string,
+    after = 0,
+    limit = 200,
+    read: AsOfRead = {}
+  ): Promise<DispatchEvent[]> {
+    return this.#read(["api", "v1", "artifacts", id, "events"], { after, limit }, read);
   }
 
   async getArtifactReferences(id: string): Promise<ArtifactReferences> {
     return this.#json("GET", ["api", "v1", "artifacts", id, "references"]);
   }
 
-  async getAsk(id: string): Promise<AskRead> {
-    return this.#json("GET", ["api", "v1", "asks", id]);
+  async getAsk(id: string, read: AsOfRead = {}): Promise<AskRead> {
+    return this.#read(["api", "v1", "asks", id], undefined, read);
   }
 
   /** A bearer follows only its own session: the body names it and the path repeats it. */
@@ -2049,8 +2162,8 @@ export class DispatchClient {
     await this.#json("DELETE", ["api", "v1", "asks", id, "followers", sessionId], { actor });
   }
 
-  async getComment(id: string): Promise<CommentRead> {
-    return this.#json("GET", ["api", "v1", "comments", id]);
+  async getComment(id: string, read: AsOfRead = {}): Promise<CommentRead> {
+    return this.#read(["api", "v1", "comments", id], undefined, read);
   }
 
   /** Resolves a comment thread as `actor`; the server takes no reason and any actor may resolve. */
@@ -2079,12 +2192,16 @@ export class DispatchClient {
    *  newest first: with the body an edit replaced while the comment stands, and with the deleted
    *  mark and no body once it is deleted. Any authenticated caller
    *  reads it, as it reads `getComment`. */
-  async commentHistory(id: string): Promise<PostHistoryRead> {
-    return this.#json("GET", ["api", "v1", "comments", id, "history"]);
+  async commentHistory(id: string, read: AsOfRead = {}): Promise<PostHistoryRead> {
+    return this.#read(["api", "v1", "comments", id, "history"], undefined, read);
   }
 
-  async getComments(issue: string): Promise<Comment[]> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"]);
+  async getComments(issue: string, read: AsOfRead = {}): Promise<Comment[]> {
+    return this.#read(
+      ["api", "v1", "issues", await this.#resolveIssue(issue, read), "comments"],
+      undefined,
+      read
+    );
   }
 
   /** `POST /api/v1/issues/{key}/handoffs/{phase}`: records `body`, the handoff's exact text, as
@@ -2162,19 +2279,25 @@ export class DispatchClient {
     });
   }
 
-  async #resolveIssue(issueReference: string): Promise<string> {
+  /** The key `issueReference` names: itself for a native key, and for an external reference the
+   *  key Dispatch resolves it to, at `read`'s cut where it names one. One client resolves one
+   *  reference once at each cut. */
+  async #resolveIssue(issueReference: string, read: AsOfRead = {}): Promise<string> {
     if (!issueReference.includes("#")) return issueReference;
-    let resolved = this.#resolvedIssues.get(issueReference);
+    const key = `${read.asOf ?? ""}\n${issueReference}`;
+    let resolved = this.#resolvedIssues.get(key);
     if (!resolved) {
-      resolved = this.#json<{ key: string }>("GET", ["api", "v1", "issues", "resolve"], undefined, {
-        ref: issueReference,
-      }).then((resolution) => resolution.key);
-      this.#resolvedIssues.set(issueReference, resolved);
+      resolved = this.#read<{ key: string }>(
+        ["api", "v1", "issues", "resolve"],
+        { ref: issueReference },
+        read
+      ).then((resolution) => resolution.key);
+      this.#resolvedIssues.set(key, resolved);
     }
     try {
       return await resolved;
     } catch (error) {
-      this.#resolvedIssues.delete(issueReference);
+      this.#resolvedIssues.delete(key);
       throw error;
     }
   }
@@ -2187,6 +2310,43 @@ export class DispatchClient {
     key?: string
   ): Promise<T> {
     return (await this.#jsonAnswer<T>(method, path, body, { query, signal, key })).payload;
+  }
+
+  /**
+   * A read of a route that answers `as_of`: `#json`'s GET, which sends `read.asOf` as `as_of`
+   * where it names a cut. An answer to a read at a cut must name the cut (`#answeredAtCut`).
+   */
+  async #read<T>(
+    path: readonly string[],
+    query: object | undefined,
+    read: AsOfRead,
+    signal?: AbortSignal
+  ): Promise<T> {
+    if (read.asOf === undefined) return this.#json("GET", path, undefined, query, signal);
+    const url = this.#url(path, query, read.asOf);
+    return this.#noRoute(async () => {
+      const response = await this.#send("GET", url, undefined, undefined, signal);
+      const payload = await this.#response<T>("GET", url, response);
+      this.#answeredAtCut(url, response, read);
+      return payload;
+    }, signal);
+  }
+
+  /**
+   * Refuses a 2xx answer to a read at a cut that does not name the cut (`AsOfNotAnswered`): a
+   * server older than `as_of` answers the present. Otherwise it tells `read.absent` the fields the
+   * answer names absent. A read at no cut has nothing to check.
+   */
+  #answeredAtCut(url: string, response: Response, read: AsOfRead): void {
+    if (read.asOf === undefined) return;
+    if (response.headers.get(DISPATCH_AS_OF_HEADER) === null) {
+      throw new AsOfNotAnswered(
+        `GET ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
+        read.asOf
+      );
+    }
+    const absent = parseAsOfAbsent(response.headers.get(DISPATCH_AS_OF_ABSENT_HEADER));
+    if (absent.length > 0) read.absent?.(absent);
   }
 
   /** `#json` with the status Dispatch answered, for a route whose status says what it did.
@@ -2886,7 +3046,9 @@ export class DispatchClient {
     }
   }
 
-  #url(path: readonly string[], query?: object): string {
+  /** The request's URL: `path` under the Dispatch URL, then `query`, then `as_of` where `asOf`
+   *  names a cut. Every request's query is built here. */
+  #url(path: readonly string[], query?: object, asOf?: string): string {
     const url = new URL(
       `${path.map((segment) => encodeURIComponent(segment)).join("/")}`,
       `${this.#baseUrl}/`
@@ -2906,6 +3068,7 @@ export class DispatchClient {
         }
       }
     }
+    if (asOf !== undefined) url.searchParams.set("as_of", asOf);
     return url.toString();
   }
 

@@ -15,6 +15,7 @@ import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 interface Recorded {
   readonly method: string;
@@ -291,6 +292,8 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const { pathname, search, searchParams } = new URL(request.url);
+    // Every read command reads whoami first (`whoami-stand-in.ts`); it is not recorded.
+    if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
     // An upload is multipart where it carries a file and JSON where it carries inline content,
     // as the route takes both: a file's part is recorded as the text it carried, since the
     // recorder below parses every body as JSON and would throw on those bytes

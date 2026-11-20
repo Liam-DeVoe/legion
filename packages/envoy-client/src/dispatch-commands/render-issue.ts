@@ -19,6 +19,7 @@ import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
+import { LEFT_OUT, type ReadCut } from "./as-of";
 import { approvalLine, documentListLines } from "./document-targets";
 import { linkFor } from "./links";
 
@@ -148,16 +149,22 @@ export interface LiveAgents {
  * per row, and none at all unless a session holds something being rendered — the same gate the
  * dashboard applies with `useAgents(holdsSession)`.
  *
- * `undefined` is no registry: none was needed, or the agents request failed. Names then fall back
- * to the title each session stamped on its write, and a session's claim reads "liveness unknown"
- * (`claimText`) rather than running or not running. A holder the registry does not list is the
- * ordinary case, a session that has ended, whose claim the next agent may take.
+ * `undefined` is no registry: none was needed, the agents request failed, or the read is at a cut
+ * (`cut`), where the registry, which answers the present only, is not read and is left out. Names
+ * then fall back to the title each session stamped on its write, and a session's claim reads
+ * "liveness unknown" (`claimText`) rather than running or not running. A holder the registry does
+ * not list is the ordinary case, a session that has ended, whose claim the next agent may take.
  */
 export async function liveAgents(
   client: DispatchClient,
-  needed: boolean
+  needed: boolean,
+  cut?: ReadCut
 ): Promise<LiveAgents | undefined> {
   if (!needed) {
+    return undefined;
+  }
+  if (cut !== undefined) {
+    cut.leave(LEFT_OUT.liveness);
     return undefined;
   }
   try {

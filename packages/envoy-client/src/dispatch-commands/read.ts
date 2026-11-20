@@ -1,3 +1,4 @@
+import { askAnswerText } from "../ask-answer";
 import type { IssueReadOptions } from "../dispatch-http";
 import {
   dispatchChildRef,
@@ -14,6 +15,7 @@ import {
   readPictures,
 } from "../dispatch-picture-tools";
 import { type DatedText, picturesNewestFirst } from "../dispatch-pictures";
+import { LEFT_OUT, type ReadCut } from "./as-of";
 import { readAskRef } from "./asks";
 import {
   type CommandContext,
@@ -21,6 +23,7 @@ import {
   optionalBoolean,
   optionalNumber,
   optionalString,
+  type ReadingContext,
   stringArg,
 } from "./context";
 import { resolveMessageArgument } from "./conversation";
@@ -54,7 +57,9 @@ import { askSummary, commentSummary, messageSummary, postHistorySummary } from "
  * or the issue itself. Reads report their owner and follow nothing; no result subscribes the
  * session.
  */
-export async function readCommand(context: CommandContext): Promise<DispatchToolResult> {
+export async function readCommand(
+  context: ReadingContext<CommandContext>
+): Promise<DispatchToolResult> {
   const {
     args,
     client,
@@ -67,6 +72,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     issue,
     configUrl,
     hostSession,
+    reading: { cut },
   } = context;
   const message = optionalString(args, "message");
   // --history reads one post's replaced bodies in place of the post. The contract holds it
@@ -76,7 +82,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
   // The pictures the shown texts embed, read beside the graph: a `Pictures:` section that
   // goes before `Referenced by:`, and the images it numbers.
   const picturesOf = (texts: readonly DatedText[]) =>
-    readPictures(client, picturesNewestFirst(texts), shown);
+    readPictures(client, picturesNewestFirst(texts), shown, cut);
   // The result's images. A tool result is the model's once it is returned, so they join
   // `shown` here, the last part of the result built, after every read that could fail it.
   const showImages = (pictures: PicturesRead) => {
@@ -86,7 +92,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
   if (message !== undefined) {
     const sessionId = input.sessionId?.trim();
     if (!sessionId) throw new Error("host session id is required for dispatch read --message");
-    const thread = await client.getMessageThread(messageIdOf(message) as string, sessionId);
+    const thread = await client.getMessageThread(messageIdOf(message) as string, sessionId, cut);
     const issueKey = thread.message.issue_key;
     const [pictures, graph] = await Promise.all([
       picturesOf(datedBodies([thread.message, ...(thread.replies ?? [])])),
@@ -94,7 +100,8 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         ? []
         : graphSections(
             client,
-            dispatchChildRef(dispatchIssueRef(issueKey), "message", thread.message.id)
+            dispatchChildRef(dispatchIssueRef(issueKey), "message", thread.message.id),
+            cut
           ),
     ]);
     return {
@@ -135,9 +142,9 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
       return "";
     }
     const deleted = await (item.kind === "comment"
-      ? client.getComment(item.id).then((read) => read.comment.deleted_at)
+      ? client.getComment(item.id, cut).then((read) => read.comment.deleted_at)
       : ref.owner.kind === "issue"
-        ? client.getMessage(ref.owner.issue, item.id).then((read) => read.message.deleted_at)
+        ? client.getMessage(ref.owner.issue, item.id, cut).then((read) => read.message.deleted_at)
         : Promise.resolve(undefined)
     ).catch(() => undefined);
     return deleted == null ? "" : ` This ${item.kind} is deleted.`;
@@ -147,10 +154,16 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     // The same undecidable `not found` the corrections and the two post reads met, one arm
     // over: a reference whose issue Dispatch does not hold reads the same as one whose ask it
     // does not. A reference naming a project document is read the same way, by the document.
-    const askRead = await readAskRef(input.tool, ref.id, refOwnerName(ref), client, async () =>
-      ref.owner.kind === "issue"
-        ? client.listIssueAsks(ref.owner.issue)
-        : client.getArtifactAsks(await documentIdOf(ref), "all")
+    const askRead = await readAskRef(
+      input.tool,
+      ref.id,
+      refOwnerName(ref),
+      client,
+      async () =>
+        ref.owner.kind === "issue"
+          ? client.listIssueAsks(ref.owner.issue, undefined, cut)
+          : client.getArtifactAsks(await documentIdOf(ref), "all", cut),
+      cut
     ).catch(async (error: unknown) => {
       throw await refuseMissingOfRef(
         error,
@@ -158,7 +171,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         ref.id,
         ref.owner,
         refOwnerName(ref),
-        readRefOwner(client, ref.owner, () => documentIdOf(ref))
+        readRefOwner(client, ref.owner, () => documentIdOf(ref), cut)
       );
     });
     await refuseItemOffRef(input.tool, "ask", ref, stringArg(args, "ref"), askRead.ask, () =>
@@ -169,8 +182,8 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     // the summary lists the edges at each of its parts under that part.
     const [pictures, incoming, outgoing] = await Promise.all([
       picturesOf(askTexts(askRead)),
-      graphReferences(client, { to: askRef }),
-      graphReferences(client, { from: askRef }),
+      graphReferences(client, { to: askRef }, cut),
+      graphReferences(client, { from: askRef }, cut),
     ]);
     return {
       text: askSummary(askRead, askRef, pictures.lines, incoming, outgoing),
@@ -183,19 +196,19 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     const ref = ownerArguments.ref;
     const id = await resolveIdPrefix(input.tool, "comment", ref.id, refOwnerName(ref), async () =>
       ref.owner.kind === "issue"
-        ? client.getComments(ref.owner.issue)
-        : client.getArtifactComments(await documentIdOf(ref))
+        ? client.getComments(ref.owner.issue, cut)
+        : client.getArtifactComments(await documentIdOf(ref), cut)
     );
     // The same undecidable `not found` the corrections met: a reader of this read must be able
     // to tell a post that is gone from an issue that was never there (dispatch://INFRA-1523).
-    const comment = await client.getComment(id).catch(async (error: unknown) => {
+    const comment = await client.getComment(id, cut).catch(async (error: unknown) => {
       throw await refuseMissingOfRef(
         error,
         "comment",
         id,
         ref.owner,
         refOwnerName(ref),
-        readRefOwner(client, ref.owner, () => documentIdOf(ref))
+        readRefOwner(client, ref.owner, () => documentIdOf(ref), cut)
       );
     });
     await refuseItemOffRef(
@@ -212,7 +225,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
           "Comment",
           refTarget(ref, "comment", id),
           id,
-          await throughPostCorrections(input.tool, configUrl, client.commentHistory(id))
+          await throughPostCorrections(input.tool, configUrl, client.commentHistory(id, cut))
         ),
         details:
           ref.owner.kind === "project"
@@ -223,7 +236,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     const commentRef = refTarget(ref, "comment", id);
     const [pictures, graph] = await Promise.all([
       picturesOf(datedBodies([comment.comment, ...(comment.replies ?? [])])),
-      graphSections(client, commentRef),
+      graphSections(client, commentRef, cut),
     ]);
     return {
       text: commentSummary(comment, [...pictures.lines, ...graph]),
@@ -248,7 +261,8 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         "ref",
         stringArg(args, "ref"),
         client,
-        hostSession
+        hostSession,
+        cut
       );
       return {
         text: postHistorySummary(
@@ -258,7 +272,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
           await throughPostCorrections(
             input.tool,
             configUrl,
-            client.messageHistory(id, hostSession === "" ? undefined : hostSession)
+            client.messageHistory(id, hostSession === "" ? undefined : hostSession, cut)
           )
         ),
         details: { issue: messageIssue, message: id },
@@ -266,7 +280,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     }
     const named = ownerArguments.ref;
     const messageRead = await client
-      .getMessage(messageIssue, named.id)
+      .getMessage(messageIssue, named.id, cut)
       .catch(async (error: unknown) => {
         throw await refuseMissingOfRef(
           error,
@@ -274,7 +288,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
           named.id,
           { kind: "issue", issue: messageIssue },
           messageIssue,
-          () => client.getIssue(messageIssue)
+          () => client.getIssue(messageIssue, cut)
         );
       });
     const messageRef = dispatchChildRef(
@@ -284,7 +298,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     );
     const [pictures, graph] = await Promise.all([
       picturesOf(datedBodies([messageRead.message, ...(messageRead.replies ?? [])])),
-      graphSections(client, messageRef),
+      graphSections(client, messageRef, cut),
     ]);
     return {
       text: messageSummary(messageRead, [...pictures.lines, ...graph]),
@@ -297,6 +311,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     const blockRef = stringArg(args, "ref");
     // The document, ask, comment or message the block is in: the reference before its `#b-`.
     const holder = blockRef.slice(0, blockRef.indexOf("#"));
+    if (cut !== undefined) return blockAtCut(context, ref, holder, cut);
     // A part of an ask is named by what it is — the question, an option or the answer — and
     // no node carries a part's type, so the ask's own read is read beside the graph. That
     // read only chooses the heading's word, so it is advisory: a failure of it leaves the
@@ -349,7 +364,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
   // not-found hint points to.
   const projectOwner = documentOwner();
   if (projectOwner.kind === "project" && optionalString(args, "artifact") === undefined) {
-    const documents = await client.listProjectArtifacts(projectOwner.project, true);
+    const documents = await client.listProjectArtifacts(projectOwner.project, true, cut);
     return {
       text: [
         `Project: ${projectOwner.project}`,
@@ -378,7 +393,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         `Reference: ${documentRef}`,
         `Versions: ${(artifact.versions ?? []).length}`,
         ...(approval === undefined ? [] : [approval]),
-        ...(await graphSections(client, documentRef)),
+        ...(await graphSections(client, documentRef, cut)),
       ].join("\n"),
       details: {
         ...(resolved.issue === undefined
@@ -395,8 +410,8 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     events: optionalBoolean(args, "all_events") === true ? "all" : optionalNumber(args, "events"),
   };
   if (ownerArguments.ref?.kind === "log") {
-    const read = await client.read(issueKey, readEvents);
-    const pictures = await picturesOf(await eventTextsWhole(client, read.events));
+    const read = await client.read(issueKey, readEvents, cut);
+    const pictures = await picturesOf(await eventTextsWhole(client, read.events, cut));
     return {
       text: [logSummary(read.issue, read.events), ...pictures.lines].join("\n"),
       details: { issue: read.issue.key },
@@ -405,28 +420,28 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
   }
   if (ownerArguments.ref?.kind === "children") {
     // The children list prints no events, so only the issue is read.
-    const parent = await client.getIssue(issueKey);
+    const parent = await client.getIssue(issueKey, cut);
     return {
       text: childrenSummary(parent),
       details: { issue: parent.key },
     };
   }
-  const readPromise = client.read(issueKey, readEvents);
+  const readPromise = client.read(issueKey, readEvents, cut);
   // Start the independent, non-fatal closure lookup with the issue read. `read` retains
   // its internal issue-then-events order because event pagination starts at issue.last_seq.
-  const referencesPromise = issueReferencesOrUnavailable(client, issueKey);
+  const referencesPromise = issueReferencesOrUnavailable(client, issueKey, cut);
   const read = await readPromise;
   // The claim's holder must read the same here as on the issue page, so the label comes
   // from the live registry — asked for only when a session holds this issue.
   const [references, graph, agents, pictures, coverage] = await Promise.all([
     referencesPromise,
-    graphSections(client, dispatchIssueRef(read.issue.key)),
-    liveAgents(client, holdsSession(read.issue.claim) || routeHeldBySession(read.issue)),
+    graphSections(client, dispatchIssueRef(read.issue.key), cut),
+    liveAgents(client, holdsSession(read.issue.claim) || routeHeldBySession(read.issue), cut),
     picturesOf([
       ...(read.issue.open_asks ?? []).map((ask) => ({ text: ask.question, at: ask.created_at })),
-      ...(await eventTextsWhole(client, read.events)),
+      ...(await eventTextsWhole(client, read.events, cut)),
     ]),
-    issueCoverageOrReason(client, read.issue.key),
+    issueCoverageOrReason(client, read.issue.key, cut),
   ]);
   return {
     text: issueSummary(
@@ -442,4 +457,98 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     ...showImages(pictures),
     ...olderServerWarnings(read.issue),
   };
+}
+
+/**
+ * A block read at a cut (decision 16 of dispatch://INFRA-4620). The reference graph, which a block
+ * read reads at the present, holds no history, so the block comes from its document, its ask or
+ * its post read at the cut, and the graph sections are left out. What only the graph records is
+ * left out too: when the block last changed, how a pinned block stands against its pin, and where
+ * a block of a comment or a message starts and ends in its post. A block the read at the cut does
+ * not hold is refused as a block no current version holds is refused.
+ */
+async function blockAtCut(
+  context: ReadingContext<CommandContext>,
+  ref: ParsedDispatchRef,
+  holder: string,
+  cut: ReadCut
+): Promise<DispatchToolResult> {
+  const { client, resolveDocument } = context;
+  const blockID = ref.block ?? "";
+  const missing = (clause = "") =>
+    new Error(`No block ${blockID} in ${holder} at ${cut.asOf}.${clause}`);
+  // An item the read at the cut does not hold has no block there either.
+  const orMissing = (error: unknown): never => {
+    throw dispatchAnswered(error, 404) ? missing() : error;
+  };
+  cut.leave(LEFT_OUT.blockChanged);
+  if (ref.pin !== undefined) cut.leave(LEFT_OUT.blockPin);
+  const graphLeftOut = cut.leave(LEFT_OUT.graph);
+  const graph = graphSectionLines(graphLeftOut, graphLeftOut);
+  const details = {
+    ...(ref.owner.kind === "project" ? { project: ref.owner.project } : { issue: ref.owner.issue }),
+    block: blockID,
+  };
+  const item = ref.item;
+  let lines: string[];
+  if (item === undefined) {
+    // The blocks' byte ranges index the markdown of the version that stood at the cut, which is
+    // read at the same cut.
+    const blocks = await (ref.owner.kind === "project"
+      ? client.projectArtifactBlocks(ref.owner.project, ref.id, cut)
+      : client.issueArtifactBlocks(ref.owner.issue, ref.id, cut)
+    ).catch(orMissing);
+    const block = blocks.find((candidate) => candidate.id === blockID);
+    if (block === undefined) throw missing();
+    const document = await resolveDocument(ref.owner, ref.id);
+    const { markdown } = await client.docRead(document.artifact.id, undefined, cut);
+    const text = new TextDecoder().decode(
+      new TextEncoder().encode(markdown).subarray(block.from, block.to)
+    );
+    lines = blockLines({ block_id: blockID, text }, ref, block);
+  } else if (item.kind === "ask") {
+    const { ask } = await client.getAsk(item.id, cut).catch(orMissing);
+    // A part's id and the ask's revision are given only for an ask that has not changed since
+    // the cut, so a part of an ask that changed reads as a `Part`, with no text.
+    const noun = askPartNoun(ask, {}, blockID);
+    const option = (ask.options ?? []).find((candidate) => candidate.id === blockID);
+    const text =
+      option !== undefined
+        ? `${option.label}${option.description ? ` — ${option.description}` : ""}`
+        : noun === "Answer"
+          ? askAnswerText(ask.answer)
+          : noun === "Question"
+            ? ask.question
+            : undefined;
+    lines = blockLines(
+      { block_id: blockID, ...(text === undefined ? {} : { text }) },
+      ref,
+      undefined,
+      noun
+    );
+  } else {
+    // A message block's owner is always an issue (`parseBlockRef`).
+    const post =
+      item.kind === "comment"
+        ? (await client.getComment(item.id, cut).catch(orMissing)).comment
+        : (
+            await client
+              .getMessage(ref.owner.kind === "issue" ? ref.owner.issue : "", item.id, cut)
+              .catch(orMissing)
+          ).message;
+    // A delete clears every block the post held, and the post reads as deleted at the cut when
+    // its author deleted it since (decision 14).
+    if (post.deleted_at != null) throw missing(` This ${item.kind} is deleted.`);
+    cut.leave(LEFT_OUT.postBlock);
+    // The post's body is absent where the records at the cut cannot give it (`Dispatch-As-Of-Absent`).
+    const body: string | undefined = post.body;
+    lines = [
+      ...blockLines(
+        { block_id: blockID, ...(post.edited_at == null ? {} : { edited_at: post.edited_at }) },
+        ref
+      ),
+      ...(body === undefined ? [] : [`The ${item.kind}'s text at ${cut.asOf}:`, body]),
+    ];
+  }
+  return { text: [...lines, ...graph].join("\n"), details };
 }

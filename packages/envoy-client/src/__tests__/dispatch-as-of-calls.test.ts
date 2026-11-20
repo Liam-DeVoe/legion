@@ -238,7 +238,7 @@ function headingBlock(id: string) {
     type: "heading",
     from: 0,
     to: 6,
-    token: `token-${id}`,
+    token: `sha256:${id}`,
     references: { comments: 0, asks: 0 },
     attributes: [],
   };
@@ -801,7 +801,7 @@ function answerFor(
           ? undefined
           : {
               markdown: document.markdown,
-              token: `token-${id}`,
+              token: `sha256:${id}`,
               version: 1,
               ...(query.get("blocks") === "true" ? { blocks: [document.block] } : {}),
             }

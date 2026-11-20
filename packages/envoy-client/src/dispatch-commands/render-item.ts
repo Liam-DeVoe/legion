@@ -15,7 +15,7 @@ import type {
 import { actorActText, encodeBlockId, POST_HISTORY_PAGE_LIMIT } from "@legion/contracts";
 import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
-import type { DispatchClient } from "../dispatch-http";
+import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
@@ -371,19 +371,21 @@ export function messageSummary(
  *  with its question and every reply under it (a comment whose `ask_id` names the ask), then each
  *  open comment thread with its root and every reply in order. A reply carries no anchor, so the
  *  threads are read from the owner's comments unfiltered and grouped by their ask or root. A
- *  resolved or answered ask and a resolved thread are not printed, nor are their replies. */
+ *  resolved or answered ask and a resolved thread are not printed, nor are their replies. At
+ *  `at`'s cut, the threads as they stood then. */
 export async function openAnchoredThreads(
   client: DispatchClient,
-  resolved: ResolvedArtifact
+  resolved: ResolvedArtifact,
+  at: AsOfRead = {}
 ): Promise<string[]> {
   const asksPromise =
     resolved.owner.kind === "project"
-      ? client.getArtifactAsks(resolved.artifact.id)
+      ? client.getArtifactAsks(resolved.artifact.id, undefined, at)
       : Promise.resolve(resolved.issue?.open_asks ?? []);
   const commentsPromise =
     resolved.owner.kind === "project"
-      ? client.getArtifactComments(resolved.artifact.id)
-      : client.getComments(resolved.issue?.key ?? "");
+      ? client.getArtifactComments(resolved.artifact.id, at)
+      : client.getComments(resolved.issue?.key ?? "", at);
   const commentsResultPromise = commentsPromise.then(
     (value) => ({ status: "fulfilled" as const, value }),
     (reason) => ({ status: "rejected" as const, reason })

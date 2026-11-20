@@ -16,6 +16,7 @@ import type {
 import { SESSION_ID_PATTERN } from "@legion/contracts";
 import { bodyWasCut, carriedItem, wholeCarriedBody } from "./delivery";
 import {
+  type AsOfRead,
   type DispatchClient,
   DispatchGatewayError,
   DispatchServiceError,
@@ -259,12 +260,14 @@ export function eventTexts(event: DispatchEvent): DatedText[] {
 }
 
 /** The texts the events of a read carry, dated, with a body the event carried only in part
- *  (`body_truncated`) read whole from the server first. A picture an author embedded past the
- *  cut is named nowhere in the event, so listing an issue's pictures off the events alone would
- *  lose it. A read that fails leaves that event the part it carried. */
+ *  (`body_truncated`) read whole from the server first, at `read`'s cut where it names one. A
+ *  picture an author embedded past the cut is named nowhere in the event, so listing an issue's
+ *  pictures off the events alone would lose it. A read that fails leaves that event the part it
+ *  carried. */
 export async function eventTextsWhole(
   client: DispatchClient,
-  events: readonly DispatchEvent[]
+  events: readonly DispatchEvent[],
+  read: AsOfRead = {}
 ): Promise<DatedText[]> {
   // Several events of one page can name the same comment or message, and every read of it
   // answers the same current body, so one read serves them all. The map is written before the
@@ -275,13 +278,13 @@ export async function eventTextsWhole(
       const item = bodyWasCut(event.payload) ? carriedItem(event) : undefined;
       if (item === undefined) return eventTexts(event);
       const key = `${item.resource}:${item.id}`;
-      let read = reads.get(key);
-      if (read === undefined) {
-        read = wholeCarriedBody(client, item);
-        reads.set(key, read);
+      let body = reads.get(key);
+      if (body === undefined) {
+        body = wholeCarriedBody(client, item, undefined, read);
+        reads.set(key, body);
       }
-      const body = await read;
-      return body === undefined ? eventTexts(event) : [{ text: body, at: event.created_at }];
+      const text = await body;
+      return text === undefined ? eventTexts(event) : [{ text, at: event.created_at }];
     })
   );
   return whole.flat();
@@ -332,7 +335,7 @@ export function shownPictureAddresses(texts: Iterable<string>): string[] {
 interface PictureTarget {
   /** Dedupes concurrent reads of one artifact: `<owner>/<slug>`. */
   readonly key: string;
-  readonly read: (client: DispatchClient) => Promise<Artifact>;
+  readonly read: (client: DispatchClient, at: AsOfRead) => Promise<Artifact>;
   readonly version: number;
 }
 
@@ -343,7 +346,7 @@ function pictureTarget(address: string): PictureTarget | undefined {
     if (agent.version === undefined) return undefined;
     return {
       key: `agent/${agent.session}/${agent.slug}`,
-      read: (client) => client.getAgentArtifact(agent.session, agent.slug),
+      read: (client, at) => client.getAgentArtifact(agent.session, agent.slug, at),
       version: agent.version,
     };
   }
@@ -353,12 +356,12 @@ function pictureTarget(address: string): PictureTarget | undefined {
   return owner.kind === "issue"
     ? {
         key: `${owner.issue}/${slug}`,
-        read: (client) => client.getIssueArtifact(owner.issue, slug),
+        read: (client, at) => client.getIssueArtifact(owner.issue, slug, at),
         version: ref.version,
       }
     : {
         key: `${owner.project}/${slug}`,
-        read: (client) => client.getProjectArtifact(owner.project, slug),
+        read: (client, at) => client.getProjectArtifact(owner.project, slug, at),
         version: ref.version,
       };
 }
@@ -412,12 +415,14 @@ export function forgetShownPictures(sessionId: string): void {
  * it. Dispatch's stated size and type rule a picture out before its bytes are fetched. An address
  * in `shown`, the pictures this session was already shown, is named as shown earlier, read
  * nothing and counts toward neither limit. `shown` is only read: the result's `shown` names the
- * pictures shown here, which the caller adds once the model has them.
+ * pictures shown here, which the caller adds once the model has them. With `at`'s cut, each
+ * picture and its bytes are read as they stood at that cut.
  */
 export async function readPictures(
   client: DispatchClient,
   addresses: readonly string[],
-  shown?: ReadonlySet<string>
+  shown?: ReadonlySet<string>,
+  at: AsOfRead = {}
 ): Promise<PicturesRead> {
   if (addresses.length === 0) return { lines: [], images: [], shown: [] };
   const artifacts = new Map<string, Promise<Artifact>>();
@@ -444,7 +449,7 @@ export async function readPictures(
     try {
       let read = artifacts.get(target.key);
       if (read === undefined) {
-        read = target.read(client);
+        read = target.read(client, at);
         artifacts.set(target.key, read);
       }
       const artifact = await read;
@@ -472,7 +477,7 @@ export async function readPictures(
         skip(overBudget);
         continue;
       }
-      const file = await client.fileVersion(artifact.id, target.version);
+      const file = await client.fileVersion(artifact.id, target.version, at);
       const image = toolImage(file.bytes);
       if (image === undefined) {
         skip(

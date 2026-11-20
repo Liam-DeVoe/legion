@@ -33,7 +33,8 @@ import type { ExecFn } from "../dispatch-cwd";
 import {
   type DispatchToolResult,
   dispatchRefFromUrl,
-  executeDispatchTool,
+  type ExecuteDispatchToolInput,
+  executeDispatchTool as executeTool,
   formatOpenAsksSummary,
   linkBaseOf,
   positionText,
@@ -50,8 +51,15 @@ import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
+import { withWhoamiAnswered } from "./whoami-stand-in";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
+
+/** The executor, with whoami answered for a read command (`withWhoamiAnswered`): the stand-ins
+ *  below answer the reads each test is about. */
+function executeDispatchTool(input: ExecuteDispatchToolInput): Promise<DispatchToolResult> {
+  return executeTool(withWhoamiAnswered(input));
+}
 
 // What one test's Dispatch showed of its keyed layer is that test's: the process memory of it
 // (`KEYED_LAYER_SEEN`) would otherwise tell the next test's fake, which answers without the key as

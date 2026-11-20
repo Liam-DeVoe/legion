@@ -38,7 +38,7 @@ import { deletedMark, withEditedMark } from "./actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
-import { DispatchClient } from "./dispatch-http";
+import { type AsOfRead, DispatchClient } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
@@ -580,7 +580,8 @@ function carriedBodyNote(event: DispatchEvent): string | undefined {
   return item === undefined ? what : `${what}; read it whole with ${wholeItemRoute(item)}`;
 }
 
-/** The whole body of a comment or message, read from the server. Undefined when the read fails
+/** The whole body of a comment or message, read from the server, at `read`'s cut where it names
+ *  one. Undefined when the read fails
  *  or its answer does not hold the item, so the caller keeps the part its event carried: a body
  *  the server will not answer is still better read in part than not at all. A direct message,
  *  which belongs to no issue, is read through the session it was delivered to. An item its
@@ -593,20 +594,21 @@ function carriedBodyNote(event: DispatchEvent): string | undefined {
 export async function wholeCarriedBody(
   client: DispatchClient,
   item: CarriedItem,
-  session?: string
+  session?: string,
+  read: AsOfRead = {}
 ): Promise<string | undefined> {
   try {
     let posts: readonly (CommentRead["comment"] | MessageRead["message"])[];
     if (item.resource === "comment") {
-      const read = await client.getComment(item.id);
-      posts = [read.comment, ...(read.replies ?? [])];
+      const answer = await client.getComment(item.id, read);
+      posts = [answer.comment, ...(answer.replies ?? [])];
     } else {
       if (item.issueKey === null && session === undefined) return undefined;
-      const read =
+      const answer =
         item.issueKey === null
-          ? await client.getMessageThread(item.id, session)
-          : await client.getMessage(item.issueKey, item.id);
-      posts = [read.message, ...(read.replies ?? [])];
+          ? await client.getMessageThread(item.id, session, read)
+          : await client.getMessage(item.issueKey, item.id, read);
+      posts = [answer.message, ...(answer.replies ?? [])];
     }
     const post = posts.find((candidate) => candidate.id === item.id);
     if (post === undefined) return undefined;

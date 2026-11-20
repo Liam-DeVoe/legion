@@ -29,7 +29,9 @@ import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owne
 import { messageFor } from "../errors";
 import { relatedCheckLines } from "../related-check";
 import { pageSummaryText, searchAnswer } from "../search-answer";
+import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
+import { resultsAtACutProblem } from "./as-of";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -42,6 +44,7 @@ import {
   optionalPriorityFilter,
   optionalString,
   optionalStringArray,
+  type ReadingContext,
   stringArg,
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
@@ -529,18 +532,25 @@ export async function claimCommand(context: CommandContext): Promise<DispatchToo
   };
 }
 
-/** `dispatch search`: the issues, documents and items matching one query. */
-export async function searchCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, linkBase } = context;
+/** `dispatch search`: the issues, documents and items matching one query; at a cut, the text each
+ *  item had then. */
+export async function searchCommand(
+  context: ReadingContext<CommandContext>
+): Promise<DispatchToolResult> {
+  const { args, client, linkBase, reading } = context;
   const query = stringArg(args, "query");
   const project = optionalString(args, "project");
   const limit = optionalNumber(args, "limit");
   const offset = optionalNumber(args, "offset");
-  const search = await client.search(query, {
-    ...(project === undefined ? {} : { project }),
-    ...(limit === undefined ? {} : { limit }),
-    ...(offset === undefined ? {} : { offset }),
-  });
+  const search = await client.search(
+    query,
+    {
+      ...(project === undefined ? {} : { project }),
+      ...(limit === undefined ? {} : { limit }),
+      ...(offset === undefined ? {} : { offset }),
+    },
+    reading.cut
+  );
   return searchAnswer(search, query, offset, linkBase);
 }
 
@@ -936,13 +946,19 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
 }
 
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it. */
-export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client } = context;
+ *  against it; at a cut, the checks and results recorded by then. A token's cut refuses `--at`
+ *  here, as the call's own `--as-of` is refused beside it before any request (`check.ts`). */
+export async function resultsCommand(
+  context: ReadingContext<CommandContext>
+): Promise<DispatchToolResult> {
+  const { args, client, input, reading } = context;
   const issue = stringArg(args, "issue");
   const at = optionalString(args, "at");
   const brief = optionalBoolean(args, "brief") === true;
-  const results = await client.issueResults(issue, at);
+  if (at !== undefined && reading.cut !== undefined) {
+    throw new ToolInputError(input.tool, [resultsAtACutProblem(reading.cut.asOf)]);
+  }
+  const results = await client.issueResults(issue, at, reading.cut);
   const checks = results.checks ?? [];
   return {
     text: formatCheckResults(results, brief),

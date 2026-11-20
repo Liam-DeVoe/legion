@@ -11,20 +11,24 @@ import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-htt
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
-import type { DispatchToolResult, SessionContext } from "./context";
+import { LEFT_OUT } from "./as-of";
+import type { DispatchToolResult, ReadingContext, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
 
 /**
- * `dispatch answers`: the answers this session's asks have been given since it last read them.
- * It names no owner, so it runs on the session's context alone.
+ * `dispatch answers`: the answers this session's asks have been given since it last read them;
+ * at a cut, those of the 72 hours before it. It names no owner, so it runs on the session's
+ * context alone.
  */
-export async function answersCommand(context: SessionContext): Promise<DispatchToolResult> {
-  const { configUrl, input, newClient: dispatchClient } = context;
+export async function answersCommand(
+  context: ReadingContext<SessionContext>
+): Promise<DispatchToolResult> {
+  const { configUrl, input, newClient: dispatchClient, reading } = context;
   const sessionId = input.sessionId?.trim();
   if (!sessionId) throw new Error("host session id is required for dispatch answers");
   let response: SessionAnswersResponse;
   try {
-    response = await dispatchClient().sessionAnswers(sessionId);
+    response = await dispatchClient().sessionAnswers(sessionId, {}, reading.cut);
   } catch (error) {
     if (isNoAnswersRoute(error)) {
       throw new Error(
@@ -329,8 +333,8 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  */
 function formatInboxSummary(
   rows: readonly InboxRow[],
-  threads: readonly MyReplyRow[],
-  requests: readonly CredentialPendingRow[],
+  threads: readonly MyReplyRow[] | undefined,
+  requests: readonly CredentialPendingRow[] | undefined,
   now: number
 ): string {
   const sections = { agent: [] as InboxRow[], human: [] as InboxRow[], later: [] as InboxRow[] };
@@ -339,7 +343,7 @@ function formatInboxSummary(
     if (section !== undefined) sections[section].push(row);
   }
   return [
-    `Needs you ${sections.human.length + requests.filter(awaitsDecision).length}`,
+    `Needs you ${sections.human.length + (requests ?? []).filter(awaitsDecision).length}`,
     ...sections.human.map(inboxAskLine),
     "",
     `Waiting on agents ${sections.agent.length}`,
@@ -347,50 +351,70 @@ function formatInboxSummary(
     "",
     `Later ${sections.later.length}`,
     ...sections.later.map(inboxAskLine),
-    "",
-    `Unread threads ${threads.length}`,
-    ...threads.map((row) => inboxThreadLine(row, now)),
-    "",
-    `Credential requests ${requests.length}`,
-    ...requests.map(credentialRequestLine),
+    // A band read at a cut from a route that holds no history is left out whole, and the
+    // `Left out at` line names it.
+    ...(threads === undefined
+      ? []
+      : [
+          "",
+          `Unread threads ${threads.length}`,
+          ...threads.map((row) => inboxThreadLine(row, now)),
+        ]),
+    ...(requests === undefined
+      ? []
+      : ["", `Credential requests ${requests.length}`, ...requests.map(credentialRequestLine)]),
   ].join("\n");
 }
 
 /**
- * `dispatch inbox`: what the person's Inbox page shows. It names no owner, so it runs on the
- * session's context alone.
+ * `dispatch inbox`: what the person's Inbox page shows; at a cut, the asks open then, with no
+ * unread threads and no credential requests, which hold no history. It names no owner, so it
+ * runs on the session's context alone.
  */
-export async function inboxCommand(context: SessionContext): Promise<DispatchToolResult> {
+export async function inboxCommand(
+  context: ReadingContext<SessionContext>
+): Promise<DispatchToolResult> {
+  const {
+    reading: { identity, cut },
+  } = context;
   const client = context.newClient();
-  // All four reads at once: they depend on nothing of each other, and the credential list is
-  // the slow one, since Dispatch relays it to the secrets broker.
-  const pending = settleSideRead(client.credentialPending());
-  const unread = settleSideRead(client.myReplies());
-  let identity: WhoamiResponse;
+  // The three reads at once: they depend on nothing of each other, and the credential list is
+  // the slow one, since Dispatch relays it to the secrets broker. Whoami was read before them
+  // (`readAtCut`). At a cut the two side reads are left out: their routes hold no history.
+  const pending = cut === undefined ? settleSideRead(client.credentialPending()) : undefined;
+  const unread = cut === undefined ? settleSideRead(client.myReplies()) : undefined;
+  if (cut !== undefined) {
+    cut.leave(LEFT_OUT.unreadThreads);
+    cut.leave(LEFT_OUT.credentialRequests);
+  }
   let rows: InboxRow[];
   try {
-    [identity, rows] = await Promise.all([client.whoami(), client.inbox("me")]);
+    rows = await client.inbox("me", cut);
   } catch (error) {
     // The inbox route needs `person`, and a credential without it is refused 403
     // OAUTH_SCOPE_REQUIRED, whose message names the scope: the code is what the caller acts
-    // on, so it reaches the text. `whoami` needs no scope.
+    // on, so it reaches the text.
     throw refusalWithCode(error);
   }
   const viewer = whoamiPerson(identity);
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
   // no credential requests, so it lists and counts none.
-  const requests: readonly CredentialPendingRow[] =
-    sideRead(await pending, "credential requests", warnings)?.pending ?? [];
-  const threads: readonly MyReplyRow[] =
-    sideRead(await unread, "unread threads", warnings)?.rows ?? [];
+  const requests: readonly CredentialPendingRow[] | undefined =
+    pending === undefined
+      ? undefined
+      : (sideRead(await pending, "credential requests", warnings)?.pending ?? []);
+  const threads: readonly MyReplyRow[] | undefined =
+    unread === undefined
+      ? undefined
+      : (sideRead(await unread, "unread threads", warnings)?.rows ?? []);
   return {
     text: formatInboxSummary(rows, threads, requests, Date.now()),
     details: {
       viewer,
       asks: rows.length,
-      unread_threads: threads.length,
-      credential_requests: requests.length,
+      ...(threads === undefined ? {} : { unread_threads: threads.length }),
+      ...(requests === undefined ? {} : { credential_requests: requests.length }),
     },
     ...(warnings.length === 0 ? {} : { warnings }),
   };
