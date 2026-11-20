@@ -1,6 +1,6 @@
 ---
 name: legion-retro
-description: "Use when the Legion daemon starts you, the implementer, on `Phase: retro` after the architect accepted the reviewed head."
+description: "Use when the Legion daemon starts you, the implementer, on `phase: retro` after the architect accepted the reviewed head."
 ---
 
 # Legion retro
@@ -31,7 +31,7 @@ with a WAITING line naming the defect and the answer you wait on.
 
 1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, the
    tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) and the review at the
-   version your task's `Handoff:` line names (`--phase review --version <n>`). A pass must stand at
+   version your task's `handoff_version` names (`--phase review --version <n>`). A pass must stand at
    the approved head for every `before_merge` check, and the body's `Checks` block carries each.
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs
      (`skill://legion-worker/references/ci-checks.md`). A `ci_check` check has no pass standing at

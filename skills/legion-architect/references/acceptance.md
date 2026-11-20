@@ -24,7 +24,7 @@ Read, against the goal, every check and every requirement:
 
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your
   `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
-- A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the
+- A `catch-up` whose `accepting` names an issue waiting for your acceptance is its wake: the
   `phase-finished` may never have reached you.
 - `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, or
   park it under the rule, and sign off again. Ask the person about one that can do neither, and
