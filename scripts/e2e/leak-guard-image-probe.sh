@@ -456,7 +456,12 @@ run_case() { # run_case <shape> <case> <variant>
   case "$variant" in
     clears) push_env=("PUBLIC_LEAK_CHECK=$clears" "$rules_var=$rule_file") ;;
     no-rules) push_env=(-u "$rules_var" "PUBLIC_LEAK_CHECK=$clears") ;;
-    no-check) push_env=(-u PUBLIC_LEAK_CHECK "HOME=$scratch/empty" "XDG_CONFIG_HOME=$scratch/empty" "$rules_var=$rule_file") ;;
+    # No check anywhere, under a deployment that names one: the role is told the deployment's
+    # manifest digest (LEGION_LEAK_CHECKER_MANIFEST_SHA256, packages/daemon/internal/leakguard's
+    # CheckerVar), so the guard expects a check and refuses the push for its absence. Without it
+    # the role is one of a deployment that runs no shared check, which no write is refused for.
+    no-check) push_env=(-u PUBLIC_LEAK_CHECK "HOME=$scratch/empty" "XDG_CONFIG_HOME=$scratch/empty"
+      "LEGION_LEAK_CHECKER_MANIFEST_SHA256=5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e" "$rules_var=$rule_file") ;;
     internal-error) push_env=("PUBLIC_LEAK_CHECK=$internal_error" "$rules_var=$rule_file") ;;
     rules-missing) push_env=("PUBLIC_LEAK_CHECK=$clears" "$rules_var=$missing_rule_file") ;;
     rules-unparseable) push_env=("PUBLIC_LEAK_CHECK=$clears" "$rules_var=$unparseable_rule_file") ;;

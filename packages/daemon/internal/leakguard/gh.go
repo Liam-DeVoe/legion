@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,10 +54,21 @@ type GhRequest struct {
 	// the whole guard.
 	WritesNothing bool
 	// ProvenCheck is the sha256, in hex, of the shared check's public_leak_check.py that the
-	// caller's rule for WritesNothing was proven against. WritesNothing is honoured only where
-	// the public_leak_check.py beside the resolved check hashes to it (provenCheck), so a check
-	// of another version, or one edited under the same tag, gets the whole guard.
+	// caller's rule for WritesNothing was proven against. `legion gh` hands the digest compiled
+	// into it (cmd/legion's ghReadsProvenCheck) for every call, whatever checker its role is told
+	// (CheckerVar). WritesNothing is honoured only where the program the check runs hashes to it
+	// (provenCheck) — under a deployment's digest the public_leak_check.py that digest covered,
+	// hashed from the bytes the guard read before the run — so a check of another version, or one
+	// edited under the same tag, gets the whole guard, and so does every call where it is empty.
 	ProvenCheck string
+	// StdinSent is a call that sends its standard input to GitHub as content: a file option
+	// given `-`, a field given `@-`, or `gh workflow run --json` (GhSent.StdinSent). A caller that
+	// parsed the command (Files not nil) says so; for a bare argv the guard reads it from the argv
+	// (readGhArgv). It is read only where no shared check runs (sharedCheck) and a rule is named
+	// (Guard.rules). The check's own handshake buffers standard input for every call that reads it
+	// (askAgain), and without the check the guard buffers it itself for such a call, so the
+	// private-name pass reads the body the call publishes.
+	StdinSent bool
 }
 
 // StdinUse is what a gh call makes of its standard input, which says how the guard reads that
@@ -100,14 +110,16 @@ type GhAnswer struct {
 type GhRead int
 
 const (
-	// GhReadWhole is the whole guard: the shared check, the destination's visibility and, where
-	// the destination is public, the private-name pass over what the call sends.
+	// GhReadWhole is the whole guard: the shared check where the deployment runs one, the
+	// destination's visibility and, where the destination is public, the private-name pass over
+	// what the call sends.
 	GhReadWhole GhRead = iota
 	// GhReadCheckedOnly is the shared check as the whole of the guard (GhRequest.WritesNothing
 	// honoured): the call read no visibility and had no private-name step.
 	GhReadCheckedOnly
-	// GhReadNoRules is the shared check alone because no rule is named: the call skipped the
-	// private-name step, and read no visibility and no file the call sends.
+	// GhReadNoRules is the shared check alone, where the deployment runs one, because no rule is
+	// named: the call skipped the private-name step, and read no visibility, no file the call
+	// sends and no standard input the shared check did not ask for.
 	GhReadNoRules
 )
 
@@ -115,28 +127,28 @@ const (
 // which check is installed: the script only runs it.
 const checkProgram = "public_leak_check.py"
 
-// provenCheck says whether the check Resolve found is the one proven names: the sha256 of the
-// public_leak_check.py beside it, the script's own directory once its symbolic links are
-// followed, is proven. A check with no such file, one whose file cannot be read, and one whose
-// file holds anything else are not, and neither is any check where proven is empty.
-func provenCheck(check, proven string) bool {
+// provenCheck says whether the program check runs is the one proven names, read before the check
+// runs: under a deployment's digest, the public_leak_check.py that digest covered, from the bytes
+// the guard read and runs (sharedRun.program); under none, the public_leak_check.py beside the
+// check Resolve found, the script's own directory once its symbolic links are followed. A check
+// with no such file, one whose file cannot be read, and one whose file holds anything else are
+// not, and neither is any check where proven is empty.
+func provenCheck(check sharedRun, proven string) bool {
 	if proven == "" {
 		return false
 	}
-	dir := filepath.Dir(check)
-	if followed, err := filepath.EvalSymlinks(check); err == nil {
-		dir = filepath.Dir(followed)
+	program := check.program
+	if program == nil {
+		dir, err := runningCheckDir(check.path)
+		if err != nil {
+			return false
+		}
+		if program, err = readManifestFile(dir, checkProgram); err != nil {
+			return false
+		}
 	}
-	program, err := os.Open(filepath.Join(dir, checkProgram))
-	if err != nil {
-		return false
-	}
-	defer program.Close()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, program); err != nil {
-		return false
-	}
-	return strings.EqualFold(hex.EncodeToString(sum.Sum(nil)), proven)
+	sum := sha256.Sum256(program)
+	return strings.EqualFold(hex.EncodeToString(sum[:]), proven)
 }
 
 // whatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of
@@ -155,34 +167,31 @@ const whatGhCall = "the gh call"
 // the check itself refuses a pipe for that reason. The bytes come back so the caller can hand
 // them to gh, because by then this package has read the caller's standard input and the caller
 // cannot read it again; a nil Stdin means standard input was never read and the caller's own is
-// still whole.
+// still whole. Under a deployment that runs no shared check (sharedCheck) and names a rule, the
+// guard reads the standard input a call sends as content itself (GhRequest.StdinSent), so the
+// visibility read and the private-name pass are the whole of it.
 func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	var answer GhAnswer
-	check, err := g.Resolve()
+	check, err := g.sharedCheck(whatGhCall)
 	if err != nil {
-		return answer, &SetupFailure{What: whatGhCall, Why: whyNoCheck, Err: err}
-	}
-	argv := append([]string{check, "gh-guard"}, req.Args...)
-	status, printed, err := g.run(ctx, child{argv: argv})
-	if err != nil {
-		return answer, sharedNotRun(whatGhCall, err, printed)
-	}
-	if status == checkWantsStdin {
-		answer.Stdin, status, printed, err = g.askAgain(ctx, argv, req)
-		if err != nil {
-			return answer, err
-		}
-	}
-	if err := readStatus(whatGhCall, status, printed); err != nil {
 		return answer, err
 	}
-	if req.WritesNothing && provenCheck(check, req.ProvenCheck) {
-		// A read leaves no text in any repository, so neither the destination's visibility nor
-		// the private-name pass is read for it: the check above, which refuses a credential in a
-		// call it reads as a read, is all it needs. Under a check its caller's rule was not
-		// proven against, the check may read the call as a write, so the guard goes on whole.
-		answer.Read = GhReadCheckedOnly
-		return answer, nil
+	defer check.remove()
+	if check.path != "" {
+		// Read before the check runs, so nothing the run or anyone else writes meanwhile decides it.
+		checkedOnly := req.WritesNothing && provenCheck(check, req.ProvenCheck)
+		if answer.Stdin, err = g.ghGuard(ctx, check, req); err != nil {
+			return answer, err
+		}
+		if checkedOnly {
+			// A read leaves no text in any repository, so neither the destination's visibility
+			// nor the private-name pass is read for it: the check above, which refuses a
+			// credential in a call it reads as a read, is all it needs. Under a check its
+			// caller's rule was not proven against, the check may read the call as a write, so
+			// the guard goes on whole.
+			answer.Read = GhReadCheckedOnly
+			return answer, nil
+		}
 	}
 	rules, err := g.rules(whatGhCall)
 	if err != nil {
@@ -191,6 +200,21 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	if rules == nil {
 		answer.Read = GhReadNoRules
 		return answer, nil
+	}
+	// The argv is read once (readGhArgv). The files, the use of standard input and whether the
+	// call sends that input as content are the caller's parse where it handed one and the argv's
+	// tables where it did not.
+	call := readGhArgv(req.Args)
+	stdinSent := req.StdinSent
+	if req.Files == nil {
+		stdinSent = call.sent.StdinSent()
+	}
+	if check.path == "" && stdinSent {
+		// No shared check ran to buffer the input the call sends as content (askAgain), so the
+		// guard reads it itself, and the private-name pass reads the body the call publishes.
+		if answer.Stdin, err = readStdin(req); err != nil {
+			return answer, err
+		}
 	}
 	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
 	if err != nil {
@@ -201,9 +225,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	}
 	// What the call would send, read here and not before the visibility answer: a private or
 	// internal destination runs no rule pass, and reading its files would cost the opens for
-	// nothing. The argv is read once (readGhArgv). The files, and the use of standard input, are
-	// the caller's parse where it handed one and the argv's tables where it did not.
-	call := readGhArgv(req.Args)
+	// nothing.
 	files, use := req.Files, req.StdinUse
 	if files == nil {
 		if call.upload != "" {
@@ -238,6 +260,24 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		}
 	}
 	return answer, rules.Check(ctx, whatGhCall, records...)
+}
+
+// ghGuard runs the shared check in its gh-guard shape over req, and answers the standard input it
+// buffered for the check's second go (askAgain), nil where the check asked for none, and the
+// refusal or setup failure of the check's answer, if any (readStatus).
+func (g *Guard) ghGuard(ctx context.Context, check sharedRun, req GhRequest) ([]byte, error) {
+	argv := append([]string{check.path, "gh-guard"}, req.Args...)
+	status, printed, err := g.run(ctx, child{argv: argv})
+	if err != nil {
+		return nil, sharedNotRun(whatGhCall, err, printed)
+	}
+	var buffered []byte
+	if status == checkWantsStdin {
+		if buffered, status, printed, err = g.askAgain(ctx, argv, check.dir, req); err != nil {
+			return buffered, err
+		}
+	}
+	return buffered, readStatus(whatGhCall, status, printed)
 }
 
 // ghArgv is a gh call's argv as readGhArgv reads it: every answer GhCall needs of the argv, from
@@ -669,8 +709,9 @@ type GhSent struct {
 // the same report.
 //
 // Standard input is no file to open: the shared check's exit-4 handshake buffers that input and
-// GhCall records it already (askAgain). What is kept is the use the option makes of it
-// (UsesStdin), and the field's name.
+// GhCall records it already (askAgain), and under no shared check GhCall buffers it itself
+// (GhRequest.StdinSent, StdinSent). What is kept is the use the option makes of it (UsesStdin),
+// and the field's name.
 func (sent *GhSent) Names(option, path, field string, use StdinUse) {
 	switch path {
 	case "":
@@ -698,6 +739,12 @@ func (sent *GhSent) UsesStdin(use StdinUse) {
 	case sent.StdinUse != use:
 		sent.StdinUse = StdinUnknown
 	}
+}
+
+// StdinSent is whether any use of standard input is named (UsesStdin): the call sends its
+// standard input to GitHub as content, which is what GhRequest.StdinSent says of a call.
+func (sent *GhSent) StdinSent() bool {
+	return sent.stdinNamed
 }
 
 // argument records args[i], as it was written, as "the gh call's argument <i>".
@@ -855,33 +902,47 @@ func readGhFile(named GhFile) (string, error) {
 	}
 }
 
-// askAgain buffers the caller's standard input to a regular file and asks the check again, with
-// that file as a descriptor of the child's and PUBLIC_LEAK_CHECK_STDIN naming it. The file is the
-// test's and the pod's own temporary directory's, and it is gone before this returns: the bytes
-// go back to the caller in memory, which is where they came from.
+// readStdin is the caller's standard input, read whole, and the empty buffer where the caller
+// hands none.
 //
 // The read is bounded as a named file's is, by maxGhFile and for the same reasons: the bytes are
 // held in memory and scanned there, and no body GitHub would take comes near a mebibyte. Input
 // past the bound is a setup failure, which refuses the call — the guard has not read what it
 // would publish — and never a truncated buffer handed on as if it were the whole.
-func (g *Guard) askAgain(ctx context.Context, argv []string, req GhRequest) ([]byte, int, string, error) {
-	buffered := []byte{}
-	if req.Stdin != nil {
-		// One byte past the bound, so input at the bound is read whole and longer input is known
-		// to be longer without reading it.
-		read, err := io.ReadAll(io.LimitReader(req.Stdin, maxGhFile+1))
-		if err != nil {
-			return nil, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be read", Err: err}
-		}
-		if len(read) > maxGhFile {
-			return nil, 0, "", &SetupFailure{
-				What: whatGhCall,
-				Why:  fmt.Sprintf("the call's standard input is longer than %d bytes, which is more text than GitHub takes through it", maxGhFile),
-			}
-		}
-		buffered = read
+func readStdin(req GhRequest) ([]byte, error) {
+	if req.Stdin == nil {
+		return []byte{}, nil
 	}
-	file, err := os.CreateTemp("", "leakguard-stdin-")
+	// One byte past the bound, so input at the bound is read whole and longer input is known to
+	// be longer without reading it.
+	read, err := io.ReadAll(io.LimitReader(req.Stdin, maxGhFile+1))
+	if err != nil {
+		return nil, &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be read", Err: err}
+	}
+	if len(read) > maxGhFile {
+		return nil, &SetupFailure{
+			What: whatGhCall,
+			Why:  fmt.Sprintf("the call's standard input is longer than %d bytes, which is more text than GitHub takes through it", maxGhFile),
+		}
+	}
+	return read, nil
+}
+
+// askAgain buffers the caller's standard input to a regular file (readStdin) and asks the check
+// again, with that file as a descriptor of the child's and PUBLIC_LEAK_CHECK_STDIN naming it. The
+// file is made in dir, the private copy's directory under a deployment's digest (sharedRun.dir):
+// the check reads the file and the caller hands gh the bytes in memory, so a file another role
+// could open by its name and rewrite before the check reads it — the issue's scratch, where every
+// role's TMPDIR is, is every role's to write — would let the check clear bytes gh never sends. With
+// no digest told, dir is "" and the file is made in the temporary directory, as before the
+// setting. It is gone before this returns: the bytes go back to the caller in memory, which is
+// where they came from.
+func (g *Guard) askAgain(ctx context.Context, argv []string, dir string, req GhRequest) ([]byte, int, string, error) {
+	buffered, err := readStdin(req)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	file, err := os.CreateTemp(dir, "leakguard-stdin-")
 	if err != nil {
 		return buffered, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be buffered", Err: err}
 	}
