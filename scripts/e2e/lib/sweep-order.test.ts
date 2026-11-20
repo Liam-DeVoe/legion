@@ -169,16 +169,15 @@ describe("the search for a start that refuses or creates its Postgres before it 
     );
     const beginLine = readFileSync(join(planted, first), "utf8").split("\n").indexOf("begin") + 1;
     expect(beginLine).toBeGreaterThan(0);
-    expect(findings).toContain(
-      `fail at scripts/e2e/lib/leftovers.sh:${leftoversLine} from ${first}:${beginLine} through begin,refuse_leftovers`
-    );
-    expect(findings).toContain(
-      `fail at scripts/e2e/lib/planted.sh:${checkLine} from ${first}:${lineOf(first, "check_port 1234")} through check_port`
-    );
-    expect(findings).toContain(
-      `postgres_mark at ${first}:${markLine} from ${first}:${markLine} through `
-    );
-    expect(findings).toContain(`fail at ${first}:${markLine} from ${first}:${markLine} through `);
+    // The four findings, exactly and in the order the driver meets them: a reordered or a missing
+    // one fails here, as a loose look for each would not see.
+    expect(findings).toEqual([
+      `fail at scripts/e2e/lib/leftovers.sh:${leftoversLine} from ${first}:${beginLine} through begin,refuse_leftovers`,
+      `fail at scripts/e2e/lib/planted.sh:${checkLine} from ${first}:${lineOf(first, "check_port 1234")} through check_port`,
+      `postgres_mark at ${first}:${markLine} from ${first}:${markLine} through `,
+      // The mark's own refusal: its check runs the mark's command.
+      `fail at ${first}:${markLine} from ${first}:${markLine} through `,
+    ]);
   });
 
   test("the search reads a refusal in each form a command takes on one line, and a removal after `; then`", () => {
