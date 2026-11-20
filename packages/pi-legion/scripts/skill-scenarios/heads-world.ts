@@ -36,8 +36,11 @@ type HeadsWorld =
  * rig-world.json's, which the agent's gh stand-in (rig.sh's heads_routes) serves too. */
 const CI_JOB = RIG_WORLD.ciJobs["ci-only"];
 const CI_RUNNING_JOB = RIG_WORLD.ciJobs["ci-pass-and-fail"];
-/** The run of k1 with no `ci_check`, which every recorded result names. */
-const K1_RUN = "grep -c widgets docs/usage.md";
+/** The run of k1 with no `ci_check`, which every recorded result names: it proves R1, the line of
+ * docs/usage.md that names `widgets --help` and says it lists every command. A check that served no
+ * requirement, or whose run matched any line naming the CLI, gave each architect a reason of its
+ * own to send the issue back, so its runs measured that and not the check's rule. */
+const K1_RUN = "grep -cE 'widgets --help.+every command' docs/usage.md";
 const HandoffRef = z.object({ id: z.string(), version: z.number().int() });
 /** What `heads-issue` writes, and `heads-events` and rig.sh's heads scenarios read: the run's issue,
  * its title and its Verification document, and once `heads-events` recorded them, its handoff
@@ -161,10 +164,12 @@ export async function headsIssue(file: string, world: HeadsWorld): Promise<void>
       : world.startsWith("ci-pass-and-fail-")
         ? CI_RUNNING_JOB.name
         : "";
+  // k1 serves R1, and its words are R1's, so an architect finds no coverage gap to send back for.
+  const serves = `serves="dispatch://${issue.key}/spec#b-r1"`;
   const attributes =
     ciJob !== ""
-      ? `ci_check="${ciJob}" when="before_merge" negative_control="Drop the line from docs/usage.md and the ${ciJob} job fails."`
-      : `run="${K1_RUN}" when="before_merge" negative_control="Drop the line from docs/usage.md and grep prints 0 and exits 1."`;
+      ? `${serves} ci_check="${ciJob}" when="before_merge" negative_control="Drop the line from docs/usage.md and the ${ciJob} job fails."`
+      : `${serves} run="${K1_RUN}" when="before_merge" negative_control="Drop the line from docs/usage.md and grep prints 0 and exits 1."`;
   const verification = await createIssueArtifact(
     issue.key,
     {
@@ -173,7 +178,7 @@ export async function headsIssue(file: string, world: HeadsWorld): Promise<void>
         "# Verification",
         "",
         `:::check{#k1 surface="cli" ${attributes}}`,
-        "`docs/usage.md` names `widgets --help`.",
+        "`docs/usage.md` names `widgets --help`, which lists every command.",
         ":::",
       ].join("\n"),
     },
@@ -201,7 +206,7 @@ const IMPLEMENTER_PASS: HeadsResult = {
   pr: "702",
   role: "implementer",
   verdict: "pass",
-  observed: "grep -c widgets docs/usage.md printed 1: docs/usage.md names `widgets --help`.",
+  observed: `${K1_RUN} printed 1: docs/usage.md names \`widgets --help\`, which lists every command.`,
 };
 const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
 
@@ -431,7 +436,7 @@ export async function headsEvents(
     observed:
       world === "architect-pass-and-fail"
         ? "A second run stopped before grep ran: the runner lost its checkout, so the run printed nothing and exited 1."
-        : "A second run of grep -c widgets docs/usage.md printed 0 and exited 1.",
+        : `A second run of ${K1_RUN} printed 0 and exited 1.`,
   };
   let implement: z.infer<typeof HandoffRef> | undefined;
   let test: z.infer<typeof HandoffRef> | undefined;

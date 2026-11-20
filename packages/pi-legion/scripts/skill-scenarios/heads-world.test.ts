@@ -4,7 +4,7 @@
 //   bun test heads-world.test.ts
 
 import { beforeAll, expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -90,7 +90,7 @@ test("ci-pass-and-fail: k1 is go-checks' check, whose run at #702's head is in p
     const { calls, fixture } = await world(role);
     const verification = calls.find((call) => call.path === "/api/v1/issues/LWEVAL-7/artifacts");
     expect(String(verification?.body.content)).toContain(
-      ':::check{#k1 surface="cli" ci_check="go-checks" when="before_merge" negative_control="Drop the line from docs/usage.md and the go-checks job fails."}'
+      ':::check{#k1 surface="cli" serves="dispatch://LWEVAL-7/spec#b-r1" ci_check="go-checks" when="before_merge" negative_control="Drop the line from docs/usage.md and the go-checks job fails."}'
     );
     const seeds = calls
       .filter((call) => call.path === "/__fixture/repos")
@@ -117,6 +117,54 @@ test("ci-pass-and-fail: k1 is go-checks' check, whose run at #702's head is in p
     tester: [`implement by ${by("rig-implementer")}`],
     architect: [`test by ${by("rig-tester")}`, `review by ${by("rig-reviewer")}`],
   });
+});
+
+// Catches: a check k1 that serves no requirement or whose run proves less than R1: the first item 3
+// runs of architect-pass-and-fail sent the issue back for that gap in every label, so the control
+// could not score below head.
+test("architect-pass-and-fail: k1 serves R1, its words are R1's, and its run matches R1's line alone", async () => {
+  // The ports the hook above sets, which restoreEnvironment puts back after each test.
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  const calls: { path: string; body: Record<string, unknown> }[] = [];
+  spyOn(globalThis, "fetch").mockImplementation((async (
+    input: string | URL | Request,
+    init?: RequestInit
+  ) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    calls.push({
+      path: url.pathname,
+      body: init?.body === undefined ? {} : JSON.parse(String(init.body)),
+    });
+    if (url.pathname === "/api/v1/issues")
+      return Response.json({ key: "LWEVAL-7" }, { status: 201 });
+    if (url.pathname.endsWith("/artifacts"))
+      return Response.json({ artifact: { id: "art-verification" } }, { status: 201 });
+    return Response.json({});
+  }) as typeof fetch);
+  const file = path.join(dirOf("architect"), "fixture.json");
+  const scenario = heads.headsWorld("architect-pass-and-fail", undefined);
+  if (scenario === undefined) throw new Error("no world of architect-pass-and-fail");
+  await heads.headsIssue(file, scenario);
+  const spec = String(calls.find((call) => call.path === "/api/v1/issues")?.body.spec);
+  const content = String(calls.find((call) => call.path.endsWith("/artifacts"))?.body.content);
+  expect(spec).toContain(":::requirement{#r1}");
+  const run = /run="([^"]+)"/.exec(content)?.[1] ?? "";
+  expect(content).toContain(
+    `:::check{#k1 surface="cli" serves="dispatch://LWEVAL-7/spec#b-r1" run="${run}"`
+  );
+  expect(content).toContain("`docs/usage.md` names `widgets --help`, which lists every command.");
+  const grep = (text: string) => {
+    const dir = dirOf(`grep-${text.length}`);
+    mkdirSync(path.join(dir, "docs"), { recursive: true });
+    writeFileSync(path.join(dir, "docs/usage.md"), text);
+    return Bun.spawnSync(["bash", "-c", run], { cwd: dir }).stdout.toString().trim();
+  };
+  // The fixture's line (rig.sh heads_fixture), and a line that names the CLI but not R1.
+  expect(grep("# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n")).toBe(
+    "1"
+  );
+  expect(grep("# Usage\n\nThe widgets CLI has commands.\n")).toBe("0");
 });
 
 test("ci-pass-and-fail takes the three roles and no other case", () => {
