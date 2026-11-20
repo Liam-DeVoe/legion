@@ -516,6 +516,17 @@ function controlOutside(): { readonly control: HTMLElement; readonly presses: ()
   return { control: drawn.getByRole("button", { name }), presses: () => presses };
 }
 
+/** Details beside the outline, drawn after the tree, with a card of the margin's in it: the
+ *  card's button. */
+function cardInDetails(): HTMLElement {
+  const thread = "A thread on the statement";
+  return render(
+    <aside {...{ [DETAILS_ATTRIBUTE]: "" }}>
+      <button type="button">{thread}</button>
+    </aside>
+  ).getByRole("button", { name: thread });
+}
+
 /** Lets the next frame come, and React draw what it changed. */
 async function nextFrame(): Promise<void> {
   const frame = Promise.withResolvers<void>();
@@ -1701,13 +1712,7 @@ test("a press in Details keeps the row's editing, and a press on another row of 
   setViewport(1440);
   const user = userEvent.setup();
   const { view } = await caretInStatement(user);
-  // Details beside the outline, with a card of the margin's in it.
-  const thread = "A thread on the statement";
-  const card = render(
-    <aside {...{ [DETAILS_ATTRIBUTE]: "" }}>
-      <button type="button">{thread}</button>
-    </aside>
-  ).getByRole("button", { name: thread });
+  const card = cardInDetails();
   const statement = rowsFor(view.container, "spec#b-r1")[0];
   const words = rowsFor(view.container, "comment-1")[0]?.querySelector<HTMLElement>(
     "[data-node-words]"
@@ -5581,7 +5586,7 @@ test(", from the row . zoomed into brings that row on screen and holds it there 
 
 // `,` from a row under the zoom's root takes the focus to the root's row, another element, which
 // places itself as it takes the focus. The zoom out places the row that kept the focus through
-// it (`zoomedOutOn`) only while that row still holds the focus once the whole outline is drawn:
+// it (`zoomKept`) only while that row still holds the focus once the whole outline is drawn:
 // the row the key's move took the focus from is placed by nothing, since bringing it on screen
 // would take the page away from the row the reader is on. happy-dom lays nothing out, so both
 // rows are given boxes below the window, moved by each scroll.
@@ -5627,6 +5632,100 @@ test(", from a row under the zoom's root places the root's row alone, not the ro
       scrolled,
       "the zoom out brought on screen the row the focus left, not the row it is on"
     ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
+  } finally {
+    boxes.mockRestore();
+    scrolled.mockRestore();
+  }
+});
+
+// A press on a crumb took the focus to the crumb, a button the zoom it makes takes off the page -
+// the line drawn for that zoom holds no crumb of the node pressed, and a zoom out to the issue
+// draws no line - and the browser dropped the focus to the page's body, at 1440 by 900 and at
+// 390 by 664 px alike. A press on a crumb leaves the focus where it was, as one on a row's fold
+// control does: on the row the reader is on, which the zoom out keeps drawn, and which the zoom
+// places as it places the row `,` leaves the focus on. happy-dom lays nothing out, so the reply's
+// row is given a box below the window once each press has started, moved by each scroll.
+test("a press on a crumb zooms out with the focus left on the row the reader is on, and brings that row on screen", async () => {
+  const user = userEvent.setup();
+  let scrolledTo = 0;
+  // Where the reply's row stands down the page, 40 px tall, its bullet 8 px into it: undefined
+  // until a press has started. Every other element is given no box, which reads as whole on
+  // screen.
+  let top: number | undefined;
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const row = this.closest<HTMLElement>("[data-node-row]");
+    if (top === undefined || row?.dataset.nodeId !== "comment-1a") return new DOMRect();
+    if (this === row) return new DOMRect(0, top - scrolledTo, 800, 40);
+    return this.matches("[data-node-bullet]")
+      ? new DOMRect(0, top + 8 - scrolledTo, 18, 24)
+      : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(((options: ScrollToOptions) => {
+    scrolledTo += options.top ?? 0;
+  }) as typeof window.scrollBy);
+  try {
+    for (const width of [1440, 390]) {
+      setViewport(width);
+      top = undefined;
+      const view = renderTree(twoCommentsTree());
+      const { container } = view;
+      await waitFor(() => expect(focusedRow(container), `at ${width} px`).toBe("comment-1"));
+      // Zoomed two levels deep: into the first comment, then into its reply.
+      await user.keyboard(".");
+      await waitFor(() =>
+        expect(container.querySelector(`[data-crumb="${KEY}"]`), `at ${width} px`).not.toBeNull()
+      );
+      await user.keyboard("j");
+      await waitFor(() => expect(focusedRow(container), `at ${width} px`).toBe("comment-1a"));
+      await user.keyboard(".");
+      await waitFor(() =>
+        expect(container.querySelector('[data-crumb="comment-1"]'), `at ${width} px`).not.toBeNull()
+      );
+      // A press on the crumb of `id`, from whose start the reply's row stands 2,000 px below the
+      // window's foot, where the zoom its click makes draws it; the zoom takes the crumb away.
+      const press = async (id: string) => {
+        const crumb = container.querySelector<HTMLElement>(`[data-crumb="${id}"]`);
+        if (crumb === null) throw new Error(`at ${width} px the crumb of ${id} is not drawn`);
+        await user.pointer({ keys: "[MouseLeft>]", target: crumb });
+        scrolled.mockClear();
+        top = scrolledTo + window.innerHeight + 2000;
+        await user.pointer({ keys: "[/MouseLeft]" });
+        await waitFor(() =>
+          expect(
+            crumb.isConnected,
+            `at ${width} px the press on ${id}'s crumb zoomed nowhere`
+          ).toBe(false)
+        );
+      };
+
+      // The thread's crumb zooms out to the thread, the issue's crumb still drawn above it.
+      await press("comment-1");
+      expect(container.querySelector(`[data-crumb="${KEY}"]`), `at ${width} px`).not.toBeNull();
+      expect(
+        focusedRow(container),
+        `at ${width} px the press on the thread's crumb took the focus off the reply's row`
+      ).toBe("comment-1a");
+      // Its foot is brought 8 px clear of the screen's (`identity-block.ts`'s `bringOnScreen`).
+      expect(
+        scrolled,
+        `at ${width} px the zoom out to the thread left the reply's row off screen`
+      ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
+
+      // The issue's crumb zooms out to the whole outline, which draws no crumb line.
+      await press(KEY);
+      expect(container.querySelector("[data-crumb]"), `at ${width} px`).toBeNull();
+      expect(
+        focusedRow(container),
+        `at ${width} px the press on the issue's crumb took the focus off the reply's row`
+      ).toBe("comment-1a");
+      expect(
+        scrolled,
+        `at ${width} px the zoom out to the issue left the reply's row off screen`
+      ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
+      view.unmount();
+    }
   } finally {
     boxes.mockRestore();
     scrolled.mockRestore();
@@ -9129,11 +9228,17 @@ test("a failed asks read draws its line over the tree and opens the page on its 
   }
 });
 
-/** Where the focus is in `container`: the id of the row that holds it, a failed read's Retry, or
- *  no row. */
+/** Where the focus is in `container`: the id of the row that holds it, a failed read's Retry
+ *  named by what its line says (`onRetryOf`), or no row. */
 function focusPlace(container: HTMLElement): string {
-  if (document.activeElement?.closest("[data-failed-read]") != null) return "a failed read's Retry";
+  const line = document.activeElement?.closest("[data-failed-read]");
+  if (line != null) return onRetryOf(line.querySelector('[role="alert"]')?.textContent ?? "");
   return focusedRow(container) ?? "no row";
+}
+
+/** What `focusPlace` says where the focus is on the Retry of the line that says `message`. */
+function onRetryOf(message: string): string {
+  return `the Retry of the line "${message}"`;
 }
 
 // A failed read's line went the moment its Retry was pressed: TanStack sets a read that holds no
@@ -9158,7 +9263,7 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
     await waitFor(
       () =>
         expect(focusPlace(container), "the page did not open on the asks' Retry").toBe(
-          "a failed read's Retry"
+          onRetryOf(STATE_LINES.asks_unreadable)
         ),
       OWN_WORDS
     );
@@ -9186,7 +9291,7 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
       expect(
         focusPlace(container),
         `the focus left the Retry while the ${run} Retry's read was out`
-      ).toBe("a failed read's Retry");
+      ).toBe(onRetryOf(STATE_LINES.asks_unreadable));
     };
 
     const failing = Promise.withResolvers<never>();
@@ -9208,7 +9313,7 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
       "the asks' line left the page when their read failed again"
     ).toEqual([1, true]);
     expect(focusPlace(container), "the second failure took the focus off the Retry").toBe(
-      "a failed read's Retry"
+      onRetryOf(STATE_LINES.asks_unreadable)
     );
     expect(
       line.querySelector('[role="alert"]'),
@@ -9302,26 +9407,6 @@ function failedLineSaying(container: HTMLElement, message: string): HTMLElement 
   return line;
 }
 
-/** The Retry of the failed read's line in `container` that says `message`. */
-function retryOfLine(container: HTMLElement, message: string): HTMLElement {
-  const retry = failedLineSaying(container, message).querySelector<HTMLElement>(FAILED_READ_RETRY);
-  if (retry === null) throw new Error(`the line that says "${message}" drew no Retry`);
-  return retry;
-}
-
-/** Where the focus is in `container`, as `focusPlace` says it, with a failed read's Retry named
- *  by what its line says (`onRetryOf`). */
-function focusAt(container: HTMLElement): string {
-  const line = document.activeElement?.closest("[data-failed-read]");
-  if (line == null) return focusPlace(container);
-  return onRetryOf(line.querySelector('[role="alert"]')?.textContent ?? "");
-}
-
-/** What `focusAt` says where the focus is on the Retry of the line that says `message`. */
-function onRetryOf(message: string): string {
-  return `the Retry of the line "${message}"`;
-}
-
 // A failed read took the page's opening whatever waited on the reader: with the results' read
 // failed and the asks' read answered, the page opened on the results' Retry, and the question that
 // waits on the reader, drawn and known, was left for the reader to find. The question keeps the
@@ -9346,14 +9431,14 @@ test("a failed results read draws its line over the tree, and the page opens on 
     await waitFor(
       () =>
         expect(
-          focusAt(container),
+          focusPlace(container),
           "the page with the results' read failed did not open on the question that waits"
         ).toBe(WAITING_QUESTION.id),
       OWN_WORDS
     );
     // The opening places its focus once: no frame after moves it to the results' Retry.
     await framesPass();
-    expect(focusAt(container), "a frame after the opening moved its focus").toBe(
+    expect(focusPlace(container), "a frame after the opening moved its focus").toBe(
       WAITING_QUESTION.id
     );
   } finally {
@@ -9388,14 +9473,14 @@ test("with the asks and the results reads failed, the page opens on the asks' Re
     ).toEqual([STATE_LINES.results_unreadable, STATE_LINES.asks_unreadable]);
     await waitFor(
       () =>
-        expect(focusAt(container), "the page did not open on the asks' Retry").toBe(
+        expect(focusPlace(container), "the page did not open on the asks' Retry").toBe(
           onRetryOf(STATE_LINES.asks_unreadable)
         ),
       OWN_WORDS
     );
     // The opening places its focus once.
     await framesPass();
-    expect(focusAt(container), "a frame after the opening moved its focus").toBe(
+    expect(focusPlace(container), "a frame after the opening moved its focus").toBe(
       onRetryOf(STATE_LINES.asks_unreadable)
     );
   } finally {
@@ -9428,14 +9513,14 @@ test("with the asks read failed, the page opens on a question that waits on the 
     await waitFor(
       () =>
         expect(
-          focusAt(container),
+          focusPlace(container),
           "the page with the asks' read failed did not open on the question the issue's read holds"
         ).toBe(WAITING_QUESTION.id),
       OWN_WORDS
     );
     // The opening places its focus once: no frame after moves it to the asks' Retry.
     await framesPass();
-    expect(focusAt(container), "a frame after the opening moved its focus").toBe(
+    expect(focusPlace(container), "a frame after the opening moved its focus").toBe(
       WAITING_QUESTION.id
     );
   } finally {
@@ -9463,7 +9548,7 @@ test("a failed asks read that answers with a question that waits before its Retr
     const { container } = body.view;
     await failedLines(container, 2, "asks and results");
     expect(
-      focusAt(container),
+      focusPlace(container),
       "the page took a focus before the frame of the asks' Retry came"
     ).toBe("no row");
 
@@ -9487,7 +9572,7 @@ test("a failed asks read that answers with a question that waits before its Retr
     await frames.run();
     await frames.run();
     expect(
-      focusAt(container),
+      focusPlace(container),
       "the asks' line that left before its frame handed the opening on elsewhere than to the question that waits"
     ).toBe(WAITING_QUESTION.id);
   } finally {
@@ -9525,14 +9610,14 @@ test("a failed comments read opens the page on its Retry where no question waits
     );
     await waitFor(
       () =>
-        expect(focusAt(container), "the page did not open on the comments' Retry").toBe(
+        expect(focusPlace(container), "the page did not open on the comments' Retry").toBe(
           onRetryOf(STATE_LINES.comments_unreadable)
         ),
       OWN_WORDS
     );
     // The opening places its focus once.
     await framesPass();
-    expect(focusAt(container), "a frame after the opening moved its focus").toBe(
+    expect(focusPlace(container), "a frame after the opening moved its focus").toBe(
       onRetryOf(STATE_LINES.comments_unreadable)
     );
   } finally {
@@ -9562,17 +9647,18 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
     await failedLines(container, 2, "asks and names");
     await waitFor(
       () =>
-        expect(focusAt(container), "the page did not open on the asks' Retry").toBe(
+        expect(focusPlace(container), "the page did not open on the asks' Retry").toBe(
           onRetryOf(STATE_LINES.asks_unreadable)
         ),
       OWN_WORDS
     );
     await framesPass();
     const line = failedLineSaying(container, STATE_LINES.names_unreadable);
-    const retry = retryOfLine(container, STATE_LINES.names_unreadable);
+    const retry = line.querySelector<HTMLElement>(FAILED_READ_RETRY);
+    if (retry === null) throw new Error("the names' line drew no Retry");
     const alert = line.querySelector('[role="alert"]');
     await act(async () => retry.focus());
-    expect(focusAt(container), "the names' Retry took no focus").toBe(
+    expect(focusPlace(container), "the names' Retry took no focus").toBe(
       onRetryOf(STATE_LINES.names_unreadable)
     );
 
@@ -9594,7 +9680,7 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
       true
     );
     expect(
-      focusAt(container),
+      focusPlace(container),
       "the focus left the names' Retry while the asks read ran again"
     ).toBe(onRetryOf(STATE_LINES.names_unreadable));
     expect(
@@ -9937,6 +10023,27 @@ test("a read that drops the row being edited ends the editing, and a Tab out of 
   expect(view.focusedNode(), "the panel still holds the facts of the row Tab left").toBeUndefined();
 });
 
+/** Draws the tree `caretInStatement` drew again as two reads do: one with a comment arrived after
+ *  the statement, then one without the statement, the row being edited. Checks the statement's
+ *  row is gone. */
+async function dropStatement(view: {
+  readonly container: HTMLElement;
+  readonly reread: (next: TreeNode) => void;
+}): Promise<void> {
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  const statement = node({
+    id: "spec#b-r1",
+    text: "A statement of the spec.",
+    type: "requirement",
+  });
+  const arrived = node({ id: "comment-3", text: "A comment that arrived.", type: "comment" });
+  await act(async () =>
+    view.reread(node({ children: [first, statement, arrived], id: KEY, type: "issue" }))
+  );
+  await act(async () => view.reread(node({ children: [first, arrived], id: KEY, type: "issue" })));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+}
+
 // A press that ends the editing once it is over does so where the edited row is gone by then too.
 // The tree ends the editing itself where a read takes out the row that held the focus as the tree
 // was last drawn (above); a press on another row takes the focus there, and a read that draws the
@@ -9948,13 +10055,6 @@ test("a press during which a read takes the row being edited out ends the editin
   setViewport(1440);
   const user = userEvent.setup();
   const { view } = await caretInStatement(user);
-  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
-  const statement = node({
-    id: "spec#b-r1",
-    text: "A statement of the spec.",
-    type: "requirement",
-  });
-  const arrived = node({ id: "comment-3", text: "A comment that arrived.", type: "comment" });
   const words = rowsFor(view.container, "comment-1")[0]?.querySelector<HTMLElement>(
     "[data-node-words]"
   );
@@ -9964,11 +10064,7 @@ test("a press during which a read takes the row being edited out ends the editin
   expect(focusedRow(view.container), "the press did not focus the row it went down on").toBe(
     "comment-1"
   );
-  await act(async () =>
-    view.reread(node({ children: [first, statement, arrived], id: KEY, type: "issue" }))
-  );
-  await act(async () => view.reread(node({ children: [first, arrived], id: KEY, type: "issue" })));
-  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await dropStatement(view);
   expect(view.edited.at(-1), "the editing ended before the press was over").toBe("artifact-spec");
 
   await user.pointer({ keys: "[/MouseLeft]" });
@@ -9999,20 +10095,7 @@ test("a press in the tree while the row being edited is no longer drawn ends the
   setViewport(1440);
   const user = userEvent.setup();
   const { view } = await caretInStatement(user);
-  // Details beside the outline, with a card of the margin's in it.
-  const thread = "A thread on the statement";
-  const card = render(
-    <aside {...{ [DETAILS_ATTRIBUTE]: "" }}>
-      <button type="button">{thread}</button>
-    </aside>
-  ).getByRole("button", { name: thread });
-  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
-  const statement = node({
-    id: "spec#b-r1",
-    text: "A statement of the spec.",
-    type: "requirement",
-  });
-  const arrived = node({ id: "comment-3", text: "A comment that arrived.", type: "comment" });
+  const card = cardInDetails();
   const tree = view.container.querySelector<HTMLElement>('[role="tree"]');
   if (tree === null) throw new Error("the outline is not drawn");
 
@@ -10020,11 +10103,7 @@ test("a press in the tree while the row being edited is no longer drawn ends the
   // The press is over a task after its click.
   await waitInAct(0);
   expect(view.edited.at(-1), "a press in Details ended the editing").toBe("artifact-spec");
-  await act(async () =>
-    view.reread(node({ children: [first, statement, arrived], id: KEY, type: "issue" }))
-  );
-  await act(async () => view.reread(node({ children: [first, arrived], id: KEY, type: "issue" })));
-  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await dropStatement(view);
   expect(view.edited.at(-1), "the read that dropped the statement ended the editing").toBe(
     "artifact-spec"
   );

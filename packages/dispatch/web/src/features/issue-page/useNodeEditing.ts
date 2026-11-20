@@ -712,8 +712,13 @@ export function useNodeEditing({
       "mousedown",
       (event) => {
         const on = event.target instanceof Node ? event.target : null;
-        const row = box.querySelector<HTMLElement>(rowSelector);
-        ends = box.contains(on) && (row === null || !inEditorBox(row, on));
+        // A press outside the tree ends nothing, so the edited row is looked up for one in it.
+        if (box.contains(on)) {
+          const row = box.querySelector<HTMLElement>(rowSelector);
+          ends = row === null || !inEditorBox(row, on);
+        } else {
+          ends = false;
+        }
         press.start();
       },
       { capture: true, signal: listening.signal }
@@ -723,10 +728,11 @@ export function useNodeEditing({
       (event) => {
         const to = event.target;
         if (!(to instanceof Element)) return;
-        const row = box.querySelector<HTMLElement>(rowSelector);
         // A row of the tree: a node's, or a branch's folded below the drawn levels.
         const entered = to.closest('[role="treeitem"]');
-        if (entered === null || entered === row || (row !== null && inEditorBox(row, to))) return;
+        if (entered === null) return;
+        const row = box.querySelector<HTMLElement>(rowSelector);
+        if (entered === row || (row !== null && inEditorBox(row, to))) return;
         if (press.pressing) ends = true;
         else setEditing(undefined);
       },

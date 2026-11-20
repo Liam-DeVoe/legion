@@ -217,14 +217,10 @@ export function IssueTree({
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
   // The last zoom the reader made, which the effect that places a zoom places once its rows and
-  // the focus are on the page (`zoomTo`): whether it draws the crumb line (`lined`), and the row
-  // that kept the focus through a zoom back out to the issue, which draws none (`kept`). Each
-  // zoom is a new value, so a zoom made before the last one's placing has been drawn is placed
-  // too, and each is placed once.
-  const [zoomMade, setZoomMade] = useState<{
-    readonly kept: HTMLElement | null;
-    readonly lined: boolean;
-  }>();
+  // the focus are on the page (`zoomTo`): whether it draws the crumb line (`lined`). Each zoom is
+  // a new value, so a zoom made before the last one's placing has been drawn is placed too, and
+  // each is placed once.
+  const [zoomMade, setZoomMade] = useState<{ readonly lined: boolean }>();
   // What a key reported when it had nowhere to go, and the row it was pressed on: the row draws
   // it, so the reader reads it where they are, and the next key, move or leaving the tree lets
   // it go. `row` is undefined where the key was pressed with no row focused.
@@ -495,12 +491,15 @@ export function IssueTree({
   // A zoom the reader makes - `.` and `,`, the arrows where the tree is read one node at a time,
   // a crumb - roots the tree at a node and draws the crumb line above its rows, which is placed
   // once they are drawn (`zoomMade`). The row it leaves the reader on - the one that keeps the
-  // focus through it, or the one the key takes the focus to (`zoomLanding`) - places nothing of
-  // its own from the render that draws the zoom until the reader's next act, so nothing of the
-  // row's undoes where the line and the row are placed. A zoom back out to the issue draws no
-  // line: the row it moves the focus to places itself as every move's does, and the row that
-  // keeps the focus through it - `,` or Left on the zoom's own row - is the zoom's `kept`, which
-  // the zoom places once the whole outline is drawn.
+  // focus through it, a crumb's press included, or the one the key takes the focus to
+  // (`zoomLanding`) - places nothing of its own from the render that draws the zoom until the
+  // reader's next act, so nothing of the row's undoes where the line and the row are placed. A
+  // zoom back out to the issue draws no line: the row it moves the focus to places itself as
+  // every move's does, and the row that keeps the focus through it - `,` or Left on the zoom's
+  // own row, or a press on the issue's crumb - is `zoomKept`, which the zoom places once the
+  // whole outline is drawn (`zoomMade`), and lets go of then: held on, it kept alive a row a
+  // later read had replaced.
+  const zoomKept = useRef<HTMLElement | null>(null);
   const rootId = root.id;
   const zoomTo = useCallback(
     (id: string) => {
@@ -508,7 +507,8 @@ export function IssueTree({
       const lined = id !== rootId;
       const row = focusedRowIn(body.current);
       zoomLanding.current = lined;
-      setZoomMade({ kept: lined ? null : row, lined });
+      zoomKept.current = lined ? null : row;
+      setZoomMade({ lined });
       setUnplaced(lined ? row?.dataset.rowKey : undefined);
     },
     [rootId]
@@ -593,7 +593,7 @@ export function IssueTree({
   // under it, as it did again each time it grew - rows of 1,634 and 1,464 px left the line at
   // 15 to 59 and at -53 to 59 px under a band 51 px tall. Until the reader's next act the row
   // places nothing of its own (`zoomTo`). A zoom back out to the issue draws the whole outline
-  // again around the row that kept the focus through it (`kept`), which placed nothing of its
+  // again around the row that kept the focus through it (`zoomKept`), which placed nothing of its
   // own: at 1440 by 900 px on a long issue it stood 2,000 to 40,000 px below the window until
   // the next key. It is brought on screen and held as the cycle key's row is (below); a row the
   // zoom moved the focus to is another element, which placed itself. This runs after the effect
@@ -603,7 +603,8 @@ export function IssueTree({
   useEffect(() => {
     if (zoomMade === undefined) return;
     if (!zoomMade.lined) {
-      const { kept } = zoomMade;
+      const kept = zoomKept.current;
+      zoomKept.current = null;
       if (kept === null || focusedRowIn(body.current) !== kept) return;
       bringOnScreen(kept);
       holdInPlaceOf(kept, onScreenHold);
@@ -850,29 +851,36 @@ export function IssueTree({
     // The question that waits on the reader, which the page opens on wherever the tree holds it,
     // whatever reads failed: the one it opened on, or the first in the outline's order where it
     // has opened on none and has placed no first row. A tree drawn again zoomed to Focus
-    // branch's node opens on none (above).
-    const question =
-      held.question ??
-      (branchAtMount.current === undefined && held.placed === undefined
-        ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)?.id
-        : undefined);
+    // branch's node opens on none (above). The outline is walked for it once a run at most, and
+    // only where it is read: on the way to the question or the first row, and where whether the
+    // opening goes to a Retry is decided (below).
+    let waiting: { readonly id: string | undefined } | undefined;
+    const waitingQuestion = (): string | undefined => {
+      waiting ??= {
+        id:
+          held.question ??
+          (branchAtMount.current === undefined && held.placed === undefined
+            ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)?.id
+            : undefined),
+      };
+      return waiting.id;
+    };
     // Where none is drawn as the reads settle and a read the rows come from stands failed, the
     // question that waits on the reader may be one it failed to bring, so the page does not open
     // on the first row as if none waited: it opens on the Retry of the asks' line where they
     // stand failed, since a question the issue's own read does not hold among its open asks comes
     // from them alone, else of the first line whose read the rows come from, over the tree, as
     // the stage gives a view's failed read's Retry the focus, in the frame after it is drawn
-    // (`landOnRow`), and the opening is done once the Retry holds the focus. A question that
-    // waits which the issue's read holds is drawn whatever the asks' read did, and the page opens
-    // on it (above). Whether it goes to a Retry is read as the reads settle, so a read that fails
-    // later moves no focus, and read again by the same rule where the Retry it went to leaves the
-    // page before its frame comes, its read answered: the opening is handed on to the question
-    // that waits on the reader where the reads now draw one, else to the Retry of the next line
-    // whose read the rows come from, where another such read still stands failed, else to the
-    // first row. The names place no row, so a failed names read changes nothing here; each line
-    // is drawn in the order the reads are given, one Retry each.
+    // (`landOnRow`), and the opening is done once the Retry holds the focus. Whether it goes to a
+    // Retry is read as the reads settle, so a read that fails later moves no focus, and read again
+    // by the same rule where the Retry it went to leaves the page before its frame comes, its read
+    // answered: the opening is handed on to the question that waits on the reader where the reads
+    // now draw one, else to the Retry of the next line whose read the rows come from, where
+    // another such read still stands failed, else to the first row. The names place no row, so a
+    // failed names read changes nothing here; each line is drawn in the order the reads are
+    // given, one Retry each.
     if (held.failed === undefined || (held.failed && held.row?.isConnected === false)) {
-      held.failed = question === undefined && retryLine !== -1;
+      held.failed = retryLine !== -1 && waitingQuestion() === undefined;
     }
     const retry =
       held.failed && retryLine !== -1
@@ -894,6 +902,7 @@ export function IssueTree({
       };
       return;
     }
+    const question = waitingQuestion();
     const questionRow =
       question === undefined
         ? undefined
@@ -1159,6 +1168,13 @@ export function IssueTree({
               data-crumb={above.id}
               key={above.id}
               onClick={() => zoomTo(above.id)}
+              // A press leaves the focus where it is, as one on a row's fold control does: the
+              // zoom it makes takes the crumb off the page, since the line drawn for that zoom
+              // holds no crumb of the node pressed, or no line where it is the issue, and a focus
+              // the crumb took went with it to the page's body. The row the reader is on keeps
+              // the focus, and the zoom places it as it places the row a key's zoom leaves the
+              // focus on (`zoomTo`).
+              onMouseDown={(event) => event.preventDefault()}
               tabIndex={-1}
               type="button"
               {...authorText}
