@@ -10,17 +10,19 @@
  * there, answered with the run of refused turns, `TURN_OUTCOMES`), the idle-release records
  * (`claims/release-records`, the tool's `read_release_records`: `releaseRecords` there, answered
  * with none, since no pod of the rig is ever released), the grant the tool mints in-process before
- * each of its own daemon calls (`grants`), the issue's record (`GET /legion/v1/state`, the tool's
- * `read_record`), the phase completion (`handoff/complete`, the tool's `handoff_complete`) and
- * the return of the issue to an earlier phase (`phase/backward`, the tool's
- * `request_backward_move`), the two routes here that redeem a grant. No credential route and no
- * grant file: a pane's `gh` and
- * `git` read the rig's token from the gh files under its `GH_CONFIG_DIR`, which `daemon-pane.go`
- * writes, and no agent runs `legion` from bash. A route the label's daemon does not register is
- * answered 404 whatever this has a handler for, as that daemon's catch-all answers it, in its
- * body (`{"error":"no route"}`, packages/daemon/internal/api/server.go's mux remainder); a route
- * it registers and this does not answer is answered 404 too, which `rig.sh health` reads as a
- * world the daemon would not have served (health.ts's `routes` rule).
+ * each of its own daemon calls (`grants`), the issue's record (`GET /legion/v1/issues/<key>/record`,
+ * the tool's `read_record` and the reminder's own check, with `GET /legion/v1/state` beside it),
+ * the health route (`GET /healthz`, which the tool's `read_build` reads for the contract this
+ * stand-in states on it), the phase completion (`handoff/complete`, the tool's
+ * `handoff_complete`) and the return of the issue to an earlier phase (`phase/backward`, the
+ * tool's `request_backward_move`), the two routes here that redeem a grant. No credential route
+ * and no grant file: a pane's `gh` and `git` read the rig's token from the gh files under its
+ * `GH_CONFIG_DIR`, which `daemon-pane.go` writes, and no agent runs `legion` from bash. A route
+ * the label's daemon does not register is answered 404 whatever this has a handler for, as that
+ * daemon's catch-all answers it, in its body (`{"error":"no route"}`,
+ * packages/daemon/internal/api/server.go's mux remainder); a route it registers and this does not
+ * answer is answered 404 too, which `rig.sh health` reads as a world the daemon would not have
+ * served (health.ts's `routes` rule).
  *
  * Every request and response body is the Go daemon's (`@legion/contracts/legion-api`): the
  * tool's grant request, its completion, and the state document. The grant rule mirrors the real
@@ -272,12 +274,14 @@ import { STEP_OTHER_ISSUE_CODE, STEP_WRITER_CODE } from "@legion/contracts/dispa
 import {
   LegionGrantRequest,
   LegionHandoffCompleteRequest,
+  LegionHealthResponse,
   LegionPhaseBackwardRequest,
   LegionReleaseRecordsRequest,
   LegionStateResponse,
   LegionTurnOutcomeRequest,
 } from "@legion/contracts/legion-api";
 import { z } from "zod";
+import pkg from "../../package.json";
 import { COMPLETE_PATH } from "./completion-answers";
 import {
   FACT_APPLY_FAILED,
@@ -799,6 +803,16 @@ function roundOutcome(pull: PullRequestFacts): "accepting" | "implementing" | un
     ? "accepting"
     : undefined;
 }
+
+/** `GET /healthz`: that this stand-in is serving, and the project its state names, which is the
+ * one word the controller's boot check reads. The contract goes in the header beside it
+ * (below), where the tool's `read_build` reads it. */
+const HEALTH = LegionHealthResponse.parse({ status: "ok", project });
+
+/** The response header the daemon states its own contract in
+ * (`packages/daemon/internal/api/server.go`). The number is this plugin build's own
+ * `legion.daemonApiVersion`, which is the contract a daemon this build pairs with speaks. */
+const DAEMON_CONTRACT_HEADER = "Legion-Daemon-Contract";
 
 interface LogLine {
   readonly at: string;
@@ -1864,57 +1878,86 @@ async function gateNow(): Promise<GateFacts | undefined> {
   };
 }
 
-/** `GET /legion/v1/state`: the record of the run's issue as the world stands now
- * (standin-record.ts's `stateBody`), read through this checkout's own contract so a body it does
- * not describe is never served. A world that cannot be read — the run's Dispatch not answering
- * for the spec — is answered 500 with why, as a daemon that cannot build its state answers,
- * never with a record of what the world last said. */
+/** The state document of the run's issue as the world stands now (standin-record.ts's
+ * `stateBody`), read through this checkout's own contract so a body it does not describe is never
+ * served. Throws where the world cannot be read — the run's Dispatch not answering for the spec. */
+const servedState = async (): Promise<z.infer<typeof LegionStateResponse>> => {
+  const pullRequest = settled();
+  await runOutbox();
+  const workers: Record<string, RowFacts> = {};
+  for (const [named, claim] of CLAIMS) {
+    if (named === "architect") continue;
+    const handoff = HANDOFFS.get(named);
+    workers[named] = { claim, handoffCommit: handoff?.commit, handoffRecord: handoff?.record };
+  }
+  const body = stateBody(
+    {
+      project,
+      issue,
+      phase: servedPhase,
+      status: shownStatus,
+      statusWrites: OUTBOX.flatMap((row) => (row.kind === "status" ? [row] : [])),
+      repo,
+      defaultBranch: base,
+      pluginContract,
+      architect: CLAIMS.get("architect"),
+      workers,
+      pass,
+      rounds,
+      backwardMoves,
+      pullRequest,
+      fixAttempts: FIX_ATTEMPTS,
+      gate: await gateNow(),
+      admittedAt,
+      entries: Object.fromEntries(ENTRIES),
+      movedAt,
+      now: new Date().toISOString(),
+    },
+    startedAt
+  );
+  const served = LegionStateResponse.parse(body);
+  // This checkout's contract keeps no member it does not declare, and the count of fix attempts
+  // a label of main `ff2a10ef`'s shape serves is that label's own, which its contract requires.
+  const pull = served.issues[issue]?.pullRequest;
+  if (pull !== undefined && FIX_ATTEMPTS !== undefined)
+    Object.assign(pull, { fixAttempts: FIX_ATTEMPTS });
+  return served;
+};
+
+/** A world that cannot be read, answered 500 with why, as a daemon that cannot build its state
+ * answers, never with a record of what the world last said. */
+function unbuilt(error: unknown): Response {
+  return json(500, {
+    error: `the state could not be built: ${error instanceof Error ? error.message : String(error)}`,
+  });
+}
+
+/** `GET /legion/v1/state`: the whole state document (`servedState`). */
 const stateAnswer = async (): Promise<Response> => {
   try {
-    const pullRequest = settled();
-    await runOutbox();
-    const workers: Record<string, RowFacts> = {};
-    for (const [named, claim] of CLAIMS) {
-      if (named === "architect") continue;
-      const handoff = HANDOFFS.get(named);
-      workers[named] = { claim, handoffCommit: handoff?.commit, handoffRecord: handoff?.record };
-    }
-    const body = stateBody(
-      {
-        project,
-        issue,
-        phase: servedPhase,
-        status: shownStatus,
-        statusWrites: OUTBOX.flatMap((row) => (row.kind === "status" ? [row] : [])),
-        repo,
-        defaultBranch: base,
-        pluginContract,
-        architect: CLAIMS.get("architect"),
-        workers,
-        pass,
-        rounds,
-        backwardMoves,
-        pullRequest,
-        fixAttempts: FIX_ATTEMPTS,
-        gate: await gateNow(),
-        admittedAt,
-        entries: Object.fromEntries(ENTRIES),
-        movedAt,
-        now: new Date().toISOString(),
-      },
-      startedAt
-    );
-    const served = LegionStateResponse.parse(body);
-    // This checkout's contract keeps no member it does not declare, and the count of fix attempts
-    // a label of main `ff2a10ef`'s shape serves is that label's own, which its contract requires.
-    const pull = served.issues[issue]?.pullRequest;
-    if (pull !== undefined && FIX_ATTEMPTS !== undefined)
-      Object.assign(pull, { fixAttempts: FIX_ATTEMPTS });
-    return json(200, served);
+    return json(200, await servedState());
   } catch (error) {
-    return json(500, {
-      error: `the state could not be built: ${error instanceof Error ? error.message : String(error)}`,
-    });
+    return unbuilt(error);
+  }
+};
+
+/** `GET /legion/v1/issues/<key>/record`, `key` as the path writes it: the one issue's record the
+ * state holds under `issues.<key>` (server.go's `issueRecordRoute`), and 404 RECORD_NOT_FOUND in
+ * the daemon's words for a key it holds no record of, every key but the run's issue. */
+const recordAnswer = async (key: string): Promise<Response> => {
+  let named = key;
+  try {
+    named = decodeURIComponent(key);
+  } catch {
+    // A key whose escapes do not decode names no issue: it is answered as written.
+  }
+  try {
+    const held = (await servedState()).issues[named];
+    return held === undefined
+      ? failure(404, "RECORD_NOT_FOUND", `The daemon has no record for ${named}`)
+      : json(200, held);
+  } catch (error) {
+    return unbuilt(error);
   }
 };
 
@@ -2475,6 +2518,33 @@ function nulIn(value: unknown, place: string): { place: string; text: string } |
   return undefined;
 }
 
+/** `GET /legion/v1/issues/<key>/record`, and the key it names. */
+const ISSUE_RECORD_PATH = /^\/legion\/v1\/issues\/([^/]+)\/record$/;
+
+/** The answer to one request of a route the label's daemon registers (`ROUTES`): the POST routes
+ * `handle` serves, then the three GET routes, then the 404 every other request gets, the
+ * catch-all's. */
+async function answer(
+  method: string,
+  path: string,
+  body: unknown
+): Promise<{ response: Response; mintedGrantId?: string; phase?: string }> {
+  if (method === "POST") return handle(path, body);
+  if (method === "GET") {
+    if (path === "/healthz") {
+      return {
+        response: Response.json(HEALTH, {
+          headers: { [DAEMON_CONTRACT_HEADER]: String(pkg.legion.daemonApiVersion) },
+        }),
+      };
+    }
+    if (path === "/legion/v1/state") return { response: await stateAnswer() };
+    const record = ISSUE_RECORD_PATH.exec(path);
+    if (record !== null) return { response: await recordAnswer(record[1] ?? "") };
+  }
+  return { response: json(404, { error: "no route" }) };
+}
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: Number(portArg),
@@ -2499,11 +2569,7 @@ const server = Bun.serve({
       ? { response: json(404, { error: "no route" }) }
       : nul !== undefined
         ? { response: json(400, { error: nul }) }
-        : request.method === "POST"
-          ? await handle(path, body)
-          : request.method === "GET" && path === "/legion/v1/state"
-            ? { response: await stateAnswer() }
-            : { response: json(404, { error: "no route" }) };
+        : await answer(request.method, path, body);
     // What the daemon last saw of the issue's tree move (`treeMovedAt`): a request of the
     // claim's that it took.
     if (request.method === "POST" && response.status < 300) movedAt = new Date().toISOString();
