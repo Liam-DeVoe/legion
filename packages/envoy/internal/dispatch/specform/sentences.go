@@ -105,25 +105,17 @@ func stopNoSpaceBreak(word string, given offer) broken {
 	return broken{rule: ruleStopNoSpace, ways: given.ways, detail: given.said(detail)}
 }
 
-// spacedStops is word with a space after each stop that joinedStop reads, after its closing marks.
+// spacedStops is word with a space at each place joinedStops names: after each joined stop and
+// its closing marks.
 func spacedStops(word string) string {
 	var spaced strings.Builder
-	afterLetter, pending := false, -1
-	for index, letter := range word {
-		if index == pending {
-			spaced.WriteByte(' ')
-		}
-		spaced.WriteRune(letter)
-		if !isStop(letter) || !afterLetter {
-			afterLetter = afterLetter || isLetterOrDigit(letter)
-			continue
-		}
-		rest := word[index+utf8.RuneLen(letter):]
-		marks := len(rest) - len(strings.TrimLeft(rest, closingMarks))
-		if next, _ := utf8.DecodeRuneInString(rest[marks:]); unicode.IsUpper(next) {
-			pending = index + utf8.RuneLen(letter) + marks
-		}
+	from := 0
+	for _, at := range joinedStops(word) {
+		spaced.WriteString(word[from:at])
+		spaced.WriteByte(' ')
+		from = at
 	}
+	spaced.WriteString(word[from:])
 	return spaced.String()
 }
 
@@ -134,23 +126,31 @@ func endsSentence(word string) bool {
 	return isStop(last) && !isInitialism(word)
 }
 
-// joinedStop reports whether word, which is no initialism, holds a stop after a letter or a digit
-// that an upper-case letter follows directly, after any closing marks.
+// joinedStop reports whether word, which is no initialism, holds a stop that joins two sentences
+// (joinedStops).
 func joinedStop(word string) bool {
-	if isInitialism(word) {
-		return false
-	}
+	return !isInitialism(word) && len(joinedStops(word)) > 0
+}
+
+// joinedStops is the place of word after each stop that follows a letter or a digit and that an
+// upper-case letter follows directly, after any closing marks: the offset of that letter. It is
+// the one scan that reads such a stop, so the finding (joinedStop) and its way out (spacedStops)
+// read the same stops.
+func joinedStops(word string) []int {
+	var places []int
 	afterLetter := false
 	for index, letter := range word {
 		if !isStop(letter) || !afterLetter {
 			afterLetter = afterLetter || isLetterOrDigit(letter)
 			continue
 		}
-		if next, _ := utf8.DecodeRuneInString(strings.TrimLeft(word[index+1:], closingMarks)); unicode.IsUpper(next) {
-			return true
+		rest := word[index+utf8.RuneLen(letter):]
+		marks := len(rest) - len(strings.TrimLeft(rest, closingMarks))
+		if next, _ := utf8.DecodeRuneInString(rest[marks:]); unicode.IsUpper(next) {
+			places = append(places, index+utf8.RuneLen(letter)+marks)
 		}
 	}
-	return false
+	return places
 }
 
 // isInitialism reports whether word is an initialism, without the marks that open or close it
