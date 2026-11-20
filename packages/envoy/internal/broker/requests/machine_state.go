@@ -566,8 +566,8 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // of that ask exists for the line to name, and the session's next valid ask ends that request. A
 // well-formed ask that Create refuses for a pending value, an unknown name, a max-grant or mixed
 // approvers can still end a live grant of the same names first (endMatchingLiveGrants). An invalid
-// session id (ErrSessionIDInvalid), which the ask's body names beside its request object, and a
-// malformed or replayed request object are refused before that grant check.
+// session id (ErrSessionIDInvalid), which the ask's body names beside its request object, and an
+// invalid request object (record.ErrRequestInvalid) are refused before that grant check.
 //
 // An end takes the request's row lock after the advisory locks, which every Create takes in
 // sorted name order, and after the enrollment's lock for share. applyDecisionAttempt, which
