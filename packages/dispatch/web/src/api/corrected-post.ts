@@ -1,5 +1,6 @@
 import {
   type InfiniteData,
+  type Mutation,
   type Query,
   type QueryClient,
   type QueryKey,
@@ -287,8 +288,18 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  * as it stood before the correction. Giving up every such read would give up reads that cannot
  * hold a post, the issue's steps read (`["issue", key, "steps"]`), whose owner never cancels a
  * read it has out (`ownQuery`), among them. So for those reads alone the correction is kept while
- * any of them is out (`keepCorrection`), and each answer of a written family that lands meanwhile
- * is written again with every kept correction's facts.
+ * any of them is out (`keepCorrection`), and the answer each of them lands is written with the
+ * correction's facts.
+ *
+ * An optimistic write out when the event arrives read what its rollback puts back before the
+ * correction too: a margin action on a comment (`useMarginItems`) puts back the comments it read
+ * as it began where Dispatch refuses it, and Dispatch refuses one on a comment deleted meanwhile
+ * (`409 POST_DELETED`), so the rollback would put the deleted comment's words back over the
+ * delete's mark, and keep them if the read after it fails. The Inbox's snooze, hand-on, answer,
+ * dismiss and Mark all read, and an issue's components save, roll back the same way. So the
+ * correction is also kept while any such write is pending, and each write by hand
+ * (`setQueryData`) into an answer of a written family made meanwhile is written with the
+ * correction's facts (`keepCorrection`).
  *
  * A member a names read answered ambiguous or gone names no post, and is left as it is. An
  * answer holding no copy of the post, or no answer yet, is written nothing, and nor is one that
@@ -317,7 +328,18 @@ export function markCorrectedPost(queryClient: QueryClient, event: DispatchEvent
       unwritten.add(query.queryHash);
     }
   }
-  keepCorrection(queryClient, post, unwritten);
+  // The optimistic writes out at the event: each mutation still pending that holds what its
+  // `onMutate` answered (`state.context`), the value TanStack hands its `onError` to roll back
+  // to. A mutation that holds none is handed nothing to roll back to.
+  const rollbacks = new Set(
+    queryClient
+      .getMutationCache()
+      .getAll()
+      .filter(
+        (mutation) => mutation.state.status === "pending" && mutation.state.context !== undefined
+      )
+  );
+  keepCorrection(queryClient, post, unwritten, rollbacks);
 }
 
 /** The family of `queryKey`, as `CORRECTED_POST_FAMILIES` names one: its first element, with its
@@ -361,53 +383,74 @@ function corrected(query: Query, write: FamilyWrite, posts: readonly CorrectedPo
 
 /**
  * The most corrections a page keeps at once (`keepCorrection`). Each is kept only while a read
- * that was out at its arrival, of a query whose answer it wrote nothing, is still out, so a page
- * holds many only under a burst of corrections that arrives while one such read is slow. Past
- * this the oldest goes, and such a read that lands after a hundred corrections since can bring its
- * post's old words back, until the refetch that event owes the read lands.
+ * that was out at its arrival, of a query whose answer it wrote nothing, is still out, or an
+ * optimistic write that was out at its arrival is still pending, so a page holds many only under
+ * a burst of corrections that arrives while one such read is slow or one such write is out. Past
+ * this the oldest goes, and such a read that lands, or such a write's rollback, after a hundred
+ * corrections since can bring its post's old words back, until a read of the query after it lands.
  */
 const KEPT_CORRECTIONS_MAX = 100;
 
-/** A correction the cache keeps for the reads of a written family that were out when it arrived
- *  and whose answer it wrote nothing, by query hash, each until its fetch is no longer out. */
+/** A correction the cache keeps, with what it is kept for: the reads of a written family that were
+ *  out when it arrived and whose answer it wrote nothing, by query hash, each until its fetch is no
+ *  longer out; and the optimistic writes that were out then, each until it is no longer pending. */
 interface KeptCorrection {
   readonly post: CorrectedPost;
   readonly out: Set<string>;
+  readonly rollbacks: Set<Mutation<unknown, unknown, unknown, unknown>>;
 }
 
 /** Per QueryClient, the corrections kept, oldest first. */
 const keptCorrections = new WeakMap<QueryClient, KeptCorrection[]>();
 
 /**
- * Keeps `post`'s correction while any read of `out` is still out, and writes every kept
- * correction's facts into each answer of a written family that lands meanwhile: the answer an out
- * read lands was composed before the correction, and a mutation's or a seed's write made from such
- * an answer was too. `out` holds the reads whose query the correction wrote nothing into
- * (`markCorrectedPost`): a read of a query it wrote is given up by that write
- * (`replaceQueryData`), which leaves no answer of it composed before the correction to land. Its
- * facts are final - a delete is never taken back, and an edit's time is the time it was made,
+ * Keeps `post`'s correction while any read of `out` is still out or any write of `rollbacks` is
+ * still pending, for the cache subscriptions (`keptCorrectionsOf`) to write its facts into what
+ * each of them puts in the cache, which was composed before the correction:
+ * - `out` holds the reads whose query the correction wrote nothing into (`markCorrectedPost`). The
+ *   answer such a read lands is written with the correction's facts, and no other answer of a
+ *   read is: a read of a query the correction wrote is given up by that write
+ *   (`replaceQueryData`), which leaves no answer of it composed before the correction to land,
+ *   and a read that begins after the event is answered as the server reads the corrected post.
+ * - `rollbacks` holds the optimistic writes out at the event: mutations still pending that hold
+ *   what their `onMutate` answered, read before the correction, which TanStack hands their
+ *   `onError` to put back. `onError` runs before the mutation leaves `pending` (`execute` in
+ *   `@tanstack/query-core`'s `mutation.ts`), so while one of them is pending each write by hand
+ *   (`setQueryData`) into an answer of a written family is written with the correction's facts.
+ *   The cache does not tell which mutation, if any, made a write, so every such write made then
+ *   is written. A margin action's rollback (`useMarginItems`) is one such write.
+ *
+ * Its facts are final - a delete is never taken back, and an edit's time is the time it was made,
  * which never moves a copy's later edit back (`editedAfter`) - so writing them again into an
  * answer composed after the correction, which already reads that way, changes nothing.
  *
- * The bound is the reads themselves, not a clock: a read that begins after the event is answered
- * as the server reads the corrected post, so only one out at the event can land an answer that
- * predates it. A read is out until its fetch lands, fails, pauses or is cancelled, and the client
- * gives one up once Dispatch says nothing on it for `REQUEST_DEADLINE_MS`, so a read whose
- * Dispatch has gone silent is let go of by that deadline. A clock of that deadline would not be
- * safe on its own: the deadline is on Dispatch's silence, not on the transfer, so a slow answer
- * that keeps arriving outlives it (`client.ts`). At most `KEPT_CORRECTIONS_MAX` are kept.
+ * The bound is the reads and the writes themselves, not a clock: a read that begins after the
+ * event is answered as the server reads the corrected post, and a write that begins after it reads
+ * the answers the correction wrote, so only one out at the event can put back what predates it. A
+ * read is out until its fetch lands, fails, pauses or is cancelled, and the client gives one up
+ * once Dispatch says nothing on it for `REQUEST_DEADLINE_MS`, so a read whose Dispatch has gone
+ * silent is let go of by that deadline. A clock of that deadline would not be safe on its own: the
+ * deadline is on Dispatch's silence, not on the transfer, so a slow answer that keeps arriving
+ * outlives it (`client.ts`). A write is pending until its `onSuccess` or `onError`, and its
+ * `onSettled`, have run. At most `KEPT_CORRECTIONS_MAX` are kept.
  */
-function keepCorrection(queryClient: QueryClient, post: CorrectedPost, out: Set<string>): void {
-  if (out.size === 0) {
+function keepCorrection(
+  queryClient: QueryClient,
+  post: CorrectedPost,
+  out: Set<string>,
+  rollbacks: Set<Mutation<unknown, unknown, unknown, unknown>>
+): void {
+  if (out.size === 0 && rollbacks.size === 0) {
     return;
   }
   const kept = keptCorrectionsOf(queryClient);
-  kept.push({ out, post });
+  kept.push({ out, post, rollbacks });
   kept.splice(0, Math.max(0, kept.length - KEPT_CORRECTIONS_MAX));
 }
 
-/** The corrections kept for `queryClient`, with the one cache subscription that writes them into
- *  each answer that lands and lets each go once no read it was kept for is out. */
+/** The corrections kept for `queryClient`, with the cache subscriptions that write each into the
+ *  answer a read it was kept for lands and into each write by hand made while a write it was kept
+ *  for is pending, and let each go once nothing it was kept for is out. */
 function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
   const existing = keptCorrections.get(queryClient);
   if (existing !== undefined) {
@@ -415,9 +458,17 @@ function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
   }
   const kept: KeptCorrection[] = [];
   keptCorrections.set(queryClient, kept);
+  const letGo = () => {
+    const left = kept.filter(
+      (correction) => correction.out.size > 0 || correction.rollbacks.size > 0
+    );
+    if (left.length !== kept.length) {
+      kept.splice(0, kept.length, ...left);
+    }
+  };
   // The query the subscription is writing the kept corrections into. The cache tells the write's
-  // own update before the write returns, and that answer already reads as every kept correction
-  // leaves it, so the corrections are not written into it again.
+  // own update before the write returns, and that answer already reads as those corrections leave
+  // it, so they are not written into it again.
   let rewriting: Query | undefined;
   queryClient.getQueryCache().subscribe((change) => {
     if (kept.length === 0 || (change.type !== "updated" && change.type !== "removed")) {
@@ -425,15 +476,19 @@ function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
     }
     const { query } = change;
     if (change.type === "updated" && change.action.type === "success" && query !== rewriting) {
+      // The corrections kept for this query's own read, and, for a write by hand (`setQueryData`,
+      // which the cache tells as a `success` it marks `manual`), those kept for an optimistic write
+      // still pending; in the order they arrived.
+      const byHand = change.action.manual === true;
+      const posts = kept
+        .filter(
+          (correction) =>
+            correction.out.has(query.queryHash) || (byHand && correction.rollbacks.size > 0)
+        )
+        .map((correction) => correction.post);
       const write = familyWrite(query.queryKey);
       const marked =
-        write === undefined
-          ? undefined
-          : corrected(
-              query,
-              write,
-              kept.map((correction) => correction.post)
-            );
+        write === undefined || posts.length === 0 ? undefined : corrected(query, write, posts);
       if (marked !== undefined) {
         const outer = rewriting;
         rewriting = query;
@@ -448,11 +503,22 @@ function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
       for (const correction of kept) {
         correction.out.delete(query.queryHash);
       }
-      const left = kept.filter((correction) => correction.out.size > 0);
-      if (left.length !== kept.length) {
-        kept.splice(0, kept.length, ...left);
-      }
+      letGo();
     }
+  });
+  queryClient.getMutationCache().subscribe((change) => {
+    const { mutation } = change;
+    if (
+      kept.length === 0 ||
+      mutation === undefined ||
+      (change.type !== "removed" && mutation.state.status === "pending")
+    ) {
+      return;
+    }
+    for (const correction of kept) {
+      correction.rollbacks.delete(mutation);
+    }
+    letGo();
   });
   return kept;
 }

@@ -1,16 +1,26 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { QueryClient, QueryClientProvider, type QueryKey, useQuery } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { correction, correctionFeed, DELETION, EDITED_AT } from "../__tests__/correction-feed";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
+import { useMarginItems } from "../features/margin/useMarginItems";
+import { ApiError, api } from "./client";
 import { CORRECTED_POST_FAMILIES, markCorrectedPost, NO_POST_FAMILIES } from "./corrected-post";
 import { useEventFeed } from "./event-feed";
 import { whoAmIQuery } from "./queries";
-import type { CommentWithTrees, DispatchEvent, MessageRead, MessageWithTrees } from "./types";
+import { DispatchQueryClient, hearLiveEvent } from "./query-client";
+import type {
+  Artifact,
+  CommentWithTrees,
+  DispatchEvent,
+  MessageRead,
+  MessageWithTrees,
+} from "./types";
 
 // R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 07:46Z and 07:48Z:
 // a correction writes its own facts into every cached family whose answer holds a comment or an
@@ -721,6 +731,117 @@ test("a correction is kept only while a read out at its arrival is out", async (
   client.setQueryData(list, [read]);
   expect(client.getQueryData<MessageRead[]>(list)?.[0]?.message.body).toBe(OLD_WORDS);
   client.clear();
+});
+
+// The architect's ruling of 2026-11-20 13:35Z (W3): a kept correction is written into the answer
+// of a read it was kept for, and into no other. Here the delete is kept for the read of CORE-1's
+// list, out with no answer yet. CORE-2's list, of the same family, is read and answered while
+// that read is still out: the delete was not kept for it, and its answer is left as it lands.
+// The held read then lands, and takes the delete's facts.
+test("a kept correction is written into the answer of a read it was kept for, and not into another query's", async () => {
+  const list = ["issue-messages", "CORE-1"];
+  const other = ["issue-messages", "CORE-2"];
+  const read: MessageRead = { message: messageOf(), replies: [] };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const held = Promise.withResolvers<MessageRead[]>();
+  const out = client.fetchQuery({ queryFn: () => held.promise, queryKey: list });
+  markCorrectedPost(client, correction("message", POST, false));
+
+  await client.fetchQuery({ queryFn: () => Promise.resolve([read]), queryKey: other });
+  expect(client.getQueryState(list)?.fetchStatus).toBe("fetching");
+  expect(client.getQueryData<MessageRead[]>(other)?.[0]?.message.body).toBe(OLD_WORDS);
+
+  held.resolve([read]);
+  await out;
+  expect(client.getQueryData<MessageRead[]>(list)?.[0]?.message.body).toBe("");
+  client.clear();
+});
+
+/** The document a margin shows on CORE-1: its spec. */
+const SPEC = {
+  created_at: "2026-11-19T00:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  id: "doc-1",
+  issue_key: "CORE-1",
+  kind: "doc",
+  name: "spec.md",
+  primary: true,
+  project: "CORE",
+  ref_key: "CORE-1/spec",
+  session_id: null,
+  slug: "spec",
+  versions: [],
+} as unknown as Artifact;
+
+// The architect's ruling of 2026-11-20 13:35Z, item 2: a write made after a correction's event
+// from an answer read before it. A margin action on a comment (`useMarginItems`) writes its value
+// over the issue's comments as it starts, and puts back the comments it read then where Dispatch
+// refuses it. Here the comment's author deletes it while an accept of its suggestion is out: the
+// delete's event is heard as the feed hears it (`hearLiveEvent`, then `markCorrectedPost`),
+// Dispatch refuses the accept, which has no replacement text left to move (`409 POST_DELETED`,
+// `commentAction` in `api/comment_actions.go`), and the rollback puts back the comments as they
+// stood before the delete. No read is out at the delete, so it is kept for the accept alone, which
+// is still pending then. The read of the comments after the rollback fails, and the margin's
+// comments read as deleted.
+test("a margin action refused after its comment's delete puts back no word of the comment", async () => {
+  const client = new DispatchQueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  const comments = ["comments", "CORE-1"];
+  const suggestion = { accepted: null, replace_with: "Hold the deploy until Monday." };
+  client.setQueryData(["issue", "CORE-1"], { artifacts: [SPEC], primary_artifact_id: SPEC.id });
+  client.setQueryData(["asks", "CORE-1"], []);
+  client.setQueryData(comments, [commentOf(POST, { suggestion })]);
+  client.setQueryData(["inbox"], []);
+  client.setQueryData(["user-state"], {});
+  const save = Promise.withResolvers<never>();
+  const acceptComment = spyOn(api, "acceptComment").mockReturnValue(save.promise);
+  const listComments = spyOn(api, "listComments").mockRejectedValue(new Error("the read failed"));
+  const places = new Map();
+  const hook = renderHook(
+    () =>
+      useMarginItems({ key: "CORE-1", kind: "issue" }, "comments", SPEC, places, places, undefined),
+    {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(MemoryRouter, null, createElement(QueryClientProvider, { client }, children)),
+    }
+  );
+  const shown = () => hook.result.current.commentRecords[0];
+  try {
+    act(() => hook.result.current.mutateItem({ id: POST, kind: "accept" }));
+    await waitFor(() => expect(acceptComment).toHaveBeenCalled());
+    await waitFor(() => expect(shown()?.suggestion?.accepted).toBe(true));
+
+    const deleted = correction("comment", POST, false);
+    act(() => {
+      hearLiveEvent(client, deleted, "alice");
+      markCorrectedPost(client, deleted);
+    });
+    expect({ body: shown()?.body, suggestion: shown()?.suggestion }).toEqual({
+      body: "",
+      suggestion: null,
+    });
+    await act(async () => {
+      save.reject(new ApiError(409, { code: "POST_DELETED", error: "this comment is deleted" }));
+    });
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    await waitFor(() => expect(listComments).toHaveBeenCalled());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+
+    expect({
+      body: shown()?.body,
+      deleted_at: shown()?.deleted_at,
+      suggestion: shown()?.suggestion,
+    }).toEqual({ body: "", deleted_at: DELETION.deleted_at, suggestion: null });
+  } finally {
+    hook.unmount();
+    acceptComment.mockRestore();
+    listComments.mockRestore();
+    client.clear();
+  }
 });
 
 // A kept edit is written again into each answer that lands while a read out at its arrival is
