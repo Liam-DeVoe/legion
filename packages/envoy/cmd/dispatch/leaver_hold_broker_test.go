@@ -118,17 +118,34 @@ func TestLeaverHoldRelease(t *testing.T) {
 // her sign-in does, so a refused refresh that makes two token requests is seen: at eight seconds
 // each it overruns the refresh's 15 seconds, Google reads as not reached, nothing is held, and no
 // refresh starts for a minute, so the eight-second row fails past its bound.
+//
+// The eight-second row then takes bob, in the same Dispatch process: his confirmation is dated an
+// hour and ten minutes back, with no request of his in between, Google waits eight seconds and
+// refuses him, and each of his three broker-facing credentials is refused within 55 seconds of
+// his first request (waitForFirstRefusals), which logs the second each was first refused at. His
+// refresh starts at that request, so this is the spec's window from a refresh's start, which a
+// broker that kept Dispatch's answer about him longer than it allows misses.
 func TestLeaverHoldBound(t *testing.T) {
 	for _, row := range []struct {
 		name  string
 		delay time.Duration
 		bound time.Duration
+		// thenBob is whether bob's step follows ada's.
+		thenBob bool
 	}{
-		{name: "an eight-second Google refusal", delay: 8 * time.Second, bound: 120 * time.Second},
+		{name: "an eight-second Google refusal", delay: 8 * time.Second, bound: 120 * time.Second, thenBob: true},
 		{name: "a half-second Google refusal", delay: 500 * time.Millisecond, bound: 40 * time.Second},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			r := newLeaverRig(t, withBrokerGate(), withRefreshFlowOfItsOwn())
+			// bob is set up before ada. The broker answers ada held only from an answer it asked
+			// at least projectaccess.CacheTTL after her setup's ask, so by then its answer about
+			// bob is older than that and it serves it no more: his first request below asks
+			// Dispatch, which starts his refresh.
+			var bob *leaverPerson
+			if row.thenBob {
+				bob = r.person(t, bobEmail)
+			}
 			ada := r.person(t, adaEmail)
 			r.ageConfirmation(t, adaEmail, time.Hour-time.Second)
 			expectAnswer(t, "ada@example.com's broker token at Dispatch before the confirmation lapses", http.StatusOK, "").got(r.brokerTokenAtDispatch(t, ada))
@@ -147,6 +164,13 @@ func TestLeaverHoldBound(t *testing.T) {
 			r.google.DelayToken(row.delay)
 			r.ageConfirmation(t, adaEmail, time.Hour)
 			waitForBrokerHold(t, r, ada, row.bound)
+			if bob == nil {
+				return
+			}
+
+			r.refuse(bobEmail)
+			r.ageConfirmation(t, bobEmail, time.Hour+10*time.Minute)
+			waitForFirstRefusals(t, r, bob, laterRefusalBound)
 		})
 	}
 }
@@ -342,6 +366,68 @@ func waitForBrokerHold(t *testing.T, r *leaverRig, p *leaverPerson, bound time.D
 		}
 		if time.Now().After(deadline) {
 			t.Errorf("%s within %s", last, bound)
+			return
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// laterRefusalBound is c-bound's bound for a person whose confirmation lapsed before their first
+// request, in one Dispatch process: each of their broker-facing credentials is refused within it
+// of that request, which starts their refresh. It is the spec's window from a refresh's start.
+const laterRefusalBound = 55 * time.Second
+
+// waitForFirstRefusals asks p's three broker-facing credentials each second, starting with p's
+// first request, until each is refused: their broker token at Dispatch (401 MEMBERSHIP_HELD), the
+// broker's introspection of it (held) and their session route at the broker (403
+// MEMBERSHIP_HELD). It logs the second, from that first request, at which each was first refused,
+// and fails t for one first refused past bound, one not refused once bound has passed, and one
+// served again after it was refused.
+func waitForFirstRefusals(t *testing.T, r *leaverRig, p *leaverPerson, bound time.Duration) {
+	t.Helper()
+	credentials := []struct {
+		name string
+		ask  func() (refused bool, answer string)
+	}{
+		{"broker token at Dispatch", func() (bool, string) {
+			status, code := r.brokerTokenAtDispatch(t, p)
+			return status == http.StatusUnauthorized && code == "MEMBERSHIP_HELD", fmt.Sprintf("%d %q, want 401 MEMBERSHIP_HELD", status, code)
+		}},
+		{"broker introspection", func() (bool, string) {
+			status, held, code := r.introspection(t, p)
+			return status == http.StatusOK && held && code == "", fmt.Sprintf("%d held=%t %q, want 200 held=true", status, held, code)
+		}},
+		{"session route", func() (bool, string) {
+			status, code := r.readAgentGrant(t, p)
+			return status == http.StatusForbidden && code == "MEMBERSHIP_HELD", fmt.Sprintf("%d %q, want 403 MEMBERSHIP_HELD", status, code)
+		}},
+	}
+	first := time.Now()
+	refusedAt := make([]time.Duration, len(credentials))
+	for {
+		served := ""
+		for i, credential := range credentials {
+			refused, answer := credential.ask()
+			at := time.Since(first)
+			switch {
+			case refused && refusedAt[i] == 0:
+				refusedAt[i] = at
+				t.Logf("%s's %s was first refused %s after their first request", p.email, credential.name, at.Round(100*time.Millisecond))
+				if at > bound {
+					t.Errorf("%s's %s was first refused %s after their first request, past %s", p.email, credential.name, at.Round(100*time.Millisecond), bound)
+				}
+			case !refused && refusedAt[i] != 0:
+				t.Errorf("%s's %s answered %s %s after their first request, after it was refused at %s", p.email, credential.name, answer, at.Round(100*time.Millisecond), refusedAt[i].Round(100*time.Millisecond))
+				return
+			case !refused && served == "":
+				served = fmt.Sprintf("%s's %s answered %s", p.email, credential.name, answer)
+			}
+		}
+		if served == "" {
+			return
+		}
+		if time.Since(first) > bound {
+			t.Errorf("%s, %s after their first request, past %s", served, time.Since(first).Round(100*time.Millisecond), bound)
 			return
 		}
 		time.Sleep(time.Second)
