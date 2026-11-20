@@ -114,7 +114,7 @@ import { useFoldedGroups } from "./preferences";
 import { questionLine } from "./question-line";
 import { ReadingPane } from "./ReadingPane";
 import { RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
-import { SnoozeControl } from "./SnoozeControl";
+import { BulkSnoozingContext, SnoozeControl } from "./SnoozeControl";
 import {
   EVERYONE_FILTER_VALUE,
   type InboxSection,
@@ -2182,56 +2182,60 @@ export function Inbox({
           show,
         }}
       >
-        {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
-            rather than in it, so the first mark moves no row (INFRA-3135, R4). */}
-        {selectionBar}
-        <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
-          {header}
-          {paneShown ? (
-            // The two columns are a grid of two fractions, so the share the reader dragged the
-            // divider to is exactly the share the pane takes, at any width; the divider is the
-            // column between them and takes its own.
-            //
-            // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
-            // so a long document in the pane would make the row - and with it both columns'
-            // boxes - taller than the page, and neither column would scroll in itself. The page
-            // would scroll instead, which is how the pane came to show a document's top however
-            // far down it the reader's section sat.
-            <div
-              className="grid min-h-0 flex-1"
-              ref={columnsRef}
-              style={{
-                gridTemplateColumns:
-                  subject === undefined
-                    ? "minmax(0, 1fr)"
-                    : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
-                gridTemplateRows: "minmax(0, 1fr)",
-              }}
-            >
-              {listColumn}
-              {subject === undefined ? null : (
-                <>
-                  <PaneDivider
-                    columns={columnsRef}
-                    onWidthChange={setPaneWidth}
-                    width={paneWidth}
-                  />
-                  {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                  <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
-                    <ReadingPane
-                      onAnswered={recordAnswered}
-                      onSnoozeLive={onSnoozeLive}
-                      row={subject}
-                      viewer={viewer}
+        {/* Every Snooze this list draws - a row's, and the column head's - is held while the
+            bar's own Snooze write is out over its ask (`SnoozeControl`). */}
+        <BulkSnoozingContext value={bulkSnoozing}>
+          {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
+              rather than in it, so the first mark moves no row (INFRA-3135, R4). */}
+          {selectionBar}
+          <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
+            {header}
+            {paneShown ? (
+              // The two columns are a grid of two fractions, so the share the reader dragged the
+              // divider to is exactly the share the pane takes, at any width; the divider is the
+              // column between them and takes its own.
+              //
+              // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
+              // so a long document in the pane would make the row - and with it both columns'
+              // boxes - taller than the page, and neither column would scroll in itself. The page
+              // would scroll instead, which is how the pane came to show a document's top however
+              // far down it the reader's section sat.
+              <div
+                className="grid min-h-0 flex-1"
+                ref={columnsRef}
+                style={{
+                  gridTemplateColumns:
+                    subject === undefined
+                      ? "minmax(0, 1fr)"
+                      : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
+                  gridTemplateRows: "minmax(0, 1fr)",
+                }}
+              >
+                {listColumn}
+                {subject === undefined ? null : (
+                  <>
+                    <PaneDivider
+                      columns={columnsRef}
+                      onWidthChange={setPaneWidth}
+                      width={paneWidth}
                     />
-                  </div>
-                </>
-              )}
-            </div>
-          ) : (
-            listColumn
-          )}
-        </div>
+                    {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
+                    <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
+                      <ReadingPane
+                        onAnswered={recordAnswered}
+                        onSnoozeLive={onSnoozeLive}
+                        row={subject}
+                        viewer={viewer}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              listColumn
+            )}
+          </div>
+        </BulkSnoozingContext>
       </RowDismissContext>
     </AskHandOnLiveContext>
   );

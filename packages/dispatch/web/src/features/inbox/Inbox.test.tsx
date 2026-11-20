@@ -3216,6 +3216,18 @@ function drawnSnooze(askId: string, label: string): string {
   return `${control.tagName === "SELECT" ? "select" : "Un-snooze"} ${held}`;
 }
 
+/** Presses what the row of `askId` draws of its Snooze control, named for `label`, as a reader
+ *  would: a pick of Next week on the select, or a click on Un-snooze where that is drawn instead. */
+async function pressDrawnSnooze(user: UserEvent, askId: string, label: string): Promise<void> {
+  const row = rowOf(askId);
+  const unsnooze = within(row).queryByRole("button", { name: `Un-snooze ${label}` });
+  if (unsnooze === null) {
+    await user.selectOptions(within(row).getByLabelText(`Snooze ${label}`), "next-week");
+  } else {
+    await user.click(unsnooze);
+  }
+}
+
 // A Snooze pick keeps its row in the band the reader saw it in while the write is out, held and
 // showing the moment being saved, and the row moves into Later, which starts folded, in the commit
 // after the write's answer, where the Inbox lets go of the row. The pick is the reader's press, and
@@ -3412,6 +3424,185 @@ test("the bar's Snooze keeps its rows in their band until its write lands", asyn
     });
     await waitFor(() => expect(rowIds()).toEqual(["ask-c"]));
     expect(headings()).toEqual(["Waiting on you (1)", "Later (2)"]);
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// A row the bar's Snooze is saving is held as a row's own Snooze pick holds it: the optimistic
+// moment would draw Un-snooze, so the select stays drawn, held, with the moment being saved before
+// it and `Snoozing…` on its badge, and its status says what is being saved. The hold lasts through
+// the commit in which the bar lets go of the row, which is the commit the row moves into Later in.
+test("the bar's Snooze holds each marked row's own Snooze, saying it is snoozing, until the rows move into Later", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const marked = [
+    ["ask-a", "CORE-1: Which approach?"],
+    ["ask-b", "CORE-2: Which format?"],
+  ] as const;
+  const commits = recordCommits<null>(() =>
+    marked.map(([askId, label]) => drawnSnooze(askId, label)).join(", ")
+  );
+  const { unmount } = renderInbox("/?group=waiting-on", { commits });
+  try {
+    await screen.findByText("Which owner?");
+    for (const [askId] of marked) {
+      await user.click(within(rowOf(askId)).getByRole("checkbox", { name: /^Select / }));
+    }
+    await screen.findByText("2 selected");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    const fromPick = commits.markAt(picker, "change");
+    await user.selectOptions(picker, "tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+
+    // Out, each marked row draws its select held, with the moment being saved before it.
+    for (const [askId, label] of marked) {
+      const row = rowOf(askId);
+      expect(drawnSnooze(askId, label)).toBe("select held");
+      expect(within(row).queryByRole("button", { name: `Un-snooze ${label}` })).toBeNull();
+      expect(row.querySelector("[data-inbox-snoozed-until]")).not.toBeNull();
+      expect(within(row).getByText("Snoozing…")).toBeTruthy();
+      expect(within(row).getByText(`Snoozing ${label}…`)).toHaveAttribute("role", "status");
+    }
+
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual(["ask-c"]));
+    expect(headings()).toEqual(["Waiting on you (1)", "Later (2)"]);
+    expect(drawnChanges(fromPick())).toEqual(["select held, select held", "(no row), (no row)"]);
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// No press on a row the bar's Snooze is saving writes while that write is out, whatever the row's
+// own Snooze draws: on a row the bar is taking out of its band, and on a row in Later the bar is
+// snoozing again, whose moment would draw Un-snooze, a press sends neither a snooze of its own nor
+// an un-snooze to race the bar's write.
+test("a press on the Snooze of a row the bar's Snooze is saving writes nothing, in its band or in Later", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { snoozed_until: soon() }),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const unsnoozeAsk = spyOn(api, "unsnoozeAsk").mockResolvedValue(undefined);
+  const getAsk = mockAskReads(rows);
+  const marked = [
+    ["ask-a", "CORE-1: Which approach?"],
+    ["ask-b", "CORE-2: Which format?"],
+  ] as const;
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Which approach?");
+    await user.click(screen.getByRole("button", { name: /^Later \(1\)/ }));
+    await screen.findByText("Which format?");
+    for (const [askId] of marked) {
+      await user.click(within(rowOf(askId)).getByRole("checkbox", { name: /^Select / }));
+    }
+    await screen.findByText("2 selected");
+    await user.selectOptions(screen.getByLabelText("Snooze selected asks"), "tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+
+    for (const [askId, label] of marked) await pressDrawnSnooze(user, askId, label);
+
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(screen.queryByText("Snoozing 2…")).not.toBeInTheDocument());
+    // The bar's own snooze of each row is all that was sent.
+    expect(snoozeAsk).toHaveBeenCalledTimes(2);
+    expect(unsnoozeAsk).not.toHaveBeenCalled();
+    await waitFor(() => expect(headings()).toEqual(["Later (2)"]));
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+    unsnoozeAsk.mockRestore();
+  }
+});
+
+// A bar's Snooze Dispatch refuses for one of its rows leaves that row where the reader saw it the
+// whole way: held while the write is out, and once the refusal is in, marked again under the
+// reason the bar gives, with its own Snooze given back - the select free and saying nothing -
+// while the row Dispatch took moves into Later.
+test("a refused bar Snooze leaves its refused row where it was, with its own Snooze enabled", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    if (id === "ask-b") {
+      throw new ApiError(400, {
+        code: "SNOOZE_INPUT",
+        error: "snoozed_until must be in the future",
+      });
+    }
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const label = "CORE-2: Which format?";
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Which owner?");
+    for (const askId of ["ask-a", "ask-b"]) {
+      await user.click(within(rowOf(askId)).getByRole("checkbox", { name: /^Select / }));
+    }
+    await screen.findByText("2 selected");
+    await user.selectOptions(screen.getByLabelText("Snooze selected asks"), "tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    expect(drawnSnooze("ask-b", label)).toBe("select held");
+
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await screen.findByText("Could not snooze 1 of 2: snoozed_until must be in the future.");
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b", "ask-c"]));
+    expect(headings()).toEqual(["Waiting on you (2)", "Later (1)"]);
+    const row = rowOf("ask-b");
+    expect(within(row).getByRole("checkbox", { name: /^Select / })).toBeChecked();
+    await waitFor(() => expect(drawnSnooze("ask-b", label)).toBe("select free"));
+    expect(row.querySelector("[data-inbox-snoozed-until]")).toBeNull();
+    expect(within(row).getByText("Snooze")).toBeTruthy();
+    expect(within(row).queryByText(`Snoozing ${label}…`)).toBeNull();
   } finally {
     unmount();
     getAsk.mockRestore();

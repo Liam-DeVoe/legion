@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { createContext, type ReactNode, useContext } from "react";
 import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
@@ -7,6 +7,18 @@ import { Timestamp } from "../refs/Timestamp";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
 import { isIndefinite, SNOOZE_PRESETS } from "./snooze";
 import { useAskSnooze } from "./useAskSnooze";
+
+/** No ask: a control drawn outside an Inbox has no selection bar over it. */
+const NO_BAR_SNOOZE: ReadonlySet<string> = new Set();
+
+/**
+ * The asks the selection bar's own Snooze write is over while that write is out
+ * (`useInboxSelection`'s `snoozing`), which the bar empties once the write settles - refused or
+ * stopped included. The Inbox provides it over every control it draws, a row's and the reading
+ * column's head alike; the head is reached through `ReadingPane`'s bodies, which carry no prop
+ * of the list's. With no provider no ask is under the bar.
+ */
+export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BAR_SNOOZE);
 
 /**
  * The per-row defer control. On an ordinary row it is the "Snooze" badge with the same
@@ -40,6 +52,15 @@ import { useAskSnooze } from "./useAskSnooze";
  * moves up into the row's place. A control taken away at the press would leave the row's going
  * to drop the focus onto the page.
  *
+ * The selection bar's Snooze over the rows the reader marked holds the control the same way while
+ * that write is out over this ask (`BulkSnoozingContext`): the optimistic moment would draw
+ * Un-snooze there too, and a press on it would send a write racing the bar's. The select stays
+ * drawn instead, held, with the return time being saved before it, through the commit in which
+ * the bar lets go of the row, which is the commit the Inbox moves the row in; a refused or
+ * stopped bar write leaves the row where it was, with the reason on the bar, and its ordinary
+ * control back in the commit after. One hold covers both writes, so no pick and no press of
+ * Snooze or Un-snooze writes while either is out.
+ *
  * The badge's `Snoozing…` is drawn for the eye alone (`aria-hidden`) and the select keeps its
  * name, so the write is said to a screen reader by a polite status of its own while it is out,
  * and that status says nothing once the write is decided.
@@ -61,36 +82,37 @@ export function SnoozeControl({
   snoozedUntil: string | null;
 }): ReactNode {
   const write = useAskSnooze(askId);
+  const barSnoozing = useContext(BulkSnoozingContext).has(askId);
   // The row held is the one the live snooze is of, which is this row's unless a host has drawn
   // the control for another ask since that press (`useAskSnooze`).
   useLiveRegistration(write.liveAskId, onLive);
-  const held = useHeldThroughAnswer(write.pending);
-  // A pick's write: a moment, where an un-snooze's is null.
-  const pickHeld = useHeldThroughAnswer(typeof write.pendingUntil === "string");
+  // A snooze out over this row: its own pick's write, whose variable is a moment where an
+  // un-snooze's is null, or the bar's.
+  const snoozing = typeof write.pendingUntil === "string" || barSnoozing;
+  const held = useHeldThroughAnswer(write.pending || barSnoozing);
+  const pickHeld = useHeldThroughAnswer(snoozing);
   const unsnoozeHeld = useHeldThroughAnswer(write.pendingUntil === null);
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
-  // replaces, so it takes a line of its own rather than drawing over the issue key.
+  // replaces, so it takes a line of its own rather than drawing over the issue key. Its Retry is
+  // held while either write is out, the bar's included, so a Retry cannot race the bar's snooze.
   const failure = write.failed ? (
     <div className="basis-full">
       <QueryError
         message={write.error ?? `Could not snooze ${label}.`}
         onRetry={write.retry}
-        retrying={write.pending}
+        retrying={held}
       />
     </div>
   ) : null;
   // Outside the Blocked on you narrowing the row stays in the band the reader saw it in while
   // the write is out, and a snooze in flight already shows the return time it is saving. What
   // the row cannot say is which way the reader is going, so the in-flight label comes from the
-  // write's own variable (a moment is a snooze, null is an un-snooze) and never from
-  // `snoozedUntil`, which by then describes the destination. It is read only while a write is
-  // live: `variables` outlives the write, so a settled row would otherwise keep reporting the
-  // last thing it did.
-  const going = !write.pending
-    ? undefined
-    : write.pendingUntil === null
-      ? "Un-snoozing"
-      : "Snoozing";
+  // write that is out - its own, by its variable (a moment is a snooze, null is an un-snooze), or
+  // the bar's, which is a snooze - and never from `snoozedUntil`, which by then describes the
+  // destination. `pendingUntil` is undefined once the row's own write settles, and the bar's set
+  // lets go of the ask once its write does, so a settled row says nothing of the last thing done
+  // to it.
+  const going = write.pendingUntil === null ? "Un-snoozing" : snoozing ? "Snoozing" : undefined;
   const pendingLabel = going === undefined ? undefined : `${going}…`;
   // Drawn first in both branches below and empty while no write is out, so the row keeps its own
   // one status, the same node, across a press: a screen reader reads a status already there when
