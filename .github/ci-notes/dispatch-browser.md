@@ -238,22 +238,24 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The browser step's budget, its `timeout-minutes: 11`, is measured over the last seven days of
-this step before 2026-11-20T15:50Z: every leg of every attempt of a `dispatch-browser` or
-`dispatch-references` shard job in a CI run of main's merge queue or of pull request #3125,
-1,718 steps in 376 runs (1,266 of them in merge groups, 452 on the pull request; no push to
-main runs this job). The longest is a cut one: shard (1) of run 44759668335 (job
-136371179565) reached the 9 minutes this step had then, 540 s, after 410 of its 412 rows had
-passed and none had failed, so 540 s is a lower bound of what it needed. Uncut, the longest
-are 522 s (run 44636495400, job 135957644469) and 521 s (run 44735839116, job 136287963678)
-on the pull request, and 516 s (run 44754421273, job 136353201329) and 510 s (run
-44318696971, job 134858341806) in main's own merge groups: shard (1) every time, the shard
-the suite's split leaves longest.
+The browser step's budget, its `timeout-minutes: 12`, is measured over every shard browser
+step of `ci.yaml` from 2026-11-13T16:00Z to 2026-11-20T16:00Z, the read of #4523, which sets
+the same budget: 19,219 steps in 4,742 runs of pull requests, merge groups and the nightly
+schedule, `workflow_dispatch` runs left out. Its longest uncut step is 585 s (run
+44557669985, job 135679815991, shard (3)), a leg that had to finish its retries to report a
+failing row, and the next is 558 s (run 44601631311, job 135835839778, shard (4)); both jobs'
+own step times read the same. A leg with a failing row must finish to report it, so a pull
+request's legs count as much as a merge group's.
 
-The rule is in this file's head. The pooled maximum is the cut 540 s, so
-540 x 1.15 = 621 s -> 11 min, the same rows in the same browsers. The 9 minutes it replaces
+An earlier read of this change, of main's merge queue and of pull request #3125 alone before
+2026-11-20T15:50Z (1,718 steps in 376 runs), found a longest step cut at the 9 minutes the
+step had then, 540 s (run 44759668335, job 136371179565, shard (1)), and 522 s uncut; the
+wider read holds both.
+
+The rule is in this file's head. The pooled maximum is 585 s, so
+585 x 1.15 = 673 s -> 12 min, the same rows in the same browsers. The 9 minutes it replaces
 came from the sharded head's own runs, whose longest leg was 419 s (42316487530, the full
-lane): the suite grew since, and main's merge groups reached 516 of those 540 s.
+lane): the suite grew since.
 
 The job budget, the shard job's `timeout-minutes`, is the rule's arithmetic, read on sha256:ba003193, the build of commit
 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
@@ -317,7 +319,7 @@ shards: its maxima there were 381 s (run 42521581875, job 128856388199), 355 s (
 128851420516) and 283 s (nightly run 42522550380), all under the 419 s that budget was
 derived from. The 474 s main measured for this step, which raised it to 10 minutes there,
 was taken on the bare runner with the Playwright install this change removed still in the
-job. The seven days' reading above, at 540 s cut, is what the budget rests on now.
+job. The wider read above, at 585 s, is what the budget rests on now.
 
 The browser step was the one step of this job that carried a budget, so the job's budget was
 that budget plus the maxima above of every step without one, which summed to 219 s:
@@ -338,8 +340,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 660 s, the two download attempts' 120 s each, and the steps without a
-budget at 219 - 5 - 45 + 355 = 524 s: 1,424 s, 23 min 44 s, rounded up to the 24 minutes
+browser step's 720 s, the two download attempts' 120 s each, and the steps without a
+budget at 219 - 5 - 45 + 355 = 524 s: 1,484 s, 24 min 44 s, rounded up to the 25 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -387,7 +389,7 @@ run-broker.sh serves from.
 
 The step budget note above does not count this step, which is new here. It copies one
 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-that rounding up to 24 minutes leaves hold it.
+that rounding up to 25 minutes leaves hold it.
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -504,12 +506,11 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 11`, is the 11 minutes the job's head derives from the
-last seven days of this step on main's merge queue and on pull request #3125: the pooled
-maximum is shard (1)'s 540 s of run 44759668335, cut at the 9 minutes the step had then, so
-540 x 1.15 = 621 s -> 11 min. The longest uncut legs, 522 s on the pull request and 516 s
-in main's merge group 44754421273, are under it, and the job's head lists them with their
-runs.
+The step's budget, `timeout-minutes: 12`, is the 12 minutes the job's head derives from #4523's
+read of every shard browser step of `ci.yaml` from 2026-11-13T16:00Z to 2026-11-20T16:00Z:
+the pooled maximum is 585 s (run 44557669985, job 135679815991), so 585 x 1.15 = 673 s
+-> 12 min. The next longest, 558 s (run 44601631311, job 135835839778), is under it, and the
+job's head lists both with their reads.
 
 ## Why the file store's address is set on the step and not in the environment
 
