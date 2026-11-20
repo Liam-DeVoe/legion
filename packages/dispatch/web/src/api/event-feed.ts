@@ -12,6 +12,7 @@ import { whenContentDrawn } from "../features/shell/content-drawn";
 import { loadEventRefresh } from "./event-refresh-load";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
+import { hearLiveEvent } from "./query-client";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
 import type { AuthenticatedUser, DispatchEvent, EventType } from "./types";
 
@@ -127,7 +128,7 @@ export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent
 // Leading window for a burst: a cold-start replay or a flurry of events on one issue is handed to
 // the refresh scheduler (`api/query-refresh.ts`) as one batch, 100ms after the first event of the
 // burst - later events join the pending batch but do not extend the window.
-const BATCH_WINDOW_MS = 100;
+export const BATCH_WINDOW_MS = 100;
 
 // A whole-cache refresh reaches every query the app holds, the GitHub proxy queries included,
 // and two callers ask for one: an event this client cannot parse, and a gap in the feed that its
@@ -365,6 +366,17 @@ export function useEventFeed({
         const event = raw as DispatchEvent;
         try {
           prependEventToLog(queryClient, event);
+          // A write's own event ends its hold on its queries' reads, so the refresh this event asks
+          // for, and every read after it, is asked past the hold (`hearLiveEvent`). It is heard
+          // here, at once, rather than once the map's chunk below is in: the holds name their
+          // own queries and need nothing of the map, so a read asked while that chunk is still
+          // downloading is not held back for a write Dispatch has already taken, and a chunk
+          // that fails to download does not leave the hold to wait out its deadline.
+          hearLiveEvent(
+            queryClient,
+            event,
+            queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login
+          );
         } catch (error) {
           console.error("event feed: an event this page cannot read", raw, error);
           refreshEverything();

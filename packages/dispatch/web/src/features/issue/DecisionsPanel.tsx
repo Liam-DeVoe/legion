@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { issueDecisionsQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
   Decision,
@@ -411,21 +412,26 @@ function WaitingDecision({
         });
         return;
       }
-      queryClient.setQueryData<IssueDecisions>(issueDecisionsQuery(issueKey).queryKey, (view) =>
-        view === undefined
-          ? view
-          : {
-              ...view,
-              // The Keep is of the text this card showed, which the server took, so it applies
-              // to the row that still holds that text. A decision's changed version is the
-              // greatest of the blocks it holds now and does not move when a block leaves it, so
-              // a row whose text changed since can carry the version the Keep was taken at.
-              decisions: (view.decisions ?? []).map((row) =>
-                row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
-                  ? { ...row, kept, waiting_review: false }
-                  : row
-              ),
-            }
+      // Over any read of the decisions still out, which was asked before the Keep and would put
+      // the decision back as waiting (`replaceQueryData`).
+      replaceQueryData<IssueDecisions>(
+        queryClient,
+        issueDecisionsQuery(issueKey).queryKey,
+        (view) =>
+          view === undefined
+            ? view
+            : {
+                ...view,
+                // The Keep is of the text this card showed, which the server took, so it applies
+                // to the row that still holds that text. A decision's changed version is the
+                // greatest of the blocks it holds now and does not move when a block leaves it,
+                // so a row whose text changed since can carry the version the Keep was taken at.
+                decisions: (view.decisions ?? []).map((row) =>
+                  row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
+                    ? { ...row, kept, waiting_review: false }
+                    : row
+                ),
+              }
       );
     },
   });

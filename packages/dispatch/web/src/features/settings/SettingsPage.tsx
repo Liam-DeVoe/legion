@@ -4,6 +4,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery, repoProjectsQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -80,7 +81,12 @@ export function SettingsPage(): ReactNode {
   const projects = useQuery(projectsQuery());
   // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
   const credentialsAvailable = useQuery(credentialPendingQuery());
-  // Both mapping writes show their refusal on the row they changed.
+  // Both mapping writes show their refusal on the row they changed. Neither holds back the reads
+  // of the mappings while it is out (`holds`): a read asked then can answer a default another
+  // browser set after Dispatch took this write, which an event brings here, and the page shows it
+  // at once. A read already out at the press is given up in the step the press shows its row, so
+  // no second press reads the rows from before it. Each write reads the mappings again once it
+  // settles, so a read Dispatch answered before it took the write is put right then.
   const putMapping = useKeyedWrite<
     RepoProject,
     MappingInput,
@@ -105,8 +111,8 @@ export function SettingsPage(): ReactNode {
             : apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
       });
     },
-    onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: mappingsKey });
+    onMutate: (variables) => {
+      void queryClient.cancelQueries({ exact: true, queryKey: mappingsKey });
       const previous = queryClient.getQueryData(mappingsKey);
       const existing = previous?.find((mapping) => mapping.repo === variables.repo);
       queryClient.setQueryData(mappingsKey, (current = []) =>
@@ -126,10 +132,13 @@ export function SettingsPage(): ReactNode {
       );
       return { previous };
     },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again.
+    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again. An
+    // answer goes over any read of the mappings still out, asked before it (`replaceQueryData`).
     onSuccess: (mapping, variables) => {
       if (mapping !== null) {
-        queryClient.setQueryData(mappingsKey, (current = []) => withMapping(current, mapping));
+        replaceQueryData<RepoProject[]>(queryClient, mappingsKey, (current = []) =>
+          withMapping(current, mapping)
+        );
       }
       setFailedAction(undefined);
       if (variables.default === undefined) {
@@ -164,8 +173,8 @@ export function SettingsPage(): ReactNode {
             : apiErrorMessage(error, `Couldn't delete ${repo}.`),
       });
     },
-    onMutate: async (repo) => {
-      await queryClient.cancelQueries({ queryKey: mappingsKey });
+    onMutate: (repo) => {
+      void queryClient.cancelQueries({ exact: true, queryKey: mappingsKey });
       const previous = queryClient.getQueryData(mappingsKey);
       queryClient.setQueryData(mappingsKey, (current = []) =>
         current.filter((mapping) => mapping.repo !== repo)

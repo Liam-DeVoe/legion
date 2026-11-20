@@ -27,6 +27,7 @@ import {
   projectsQuery,
   userStateQuery,
 } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
@@ -285,6 +286,10 @@ export function IssueHeader({
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
   const pinGuard = useSubmitGuard();
   const updateState = useKeyedWrite({
+    // A read of the state asked while the pin is out could be answered before Dispatch takes it,
+    // with the pin as it was: it waits for the answer, for at most `SEND_DEADLINE_MS`. The state
+    // is the viewer's alone, so the wait keeps back nobody else's change.
+    holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
     method: "PUT",
     write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
@@ -312,7 +317,8 @@ export function IssueHeader({
     },
     onSuccess: (next) => {
       if (next === null) return;
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+      // Over any read of the state still out, asked before the answer (`replaceQueryData`).
+      replaceQueryData<UserState>(queryClient, userStateQuery().queryKey, (current) => ({
         ...current,
         [issue.key]: next,
       }));

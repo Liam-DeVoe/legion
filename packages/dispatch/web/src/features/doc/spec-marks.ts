@@ -4,7 +4,14 @@ import { useMemo, useState } from "react";
 
 import { api, documentReadRequest } from "../../api/client";
 import { artifactBlocksQuery, documentReadQuery, issueDecisionsQuery } from "../../api/queries";
-import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
+import { replaceQueryData } from "../../api/query-client";
+import type {
+  Artifact,
+  ArtifactBlock,
+  DocumentRead,
+  GraphReferences,
+  IssueDecisions,
+} from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
@@ -163,10 +170,12 @@ export function useSpecMarks({
         ? { key: `${artifact.id}@${shownVersion}`, value: shownVersion }
         : undefined,
     // `request` comes first: `onSuccess` reads its answer, and the answer's type is the
-    // request's, which is what holds it to the type the read of this key answers.
+    // request's. The answer goes over any read of the mark still out, which was asked before it
+    // and would put back the version read before (`replaceQueryData`), as the type the read of
+    // this key answers (`DocumentRead`), which is what holds the request's answer to that type.
     request: (version) => documentReadRequest(artifact.id, version),
     onSuccess: (result) =>
-      queryClient.setQueryData(documentReadQuery(artifact.id).queryKey, result),
+      replaceQueryData<DocumentRead>(queryClient, documentReadQuery(artifact.id).queryKey, result),
     shouldSend: true,
     target: `read:document:${artifact.id}`,
   });
