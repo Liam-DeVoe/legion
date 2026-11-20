@@ -12,7 +12,7 @@ import {
 } from "@legion/pi-shared/test/omp-harness";
 
 // A turn killed in a provider retry's backoff, on the real Oh My Pi (R2). At the pin (.omp-pin,
-// 18.16.0-sami.20261105-032528) the host writes the failed attempt into the transcript, emits
+// 18.18.6-sami.20261119-162325) the host writes the failed attempt into the transcript, emits
 // `auto_retry_start` and sleeps (`#applyRetryPolicy`,
 // packages/coding-agent/src/session/turn-recovery.ts:3396-3434); it notifies extensions of the
 // run's end (`agent_end`) only once the run settles, with `willContinue` when a continuation
@@ -75,14 +75,15 @@ async function readTranscript(
   return { id, entries };
 }
 
-/** The newest assistant message of `entries`. */
-function newestAssistant(entries: readonly Entry[]): Entry | undefined {
-  for (const entry of entries.toReversed()) {
+/** The assistant messages of `entries`, oldest first. */
+function assistantReplies(entries: readonly Entry[]): readonly Entry[] {
+  const replies: Entry[] = [];
+  for (const entry of entries) {
     const message = entry.message;
     if (entry.type !== "message" || typeof message !== "object" || message === null) continue;
-    if ("role" in message && message.role === "assistant") return message as Entry;
+    if ("role" in message && message.role === "assistant") replies.push(message as Entry);
   }
-  return undefined;
+  return replies;
 }
 
 /**
@@ -156,7 +157,7 @@ async function killInRetry(
     const entries = written ? (await readTranscript(sessions)).entries : [];
     const mark = entries.filter((entry) => entry.customType === TURN_MARK_ENTRY).at(-1)?.data;
     const ended = typeof mark === "object" && mark !== null && "ended" in mark && mark.ended;
-    if (cancel ? ended === true : newestAssistant(entries)?.stopReason === "error") break;
+    if (cancel ? ended === true : assistantReplies(entries).at(-1)?.stopReason === "error") break;
     await Bun.sleep(100);
   }
   first.kill("SIGKILL");
@@ -204,7 +205,7 @@ test.skipIf(omp === undefined && !onActions)(
 
     // The process ended in the retry: the newest reply the host wrote is the failed attempt, which
     // alone reads as a turn that ended.
-    expect(newestAssistant(left)).toMatchObject({
+    expect(assistantReplies(left).at(-1)).toMatchObject({
       stopReason: "error",
       errorMessage: expect.stringContaining("Overloaded"),
     });
@@ -246,7 +247,11 @@ test.skipIf(omp === undefined && !onActions)(
     if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
     const { left, resumedTurn } = await killInRetry(omp, true);
 
-    expect(newestAssistant(left)).toMatchObject({
+    // The cancel ended the retry: at the pin the host writes the cancel itself as the run's last
+    // reply, an aborted one, right after the failed attempt it cancelled the retry of.
+    const replies = assistantReplies(left);
+    expect(replies.at(-1)).toMatchObject({ stopReason: "aborted", errorMessage: "Retry cancelled" });
+    expect(replies.at(-2)).toMatchObject({
       stopReason: "error",
       errorMessage: expect.stringContaining("Overloaded"),
     });
