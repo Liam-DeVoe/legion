@@ -105,57 +105,13 @@ func TestATTLGrantEndsAfterItsLifetime(t *testing.T) {
 	}
 }
 
-// beforeMigration13 moves request requestID (and its grant, when it has one) to before migration
-// 0013 was applied, as a broker of that release wrote it: it asked for no lifetime and recorded
-// the release's fixed 43200 seconds. The expiry is left as it was.
-func beforeMigration13(t *testing.T, m *Machine, requestID string) {
-	t.Helper()
-	ctx := context.Background()
-	for _, statement := range []string{
-		`update requests set created_at = (select applied_at from broker_schema_migrations where version=13) - interval '1 hour' where id=$1`,
-		`update grants set created_at = (select applied_at from broker_schema_migrations where version=13) - interval '1 hour' where request_id=$1`,
-	} {
-		if _, err := m.Store.Pool.Exec(ctx, statement, requestID); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-// TestANoTTLRequestReusesAnUnexpiredPreMigrationGrant pins the one rollout bridge: before
-// migration 0013, a no-TTL request recorded the former 12-hour default and its grant has an
-// expiry. A running session asking again without --ttl keeps that grant and its original expiry,
-// rather than opening a second approval request or extending what the person approved.
-func TestANoTTLRequestReusesAnUnexpiredPreMigrationGrant(t *testing.T) {
-	m, enr, key, _ := newFixture(t)
-	ctx := context.Background()
-
-	old, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "AUTO_TOKEN"), "", nil)
-	if err != nil || old.GrantID == nil {
-		t.Fatalf("Create(pre-migration AUTO_TOKEN) = %+v, %v; want a grant", old, err)
-	}
-	beforeMigration13(t, m, old.ID)
-	var before time.Time
-	if err := m.Store.Pool.QueryRow(ctx, `select expires_at from grants where id=$1`, *old.GrantID).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
-
-	reused, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL after migration", "AUTO_TOKEN"), "", nil)
-	if err != nil || reused.ID != old.ID || reused.GrantID == nil || *reused.GrantID != *old.GrantID {
-		t.Fatalf("Create(no TTL after migration) = %+v, %v; want pre-migration request %s and grant %s reused", reused, err, old.ID, *old.GrantID)
-	}
-	var after time.Time
-	if err := m.Store.Pool.QueryRow(ctx, `select expires_at from grants where id=$1`, *old.GrantID).Scan(&after); err != nil {
-		t.Fatal(err)
-	}
-	if !after.Equal(before) {
-		t.Fatalf("pre-migration grant expiry changed from %s to %s; want it left as approved", before, after)
-	}
-}
-
-// TestANoTTLRequestDoesNotReuseAPostMigration12HourGrant: the bridge reaches only grants written
-// before migration 0013. A grant asked for with --ttl 12h after the deploy records the same 43200
-// seconds, and is a lifetime that session chose; a request without --ttl is never handed it.
-func TestANoTTLRequestDoesNotReuseAPostMigration12HourGrant(t *testing.T) {
+// TestANoTTLRequestIsNotHandedATwelveHourGrant: a grant asked for with --ttl 12h records 43200
+// seconds, a lifetime that session chose; a request without --ttl, which gets none here
+// (default-grant=session), is never handed it, as no request is handed a grant of another
+// lifetime (sameLifetime). A no-TTL request recorded those 43200 seconds before migration 0013,
+// and a rule for such requests once handed their grants back; none of them has been live since a
+// day after that migration, so the rule is gone and 43200 seconds are like any other lifetime.
+func TestANoTTLRequestIsNotHandedATwelveHourGrant(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)
@@ -166,37 +122,24 @@ func TestANoTTLRequestDoesNotReuseAPostMigration12HourGrant(t *testing.T) {
 	}
 	fresh, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL", "AUTO_TOKEN"), "", nil)
 	if err != nil || fresh.ID == twelve.ID || fresh.GrantID == nil || *fresh.GrantID == *twelve.GrantID || fresh.LifetimeSeconds != nil {
-		t.Fatalf("Create(no TTL) after a post-migration --ttl 12h grant = %+v, %v; want a new grant with no lifetime, not %s reused", fresh, err, twelve.ID)
+		t.Fatalf("Create(no TTL) after a --ttl 12h grant = %+v, %v; want a new grant with no lifetime, not %s reused", fresh, err, twelve.ID)
 	}
 }
 
-// TestANoTTLRequestJoinsAPreMigrationPendingRequest: a request still pending at the deploy recorded
-// the old release's 43200 seconds. The same session asking again for the same names without
-// --ttl, as an older client's retry does, joins it rather than being refused REQUEST_PENDING; a
-// pending request written after the deploy with --ttl 12h is never joined by a request without one.
-func TestANoTTLRequestJoinsAPreMigrationPendingRequest(t *testing.T) {
+// TestANoTTLRequestDoesNotJoinATwelveHourPendingRequest: a pending request written with --ttl
+// 12h is never joined by a request without one, which is refused REQUEST_PENDING, as a request of
+// any other lifetime is (sameLifetime).
+func TestANoTTLRequestDoesNotJoinATwelveHourPendingRequest(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)
 
-	old, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "DEEL_API_KEY"), "", nil)
-	if err != nil || old.State != "pending" {
-		t.Fatalf("Create(pre-migration DEEL_API_KEY) = %+v, %v; want pending", old, err)
-	}
-	beforeMigration13(t, m, old.ID)
-	joined, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL after migration", "DEEL_API_KEY"), "", nil)
-	if err != nil || joined.ID != old.ID || !joined.Coalesced {
-		t.Fatalf("Create(no TTL) beside a pre-migration pending request = %+v, %v; want request %s joined", joined, err, old.ID)
-	}
-
-	m2, enr2, key2, _ := newFixture(t)
-	sessionDefaultFixture(t, m2)
-	twelve, err := m2.Create(ctx, enr2, signRequestFor(t, m2, key2, 43200, "DEEL_API_KEY"), "", nil)
+	twelve, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "DEEL_API_KEY"), "", nil)
 	if err != nil || twelve.State != "pending" {
 		t.Fatalf("Create(DEEL_API_KEY --ttl 12h) = %+v, %v; want pending", twelve, err)
 	}
-	if refused, err := m2.Create(ctx, enr2, signRequest(t, m2, key2, "no TTL", "DEEL_API_KEY"), "", nil); !errors.Is(err, ErrRequestPending) {
-		t.Fatalf("Create(no TTL) beside a post-migration --ttl 12h pending request = %+v, %v; want ErrRequestPending", refused, err)
+	if refused, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL", "DEEL_API_KEY"), "", nil); !errors.Is(err, ErrRequestPending) {
+		t.Fatalf("Create(no TTL) beside a --ttl 12h pending request = %+v, %v; want ErrRequestPending", refused, err)
 	}
 }
 

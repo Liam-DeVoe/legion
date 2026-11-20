@@ -1049,9 +1049,6 @@ type pendingRequestRow struct {
 	ID       string
 	Lifetime *int
 	Names    []string
-	// Legacy is a request written before migration 0013 (writtenBeforeMigration13), which asked
-	// for no lifetime and recorded the release's fixed one.
-	Legacy bool
 	// RecordBody and RecordCreatedAt are the request's credential-request record: its canonical
 	// body and when it was written, which is what signedForAnotherBroker verifies it against.
 	// They are pointers because the left join reads NULL in both for a request with no record,
@@ -1087,7 +1084,7 @@ type pendingRequestRow struct {
 // the same transaction, and a pgx transaction runs no statement while rows of its connection are
 // open.
 func pendingRequests(ctx context.Context, q querier, enrollmentID string, sorted []string) ([]pendingRequestRow, error) {
-	rows, err := q.Query(ctx, `select req.id, req.lifetime_seconds, array_agg(s.name order by s.name), `+writtenBeforeMigration13("req")+`,
+	rows, err := q.Query(ctx, `select req.id, req.lifetime_seconds, array_agg(s.name order by s.name),
 			cr.body, cr.created_at
 		from requests req join request_secrets s on s.request_id=req.id
 		left join credential_requests cr on cr.id = req.record_id
@@ -1099,18 +1096,14 @@ func pendingRequests(ctx context.Context, q querier, enrollmentID string, sorted
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (pendingRequestRow, error) {
 		var p pendingRequestRow
-		err := row.Scan(&p.ID, &p.Lifetime, &p.Names, &p.Legacy, &p.RecordBody, &p.RecordCreatedAt)
+		err := row.Scan(&p.ID, &p.Lifetime, &p.Names, &p.RecordBody, &p.RecordCreatedAt)
 		return p, err
 	})
 }
 
-// joins answers whether a request asking for lifetime joins this pending request: the same
-// lifetime, or, for a request asking for none, one written before migration 0013, which asked for
-// none and recorded the release's fixed lifetime.
-func (p pendingRequestRow) joins(lifetime *int) bool {
-	return sameLifetime(p.Lifetime, lifetime) || (lifetime == nil && p.Legacy)
-}
-
+// sameLifetime is the one lifetime rule of a join and of a reuse: a new request joins a pending
+// request, or takes a live grant, only of the lifetime it asks for, the same seconds or none on
+// both sides.
 func sameLifetime(a, b *int) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -1140,21 +1133,10 @@ type querier interface {
 }
 
 // liveGrant is one live grant this enrollment holds for exactly the names a request asks for:
-// the request that made it, the grant, the lifetime that request signed, and whether that request
-// was written before migration 0013 (writtenBeforeMigration13).
+// the request that made it, the grant, and the lifetime that request signed.
 type liveGrant struct {
 	requestID, grantID string
 	lifetime           *int
-	beforeMigration13  bool
-}
-
-// reusableFor reports whether a new request that signs lifetime may take this grant: one with the
-// same lifetime, or, for a request that signs none, one written before migration 0013.
-func (g liveGrant) reusableFor(lifetime *int) bool {
-	if lifetime == nil {
-		return g.lifetime == nil || g.beforeMigration13
-	}
-	return g.lifetime != nil && *g.lifetime == *lifetime
 }
 
 // liveGrantsWithNames answers every live grant this enrollment holds for exactly sorted, newest
@@ -1164,8 +1146,7 @@ func (g liveGrant) reusableFor(lifetime *int) bool {
 // returns, so no connection is held open while the caller checks each match, which reads and
 // writes on connections of its own.
 func (m *Machine) liveGrantsWithNames(ctx context.Context, enr enrollmentRow, sorted []string) ([]liveGrant, error) {
-	rows, err := m.Store.Pool.Query(ctx, `select r.id, g.id::text, array_agg(s.name), r.lifetime_seconds,
-			coalesce(`+writtenBeforeMigration13("r")+`, false)
+	rows, err := m.Store.Pool.Query(ctx, `select r.id, g.id::text, array_agg(s.name), r.lifetime_seconds
 		from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
@@ -1179,7 +1160,7 @@ func (m *Machine) liveGrantsWithNames(ctx context.Context, enr enrollmentRow, so
 	for rows.Next() {
 		var match liveGrant
 		var names []string
-		if err := rows.Scan(&match.requestID, &match.grantID, &names, &match.lifetime, &match.beforeMigration13); err != nil {
+		if err := rows.Scan(&match.requestID, &match.grantID, &names, &match.lifetime); err != nil {
 			return nil, err
 		}
 		sort.Strings(names)
@@ -1188,20 +1169,6 @@ func (m *Machine) liveGrantsWithNames(ctx context.Context, enr enrollmentRow, so
 		}
 	}
 	return matches, rows.Err()
-}
-
-// writtenBeforeMigration13 is the SQL predicate that request alias was written before migration
-// 0013 (grants until the session ends) was applied, recording that release's fixed 43200-second
-// lifetime although it asked for none. A request without a lifetime takes such a request's live
-// grant, keeping its expiry, and joins it while it is pending, so a session running across the
-// deploy neither asks its approver again nor is refused. The request's own time decides, since it
-// is the row that recorded the old default: a request pending at the deploy and approved after it
-// is covered too. No request written after the deploy matches, so a later --ttl 12h request is
-// never taken for one, and the bridge ends on its own, with nothing to remove: such a request
-// waits at most 12 hours and its grant lasts 12 more, so none matches a day after the deploy.
-func writtenBeforeMigration13(alias string) string {
-	return "(" + alias + ".lifetime_seconds = 43200 and " + alias +
-		".created_at < (select applied_at from broker_schema_migrations where version = 13))"
 }
 
 // liveGrantPolicy reads the request data that recheckLiveGrant needs for a matching live grant.
@@ -1246,16 +1213,15 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 
 // reuseLiveGrant answers Create's own "request (or reuse the live grant)" contract: an exact
 // name-set match (never a subset or superset — the same matching rule coalescing uses for pending
-// requests), asking for the same lifetime (or, asking for none, a request written before
-// migration 0013: writtenBeforeMigration13), against a still-live grant (not revoked, not expired)
-// under this enrollment is returned as-is, with no new request row and no new record, as long as
-// endMatchingLiveGrants left it live with no pause, and its whole approval chain still verifies
-// (verifyChainForRelease, the same check Values makes). endMatchingLiveGrants made the policy
-// checks Values makes before any refusal Create can return: a changed airlock entry
-// (changedEntry), and, when the policy version moved, a granted name is a service's
-// (anyServiceOwned), carries a requesters tag (anyListed) or the grant is a person's pod's
-// (personPodGrant), stillAllowed and overMaxGrant over every name under the grant's own lifetime.
-// It ended each grant those checks end. So a reuse never has an end of its own to make.
+// requests), asking for the same lifetime (sameLifetime), against a still-live grant (not
+// revoked, not expired) under this enrollment is returned as-is, with no new request row and no
+// new record, as long as endMatchingLiveGrants left it live with no pause, and its whole approval
+// chain still verifies (verifyChainForRelease, the same check Values makes).
+// endMatchingLiveGrants made the policy checks Values makes before any refusal Create can return:
+// a changed airlock entry (changedEntry), and, when the policy version moved, a granted name is a
+// service's (anyServiceOwned), carries a requesters tag (anyListed) or the grant is a person's
+// pod's (personPodGrant), stillAllowed and overMaxGrant over every name under the grant's own
+// lifetime. It ended each grant those checks end. So a reuse never has an end of its own to make.
 //
 // The lookup runs again here, for each grant's request, lifetime and order, and so that a grant
 // revoked or expired since the end pass is not handed back. Every exact, reusable match the end
@@ -1296,7 +1262,7 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 	}
 	for _, match := range matches {
 		pause, wasChecked := checked[match.grantID]
-		if !wasChecked || !match.reusableFor(lifetime) {
+		if !wasChecked || !sameLifetime(match.lifetime, lifetime) {
 			continue
 		}
 		if pause != nil {

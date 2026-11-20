@@ -750,7 +750,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		return Request{}, err
 	}
 	if e.state == "pending" && kept.ID != "" {
-		if slices.Equal(kept.Names, sorted) && (kept.joins(lifetime) || (obj.LifetimeSeconds == nil && kept.Lifetime == nil)) {
+		if slices.Equal(kept.Names, sorted) && (sameLifetime(kept.Lifetime, lifetime) || (obj.LifetimeSeconds == nil && kept.Lifetime == nil)) {
 			if err := tx.Commit(ctx); err != nil {
 				return Request{}, err
 			}
