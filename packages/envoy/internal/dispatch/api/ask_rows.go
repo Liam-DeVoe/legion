@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -277,14 +278,20 @@ func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 // beside its other reads (readIssueDetails), and a read of its own sends them as a batch of its
 // own (loadAskDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
 // declares no counting arms for is refused as the count is queued, which queues nothing and
-// answers nothing itself, so the apply reports that refusal.
-func queueAskDetails(b *pgx.Batch, asks []*model.Ask) func() error {
+// answers nothing itself, so the apply reports that refusal. A read at a cut, which ctx carries,
+// queues no count and stamps none: the reference graph keeps no history, and a past-time answer
+// leaves the count out (leaveOutPastAskFields).
+func queueAskDetails(ctx context.Context, b *pgx.Batch, asks []*model.Ask) func() error {
 	askIDs := distinctAskIDs(asks)
 	openedEventIDs := make(map[string]int64, len(askIDs))
 	counts := map[string]int{}
 	partIDs := make([]refs.AskIDs, len(asks))
+	_, atCut := asof.CutFrom(ctx)
 	events.QueueOpenedEventIDs(b, askIDs, openedEventIDs)
-	countsErr := refs.QueueBacklinkCounts(b, "ask", askIDs, refs.AskBacklinkExclusions, counts)
+	var countsErr error
+	if !atCut {
+		countsErr = refs.QueueBacklinkCounts(b, "ask", askIDs, refs.AskBacklinkExclusions, counts)
+	}
 	refs.QueueAskPartIDs(b, asks, partIDs)
 	return func() error {
 		if countsErr != nil {
@@ -293,7 +300,9 @@ func queueAskDetails(b *pgx.Batch, asks []*model.Ask) func() error {
 		if err := applyOpenedEventIDs(asks, openedEventIDs); err != nil {
 			return err
 		}
-		applyAskBacklinkCounts(asks, counts)
+		if !atCut {
+			applyAskBacklinkCounts(asks, counts)
+		}
 		applyAskPartIDs(asks, partIDs)
 		return nil
 	}
@@ -304,7 +313,7 @@ func queueAskDetails(b *pgx.Batch, asks []*model.Ask) func() error {
 // holds q's connection until its results close, so nothing else reads the database in between.
 func loadAskDetails(ctx context.Context, q queryer, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
-	apply := queueAskDetails(batch, asks)
+	apply := queueAskDetails(ctx, batch, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -356,9 +365,12 @@ func applyAskPartIDs(asks []*model.Ask, partIDs []refs.AskIDs) {
 // graph-edge count (attachAskBacklinkCounts), then the part ids of its options and of its answer
 // with its part revision (attachAskPartIDs). A write attaches neither. A list of asks reads the
 // same fields, with their identity events, in one batch instead (queueAskDetails, loadAskDetails).
+// A read at a cut reads no count, as queueAskDetails reads none.
 func attachAskReadFields(ctx context.Context, q queryer, asks []*model.Ask) error {
-	if err := attachAskBacklinkCounts(ctx, q, asks); err != nil {
-		return err
+	if _, atCut := asof.CutFrom(ctx); !atCut {
+		if err := attachAskBacklinkCounts(ctx, q, asks); err != nil {
+			return err
+		}
 	}
 	return attachAskPartIDs(ctx, q, asks)
 }

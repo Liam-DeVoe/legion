@@ -222,5 +222,8 @@ var CutReadTables = map[string]string{
 		"embedded at or before the cut.",
 	"post_body_history": "Only the body that the first comment.edited, comment.deleted, message.edited or message.deleted event " +
 		"of the post after the cut replaced: the oldest row of the post whose edited_at is at or after that event's created_at, " +
-		"for an event at or after the time schema_migrations records for 20261110224508.",
+		"for an event at or after the time schema_migrations records for 20261110224508. " +
+		"In the history read of one post, only the rows that the post's edit and delete events at the cut wrote: " +
+		"the first rows in edited_at and id order, as many as the post has such events at or after that time " +
+		"(CommentHistoryRowsAtCut, MessageHistoryRowsAtCut).",
 }

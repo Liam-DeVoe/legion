@@ -672,7 +672,10 @@ func (s *server) attachAskEventFields(ctx context.Context, events []model.Event)
 	}
 	for index := range payloads {
 		payloads[index].payload["opened_event_id"] = *asks[index].OpenedEventID
-		payloads[index].payload[model.ReferencedByCountKey] = *asks[index].ReferencedByCount
+		// A read at a cut reads no count (queueAskDetails): the payload then carries none.
+		if count := asks[index].ReferencedByCount; count != nil {
+			payloads[index].payload[model.ReferencedByCountKey] = *count
+		}
 		attachAskEventPartIDs(payloads[index].payload, asks[index])
 	}
 	if err := s.attachAskDocumentArtifacts(ctx, payloads); err != nil {

@@ -985,7 +985,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
 	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, asks)
+	applyAsks := queueAskDetails(ctx, batch, asks)
 	if batch.Len() == 0 {
 		return nil
 	}

@@ -54,10 +54,11 @@ const (
 )
 
 // AbsentFields is, by route ("<method> <pattern>" as in api/routes_table.go), each member that a
-// past-time answer of the route can leave out. It holds exactly the plan's list "Absent fields,
-// by route". A route that the plan lists with no field has an empty list. A past-time answer
-// names a member in the Dispatch-As-Of-Absent header only when it leaves that member out, and
-// it names only members this table holds for its route (ValidAbsent).
+// past-time answer of the route can leave out. It holds the plan's list "Absent fields, by
+// route", and beside it the delivery mode and the session of a comment's or a message's delivery
+// attempt (commentFields). A route that the plan lists with no field has an empty list. A
+// past-time answer names a member in the Dispatch-As-Of-Absent header only when it leaves that
+// member out, and it names only members this table holds for its route (ValidAbsent).
 var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/issues/{key}": {
 		{"/route_status", reasonLiveness},
@@ -176,7 +177,9 @@ func eventLogFields() []AbsentField {
 	}
 }
 
-// commentFields are the fields of a comment at prefix.
+// commentFields are the fields of a comment at prefix. The delivery mode and the session of an
+// attempt are not in the plan's list: a send resolves both with no event, so for an attempt that
+// no event at the cut dates they are absent too (decision 5).
 func commentFields(prefix string) []AbsentField {
 	return []AbsentField{
 		{prefix + "/body", reasonBody},
@@ -186,10 +189,13 @@ func commentFields(prefix string) []AbsentField {
 		{prefix + "/deliveries/*/envelope_id", reasonDeliveryState},
 		{prefix + "/deliveries/*/resolve_error", reasonDeliveryState},
 		{prefix + "/deliveries/*/created_at", reasonDeliveryState},
+		{prefix + "/deliveries/*/delivery", reasonDeliveryState},
+		{prefix + "/deliveries/*/session_id", reasonDeliveryState},
 	}
 }
 
-// messageFields are the fields of an issue message at prefix.
+// messageFields are the fields of an issue message at prefix, with the delivery mode and the
+// session of an attempt for the reason commentFields gives.
 func messageFields(prefix string) []AbsentField {
 	return []AbsentField{
 		{prefix + "/body", reasonBody},
@@ -198,6 +204,8 @@ func messageFields(prefix string) []AbsentField {
 		{prefix + "/deliveries/*/envelope_id", reasonDeliveryState},
 		{prefix + "/deliveries/*/created_at", reasonDeliveryState},
 		{prefix + "/deliveries/*/requested_by", reasonDeliveryState},
+		{prefix + "/deliveries/*/delivery", reasonDeliveryState},
+		{prefix + "/deliveries/*/session_id", reasonDeliveryState},
 	}
 }
 

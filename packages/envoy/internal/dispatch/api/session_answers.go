@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
@@ -27,6 +28,11 @@ const (
 // item whose words take the running sum past max_chars, in UTF-16 units as an agent host counts
 // its cap: a superset of what fits under the host's cap, and a body bounded at about that cap
 // plus one item.
+//
+// At a cut the window counts from the cut (decision 12 of INFRA-4620's plan): since defaults to
+// the cut less 72 hours, and a since older than the cut less 7 days is refused. A since later
+// than the cut answers no items, since nothing after the cut exists at it, so an agent host's own
+// poll under a token that carries a cut is answered and not refused.
 func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -37,7 +43,12 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	since, err := parseSessionAnswersSince(query, time.Now().UTC())
+	now := time.Now().UTC()
+	cut, atCut := asof.CutFrom(r.Context())
+	if atCut {
+		now = cut.Time()
+	}
+	since, err := parseSessionAnswersSince(query, now, atCut)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -48,10 +59,12 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 			"max_chars must be one integer from 1 to %d", sessionAnswersMaxChars))
 		return
 	}
-	items, err := sessionanswers.List(r.Context(), s.deps.Store.Pool, session, since)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	items := []model.SessionAnswer{}
+	if !since.After(now) {
+		if items, err = sessionanswers.List(r.Context(), s.deps.Store.Pool, session, since); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	response := model.SessionAnswersResponse{SessionID: session, Since: since, Total: len(items), Items: items}
 	if limited {
@@ -61,8 +74,9 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseSessionAnswersSince reads the window's start: the request's one since, an RFC 3339 time no
-// older than sessionAnswersOldest and not after now, or sessionAnswersWindow before now.
-func parseSessionAnswersSince(query url.Values, now time.Time) (time.Time, error) {
+// older than sessionAnswersOldest before now and not after now, or sessionAnswersWindow before
+// now. At a cut now is the cut, and a since after it is the caller's to send (atCut).
+func parseSessionAnswersSince(query url.Values, now time.Time, atCut bool) (time.Time, error) {
 	values, present := query["since"]
 	if !present {
 		return now.Add(-sessionAnswersWindow), nil
@@ -76,9 +90,12 @@ func parseSessionAnswersSince(query url.Values, now time.Time) (time.Time, error
 	}
 	since = since.UTC()
 	if since.Before(now.Add(-sessionAnswersOldest)) {
+		if atCut {
+			return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must be no more than 7 days before the cut")
+		}
 		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must be no more than 7 days ago")
 	}
-	if since.After(now) {
+	if since.After(now) && !atCut {
 		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must not be in the future")
 	}
 	return since, nil

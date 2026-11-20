@@ -86,6 +86,10 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := s.commentsAtTheCut(r.Context(), comments, elementsOf("")); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	reader := s.readDisplayTrees(r.Context(), trees)
 	reads := shapedComments(comments, reader)
 	reader.resolve()
@@ -214,6 +218,14 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	}
 	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, "reply_to", comment.ID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.commentsAtTheCut(r.Context(), comments, func(int) string { return "/comment" }); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.commentsAtTheCut(r.Context(), replies, elementsOf("/replies")); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

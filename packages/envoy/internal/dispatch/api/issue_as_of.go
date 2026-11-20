@@ -78,7 +78,7 @@ func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail) error {
 			leaveOut(ctx, "/artifacts/"+strconv.Itoa(index)+"/approval/documents")
 		}
 	}
-	return s.leaveOutPastAskFields(ctx, asks, func(index int) string { return "/open_asks/" + strconv.Itoa(index) })
+	return s.leaveOutPastAskFields(ctx, asks, elementsOf("/open_asks"), true)
 }
 
 // namesApprovalWithNoDocuments reports whether one of asks is an approval request on the document
@@ -189,8 +189,9 @@ func (s *server) tasksAtTheCut(ctx context.Context, keys []string) (map[string]*
 //     its issue held nobody, and its project's default assignee is unknown at the cut, which the
 //     projects shadow gives as null (reason D); the read then gives no person;
 //   - approval.documents of an approval request whose state at the cut names no document, written
-//     before requests held their documents (reason B).
-func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at func(index int) string) error {
+//     before requests held their documents (reason B), where the route's list holds the field
+//     (approvalDocuments; the inbox's does not).
+func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at func(index int) string, approvalDocuments bool) error {
 	cut, atCut := asof.CutFrom(ctx)
 	if !atCut || len(asks) == 0 {
 		return nil
@@ -231,7 +232,7 @@ func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at
 		if ask.WaitingOnPerson == "" {
 			leaveOut(ctx, place+"/waiting_on_person")
 		}
-		if ask.Approval != nil && len(ask.Approval.Documents) == 0 {
+		if approvalDocuments && ask.Approval != nil && len(ask.Approval.Documents) == 0 {
 			leaveOut(ctx, place+"/approval/documents")
 		}
 	}

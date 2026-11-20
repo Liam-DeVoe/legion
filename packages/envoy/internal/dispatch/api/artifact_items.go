@@ -29,6 +29,11 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// At a cut each ask leaves out what the records at the cut do not give of it.
+	if err := s.leaveOutPastAskFields(r.Context(), asks, elementsOf(""), true); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := shapedAsks(asks, reader)
 	reader.resolve()

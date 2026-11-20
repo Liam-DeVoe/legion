@@ -12,6 +12,63 @@ var commentStateTypes = []string{
 // message.answered creates a reply, as message.created creates every other message.
 var messageStateTypes = []string{"message.created", "message.answered", "message.edited", "message.deleted"}
 
+// commentRewriteTypes and messageRewriteTypes are the events of a post's edit and of its delete.
+// From the time post_body_history began (postHistoryBegan), the transaction of each one writes one
+// post_body_history row, which keeps the body that the edit or the delete replaced.
+var (
+	commentRewriteTypes = []string{"comment.edited", "comment.deleted"}
+	messageRewriteTypes = []string{"message.edited", "message.deleted"}
+)
+
+// CommentBodiesNotGivenStatement reads, of the comments whose ids $1 holds (uuid[]), the id of each
+// comment that its author did not delete and whose body at the cut $2 (timestamptz) no record
+// holds (reason T). The first edit of such a comment after the cut was made before
+// post_body_history began, so no history row keeps the body that the edit replaced, and the newest
+// event of the comment at the cut holds only the first part of the body (body_truncated). The
+// comments shadow gives such a body as the empty text (postBodyAtCut), so a past-time answer
+// leaves the body out. A deleted comment is not such a comment: its body is empty at all times
+// (decision 14). The statement names each table by its schema, so the store's binding at a cut
+// does not read a shadow in its place (Bind). It reads the events as they are now, under its own
+// bound $2.
+//
+// No message is such a post. post_body_history began with the edit and the delete of a message
+// (migration 20261110224508), so each edit of a message after the cut has its history row.
+var CommentBodiesNotGivenStatement = `select c.id::text from public.comments c
+	where c.id = any($1::uuid[]) and c.deleted_at is null
+		and coalesce((
+			select (e.payload->>'body_truncated')::boolean from public.events e
+			where e.payload->>'id' = c.id::text and e.type in ` + sqlList(commentStateTypes) + `
+				and e.created_at <= $2::timestamptz and ` + ownedBy("e", "c") + `
+			order by e.id desc limit 1), false)
+		and (
+			select f.created_at from public.events f
+			where f.payload->>'id' = c.id::text and f.type in ` + sqlList(commentRewriteTypes) + `
+				and f.created_at > $2::timestamptz and ` + ownedBy("f", "c") + `
+			order by f.id limit 1) < ` + postHistoryBegan
+
+// CommentHistoryRowsAtCut and MessageHistoryRowsAtCut are SQL expressions for the history read of
+// one post at a cut (decision 17). Each is the number of post_body_history rows that the post had
+// at the cut, for the post whose row the alias p names: one row for each edit or delete event of
+// the post that began at or after the time post_body_history began (postHistoryBegan). The
+// transaction of each such event wrote one row, and the rows of a post in edited_at, id order are
+// the rows of those events in their order. So the history at the cut is the first rows, as many
+// as this number. An edit made before the history began wrote no row, and it does not count. The
+// expression reads the events by their bare name, so the binding at the cut reads the events at
+// the cut (the events shadow).
+var (
+	CommentHistoryRowsAtCut = historyRowsAtCut(commentRewriteTypes, ownedBy("e", "p"))
+	MessageHistoryRowsAtCut = historyRowsAtCut(messageRewriteTypes, "e.issue_key = p.issue_key")
+)
+
+// historyRowsAtCut counts the events of types of the post p that began at or after the time
+// post_body_history began. owned holds each event to the owner of p, so that the read can take the
+// owner's index.
+func historyRowsAtCut(types []string, owned string) string {
+	return `(select count(*) from events e
+		where e.payload->>'id' = p.id::text and e.type in ` + sqlList(types) + `
+			and e.created_at >= ` + postHistoryBegan + ` and ` + owned + `)`
+}
+
 // commentsShadow is decision 2's comments: each comment whose creating event (comment.created, or
 // the comment.answered of a delivery callback's reply) began at or before the cut. Its
 // created_at is not that clock: the insert takes clock_timestamp(), later than its transaction's
@@ -55,7 +112,7 @@ func commentsShadow(cut string) string {
 	) p
 	left join lateral (
 		select e.id, e.created_at from public.events e
-		where e.payload->>'id' = c.id::text and e.type in ('comment.edited', 'comment.deleted')
+		where e.payload->>'id' = c.id::text and e.type in ` + sqlList(commentRewriteTypes) + `
 			and e.created_at > ` + cut + ` and ` + ownedBy("e", "c") + `
 		order by e.id limit 1
 	) f on true
@@ -103,7 +160,7 @@ func messagesShadow(cut string) string {
 	left join lateral (
 		select e.id, e.created_at from public.events e
 		where e.issue_key = m.issue_key and e.payload->>'id' = m.id::text
-			and e.type in ('message.edited', 'message.deleted') and e.created_at > ` + cut + `
+			and e.type in ` + sqlList(messageRewriteTypes) + ` and e.created_at > ` + cut + `
 		order by e.id limit 1
 	) f on true
 	cross join lateral (select ` + postBodyAtCut("m", "message_id", "p", "f") + ` as body) b

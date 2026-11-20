@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -677,6 +678,13 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		since = &value
 	}
 
+	// At a cut the answer stands at the cut: as_of is the cut, and each ask's age counts from it
+	// (decision 12 of INFRA-4620's plan).
+	clock, args := `statement_timestamp()`, []any{sessionID, since, project}
+	cut, atCut := asof.CutFrom(r.Context())
+	if atCut {
+		clock, args = `$4::timestamptz`, append(args, cut.Time())
+	}
 	var asOf time.Time
 	var openedSince bool
 	var rawAsks []byte
@@ -696,7 +704,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				a.kind,
 				a.urgency,
 				a.created_at,
-				greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint as age_seconds,
+				greatest(0, floor(extract(epoch from (`+clock+` - a.created_at))))::bigint as age_seconds,
 				i.priority,
 				-- The issue's own assignee beside its key and title, which is not the person the
 				-- question reaches: a question on an issue nobody holds carries a null assignee
@@ -720,10 +728,10 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 			where a.state = 'open' and (i.key is null or i.closed_at is null)
 		)
 		select
-			statement_timestamp(),
+			`+clock+`,
 			exists (select 1 from mine where $2::timestamptz is not null and created_at >= $2),
 			coalesce((select jsonb_agg(to_jsonb(active) order by priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
-	`, sessionID, since, project).Scan(&asOf, &openedSince, &rawAsks)
+	`, args...).Scan(&asOf, &openedSince, &rawAsks)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -752,6 +760,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	response.Count = len(response.Asks)
+	openAsksAtTheCut(r.Context(), asks)
 	WriteJSON(w, http.StatusOK, response)
 }
 
@@ -806,6 +815,10 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+	}
+	if err := s.issueAsksAtTheCut(r.Context(), asks, rows); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, rows)
@@ -932,6 +945,10 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	read.Ask.Ask = ask
 	read.Ask.shape(reader)
 	reader.resolve()
+	if err := s.askAtTheCut(r.Context(), read); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, read)
 }
 
