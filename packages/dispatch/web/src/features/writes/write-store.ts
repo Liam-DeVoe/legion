@@ -343,7 +343,8 @@ interface TakeUp {
   /** Every person whose writes were dropped while the take-up waited: by another person's sign-in
    *  (`signedIn`), or by their sign-out landing in another tab or under a lapse (`dropLogin`).
    *  What the reload kept of theirs is not in the store yet for that drop to reach, so the take-up
-   *  drops it in turn, unsent, rather than take it up for the next sign-in to send (`#takeUp`). */
+   *  drops it in turn, unsent, rather than take it up for the next sign-in to send
+   *  (`#dropKept`). */
   readonly dropped: Set<string>;
 }
 
@@ -949,7 +950,8 @@ export class Writes {
       // meanwhile takes up the first person's, to wait for the sign-in that follows (`signedIn`),
       // unless a drop meanwhile took that person's writes (`TakeUp.dropped`).
       const person = this.#login ?? login;
-      await this.#takeUp(person, takingUp.dropped.has(person));
+      if (takingUp.dropped.has(person)) this.#dropKept(person);
+      else await this.#takeUp(person);
       this.#takingUp = undefined;
       for (const entry of takingUp.pressedMeanwhile) {
         if (this.#entries.get(entry.write.id) !== entry) continue;
@@ -960,10 +962,8 @@ export class Writes {
   }
 
   /** The take-up `resume` describes, with every kind in: answers once each write it takes up has
-   *  joined its line, an upload once its file has been read. With `dropped`, a drop took the
-   *  person's writes while the take-up waited, and every write the reload kept of theirs goes
-   *  instead, unsent, its file with it. */
-  #takeUp(login: string, dropped = false): Promise<unknown> {
+   *  joined its line, an upload once its file has been read. */
+  #takeUp(login: string): Promise<unknown> {
     const now = Date.now();
     // A write pressed in this page before this take-up is kept in the tab from its press, so the
     // tab holds it too: it is already in the store - pressed meanwhile, or in its line where the
@@ -980,11 +980,6 @@ export class Writes {
       // `WriteStorage.load` has already read it as that release read it, so nothing here asks
       // the question a second way.
       if (kept.carried !== null) this.#carried.set(kept.key, kept.carried);
-      if (dropped) {
-        this.#kept.forget(kept.key);
-        if (kept.request !== null && "form" in kept.request) void this.#files.delete(kept.key);
-        continue;
-      }
       const kind = kinds.get(kept.kind);
       if (kind === undefined || !kind.kept(kept.detail)) {
         this.#kept.forget(kept.key);
@@ -1002,6 +997,21 @@ export class Writes {
     void this.#files.keepOnly(login);
     // Settled rather than all: a write pressed meanwhile goes on whatever a read made.
     return Promise.allSettled(files);
+  }
+
+  /** What a take-up does instead once a drop took `login`'s writes while it waited
+   *  (`TakeUp.dropped`): every write the reload kept of theirs goes, unsent, its file with it. */
+  #dropKept(login: string): void {
+    // A write the store holds is this page's own, kept in the tab from its press - one pressed
+    // since the drop, by the person signed in again - and no write of the reload's, as `#takeUp`
+    // reads it too: it goes on as its press asked.
+    const held = new Set([...this.#entries.values()].map((entry) => entry.write.key));
+    for (const kept of this.#kept.load(login)) {
+      if (held.has(kept.key)) continue;
+      this.#kept.forget(kept.key);
+      if (kept.request !== null && "form" in kept.request) void this.#files.delete(kept.key);
+    }
+    void this.#files.keepOnly(login);
   }
 
   #resume(kept: KeptWrite, kind: AnyKind, detail: unknown, now: number, file?: File): void {

@@ -30,7 +30,7 @@ import {
   SendStoppedError,
   WriteDiscardedError,
 } from "./keyed-write";
-import { KEPT_SEND_RESUME_MS, type KeptState } from "./write-storage";
+import { KEPT_SEND_RESUME_MS, type KeptState, type KeptWrite } from "./write-storage";
 import { defineWriteKind, kindsRegistered, plainWrite, type Write, Writes } from "./write-store";
 
 /** A page's query client, signed in: the store stamps every write with this login at its press
@@ -173,15 +173,15 @@ function storeOf(tab = keptTab(), login = "alice", files = memoryFiles()) {
 /** The write `writes` holds now, at `index` in press order. */
 const row = (writes: Writes, index = 0): Write | undefined => writes.rows()[index];
 
-/** A page that has just resumed one write on CORE-1, kept in `tab` under `key` as it stood
- *  (`state`) when the page that pressed it went away, as the request it last went out as: a
- *  status pick unless a row names another. */
-function resuming(
-  tab: KeptTab,
-  key: string,
-  state: KeptState,
-  request: WriteRequest = patch
-): Writes {
+/** The fields of a kept write a row names (`keepWrite`), its request as the page made it. */
+type KeptFields = Omit<KeptWrite, "carried" | "key" | "keyed" | "request"> & {
+  readonly request: WriteRequest | null;
+};
+
+/** Keeps in `tab`, under `key`, one write of alice's as a page that went away left it: a status
+ *  pick of CORE-1 out within its deadline, pressed now, as the request it last went out as,
+ *  unless `fields` names otherwise. */
+function keepWrite(tab: KeptTab, key: string, fields: Partial<KeptFields> = {}): void {
   tab.storage.setItem(
     `dispatch.write:${key}`,
     JSON.stringify({
@@ -192,13 +192,26 @@ function resuming(
       login: "alice",
       presentation: "indicator",
       pressedAt: Date.now(),
-      request,
+      request: patch,
       sent: true,
-      state,
+      state: { status: "sending" },
       target: null,
       version: 1,
+      ...fields,
     })
   );
+}
+
+/** A page that has just resumed one write on CORE-1, kept in `tab` under `key` as it stood
+ *  (`state`) when the page that pressed it went away, as the request it last went out as: a
+ *  status pick unless a row names another. */
+function resuming(
+  tab: KeptTab,
+  key: string,
+  state: KeptState,
+  request: WriteRequest = patch
+): Writes {
+  keepWrite(tab, key, { request, state });
   const writes = new Writes(signedIn(), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
@@ -544,23 +557,7 @@ async function pressedWhileTakingUp(
 ): Promise<TakingUp> {
   const tab = keptTab();
   const kept = keyMinted(Date.now());
-  tab.storage.setItem(
-    `dispatch.write:${kept}`,
-    JSON.stringify({
-      detail: null,
-      key: kept,
-      kind: "write",
-      label: "CORE-1 set to done",
-      login: "alice",
-      presentation: "indicator",
-      pressedAt: Date.now(),
-      request: patch,
-      sent: true,
-      state: { status: "sending" },
-      target: "issue:CORE-1",
-      version: 1,
-    })
-  );
+  keepWrite(tab, kept, { target: "issue:CORE-1" });
   const send = spyOn(api, "send").mockResolvedValue(null as never);
   const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
   writes.signedIn("alice");
@@ -591,8 +588,7 @@ async function pressedWhileTakingUp(
  *  neither is in the store, and the tab keeps neither. Read once the kinds are in, and again
  *  once alice has signed in after that, as a sign-in the take-up kept a write for would send it. */
 async function nothingLeft(name: string, of: TakingUp): Promise<void> {
-  for (const when of ["once the kinds are in", "once alice signs in again"]) {
-    if (when !== "once the kinds are in") of.writes.signedIn("alice");
+  const check = async (when: string) => {
     await tick(60_000);
     expect([name, when, of.sent()]).toEqual([name, when, []]);
     expect([name, when, of.writes.rows()]).toEqual([name, when, []]);
@@ -602,6 +598,26 @@ async function nothingLeft(name: string, of: TakingUp): Promise<void> {
       undefined,
       undefined,
     ]);
+  };
+  await check("once the kinds are in");
+  of.writes.signedIn("alice");
+  await check("once alice signs in again");
+}
+
+/** That each of `ways`, done to a page of its own while the take-up waits, lets alice's two writes
+ *  go: nothing of either is left (`nothingLeft`), and the press of the one pressed meanwhile is
+ *  refused, stopped. */
+async function dropsBoth(ways: Readonly<Record<string, (writes: Writes) => void>>): Promise<void> {
+  for (const [name, way] of Object.entries(ways)) {
+    const taking = await pressedWhileTakingUp();
+    try {
+      way(taking.writes);
+      taking.kinds.resolve();
+      await nothingLeft(name, taking);
+      expect([name, await taking.pressed]).toEqual([name, expect.any(SendStoppedError)]);
+    } finally {
+      taking.end();
+    }
   }
 }
 
@@ -610,23 +626,12 @@ async function nothingLeft(name: string, of: TakingUp): Promise<void> {
 // write go: the one pressed meanwhile, its press refused, and the one the reload kept, which the
 // take-up then finds nothing of. Neither goes out, then or at the next sign-in.
 test("a sign-out that lands while the take-up waits drops the write pressed meanwhile and the kept one, and sends neither", async () => {
-  await onFakeClock(async () => {
-    const ways: Record<string, (writes: Writes) => void> = {
+  await onFakeClock(() =>
+    dropsBoth({
       "this page's sign-out": (writes) => writes.signedOut("alice"),
       "the preload's clear": (writes) => writes.clear(),
-    };
-    for (const [name, way] of Object.entries(ways)) {
-      const taking = await pressedWhileTakingUp();
-      try {
-        way(taking.writes);
-        taking.kinds.resolve();
-        await nothingLeft(name, taking);
-        expect([name, await taking.pressed]).toEqual([name, expect.any(SendStoppedError)]);
-      } finally {
-        taking.end();
-      }
-    }
-  });
+    })
+  );
 });
 
 // W26. Another person's sign-in while the take-up waits drops every write of the person before:
@@ -634,24 +639,18 @@ test("a sign-out that lands while the take-up waits drops the write pressed mean
 // whoever is signed in by then - that person, or the person before again, or no one after a
 // lapse, when the take-up takes up under the login it began with. Neither goes out as anyone.
 test("another person's sign-in while the take-up waits drops the first person's write pressed meanwhile and the kept one, and sends neither", async () => {
-  await onFakeClock(async () => {
-    const ways: Record<string, readonly (string | undefined)[]> = {
-      "bob signs in": ["bob"],
-      "bob signs in, then alice again": ["bob", "alice"],
-      "bob signs in, then his session lapses": ["bob", undefined],
-      "alice's session lapses, then bob signs in": [undefined, "bob"],
-    };
-    for (const [name, logins] of Object.entries(ways)) {
-      const taking = await pressedWhileTakingUp();
-      try {
-        for (const login of logins) taking.writes.signedIn(login);
-        taking.kinds.resolve();
-        await nothingLeft(name, taking);
-        expect([name, await taking.pressed]).toEqual([name, expect.any(SendStoppedError)]);
-      } finally {
-        taking.end();
-      }
-    }
+  await onFakeClock(() => {
+    const signIns =
+      (...logins: readonly (string | undefined)[]) =>
+      (writes: Writes) => {
+        for (const login of logins) writes.signedIn(login);
+      };
+    return dropsBoth({
+      "bob signs in": signIns("bob"),
+      "bob signs in, then alice again": signIns("bob", "alice"),
+      "bob signs in, then his session lapses": signIns("bob", undefined),
+      "alice's session lapses, then bob signs in": signIns(undefined, "bob"),
+    });
   });
 });
 
@@ -730,8 +729,8 @@ test("this page's sign-out pressed while the take-up waits goes out alone once i
 // write of theirs goes, the one pressed meanwhile at once and the one the reload kept once the
 // kinds are in, and neither waits for a sign-in the person discarded them before.
 test("a 401 that lands another tab's sign-out while the take-up waits drops the write pressed meanwhile and the kept one, and sends neither", async () => {
-  await onFakeClock(async () => {
-    const ways: Record<string, (writes: Writes) => void> = {
+  await onFakeClock(() =>
+    dropsBoth({
       "while that tab's sign-out holds them": (writes) => {
         writes.holdFor("alice");
         writes.signedIn(undefined);
@@ -741,19 +740,8 @@ test("a 401 that lands another tab's sign-out while the take-up waits drops the 
         writes.releaseUnsettled("alice");
         writes.signedIn(undefined);
       },
-    };
-    for (const [name, way] of Object.entries(ways)) {
-      const taking = await pressedWhileTakingUp();
-      try {
-        way(taking.writes);
-        taking.kinds.resolve();
-        await nothingLeft(name, taking);
-        expect([name, await taking.pressed]).toEqual([name, expect.any(SendStoppedError)]);
-      } finally {
-        taking.end();
-      }
-    }
-  });
+    })
+  );
 });
 
 // W26, W57. The person's sign-out landing in another tab while the take-up waits (`dropLogin`)
@@ -761,26 +749,15 @@ test("a 401 that lands another tab's sign-out while the take-up waits drops the 
 // kept once the kinds are in - whether this page still reads them signed in, or has read the 401
 // that follows - and neither goes out, then or at their next sign-in.
 test("another tab's sign-out that lands while the take-up waits drops the write pressed meanwhile and the kept one, and sends neither", async () => {
-  await onFakeClock(async () => {
-    const ways: Record<string, (writes: Writes) => void> = {
+  await onFakeClock(() =>
+    dropsBoth({
       "still signed in here": (writes) => writes.dropLogin("alice"),
       "then the 401 here": (writes) => {
         writes.dropLogin("alice");
         writes.signedIn(undefined);
       },
-    };
-    for (const [name, way] of Object.entries(ways)) {
-      const taking = await pressedWhileTakingUp();
-      try {
-        way(taking.writes);
-        taking.kinds.resolve();
-        await nothingLeft(name, taking);
-        expect([name, await taking.pressed]).toEqual([name, expect.any(SendStoppedError)]);
-      } finally {
-        taking.end();
-      }
-    }
-  });
+    })
+  );
 });
 
 // A quiet write is let go once five minutes pass from its press without Dispatch confirming it,
@@ -2323,23 +2300,7 @@ test("a resumed write whose key Dispatch has forgotten makes no attempt", async 
  *  was planned as, as every write waiting its turn is, and `sent` says nothing has gone out
  *  under its key. */
 function neverSent(tab: KeptTab, key: string, pressedAt: number): Writes {
-  tab.storage.setItem(
-    `dispatch.write:${key}`,
-    JSON.stringify({
-      detail: null,
-      key,
-      kind: "write",
-      label: "CORE-1 set to done",
-      login: "alice",
-      presentation: "indicator",
-      pressedAt,
-      request: patch,
-      sent: false,
-      state: { status: "queued" },
-      target: null,
-      version: 1,
-    })
-  );
+  keepWrite(tab, key, { pressedAt, sent: false, state: { status: "queued" } });
   const writes = new Writes(signedIn(), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
@@ -2417,23 +2378,14 @@ test("a resumed write that sent nothing makes its attempt on the first Retry", a
     try {
       const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
       composedAttempts = 0;
-      tab.storage.setItem(
-        `dispatch.write:${spent}`,
-        JSON.stringify({
-          detail: null,
-          key: spent,
-          kind: composedWrite.name,
-          label: "A message",
-          login: "alice",
-          presentation: "composer",
-          pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1,
-          request: null,
-          sent: false,
-          state: { status: "sending" },
-          target: null,
-          version: 1,
-        })
-      );
+      keepWrite(tab, spent, {
+        kind: composedWrite.name,
+        label: "A message",
+        presentation: "composer",
+        pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1,
+        request: null,
+        sent: false,
+      });
       const writes = new Writes(signedIn(), tab.page(), memoryFiles());
       writes.resume("alice");
       await settle();

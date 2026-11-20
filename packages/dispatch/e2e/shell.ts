@@ -213,6 +213,17 @@ export async function failBuildScript(page: Page): Promise<void> {
  *  content-drawn.ts`). */
 export const MARGIN_CHUNK = /\/assets\/Margin-[^/]+\.js$/u;
 
+/** Holds the margin's chunk on the wire until the row calls the release this answers: the moment
+ *  between the page's first draw and the margin, which a row measures the page in. */
+export async function holdMarginChunk(page: Page): Promise<() => void> {
+  const held = Promise.withResolvers<void>();
+  await page.route(MARGIN_CHUNK, async (route) => {
+    await held.promise;
+    await route.continue();
+  });
+  return () => held.resolve();
+}
+
 /** The path of the reference-preview layer's chunk (`web/src/features/refs/RefPreviewLayer.tsx`),
  *  which the shell asks for at the same moment. */
 const REF_PREVIEW_CHUNK = /\/assets\/RefPreview-[^/]+\.js$/u;

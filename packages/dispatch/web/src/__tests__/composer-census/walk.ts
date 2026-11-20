@@ -19,6 +19,7 @@ import {
   declOf,
   dependsOn,
   drawnIn,
+  exportKey,
   helperId,
   helperName,
   isModuleHelper,
@@ -117,8 +118,10 @@ function walkFrom(
   comp: Comp,
   inside: boolean,
   depth: number,
-  initialPath: readonly string[] = [],
-  top?: ts.Node
+  {
+    initialPath = [],
+    top,
+  }: { readonly initialPath?: readonly string[]; readonly top?: ts.Node } = {}
 ): void {
   if (walk.seen.has(start)) return;
   walk.seen.add(start);
@@ -273,7 +276,7 @@ function walkFrom(
         if (helper.uses.length === 0) {
           unreadAt(walk, current, `${helper.what} nowhere the census can see`);
         }
-        for (const use of helper.uses) walkFrom(walk, use, comp, inside, depth + 1, [], top);
+        for (const use of helper.uses) walkFrom(walk, use, comp, inside, depth + 1, { top });
         return;
       }
       // Handed to a function the component is handed itself (`providers(children, …)`): read
@@ -327,12 +330,6 @@ const CALL_WRAPPERS: Readonly<Record<string, CallWrapper>> = {
  *  what such a hook returns (`const fill = useMarginSlotFill()`). Undefined for any other. */
 function callKey(program: Program, call: ts.CallExpression, comp: Comp): string | undefined {
   const mod = modOf(program, call);
-  const exported = (name: string): string | undefined => {
-    const binding = mod.imports.get(name);
-    if (binding !== undefined && binding.from === undefined)
-      return `${binding.spec}#${binding.name}`;
-    return resolveLocal(program, mod, name);
-  };
   const callee = call.expression;
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
     const binding = mod.imports.get(callee.expression.text);
@@ -342,13 +339,13 @@ function callKey(program: Program, call: ts.CallExpression, comp: Comp): string 
   }
   if (!ts.isIdentifier(callee)) return undefined;
   const found = lookup(callee, comp);
-  if (found.kind === "module") return exported(callee.text);
+  if (found.kind === "module") return exportKey(program, mod, callee.text);
   if (found.kind !== "local" || found.element !== undefined) return undefined;
   const init = found.decl.initializer;
   if (init === undefined || !ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) {
     return undefined;
   }
-  const hook = exported(init.expression.text);
+  const hook = exportKey(program, mod, init.expression.text);
   return hook === undefined ? undefined : `${hook}()`;
 }
 
@@ -422,7 +419,7 @@ function followCalled(walk: Walk, comp: Comp, called: Called, depth: number): st
     const uses = paramUses(fn, index, host);
     if (uses.length === 0) nowhere.push(where(fn));
     walk.receivers.add(host.id);
-    for (const use of uses) walkFrom(walk, use, host, true, depth, [], fn);
+    for (const use of uses) walkFrom(walk, use, host, true, depth, { top: fn });
   }
   return nowhere.length === 0
     ? undefined
@@ -555,7 +552,7 @@ function paramUses(fn: ts.FunctionLikeDeclaration, index: number, comp: Comp): t
     if (ts.isIdentifier(node)) {
       const found = lookup(node, comp);
       if (found.kind === "param" && found.fn === fn && found.index === index) {
-        if (placed(node, []) !== undefined) uses.push(node);
+        if (drawsWhole(node)) uses.push(node);
       }
     }
     ts.forEachChild(node, visit);
@@ -574,7 +571,6 @@ function helperAt(
   child: ts.Node,
   comp: Comp
 ): { readonly name: string; readonly uses: readonly ts.Node[]; readonly what: string } | undefined {
-  const drawsWhole = (use: ts.Node) => placed(use, []) !== undefined;
   if (isModuleHelper(current) && current !== comp.fn) {
     // A helper of its module, outside every component: follow each place a component it is
     // drawn in reads it, `comp` here, directly or through another helper of a module.
@@ -728,6 +724,12 @@ function placed(use: ts.Node, subpath: readonly string[]): string[] | undefined 
     }
     node = parent;
   }
+}
+
+/** Whether a use places the value whole (`placed`, with no part of it to reach), rather than
+ *  reading something out of it. */
+function drawsWhole(use: ts.Node): boolean {
+  return placed(use, []) !== undefined;
 }
 
 /** Records what between the place a walk started from and the routes the walk cannot read. */
@@ -898,7 +900,7 @@ function followSlot(
     if (start !== undefined && rest !== undefined) {
       drawn = true;
       walk.receivers.add(receiverId);
-      walkFrom(walk, start, receiver, true, depth, rest);
+      walkFrom(walk, start, receiver, true, depth, { initialPath: rest });
     }
     ts.forEachChild(node, visit);
   };

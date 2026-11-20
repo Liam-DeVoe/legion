@@ -29,13 +29,6 @@ import { writesOf } from "./features/writes/write-store";
 // row starts or waits for them.
 import "./features/inbox/inbox-chunk";
 import "./features/margin/Margin";
-// Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
-// of what a reload kept waits for from the sign-in on, and every write a row presses waits for that
-// take-up (`Writes.resume`, `Writes.run`). The rows here are about the writes, not about that
-// download, and a row on a held clock runs its waits out in a few real milliseconds while
-// `test:web:cold` holds the chunk for a real second. So the kinds are loaded here, with the test
-// file, and no row's press waits for them.
-import "./features/writes/kinds";
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });

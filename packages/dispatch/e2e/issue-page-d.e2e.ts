@@ -34,7 +34,7 @@ import {
   presetToolbar,
 } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
-import { MARGIN_CHUNK } from "./shell";
+import { holdMarginChunk } from "./shell";
 import { expect, type Locator, type Page, type Route, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -477,17 +477,13 @@ test("the frame's stage drawn before the margin keeps its width when the margin 
   browser,
 }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
-    const marginChunk = Promise.withResolvers<void>();
-    await page.route(MARGIN_CHUNK, async (route) => {
-      await marginChunk.promise;
-      await route.continue();
-    });
+    const releaseMargin = await holdMarginChunk(page);
     await gotoIssue(page, `/issues/${key}`);
     await expect(contentsPane(page), "the page draws no Contents pane").toHaveCount(1);
     const held = await stageWidth(page);
     expect(held, "the stage beside the pane is not 1068 px while the margin is held").toBe(1068);
 
-    marginChunk.resolve();
+    releaseMargin();
     // Details is the margin, so it opens only once the margin's chunk is in.
     await focusNothing(page);
     await openDetails(page);

@@ -248,22 +248,6 @@ const CHUNK_COMPONENTS: Readonly<Record<string, string>> = {
  *  `chunkComponent` is handed: a chunk is no component, so only that call is read through it. */
 const CHUNK = "features/shell/chunk-component.tsx#chunk";
 
-/** A call's function by `<module>#<export>`, a package's by the name the package exports it
- *  under. Undefined for a function no name of the module's top level stands for. */
-function calleeKey(
-  program: Program,
-  mod: Mod,
-  call: ts.CallExpression,
-  depth: number
-): string | undefined {
-  if (!ts.isIdentifier(call.expression)) return undefined;
-  const binding = mod.imports.get(call.expression.text);
-  if (binding !== undefined && binding.from === undefined) {
-    return `${binding.spec}#${binding.name}`;
-  }
-  return resolveLocal(program, mod, call.expression.text, depth + 1);
-}
-
 /** The component a constant of a chunk draws (`CHUNK_COMPONENTS`), by its id: `const X =
  *  lazyChunk(() => import("./x").then((module) => ({ default: module.X })))`, and the same
  *  through `lazy` or `chunkComponent`. */
@@ -272,8 +256,8 @@ function chunkTarget(program: Program, mod: Mod, decl: ts.Node, depth: number): 
     return undefined;
   }
   const init = decl.initializer;
-  if (!ts.isCallExpression(init)) return undefined;
-  const key = calleeKey(program, mod, init, depth);
+  if (!ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) return undefined;
+  const key = exportKey(program, mod, init.expression.text, depth + 1);
   const source = init.arguments[0];
   if (key === undefined || CHUNK_COMPONENTS[key] === undefined || source === undefined) {
     return undefined;
@@ -325,7 +309,7 @@ function loaderTarget(
           return;
         }
         if (ts.isIdentifier(current.expression)) {
-          if (calleeKey(program, at, current, depth) === CHUNK) {
+          if (exportKey(program, at, current.expression.text, depth + 1) === CHUNK) {
             if (first !== undefined) read(first, at, depth + 1);
             return;
           }
@@ -367,6 +351,15 @@ function resolveExport(
     if (id !== undefined) return id;
   }
   return undefined;
+}
+
+/** What a name of `mod`'s top level stands for, by `<module>#<export>`: a package's by the name
+ *  the package exports it under. Undefined for a name that stands for no declaration the census
+ *  reads. */
+export function exportKey(program: Program, mod: Mod, name: string, depth = 0): string | undefined {
+  const binding = mod.imports.get(name);
+  if (binding !== undefined && binding.from === undefined) return `${binding.spec}#${binding.name}`;
+  return resolveLocal(program, mod, name, depth);
 }
 
 /** The declaration a name of `mod` stands for, by its id (`<module>#<name>`). */

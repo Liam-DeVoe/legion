@@ -36,7 +36,14 @@ import {
 } from "./editor";
 import { engineParagraphs } from "./read-back";
 import { navigateInApp } from "./sends";
-import { failAssetWhen, MARGIN_CHUNK, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
+import {
+  failAssetWhen,
+  holdMarginChunk,
+  MARGIN_CHUNK,
+  missEntryChunk,
+  recordTabReloads,
+  tabReloads,
+} from "./shell";
 import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser, withAlice } from "./users";
 
@@ -1131,17 +1138,13 @@ test("a document drawn before the margin keeps its width when the margin arrives
 
   await withAlice(browser, async (page) => {
     await page.setViewportSize({ height: 900, width: 1440 });
-    const marginChunk = Promise.withResolvers<void>();
-    await page.route(MARGIN_CHUNK, async (route) => {
-      await marginChunk.promise;
-      await route.continue();
-    });
+    const releaseMargin = await holdMarginChunk(page);
     await page.goto(`/issues/${issue.key}`);
     const document = page.locator('article[aria-label="Document"]');
     await expect(documentEditor(page).locator("[data-block-id]").first()).toBeVisible();
     const held = (await document.boundingBox())?.width;
 
-    marginChunk.resolve();
+    releaseMargin();
     await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
     const arrived = (await document.boundingBox())?.width;
     expect(held, "the document has a width while the margin is held").toBeGreaterThan(0);

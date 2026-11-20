@@ -491,6 +491,63 @@ test("events that arrive while the map is downloading each refresh once it lands
   }
 });
 
+// An event's refresh waits on the map's download, and nothing can take that wait back once the
+// feed stops: the person signs out, or another person's sign-in mounts the app again on the same
+// query client. The download ending after that, whether it lands or fails, refreshes nothing: no
+// read is asked for a feed that is gone, under whoever is signed in by then.
+type MapDownload = ReturnType<typeof Promise.withResolvers<eventRefreshLoad.EventRefreshMap>>;
+const downloadEnds = [
+  ["lands", (download: MapDownload) => download.resolve(eventRefreshMap)],
+  [
+    "fails",
+    (download: MapDownload) =>
+      download.reject(new TypeError("Failed to fetch dynamically imported module")),
+  ],
+] as const;
+
+test.each(
+  downloadEnds
+)("an event waiting on the map's download asks no read once the feed has stopped and the download %s", async (_ends, end) => {
+  jest.useFakeTimers();
+  const queryClient = newClient();
+  signIn(queryClient);
+  // A detail the next app on this client still renders, which the event's refresh would fetch.
+  let fetches = 0;
+  const unsubscribe = new QueryObserver(queryClient, {
+    queryFn: async () => {
+      fetches += 1;
+      return { key: "CORE-1" };
+    },
+    queryKey: ["issue", "CORE-1"],
+  }).subscribe(() => {});
+  const wholeCache = countWholeCacheRefreshes(queryClient);
+  const download = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
+  const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
+    () => download.promise
+  );
+  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+  try {
+    await waitFor(() => expect(fetches).toBe(1));
+    const { socket, sub } = openFeed("0", true);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    receive(socket, eventFrame(sub, issueUpdated(1)));
+    hook.unmount();
+
+    end(download);
+    // Past the batch window, a whole-cache refresh's first one, and the scheduler's interval.
+    await advance(2_000);
+    expect(fetches).toBe(1);
+    expect(queryClient.getQueryState(["issue", "CORE-1"])?.isInvalidated).toBe(false);
+    expect(wholeCache.count()).toBe(0);
+  } finally {
+    hook.unmount();
+    unsubscribe();
+    load.mockRestore();
+    wholeCache.restore();
+    realClock();
+  }
+});
+
 test("repeated gaps cost one refresh plus a trailing one", async () => {
   jest.useFakeTimers();
   const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });

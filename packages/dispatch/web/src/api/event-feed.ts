@@ -8,6 +8,7 @@ import {
 } from "../features/inbox/ask-thread-freshness";
 import { keptUntilRejected } from "../features/shell/chunk-loads";
 import { whenContentDrawn } from "../features/shell/content-drawn";
+import { signedInLogin } from "../features/writes/write-store";
 
 import { loadEventRefresh } from "./event-refresh-load";
 import { liveSocketFor } from "./live-socket";
@@ -247,6 +248,11 @@ export function useEventFeed({
     let lastWholeCacheRefresh = Number.NEGATIVE_INFINITY;
     let wholeCacheTrailing: number | undefined;
     let pending: RefreshTarget[] = [];
+    // Set first thing when the feed stops. An event's refresh can still be waiting on the map's
+    // chunk then (below), and nothing can take that wait back: run after the feed is gone, it would
+    // start a timer no cleanup clears and refresh a client the feed has left - under the next
+    // person's login, where another person's sign-in mounts the app again on the same client.
+    let stopped = false;
     // Record when each query's fetches begin from now on, so the scheduler's one-a-second rule
     // holds for the first batch after the page's own loads too.
     trackQueryFetches(queryClient);
@@ -372,11 +378,7 @@ export function useEventFeed({
           // own queries and need nothing of the map, so a read asked while that chunk is still
           // downloading is not held back for a write Dispatch has already taken, and a chunk
           // that fails to download does not leave the hold to wait out its deadline.
-          hearLiveEvent(
-            queryClient,
-            event,
-            queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login
-          );
+          hearLiveEvent(queryClient, event, signedInLogin(queryClient));
         } catch (error) {
           console.error("event feed: an event this page cannot read", raw, error);
           refreshEverything();
@@ -385,14 +387,13 @@ export function useEventFeed({
         // The refresh the event asks for waits on the map's chunk, and every event waits on the
         // same promise, so they are read in the order they arrived (`event-refresh-load.ts`).
         // The chunk is in after the first round trip, so this is a promise already settled for
-        // all but the first few events of a page.
+        // all but the first few events of a page. A feed that stopped meanwhile refreshes nothing
+        // (`stopped`), whether the chunk lands or fails.
         void awaitRefreshMap().then(
           ({ askThreadsIssue, eventRefreshTargets }) => {
+            if (stopped) return;
             try {
-              const targets = eventRefreshTargets(
-                event,
-                queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login
-              );
+              const targets = eventRefreshTargets(event, signedInLogin(queryClient));
               markAskThreadsSeededByAnOlderInbox(queryClient, targets, askThreadsIssue(event));
               queueRefresh(targets);
             } catch (error) {
@@ -403,6 +404,7 @@ export function useEventFeed({
             }
           },
           () => {
+            if (stopped) return;
             // The map's chunk did not download, so nothing here can say which queries the event
             // changed. The chunk-failure recovery reloads the tab where it can; where it cannot,
             // this refresh is what keeps the page from showing the change as never made.
@@ -413,6 +415,7 @@ export function useEventFeed({
     });
 
     return () => {
+      stopped = true;
       stop();
       window.clearTimeout(flush);
       window.clearTimeout(wholeCacheTrailing);
