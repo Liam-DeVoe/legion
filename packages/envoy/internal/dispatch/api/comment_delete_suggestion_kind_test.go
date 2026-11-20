@@ -172,7 +172,9 @@ func (f orphanedInsert) deleteAndFindTheWords(t *testing.T) (model.Comment, []st
 		}
 		gives("the event log's "+event.Type, string(encoded))
 	}
-	return decodeBody[model.Comment](t, read), giving
+	return decodeBody[struct {
+		Comment model.Comment `json:"comment"`
+	}](t, read).Comment, giving
 }
 
 // Row 1 of the ruling. A browser edit changed some of an insert's words under its mark, an anchor
@@ -298,10 +300,15 @@ func TestASuggestionStoresTheKindOfItsMarkAndNoAnswerCarriesIt(t *testing.T) {
 			if response.Code != http.StatusOK {
 				t.Fatalf("read comment: status=%d body=%s", response.Code, response.Body.String())
 			}
-			read := decodeBody[map[string]any](t, response)
-			suggestion, _ := read["suggestion"].(map[string]any)
+			// The read wraps the comment in "comment" (commentRead), beside its replies.
+			read := decodeBody[struct {
+				Comment struct {
+					Suggestion map[string]any `json:"suggestion"`
+				} `json:"comment"`
+			}](t, response)
+			suggestion := read.Comment.Suggestion
 			if suggestion == nil || suggestion["replace_with"] != "slow" {
-				t.Fatalf("the read gives the suggestion %#v, want replace_with slow", read["suggestion"])
+				t.Fatalf("the read gives the suggestion %#v, want replace_with slow: %s", suggestion, response.Body.String())
 			}
 			if kind, carried := suggestion["kind"]; carried {
 				t.Errorf("the read's suggestion carries the kind %v: %#v", kind, suggestion)
