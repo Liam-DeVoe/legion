@@ -57,9 +57,7 @@ import { machine, removalBounds, removeContainer } from "../harness-postgres-con
 import * as marks from "../harness-postgres-marks";
 import { claimWaitMs, servingPostmasters, stopPostmaster } from "../harness-postgres-removal";
 import {
-  boundOf,
   claimAndDie,
-  claimEventMs,
   claimInChild,
   endChild,
   fixtureDockerInChild,
@@ -67,18 +65,9 @@ import {
   leaveContainerMark,
   leaveData,
   leaveElsewhere,
-  neverEnds,
   owners,
-  type Part,
-  partOf,
   plantsRoot,
-  type Row,
-  type RowAnswer,
   removeInChild,
-  rowMachine,
-  rowMs,
-  rowOf,
-  rowRoomMs,
   type StandInDocker,
   scratch,
   signalCountingPostmaster,
@@ -89,10 +78,22 @@ import {
   sweepInChild,
   type Tick,
   until,
-  type Waits,
-  waitsMs,
   writeMark,
 } from "./harness-postgres-removal-fixtures";
+import { type RowAnswer, rowMachine } from "./harness-postgres-row-machine";
+import {
+  boundOf,
+  claimEventMs,
+  neverEnds,
+  type Part,
+  partOf,
+  type Row,
+  rowMs,
+  rowOf,
+  rowRoomMs,
+  type Waits,
+  waitsMs,
+} from "./harness-postgres-waits";
 import {
   hostileMarkKept,
   plantedBin,
@@ -1167,7 +1168,7 @@ const usedUp: Waits = { children: 1, reads: 0, bounds: [usedUpMs] };
 // call, a `psql`, then started after the deadline, was stopped at once, and its line said that the
 // `psql` "did not end within" the row's time, naming a call that had had no time at all. A fixture
 // call that its row's deadline finds already passed now starts nothing, and its line says so and
-// names the wait during which the deadline passed (`during` of harness-postgres-leftover-fixtures.ts).
+// names the wait during which the deadline passed (`during` of harness-postgres-waits.ts).
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a fixture's docker call that its row's deadline finds already passed starts nothing, says the deadline had passed before it, and names the wait that used it up",
   async () => {

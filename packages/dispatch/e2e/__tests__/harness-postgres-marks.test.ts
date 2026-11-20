@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as marks from "../harness-postgres-marks";
-import { partOf, rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
+import { partOf, rowMs, rowOf, type Waits } from "./harness-postgres-waits";
 
 /** A stubbed `lstat` over `entries`, path to what it says; any other path is gone. */
 function stubbedLstat(

@@ -32,8 +32,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { pgImageVariable, stackPostgres } from "../harness-postgres";
-import { ownStart, ownStop, startOwn, stopOwn } from "./harness-postgres-leftover-fixtures";
-import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
+import { ownStart, ownStop, startOwn, stopOwn } from "./harness-postgres-provider-children";
+import { rowMs, rowOf, type Waits } from "./harness-postgres-waits";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
 /** What the row waits for (`Waits`): one start of the image provider's Postgres in the row's own

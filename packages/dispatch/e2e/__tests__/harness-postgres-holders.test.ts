@@ -8,8 +8,8 @@
  *  socket directory, and by a postmaster's process that outlives it a moment; and one row has a
  *  process name a path that never answers, which the start cannot judge it by within its bound.
  *  The fixtures and the way the rows run the start's sweep are those of
- *  `harness-postgres-removal.test.ts` (`harness-postgres-removal-fixtures.ts`), under a TMPDIR of
- *  each row's own. */
+ *  `harness-postgres-removal.test.ts` (`harness-postgres-removal-fixtures.ts`, and the program of
+ *  each row's own limit, `harness-postgres-waits.ts`), under a TMPDIR of each row's own. */
 
 import { afterAll, expect, test } from "bun:test";
 import {
@@ -29,31 +29,26 @@ import type { Subprocess } from "bun";
 import * as marks from "../harness-postgres-marks";
 import { statMs } from "../harness-postgres-processes";
 import {
-  claimEventMs,
   clockOf,
   endChild,
   firstLineOf,
   harnessScript,
   holding,
   leaveData,
-  lifeOf,
   neverAnswering,
   owners,
   plantsRoot,
   readsAfterRename,
   removingInChild,
-  rowMs,
-  rowOf,
   scratch,
   slowReleasingPostmaster,
   startingPgCtl,
   startSweep,
   sweep,
   until,
-  type Waits,
-  waitsMs,
   writeMark,
 } from "./harness-postgres-removal-fixtures";
+import { claimEventMs, lifeOf, rowMs, rowOf, type Waits, waitsMs } from "./harness-postgres-waits";
 import { type StandIn, standIn, untilParentEnds, untilThisEnds } from "./planted-marks";
 import { noHookLimit, removeScratch } from "./step-end";
 

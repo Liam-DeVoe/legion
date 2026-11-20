@@ -19,7 +19,7 @@
  *  limit (`timeout-minutes`) ends it, in whole seconds since the epoch: the first line of the
  *  step's script exports it, as `date -u +%s` and that same limit times 60, and a row of
  *  `harness-postgres-source-rules.test.ts` reads every workflow of the repository for a step that
- *  runs a row of `harness-postgres-removal-fixtures.ts`'s files and exports none
+ *  runs a row of `harness-postgres-waits.ts`'s files and exports none
  *  (`stepsThatCutNoRow`).
  *  Its name is no one package's: any test of the repository may read when its step ends. */
 export const stepEndsVariable = "LEGION_TEST_STEP_ENDS_AT";

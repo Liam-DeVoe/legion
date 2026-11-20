@@ -43,9 +43,11 @@
  *  Docker lists with a mark, a running stack's of another run included, and the row's live
  *  controls are what show those are left.
  *
- *  THE FIXTURES. The children, the stacks and the starts of the pool they run, Docker's reads and
- *  removals, and what the rows plant are in `harness-postgres-leftover-fixtures.ts` beside this
- *  file, which holds no assertion. This file holds the rows and each of their checks. */
+ *  THE FIXTURES. The children, the stacks and the starts of the pool they run are in
+ *  `harness-postgres-provider-children.ts`, Docker's reads and removals and what the rows plant in
+ *  `harness-postgres-leftover-fixtures.ts`, and the program of each row's own limit in
+ *  `harness-postgres-waits.ts`, beside this file, none of which holds an assertion. This file holds
+ *  the rows and each of their checks. */
 
 import { expect, test } from "bun:test";
 import {
@@ -82,15 +84,11 @@ import {
 } from "../harness-postgres-marks";
 import {
   answers,
-  childEnv,
   containerExists,
   containersOf,
   docker,
-  endOfKilled,
   exists,
   heldSockets,
-  kill,
-  killedEnd,
   leaveCluster,
   leaveContainer,
   leaveContainerMark,
@@ -98,29 +96,39 @@ import {
   leftRemovalMs,
   ownContainerServes,
   owners,
-  ownStart,
-  ownStop,
-  type PoolStart,
-  pgCtlMs,
-  pidNamespaceRefusal,
   plantedName,
-  poolStart,
-  poolStop,
   postmastersOf,
-  refused,
   removeAll,
   removeContainersOf,
   removeIds,
   removeImage,
   removeLeft,
   runTag,
+  soleListing,
+  startUnjudged,
+  stopCluster,
+  type Unjudged,
+  volumesOf,
+} from "./harness-postgres-leftover-fixtures";
+import {
+  childEnv,
+  endOfKilled,
+  kill,
+  killedEnd,
+  ownStart,
+  ownStop,
+  type PoolStart,
+  pgCtlMs,
+  pidNamespaceRefusal,
+  poolStart,
+  poolStop,
+  refused,
   type ShellStack,
   type Stack,
   servingStart,
   shellStackStart,
   shellSweep,
   shellSweepOf,
-  soleListing,
   stackStart,
   stackStop,
   startNamespacedStack,
@@ -130,15 +138,12 @@ import {
   startShellStack,
   startStack,
   startTimeOf,
-  startUnjudged,
-  stopCluster,
   stopOwn,
   stopPool,
   stopStack,
-  type Unjudged,
-  volumesOf,
-} from "./harness-postgres-leftover-fixtures";
-import { claimEventMs, rowMs, rowOf, until, type Waits } from "./harness-postgres-removal-fixtures";
+} from "./harness-postgres-provider-children";
+import { until } from "./harness-postgres-removal-fixtures";
+import { claimEventMs, rowMs, rowOf, type Waits } from "./harness-postgres-waits";
 import {
   type HostileMark,
   hostileMarkKept,

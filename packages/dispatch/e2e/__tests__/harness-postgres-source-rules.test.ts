@@ -260,11 +260,14 @@ const summedFiles = [
   "harness-postgres-removal.test.ts",
 ];
 
-/** The files that start the stand-ins of these rows: the rows' own files and their fixtures. */
+/** The files that start the stand-ins of these rows, or write their scripts: the rows' own files
+ *  and their fixtures. */
 const standInFiles = [
   ...summedFiles,
   "harness-postgres-leftover-fixtures.ts",
+  "harness-postgres-provider-children.ts",
   "harness-postgres-removal-fixtures.ts",
+  "harness-postgres-waits.ts",
   "planted-marks.ts",
 ];
 

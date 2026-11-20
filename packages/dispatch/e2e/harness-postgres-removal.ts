@@ -137,7 +137,7 @@ const postmasterPollMs = 50;
 const postmasterChildrenMs = 5_000;
 /** The longest one stop of a postmaster can take a start: the wait after SIGQUIT, the wait after
  *  SIGKILL and the wait for its processes after it. A row's own limit counts it for each stop
- *  that row's sweep makes (`Waits` of `e2e/__tests__/harness-postgres-removal-fixtures.ts`). */
+ *  that row's sweep makes (`Waits` of `e2e/__tests__/harness-postgres-waits.ts`). */
 export const stopMs = postmasterQuitMs + postmasterKillMs + postmasterChildrenMs;
 
 /** The data directory of each postmaster that still serves among the marks of the run in `run`:

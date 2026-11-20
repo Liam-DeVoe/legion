@@ -181,7 +181,7 @@ async function serverSettings(env: NodeJS.ProcessEnv): Promise<string[]> {
   return [`max_connections=${await maxConnections}`, ...settings];
 }
 /** How long a stack's server may take to answer `select 1`. A row's limit counts it for each
- *  start of a stack it waits for (`e2e/__tests__/harness-postgres-leftover-fixtures.ts`). */
+ *  start of a stack it waits for (`e2e/__tests__/harness-postgres-provider-children.ts`). */
 export const readyMs = 120_000;
 
 /** One stack's Postgres. */

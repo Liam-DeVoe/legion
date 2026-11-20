@@ -103,7 +103,7 @@ jobs:
       # The rows of harness-postgres-removal.test.ts, harness-postgres-holders.test.ts and
       # harness-postgres-marks.test.ts in this lane may wait, within their parts' own bounds, far
       # longer than this job runs (their limits are the sums of those bounds,
-      # e2e/__tests__/harness-postgres-removal-fixtures.ts's `rowMs`). So the step has a limit of
+      # e2e/__tests__/harness-postgres-waits.ts's `rowMs`). So the step has a limit of
       # its own and exports when it ends, in whole seconds since the epoch, as its script's first
       # line (LEGION_TEST_STEP_ENDS_AT): a row whose step ends first ends there, naming what it
       # waited for, and removes what it made, where the step's own clock would name no row

@@ -18,8 +18,8 @@ import { join } from "node:path";
 import { diskStallVariable, stallEnvironment } from "../disk-stall";
 import { pgImageVariable, stackPostgres } from "../harness-postgres";
 import { sqlAt } from "../psql";
-import { ownStart, ownStop, startOwn, stopOwn } from "./harness-postgres-leftover-fixtures";
-import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
+import { ownStart, ownStop, startOwn, stopOwn } from "./harness-postgres-provider-children";
+import { rowMs, rowOf, type Waits } from "./harness-postgres-waits";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
 const skipped = skipsWithoutPostgres("harness-postgres-image-stall.test.ts", [pgImageVariable]);

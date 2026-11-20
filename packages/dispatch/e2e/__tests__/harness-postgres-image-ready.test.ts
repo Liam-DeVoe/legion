@@ -26,16 +26,13 @@ import { pgConnectionsVariable, pgImageVariable, stackPostgres } from "../harnes
 import { removalBounds } from "../harness-postgres-container-removal";
 import {
   docker,
-  ownStart,
-  ownStop,
   psql,
   removeAll,
   removeImage,
   removeWithin,
-  startOwn,
-  stopOwn,
 } from "./harness-postgres-leftover-fixtures";
-import { makeMs, rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
+import { ownStart, ownStop, startOwn, stopOwn } from "./harness-postgres-provider-children";
+import { makeMs, rowMs, rowOf, type Waits } from "./harness-postgres-waits";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
 const skipped = skipsWithoutPostgres("e2e/__tests__/harness-postgres-image-ready.test.ts", [
