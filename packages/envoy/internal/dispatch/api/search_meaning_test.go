@@ -327,8 +327,11 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 // a backlog saturating the model service's quota for bulk document traffic. The limiter waits on
 // a fake no one moves (embed.WithLimiterClock), so once the drain has made its first call every
 // call through the limiter waits for good: a live query paced by it would never answer. The
-// server's own clock is held too, so no bound of the search's (searchEmbedTimeout) ends a query
-// that waits.
+// server's own clock is held too, so no bound of the search's (searchEmbedTimeout) or of a write's
+// related-item check (relatedAllowance, relatedMeaningAllowance) ends a query that waits. Each
+// issue create runs that check, whose meaning stage embeds the issue's text as a live query, so
+// a create paced by the limiter would never answer either: the creates run on goroutines of their
+// own and are waited for through the shared wait, which fails naming the create.
 func throttledSearchHandler(t *testing.T) http.Handler {
 	t.Helper()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
@@ -338,7 +341,16 @@ func throttledSearchHandler(t *testing.T) http.Handler {
 	}}
 	limited := embed.NewRateLimitedEmbedder(embedder, embed.WithLimiterClock(clocktest.New(time.Now())))
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, clock: clocktest.Held()})
-	createInteractionIssue(t, handler, "PRIO", title, spec)
+	create := func(project, title, spec string) {
+		t.Helper()
+		created := make(chan struct{})
+		go func() {
+			defer close(created)
+			createInteractionIssue(t, handler, project, title, spec)
+		}()
+		testwait.Receive(t, fmt.Sprintf("the create of issue %s to answer, whose related-item check embeds the issue's text as a live query no limiter may pace", project), created)
+	}
+	create("PRIO", title, spec)
 	// Embeds while nothing is throttled yet: this is the content a later query below must still
 	// find - already embedded, before the saturating bulk traffic simulated next ever starts.
 	processAllPending(t, database, embedder)
@@ -350,7 +362,7 @@ func throttledSearchHandler(t *testing.T) http.Handler {
 	// for the rest of the test - exactly a saturating background drain in progress.
 	throttleErr := embedtest.FakeThrottleError{Code: "ThrottlingException"}
 	embedder.errFor = map[embed.InputType]error{embed.InputDocument: throttleErr}
-	createInteractionIssue(t, handler, "SAT", "Other bulk content that never finishes embedding", "Body.")
+	create("SAT", "Other bulk content that never finishes embedding", "Body.")
 	calls := func() int {
 		embedder.callsMu.Lock()
 		defer embedder.callsMu.Unlock()
