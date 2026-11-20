@@ -5647,6 +5647,61 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
   });
 
+  // Its claim made again ends at the session's shutdown, as a worker's does: the claim makes no
+  // more, and the controller does not log a failed claim or exit 1 for a process that is already
+  // being stopped. NATS refuses throughout; the shutdown lands during the first wait.
+  test("a daemon-launched controller whose role claim is made again for want of a relay subject claims no more once the session shuts down, and does not exit", async () => {
+    natsConnectGates.set("omp-ses_controller_down", async () => {
+      throw new Error("nats: connection refused");
+    });
+    const controller = await launchedController({
+      sessionId: "ses_controller_down",
+      stateFixture: "state-controller-claim.json",
+    });
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn" && entry.message.includes("holds no relay subject yet")) {
+        setTimeout(
+          () =>
+            void controller.handlers.get("session_shutdown")?.(
+              {},
+              controller.context("ses_controller_down")
+            ),
+          0
+        );
+      }
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    let warnings: LoggedWarning[] = [];
+    let errors: string[] = [];
+    try {
+      ({ errors } = await loggedErrors(async () => {
+        ({ warnings } = await loggedWarnings(async () => {
+          await controller.handlers.get("session_start")?.(
+            {},
+            controller.context("ses_controller_down")
+          );
+        }));
+      }));
+    } finally {
+      stopSink();
+      natsConnectGates.delete("omp-ses_controller_down");
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(
+      warnings.filter((warning) => warning.message.includes("holds no relay subject yet"))
+    ).toHaveLength(1);
+    expect(errors.filter((line) => line.includes("claim failed"))).toEqual([]);
+    expect(controller.exits).toEqual([]);
+    expect(controller.requests.map((request) => request.path)).not.toContain(
+      "/legion/v1/claims/ready"
+    );
+  });
+
   // A session change in the daemon-launched controller never reaches its Envoy role claim: the
   // daemon refuses to register a session other than the one it recorded with its same-agent
   // refusal (409, the sentence of claim.SameAgentRefusal; supervise's

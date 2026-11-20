@@ -773,8 +773,12 @@ export default function legionExtension(pi: PiApi): void {
     clearStartupTurn(context.sessionManager.getSessionId());
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();
-    // A role claim the boot is still making again makes no more: the session it claims for ended.
-    if (!subagentEvent(context)) claimSession.shutdown();
+    // A role claim the boot or the controller is still making again makes no more: the session it
+    // claims for ended.
+    if (!subagentEvent(context)) {
+      claimSession.shutdown();
+      controllerSession.shutdown();
+    }
   });
   // Every provider request of this session passes here, which makes it one of the triggers of the
   // model fallback's return; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the rule.
