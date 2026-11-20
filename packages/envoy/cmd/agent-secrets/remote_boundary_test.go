@@ -61,10 +61,13 @@ func (refusingSource) Token() (*oauth2.Token, error) {
 // (gcpBackend.personEmail) prints none of a credential's URL Google's words quote: neither the
 // body of a refusal it answers (gcpUserinfo's status line and body, including the bearer it
 // echoes), nor the refusal of the token source the read asks for a token through the http.Client
-// oauth2.NewClient builds, which comes back inside that client's *url.Error.
+// oauth2.NewClient builds, which comes back inside that client's *url.Error. The bearer comes
+// before the URL, which the rule reads as clean and prints, so only the answer's own request
+// record (redact.Carried) keeps the bearer out: words after the URL's query would make the whole
+// body not readable, which hides the echo whether or not the record is read.
 func TestTheUserinfoReadPrintsNoneOfGooglesWords(t *testing.T) {
 	refused := answering(func(r *http.Request) *http.Response {
-		body := redacttest.Words + " the request carried " + r.Header.Get("Authorization")
+		body := "the request carried " + r.Header.Get("Authorization") + " to " + redacttest.Words
 		return &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: http.Header{},
 			Body: io.NopCloser(strings.NewReader(body)), Request: r}
 	})
