@@ -71,6 +71,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A restricted member sets, changes and clears no issue's repository
+	// (refuseRepoOfRestrictedMember): refused here, before the issue is read and before the
+	// settlement a close runs first, so nothing of the write is made.
+	if refuseRepoOfRestrictedMember(w, who, input.Repo) {
+		return
+	}
 	var blockers []string
 	if input.BlockedBy != nil {
 		var err error
@@ -213,10 +219,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A PATCH takes the owner lock of every issue it names in one lock order before it reads any
-	// of them: the issue, its current parent when a status change or a reparent appends to it, the
-	// proposed parent and the rank neighbours (lockPatchOwners, lockPatchOwnersAndParent). It never
-	// holds one of those locks while waiting for another that a second write holds. Validation, the
+	// A PATCH takes the owner lock of every issue it names that its caller sees in one lock order
+	// before it reads what it decides on: the issue, its current parent when a status change or a
+	// reparent appends to it, the proposed parent and the rank neighbours (lockPatchOwners,
+	// lockPatchOwnersAndParent). Which of them the caller sees is read first, with nothing locked,
+	// so an issue it does not see is refused, or left to the read that refuses it, without waiting
+	// behind its project's writers, as a key no issue holds is (lockIssueOwners). It never holds one
+	// of those locks while waiting for another that a second write holds. Validation, the
 	// dependency walk and the rank reads below are plain reads of issues whose locks it holds.
 	named := make([]string, 0, 3)
 	if parent != nil {

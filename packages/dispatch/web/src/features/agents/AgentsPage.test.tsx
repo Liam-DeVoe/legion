@@ -12,7 +12,6 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
-import { runFocusFixup } from "../../__tests__/focus-fixup";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -47,6 +46,7 @@ import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
@@ -468,6 +468,46 @@ test("a restricted member's Agents page links to no Broadcasts", async () => {
       "href",
       "/agents/broadcasts"
     );
+  } finally {
+    full.view.unmount();
+    full.restore();
+  }
+});
+
+// A broadcast is the deployment's write, which Dispatch refuses a restricted member (403
+// RESTRICTED_MEMBER), so their Agents page offers no way to compose one: no row's select box, no
+// select-all, and so no composer. The rest of each row stays theirs. A full member's page offers
+// the select boxes, and ticking one opens the composer.
+test("a restricted member's Agents page offers no broadcast composer", async () => {
+  const user = userEvent.setup();
+  const restricted = renderAgents({
+    user: {
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    },
+  });
+  try {
+    await screen.findByRole("heading", { name: "Agents" });
+    const pageRegion = screen.getByRole("region", { name: "Agents" });
+    expect(
+      within(card(pageRegion, "Planner")).getByRole("button", { name: "Planner" })
+    ).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Select Planner for broadcast" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Select all matching agents" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Broadcast" })).toBeNull();
+  } finally {
+    restricted.view.unmount();
+    restricted.restore();
+  }
+
+  const full = renderAgents();
+  try {
+    await screen.findByRole("heading", { name: "Agents" });
+    expect(screen.getByRole("checkbox", { name: "Select all matching agents" })).toBeTruthy();
+    await user.click(screen.getByRole("checkbox", { name: "Select Planner for broadcast" }));
+    expect(await screen.findByRole("region", { name: "Broadcast" })).toBeTruthy();
   } finally {
     full.view.unmount();
     full.restore();
@@ -4044,7 +4084,7 @@ test("a send from an Agents row's Send gives the focus to the row's box once it 
   const sent = Promise.withResolvers<Message>();
   const page = renderAgents({ issues: [coreIssue] });
   page.createAgentMessage.mockImplementationOnce(() => sent.promise);
-  const stopFocusFixup = runFocusFixup();
+  const stopFocusFixup = emulateChromiumFocusFixup();
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });

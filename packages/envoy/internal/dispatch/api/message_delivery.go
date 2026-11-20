@@ -605,7 +605,8 @@ func finishPendingMessageDelivery(
 		if err := hydrateMessageReplyBlocks(ctx, tx, everyReader, &message); err != nil {
 			return err
 		}
-		derived, err := loadMessageReplyThread(ctx, tx, message)
+		// The writer's path read this parent as its writer reads it; the frame reads it as everyReader.
+		derived, err := loadMessageReplyThread(ctx, tx, everyReader, message)
 		if err != nil {
 			return err
 		}
@@ -1012,10 +1013,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	// The message as the writer reads it (access.MessageClause): one it does not see is a message
 	// no row holds, before anything says whose delivery it was.
-	message, err := scanMessage(tx.QueryRow(r.Context(), `
-		select `+messageColumns+`
-		from messages where id = $1 and `+access.MessageClause("messages", "$2"),
-		r.PathValue("id"), refs.VisibilityArg(who)))
+	message, err := s.loadMessage(r.Context(), tx, who, "", r.PathValue("id"))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
@@ -1318,8 +1316,10 @@ func scanMessageDelivery(row pgx.Row, extra ...any) (model.MessageDelivery, erro
 
 // loadMessageDeliveries reads every delivery attempt of the given messages in one query, keyed
 // by message id and ordered by attempt within each; a message with no attempts maps to an empty
-// (never nil) slice.
-func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageIDs []string) (map[string][]model.MessageDelivery, error) {
+// (never nil) slice. Each attempt is read only where who may read its own message
+// (access.MessageClause, in the statement itself), so a message made hidden after the read of it
+// answers no attempt.
+func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, who model.Actor, messageIDs []string) (map[string][]model.MessageDelivery, error) {
 	deliveries := make(map[string][]model.MessageDelivery, len(messageIDs))
 	for _, id := range messageIDs {
 		deliveries[id] = []model.MessageDelivery{}
@@ -1329,8 +1329,12 @@ func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageID
 	}
 	rows, err := q.Query(ctx, `
 		select `+messageDeliveryColumns+`
-		from message_deliveries where message_id = any($1::uuid[]) order by message_id, attempt
-	`, messageIDs)
+		from message_deliveries
+		where message_id = any($1::uuid[]) and exists (
+			select 1 from messages m
+			where m.id = message_deliveries.message_id and `+access.MessageClause("m", "$2")+`)
+		order by message_id, attempt
+	`, messageIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}

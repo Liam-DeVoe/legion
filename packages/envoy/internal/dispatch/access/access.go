@@ -67,21 +67,31 @@ func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
 }
 
 // VisibleProjectsSQL answers one caller's viewer in one row: every project it sees as a sorted
-// jsonb array, whether it is a restricted member, and whether any project is private. Its
-// parameters are $1 the person (null for a credential that names none), $2 whether the
-// credential is a broker token, whose person reads as a full member when no people row holds
-// them (the broker signs in only people of its sign-in domain), $3 whether it is an agent
-// credential rather than a browser, and $4 its list of projects (null or empty for none).
+// jsonb array, whether it is a restricted member, whether any project is private, and whether its
+// list holds what it sees. Its parameters are $1 the person (null for a credential that names
+// none), $2 whether the credential is a broker token, whose person reads as a full member when no
+// people row holds them (the broker signs in only people of its sign-in domain), $3 whether it is
+// an agent credential rather than a browser, $4 its list of projects (null or empty for none), and
+// $5 whether that list holds it only while some project is private or its person is a restricted
+// member (model.ListHold): with $5, no private project and a person who is not restricted, the
+// caller sees what a credential listing none sees.
 func VisibleProjectsSQL() string {
 	return fragment("VisibleProjectsSQL", `
-		with viewer as (
+		with deployment as (
+			select exists (select 1 from projects where visibility = 'private') as private
+		), person as (
 			select $1::text as person,
 				case when $1::text is null then null
 					else coalesce(
 						(select member_kind from people where email = $1::text),
 						case when $2::boolean then 'full' end)
-				end as member_kind,
-				coalesce(cardinality($4::text[]), 0) > 0 as listed
+				end as member_kind
+		), viewer as (
+			select person.person, person.member_kind,
+				coalesce(cardinality($4::text[]), 0) > 0
+					and (not $5::boolean or deployment.private or coalesce(person.member_kind = 'restricted', false)) as listed,
+				deployment.private
+			from deployment, person
 		)
 		select
 			coalesce(jsonb_agg(p.key order by p.key collate "C") filter (where
@@ -92,10 +102,11 @@ func VisibleProjectsSQL() string {
 							or case when viewer.listed then p.key = any($4::text[]) else p.visibility = 'public' end)
 				end), '[]'::jsonb),
 			coalesce(viewer.member_kind = 'restricted', false),
-			exists (select 1 from projects where visibility = 'private')
+			viewer.private,
+			viewer.listed
 		from viewer
 		left join projects p on true
-		group by viewer.person, viewer.member_kind, viewer.listed`)
+		group by viewer.person, viewer.member_kind, viewer.listed, viewer.private`)
 }
 
 // The clauses below test one row against the viewer a statement binds as jsonb at viewerParam,
@@ -133,6 +144,17 @@ func ProjectClause(projectExpr, viewerParam string) string {
 		ViewerFlag(viewerParam, "all"), viewerParam, projectExpr))
 }
 
+// HiddenPrivateProjectClause passes a row of the project keyExpr names when that project is
+// private and the viewer does not see it: the projects whose ownership of a repository hides it
+// from the viewer (refs.RepositoryClause). It probes the projects primary key once per row: its
+// `exists` ends in `offset 0`, without which Postgres hashes every private project once per
+// statement in its place (refs.TestRepositoryClauseProbesEachRepositoryWithoutAHashedSubplan).
+func HiddenPrivateProjectClause(keyExpr, viewerParam string) string {
+	return clause("HiddenPrivateProjectClause", `(not `+ProjectClause(keyExpr, viewerParam)+` and exists (
+		select from projects hiding where hiding.key = (`+keyExpr+`) and hiding.visibility = 'private'
+		offset 0))`)
+}
+
 // OpenClause passes an open viewer: one that is not a restricted member and holds no list, which
 // reads every row that belongs to no project and to no conversation, as every caller did before a
 // project could be private. The server's own viewer is open.
@@ -166,14 +188,17 @@ func PersonClause(loginExpr, viewerParam string) string {
 // acted in one of theirs too.
 //
 // A session with no pair, which has acted in no project, is judged by its listener record's
-// projects (listener_session_projects, the migration's primary-key projection of the credential it
-// registered with): it passes an open viewer when the record names no project the viewer does not
-// see, an empty list included, and a viewer that is not open when the record names a project it
-// sees (K6). While a project is private, a session with neither a pair nor a listener record passes
-// no viewer but its own: nothing Dispatch holds says which projects it works for. A deployment that
-// holds no private project skips the reads of the private pairs and of the listener records: every
-// project is public, the open viewer sees each one, no pair is of a private project, and a viewer
-// that is not open reads a session by its pairs alone, as before (R9).
+// projects (route_roster_session_projects, the migration's primary-key projection of the
+// credential it registered with): it passes an open viewer when every project the record names is
+// one the viewer sees, an empty list included, and a viewer that is not open when the record names
+// a project and every project it names is one the viewer sees (K6), so a session that lists a
+// project the viewer cannot see reaches no viewer of another. A record with no projects key is a
+// listener that does not know the session's projects, never a credential that lists none: while a
+// project is private, a session with neither a pair nor a listed record passes no viewer but its
+// own, since nothing Dispatch holds says which projects it works for. A deployment that holds no
+// private project skips the reads of the private pairs and of the listener records: every project
+// is public, the open viewer sees each one, no pair is of a private project, and a viewer that is
+// not open reads a session by its pairs alone, as before (R9).
 //
 // session_projects places every session in the projects it acted in only once
 // `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
@@ -183,13 +208,26 @@ func PersonClause(loginExpr, viewerParam string) string {
 // viewer's own while any project is private. The marker's read names no column of the row it
 // tests, so a statement makes it once (an InitPlan), and only for an open viewer of a deployment
 // that holds a private project.
+//
+// The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
+// private project are answered in the statement's own SQL, so those rows call nothing and read
+// nothing (R9). Every other row asks session_clause_visible (the migration's function, which names
+// each table by its schema and sets no search_path). Postgres never inlines that function, since
+// its body reads tables, and runs it once per row it asks about; its declared cost is what keeps
+// the statements that bind this clause on their indexes, which the same decision written into the
+// statement does not (refs.TestBacklinkCountStatementReadsEveryArmThroughAnIndex). What one call
+// runs is in TestTheListenerRecordUsesItsPrimaryKey: the listener record read through its primary
+// key.
 func SessionClause(sessionExpr, viewerParam string) string {
-	return clause("SessionClause", fmt.Sprintf(`session_clause_visible((%[1]s), %[2]s::jsonb,
-		case when %[3]s and %[4]s then exists (
-			select 1 from session_projects_filled
-			offset 0)
-		else true end)`,
-		sessionExpr, viewerParam, ViewerFlag(viewerParam, "open"), ViewerFlag(viewerParam, "private")))
+	return clause("SessionClause", fmt.Sprintf(`(%[3]s or (%[1]s) = %[2]s::jsonb->>'session'
+		or (%[4]s and not %[5]s)
+		or session_clause_visible((%[1]s), %[2]s::jsonb,
+			case when %[4]s and %[5]s then exists (
+				select 1 from session_projects_filled
+				offset 0)
+			else true end))`,
+		sessionExpr, viewerParam, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"),
+		ViewerFlag(viewerParam, "private")))
 }
 
 // roleProjectSQL is contracts.RoleProject in SQL, over the role name roleExpr gives: the project
@@ -200,14 +238,35 @@ func roleProjectSQL(roleExpr string) string {
 	return `translate(substring((` + roleExpr + `) from '^legion-([a-z][a-z0-9]{1,9})-.'), 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')`
 }
 
+// RoleProjectClause passes the project key keyExpr gives - the project a Legion role's name works
+// for (contracts.RoleProject; roleProjectSQL reads it off a role's name) - unless it is a private
+// project the viewer does not see (ProjectClause). A null key, a key no project holds and a public
+// project's key pass, and a deployment that holds no private project reads no project: the
+// viewer's "private" flag is false there, so the clause is true before it reads a row (R9).
+//
+// It is the one spelling of the half of a role's rule that reads the role's name. RoleClause
+// splices it beside the role's held_by holders; the api's reads splice it where a role's holder
+// comes from the Envoy listener's answer instead of a tuple (a route's reach, a delivery's
+// resolve), each keeping its own holder lookup.
+func RoleProjectClause(keyExpr, viewerParam string) string {
+	return clause("RoleProjectClause", fmt.Sprintf(`(not (%[2]s and exists (
+		select 1 from projects hidden
+		where hidden.key = (%[1]s) and hidden.visibility = 'private'
+			and not %[3]s
+		offset 0)))`,
+		keyExpr, ViewerFlag(viewerParam, "private"), ProjectClause("hidden.key", viewerParam)))
+}
+
 // RoleClause passes a role, by name, to no viewer but the server's when it works for a private
-// project the viewer does not see (contracts.RoleProject: legion-<token>-…), whether or not a
-// session holds it. Any other role it passes to an open viewer unless a session that holds it now
-// (its held_by tuple not retracted since) does not pass SessionClause, and to any other viewer when
-// a session that holds it now passes SessionClause. So a role held by a session of a private
-// project the viewer does not see reaches no viewer that may not read that session. A deployment
-// that holds no private project skips the read of the role's project and the open viewer's read of
-// the holders: SessionClause then passes every session to it (R9).
+// project the viewer does not see (RoleProjectClause over contracts.RoleProject: legion-<token>-…),
+// whether or not a session holds it. Any other role it passes to a viewer when a session that holds
+// it now (its held_by tuple not retracted since) passes SessionClause for that viewer, and to an
+// open viewer as well when no session that holds it now fails SessionClause, a role nobody holds
+// included. So a role held only by sessions of a private project the viewer does not see reaches no
+// viewer that may not read one of them, and a role one of whose holders the viewer may read reaches
+// it, the hidden holder staying hidden wherever holders are listed. A deployment that holds no
+// private project skips the read of the role's project and the open viewer's read of the holders:
+// SessionClause then passes every session to it (R9).
 func RoleClause(roleExpr, viewerParam string) string {
 	session := SessionClause("holder.to_id", viewerParam)
 	holder := func(condition string) string {
@@ -225,30 +284,31 @@ func RoleClause(roleExpr, viewerParam string) string {
 			offset 0)`, roleExpr, condition)
 	}
 	return clause("RoleClause", fmt.Sprintf(`(%[1]s
-		or (not (%[3]s and exists (
-				select 1 from projects hidden
-				where hidden.key = %[6]s and hidden.visibility = 'private'
-					and not ((%[7]s::jsonb->'sees') ? hidden.key)
-				offset 0))
+		or (%[6]s
 			and ((%[2]s and (not %[3]s or not %[4]s)) or %[5]s)))`,
 		ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), ViewerFlag(viewerParam, "private"),
-		holder("not "+session), holder(session), roleProjectSQL(roleExpr), viewerParam))
+		holder("not "+session), holder(session), RoleProjectClause(roleProjectSQL(roleExpr), viewerParam)))
 }
 
 // PartyClause passes a conversation that belongs to no project, by its parties ("person:<login>",
 // "session:<id>"), when the viewer's own person or session is a party, or the viewer is open, and
-// every session party passes SessionClause.
+// every session party passes SessionClause. A conversation that names no party - null parties, a
+// direct message whose node Dispatch does not hold, or an empty list - says nothing of who may read
+// it: it passes an open viewer while no project is private, as every conversation did before one
+// could be (R9), and no viewer but the server's once one is, as a node naming neither a project
+// nor parties does (refs' unscoped rule). The switch to private refuses while a direct message is
+// one of them (api's privateProjectIncomplete).
 func PartyClause(partiesExpr, viewerParam string) string {
 	return clause("PartyClause", fmt.Sprintf(`(%[2]s
 		or ((('person:' || (%[4]s::jsonb->>'person')) = any(%[1]s)
 				or ('session:' || (%[4]s::jsonb->>'session')) = any(%[1]s)
-				or %[3]s)
+				or (%[3]s and (not %[6]s or coalesce(cardinality(%[1]s), 0) > 0)))
 			and not exists (
 				select 1 from unnest(%[1]s) party
 				where party like 'session:%%' and not %[5]s
 				offset 0)))`,
 		partiesExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam,
-		SessionClause("substr(party, 9)", viewerParam)))
+		SessionClause("substr(party, 9)", viewerParam), ViewerFlag(viewerParam, "private")))
 }
 
 // Resolve answers what actor may see, in one read of VisibleProjectsSQL. actor is the request's
@@ -258,6 +318,16 @@ func PartyClause(partiesExpr, viewerParam string) string {
 // is the credential's Projects. A caller is a browser only when it is a person acting with no
 // agent: a person-scope token acting for its person (actingPerson) is a user that carries an act,
 // and it sees what its own list lets it see, never everything its person sees.
+//
+// A list holds what its credential reads unless the credential's ListHoldsWhileNoPrivate says it
+// holds no read while the deployment holds no private project (a broker token's list, which
+// existed before projects could be private and limited no read then): such a credential of a full
+// member, or of no person, reads as one that lists none until a project is private, open and with
+// no Lists, exactly as it read before (R9). Once a project is private, and for a restricted member
+// whatever the deployment holds, it is held to its list (R3): a restricted member's credential sees
+// exactly the projects its list and its person both see. What a full member's broker token writes
+// while it reads open is api's (writesHeldTo), which keeps the writes a broker token scoped to one
+// project made before projects could be private within that project.
 func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, error) {
 	if actor.Credential == nil {
 		return model.Viewer{}, ErrUnresolvedActor
@@ -276,16 +346,18 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 	listed := actor.Credential.Projects
 	broker := actor.Credential.Session != ""
 	agent := actor.Kind != "user" || actor.Act != nil
+	onlyWhilePrivate := actor.Credential.ListHoldsWhileNoPrivate != model.ListHoldsAll
 	viewer := model.Viewer{Person: login}
-	if len(listed) > 0 {
-		viewer.Lists = listed
-	}
 	if actor.Kind == "session" {
 		viewer.Session = actor.ID
 	}
-	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, broker, agent, listed).
-		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate); err != nil {
+	var held bool
+	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, broker, agent, listed, onlyWhilePrivate).
+		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate, &held); err != nil {
 		return model.Viewer{}, fmt.Errorf("resolve what the caller sees: %w", err)
+	}
+	if held {
+		viewer.Lists = listed
 	}
 	viewer.Open = !viewer.Restricted && len(viewer.Lists) == 0
 	return viewer, nil

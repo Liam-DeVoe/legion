@@ -35,10 +35,7 @@ import (
 // name the daemon's session and write, as the role-holders publish can. Like the design gates'
 // publish the writes append no issue event and notify nobody, since an event would feed the
 // daemon's intake with facts it caused; and they read the issue with no open check, because the
-// merge that closes an issue ends a step of it. The writer is judged from the key alone, before
-// any read, so it answers an issue the caller does not see as it answers a key no issue holds; the
-// issue is then read as the request's caller sees it (access.ProjectClause), and one it does not
-// see is a key no issue holds (ISSUE_NOT_FOUND), as is every read of the list route's.
+// merge that closes an issue ends a step of it.
 
 // The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND,
 // each the code contracts gives it, which the Legion daemon reads to end a row on.
@@ -145,8 +142,15 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 // writeIssueStep is the one write of a step record behind both routes, by actor to the issue key:
 // the issue is read and its writer judged (lockRecordedIssue), a write the rating route sends with
 // no rating is refused (rated), write (its ID, Issue and Project filled here from the path and the
-// issue row) is written, and the record is answered as the read lists it.
+// issue row) is written, and the record is answered as the read lists it. The request's reader is
+// resolved once, before the transaction opens, and handed on in the request's context
+// (withReader), so the issue's read and the read of its runs bind the one viewer.
 func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string, rated bool) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	r = r.WithContext(withReader(r.Context(), who))
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -178,7 +182,7 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	// The attempt is the run's place among the issue's runs, which no write stores, so the
 	// answer reads the issue's runs in the write's own transaction, as GET would after it. That
 	// read lists the run: the write made it part of the issue, or found it part of the issue.
-	steps, err := workflowstore.IssueSteps(r.Context(), tx, key)
+	steps, err := workflowstore.IssueSteps(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -216,28 +220,38 @@ func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supp
 // the merge that closes an issue still records its step. An issue Dispatch does not hold, or one
 // of a project the request's caller does not see (access.ProjectClause), is refused with a code of
 // its own rather than loadIssue's NOT_FOUND: the daemon must tell a Dispatch that holds no such
-// issue from one that does not serve the route, whose router answers NOT_FOUND. Then the actor
-// must be the writer of the records of that issue, the session of its project's Legion daemon
-// (legionDaemonSessionOf); any other writer is refused 403 STEP_WRITER, naming what record and
-// whose.
+// issue from one that does not serve the route, whose router answers NOT_FOUND. The path names the
+// issue by its key alone, so the issue is read so once before the lock is asked for, and a hidden
+// one is refused without waiting behind its project's writers, as a key no issue holds is. Then
+// the actor must be the writer of the records of that issue, the session of its project's Legion
+// daemon (legionDaemonSessionOf); any other writer is refused 403 STEP_WRITER, naming what record
+// and whose.
 func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string, actor model.Actor, record string) (string, bool) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
+		return "", false
+	}
+	var project string
+	read := func() bool {
+		err := tx.QueryRow(r.Context(), `
+			select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`
+		`, key, refs.VisibilityArg(who)).Scan(&project)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
+		case err != nil:
+			s.writeHandlerError(w, err)
+		}
+		return err == nil
+	}
+	if !read() {
 		return "", false
 	}
 	if err := store.LockOwnersShared(r.Context(), tx, store.IssueOwner(key)); err != nil {
 		s.writeHandlerError(w, err)
 		return "", false
 	}
-	var project string
-	if err := tx.QueryRow(r.Context(), `
-		select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`
-	`, key, refs.VisibilityArg(who)).Scan(&project); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
-			return "", false
-		}
-		s.writeHandlerError(w, err)
+	if !read() {
 		return "", false
 	}
 	writer := legionDaemonSessionOf(key)
@@ -275,7 +289,7 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, pgx.ErrNoRows)
 		return
 	}
-	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, key)
+	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

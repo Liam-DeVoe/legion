@@ -190,7 +190,7 @@ func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select `+askReadColumns+` `+askReadFrom+`
+		select `+askReadColumns+` `+askReadFromSeenBy("$3")+`
 		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid and `+access.IssueProjectClause("$1", "$3")+`
 		order by a.created_at, a.id
 	`, key, specID, refs.VisibilityArg(who))
@@ -240,7 +240,7 @@ func (s *server) readDecisions(
 	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader,
 ) ([]model.Decision, error) {
 	viewer := refs.VisibilityArg(who)
-	markdown, sections, err := s.decisionSections(ctx, document.ID)
+	markdown, sections, err := s.decisionSections(ctx, who, document.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -621,8 +621,8 @@ func decisionTextSum(text string) string {
 // decisionSections cuts the decisions document into its sections: each `##` heading outside
 // `## Replaced`, and each `###` heading under it, with every block after the heading up to the
 // next heading of its level or higher.
-func (s *server) decisionSections(ctx context.Context, artifactID string) (string, []decisionSection, error) {
-	markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, artifactID)
+func (s *server) decisionSections(ctx context.Context, who model.Actor, artifactID string) (string, []decisionSection, error) {
+	markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, who, artifactID)
 	if err != nil {
 		return "", nil, err
 	}

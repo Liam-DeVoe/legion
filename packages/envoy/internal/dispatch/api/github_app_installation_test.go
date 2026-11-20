@@ -4,23 +4,33 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
-// TestAppInstallationAnswersEveryCallerAlike: whether Dispatch's App is installed on a repository
-// is no project's content, since a repository's name is not, so GET
-// /api/v1/github/app-installation answers every caller alike, whatever projects it sees. acme/priv,
-// which the App is installed on, is the repository PRIV's issue names; bob, carol and carol's token
-// that lists PRIV see PRIV, and alice, alice's token that lists PRIV, carol's token that lists no
-// project and the shared token do not, and every one of them reads it installed.
+// TestAppInstallationAnswersEveryCallerAlike: GET /api/v1/github/app-installation has the read
+// class none, as every Legion daemon asks it for each repository it serves whatever its token
+// lists: whether Dispatch's App is installed on a repository is no project's content. acme/priv,
+// which the App is installed on, is the repository PRIV's issue names: every caller, the ones that
+// see PRIV and the ones that do not, reads it installed, each asking GitHub's installation lookup,
+// and reads acme/elsewhere, which the App is not installed on, as not installed.
+//
+// Control: give the route back a gate holding the repository to refs.RepositoryClause, and alice,
+// who does not see PRIV, reads acme/priv as not installed; the test fails naming her.
 func TestAppInstallationAnswersEveryCallerAlike(t *testing.T) {
-	const installed = "acme/priv"
+	const installed, uninstalled = "acme/priv", "acme/elsewhere"
+	var mu sync.Mutex
+	var asked []string
 	seed := seedPrivateProjectWith(t, testServerOptions{
 		app: fakeGitHubAppConfig(t),
 		githubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			asked = append(asked, r.Method+" "+r.URL.Path)
+			mu.Unlock()
 			if r.URL.Path == "/repos/"+installed+"/installation" {
 				fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{}}`)
 				return
@@ -29,15 +39,27 @@ func TestAppInstallationAnswersEveryCallerAlike(t *testing.T) {
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 		}}),
 	})
+	requests := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), asked...)
+	}
 	if _, err := seed.database.Pool.Exec(context.Background(), `update issues set repo = $2 where key = $1`,
 		seed.issue[seedPrivate], installed); err != nil {
 		t.Fatalf("name %s on PRIV's issue: %v", installed, err)
 	}
-	for _, caller := range []privateCaller{callerBob, callerCarol, callerCarolPrivToken, callerAlice, callerAlicePrivToken,
-		callerCarolToken, callerSharedToken} {
-		response := seed.request(t, caller, http.MethodGet, "/api/v1/github/app-installation/"+installed, nil)
-		if got := fmt.Sprintf("%d %s", response.Code, strings.TrimSpace(response.Body.String())); got != `200 {"installed":true}` {
-			t.Errorf("%s reads whether the App is installed on %s as %s, want 200 installed", caller, installed, got)
+	answer := func(caller privateCaller, repository string) string {
+		response := seed.request(t, caller, http.MethodGet, "/api/v1/github/app-installation/"+repository, nil)
+		return fmt.Sprintf("%d %s", response.Code, strings.TrimSpace(response.Body.String()))
+	}
+	for _, caller := range []privateCaller{callerBob, callerCarol, callerCarolPrivToken, callerAlice, callerAlicePrivToken, callerCarolToken, callerSharedToken} {
+		before := len(requests())
+		if got := answer(caller, installed); got != `200 {"installed":true}` || !slices.Contains(requests()[before:], "GET /repos/"+installed+"/installation") {
+			t.Errorf("%s reads whether the App is installed on %s as %s with GitHub asked %q, want 200 installed from GitHub's lookup",
+				caller, installed, got, requests()[before:])
+		}
+		if got := answer(caller, uninstalled); got != `200 {"installed":false}` {
+			t.Errorf("%s reads whether the App is installed on %s as %s, want 200 not installed", caller, uninstalled, got)
 		}
 	}
 }

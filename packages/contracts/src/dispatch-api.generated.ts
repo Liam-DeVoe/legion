@@ -598,7 +598,7 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Unsubscribe a session from a document. */
+    /** @description Unsubscribe a session from a document. A session the caller may not see is 404 SUBSCRIBER_NOT_FOUND, as one not subscribed, before the listener is asked anything. */
     delete: operations["deleteApiV1ArtifactsByIdSubscribersBySessionId"];
     options?: never;
     head?: never;
@@ -784,10 +784,10 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Follow an ask (a credential holding the person scope for any session; every other for its own session alone). */
+    /** @description Follow an ask (a credential holding the person scope for any session; every other for its own session alone). A session the caller may not see is 404 SESSION_NOT_FOUND, as one nobody holds. */
     put: operations["putApiV1AsksByIdFollowersBySessionId"];
     post?: never;
-    /** @description Unfollow an ask (a credential holding the person scope for any session; every other for its own session alone). */
+    /** @description Unfollow an ask (a credential holding the person scope for any session; every other for its own session alone). A session the caller may not see is 404 FOLLOWER_NOT_FOUND, as one that does not follow the ask. */
     delete: operations["deleteApiV1AsksByIdFollowersBySessionId"];
     options?: never;
     head?: never;
@@ -835,10 +835,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Recent broadcasts, newest first, with their recipient and reply counts. Only broadcasts the caller wrote, or whose every recipient it may see. */
+    /** @description Recent broadcasts, newest first, with their recipient and reply counts. Only broadcasts whose every recipient the caller may see, and that it wrote or, for a caller that sees every public project, any one. */
     get: operations["getApiV1Broadcasts"];
     put?: never;
-    /** @description Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session the Envoy listener knows and that is not running is a recipient like any other, its copy stored for it and its attempt recorded queued; one the listener knows nothing about, or that does not advertise the mode, is excluded and named in the response, never switched to another mode. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
+    /** @description Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session the Envoy listener knows and that is not running is a recipient like any other, its copy stored for it and its attempt recorded queued; one the listener knows nothing about, or that does not advertise the mode, is excluded and named in the response, never switched to another mode. One the sender may not see is excluded as one the listener knows nothing about, and the listener is asked nothing about it. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
     post: operations["postApiV1Broadcasts"];
     delete?: never;
     options?: never;
@@ -853,7 +853,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. Only broadcasts the caller wrote, or whose every recipient it may see. */
+    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. Only broadcasts whose every recipient the caller may see, and that it wrote or, for a caller that sees every public project, any one; any other is 404 as an id nobody holds. */
     get: operations["getApiV1BroadcastsById"];
     put?: never;
     post?: never;
@@ -1177,7 +1177,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Only the pull requests whose issue the caller sees, and, for a full member or a credential with no person that lists no project, those that name no issue; every count, facet, measure and title is computed from them, and a run that shipped pull requests none of which is left is left out, as, for any other caller, is a run that shipped none. */
+    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Only the pull requests whose issue the caller sees, and, for a full member or a credential with no person that lists no project, those that name no issue; every count, facet, measure and title is computed from them, and a run that shipped pull requests none of which is left is left out, as, for any other caller, is a run that shipped none. A pull request that names no issue, a deploy run that shipped none and a PR-checks run whose number no stored pull request holds are shown to an open viewer only when their repository (the deploy repository, for a run) is not hidden from that viewer; a hidden run answers as an id no run holds. */
     get: operations["getApiV1DeliveryMeasures"];
     put?: never;
     post?: never;
@@ -1194,7 +1194,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Its lead times, deploy job timings and PR checks count only the pull requests and runs the timeline's rule shows the caller. */
+    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Its lead times, deploy job timings and PR checks count only the pull requests and runs the timeline's rule shows the caller. A pull request that names no issue, a deploy run that shipped none and a PR-checks run whose number no stored pull request holds are shown to an open viewer only when their repository (the deploy repository, for a run) is not hidden from that viewer; a hidden run answers as an id no run holds. */
     get: operations["getApiV1DeliveryPipeline"];
     put?: never;
     post?: never;
@@ -1211,7 +1211,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. A run the timeline's rule does not show the caller answers 404 NOT_FOUND, as a run id no run holds does. */
+    /** @description One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. A run the timeline's rule does not show the caller answers 404 NOT_FOUND, as a run id no run holds does: a deploy run that shipped no pull request, and a PR-checks run whose number no stored pull request holds, are shown to an open viewer only when the deploy repository is not hidden from that viewer. */
     get: operations["getApiV1DeliveryRunsById"];
     put?: never;
     post?: never;
@@ -1230,7 +1230,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group. The timeline lists every group whose every session the caller may see (session_groups). */
+    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 404 SESSION_NOT_FOUND for a session the caller may not see, as for one nobody holds, before any group is read; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group, among the sessions the caller may see, each by the newest title among the events it may read. The timeline lists every group whose every session the caller may see (session_groups). */
     post: operations["postApiV1DeliverySessionGroups"];
     delete?: never;
     options?: never;
@@ -1252,7 +1252,7 @@ export interface paths {
     delete: operations["deleteApiV1DeliverySessionGroupsById"];
     options?: never;
     head?: never;
-    /** @description Rename a Delivery session group, add sessions to it and remove sessions from it {name?, add?, remove?}, with the create route's refusals; 400 SESSION_GROUP_INPUT for an edit that would leave it empty. */
+    /** @description Rename a Delivery session group, add sessions to it and remove sessions from it {name?, add?, remove?}, with the create route's refusals, a session it adds or removes among them; 400 SESSION_GROUP_INPUT for an edit that would leave it empty. */
     patch: operations["patchApiV1DeliverySessionGroupsById"];
     trace?: never;
   };
@@ -1263,7 +1263,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Only the pull requests whose issue the caller sees, and, for a full member or a credential with no person that lists no project, those that name no issue; every count, facet, measure and title is computed from them, and a run that shipped pull requests none of which is left is left out, as, for any other caller, is a run that shipped none. */
+    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Only the pull requests whose issue the caller sees, and, for a full member or a credential with no person that lists no project, those that name no issue; every count, facet, measure and title is computed from them, and a run that shipped pull requests none of which is left is left out, as, for any other caller, is a run that shipped none. A pull request that names no issue, a deploy run that shipped none and a PR-checks run whose number no stored pull request holds are shown to an open viewer only when their repository (the deploy repository, for a run) is not hidden from that viewer; a hidden run answers as an id no run holds. */
     get: operations["getApiV1DeliveryTimeline"];
     put?: never;
     post?: never;
@@ -1419,7 +1419,7 @@ export interface paths {
     /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A restricted member, or a credential acting for one, that names repo, a string or null, is 403 RESTRICTED_MEMBER before the body's project, parent or external ref is read and before anything is written: their issues take the repository they resolve to, their nearest parent's or their project's default. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1458,7 +1458,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. repo is the issue's own repository, "owner/name", or null to clear it; a restricted member, or a credential acting for one, that names it is 403 RESTRICTED_MEMBER before the issue is read and before anything is written, so only a full member sets, changes or clears an issue's own repository. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -1609,9 +1609,9 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry. */
+    /** @description Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end). A holder the caller may not see is named by no answer: the 409's claim is null and its text names no session, person or title; a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry. */
     post: operations["postApiV1IssuesByKeyClaim"];
-    /** @description Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked. */
+    /** @description Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route), a holder the caller may not see by no answer (the claim is null and the text names no session, person or title); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked. */
     delete: operations["deleteApiV1IssuesByKeyClaim"];
     options?: never;
     head?: never;
@@ -1955,7 +1955,7 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Unsubscribe a session from an issue. */
+    /** @description Unsubscribe a session from an issue. A session the caller may not see is 404 SUBSCRIBER_NOT_FOUND, as one not subscribed, before the listener is asked anything. */
     delete: operations["deleteApiV1IssuesByKeySubscribersBySessionId"];
     options?: never;
     head?: never;
@@ -3448,8 +3448,6 @@ export interface components {
       last_seen: number;
       machine_id: string;
       open_asks: number;
-      /** @description Never in an answer: the projects of the session's token (K6), which Dispatch reads to filter the agents list and serves to no caller (R4, R9) */
-      projects?: string[];
       roles: string[] | null;
       session_id: string;
       state: string;

@@ -65,16 +65,25 @@ var proxiedRepositories = []string{
 const uninstalledRepository = "acme/uninstalled"
 
 // TestTheGitHubProxyShowsARepositoryByItsIssues (c-proxy-by-issue): the proxy shows a person a
-// repository when an issue the person sees resolves to it, or when the person is an open viewer
-// and no issue of a project the person does not see resolves to it, and answers every other
-// repository, in status and bytes, as one the App is not installed on, reading nothing of it from
-// GitHub. An issue resolves through its own repository, its parent's and its project's default,
-// and a done issue counts as an open one does; no rename is read.
+// repository that an issue of a project the person sees resolves to, and an open viewer also one
+// that no project the person does not see owns; it answers every other repository, in status and
+// bytes, as one the App is not installed on, reading nothing of it from GitHub. An issue resolves
+// through its own repository, its parent's and its project's default, a done issue counts as an
+// open one does, and no rename a mapping records is read.
 //
-// alice, a full member no private list names, reads acme/pub, acme/none, acme/both and
-// acme/newname; bob, a restricted member PRIV's list names, reads every acme/priv*, acme/both and
-// acme/oldname; carol, on PRIV's and PRIV2's lists, reads all nine. Each readable repository is
-// read through a pull request path and a check path, and each hidden one through both too.
+// alice, a full member no private list names, reads acme/pub, acme/none, acme/both, which PUB-2
+// names beside PRIV-5, and acme/newname, which no issue names; bob, a restricted member PRIV's list
+// names, reads every acme/priv* repository, acme/privparent among them through PRIV-3's parent, and
+// acme/both and acme/oldname; carol, on PRIV's and PRIV2's lists, reads all nine. The rename row
+// shows the rule reads no rename: alice reads acme/newname and not acme/oldname, and bob reads
+// acme/oldname and not acme/newname. Each readable repository is read through a pull request path
+// and a check path, and each hidden one through both too.
+//
+// Four controls, each run on its own, and each time the test fails naming the repository: show
+// every repository to an open viewer (alice reads acme/priv); count open issues only (alice reads
+// acme/privdone); resolve an issue's own repository only (alice reads acme/privdefault and bob loses
+// acme/privparent); compare names through refs.CanonicalRepoSQL (bob reads acme/newname and alice
+// loses it).
 func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 	database := seedProxyGate(t)
 	fake := &gateGitHub{installed: proxiedRepositories}
@@ -107,7 +116,7 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 							caller.login, repository, path.name, got, read, want)
 					}
 				case got != uninstalled || read:
-					t.Errorf("%s reads %s, which no issue the person sees resolves to, through its %s path as\n\t%s (GitHub read: %t)\nwant what %s, which the App is not installed on, answers:\n\t%s",
+					t.Errorf("%s reads %s, which the person may not see, through its %s path as\n\t%s (GitHub read: %t)\nwant what %s, which the App is not installed on, answers:\n\t%s",
 						caller.login, repository, path.name, got, read, uninstalledRepository, uninstalled)
 				}
 			}
@@ -207,14 +216,19 @@ func proxyAnswer(t *testing.T, handler http.Handler, login, repository, suffix s
 
 // gateGitHub is GitHub for the repositories it names installed: the App's installation on each of
 // them, a token for that installation, and every read of a repository, answered with the
-// repository's name and recorded.
+// repository's name and recorded. Every request it is sent, the installation lookups and token
+// mints included, is recorded apart.
 type gateGitHub struct {
 	installed []string
 	mu        sync.Mutex
 	reads     []string
+	every     []string
 }
 
 func (g *gateGitHub) serve(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	g.every = append(g.every, r.Method+" "+r.URL.RequestURI())
+	g.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method == http.MethodPost && r.URL.Path == "/app/installations/11/access_tokens" {
 		w.WriteHeader(http.StatusCreated)
@@ -243,4 +257,11 @@ func (g *gateGitHub) repositoryReads() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]string(nil), g.reads...)
+}
+
+// requests is every request GitHub was sent, the installation lookups and token mints included.
+func (g *gateGitHub) requests() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.every...)
 }

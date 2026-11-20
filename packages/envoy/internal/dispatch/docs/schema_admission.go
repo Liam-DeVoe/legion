@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // schemaPage is the schema a page presents on its document socket: version is C, the
@@ -260,21 +261,54 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 	s.recheckAccess(ctx)
 }
 
+// RunAccessRecheck runs the access re-check (recheckAccess) once every every, until ctx ends. The
+// API runs it on the document sockets' heartbeat (its Deps.StreamHeartbeat, accessRecheckEvery),
+// on which the live socket and the Delivery views resolve their readers again too. An access change
+// made by SQL alone - a statement at a psql prompt - appends no event and announces nothing on
+// store.AccessChangedChannel, so no notification reaches room sync's access lane, and it moves
+// what a person sees all the same: this pass is what finds it, a heartbeat at most after it
+// committed, and closes each socket whose person lost its room with the code an announced change
+// closes it with
+// (errAccessRevoked). A pass while this process holds no socket reads nothing. ctx is a
+// process-lifetime context, outside any transaction of the pool: the passes run on a hold mark of
+// their own (store.ForConcurrentWorker), as each room-sync lane does.
+func (s *Service) RunAccessRecheck(ctx context.Context, every time.Duration) {
+	ctx = store.ForConcurrentWorker(ctx)
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.recheckAccess(ctx)
+		}
+	}
+}
+
 // recheckAccess closes each document socket this process holds whose person may no longer read its
 // room (errAccessRevoked): for each person with a socket here it reads what they see now
 // (access.Resolve) and which of their rooms they may read (access.DocumentClause), and
 // revokes the rest (revokeUnless). It runs on each access change and after each LISTEN stands,
-// since a change notified while the hub had no connection reached nobody. A socket whose admission
-// read its room before this pass began and that is recorded only after the pass looked is read
-// again as it is recorded (recheckAdmission). A person whose read fails keeps their sockets until
-// the next pass, as a failed read of an issue leaves its rooms as they were (issueOpenChanged).
+// since a change notified while the hub had no connection reached nobody, and on every heartbeat
+// of the sockets (RunAccessRecheck), since a change made by SQL alone is notified to nobody at all.
+// A socket whose admission read its room before this pass began and that is recorded only after
+// the pass looked is read again as it is recorded (recheckAdmission). A person whose read fails has
+// every socket of theirs closed too, as recheckAdmission closes a socket whose read fails: the pass
+// cannot show they still read those rooms, and each reconnect's admission reads them again.
 func (s *Service) recheckAccess(ctx context.Context) {
+	// hidden is each socket whose person's read answered that they no longer read its room, and
+	// unread each socket whose person's read failed.
 	hidden := make(map[*schemaAdmission]bool)
+	unread := make(map[*schemaAdmission]bool)
 	for person, admissions := range s.schemaAdmissions.beginAccessCheck() {
 		readable, err := s.readableRooms(ctx, person, admissions)
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Error("dispatch: read which documents a person with an open document socket still reads", "sockets", len(admissions), "error", err)
+				slog.Warn("dispatch: read which documents a person with an open document socket still reads; their sockets close and the provider reconnects", "sockets", len(admissions), "error", err)
+			}
+			for _, admission := range admissions {
+				unread[admission] = true
 			}
 			continue
 		}
@@ -284,11 +318,13 @@ func (s *Service) recheckAccess(ctx context.Context) {
 			}
 		}
 	}
-	if len(hidden) == 0 {
+	if len(hidden) == 0 && len(unread) == 0 {
 		return
 	}
-	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] }, errAccessRevoked) {
-		slog.Info("dispatch: close a document socket whose person no longer reads its document; the provider reconnects", "room", admission.key.room)
+	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] && !unread[admission] }, errAccessRevoked) {
+		if hidden[admission] {
+			slog.Info("dispatch: close a document socket whose person no longer reads its document; the provider reconnects", "room", admission.key.room)
+		}
 	}
 }
 
@@ -361,9 +397,10 @@ func (schemaRevoked) CloseCode() (int, string) {
 }
 
 // errAccessRevoked is the cause a socket's request context is cancelled with once its person may no
-// longer read its room (recheckAccess, schemaAdmissions.admit). ygo sends the peer the close frame
-// a revoked admission gets, on which the provider reconnects, and the reconnect's admission refuses
-// the room as a room no document holds (readIssue).
+// longer read its room, or a re-check of that person's access cannot read it (recheckAccess,
+// recheckAdmission). ygo sends the peer the close frame a revoked admission gets, on which the
+// provider reconnects, and the reconnect's admission refuses the room as a room no document holds
+// (readIssue) when the person no longer reads it.
 var errAccessRevoked error = accessRevoked{}
 
 // accessRevoked is that cause's type.

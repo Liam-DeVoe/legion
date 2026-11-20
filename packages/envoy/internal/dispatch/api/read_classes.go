@@ -88,7 +88,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/going/capability":         reads("whether the deployment configured a text model, which names no row", nil, readclass.None),
 	"GET /api/v1/dashboard/builds":         reads("the dashboard builds the server processes serve, which name no row of a project", nil, readclass.None),
 	"GET /api/v1/credentials/capabilities": reads("the secrets broker's own metadata, relayed whole", nil, readclass.None),
-	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository, asked of GitHub and read from no row: a repository's name is no project's content",
+
+	// Whether Dispatch's App is installed on a repository, which the Legion daemon asks for every
+	// repository it serves, whatever its token lists.
+	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository, which is no project's content",
 		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.None),
 
 	// The caller's own rows, keyed on its credential or its person.
