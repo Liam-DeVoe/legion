@@ -9086,6 +9086,231 @@ test("a read whose refresh failed while it holds its answer draws no line, and a
   }
 });
 
+/** The failed read's line in `container` that says `message`. */
+function failedLineSaying(container: HTMLElement, message: string): HTMLElement {
+  const line = [...container.querySelectorAll<HTMLElement>("[data-failed-read]")].find(
+    (each) => each.querySelector('[role="alert"]')?.textContent === message
+  );
+  if (line === undefined) throw new Error(`the page drew no line that says "${message}"`);
+  return line;
+}
+
+/** The Retry of the failed read's line in `container` that says `message`. */
+function retryOfLine(container: HTMLElement, message: string): HTMLElement {
+  const retry = failedLineSaying(container, message).querySelector<HTMLElement>(FAILED_READ_RETRY);
+  if (retry === null) throw new Error(`the line that says "${message}" drew no Retry`);
+  return retry;
+}
+
+/** Where the focus is in `container`, as `focusPlace` says it, with a failed read's Retry named
+ *  by what its line says (`onRetryOf`). */
+function focusAt(container: HTMLElement): string {
+  const line = document.activeElement?.closest("[data-failed-read]");
+  if (line == null) return focusPlace(container);
+  return onRetryOf(line.querySelector('[role="alert"]')?.textContent ?? "");
+}
+
+/** What `focusAt` says where the focus is on the Retry of the line that says `message`. */
+function onRetryOf(message: string): string {
+  return `the Retry of the line "${message}"`;
+}
+
+// A failed read took the page's opening whatever waited on the reader: with the results' read
+// failed and the asks' read answered, the page opened on the results' Retry, and the question that
+// waits on the reader, drawn and known, was left for the reader to find. The question keeps the
+// opening whatever reads failed, and the results' line is drawn over the tree all the same.
+test("a failed results read draws its line over the tree, and the page opens on the question that waits", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
+  const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
+      ["asks", KEY],
+      issueResultsQuery(KEY).queryKey,
+    ]);
+    const { container } = view;
+    const { inTree, line, overTree } = await failedLines(container, 1, "results");
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.results_unreadable);
+    expect({ inTree, overTree }, "the results' line is not drawn over the tree").toEqual({
+      inTree: false,
+      overTree: true,
+    });
+    await waitFor(
+      () =>
+        expect(
+          focusAt(container),
+          "the page with the results' read failed did not open on the question that waits"
+        ).toBe(WAITING_QUESTION.id),
+      OWN_WORDS
+    );
+    // The opening places its focus once: no frame after moves it to the results' Retry.
+    await framesPass();
+    expect(focusAt(container), "a frame after the opening moved its focus").toBe(
+      WAITING_QUESTION.id
+    );
+  } finally {
+    asks.mockRestore();
+    names.mockRestore();
+    results.mockRestore();
+  }
+});
+
+// With the asks' read failed no question can be known, so the asks' Retry takes the opening, even
+// where a read whose line is drawn above the asks' failed too: the page opened on the first failed
+// line's Retry, the results', whose answer brings no question.
+test("with the asks and the results reads failed, the page opens on the asks' Retry", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const asks = spyOn(api, "listIssueAsks").mockRejectedValue(serverDown());
+  const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
+      ["asks", KEY],
+      issueResultsQuery(KEY).queryKey,
+    ]);
+    const { container } = view;
+    await failedLines(container, 2, "asks and results");
+    expect(
+      [...container.querySelectorAll("[data-failed-read] [role='alert']")].map(
+        (alert) => alert.textContent
+      ),
+      "the lines are not drawn in the order the reads are given"
+    ).toEqual([STATE_LINES.results_unreadable, STATE_LINES.asks_unreadable]);
+    await waitFor(
+      () =>
+        expect(focusAt(container), "the page did not open on the asks' Retry").toBe(
+          onRetryOf(STATE_LINES.asks_unreadable)
+        ),
+      OWN_WORDS
+    );
+    // The opening places its focus once.
+    await framesPass();
+    expect(focusAt(container), "a frame after the opening moved its focus").toBe(
+      onRetryOf(STATE_LINES.asks_unreadable)
+    );
+  } finally {
+    asks.mockRestore();
+    names.mockRestore();
+    results.mockRestore();
+  }
+});
+
+// Where no question waits on the reader, a failed read the rows come from still takes the
+// opening: the question that waits may be what it failed to bring. The comments' read failed here,
+// and the one question drawn waits on somebody else, so the page opens on the comments' Retry and
+// not on that question's row, the outline's first.
+test("a failed comments read opens the page on its Retry where no question waits on the reader", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const elsewhere = { ...WAITING_QUESTION, waiting_on_person: "bob" };
+  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([elsewhere] as never);
+  const comments = spyOn(api, "listComments").mockRejectedValue(serverDown());
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}`, undefined, StageSlot, undefined, [
+      ["asks", KEY],
+    ]);
+    const { container } = view;
+    const { line } = await failedLines(container, 1, "comments");
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.comments_unreadable);
+    await waitFor(
+      () =>
+        expect(
+          rowsFor(container, elsewhere.id).length,
+          "the question that waits on somebody else drew no row"
+        ).toBe(1),
+      OWN_WORDS
+    );
+    await waitFor(
+      () =>
+        expect(focusAt(container), "the page did not open on the comments' Retry").toBe(
+          onRetryOf(STATE_LINES.comments_unreadable)
+        ),
+      OWN_WORDS
+    );
+    // The opening places its focus once.
+    await framesPass();
+    expect(focusAt(container), "a frame after the opening moved its focus").toBe(
+      onRetryOf(STATE_LINES.comments_unreadable)
+    );
+  } finally {
+    asks.mockRestore();
+    comments.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// A failed names read's line left the page while another failed read ran again - its Retry,
+// window focus or an event's refresh - since TanStack puts a read that holds no answer back in
+// `pending` as it runs, and the names read, held back until every read has answered, was moved
+// to a set of none, which stands failed no more. The focus its Retry held went with the line, and
+// its alert was said again once the line came back. The names read keeps its set while the other
+// read runs: its line stays drawn, as it was, with the focus on its Retry.
+test("a failed names read's line stays drawn, with the focus on its Retry, while the failed asks read runs again", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(serverDown());
+  const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
+  const out = Promise.withResolvers<never>();
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
+      ["asks", KEY],
+    ]);
+    const { container } = body.view;
+    await failedLines(container, 2, "asks and names");
+    await waitFor(
+      () =>
+        expect(focusAt(container), "the page did not open on the asks' Retry").toBe(
+          onRetryOf(STATE_LINES.asks_unreadable)
+        ),
+      OWN_WORDS
+    );
+    await framesPass();
+    const line = failedLineSaying(container, STATE_LINES.names_unreadable);
+    const retry = retryOfLine(container, STATE_LINES.names_unreadable);
+    const alert = line.querySelector('[role="alert"]');
+    await act(async () => retry.focus());
+    expect(focusAt(container), "the names' Retry took no focus").toBe(
+      onRetryOf(STATE_LINES.names_unreadable)
+    );
+
+    // An event's refresh of the asks, which runs their read again and leaves it out.
+    asks.mockReturnValueOnce(out.promise as never);
+    await act(async () => {
+      void body.client.invalidateQueries({ queryKey: ["asks", KEY] });
+    });
+    await waitFor(
+      () => expect(asks.mock.calls.length, "the asks read did not run again").toBe(2),
+      OWN_WORDS
+    );
+    expect(
+      body.client.getQueryState(["asks", KEY])?.status,
+      "the asks read running again is not pending"
+    ).toBe("pending");
+    await framesPass();
+    expect(line.isConnected, "the names' line left the page while the asks read ran again").toBe(
+      true
+    );
+    expect(
+      focusAt(container),
+      "the focus left the names' Retry while the asks read ran again"
+    ).toBe(onRetryOf(STATE_LINES.names_unreadable));
+    expect(
+      line.querySelector('[role="alert"]'),
+      "the names' alert was drawn again, which says a failure again that came only once"
+    ).toBe(alert);
+    expect(
+      retry.getAttribute("aria-busy"),
+      "the names' Retry reads busy while only the asks read runs"
+    ).toBeNull();
+    expect(names.mock.calls.length, "the names were read again while the asks read ran").toBe(1);
+  } finally {
+    await act(async () => out.resolve([] as never));
+    asks.mockRestore();
+    names.mockRestore();
+  }
+});
+
 /** Every preset that draws a view in the outline's place, read from the stage's own slots
  *  (`VIEW_SLOTS`), so a view added there is a view these cases cover. */
 const VIEW_PRESETS: readonly Preset[] = PRESET_ORDER.filter(

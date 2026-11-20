@@ -71,11 +71,12 @@ import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
  * was pressed on, until the reader's next key or move.
  *
  * The page opens with the focus on the first open question that waits on the reader, its path
- * unfolded and its row in the viewport, and on the outline's first row where none does; where a
- * read the rows come from stood failed as the reads settled, it opens on that read's Retry, over
- * the tree, since the question that waits may be what the read failed to bring. A write from the
- * line at the foot takes the reader to what they wrote once its read has drawn it, its branch
- * unfolded (`outline-writer.tsx`'s `Landing`).
+ * unfolded and its row in the viewport, whatever reads failed. Where none is drawn and a read the
+ * rows come from stood failed as the reads settled, it opens on a failed read's Retry, over the
+ * tree, since the question that waits may be what the read failed to bring: the asks' where they
+ * failed, which the questions come from, else the first such read's. Where none of those is, it
+ * opens on the outline's first row. A write from the line at the foot takes the reader to what
+ * they wrote once its read has drawn it, its branch unfolded (`outline-writer.tsx`'s `Landing`).
  *
  * Below 1024 px the page with no filter on is read one node at a time: the path down to the node
  * the reader is on is a breadcrumb, and the outline draws that node and one level below it, and
@@ -127,9 +128,10 @@ export function IssueTree({
   /** Each read the tree's rows or their names come from that stands failed
    *  (`outline-reads.ts`), in the order the page gives them: each is drawn as its line, with a
    *  Retry that asks that read alone again, over the tree and never in it (`FailedReadLine`).
-   *  The rows the reads hold stay drawn under them. Where one the rows come from stands failed
-   *  as the reads settle (`readsSettled`), the page opens on the first such line's Retry. None
-   *  unless the page gives them. */
+   *  The rows the reads hold stay drawn under them. Where no question that waits on the reader
+   *  is drawn as the reads settle (`readsSettled`) and one the rows come from stands failed, the
+   *  page opens on a line's Retry: the asks' line's where it is one of them (`bringsQuestions`),
+   *  else the first such line's. None unless the page gives them. */
   failedReads?: readonly FailedRead[];
   /** Whether the preset or its query filters the tree (`presets.ts`'s `PresetView.filtering`):
    *  while one does, every branch of the view it left is drawn open, and while nothing filters
@@ -228,10 +230,13 @@ export function IssueTree({
   const reader = useQuery(whoAmIQuery()).data?.login;
   const body = useRef<HTMLDivElement | null>(null);
   const crumbLine = useRef<HTMLParagraphElement | null>(null);
-  // The failed reads' lines over the tree, and which of them is the first read the rows come
-  // from, whose Retry the page opens on (`opening`): -1 where none of them is.
+  // The failed reads' lines over the tree, and the one whose Retry the page opens on where no
+  // question that waits on the reader is drawn (`opening`): the asks', which the questions come
+  // from, where it is one of them, else the first whose read the rows come from; -1 where none
+  // of them is.
   const lines = useRef<HTMLDivElement | null>(null);
-  const firstFailed = failedReads.findIndex((read) => read.placesRows);
+  const asksLine = failedReads.findIndex((read) => read.bringsQuestions);
+  const retryLine = asksLine !== -1 ? asksLine : failedReads.findIndex((read) => read.placesRows);
   const reportHere = useCallback((line: string) => {
     if (line === "") {
       setReport(undefined);
@@ -802,13 +807,13 @@ export function IssueTree({
   // is no page opening on what waits: it opens on the branch's first row, the node itself,
   // where it stands, since going to a question would leave the zoom for one outside the branch,
   // drawing every branch while the toggle read on, and below 1024 px zoom deeper for one inside
-  // it. Where a read the rows come from stood failed as the reads settled, the opening lands on
-  // the first such read's Retry instead (below). `row` is the row the opening last focused, or
-  // the question's row or the Retry from when it lands there, whose landing (`landing`, with the
-  // focus it found) tells whose the focus is until its frame comes; `next` is the row whose
-  // focus it has asked of the next frame and not given yet, `question` the question it opened
-  // on, `placed` the node of the first row it opened on, and `failed` whether a read the rows
-  // come from stood failed as the reads settled.
+  // it. Where no question that waits on the reader is drawn as the reads settle and a read the
+  // rows come from stands failed, the opening lands on a failed read's Retry instead (below).
+  // `row` is the row the opening last focused, or the question's row or the Retry from when it
+  // lands there, whose landing (`landing`, with the focus it found) tells whose the focus is until
+  // its frame comes; `next` is the row whose focus it has asked of the next frame and not given
+  // yet, `question` the question it opened on, `placed` the node of the first row it opened on,
+  // and `failed` whether it went to a failed read's Retry as the reads settled.
   const opening = useRef<{
     done: boolean;
     failed?: boolean;
@@ -834,21 +839,32 @@ export function IssueTree({
       return;
     }
     if (!readsSettled) return;
-    // Where a read the rows come from stood failed as the reads settled, the question that waits
-    // on the reader may be one it failed to bring, so the page does not open on the first row as
-    // if none waited: it opens on the first such read's Retry, over the tree, as the stage gives
-    // a view's failed read's Retry the focus, in the frame after it is drawn (`landOnRow`), and
-    // the opening is done once the Retry holds the focus. Whether one stood failed is read once,
-    // at the settling, so a read that fails later moves no focus. A line that leaves the page
-    // before its frame comes, its read answered, hands the opening on: to the Retry of the next
-    // line whose read the rows come from, where another such read still stands failed, and to the
-    // question or the first row the reads now draw where none does. The names place no row, so a
-    // failed names read changes nothing here; each line is drawn in the order the reads are
-    // given, one Retry each.
-    held.failed ??= firstFailed !== -1;
+    // The question that waits on the reader, which the page opens on wherever the tree holds it,
+    // whatever reads failed: the one it opened on, or the first in the outline's order where it
+    // has opened on none and has placed no first row. A tree drawn again zoomed to Focus
+    // branch's node opens on none (above).
+    const question =
+      held.question ??
+      (branchAtMount.current === undefined && held.placed === undefined
+        ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)?.id
+        : undefined);
+    // Where none is drawn as the reads settle and a read the rows come from stands failed, the
+    // question that waits on the reader may be one it failed to bring, so the page does not open
+    // on the first row as if none waited: it opens on the Retry of the asks' line where they
+    // stand failed, since the questions come from them and none can be known, else of the first
+    // line whose read the rows come from, over the tree, as the stage gives a view's failed
+    // read's Retry the focus, in the frame after it is drawn (`landOnRow`), and the opening is
+    // done once the Retry holds the focus. Whether it goes to a Retry is read once, at the
+    // settling, so a read that fails later moves no focus. A line that leaves the page before its
+    // frame comes, its read answered, hands the opening on: to the Retry of the next such line,
+    // where another read the rows come from still stands failed, and to the question or the
+    // first row the reads now draw where none does. The names place no row, so a failed names
+    // read changes nothing here; each line is drawn in the order the reads are given, one Retry
+    // each.
+    held.failed ??= question === undefined && retryLine !== -1;
     const retry =
-      held.failed && firstFailed !== -1
-        ? lines.current?.querySelectorAll<HTMLElement>(FAILED_READ_RETRY)[firstFailed]
+      held.failed && retryLine !== -1
+        ? lines.current?.querySelectorAll<HTMLElement>(FAILED_READ_RETRY)[retryLine]
         : undefined;
     if (retry !== undefined) {
       // Its landing still waits for its frame.
@@ -866,11 +882,6 @@ export function IssueTree({
       };
       return;
     }
-    const question =
-      held.question ??
-      (branchAtMount.current === undefined && held.placed === undefined
-        ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)?.id
-        : undefined);
     const questionRow =
       question === undefined
         ? undefined
@@ -959,7 +970,7 @@ export function IssueTree({
       openingRow.current = undefined;
     });
     held.next = { frame, row };
-  }, [firstFailed, goToNode, readsSettled, root, rootRow, rows, targetId, unfoldTo]);
+  }, [goToNode, readsSettled, retryLine, root, rootRow, rows, targetId, unfoldTo]);
 
   // A read can answer without the node whose row holds the focus - a comment deleted - and the
   // row then leaves the tree with the focus, which the browser drops to the page's body: the
