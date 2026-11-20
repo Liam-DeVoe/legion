@@ -256,9 +256,7 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 	for _, task := range stored.Tasks {
 		block := plan.Task{ID: task.Task, Needs: task.Needs, PartOf: task.PartOf, Owner: task.OwnerRole, Merges: task.Merges, Text: task.BlockText}
 		if !task.StepsByDefault {
-			for _, step := range stored.Steps[task.Task] {
-				block.Steps = append(block.Steps, plan.Step{Role: step.Role, Key: step.AgentKey})
-			}
+			block.Steps = namedSteps(stored.Steps[task.Task])
 		}
 		held.Tasks = append(held.Tasks, block)
 	}

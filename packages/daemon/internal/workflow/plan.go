@@ -39,21 +39,8 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	if w.Version.Source == record.PlanSourceOwner {
 		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
-	steps := make([]plan.Step, len(w.Steps))
-	for i, step := range w.Steps {
-		steps[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
-	}
-	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: stepWords(steps)}}
+	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps))}}
 	return node
-}
-
-// stepWords is steps as a plan writes them, each `role` or `role:key`.
-func stepWords(steps []plan.Step) []string {
-	words := make([]string, len(steps))
-	for i, step := range steps {
-		words[i] = step.String()
-	}
-	return words
 }
 
 // passOverEarlierOwners deletes each plan of issue that an earlier owner gave, before its first

@@ -76,16 +76,23 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 	}
 	task := stored.Tasks[0]
 	steps := stored.Steps[task.Task]
-	named := make([]plan.Step, len(steps))
-	for i, step := range steps {
-		named[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
-	}
-	line := plan.Line(named, builtinDeployment)
+	line := plan.Line(namedSteps(steps), builtinDeployment)
 	if at := slices.Index(line, ""); at >= 0 {
 		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
 	}
 	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place,
 		StoppedReason: task.StoppedReason, Version: stored.Version}, nil
+}
+
+// namedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
+// names: what a walk's line is read from (plan.Line), what its plan node and a started worker's
+// task write (plan.Words) and what a later version is compared with (heldPlan).
+func namedSteps(steps []record.PlanStep) []plan.Step {
+	named := make([]plan.Step, len(steps))
+	for i, step := range steps {
+		named[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
+	}
+	return named
 }
 
 // PlaceOf is where the task stands while its issue stands in p: the step of the line that runs
