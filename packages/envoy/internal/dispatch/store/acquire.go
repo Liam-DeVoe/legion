@@ -598,8 +598,13 @@ const idleInTransactionParam = "idle_in_transaction_session_timeout"
 // lockTimeoutParam is the session setting Postgres refuses a statement's wait for a lock by once
 // the wait has lasted that long (lock_not_available, 55P03), which the request pool's connections
 // carry (configurePool) and each of its transactions sets for itself (Pool.begin), at the write
-// lock bound (lockWaitDefault).
+// lock bound (lockWaitDefault), and every other pool's connections carry at none
+// (lockTimeoutNone).
 const lockTimeoutParam = "lock_timeout"
+
+// lockTimeoutNone is lockTimeoutParam's value that bounds no lock wait, which every pool but the
+// request pool asks for as a startup parameter (configurePool).
+const lockTimeoutNone = "0"
 
 // idleInTransactionSetting is the idle bound (requestIdleInTransaction) as idleInTransactionParam's
 // value: a count of milliseconds, the setting's own unit.
@@ -610,10 +615,11 @@ func idleInTransactionSetting() string {
 // configurePool names config's connections dispatch-<name> in application_name
 // (applicationNamePrefix), bounds an idle transaction on them where every transaction of the pool
 // can take that bound (idleInTransactionParam; the comment below names those pools), bounds every
-// lock wait of the request pool's connections at the write lock bound (lockTimeoutParam), and sets
-// the pool's acquire tracer, bounded at bound (zero is none) and composed with any tracer config
-// already carries. A configuration copied from another pool's is re-configured from that pool's
-// original tracer, not stacked on its acquire tracer.
+// lock wait of the request pool's connections at the write lock bound and asks for no bound on
+// every other pool's (lockTimeoutParam), and sets the pool's acquire tracer, bounded at bound
+// (zero is none) and composed with any tracer config already carries. A configuration copied
+// from another pool's is re-configured from that pool's original tracer, not stacked on its
+// acquire tracer.
 func configurePool(config *pgxpool.Config, name string, bound time.Duration) *acquireTracer {
 	inner := config.ConnConfig.Tracer
 	if configured := acquireTracerOf(inner); configured != nil {
@@ -666,14 +672,21 @@ func configurePool(config *pgxpool.Config, name string, bound time.Duration) *ac
 	// is a startup parameter, so it is the session's reset value, which RESET ALL and DISCARD ALL
 	// give back (pgmigrate.ResetSession); Postgres refuses a connection whose value it cannot take,
 	// and requireLockBound refuses one whose session does not carry it, such as a session a pooler
-	// opened without the parameter. No other pool carries it: the bound is a request's, and their
-	// work keeps the waits it had. A connection string that sets the parameter itself is replaced
-	// either way, as the idle bound is.
+	// opened without the parameter. Every other pool's connections ask for no bound,
+	// lock_timeout = 0 (lockTimeoutNone), rather than leave the parameter out: the bound is a
+	// request's, and their work keeps the waits it had. A startup parameter outranks a setting of
+	// the database role or of the database (ALTER ROLE ... SET lock_timeout, ALTER DATABASE ... SET
+	// lock_timeout), which a deployment behind a pooler that drops startup parameters sets for the
+	// request pool's sake (cmd/dispatch/README.md), and every pool connects as the one login
+	// DATABASE_URL names, so a connection that asked for nothing would wait under that setting. A
+	// pooler that drops the parameter drops this one too, and the setting then reaches every pool
+	// (the README says what each pool's work does when Postgres refuses its wait). A connection
+	// string that sets the parameter itself is replaced either way, as the idle bound is.
 	switch name {
 	case RequestsPool:
 		config.ConnConfig.RuntimeParams[lockTimeoutParam] = lockWaitDefault
 	default:
-		delete(config.ConnConfig.RuntimeParams, lockTimeoutParam)
+		config.ConnConfig.RuntimeParams[lockTimeoutParam] = lockTimeoutNone
 	}
 	if inner == nil {
 		config.ConnConfig.Tracer = tracer
@@ -702,8 +715,9 @@ func BoundAcquires(config *pgxpool.Config, bound time.Duration) {
 const lockTimeoutRead = `select setting from pg_settings where name = 'lock_timeout'`
 
 // requireLockBound refuses conn, a new connection of a pool whose configuration asks for a
-// lock_timeout (configurePool: the request pool's), unless its session waits for a lock under a
-// bound no longer than the one asked for. Postgres applies a startup parameter or refuses the
+// lock_timeout bound (configurePool: the request pool's; every other pool asks for none,
+// lockTimeoutNone, and is not checked), unless its session waits for a lock under a bound no
+// longer than the one asked for. Postgres applies a startup parameter or refuses the
 // connection, but a pooler between this process and Postgres can drop the parameter and hand over
 // a session that waits without limit, and its statements outside a transaction would then wait for
 // as long as a lock's holder held it with nothing to say so. Such a connection is refused here, at
@@ -714,7 +728,7 @@ const lockTimeoutRead = `select setting from pg_settings where name = 'lock_time
 // not per request.
 func requireLockBound(ctx context.Context, conn *pgx.Conn) error {
 	asked, ok := conn.Config().RuntimeParams[lockTimeoutParam]
-	if !ok {
+	if !ok || asked == lockTimeoutNone {
 		return nil
 	}
 	bound, err := time.ParseDuration(asked)
