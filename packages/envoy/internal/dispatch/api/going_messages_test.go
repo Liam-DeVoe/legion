@@ -398,16 +398,42 @@ func TestAMessageIsARowOfAPlan(t *testing.T) {
 			sendTo("s-stopped", "The build is green: stored.", "aside"),
 			sendTo("s-btw", "The build is green: refused.", "steer"))
 		done := rig.approved(t, run)
-		var said []string
-		for _, row := range done.Rows {
-			if row.Result == nil || row.Result.Delivery == nil {
-				said = append(said, "nothing")
-				continue
-			}
-			said = append(said, *row.Result.Delivery)
-		}
-		if want := []string{goingDeliverySent, goingDeliveryQueued, goingDeliveryRefused}; !slices.Equal(said, want) {
+		if said, want := rowDeliveries(done), []string{goingDeliverySent, goingDeliveryQueued, goingDeliveryRefused}; !slices.Equal(said, want) {
 			t.Errorf("the rows' results say %v, want %v", said, want)
 		}
 	})
+
+	t.Run("a send whose answer was lost after its commit says what its delivery record says", func(t *testing.T) {
+		listener.session("s-lost-live", "lost live", "aside", "btw", "steer")
+		listener.stoppedSession("s-lost-stopped", "lost stopped")
+		for _, session := range []string{"s-lost-live", "s-lost-stopped"} {
+			// The route stores the message and makes its first attempt, and its answer is lost:
+			// the call is answered from what its landing recorded, before that attempt.
+			rig.hooks.set(t, http.MethodPost, "/api/v1/agents/"+session+"/messages", func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+				inner.ServeHTTP(httptest.NewRecorder(), r)
+				writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "the send committed and its answer was lost")
+			})
+		}
+		run, _ := rig.planned(t, "tell the two sessions their answers were lost", "",
+			sendTo("s-lost-live", "The answer was lost: reached.", "aside"),
+			sendTo("s-lost-stopped", "The answer was lost: stored.", "aside"))
+		done := rig.approved(t, run)
+		if said, want := rowDeliveries(done), []string{goingDeliverySent, goingDeliveryQueued}; !slices.Equal(said, want) {
+			t.Errorf("the rows' results say %v, want %v: the stopped session's message is stored for it, not sent", said, want)
+		}
+	})
+}
+
+// rowDeliveries is what each row of plan says became of its message, "nothing" for a row that says
+// nothing.
+func rowDeliveries(plan goingPlanAnswer) []string {
+	said := make([]string, 0, len(plan.Rows))
+	for _, row := range plan.Rows {
+		if row.Result == nil || row.Result.Delivery == nil {
+			said = append(said, "nothing")
+			continue
+		}
+		said = append(said, *row.Result.Delivery)
+	}
+	return said
 }

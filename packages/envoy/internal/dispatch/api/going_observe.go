@@ -153,11 +153,9 @@ type goingObservation struct {
 	delivery  *goingDelivery
 	unchanged bool
 	stood     json.RawMessage
-	// ownerUnnamed is an upload whose route names no owner the read before could read
-	// (uploadedOver), and held the document the read before found under the upload's name, with
-	// its versions.
-	ownerUnnamed bool
-	held         *model.Artifact
+	// held is the document an upload's read before found under the upload's name, with its
+	// versions (uploadedOver).
+	held *model.Artifact
 	// token is a document's token as the read that saw its value answered it, which a document
 	// edit's route answers too, for the document it found and the one it left (editArtifactResponse).
 	token string
@@ -196,6 +194,7 @@ var goingWriteFields = map[string]string{
 	"dispatch_ask":               "ask",
 	"dispatch_resolve_ask":       "state",
 	"dispatch_resolve_comment":   "resolved",
+	"dispatch_reopen_comment":    "resolved",
 	"dispatch_follow":            "following",
 	"dispatch_comment":           "comment",
 	"dispatch_suggest":           "suggestion",
@@ -332,8 +331,9 @@ func (o goingObserver) askResolved(ctx context.Context, prepared goingPrepared, 
 	return o.askState(ctx, prepared.call.path["id"])
 }
 
-// commentResolvedBy reads the thread's resolution before it is resolved, and after it what the
-// resolve route answered.
+// commentResolvedBy reads the thread's resolution before it is resolved or reopened, and after it
+// what the resolve or the reopen route answered: each answers the resolution it left and the one
+// it found (resolvedComment).
 func (o goingObserver) commentResolvedBy(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
 	if answer == nil {
 		return o.commentResolved(ctx, prepared.call.path["id"])
@@ -696,13 +696,12 @@ type goingUploadBefore struct {
 // route writes to (goingRouteUploadOwner) whose name or slug the name is, as the upload's own
 // lookup finds it (findArtifactByNameOrSlug), at its latest version, and no value where the owner
 // holds none, so the upload makes one. It is read from the store, as rankPlace is, since no route
-// answers a document by the name an upload gives it. A route whose owner it cannot name is marked
-// so (ownerUnnamed): that owner may hold a document of the name, which nothing read rules out.
+// answers a document by the name an upload gives it. A route whose owner it cannot name reads
+// nothing.
 func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared, fields []string, issue string) (goingObservation, error) {
 	observed := goingObservation{target: goingTargetOfPath(prepared.call.path), fields: fields, issue: issue}
 	owner, known := goingRouteUploadOwner(prepared.route, prepared.call.path)
 	if !known {
-		observed.ownerUnnamed = true
 		return observed, nil
 	}
 	name := strings.TrimSpace(goingText(prepared.arguments, "name"))
@@ -940,10 +939,10 @@ func (o goingObserver) commentResolved(ctx context.Context, id string) (goingObs
 	return observed, nil
 }
 
-// goingCommentResolved is what a resolve found and left of the thread, read off its route's
-// answer (resolvedComment): the resolution it left (value) and the one it found under the
-// comment's lock (stood). An answer that does not say what the resolve found is the value after
-// unread, so the undo reopens nothing.
+// goingCommentResolved is what a resolve or a reopen found and left of the thread, read off its
+// route's answer (resolvedComment): the resolution it left (value) and the one it found under the
+// comment's lock (stood). An answer that does not say what the write found is the value after
+// unread, so the undo writes nothing back.
 func goingCommentResolved(answer []byte, before goingObservation) (goingObservation, error) {
 	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
 	var resolved struct {
@@ -951,10 +950,10 @@ func goingCommentResolved(answer []byte, before goingObservation) (goingObservat
 		Previous *goingCommentResolution `json:"previous"`
 	}
 	if err := json.Unmarshal(answer, &resolved); err != nil {
-		return observed, fmt.Errorf("read the resolve's answer: %w", err)
+		return observed, fmt.Errorf("read the thread's answer: %w", err)
 	}
 	if resolved.Previous == nil {
-		return observed, errors.New("the resolve's answer does not say how it found the thread")
+		return observed, errors.New("the thread's answer does not say how the write found it")
 	}
 	left, found := resolved.goingCommentResolution, *resolved.Previous
 	for _, resolution := range []*goingCommentResolution{&left, &found} {

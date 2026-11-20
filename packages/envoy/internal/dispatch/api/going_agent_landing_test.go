@@ -1,9 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -201,4 +205,91 @@ func TestALandedRequestIsNotSentAgain(t *testing.T) {
 			t.Fatal("the run's issues hold the issue its refused request named")
 		}
 	})
+}
+
+// goingAnswerMembers is the members of the JSON object encoded, its numbers as written.
+func goingAnswerMembers(t *testing.T, encoded []byte) map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var members map[string]any
+	if err := decoder.Decode(&members); err != nil {
+		t.Fatalf("decode %s as a JSON object: %v", encoded, err)
+	}
+	return members
+}
+
+// TestGoingLandingRecordsWhatItsRouteAnsweredOnceTheWritePhaseRan: an issue's update and an ask's
+// open, each the approved row of a run's plan that its call writes through the command bar's
+// in-process path, record beside their landing the status and the value their route answers that
+// very request, the members its write phase fills in included - the last_seq the update's events
+// leave, and the id of the event that opened the ask - never what those members held before the
+// Commit ran. The advice the route answers beside the value is no part of what its transaction
+// found and left, and no landing records it.
+func TestGoingLandingRecordsWhatItsRouteAnsweredOnceTheWritePhaseRan(t *testing.T) {
+	rig := newGoingAgentRig(t, nil)
+	asked := rig.issue(t, "Asked through the bar")
+	for _, tc := range []struct {
+		name, tool string
+		// filled is the member of the answer the write phase fills in.
+		filled string
+		// setup is the write's arguments and the method and path of its request whose answer
+		// is recorded.
+		setup func(t *testing.T) (map[string]any, string, string)
+	}{
+		{
+			name: "an issue's update", tool: "dispatch_issue_update", filled: "last_seq",
+			setup: func(t *testing.T) (map[string]any, string, string) {
+				issue := rig.issue(t, "Titled before the bar")
+				return map[string]any{"issue": issue, "title": "Titled by the bar"}, http.MethodPatch, "/api/v1/issues/" + issue
+			},
+		},
+		{
+			name: "an opened ask", tool: "dispatch_ask", filled: "opened_event_id",
+			setup: func(t *testing.T) (map[string]any, string, string) {
+				return map[string]any{"issue": asked, "question": "Recorded as it was answered?"}, http.MethodPost, "/api/v1/issues/" + asked + "/asks"
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			arguments, method, path := tc.setup(t)
+			run, token := rig.working(t, "alice", tc.name)
+			rig.approve(t, run, tc.tool, arguments)
+			var answer *httptest.ResponseRecorder
+			rig.hooks.set(t, method, path, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+				answer = httptest.NewRecorder()
+				inner.ServeHTTP(answer, r)
+				maps.Copy(w.Header(), answer.Header())
+				w.WriteHeader(answer.Code)
+				_, _ = w.Write(answer.Body.Bytes())
+			})
+			called, err := rig.call(goingRouteCall(run, token, 1, 1, tc.tool, arguments))
+			if err != nil || called.Status >= http.StatusMultipleChoices || answer == nil {
+				t.Fatalf("the call answered %d %s, %v, with %s %s sent through the route table: %v; want it landed through that request",
+					called.Status, called.Body, err, method, path, answer != nil)
+			}
+			var status int
+			var body []byte
+			if err := rig.database.Pool.QueryRow(context.Background(), `
+				select coalesce((answer->>'status')::int, 0), answer->'body' from going_landings
+				where run_id = $1::uuid and phase = 'do' and step = 1 and call = 1 and method = $2 and path = $3
+			`, run, method, path).Scan(&status, &body); err != nil {
+				t.Fatalf("read the landing of %s %s: %v", method, path, err)
+			}
+			if status != answer.Code {
+				t.Fatalf("the landing recorded status %d, the route answered %d", status, answer.Code)
+			}
+			answered := goingAnswerMembers(t, answer.Body.Bytes())
+			delete(answered, "advice")
+			held := goingAnswerMembers(t, body)
+			filled, _ := held[tc.filled].(json.Number)
+			if value, err := filled.Int64(); err != nil || value <= 0 || filled != answered[tc.filled] {
+				t.Fatalf("the landing recorded %s %v, the route answered %v: want the value the write phase filled in",
+					tc.filled, held[tc.filled], answered[tc.filled])
+			}
+			if !reflect.DeepEqual(held, answered) {
+				t.Fatalf("the landing recorded %s, want what the route answered, %s", body, answer.Body.String())
+			}
+		})
+	}
 }

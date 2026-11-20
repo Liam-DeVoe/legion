@@ -10,8 +10,8 @@ package api
 //     found, field by field, only where the value now is the one the call left; a later value
 //     another writer left is kept and named, with who wrote the item's newest event;
 //   - reverse calls the row's reverse route (goingToolRoute.UndoRoutes): a claim released or taken
-//     back, a follow unfollowed, a resolved thread reopened, an opened ask retracted, and a
-//     suggestion of the run that is still open rejected;
+//     back, a follow unfollowed, a resolved thread reopened and a reopened one resolved again, an
+//     opened ask retracted, and a suggestion of the run that is still open rejected;
 //   - close_created closes the issue the call created, with no message and no comment;
 //   - not_undone names the call "sent, not undone": a message, a broadcast, a review.
 //
@@ -282,8 +282,9 @@ func (u goingUndoer) undo(ctx context.Context, write goingLandedWrite) goingUndo
 		line.Item = cmp.Or(undone.target, line.Item)
 		switch {
 		case err != nil:
-			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoAfterUnread, Message: fmt.Sprintf(
-				"what this change left cannot be read off its record (%v), so nothing was put back: read the item, and change it by hand to undo this change", err)}
+			slog.Warn("dispatch: read what a command-bar change left off its record", "run", write.key.run, "tool", write.tool, "error", err)
+			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoAfterUnread,
+				Message: "what this change left cannot be read off its record, so nothing was put back: read the item, and change it by hand to undo this change"}
 			return goingLineOf(line, undone.fields)
 		case undone.beforeUnread:
 			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoBeforeUnread,
@@ -312,13 +313,15 @@ func (u goingUndoer) kind(ctx context.Context, line goingUndoLine, undone goingU
 		return u.follow(ctx, line, undone)
 	case line.Undo == goingUndoReverse && undone.tool == "dispatch_resolve_comment":
 		return u.comment(ctx, line, undone)
+	case line.Undo == goingUndoReverse && undone.tool == "dispatch_reopen_comment":
+		return u.reopened(ctx, line, undone)
 	case line.Undo == goingUndoReverse && (undone.tool == "dispatch_ask" || undone.tool == "dispatch_request_approval"):
 		return u.retract(ctx, line, undone)
 	case line.Undo == goingUndoCloseCreated && undone.tool == "dispatch_issue":
 		return u.closeCreated(ctx, line, undone)
 	}
 	line.Outcome = goingWriteOutcome{Status: http.StatusNotImplemented, Code: codeGoingUndoUnserved,
-		Message: fmt.Sprintf("%s states a %s undo, which this server has no way to run, so nothing was undone", undone.tool, line.Undo)}
+		Message: "Dispatch has no way to run this change's undo, so nothing was undone"}
 	return goingLineOf(line, undone.fields), nil
 }
 
@@ -1110,6 +1113,37 @@ func (u goingUndoer) comment(ctx context.Context, line goingUndoLine, undone goi
 	reversed.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "reversed"}
 	return line, &goingUndoSend{route: goingCommentReopenRoute, values: map[string]string{"id": undone.target},
 		condition: &goingCondition{WriteBack: true, ExpectResolvedAt: &resolvedAt}, landed: goingLineOf(reversed, undone.fields),
+		changed: []string{codeCommentChanged}}
+}
+
+// reopened undoes a reopen by resolving the thread again, while it is still open as the run left
+// it: the resolve expects an open thread (goingCondition.ExpectOpen), decided under the comment's
+// lock, so a thread another writer resolved since keeps their resolution, the route's 409
+// COMMENT_CHANGED being the thread changed. A reopen that found the thread open changed nothing,
+// and is undone by nothing.
+func (u goingUndoer) reopened(ctx context.Context, line goingUndoLine, undone goingUndone) (goingUndoLine, *goingUndoSend) {
+	var before, after goingCommentResolution
+	if json.Unmarshal(undone.before, &before) != nil || json.Unmarshal(undone.after, &after) != nil {
+		line.Outcome = goingFailed(errors.New("the change's record holds no reopen to undo"))
+		return goingLineOf(line, undone.fields), nil
+	}
+	if !before.Resolved || after.Resolved {
+		line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "the thread was open before this change, so there is nothing to resolve"}
+		return goingLineOf(line, undone.fields), nil
+	}
+	current, err := u.observer.commentResolved(ctx, undone.target)
+	if err != nil {
+		line.Outcome = goingFailed(err)
+		return goingLineOf(line, undone.fields), nil
+	}
+	if now, _ := current.value.(goingCommentResolution); now.Resolved {
+		line.Outcome = goingChanged([]string{"the thread is resolved now, by another writer after this run, so it is kept"}, nil)
+		return goingLineOf(line, undone.fields), nil
+	}
+	reversed := line
+	reversed.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "reversed"}
+	return line, &goingUndoSend{route: goingCommentResolve, values: map[string]string{"id": undone.target},
+		condition: &goingCondition{WriteBack: true, ExpectOpen: true}, landed: goingLineOf(reversed, undone.fields),
 		changed: []string{codeCommentChanged}}
 }
 

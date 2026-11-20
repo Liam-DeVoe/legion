@@ -6,13 +6,14 @@ package api
 // same landings as every call of the run (going_agent_call.go), as the person the run's grant
 // resolves to at that call. The server holds each such call to its row (rowGate): a write that
 // names no row, or a row with another tool or other arguments, or a row that is not approved, is
-// refused WRITE_NOT_APPROVED, so a run writes nothing outside its approved rows. Before a row's
-// first write its item is read again as the person: a row whose item changed after its approval -
-// another value, or another holder of its issue's claim - waits for the person again, ROW_WAITS,
-// and a row whose needed row failed or was skipped is skipped, ROW_SKIPPED; the rows that need
-// neither run on. A row's call key is kept on the row, so a second try of that key - the agent
-// died after the call, or the server between the write's commit and its answer - answers what the
-// first landed and sends nothing twice, and no other key runs the row.
+// refused WRITE_NOT_APPROVED, so a run writes nothing outside its approved rows. Before each write
+// of a row its item is read again as the person - before its first try, and before a second try
+// of its call key that finds nothing of that key landed, which writes too: a row whose item changed
+// after its approval - another value, or another holder of its issue's claim - waits for the person
+// again, ROW_WAITS, and a row whose needed row failed or was skipped is skipped, ROW_SKIPPED; the
+// rows that need neither run on. A row's call key is kept on the row, so a second try of that key -
+// the agent died after the call, or the server between the write's commit and its answer - answers
+// what the first landed and sends nothing twice, and no other key runs the row.
 //
 // Auto-review (going_modes.go) is a review call of the agent's (agentwire.KindReview), once its
 // model call named the rows the person's words ask for: the server lets through those its mode
@@ -26,6 +27,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -41,9 +43,13 @@ func goingRowNotApproved(tool, why string) *agentwire.Error {
 // rowGate holds a route call of a write tool to the row of its run's latest plan it names, and
 // answers the row with no refusal where the call may send: an approved row whose item reads as it
 // did at its approval and whose needed rows ran, which it marks running under the call's key; or a
-// row that key already ran, whose second try answers what it landed. A row the key marked waiting
-// or skipped is answered that refusal again. doer reads the row's item as the run's person (login).
-func (a *AgentListener) rowGate(ctx context.Context, request agentwire.CallRequest, login string, doer GoingDoer) (goingPlanRowStored, *agentwire.Error) {
+// row that key already ran, whose second try answers what it landed, and whose item is read again
+// first where nothing of the key landed (landed), since that try writes (rowItemChanged). A row the
+// key marked waiting or skipped is answered that refusal again. doer reads the row's item as the
+// run's person (login).
+func (a *AgentListener) rowGate(ctx context.Context, request agentwire.CallRequest, login string, doer GoingDoer,
+	landed []*goingLandedRequest,
+) (goingPlanRowStored, *agentwire.Error) {
 	if request.Row == nil {
 		return goingPlanRowStored{}, goingRowNotApproved(request.Tool, "call_tool runs no tool that changes something")
 	}
@@ -70,6 +76,12 @@ func (a *AgentListener) rowGate(ctx context.Context, request agentwire.CallReque
 		if !ours {
 			return row, goingRowNotApproved(request.Tool, fmt.Sprintf("row %d of plan %d ran under another call", row.row, plan.plan))
 		}
+		if goingLastLanded(landed) == nil {
+			// Nothing of the key landed - its earlier try failed in the server, or its route
+			// refused the write or changed nothing - so this try writes, and the row's item is
+			// read again first.
+			return row, a.rowItemChanged(ctx, request, row, login, doer)
+		}
 		return row, nil
 	case "waiting", "skipped":
 		if ours && row.result.Code != "" {
@@ -81,8 +93,8 @@ func (a *AgentListener) rowGate(ctx context.Context, request agentwire.CallReque
 
 // beforeRowWrite is the gate of an approved row's first try: a needed row that failed or was
 // skipped skips it, and one that waits makes it wait; its item read again as the person that no
-// longer reads as it did at its approval makes it wait again, showing the new read; and otherwise
-// it is marked running under the call's key, in a statement that holds the run's lease.
+// longer reads as it did at its approval makes it wait again (rowItemChanged); and otherwise it is
+// marked running under the call's key, in a statement that holds the run's lease.
 func (a *AgentListener) beforeRowWrite(ctx context.Context, request agentwire.CallRequest, plan *goingPlanStored, row goingPlanRowStored,
 	login string, doer GoingDoer,
 ) *agentwire.Error {
@@ -109,18 +121,8 @@ func (a *AgentListener) beforeRowWrite(ctx context.Context, request agentwire.Ca
 			return goingRowNotApproved(request.Tool, fmt.Sprintf("row %d needs row %d, which has not run", row.row, need))
 		}
 	}
-	if row.approval != nil {
-		arguments, err := goingRowArguments(row.arguments)
-		if err != nil {
-			return goingAgentFailed(agentwire.CallCall, err)
-		}
-		// A read the person may no longer make is the write's own to refuse, as its route does.
-		if now, err := a.s.goingReadRow(ctx, doer, login, row.tool, arguments, row.sendIssue()); err == nil && !row.approval.Seen.same(now) {
-			now.Changed = true
-			key.Code, key.Message = agentwire.CodeRowWaits, fmt.Sprintf(
-				"row %d waits for the person's approval again: its item %s changed after they approved it", row.row, now.Item)
-			return a.settleRow(ctx, request, row, "waiting", key, &now)
-		}
+	if refusal := a.rowItemChanged(ctx, request, row, login, doer); refusal != nil {
+		return refusal
 	}
 	tag, err := a.s.deps.Store.Pool.Exec(ctx, `
 		update going_plan_rows set state = 'running', result = $4::jsonb
@@ -139,8 +141,62 @@ func (a *AgentListener) beforeRowWrite(ctx context.Context, request agentwire.Ca
 	return a.refreshPlanState(ctx, request.Run, plan.plan)
 }
 
+// rowItemChanged reads the item of row, an approved row, again as the person (login, through doer)
+// before a write of it, and makes the row wait again, showing the new read, where its item no
+// longer reads as it did at its approval: another value, or another holder of its issue's claim. A
+// read refused as the person (goingReadRefused) is passed over, since the write's own preparation
+// or route refuses it the same, and that refusal is kept on the row; any other failure of the read
+// ends the call failed, since a read that failed is no reason to write unchecked.
+func (a *AgentListener) rowItemChanged(ctx context.Context, request agentwire.CallRequest, row goingPlanRowStored,
+	login string, doer GoingDoer,
+) *agentwire.Error {
+	if row.approval == nil {
+		return nil
+	}
+	arguments, err := goingRowArguments(row.arguments)
+	if err != nil {
+		return goingAgentFailed(agentwire.CallCall, err)
+	}
+	now, err := a.s.goingReadRow(ctx, doer, login, row.tool, arguments, row.sendIssue())
+	switch {
+	case err != nil && goingReadRefused(err):
+		return nil
+	case err != nil:
+		return goingAgentFailed(agentwire.CallCall, fmt.Errorf("read the item of row %d again before its write: %w", row.row, err))
+	case row.approval.Seen.same(now):
+		return nil
+	}
+	now.Changed = true
+	return a.settleRow(ctx, request, row, "waiting", goingRowChanged(request, row.row, now.Item), &now)
+}
+
+// goingReadRefused reports whether err, the error of a row's read again before its write, is a
+// refusal of the person's own call rather than a failure: the tool's schema refusing the row's
+// arguments, or a read refused as the person (4xx) - an item they may no longer read (403, 404), or
+// a call its translation refuses. The write's own preparation or route refuses the same. A failed
+// read - a store error, a route's 5xx - is not one.
+func goingReadRefused(err error) bool {
+	var arguments GoingArgumentError
+	var refused goingRefusal
+	switch {
+	case errors.As(err, &arguments):
+		return true
+	case errors.As(err, &refused):
+		return refused.Status >= http.StatusBadRequest && refused.Status < http.StatusInternalServerError
+	}
+	return false
+}
+
+// goingRowChanged is the record of a row (row) that waits for the person again under request's
+// key, since its item (item) changed after their approval.
+func goingRowChanged(request agentwire.CallRequest, row int, item string) goingRowRecord {
+	return goingRowRecord{Step: request.Step, Call: request.Call, Code: agentwire.CodeRowWaits,
+		Message: fmt.Sprintf("row %d waits for the person's approval again: its item %s changed after they approved it", row, item)}
+}
+
 // settleRow sets row of request's plan to state, waiting or skipped, with record and, for a row
-// that waits again, what it shows now, under the run's lease, and answers the record's refusal.
+// that waits again, what it shows now, under the run's lease, and answers the record's refusal. The
+// row is an approved one, or one request's key ran (rowItemChanged, uploadChanged).
 func (a *AgentListener) settleRow(ctx context.Context, request agentwire.CallRequest, row goingPlanRowStored, state string,
 	record goingRowRecord, shown *goingRowShown,
 ) *agentwire.Error {
@@ -156,9 +212,11 @@ func (a *AgentListener) settleRow(ctx context.Context, request agentwire.CallReq
 	tag, err := a.s.deps.Store.Pool.Exec(ctx, `
 		update going_plan_rows set state = $4, result = $5::jsonb, shown = coalesce($6::jsonb, shown),
 		  approval = case when $4 = 'waiting' then null else approval end
-		where run_id = $1::uuid and plan = $2 and row = $3 and state = 'approved'
+		where run_id = $1::uuid and plan = $2 and row = $3
+		  and (state = 'approved' or (state in ('running', 'done', 'failed')
+		       and (result->>'step')::int = $8 and (result->>'call')::int = $9))
 		  and exists (select 1 from going_runs where id = $1::uuid and lease_token = $7::uuid and state = 'working')
-	`, request.Run, request.Row.Plan, row.row, state, goingRecordJSON(record), shownJSON, request.LeaseToken)
+	`, request.Run, request.Row.Plan, row.row, state, goingRecordJSON(record), shownJSON, request.LeaseToken, request.Step, request.Call)
 	if err != nil {
 		return goingAgentFailed(agentwire.CallCall, err)
 	}
@@ -191,9 +249,10 @@ func (a *AgentListener) refreshPlanState(ctx context.Context, run string, plan i
 // route answered below 300, and failed where it answered a refusal, or where the tool's schema or
 // translation refused it before anything was sent, with what became of the message of a row that
 // sends one (goingRowDelivery). A call that failed in the server, or whose lease is not the run's,
-// keeps nothing: its next try runs the row on under the same key. The record keeps how the row's
-// upload was sent (goingRowUpload), which a second try of the key sends again. A row done carries
-// what its write left to the later rows of its item (carryRowWrite).
+// keeps nothing: its next try runs the row on under the same key. A call that panicked is kept
+// failed (recordRowPanicked). The record keeps how the row's upload was sent (goingRowUpload),
+// which a second try of the key sends again. A row done carries what its write left to the later
+// rows of its item (carryRowWrite).
 func (a *AgentListener) recordRow(ctx context.Context, request agentwire.CallRequest, answer agentwire.CallAnswer, refusal *agentwire.Error) {
 	record := goingRowRecord{Step: request.Step, Call: request.Call}
 	state := "done"
@@ -211,7 +270,7 @@ func (a *AgentListener) recordRow(ctx context.Context, request agentwire.CallReq
 	default:
 		record.Status = answer.Status
 	}
-	record.Delivery = goingRowDelivery(request.Tool, answer, state == "failed")
+	record.Delivery = a.s.goingRowDelivery(ctx, request, answer, state == "failed")
 	if _, err := a.s.deps.Store.Pool.Exec(ctx, `
 		update going_plan_rows set state = $4, result = $5::jsonb || jsonb_strip_nulls(jsonb_build_object('upload', result->'upload'))
 		where run_id = $1::uuid and plan = $2 and row = $3 and state in ('running', 'done', 'failed')
@@ -227,16 +286,78 @@ func (a *AgentListener) recordRow(ctx context.Context, request agentwire.CallReq
 	_ = a.refreshPlanState(ctx, request.Run, request.Row.Plan)
 }
 
+// codeGoingRouteFailed is the code a row is kept failed with, status 500, where its call panicked
+// in the server - its route, or the server's own code around it - and goingRouteFailedText the
+// words its person reads where nothing of the call is known to have landed: a next try of its key
+// then reads the row's item again before it writes, as every try that finds nothing of its key
+// landed does (rowGate).
+const (
+	codeGoingRouteFailed = "GOING_ROUTE_FAILED"
+	goingRouteFailedText = "this change failed in the server, and nothing of it is known to have been written"
+)
+
+// recordRowPanicked keeps on request's row that its call panicked: failed, as a refusal its route
+// answered is kept (recordRow), with status 500, codeGoingRouteFailed and the words of what of the
+// call landed before the panic (goingPanickedText), read off the landings of its key; specs are the
+// requests the call sends, nil where it panicked before it had them. The panic itself is answered
+// and logged with its stack by runCall.
+func (a *AgentListener) recordRowPanicked(ctx context.Context, request agentwire.CallRequest, specs []goingSend) {
+	text := goingRouteFailedText
+	landed, err := a.s.goingCallLandings(ctx, goingCallKey{run: request.Run, step: request.Step, call: request.Call})
+	if err != nil {
+		slog.Error("dispatch: read what a command-bar call that panicked landed", "run", request.Run, "step", request.Step,
+			"call", request.Call, "error", err)
+	} else {
+		text = goingPanickedText(specs, landed)
+	}
+	body, _ := json.Marshal(errorBody{Code: codeGoingRouteFailed, Error: text})
+	a.recordRow(ctx, request, agentwire.CallAnswer{Status: http.StatusInternalServerError, Body: body, ContentType: "application/json"}, nil)
+}
+
+// goingPanickedText is what the row of a call that panicked tells its person, from the requests of
+// its key that landed (landed) among those it sends (specs): that nothing of it is known to have
+// been written; or what was written - each request that landed by its words (goingSend.what), the
+// call's own request as the change itself - and that the rest was not; or that all of it was.
+func goingPanickedText(specs []goingSend, landed []*goingLandedRequest) string {
+	var written []string
+	for index, request := range landed {
+		if request == nil {
+			continue
+		}
+		what := "an earlier part of this change"
+		switch {
+		case index == len(specs)-1:
+			what = "the change itself"
+		case index < len(specs) && specs[index].what != "":
+			what = specs[index].what
+		}
+		written = append(written, what)
+	}
+	switch {
+	case len(written) == 0:
+		return goingRouteFailedText
+	case len(written) == len(specs):
+		return "this change failed in the server after all of it was written"
+	case len(written) == 1:
+		return fmt.Sprintf("this change failed in the server partway: %s was written and the rest was not", written[0])
+	}
+	return fmt.Sprintf("this change failed in the server partway: %s were written and the rest was not", strings.Join(written, " and "))
+}
+
 // rowUpload is how the upload of request's row is sent (goingRowUpload): as a try of its call's
 // key decided it before, or, on that key's first try to reach it, as the upload's read before now
 // finds its name - over the document of that name its owner holds, naming the token of the
 // version it replaces (goingObserver.uploadBase), or as a create alone - kept on the row under the
 // call's key before anything of it is sent. So a second try of the key sends the request the first
-// sent, and answers what that one landed. A document another writer changed after the row's
-// approval made the row wait again at its gate (beforeRowWrite); one changed between that gate and
-// this read lands over the version read here, and one changed after it is refused by the upload's
-// route, 409 PRECONDITION_FAILED.
-func (a *AgentListener) rowUpload(ctx context.Context, request agentwire.CallRequest, prepared goingPrepared, read goingReader) (goingRowUpload, *agentwire.Error) {
+// sent, and answers what that one landed. What the read finds is held to the read the row's
+// approval was made over (uploadChanged): a document made, written or removed under the name after
+// that read makes the row wait again, so an upload is sent over a document only where its approval
+// showed that document at that version, and as a create alone otherwise. A document made after
+// this read is refused by the upload's route, 409 DOCUMENT_EXISTS, and one written after it 409
+// PRECONDITION_FAILED.
+func (a *AgentListener) rowUpload(ctx context.Context, request agentwire.CallRequest, row goingPlanRowStored, prepared goingPrepared,
+	read goingReader,
+) (goingRowUpload, *agentwire.Error) {
 	var decided *goingRowUpload
 	if err := a.s.deps.Store.Pool.QueryRow(ctx, `
 		select result->'upload' from going_plan_rows
@@ -251,6 +372,9 @@ func (a *AgentListener) rowUpload(ctx context.Context, request agentwire.CallReq
 	before, err := observer.observe(ctx, prepared, nil, 0, goingObservation{})
 	if err != nil {
 		return goingRowUpload{}, goingCallRefusal(request.Tool, err)
+	}
+	if refusal := a.uploadChanged(ctx, request, row, before); refusal != nil {
+		return goingRowUpload{}, refusal
 	}
 	upload := goingRowUpload{Over: before.held != nil}
 	if upload.Over {
@@ -278,6 +402,32 @@ func (a *AgentListener) rowUpload(ctx context.Context, request agentwire.CallReq
 		return goingRowUpload{}, goingAgentRefusal(agentwire.CodeCallUnknown, "row %d of plan %d was taken by another call meanwhile", request.Row.Row, request.Row.Plan)
 	}
 	return upload, nil
+}
+
+// uploadChanged holds what the read before an upload finds under its name (before) to the read its
+// row's approval was made over (Seen), as rowItemChanged holds a row's item: a document there now
+// that the approval did not show - made after it, or written to another version - or one it showed
+// and that is gone makes the row wait again, showing what is there now.
+func (a *AgentListener) uploadChanged(ctx context.Context, request agentwire.CallRequest, row goingPlanRowStored,
+	before goingObservation,
+) *agentwire.Error {
+	var shown goingRowShown
+	if row.approval != nil {
+		shown = row.approval.Seen
+	}
+	var now json.RawMessage
+	if before.value != nil {
+		encoded, err := json.Marshal(before.value)
+		if err != nil {
+			return goingAgentFailed(agentwire.CallCall, err)
+		}
+		now = encoded
+	}
+	if goingJSONEqual(shown.Now, now) {
+		return nil
+	}
+	shown.Item, shown.Now, shown.Changed = before.target, now, true
+	return a.settleRow(ctx, request, row, "waiting", goingRowChanged(request, row.row, shown.Item), &shown)
 }
 
 // carryRowWrite moves each later approved row of request's plan on the item, or the issue, that the

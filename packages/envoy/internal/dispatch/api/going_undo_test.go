@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/going/agent/agenttest"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -406,4 +408,172 @@ func TestUndoOfOneRun(t *testing.T) {
 			t.Fatalf("the closed issue holds %d messages, want none", messages)
 		}
 	})
+}
+
+// textOf is the one text query answers off the store.
+func (rig goingPlanRig) textOf(t *testing.T, query string, arguments ...any) string {
+	t.Helper()
+	var text string
+	if err := rig.database.Pool.QueryRow(context.Background(), query, arguments...).Scan(&text); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	return text
+}
+
+// undoneOnce runs change as alice's approved plan, presses Undo on it and answers its one line,
+// failing t unless the line says the change was undone.
+func (rig goingPlanRig) undoneOnce(t *testing.T, words string, change map[string]any) goingUndoLine {
+	t.Helper()
+	tool, _ := change["tool"].(string)
+	line := rig.undone(t, rig.ran(t, words, change), tool)[0]
+	if !line.Outcome.OK {
+		t.Fatalf("Undo of %s answered %+v, want it undone", tool, line)
+	}
+	return line
+}
+
+// thread posts a thread on issue as alice, resolved where resolved is true, and answers its id.
+func (rig goingPlanRig) thread(t *testing.T, issue, body string, resolved bool) string {
+	t.Helper()
+	comment := decodeBody[model.Comment](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{"body": body})).ID
+	if resolved {
+		rig.fixture(t, "alice", http.MethodPost, "/api/v1/comments/"+comment+"/resolve", nil)
+	}
+	return comment
+}
+
+// goingUndoRuns is, by write tool, one run of the tool and its Undo: each makes what the tool
+// writes, runs one change of it as alice's approved plan, presses Undo and fails t unless the
+// item, read off the store or its route, holds what it held before the change.
+var goingUndoRuns = map[string]func(t *testing.T, rig goingPlanRig){
+	"dispatch_issue": func(t *testing.T, rig goingPlanRig) {
+		line := rig.undoneOnce(t, "file Made and undone", goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made and undone", "force": true}))
+		if status := rig.issueRead(t, line.Item).Status; status != "done" {
+			t.Fatalf("the issue the run made is %s after Undo, want it closed", status)
+		}
+	},
+	"dispatch_issue_update": func(t *testing.T, rig goingPlanRig) {
+		issue := rig.issue(t, "Retitled and undone")
+		rig.undoneOnce(t, "retitle Retitled and undone", goingChange("dispatch_issue_update", retitle(issue, "Retitled by the run")))
+		if title := rig.title(t, issue); title != "Retitled and undone" {
+			t.Fatalf("the issue is titled %q after Undo, want its title back", title)
+		}
+	},
+	"dispatch_claim": func(t *testing.T, rig goingPlanRig) {
+		issue := rig.issue(t, "Claimed and undone")
+		rig.undoneOnce(t, "claim Claimed and undone", goingChange("dispatch_claim", map[string]any{"issue": issue}))
+		if claim := rig.issueRead(t, issue).Claim; claim != nil {
+			t.Fatalf("the issue is held by %+v after Undo, want nobody", claim)
+		}
+	},
+	"dispatch_ask": func(t *testing.T, rig goingPlanRig) {
+		issue := rig.issue(t, "Asked and undone")
+		line := rig.undoneOnce(t, "ask on Asked and undone", goingChange("dispatch_ask", map[string]any{"issue": issue, "question": "Ship it as it stands?"}))
+		if state := rig.textOf(t, `select state from asks where id = $1::uuid`, line.Item); state != "resolved" {
+			t.Fatalf("the ask the run opened is %s after Undo, want it retracted", state)
+		}
+	},
+	"dispatch_edit_ask": func(t *testing.T, rig goingPlanRig) {
+		ask := rig.ask(t, rig.issue(t, "Holds an ask to edit"), "Ship it on Friday?")
+		rig.undoneOnce(t, "move the ask to Monday", goingChange("dispatch_edit_ask", map[string]any{"ask": ask, "question": "Ship it on Monday?"}))
+		if question := rig.textOf(t, `select question from asks where id = $1::uuid`, ask); question != "Ship it on Friday?" {
+			t.Fatalf("the ask asks %q after Undo, want its question back", question)
+		}
+	},
+	"dispatch_resolve_comment": func(t *testing.T, rig goingPlanRig) {
+		comment := rig.thread(t, rig.issue(t, "Holds a thread to resolve"), "A thread the run resolves.", false)
+		rig.undoneOnce(t, "resolve the thread", goingChange("dispatch_resolve_comment", map[string]any{"comment": comment}))
+		if resolved := rig.textOf(t, `select resolved::text from comments where id = $1::uuid`, comment); resolved != "false" {
+			t.Fatalf("the thread is resolved %s after Undo, want it open again", resolved)
+		}
+	},
+	"dispatch_reopen_comment": func(t *testing.T, rig goingPlanRig) {
+		comment := rig.thread(t, rig.issue(t, "Holds a thread to reopen"), "A thread the run reopens.", true)
+		rig.undoneOnce(t, "reopen the thread", goingChange("dispatch_reopen_comment", map[string]any{"comment": comment}))
+		if resolved := rig.textOf(t, `select resolved::text from comments where id = $1::uuid`, comment); resolved != "true" {
+			t.Fatalf("the thread is resolved %s after Undo, want it resolved again", resolved)
+		}
+	},
+	"dispatch_suggest": func(t *testing.T, rig goingPlanRig) {
+		issue := decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "DEMO", "title": "Suggested on and undone", "spec": "The spec says hello to everyone.\n", "force": true,
+		})).Key
+		line := rig.undoneOnce(t, "suggest hi on Suggested on and undone",
+			goingChange("dispatch_suggest", map[string]any{"issue": issue, "quote": "says hello", "replace_with": "says hi"}))
+		if accepted := rig.textOf(t, `select coalesce(suggestion->>'accepted', 'open') from comments where id = $1::uuid`, line.Item); accepted != "false" {
+			t.Fatalf("the suggestion the run posted is %s after Undo, want it rejected", accepted)
+		}
+	},
+	"dispatch_doc_edit": func(t *testing.T, rig goingPlanRig) {
+		issue := rig.issue(t, "Holds notes edited and undone")
+		notes := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nThe first line.\n")
+		rig.undoneOnce(t, "edit the notes and undo it", goingChange("dispatch_doc_edit", map[string]any{
+			"issue": issue, "artifact": notes.Artifact.Slug, "ops": replaceText("first line", "opening line"),
+		}))
+		if text := rig.documentText(t, notes.Artifact.ID); !strings.Contains(text, "The first line.") {
+			t.Fatalf("the document reads %q after Undo, want the first line back", text)
+		}
+	},
+	"dispatch_request_approval": func(t *testing.T, rig goingPlanRig) {
+		issue := decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "DEMO", "title": "Asks approval and undoes it", "spec": "The spec to approve.\n", "force": true,
+		})).Key
+		line := rig.undoneOnce(t, "ask for the spec's approval", goingChange("dispatch_request_approval", map[string]any{
+			"issue": issue, "artifact": "spec", "summary": "Ready for review.",
+		}))
+		if state := rig.textOf(t, `select state from asks where id = $1::uuid`, line.Item); state != "resolved" {
+			t.Fatalf("the approval request's ask is %s after Undo, want it retracted", state)
+		}
+	},
+}
+
+// goingTakesTheCallingSession reports whether every row of the write tool name fills a
+// placeholder of its path with the calling session (goingCallerSession).
+func goingTakesTheCallingSession(name string) bool {
+	tool := goingWriteTools[name]
+	var spec contracts.DispatchTool
+	for _, each := range contracts.DispatchTools {
+		if each.Name == name {
+			spec = each
+		}
+	}
+	rows, _ := goingToolRows(spec, tool.Routes, tool.UndoRoutes)
+	for _, row := range rows {
+		takes := false
+		for _, argument := range row.Path {
+			takes = takes || argument == goingCallerSession
+		}
+		if !takes {
+			return false
+		}
+	}
+	return len(rows) > 0
+}
+
+// TestEveryStatedUndoRuns (R6): every write tool whose stated undo is not not_undone, whether the
+// answer run's catalogue offers it or the agent finds it by find_tools, has that undo run here (by
+// goingUndoRuns), and the undo reverses the change: a tool that states one with no case here fails,
+// and so does a case of a tool that states none. A tool every row of whose path takes the calling
+// session is left out, since a run acts as a person and no session, so no run writes it.
+func TestEveryStatedUndoRuns(t *testing.T) {
+	var stated []string
+	for _, name := range slices.Sorted(maps.Keys(goingWriteTools)) {
+		if goingWriteTools[name].Undo != goingUndoNotUndone && !goingTakesTheCallingSession(name) {
+			stated = append(stated, name)
+		}
+	}
+	for name := range goingUndoRuns {
+		if !slices.Contains(stated, name) {
+			t.Errorf("a case runs the undo of %s, which states no undo a run's change has", name)
+		}
+	}
+	rig := newGoingPlanRig(t)
+	for _, name := range stated {
+		run, held := goingUndoRuns[name]
+		if !held {
+			t.Errorf("%s states a %s undo, and no case here runs it", name, goingWriteTools[name].Undo)
+			continue
+		}
+		t.Run(name, func(t *testing.T) { run(t, rig) })
+	}
 }

@@ -186,12 +186,13 @@ export function rowWaits(row: GoingPlanRow): boolean {
   return row.state === "waiting";
 }
 
-/** The approval the draft makes of `plan` (`POST /api/v1/going/runs/{id}/plan/approve`): each
- *  waiting row's tick, and the values the person edited. */
+/** The approval the draft makes of `plan` (`POST /api/v1/going/runs/{id}/plan/approve`): the
+ *  version of the plan the person was shown, which Dispatch refuses the approval over once the
+ *  plan has changed since, each waiting row's tick, and the values the person edited. */
 export function approvalOf(
   plan: GoingPlanAnswer,
   draft: PlanDraft
-): { plan: number; rows: GoingPlanTick[] } {
+): { plan: number; rows: GoingPlanTick[]; version: GoingPlanAnswer["version"] } {
   const rows: GoingPlanTick[] = (plan.rows ?? []).filter(rowWaits).map((row) => {
     const values = draft.edits.get(row.row);
     return {
@@ -200,5 +201,5 @@ export function approvalOf(
       ...(values === undefined ? {} : { values: { ...values } }),
     };
   });
-  return { plan: plan.plan, rows };
+  return { plan: plan.plan, rows, version: plan.version };
 }

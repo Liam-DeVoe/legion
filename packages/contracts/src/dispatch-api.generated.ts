@@ -25,7 +25,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old, newest seen first. ?limit= answers that many of the newest seen alone, reading the open asks and last activity of those alone (400 INVALID_QUERY for anything but a whole number of 1 or more); without it every session is listed. */
+    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old, newest seen first. last_activity is the time of the session's newest event, and last_activity_issue and last_activity_type say where it is: that event's issue (absent for a document on no issue) and its type, both absent for a session with no event. ?limit= answers that many of the newest seen alone, reading the open asks and last activity of those alone (400 INVALID_QUERY for anything but a whole number of 1 or more); without it every session is listed. */
     get: operations["getApiV1Agents"];
     put?: never;
     post?: never;
@@ -889,7 +889,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Reopen a resolved comment thread, whatever resolution it holds. Its optional body {actor?} names the session the reopen acts for where the caller's credential proved none, as the person routes take it (403 ACTOR_SESSION_MISMATCH where the credential acts for another session); a body that does not decode is ignored, as an empty one is. The command bar's undo of a resolve makes the reopen conditional by an in-process condition on the request's context, never a body member: the thread must still hold the resolution the turn left, as the comment's read answers resolved_at, when the reopen takes the comment's lock, else 409 COMMENT_CHANGED, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition). */
+    /** @description Reopen a resolved comment thread, whatever resolution it holds. Its optional body {actor?} names the session the reopen acts for where the caller's credential proved none, as the person routes take it (403 ACTOR_SESSION_MISMATCH where the credential acts for another session); a body that does not decode is ignored, as an empty one is. The answer is the comment as the reopen left it, with previous beside it: the thread's resolution {resolved, resolved_by, resolved_at} when the reopen took the comment's lock. The command bar's undo of a resolve makes the reopen conditional by an in-process condition on the request's context, never a body member: the thread must still hold the resolution the turn left, as the comment's read answers resolved_at, when the reopen takes the comment's lock, else 409 COMMENT_CHANGED, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition). */
     post: operations["postApiV1CommentsByIdReopen"];
     delete?: never;
     options?: never;
@@ -923,7 +923,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Resolve a comment thread. The answer is the comment as the resolve left it, with previous beside it: the thread's resolution {resolved, resolved_by, resolved_at} when the resolve took the comment's lock. */
+    /** @description Resolve a comment thread. The answer is the comment as the resolve left it, with previous beside it: the thread's resolution {resolved, resolved_by, resolved_at} when the resolve took the comment's lock. The command bar's undo of a reopen makes the resolve conditional by an in-process condition on the request's context, never a body member: the thread must be open when the resolve takes the comment's lock, else 409 COMMENT_CHANGED, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition). */
     post: operations["postApiV1CommentsByIdResolve"];
     delete?: never;
     options?: never;
@@ -1364,7 +1364,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar run's latest plan: {run, plan, state (waiting, approved, running, done or rejected), summary, mode (ask or auto_review), rows: [{row, tool, class, arguments, needs, state (waiting, approved, unticked, running, done, failed or skipped), item, issue, fields, now, claim, waits, changed, result {status, code, message, delivery}}]}. Each row is one change the run's model proposed: the write tool and the arguments it runs with, the rows before it that it needs, the item it changes, the fields it writes and their value now, the holder of its issue's claim, why it waits for the person in every mode (its class, delivers_to_session, claimed_by_session), and changed for a row that waits again because its item changed after the person saw it. result is null until the row's write answered, and its delivery is whether a row that sends a message or a broadcast was sent, queued (a delivery not yet confirmed included) or refused, null for any other row. While the run waits, each waiting row's item is read again as the caller, and the plan shows that read from then on. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's or that the record does not hold, 404 GOING_PLAN_NOT_FOUND for a run that proposed no plan. */
+    /** @description The caller's own command-bar run's latest plan: {run, plan, state (waiting, approved, running, done or rejected), summary, mode (ask or auto_review), rows: [{row, tool, class, arguments, needs, state (waiting, approved, unticked, running, done, failed or skipped), item, issue, fields, now, claim, waits, changed, result {status, code, message, delivery}}], version}. Each row is one change the run's model proposed: the write tool and the arguments it runs with, the rows before it that it needs, the item it changes, the fields it writes and their value now, the holder of its issue's claim, why it waits for the person in every mode (its class, delivers_to_session, claimed_by_session), and changed for a row that waits again because its item changed after the person saw it. result is null until the row's write answered, and its delivery is whether a row that sends a message or a broadcast was sent, queued (a delivery not yet confirmed included) or refused, null for any other row. version names the plan as this answer shows it, and moves whenever what it shows moves; an approval names it. While the run waits, each waiting row's item is read again as the caller, and the plan shows that read from then on. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's or that the record does not hold, 404 GOING_PLAN_NOT_FOUND for a run that proposed no plan. */
     get: operations["getApiV1GoingRunsByIdPlan"];
     put?: never;
     post?: never;
@@ -1383,7 +1383,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve the caller's own run's waiting plan {plan, rows?: [{row, tick, values?}]}: each named row's tick, where false leaves the row out and every row that needs it, and values, arguments of the row's tool put over the arguments the plan shows; a waiting row the body does not name is approved as shown. Each ticked row is read again as the caller with its values: one whose item changed after the plan showed - another value now, or another holder of its issue's claim - shows the new value and waits for approval again, changed; every other is approved over that read. The approval moves the run's grant to the caller's own sign-in or personal token (403 RUN_NEEDS_PERSON_CREDENTIAL for any other credential), is saved as a step of the run, and makes the run ready, whose agent runs the approved rows in order, each read again before its write: a row whose item changed since waits again, and one whose needed row failed is skipped. Answers the plan as GET answers it. 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait, 400 GOING_PLAN_VALUES for a row that is no waiting row of the plan or values its tool's schema refuses, 400 GOING_PLAN_INPUT for a row with no tick. */
+    /** @description Approve the caller's own run's waiting plan {plan, rows?: [{row, tick, values?}], version?}: each named row's tick, where false leaves the row out and every row that needs it, and values, arguments of the row's tool put over the arguments the plan shows; a waiting row the body does not name is approved as shown. version is the plan's version as the approving page read it: 409 GOING_PLAN_CHANGED, nothing written, where the plan's version moved since, as when another page read the plan again and its rows show another value. Each ticked row is read again as the caller with its values: one whose item changed after the plan showed - another value now, or another holder of its issue's claim - shows the new value and waits for approval again, changed; every other is approved over that read. The approval moves the run's grant to the caller's own sign-in or personal token (403 RUN_NEEDS_PERSON_CREDENTIAL for any other credential), is saved as a step of the run, and makes the run ready, whose agent runs the approved rows in order, each read again before its write: a row whose item changed since waits again, and one whose needed row failed is skipped. Answers the plan as GET answers it. 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait, 400 GOING_PLAN_VALUES for a row that is no waiting row of the plan or values its tool's schema refuses, 400 GOING_PLAN_INPUT for a row with no tick. */
     post: operations["postApiV1GoingRunsByIdPlanApprove"];
     delete?: never;
     options?: never;
@@ -3501,6 +3501,8 @@ export interface components {
       dir: string;
       host: string;
       last_activity: null | string;
+      last_activity_issue?: string;
+      last_activity_type?: string;
       /** Format: int64 */
       last_seen: number;
       machine_id: string;
@@ -5324,10 +5326,12 @@ export interface components {
       /** @enum {string} */
       state: "waiting" | "approved" | "rejected" | "running" | "done";
       summary: string;
+      version: string;
     };
     GoingPlanApproveInput: {
       plan: number;
       rows?: components["schemas"]["GoingPlanTick"][] | null;
+      version?: null | string;
     };
     GoingPlanRejectInput: {
       plan: number;
@@ -9679,7 +9683,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["CommentWithTrees"];
+          "application/json": components["schemas"]["ResolvedComment"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */

@@ -67,7 +67,8 @@ func (s *server) rejectComment(w http.ResponseWriter, r *http.Request) {
 	s.commentAction(w, r, "reject")
 }
 
-// codeCommentChanged is the refusal of a reopen whose condition the thread no longer meets.
+// codeCommentChanged is the refusal of a reopen or a resolve whose condition the thread no longer
+// meets.
 const codeCommentChanged = "COMMENT_CHANGED"
 
 // reopenComment is POST /api/v1/comments/{id}/reopen. Its optional body names the acting session
@@ -79,7 +80,9 @@ const codeCommentChanged = "COMMENT_CHANGED"
 // request's context): the thread must still hold the resolution of that moment, as the comment's
 // read answers resolved_at, when the reopen takes the comment's lock, or it is refused, 409
 // COMMENT_CHANGED, with nothing written. Every other caller reopens whatever resolution the thread
-// holds.
+// holds. It answers as the resolve does (resolvedComment): the comment as the reopen left it, and
+// the resolution it found under the comment's lock, which the command bar's undo of the reopen
+// reads.
 func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -143,6 +146,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	found := threadResolution{Resolved: comment.Resolved, ResolvedBy: comment.ResolvedBy, ResolvedAt: comment.ResolvedAt}
 	comment.Resolved = false
 	comment.ResolvedBy = nil
 	comment.ResolvedAt = nil
@@ -183,12 +187,17 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the reopen answers it found and left, handed to the command bar's landing of this
+	// request, which records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any {
+		return resolvedComment{shapedComment: newShapedComment(comment, false), Previous: found}
+	})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), *event)
-	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, resolvedComment{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), Previous: found})
 }
 
 // editCommentInput is the body of PATCH /api/v1/comments/{id}.
@@ -344,6 +353,16 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	if !ok {
 		return
 	}
+	// The command bar's undo of a reopen makes the resolve conditional (goingCondition.ExpectOpen,
+	// on the request's context): the thread must be open when the resolve takes the comment's
+	// lock, or it is refused, 409 COMMENT_CHANGED, with nothing written.
+	condition := goingConditionOf(r)
+	if action == "resolve" {
+		if refusal := condition.writeBackRefusal(condition.ExpectOpen, "expectation that the thread is open"); refusal != nil {
+			s.writeHandlerError(w, refusal)
+			return
+		}
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -388,6 +407,10 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		}
 		if kindErr == nil {
 			projectionKind = kind
+		}
+		if condition.ExpectOpen && comment.Resolved {
+			writeError(w, codeCommentChanged, http.StatusConflict, "the thread is resolved now, not open as the resolve expected, so nothing was written")
+			return
 		}
 		found = &threadResolution{Resolved: comment.Resolved, ResolvedBy: comment.ResolvedBy, ResolvedAt: comment.ResolvedAt}
 		resolvedAt, err := ledger.Now(r.Context())
@@ -602,10 +625,10 @@ type threadResolution struct {
 	ResolvedAt *string      `json:"resolved_at"`
 }
 
-// resolvedComment is what POST /api/v1/comments/{id}/resolve answers: the comment as the resolve
-// left it, and beside it Previous, the thread's resolution when the resolve took the comment's
-// lock. A caller that undoes the resolve reads both here: what it reads of the thread before or
-// after the resolve may have moved on either side of the resolve's own transaction.
+// resolvedComment is what POST /api/v1/comments/{id}/resolve and POST /api/v1/comments/{id}/reopen
+// answer: the comment as the write left it, and beside it Previous, the thread's resolution when
+// the write took the comment's lock. A caller that undoes the write reads both here: what it reads
+// of the thread before or after the write may have moved on either side of its own transaction.
 type resolvedComment struct {
 	shapedComment
 	Previous threadResolution `json:"previous"`

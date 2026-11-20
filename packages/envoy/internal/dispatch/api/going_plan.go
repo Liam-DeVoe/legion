@@ -21,6 +21,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +45,9 @@ const (
 	codeGoingPlanNotWaiting = "GOING_PLAN_NOT_WAITING"
 	codeGoingPlanValues     = "GOING_PLAN_VALUES"
 	codeGoingPlanInput      = "GOING_PLAN_INPUT"
+	// codeGoingPlanChanged refuses an approval of a plan that changed after the page that sends
+	// it read it (goingPlanApproveInput.Version).
+	codeGoingPlanChanged = "GOING_PLAN_CHANGED"
 )
 
 // goingPlanMostRows is the most changes one plan holds.
@@ -153,7 +158,8 @@ type goingPlanStored struct {
 }
 
 // goingPlanAnswer is a run's plan as its person reads it: its number within the run, its state,
-// what it does, the run's mode, and each row.
+// what it does, the run's mode, each row, and its version, which an approval names
+// (goingPlanApproveInput.Version).
 type goingPlanAnswer struct {
 	Run     string         `json:"run"`
 	Plan    int            `json:"plan"`
@@ -161,6 +167,7 @@ type goingPlanAnswer struct {
 	Summary string         `json:"summary"`
 	Mode    string         `json:"mode" enum:"ask,auto_review"`
 	Rows    []goingPlanRow `json:"rows"`
+	Version string         `json:"version"`
 }
 
 // goingPlanRow is one row of a plan as its person reads it: the change (the tool and the arguments
@@ -217,7 +224,21 @@ func (p goingPlanStored) answer(run, mode string) goingPlanAnswer {
 		}
 		answer.Rows = append(answer.Rows, read)
 	}
+	answer.Version = goingPlanVersion(answer)
 	return answer
+}
+
+// goingPlanVersion is the version of a plan as its person reads it: the hex SHA-256 of its state,
+// its summary and its rows as answered, so it moves with whatever the page shows of the plan - a
+// row read again with another value, a row that waits again, a row approved, unticked or run.
+func goingPlanVersion(answer goingPlanAnswer) string {
+	shown, _ := json.Marshal(struct {
+		State   string         `json:"state"`
+		Summary string         `json:"summary"`
+		Rows    []goingPlanRow `json:"rows"`
+	}{answer.State, answer.Summary, answer.Rows})
+	digest := sha256.Sum256(shown)
+	return hex.EncodeToString(digest[:])
 }
 
 // goingQuerier is what the plan's reads run on: the pool, or a transaction.
@@ -744,11 +765,13 @@ func (s *server) storeRowShown(ctx context.Context, run string, plan, row int, s
 }
 
 // goingPlanApproveInput is POST /api/v1/going/runs/{id}/plan/approve's body: the plan approved,
-// and the person's tick and edited values of each row of it they changed. A waiting row the body
-// does not name is approved as shown.
+// the person's tick and edited values of each row of it they changed, and the version of the plan
+// the page they approve on read (goingPlanAnswer.Version), which the approval holds the plan to. A
+// waiting row the body does not name is approved as shown.
 type goingPlanApproveInput struct {
-	Plan int             `json:"plan" required:"true"`
-	Rows []goingPlanTick `json:"rows"`
+	Plan    int             `json:"plan" required:"true"`
+	Rows    []goingPlanTick `json:"rows"`
+	Version *string         `json:"version"`
 }
 
 // goingPlanTick is the person's word on one row: whether it runs (an untick also unticks every row
@@ -783,8 +806,10 @@ type goingPlanRejectInput struct {
 // the approve scope; it is saved as a step of the run (agentwire.PersonStep), and the run, with a
 // row to run, is ready again for the agent, which runs them. A plan that is not the run's latest is
 // 409 GOING_PLAN_NOT_CURRENT, and a run or a plan that does not wait 409 GOING_PLAN_NOT_WAITING; a
-// row the body names that is no waiting row of the plan, or a value its tool's schema refuses, 400
-// GOING_PLAN_VALUES.
+// version that is not the plan's now - another page read the plan again since, and the rows it
+// shows moved - is 409 GOING_PLAN_CHANGED, with nothing written, so a person approves only what
+// their page showed; a row the body names that is no waiting row of the plan, or a value its tool's
+// schema refuses, 400 GOING_PLAN_VALUES.
 func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 	login, run, plan, ok := s.planRoute(w, r)
 	if !ok {
@@ -796,6 +821,11 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.planAnswerable(w, run, plan, input.Plan) {
+		return
+	}
+	if input.Version != nil && *input.Version != plan.answer(run.id, run.mode).Version {
+		writeError(w, codeGoingPlanChanged, http.StatusConflict,
+			"This plan changed after this page read it. Read it again before you approve it.")
 		return
 	}
 	grant, err := s.goingGrantOf(r)

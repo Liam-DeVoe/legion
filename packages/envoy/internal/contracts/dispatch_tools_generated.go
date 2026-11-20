@@ -831,7 +831,7 @@ var DispatchTools = []DispatchTool{
 	},
 	{
 		Name:        "dispatch_create_session_group",
-		Description: "Create a Delivery session group: a name that stands as the parent agent of every pull request whose first session the group holds. Use it when a person asks to see several sessions' pull requests as one on the Delivery page. Undo deletes the group.",
+		Description: "Create a Delivery session group: a name that stands as the parent agent of every pull request whose first session the group holds. Use it when a person asks to see several sessions' pull requests as one on the Delivery page. Undo does not delete the group: delete it to take it back.",
 		Arguments: []ToolField{
 			{Name: "name", Kind: ToolFieldString, Required: true, Description: "The group's name."},
 			{Name: "sessions", Kind: ToolFieldArray, Required: true, Description: "The session ids the group holds.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
@@ -895,7 +895,7 @@ var DispatchTools = []DispatchTool{
 	},
 	{
 		Name:        "dispatch_create_priority",
-		Description: "Write a new priority the deployment works towards, last in the order: a title, an optional description in markdown, an optional owner and an optional id (the title as a slug by default). Issues state the priorities they advance. Undo deletes the priority.",
+		Description: "Write a new priority the deployment works towards, last in the order: a title, an optional description in markdown, an optional owner and an optional id (the title as a slug by default). Issues state the priorities they advance. Undo does not delete the priority: delete it to take it back.",
 		Arguments: []ToolField{
 			{Name: "title", Kind: ToolFieldString, Required: true, Description: "The priority's title."},
 			{Name: "id", Kind: ToolFieldString, Description: "The priority's id, a slug of lowercase letters, digits and hyphens."},
@@ -1698,7 +1698,7 @@ var DispatchTools = []DispatchTool{
 	},
 	{
 		Name:        "dispatch_snooze_ask",
-		Description: "Snooze an ask in the Inbox of the person you act for until a time, or with null until it changes; it shows under Later meanwhile. Undo ends the snooze.",
+		Description: "Snooze an ask in the Inbox of the person you act for until a time, or with null until it changes; it shows under Later meanwhile. Undo does not end the snooze: end it to take it back.",
 		Arguments: []ToolField{
 			{Name: "ask", Kind: ToolFieldString, Required: true, Description: "The ask's id, or a unique prefix of it of 8 characters or more."},
 			{Name: "snoozed_until", Kind: ToolFieldString, Required: true, Nullable: true, Description: "Snooze until this time, or null. An RFC 3339 time, such as 2026-11-19T00:00:00Z."},

@@ -21,7 +21,9 @@ body: |-
   `.../plan/revise` (words for another plan) and `.../plan/reject` answer it. The server runs the
   approved rows alone, in order, and refuses every other write of the run `WRITE_NOT_APPROVED`; a
   row whose item changed since its approval waits again, and each row's change is made once, also
-  when the agent or the server dies during it. `GET` and `PUT /api/v1/me/going/settings` hold the
+  when the agent or the server dies during it. The plan answers its `version`, and an approval
+  naming a version the plan has moved on from is refused `409 GOING_PLAN_CHANGED`, so a person
+  approves only what their page showed. `GET` and `PUT /api/v1/me/going/settings` hold the
   person's `mode`: in `ask`, the default, every row waits; in `auto_review` one model call lets
   through the field, link, claim and title-only create rows the person's words ask for. In both
   modes the person's own approvals, reviews, answers, decisions and check results, a change of a
@@ -31,11 +33,12 @@ body: |-
   `POST /api/v1/going/runs/{id}/undo` undoes one run while History lists it: it writes back the
   values the run's changes found where the item still holds what the run left, and keeps and names
   a later value another writer left; it releases a claim the run took, unfollows, reopens a thread
-  the run resolved, retracts an ask the run opened, rejects the run's open suggestions, closes the
-  issues the run created with no message, and names a message or a broadcast sent, not undone. So
-  that an undo reads what each change found and left, routes answer more of their own transaction:
-  `PATCH /api/v1/issues/{key}` answers `previous` and, for a rank, `rank_place`;
-  `PATCH /api/v1/asks/{id}` and `POST /api/v1/comments/{id}/resolve` answer `previous`; `POST` and
+  the run resolved and resolves again one it reopened, retracts an ask the run opened, rejects the
+  run's open suggestions, closes the issues the run created with no message, and names a message
+  or a broadcast sent, not undone. So that an undo reads what each change found and left, routes
+  answer more of their own transaction: `PATCH /api/v1/issues/{key}` answers `previous` and, for a
+  rank, `rank_place`; `PATCH /api/v1/asks/{id}`, `POST /api/v1/comments/{id}/resolve` and
+  `.../reopen` answer `previous`; `POST` and
   `DELETE /api/v1/issues/{key}/claim` answer `claim_changed` and `previous_claim`;
   `POST /api/v1/artifacts/{id}/approval-requests` answers `opened`; the document edit routes answer
   `previous_token` beside `token`; and the upload routes answer `previous_version`.

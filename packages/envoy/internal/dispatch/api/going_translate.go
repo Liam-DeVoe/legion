@@ -99,7 +99,9 @@ type goingUpload struct {
 // goingSend is one request a call sends, whole. stable is what its digest is taken of where the
 // body itself differs between two sends of the same request - a multipart upload, whose boundary
 // is drawn at random - nil where the body is its own (digest). condition is the compare-and-set
-// the request carries to its route on its context (build), nil for none.
+// the request carries to its route on its context (build), nil for none. what is what a request a
+// call sends before its own writes, in the words a row tells its person where the call failed in
+// the server after it landed (goingPanickedText); it is no part of what the request sends.
 type goingSend struct {
 	method      string
 	path        string
@@ -108,6 +110,7 @@ type goingSend struct {
 	body        []byte
 	stable      []byte
 	condition   *goingCondition
+	what        string
 }
 
 // digest is the hex SHA-256 of what the request sends, its condition included, which a landing
@@ -934,6 +937,7 @@ func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call going
 		if err != nil {
 			return goingCall{}, err
 		}
+		message.what = "the reason posted on " + key
 		translated.first = []goingSend{message}
 	}
 	return translated, nil

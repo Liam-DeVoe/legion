@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/going/agent/agenttest"
+	"github.com/sjawhar/envoy/going/agentwire"
 )
 
 // goingPlanRig is the agent rig with the agent's loop on a fake chat model, whose people are named
@@ -383,6 +384,61 @@ func TestAPlanUploadsANewVersionOfADocument(t *testing.T) {
 	}
 }
 
+// TestAnUploadApprovedAsACreateWaitsAgainOverADocumentMadeSince: an upload whose row its person
+// approved while its issue held no document of its name never writes over one another person makes
+// under that name after the approval, even once the row's gate has read the name free: the row
+// waits for the person again, showing that document, which keeps its one version, and their
+// approval of it again lands the upload as the document's next version.
+func TestAnUploadApprovedAsACreateWaitsAgainOverADocumentMadeSince(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	issue := rig.issue(t, "Gets notes")
+	owner := "/api/v1/issues/" + issue
+	const words = "add notes.md to Gets notes"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_artifact", map[string]any{"issue": issue, "name": "notes.md", "content": "# Notes\n\nThe plan's.\n"}))
+		}
+		return answered("Added, or waiting.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	if plan := rig.waiting(t, run); len(plan.Rows) != 1 || !goingJSONEqual(plan.Rows[0].Now, nil) {
+		t.Fatalf("the plan shows %+v, want its one row showing no document of the name", plan.Rows)
+	}
+	rig.loop.stop()
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	// Bob makes notes.md as the row's gate reads the claim of its issue, after the gate read the
+	// name free: only the upload's own read before finds the document.
+	var bobs atomic.Pointer[uploadedArtifact]
+	rig.hooks.set(t, http.MethodGet, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		inner.ServeHTTP(w, r)
+		if bobs.Load() == nil {
+			made := decodeBody[uploadedArtifact](t, rig.fixture(t, "bob", http.MethodPost, owner+"/artifacts",
+				map[string]any{"name": "notes.md", "content": "# Notes\n\nBob's.\n"}))
+			bobs.Store(&made)
+		}
+	})
+	rig.loop.start(rig.goingAgentRig)
+	plan := rig.waiting(t, run)
+	made := bobs.Load()
+	if made == nil {
+		t.Fatal("no read of the issue reached its route after the approval, so Bob made no document")
+	}
+	if row := plan.Rows[0]; row.State != "waiting" || !row.Changed || row.Item != made.Artifact.ID {
+		t.Fatalf("the row is %s (changed %v) on %q, want it waiting again on Bob's notes.md, %s", row.State, row.Changed, row.Item, made.Artifact.ID)
+	}
+	const versions = `select count(*) from artifact_versions where artifact_id = $1::uuid`
+	if count := rig.count(t, versions, made.Artifact.ID); count != 1 {
+		t.Fatalf("Bob's notes.md holds %d versions, want its one: the upload approved as a create wrote over it", count)
+	}
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("after its approval again the run ended %s with %q, want done", record.state, record.reason)
+	}
+	if count := rig.count(t, versions, made.Artifact.ID); count != 2 {
+		t.Errorf("after its approval again Bob's notes.md holds %d versions, want 2, the upload its next version", count)
+	}
+}
+
 // TestAFailedChangeSkipsWhatNeedsIt: a row whose write its route refuses fails, the row that needs
 // it is skipped and says so, and a row that needs neither runs.
 func TestAFailedChangeSkipsWhatNeedsIt(t *testing.T) {
@@ -471,6 +527,242 @@ func TestARowWhoseItemChangedWaitsAgain(t *testing.T) {
 	if states := rowStates(plan); !slices.Equal(states, []string{"done", "done", "waiting"}) || !plan.Rows[2].Changed || rig.title(t, twice) != "Bob's between" {
 		t.Fatalf("the rows are %v (the last changed %v) and the title %q, want the last waiting again over Bob's title", states, plan.Rows[2].Changed, rig.title(t, twice))
 	}
+}
+
+// TestASecondTryOfARowReadsItsItemAgain: a second try of a row's call key that finds nothing of the
+// key landed writes, so it reads the row's item again first, as a first try does: where another
+// person changed the item after the approval, the row waits for its person again, showing the new
+// value, and nothing is written. The first try kept nothing, since it failed in the server, or kept
+// the refusal its route answered, and its agent died before it saved the step.
+func TestASecondTryOfARowReadsItsItemAgain(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	for _, first := range []struct{ name, state, record string }{
+		{"after a try that failed in the server", "running", `{}`},
+		{"after a try whose route refused the write", "failed", `{"status": 503, "code": "SERVICE_UNAVAILABLE", "message": "try again"}`},
+	} {
+		t.Run(first.name, func(t *testing.T) {
+			issue := rig.issue(t, "Renamed meanwhile")
+			words := "rename the issue renamed meanwhile, " + first.state
+			rig.loop.script.set(words, func(n int) agenttest.Reply {
+				if n == 1 {
+					return proposing(goingChange("dispatch_issue_update", retitle(issue, "Ours")))
+				}
+				return answered("Renamed, or waiting.")
+			})
+			run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+			rig.waiting(t, run)
+			rig.loop.stop()
+			rig.answer(t, run, "approve", map[string]any{"plan": 1})
+			// The row's first try, at the run's next step, left this on the row and landed nothing.
+			step := rig.count(t, `select coalesce(max(step), 0) + 1 from going_run_steps where run_id = $1::uuid`, run)
+			rig.exec(t, `update going_plan_rows set state = $2, result = $3::jsonb || jsonb_build_object('step', $4::int, 'call', 1) where run_id = $1::uuid`,
+				run, first.state, first.record, step)
+			rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"title": "Bob's"})
+			rig.loop.start(rig.goingAgentRig)
+			plan := rig.waiting(t, run)
+			if row := plan.Rows[0]; row.State != "waiting" || !row.Changed || !strings.Contains(string(row.Now), "Bob's") {
+				t.Fatalf("the row is %s (changed %v) showing %s, want it waiting again with Bob's title", row.State, row.Changed, row.Now)
+			}
+			if title := rig.title(t, issue); title != "Bob's" {
+				t.Fatalf("the issue is titled %q, want Bob's title kept: the second try wrote over it", title)
+			}
+		})
+	}
+}
+
+// TestARowWhoseItemCannotBeReadAgainIsNotWritten: a read of an approved row's item again before its
+// write that fails - its route answers 500 - ends the row's call failed with nothing written, and the
+// row is left approved; it is never passed over to write the row unchecked.
+func TestARowWhoseItemCannotBeReadAgainIsNotWritten(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	issue := rig.issue(t, "Unreadable for a while")
+	const words = "rename Unreadable for a while"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_issue_update", retitle(issue, "Ours")))
+		}
+		return answered("Renamed, or not.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	rig.waiting(t, run)
+	rig.loop.stop()
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	var reads atomic.Int32
+	rig.hooks.set(t, http.MethodGet, "/api/v1/issues/"+issue, func(w http.ResponseWriter, _ *http.Request, _ http.Handler) {
+		reads.Add(1)
+		writeError(w, codeInternal, http.StatusInternalServerError, "the issue could not be read")
+	})
+	rig.loop.start(rig.goingAgentRig)
+	rig.ended(t, run, time.Minute)
+	if reads.Load() == 0 {
+		t.Fatal("no read of the issue reached its route after the approval")
+	}
+	if title := rig.title(t, issue); title != "Unreadable for a while" {
+		t.Fatalf("the issue is titled %q, want its title kept: the row was written though its read failed; its call was told %q", title, rig.toolResults(t, run))
+	}
+	if state := rig.plan(t, run).Rows[0].State; state != "approved" {
+		t.Errorf("the row is %s, want it approved still, its write never sent", state)
+	}
+}
+
+// TestARowWhoseRouteCrashedFailsAndIsReadAgainBeforeItsRetry: a row whose route panics is kept
+// failed, status 500 and GOING_ROUTE_FAILED, telling its person the change failed in the server
+// with nothing of it known to have been written, and its call is answered CALL_PANICKED. A retry
+// of its key reads the row's item again before it writes: a change another person made since makes
+// the row wait for its person again, and that person's title is kept.
+func TestARowWhoseRouteCrashedFailsAndIsReadAgainBeforeItsRetry(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	issue := rig.issue(t, "Crashed on")
+	const words = "rename Crashed on"
+	rename := retitle(issue, "Ours")
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_issue_update", rename))
+		}
+		return answered("Renamed, or not.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	rig.waiting(t, run)
+	rig.loop.stop()
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	// The test is the run's agent from here: it claims the run and makes the row's call itself.
+	claimed := rig.claim(t, "i-crashes")
+	if claimed == nil || claimed.ID != run {
+		t.Fatalf("the claim took %+v, want run %s", claimed, run)
+	}
+	var patches atomic.Int32
+	rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		if patches.Add(1) == 1 {
+			panic("the route crashed")
+		}
+		inner.ServeHTTP(w, r)
+	})
+	call := goingRouteCall(run, claimed.LeaseToken, 7, 1, "dispatch_issue_update", rename)
+	call.Row = &agentwire.PlanRow{Plan: 1, Row: 0}
+	_, err := rig.call(call)
+	requireAgentCode(t, err, agentwire.CodeCallPanicked, "the call whose route panicked")
+	if row := rig.plan(t, run).Rows[0]; row.State != "failed" || row.Result == nil || row.Result.Status != http.StatusInternalServerError ||
+		row.Result.Code != codeGoingRouteFailed || row.Result.Message != goingRouteFailedText {
+		t.Fatalf("the row is %s with %+v, want it failed, 500 %s, saying %q", row.State, row.Result, codeGoingRouteFailed, goingRouteFailedText)
+	}
+	if title := rig.title(t, issue); title != "Crashed on" {
+		t.Fatalf("the issue is titled %q after its route panicked, want its title kept", title)
+	}
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"title": "Bob's"})
+	_, err = rig.call(call)
+	requireAgentCode(t, err, agentwire.CodeRowWaits, "the retry of the key after Bob's change")
+	if row := rig.plan(t, run).Rows[0]; row.State != "waiting" || !row.Changed || !strings.Contains(string(row.Now), "Bob's") {
+		t.Fatalf("after the retry the row is %s (changed %v) showing %s, want it waiting again with Bob's title", row.State, row.Changed, row.Now)
+	}
+	if title, sent := rig.title(t, issue), patches.Load(); title != "Bob's" || sent != 1 {
+		t.Fatalf("after the retry the issue is titled %q and the write was sent %d times, want Bob's title and the one send that panicked", title, sent)
+	}
+}
+
+// TestARowWhoseRouteCrashedPartwaySaysWhatWasWritten: a reasoned close, whose call sends the reason
+// and then the close, lands its reason and panics in the server on its close. Its row is kept
+// failed, status 500 and GOING_ROUTE_FAILED, saying the reason was written and the rest was not;
+// the issue holds the reason and is open. A retry of its key sends the close alone, and the issue
+// holds the reason once and is closed.
+func TestARowWhoseRouteCrashedPartwaySaysWhatWasWritten(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	issue := rig.issue(t, "Closed partway")
+	const words = "close Closed partway, saying why"
+	reason := "Shipped in the last release."
+	closing := map[string]any{"issue": issue, "status": "done", "reason": reason}
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_issue_update", closing))
+		}
+		return answered("Closed, or not.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	rig.waiting(t, run)
+	rig.loop.stop()
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	// The test is the run's agent from here: it claims the run and makes the row's call itself.
+	claimed := rig.claim(t, "i-crashes-partway")
+	if claimed == nil || claimed.ID != run {
+		t.Fatalf("the claim took %+v, want run %s", claimed, run)
+	}
+	var patches atomic.Int32
+	rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		if patches.Add(1) == 1 {
+			panic("the close crashed")
+		}
+		inner.ServeHTTP(w, r)
+	})
+	call := goingRouteCall(run, claimed.LeaseToken, 7, 1, "dispatch_issue_update", closing)
+	call.Row = &agentwire.PlanRow{Plan: 1, Row: 0}
+	_, err := rig.call(call)
+	requireAgentCode(t, err, agentwire.CodeCallPanicked, "the call whose close panicked")
+	if row := rig.plan(t, run).Rows[0]; row.State != "failed" || row.Result == nil || row.Result.Status != http.StatusInternalServerError ||
+		row.Result.Code != codeGoingRouteFailed || !strings.HasPrefix(row.Result.Message, "this change failed in the server partway: ") ||
+		!strings.Contains(row.Result.Message, "reason") || !strings.Contains(row.Result.Message, issue) {
+		t.Fatalf("the row is %s with %+v, want it failed, 500 %s, saying the reason on %s was written and the rest was not",
+			row.State, row.Result, codeGoingRouteFailed, issue)
+	}
+	if reasons, status := rig.goingReasonsOn(t, issue, reason), rig.issueRead(t, issue).Status; reasons != 1 || status == "done" {
+		t.Fatalf("after the panic %s holds %d reasons and status %s, want the reason posted and the issue open", issue, reasons, status)
+	}
+	if answer, err := rig.call(call); err != nil || answer.Status != http.StatusOK {
+		t.Fatalf("the retry answered %d, %v; want the close sent and answered 200", answer.Status, err)
+	}
+	if reasons, status := rig.goingReasonsOn(t, issue, reason), rig.issueRead(t, issue).Status; reasons != 1 || status != "done" {
+		t.Fatalf("after the retry %s holds %d reasons and status %s, want one reason and the issue done", issue, reasons, status)
+	}
+	if state := rig.plan(t, run).Rows[0].State; state != "done" {
+		t.Errorf("after the retry the row is %s, want done", state)
+	}
+}
+
+// TestARowAndAnUndoLineSayWhatHappenedInWords: what a plan's row and an Undo line tell their person
+// says what happened in words, and names no tool id, HTTP status, code, method or path, which stay
+// in the row's and the line's own fields: a row its translation refused after its approval - a
+// reasoned close of an issue another person closed meanwhile - fails saying the issue closed, and
+// the undo of a write whose record holds nothing of what it left says nothing was put back.
+func TestARowAndAnUndoLineSayWhatHappenedInWords(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	namesNone := func(t *testing.T, what, text string, names ...string) {
+		t.Helper()
+		for _, name := range names {
+			if strings.Contains(text, name) {
+				t.Errorf("%s says %q, which names %q", what, text, name)
+			}
+		}
+	}
+	t.Run("a row its translation refused", func(t *testing.T) {
+		issue := rig.issue(t, "Closed meanwhile")
+		const words = "close Closed meanwhile, saying why"
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return proposing(goingChange("dispatch_issue_update", map[string]any{"issue": issue, "status": "done", "reason": "Shipped in the last release."}))
+			}
+			return answered("Closed, or not.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		rig.waiting(t, run)
+		rig.loop.stop()
+		rig.answer(t, run, "approve", map[string]any{"plan": 1})
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "done"})
+		rig.loop.start(rig.goingAgentRig)
+		rig.ended(t, run, time.Minute)
+		row := rig.plan(t, run).Rows[0]
+		if row.State != "failed" || row.Result == nil || row.Result.Code != agentwire.CodeCallRefused || !strings.Contains(row.Result.Message, issue+" closed at") {
+			t.Fatalf("the row is %s with %+v, want it failed, refused, saying %s closed", row.State, row.Result, issue)
+		}
+		namesNone(t, "the row", row.Result.Message, "dispatch_", "409", "ISSUE_CLOSED")
+	})
+	t.Run("an undo line of a write whose record holds nothing of what it left", func(t *testing.T) {
+		issue := rig.issue(t, "Renamed unrecorded")
+		run := rig.ran(t, "rename Renamed unrecorded", goingChange("dispatch_issue_update", retitle(issue, "Renamed")))
+		rig.exec(t, `update going_landings set answer = answer - 'body' where run_id = $1::uuid and phase = 'do'`, run)
+		line := rig.undone(t, run, "dispatch_issue_update")[0]
+		if line.Outcome.OK || line.Outcome.Code != codeGoingUndoAfterUnread || rig.title(t, issue) != "Renamed" {
+			t.Fatalf("Undo answered %+v and the title is %q, want nothing put back, %s", line.Outcome, rig.title(t, issue), codeGoingUndoAfterUnread)
+		}
+		namesNone(t, "the undo line", line.Outcome.Message, "dispatch_", "PATCH", "/api/v1/")
+	})
 }
 
 // TestThePlanStates: the states of a plan and of its rows, each reached through the routes and
@@ -585,4 +877,42 @@ func TestThePlanStates(t *testing.T) {
 			t.Fatalf("the run is %s with %q and the title %q, want done with nothing run", record.state, record.reason, rig.title(t, x))
 		}
 	})
+}
+
+// TestAnApprovalOfAPlanAnotherPageReadSinceIsRefused: an approval names the version of the plan
+// its page read. Where another page read the plan since and the plan moved - its waiting row read
+// again with the value another writer left - the older page's approval is refused, 409
+// GOING_PLAN_CHANGED, with nothing written, so its person never approves a value their page did
+// not show; the page that read the plan last approves it.
+func TestAnApprovalOfAPlanAnotherPageReadSinceIsRefused(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	issue := rig.issue(t, "Read in two tabs")
+	const words = "rename Read in two tabs"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_issue_update", retitle(issue, "Ours")))
+		}
+		return answered("Renamed.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	older := rig.waiting(t, run)
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"title": "Bob's"})
+	newer := rig.plan(t, run)
+	if newer.Version == older.Version || !strings.Contains(string(newer.Rows[0].Now), "Bob's") {
+		t.Fatalf("the second page read version %s showing %s, the first %s: want the row read again with Bob's title, under another version",
+			newer.Version, newer.Rows[0].Now, older.Version)
+	}
+	refused := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/plan/approve",
+		map[string]any{"plan": 1, "version": older.Version}, "alice")
+	if refused.Code != http.StatusConflict || responseCode(t, refused) != codeGoingPlanChanged {
+		t.Fatalf("the first page's approval answered %d %s, want 409 %s", refused.Code, refused.Body.String(), codeGoingPlanChanged)
+	}
+	if plan := rig.plan(t, run); plan.State != "waiting" || plan.Rows[0].State != "waiting" || plan.Version != newer.Version || rig.title(t, issue) != "Bob's" {
+		t.Fatalf("after the refusal the plan is %s with its row %s (version %s) and the title %q, want nothing written",
+			plan.State, plan.Rows[0].State, plan.Version, rig.title(t, issue))
+	}
+	rig.answer(t, run, "approve", map[string]any{"plan": 1, "version": newer.Version})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" || rig.title(t, issue) != "Ours" {
+		t.Fatalf("after the second page's approval the run is %s and the title %q, want done with Ours", record.state, rig.title(t, issue))
+	}
 }

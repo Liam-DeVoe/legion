@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -149,21 +150,36 @@ const (
 	goingDeliveryRefused = "refused"
 )
 
-// goingRowDelivery is what became of the message a row of tool sent, as the answer of its write
-// says, "" for a tool that sends neither a message nor a broadcast: refused where the call or its
-// route refused it (failed), or where a message it sent failed its last delivery; queued where a
-// delivery is still to be made - the listener stored the message for a session that is not
+// goingRowDelivery is what became of the message the row of request sent, as the answer of its
+// write says, "" for a tool that sends neither a message nor a broadcast: refused where the call or
+// its route refused it (failed), or where a message it sent failed its last delivery; queued where
+// a delivery is still to be made - the listener stored the message for a session that is not
 // running, which gets it when it runs again, or the attempt was not yet confirmed when the route
 // answered, as a broadcast's are, which it sends once it answered; and sent where each message
-// reached its session, or targets none, a message posted on an issue for whoever reads it.
-func goingRowDelivery(tool string, answer agentwire.CallAnswer, failed bool) string {
-	switch goingWriteTools[tool].Class {
+// reached its session, or targets none, a message posted on an issue for whoever reads it. A
+// replayed answer (agentwire.CallAnswer.Replayed) is what the route recorded in the transaction that
+// stored the message, before its first delivery attempt, so it says nothing of a delivery: the
+// deliveries are read from the store, for each message the call's landings name
+// (goingLandedDeliveries), and a read that fails says queued.
+func (s *server) goingRowDelivery(ctx context.Context, request agentwire.CallRequest, answer agentwire.CallAnswer, failed bool) string {
+	switch goingWriteTools[request.Tool].Class {
 	case goingClassMessage, goingClassBroadcast:
 	default:
 		return ""
 	}
 	if failed {
 		return goingDeliveryRefused
+	}
+	if answer.Replayed {
+		states, named, err := s.goingLandedDeliveries(ctx, goingCallKey{run: request.Run, step: request.Step, call: request.Call})
+		if err != nil {
+			slog.Error("dispatch: read the deliveries of a command-bar row's message", "run", request.Run,
+				"step", request.Step, "call", request.Call, "error", err)
+			return goingDeliveryQueued
+		}
+		if named {
+			return goingDeliveryOf(states)
+		}
 	}
 	// A message answers its deliveries, a broadcast each recipient's message, and a redelivery
 	// the attempt it made.
@@ -193,6 +209,12 @@ func goingRowDelivery(tool string, answer agentwire.CallAnswer, failed bool) str
 	for _, recipient := range sent.Recipients {
 		last(recipient.Message.Deliveries)
 	}
+	return goingDeliveryOf(states)
+}
+
+// goingDeliveryOf is the word for the last delivery states of the messages a row sent: queued
+// while one is pending or stored for its session, refused where one failed, and sent otherwise.
+func goingDeliveryOf(states []string) string {
 	switch {
 	case slices.ContainsFunc(states, func(state string) bool {
 		return state == model.DeliveryStatePending || state == model.DeliveryStateQueued
@@ -202,4 +224,37 @@ func goingRowDelivery(tool string, answer agentwire.CallAnswer, failed bool) str
 		return goingDeliveryRefused
 	}
 	return goingDeliverySent
+}
+
+// goingLandedDeliveries is the state of the last delivery attempt of each targeted message that
+// the landings of key name in their recovery points (goingRecordRecovery): the message a send
+// stored, and each recipient's message of a broadcast. A targeted message with no attempt yet is
+// pending; a message that targets none has no delivery and adds no state. named reports whether
+// the landings name any message.
+func (s *server) goingLandedDeliveries(ctx context.Context, key goingCallKey) (states []string, named bool, err error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select m.target is not null, coalesce(d.state, $4)
+		from going_landings l
+		join messages m on m.id = (l.recovery->>'message_id')::uuid or m.broadcast_id = (l.recovery->>'broadcast_id')::uuid
+		left join lateral (
+			select state from message_deliveries where message_id = m.id order by attempt desc limit 1
+		) d on true
+		where l.run_id = $1::uuid and l.phase = 'do' and l.step = $2 and l.call = $3
+	`, key.run, key.step, key.call, model.DeliveryStatePending)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var targeted bool
+		var state string
+		if err := rows.Scan(&targeted, &state); err != nil {
+			return nil, false, err
+		}
+		named = true
+		if targeted {
+			states = append(states, state)
+		}
+	}
+	return states, named, rows.Err()
 }

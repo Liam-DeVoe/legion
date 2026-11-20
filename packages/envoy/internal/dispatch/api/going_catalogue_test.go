@@ -292,6 +292,70 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 	})
 }
 
+// TestACallTheBarCanNeverSendIsRefusedWithNoRequestMade: a call naming what the bar has no way to
+// send - a picture file, a place given by a dispatch:// link, a file to upload, an upload with no
+// text, a closing note on an update that does not close the issue, a sync's repository not written
+// as owner/name - is refused as the call's own argument error before any request, read or write,
+// is made; the same call without it, or with an empty picture list, goes on to its requests.
+func TestACallTheBarCanNeverSendIsRefusedWithNoRequestMade(t *testing.T) {
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatalf("build the catalogue: %v", err)
+	}
+	const issue = "INFRA-1042"
+	edit := []any{map[string]any{"op": "replace", "find": "first line", "with": "opening line"}}
+	for _, tc := range []struct {
+		name, action      string
+		refused, sendable map[string]any
+	}{
+		{"a comment with a picture", "dispatch_comment",
+			map[string]any{"issue": issue, "body": "Reads well.", "images": []any{"shot.png"}},
+			map[string]any{"issue": issue, "body": "Reads well.", "images": []any{}}},
+		{"a comment placed by a link", "dispatch_comment",
+			map[string]any{"issue": issue, "body": "Reads well.", "ref": "dispatch://" + issue + "/comment/1"},
+			map[string]any{"issue": issue, "body": "Reads well."}},
+		{"a question with a picture", "dispatch_ask",
+			map[string]any{"issue": issue, "question": "Ship it?", "images": []any{"shot.png"}},
+			map[string]any{"issue": issue, "question": "Ship it?"}},
+		{"a message with a picture", "dispatch_message",
+			map[string]any{"issue": issue, "body": "Where are we?", "images": []any{"shot.png"}},
+			map[string]any{"issue": issue, "body": "Where are we?"}},
+		{"a suggestion placed by a link", "dispatch_suggest",
+			map[string]any{"issue": issue, "quote": "says hello", "replace_with": "says hi", "ref": "dispatch://" + issue + "/spec"},
+			map[string]any{"issue": issue, "quote": "says hello", "replace_with": "says hi"}},
+		{"an edit placed by a link", "dispatch_doc_edit",
+			map[string]any{"issue": issue, "artifact": "notes", "ops": edit, "ref": "dispatch://" + issue + "/artifact/notes"},
+			map[string]any{"issue": issue, "artifact": "notes", "ops": edit}},
+		{"an upload of a file", "dispatch_artifact",
+			map[string]any{"issue": issue, "name": "notes.md", "path": "notes.md"},
+			map[string]any{"issue": issue, "name": "notes.md", "content": "# Notes\n"}},
+		{"an upload with no text", "dispatch_artifact",
+			map[string]any{"issue": issue, "name": "notes.md"},
+			map[string]any{"issue": issue, "name": "notes.md", "content": "# Notes\n"}},
+		{"a closing note on an update that does not close the issue", "dispatch_issue_update",
+			map[string]any{"issue": issue, "status": "in_progress", "reason": "Shipped in the last release."},
+			map[string]any{"issue": issue, "status": "done", "reason": "Shipped in the last release."}},
+		{"a sync of a repository not written as owner/name", "dispatch_architecture_sync",
+			map[string]any{"project": "INFRA", "repo": "acme"},
+			map[string]any{"project": "INFRA", "repo": "acme/arch"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doer := &countingDoer{}
+			// In-process, as the bar calls: an upload carries its create-only condition on its
+			// context, which only an in-process request takes.
+			caller := GoingCaller{Catalogue: catalogue, Doer: doer}
+			_, err := caller.Do(context.Background(), tc.action, tc.refused)
+			var refused GoingArgumentError
+			if !errors.As(err, &refused) || len(doer.requests) != 0 {
+				t.Fatalf("the call answered %v after %d request(s), want it refused as its own argument error with none made", err, len(doer.requests))
+			}
+			if _, err := caller.Do(context.Background(), tc.action, tc.sendable); len(doer.requests) == 0 {
+				t.Fatalf("the same call without what the bar cannot send answered %v with no request made, want it to go on to its requests", err)
+			}
+		})
+	}
+}
+
 // TestAGoingRelationOutsideBothEdgeFamiliesFails: a catalogue entry names the relations its
 // verbs write, and a name in neither edge family — the global relation names
 // (model.GraphEdgeKinds) and the `block[]` attributes of the typed blocks (pmdoc.LinkKinds) — is

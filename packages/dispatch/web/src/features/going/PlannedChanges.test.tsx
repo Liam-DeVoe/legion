@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
-import { api, type WriteBounds } from "../../api/client";
+import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun } from "../../api/types";
 import { ConversationView } from "./ConversationView";
 import { resetGoingStore, setPlace, startRun } from "./going-store";
@@ -69,6 +69,7 @@ const plan: GoingPlanAnswer = {
   run: "run-1",
   state: "waiting",
   summary: "Split CORE-1 in two.",
+  version: "5be1c0",
 };
 
 const created: GoingRun = {
@@ -203,6 +204,7 @@ test("unticking a row unticks the row that needs it, and the approval carries ea
             { row: 1, tick: true },
             { row: 2, tick: true },
           ],
+          version: "5be1c0",
         },
         keyedAttempt
       )
@@ -230,6 +232,111 @@ test("a plan that cannot be read says so in the card, and Retry reads it again",
     );
     await user.click(within(unreadable).getByRole("button", { name: "Retry" }));
     expect(drawnRows(await screen.findByTestId("going-plan-card-rows"))).toEqual(["0", "1", "2"]);
+  } finally {
+    restore();
+  }
+});
+
+// Dispatch's refusal of an answer is said under the plan it refused, and only there: the bar's card
+// stays on the screen as the person starts another run, whose plan shows none of it.
+test("a refusal of one run's plan does not show under the next run's plan", async () => {
+  const user = userEvent.setup();
+  const next: GoingRun = { ...created, conversation: "run-2", id: "run-2", words: "close CORE-5" };
+  const nextPlan: GoingPlanAnswer = { ...plan, run: "run-2", summary: "Close CORE-5." };
+  const start = spyOn(api, "createGoingRun")
+    .mockResolvedValueOnce(created)
+    .mockResolvedValueOnce(next);
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    onFrame("plan", { plan: 1, state: "waiting" });
+    return Promise.withResolvers<void>().promise;
+  });
+  const read = spyOn(api, "goingPlan").mockImplementation(async (run) =>
+    run === next.id ? nextPlan : plan
+  );
+  const approve = answerRoute<() => Promise<GoingPlanAnswer>>(
+    "POST",
+    "/api/v1/going/runs/*/plan/approve"
+  );
+  approve.mockImplementation(async () => {
+    throw new ApiError(409, {
+      code: "GOING_PLAN_NOT_WAITING",
+      error: "the plan was answered meanwhile, and no longer waits",
+    });
+  });
+  try {
+    await startRun("split CORE-1 in two", { path: "/projects/CORE/issues" }, "alice");
+    setPlace("over");
+    renderWithQueries(<Card />);
+    await user.click(await screen.findByTestId("going-plan-approve"));
+    expect(await screen.findByTestId("going-plan-refused")).toHaveTextContent(
+      "the plan was answered meanwhile, and no longer waits"
+    );
+
+    // The person asks for something else while the refused plan still waits: the bar's
+    // conversation is now run-2's, and its card draws run-2's plan.
+    await act(() => startRun("close CORE-5", { path: "/projects/CORE/issues" }, "alice"));
+    await waitFor(() =>
+      expect(screen.getByTestId("going-plan")).toHaveTextContent("Close CORE-5.")
+    );
+    expect(screen.queryByTestId("going-plan-refused")).toBeNull();
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// An approval names the version of the plan the person was shown, and Dispatch refuses one over a
+// plan that changed since it was read: the card says why under that plan and reads it again, so the
+// next approval names the version the person sees now.
+test("an approval of a plan that changed since it was read is refused, and the next names the plan as it is now", async () => {
+  const user = userEvent.setup();
+  const changed: GoingPlanAnswer = {
+    ...plan,
+    summary: "Split CORE-1 in three.",
+    version: "9d02aa",
+  };
+  let reads = 0;
+  const { restore } = await openPlan("over", async () => {
+    reads += 1;
+    return reads === 1 ? plan : changed;
+  });
+  const approve = answerRoute<
+    (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
+  >("POST", "/api/v1/going/runs/*/plan/approve");
+  approve.mockImplementationOnce(async () => {
+    throw new ApiError(409, {
+      code: "GOING_PLAN_CHANGED",
+      error: "This plan changed after this page read it. Read it again before you approve it.",
+    });
+  });
+  approve.mockImplementation(async () => ({ ...changed, state: "running" }));
+  try {
+    renderWithQueries(<Card />);
+    await user.click(await screen.findByTestId("going-plan-approve"));
+    expect(await screen.findByTestId("going-plan-refused")).toHaveTextContent(
+      "This plan changed after this page read it. Read it again before you approve it."
+    );
+    expect(approve).toHaveBeenCalledWith(
+      "run-1",
+      expect.objectContaining({ plan: 1, version: "5be1c0" }),
+      keyedAttempt
+    );
+
+    // The plan is read again and shows as it is now, the refusal still under it.
+    await waitFor(() =>
+      expect(screen.getByTestId("going-plan")).toHaveTextContent("Split CORE-1 in three.")
+    );
+    expect(screen.getByTestId("going-plan-refused")).toBeInTheDocument();
+    await user.click(screen.getByTestId("going-plan-approve"));
+    await waitFor(() =>
+      expect(approve).toHaveBeenLastCalledWith(
+        "run-1",
+        expect.objectContaining({ plan: 1, version: "9d02aa" }),
+        keyedAttempt
+      )
+    );
+    expect(approve).toHaveBeenCalledTimes(2);
   } finally {
     restore();
   }

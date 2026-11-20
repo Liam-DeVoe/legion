@@ -2,10 +2,10 @@ package api
 
 // going_conditions.go is how a request the command bar sends in-process is made conditional. An
 // undo's write back (going_undo.go) - an issue's fields, an ask's parts, a document's content, a
-// claim taken back or released, a thread reopened, a created issue closed - puts its value back
-// only where the item still holds what the undone write left, and every other upload the bar
-// sends makes a document only where its owner holds none of the name, a row of a plan shedding
-// that condition at the write where its read before found the document it names
+// claim taken back or released, a thread reopened or resolved again, a created issue closed -
+// puts its value back only where the item still holds what the undone write left, and every other
+// upload the bar sends makes a document only where its owner holds none of the name, a row of a
+// plan shedding that condition at the write where its read before found the document it names
 // (AgentListener.rowUpload). Each is a compare-and-set its route decides under the lock it takes
 // for the write, never a read and then a write.
 //
@@ -64,6 +64,10 @@ type goingCondition struct {
 	// ExpectResolvedAt is a reopen's: the moment of the resolution the thread must hold, as the
 	// comment's read answers resolved_at, or the reopen is refused, 409 COMMENT_CHANGED.
 	ExpectResolvedAt *string
+	// ExpectOpen is a resolve's: the thread must be open, or the resolve is refused, 409
+	// COMMENT_CHANGED. While false it is left out of the request's digest (goingSend.digest), so a
+	// request that carries none digests as a build without the field records it.
+	ExpectOpen bool `json:",omitempty"`
 }
 
 // withGoingCondition is ctx carrying condition to the route of the request it is the context of.

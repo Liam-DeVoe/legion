@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import {
+  apiErrorCodeIn,
   apiErrorMessage,
   goingPlanApproveRequest,
   goingPlanRejectRequest,
@@ -19,6 +20,9 @@ export function planTarget(run: string): string {
   return `going-plan:${run}`;
 }
 
+/** Dispatch's refusal of an approval naming a version of the plan older than the plan now. */
+const PLAN_CHANGED: ReadonlySet<string> = new Set(["GOING_PLAN_CHANGED"]);
+
 /** What a surface answers a plan with, and how that stands. */
 export interface PlanAnswering {
   /** The plan, once read; undefined while it is read, or for a run that proposed none. */
@@ -27,14 +31,16 @@ export interface PlanAnswering {
   readonly unreadable:
     | { readonly message: string; readonly retry: () => void; readonly retrying: boolean }
     | undefined;
-  /** Approves the waiting plan with the person's ticks and edits (Enter, or Approve). */
+  /** Approves the waiting plan with the person's ticks and edits (Enter, or Approve), naming the
+   *  version of the plan drawn, which Dispatch refuses once the plan has changed since. */
   readonly approve: () => void;
   /** Rejects the waiting plan. */
   readonly reject: () => void;
   /** Says in words what to change; the run proposes another plan in its place. */
   readonly revise: (words: string) => void;
   readonly pending: boolean;
-  /** Why Dispatch refused the last answer, in its words. */
+  /** Why Dispatch refused the last answer to the plan drawn now, in its words; undefined under
+   *  any other plan, of this run or of another. */
   readonly refusal: string | undefined;
 }
 
@@ -64,7 +70,19 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
       void queryClient.invalidateQueries({ exact: true, queryKey: query.queryKey });
     }
   }, [planReads]);
-  const [refusal, setRefusal] = useState<string>();
+  // The refusal names the plan it answered, so the hook, which stays mounted as the open run
+  // changes, shows it only under that plan.
+  const [refused, setRefused] = useState<{
+    readonly message: string;
+    readonly plan: number;
+    readonly run: string;
+  }>();
+  const refuse = (error: unknown, answered: GoingPlanAnswer) =>
+    setRefused({
+      message: apiErrorMessage(error, "The answer to the plan did not reach Dispatch."),
+      plan: answered.plan,
+      run: answered.run,
+    });
   const settle = (answered: GoingPlanAnswer | null) => {
     if (answered !== null) {
       queryClient.setQueryData(query.queryKey, answered);
@@ -76,14 +94,24 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
   };
   const common = {
     inline: true,
-    onError: (error: unknown) =>
-      setRefusal(apiErrorMessage(error, "The answer to the plan did not reach Dispatch.")),
     onSuccess: settle,
     target: () => planTarget(run ?? ""),
   };
   const approve = useKeyedWrite<GoingPlanAnswer, GoingPlanAnswer>({
     ...common,
     label: () => "Approve the command bar's plan",
+    // An approval names the version of the plan the page shows; one refused because the plan
+    // changed since reads the plan again, so the person sees what they would approve under the
+    // refusal, and their next approval names that version.
+    onError: (error, answered) => {
+      refuse(error, answered);
+      if (apiErrorCodeIn(error, PLAN_CHANGED)) {
+        void queryClient.invalidateQueries({
+          exact: true,
+          queryKey: goingPlanQuery(answered.run).queryKey,
+        });
+      }
+    },
     request: (answered) =>
       goingPlanApproveRequest(
         answered.run,
@@ -93,20 +121,29 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
   const reject = useKeyedWrite<GoingPlanAnswer, GoingPlanAnswer>({
     ...common,
     label: () => "Reject the command bar's plan",
+    onError: refuse,
     request: (answered) => goingPlanRejectRequest(answered.run, { plan: answered.plan }),
   });
   const revise = useKeyedWrite<GoingPlanAnswer, { plan: GoingPlanAnswer; words: string }>({
     ...common,
     label: () => "Revise the command bar's plan",
+    onError: (error, { plan: answered }) => refuse(error, answered),
     request: ({ plan: answered, words }) =>
       goingPlanReviseRequest(answered.run, { plan: answered.plan, words }),
   });
   const shown = plan.data;
   const waiting = shown?.state === "waiting" ? shown : undefined;
+  const refusal =
+    refused !== undefined &&
+    shown !== undefined &&
+    refused.run === shown.run &&
+    refused.plan === shown.plan
+      ? refused.message
+      : undefined;
   return {
     approve: () => {
       if (waiting === undefined) return;
-      setRefusal(undefined);
+      setRefused(undefined);
       approve.mutate(waiting);
     },
     pending: approve.isPending || reject.isPending || revise.isPending,
@@ -114,12 +151,12 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
     refusal,
     reject: () => {
       if (waiting === undefined) return;
-      setRefusal(undefined);
+      setRefused(undefined);
       reject.mutate(waiting);
     },
     revise: (words) => {
       if (waiting === undefined || words.trim() === "") return;
-      setRefusal(undefined);
+      setRefused(undefined);
       revise.mutate({ plan: waiting, words: words.trim() });
     },
     unreadable: plan.isError

@@ -103,8 +103,9 @@ type goingUndoKind string
 
 const (
 	// goingUndoReverse runs the write's reverse, a route of the table whether or not a tool
-	// calls it: a claim is released, a follow unfollowed, a resolved comment reopened, an ask
-	// the run opened retracted, a suggestion the run posted rejected while it is still open.
+	// calls it: a claim is released, a follow unfollowed, a resolved comment reopened and a
+	// reopened one resolved again, an ask the run opened retracted, a suggestion the run posted
+	// rejected while it is still open.
 	goingUndoReverse goingUndoKind = "reverse"
 	// goingUndoWriteBack writes the value the write found back over it: an issue's fields, an
 	// ask's text, a document's content.
@@ -631,19 +632,17 @@ var goingWriteTools = map[string]goingWriteTool{
 	"dispatch_set_delivery_settings":          {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
 	"dispatch_set_legion_daemon":              {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
 	"dispatch_unset_legion_daemon":            {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
-	// A session group the run made is deleted by its undo.
-	"dispatch_create_session_group": {
-		Undo: goingUndoReverse, UndoRoutes: []string{http.MethodDelete + " /api/v1/delivery/session-groups/{id}"},
-		Class: goingClassSetting, Event: goingNoEvent,
-	},
-	"dispatch_edit_session_group": {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
+	// A session group the run made stays: no route reads one group or names who changed it, and
+	// its delete takes no condition, so an undo that deleted it could take with it the sessions
+	// another writer put in it since. The person deletes it to take it back.
+	"dispatch_create_session_group": {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
+	"dispatch_edit_session_group":   {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
 	// A deleted group's sessions are not read before, so a delete is not undone.
 	"dispatch_delete_session_group": {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
-	// A priority the run made is deleted by its undo.
-	"dispatch_create_priority": {
-		Undo: goingUndoReverse, UndoRoutes: []string{http.MethodDelete + " /api/v1/priorities/{id}"},
-		Class: goingClassCreateText, Event: "priority.updated",
-	},
+	// A priority the run made stays: a delete is final, since no route makes a deleted priority
+	// live again, and takes no condition, so an undo that deleted it could end a priority another
+	// writer edited, or tied issues to, since. The person deletes it to take it back.
+	"dispatch_create_priority": {Undo: goingUndoNotUndone, Class: goingClassCreateText, Event: "priority.updated"},
 	// A priority's fields before the edit are not read, so an edit is not undone.
 	"dispatch_edit_priority": {Undo: goingUndoNotUndone, Class: goingClassField, Event: "priority.updated"},
 	// Dispatch serves no route that makes a deleted priority live again.
@@ -670,9 +669,9 @@ var goingWriteTools = map[string]goingWriteTool{
 	// An answer and a decline reach whoever asked when they are written.
 	"dispatch_answer_ask":  {Undo: goingUndoNotUndone, Class: goingClassAskAnswer, Event: "ask.answered"},
 	"dispatch_decline_ask": {Undo: goingUndoNotUndone, Class: goingClassAskAnswer, Event: "ask.resolved"},
-	// A thread the run reopened is resolved again by its undo.
+	// A thread the run reopened is resolved again by its undo, while it is still open.
 	"dispatch_reopen_comment": {
-		Undo: goingUndoReverse, UndoRoutes: []string{goingCommentResolve},
+		Observe: goingObserver.commentResolvedBy, Undo: goingUndoReverse, UndoRoutes: []string{goingCommentResolve},
 		Class: goingClassField, Event: "comment.reopened",
 	},
 	// An accepted suggestion's change is the document's next version, which no route takes back
@@ -692,11 +691,10 @@ var goingWriteTools = map[string]goingWriteTool{
 	"dispatch_review_document": {Undo: goingUndoNotUndone, Class: goingClassReview, Event: "artifact.approved"},
 	// Keeping a decision records that the person read it, which no route unrecords.
 	"dispatch_keep_decision": {Undo: goingUndoNotUndone, Class: goingClassDecision, Event: "decision.kept"},
-	// An ask the run snoozed is woken by its undo; a woken ask's snooze is not read before.
-	"dispatch_snooze_ask": {
-		Undo: goingUndoReverse, UndoRoutes: []string{http.MethodDelete + " /api/v1/me/asks/{id}/snooze"},
-		Class: goingClassSetting, Event: "user_state.updated",
-	},
+	// A snooze stays: its route keeps no record of the snooze it replaced, so an undo that ended
+	// it could wake an ask the person had snoozed before the run. The person ends it to take it
+	// back.
+	"dispatch_snooze_ask":   {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "user_state.updated"},
 	"dispatch_unsnooze_ask": {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "user_state.updated"},
 }
 

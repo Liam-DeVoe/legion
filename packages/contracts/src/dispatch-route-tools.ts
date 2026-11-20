@@ -480,7 +480,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_create_session_group",
     example: { name: "Release train", sessions: ["session-0123456789abcdef"] },
     description:
-      "Create a Delivery session group: a name that stands as the parent agent of every pull request whose first session the group holds. Use it when a person asks to see several sessions' pull requests as one on the Delivery page. Undo deletes the group.",
+      "Create a Delivery session group: a name that stands as the parent agent of every pull request whose first session the group holds. Use it when a person asks to see several sessions' pull requests as one on the Delivery page. Undo does not delete the group: delete it to take it back.",
     arguments: (z) => ({
       name: z.string({ min: 1 }).describe("The group's name."),
       sessions: z.array(z.string({ min: 1 })).describe("The session ids the group holds."),
@@ -553,7 +553,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_create_priority",
     example: { title: "Ship the command bar" },
     description:
-      "Write a new priority the deployment works towards, last in the order: a title, an optional description in markdown, an optional owner and an optional id (the title as a slug by default). Issues state the priorities they advance. Undo deletes the priority.",
+      "Write a new priority the deployment works towards, last in the order: a title, an optional description in markdown, an optional owner and an optional id (the title as a slug by default). Issues state the priorities they advance. Undo does not delete the priority: delete it to take it back.",
     arguments: (z) => ({
       title: z.string({ min: 1 }).describe("The priority's title."),
       id: z
@@ -1488,7 +1488,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_snooze_ask",
     example: { ask: "0190c7d2-1111-7222-8333-444444444444", snoozed_until: "2026-11-20T09:00:00Z" },
     description:
-      "Snooze an ask in the Inbox of the person you act for until a time, or with null until it changes; it shows under Later meanwhile. Undo ends the snooze.",
+      "Snooze an ask in the Inbox of the person you act for until a time, or with null until it changes; it shows under Later meanwhile. Undo does not end the snooze: end it to take it back.",
     arguments: (z) => ({
       ask: z.string().describe(ASK_ID),
       snoozed_until: z.string().nullable().describe(`Snooze until this time, or null. ${RFC3339}`),

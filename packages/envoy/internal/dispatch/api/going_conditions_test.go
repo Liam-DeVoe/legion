@@ -105,9 +105,10 @@ func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtu
 
 // goingConditionWrites is one write of each route that takes a condition, by name: the issue
 // update, the ask edit, the issue's, the project's and a session's upload, the claim of an issue
-// nobody holds and of one alice holds, the release and the reopen. The issue's and the project's
-// uploads replace a document, so each names the token of the version it replaces, read off
-// handler when it is sent, as the command bar's upload names it (main's upload precondition).
+// nobody holds and of one alice holds, the release, the reopen and the resolve. The issue's and
+// the project's uploads replace a document, so each names the token of the version it replaces,
+// read off handler when it is sent, as the command bar's upload names it (main's upload
+// precondition).
 var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f goingConditionFixtures) goingSend{
 	"issue update": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingJSONSend(t, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{"title": "Written in process"})
@@ -140,6 +141,9 @@ var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f
 	"reopen": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingSend{method: http.MethodPost, path: "/api/v1/comments/" + f.comment + "/reopen"}
 	},
+	"resolve": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
+		return goingSend{method: http.MethodPost, path: "/api/v1/comments/" + f.comment + "/resolve"}
+	},
 }
 
 // TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute (deep review round 5, finding C): each
@@ -165,6 +169,7 @@ func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 		{"claim of a held issue", codeClaimHolderChanged, goingCondition{ExpectUnclaimed: true}},
 		{"release", codeClaimHolderChanged, goingCondition{ExpectHolder: bob}},
 		{"reopen", codeCommentChanged, goingCondition{ExpectResolvedAt: &never}},
+		{"resolve", codeCommentChanged, goingCondition{ExpectOpen: true}},
 	} {
 		t.Run(tc.write+" "+tc.code, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
@@ -210,6 +215,7 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 		{"a release expecting a holder of no kind and no id", "release", goingCondition{WriteBack: true, ExpectHolder: &model.Actor{}}},
 		{"a reopen with no condition", "reopen", goingCondition{WriteBack: true}},
 		{"a reopen expecting an empty moment", "reopen", goingCondition{WriteBack: true, ExpectResolvedAt: &empty}},
+		{"a resolve with no condition", "resolve", goingCondition{WriteBack: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
@@ -223,7 +229,7 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 		})
 	}
 	// Unmarked, each of the same writes is made: the refusal is the mark's.
-	for _, write := range []string{"issue update", "ask edit", "issue upload", "project upload", "session upload", "claim", "release", "reopen"} {
+	for _, write := range []string{"issue update", "ask edit", "issue upload", "project upload", "session upload", "claim", "release", "reopen", "resolve"} {
 		t.Run("unmarked "+write, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
 			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[write](t, rig.mux, f), goingCondition{})

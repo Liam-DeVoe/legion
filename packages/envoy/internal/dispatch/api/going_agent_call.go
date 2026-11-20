@@ -3,7 +3,8 @@ package api
 // going_agent_call.go runs the agent's calls (agentwire.CallRequest): at most goingCallSlots at
 // once in the server, each on a context of its own bounded by goingCallTime, so a call whose agent
 // died runs to its end, and each under a recover that answers a panic of its route as an error and
-// logs it, so the server serves on. Each call is made as the run's person, resolved from the run's
+// logs it with its stack, so the server serves on; the row of a write whose call panicked is kept
+// failed first (recordRowPanicked). Each call is made as the run's person, resolved from the run's
 // grant at the call (goingGrantCaller), after its lease is checked.
 //
 // A call of kind route runs a tool's rows through the server's own route table in-process
@@ -22,6 +23,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -405,7 +407,9 @@ func (s *server) goingCallLandings(ctx context.Context, key goingCallKey) ([]*go
 // route table in-process as the run's person (login). A write runs only as the row of the run's
 // plan it names, held to it by rowGate under the call key's lock, posted on the issue the row names
 // where it is a send to an agent session (going_messages.go), and what it came to is kept on that
-// row (recordRow). A second try of the call key sends only what its earlier tries did not land.
+// row (recordRow), a panic of its route as a failure of the server's (recordRowPanicked), which
+// then goes on to runCall. A second try of the call key sends only what its earlier tries did not
+// land.
 func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallRequest, login string, doer goingInProcess) (answer agentwire.CallAnswer, refusal *agentwire.Error) {
 	key := goingCallKey{run: request.Run, step: request.Step, call: request.Call}
 	release, held := a.keys.lock(ctx, key, a.callKeyWait)
@@ -428,13 +432,20 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
 	}
 	var row goingPlanRowStored
+	var specs []goingSend
 	if _, writes := a.s.going.Lookup(request.Tool); writes {
 		var gated *agentwire.Error
-		row, gated = a.rowGate(ctx, request, login, doer)
+		row, gated = a.rowGate(ctx, request, login, doer, landed)
 		if gated != nil {
 			return agentwire.CallAnswer{}, gated
 		}
-		defer func() { a.recordRow(ctx, request, answer, refusal) }()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				a.recordRowPanicked(ctx, request, specs)
+				panic(recovered)
+			}
+			a.recordRow(ctx, request, answer, refusal)
+		}()
 	}
 	specs, write, refusal := a.routeSends(ctx, request, arguments, doer, landed, row)
 	if refusal != nil {
@@ -518,11 +529,12 @@ func goingCallAnswerOf(recorded *recordedAnswer) agentwire.CallAnswer {
 // of the catalogue (GoingCaller), whose row of the run's plan rowGate held the call to; it is
 // prepared as the plan prepared it, a send to an agent session on the issue its row names
 // (sendIssue), its translation's reads made through doer, and told what of its requests landed
-// before (landed). An upload whose row is sent over the document of its name (rowUpload) sheds the
-// create alone its translation carries and names the token of the version it replaces, so it lands
-// as that document's next version. The create of a new-issue run carries the route its row's
-// approval names (newIssueRoute), which no argument of the tool holds. A read tool sends one
-// request (goingReadSends). Any other name is refused UNKNOWN_TOOL.
+// before (landed). An upload whose row's approval showed the document of its name, and whose read
+// before finds that document as shown (rowUpload), sheds the create alone its translation carries
+// and names the token of the version it replaces, so it lands as that document's next version. The
+// create of a new-issue run carries the route its row's approval names (newIssueRoute), which no
+// argument of the tool holds. A read tool sends one request (goingReadSends). Any other name is
+// refused UNKNOWN_TOOL.
 func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRequest, arguments map[string]any, doer goingInProcess,
 	landed []*goingLandedRequest, row goingPlanRowStored,
 ) ([]goingSend, bool, *agentwire.Error) {
@@ -537,7 +549,7 @@ func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRe
 			prepared.call.body["route"] = route
 		}
 		if _, uploads := goingUploadNames[request.Tool]; uploads && request.Row != nil {
-			upload, refusal := a.rowUpload(ctx, request, prepared, caller.reader())
+			upload, refusal := a.rowUpload(ctx, request, row, prepared, caller.reader())
 			if refusal != nil {
 				return nil, true, refusal
 			}
@@ -565,15 +577,19 @@ func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRe
 }
 
 // goingCallRefusal is a route call's refusal before any request: the tool's schema or translation
-// refusing it, or a read its translation made failing.
+// refusing it, or a read its translation made refused. Its message is the refusal's own words,
+// which a plan's row shows its person (recordRow); the tool, and a refused read's status and code,
+// are logged. Any other error is the server's own failure.
 func goingCallRefusal(tool string, err error) *agentwire.Error {
 	var arguments GoingArgumentError
 	var refused goingRefusal
 	switch {
 	case errors.As(err, &arguments):
-		return goingAgentRefusal(agentwire.CodeCallRefused, "%s", arguments.Error())
+		return goingAgentRefusal(agentwire.CodeCallRefused, "%s", arguments.Reason)
 	case errors.As(err, &refused):
-		return goingAgentRefusal(agentwire.CodeCallRefused, "%s: %s", tool, refused.Error())
+		slog.Info("dispatch: a command-bar call was refused before it was sent", "tool", tool, "status", refused.Status,
+			"code", refused.Code, "message", refused.Message)
+		return goingAgentRefusal(agentwire.CodeCallRefused, "%s", cmp.Or(refused.Message, strings.ToLower(http.StatusText(refused.Status))))
 	}
 	return goingAgentFailed(agentwire.CallCall, fmt.Errorf("%s: %w", tool, err))
 }
