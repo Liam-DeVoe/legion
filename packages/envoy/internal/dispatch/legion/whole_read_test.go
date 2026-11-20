@@ -330,6 +330,44 @@ func TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone(t *testing.T)
 	requireLastSeq(t, database, "INFRA", 1)
 }
 
+// TestAWholeReadOverTheCapRecordsItsSize: a daemon answering more than ResponseLimit is recorded
+// as a failed read whose legion_reads row names the answer's size and the cap and has that size
+// as its bytes, whether the answer declares its Content-Length or is sent chunked. A size past
+// what the integer column bytes holds is recorded as at least countedLimit, so the read's row is
+// still written.
+func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
+	for _, over := range []struct {
+		name     string
+		size     int
+		declared bool
+		failure  string
+		bytes    int
+	}{
+		{"with its Content-Length", 70_000_000, true, "the answer of 70000000 bytes is over the 67108864-byte cap", 70_000_000},
+		{"chunked", 70_000_000, false, "the answer of 70000000 bytes is over the 67108864-byte cap", 70_000_000},
+		{"with a Content-Length past what bytes holds", 3_000_000_000, true, "the answer of at least 2147483647 bytes is over the 67108864-byte cap", countedLimit},
+	} {
+		t.Run(over.name, func(t *testing.T) {
+			daemon, _ := streamedState(t, over.size, over.declared)
+			database, setting := configured(t, daemon.URL)
+
+			readDaemon(t, database, setting)
+
+			rows := readRecords(t, database, "INFRA")
+			if len(rows) != 1 {
+				t.Fatalf("legion_reads = %v, want the one read", rows)
+			}
+			requireWholeRead(t, rows[0], ReadReasonStart, false)
+			if rows[0].error == nil || !strings.Contains(*rows[0].error, over.failure) {
+				t.Errorf("the read's row = %s, want its error to name the size and the cap: %q", rows[0], over.failure)
+			}
+			if rows[0].bytes != over.bytes {
+				t.Errorf("the read's bytes = %d, want %d", rows[0].bytes, over.bytes)
+			}
+		})
+	}
+}
+
 // TestANULInAStringDoesNotLoseTheRead: jsonb refuses the NUL escape ("unsupported Unicode escape
 // sequence", SQLSTATE 22P05), and a read's observations go in one statement, so one wait whose
 // text carries a NUL failed every observation of the read, at every read. The NUL is stored as

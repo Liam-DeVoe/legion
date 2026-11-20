@@ -1621,12 +1621,15 @@ A message whose events do not run from its `firstSeq` to its `seq`, one sequence
 A transaction whose events pass 900 KB goes out as consecutive messages, split between events (`stateMessageBound`, `packages/daemon/internal/daemon/outbox.go`), and each of them but the last carries `more: true`.
 The intake holds those parts in `legion_event_parts` and applies the events of all of them in one batch when the last part arrives, so no row holds a value of a transaction that did not arrive whole.
 Messages run under the project their payload names, one at a time per project, and each transaction applied writes the fields it moved, one `legion_reads` row of kind `events` and the project's cursor (`legion_event_cursors`) in one transaction, whose commit wakes the project's board (`legion.StateChannel`).
-It reads a daemon's `GET /legion/v1/state` whole, on the same project's runner, only where the events cannot carry the state: a project with no starting point, at each take-over and at each write of its Legion setting (`dispatch_legion_settings`, on the shared listener above);
+It reads a daemon's `GET /legion/v1/state?view=observed` whole, on the same project's runner, only where the events cannot carry the state: a project with no starting point, at each take-over and at each write of its Legion setting (`dispatch_legion_settings`, on the shared listener above);
 a boot event that does not follow the cursor, or whose `schemaVersion` is not the one the cursor holds;
 a message past a gap the stream no longer holds, or a message that does not continue the parts held for it;
 a message of another store, so a daemon whose store was replaced is found again;
 a message the database refuses for good (a Postgres error of SQLSTATE class 22 or 23), which the intake logs at WARN and acknowledges, and does not try again in place;
 and a read owed since one failed.
+The observed view carries only the members the intake decodes, and a daemon of an earlier build ignores the query and serves its whole state, which the intake reads the same way.
+A whole read waits up to 60 s (`legion.RequestTimeout`) and reads at most 64 MiB of the answer (`legion.ResponseLimit`).
+An answer over the cap is a failed read: its `legion_reads` row names the answer's size and the cap, and its `bytes` is that size.
 A project's whole reads start at least a minute apart (`legion.ReadRetryAfter`), whatever their reason, and a good starting read holds back no read after it.
 A message that calls for a read inside that minute makes none: the cursor records the read owed with the message's reason (`legion_event_cursors.read_reasons`).
 The first message that owes the read goes back to the stream unacknowledged, with a redelivery delay of the time left in the minute (`delivery.HeldMessage.HandBackAfter`), and the cursor names it as the read's holder (`read_holder`), so its redelivery makes the read;
