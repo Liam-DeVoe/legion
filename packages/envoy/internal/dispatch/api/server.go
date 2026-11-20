@@ -1544,9 +1544,10 @@ func (s *server) presentsPersonalToken(r *http.Request) bool {
 //   - On a row that answers as_of (asOfAnswers), asof.ParseCut reads the value and rounds it down
 //     to the microsecond. A value it cannot read, an as_of sent more than once, and a cut later
 //     than the database's now() are answered 400 INVALID_AS_OF, and next does not run. Any other
-//     cut goes on the context (asof.WithCut), and next runs under it: the store binds every
-//     statement that next sends under that context to the cut, and refuses every write
-//     (store.Pool, asof.Bind). So the layer first resolves the caller, with no cut on the
+//     cut goes on the context (asof.WithCut), and next runs under it (serveAtCut): the store
+//     binds every statement that next sends under that context to the cut, and refuses every
+//     write (store.Pool, asof.Bind), and every answer next writes names the cut and the members
+//     it leaves out (pastAnswer). So the layer first resolves the caller, with no cut on the
 //     context, where nothing has resolved it yet: a resolution can write the caller's own
 //     bookkeeping (the people row a sign-in records, a membership's confirmation), which is no
 //     write of the read. It carries the result on the context, its refusal included
@@ -1601,7 +1602,7 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 			actor, human, err := s.optionalActor(r)
 			r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human, err: err}))
 		}
-		next(w, r.WithContext(asof.WithCut(r.Context(), cut)))
+		serveAtCut(w, r, name, cut, next)
 	}
 }
 

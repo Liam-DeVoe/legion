@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -541,6 +542,9 @@ func normalizeIssueLabels(values []string) ([]string, error) {
 }
 
 func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
+	if refuseListingFilterAtCut(w, r) {
+		return
+	}
 	query := r.URL.Query()
 	pinned := query.Get("pinned") == "true"
 	login := ""
@@ -655,7 +659,18 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		// At a cut the listing reads no route roster, and the request carries no route_status
+		// (refuseListingFilterAtCut), so the page is cut in SQL whenever it is paged.
+		prefix := "/"
+		if inSQL {
+			prefix = "/issues/"
+		}
+		if err := s.issueSummariesAtTheCut(r.Context(), issues, prefix); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	} else if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
 		judged := routeStatus != "" && routeStatus != model.RouteUnknown
 		var roster routeRoster
 		if judged {
@@ -843,7 +858,13 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// One roster read serves both answers beside the issue: where its route reaches, and what
 	// state the session holding its claim is in. An issue with neither costs no listener call.
-	if read.Route != nil || issueClaimSession(read.Claim) != "" {
+	// At a cut the read reads no roster, which keeps no past state (issueAtTheCut).
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		if err := s.issueAtTheCut(r.Context(), &read); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	} else if read.Route != nil || issueClaimSession(read.Claim) != "" {
 		roster := s.routeRosterOrUnknown(r.Context())
 		read.IssueRouteReach = roster.reach(read.Route)
 		read.IssueClaimLiveness = roster.claimLiveness(read.Claim, time.Now())
@@ -883,6 +904,8 @@ type issueDetail struct {
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
 // the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
 // the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
+// At a cut it does not read the design gates or the issue's backlink count, which keep no
+// history and which the answer leaves out (issueAtTheCut).
 func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
@@ -922,13 +945,15 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		read.Children = scanned
 		return err
 	})
-	first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown).Query(func(rows pgx.Rows) error {
-		scanned, err := scanIssueDesignGates(rows)
-		read.DesignGates = scanned
-		return err
-	})
-	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
-		return issueDetail{}, err
+	if _, atCut := asof.CutFrom(ctx); !atCut {
+		first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown).Query(func(rows pgx.Rows) error {
+			scanned, err := scanIssueDesignGates(rows)
+			read.DesignGates = scanned
+			return err
+		})
+		if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
+			return issueDetail{}, err
+		}
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
 		return issueDetail{}, err

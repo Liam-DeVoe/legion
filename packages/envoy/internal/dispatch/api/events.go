@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -78,6 +79,12 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // entry, and the read behind it attaches all of them again. An entry the cache evicts and a
 // restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
 // Inbox, the ask read and the issue read answer them fresh, from no kept list.
+//
+// A page at a cut is read whole every time. It reads no validator of metadata, since the issue's
+// sequence at the cut does not move for a post deleted after the cut, which the page then reads
+// as deleted, and it reads nothing kept, which holds present answers under keys that name no cut.
+// It goes out under an ETag over the cut and its own bytes, and is kept under no key
+// (writePastListAnswer).
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -87,19 +94,25 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	trees := wantsDisplayTrees(r)
-	etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
-	if answerNotModified(w, r, etag) {
-		return
-	}
-	key := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
-	if s.listAnswers.answer(w, key) {
-		return
+	cut, atCut := asof.CutFrom(r.Context())
+	var key listAnswerKey
+	issueHeld := false
+	if !atCut {
+		lastSeq, createdAt, held, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
+		if answerNotModified(w, r, etag) {
+			return
+		}
+		key = listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
+		if s.listAnswers.answer(w, key) {
+			return
+		}
+		issueHeld = held
 	}
 	events, err := s.readEvents(r.Context(), issueOwner(r.PathValue("key")), options)
 	if err != nil {
@@ -114,6 +127,10 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	encoded, err := encodeListAnswer(events)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if atCut {
+		s.writePastListAnswer(w, r, cut, encoded, trees)
 		return
 	}
 	s.writeListAnswer(w, key, encoded, issueHeld)

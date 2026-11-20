@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -55,20 +56,30 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 //
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
+//
+// A list at a cut is read whole every time, as a page of the feed at a cut is (listIssueEvents):
+// it reads no watermark, which keeps no history, and nothing kept, and it goes out under an ETag
+// over the cut and its own bytes, kept under no key (writePastListAnswer).
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
-	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	trees := wantsDisplayTrees(r)
-	etag := s.commentListETag(owner, artifactFilter, watermark, lastSeq, trees)
-	if answerNotModified(w, r, etag) {
-		return
-	}
-	key := listAnswerKeyFor(r, commentListRoute, name, etag)
-	if s.listAnswers.answer(w, key) {
-		return
+	cut, atCut := asof.CutFrom(r.Context())
+	var key listAnswerKey
+	ownerHeld := false
+	if !atCut {
+		watermark, lastSeq, held, err := s.commentListWatermark(r.Context(), owner)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		etag := s.commentListETag(owner, artifactFilter, watermark, lastSeq, trees)
+		if answerNotModified(w, r, etag) {
+			return
+		}
+		key = listAnswerKeyFor(r, commentListRoute, name, etag)
+		if s.listAnswers.answer(w, key) {
+			return
+		}
+		ownerHeld = held
 	}
 	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, owner, artifactFilter)
 	if err != nil {
@@ -81,6 +92,10 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	encoded, err := encodeListAnswer(reads)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if atCut {
+		s.writePastListAnswer(w, r, cut, encoded, trees)
 		return
 	}
 	s.writeListAnswer(w, key, encoded, ownerHeld)

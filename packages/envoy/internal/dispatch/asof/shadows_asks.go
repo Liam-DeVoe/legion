@@ -16,6 +16,19 @@ var askStateTypes = []string{
 // a new index.
 func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 
+// AsksChangedAfterStatement reads which asks changed after a cut: of the asks whose ids $1 holds
+// (text[]), the id of each one that has an event of its state (AskStateTypes) later than the cut
+// $2 (timestamptz). It names public.events, the events as they are now, by its schema, so that
+// the store's binding at a cut does not read the events shadow in its place (Bind). An ask that
+// no such event changed has the same parts at the cut as now, so a past-time answer gives its
+// revision and its part ids from the present tables, and leaves them out for every other ask
+// (reason P). The partial index events_ask_state serves the read.
+var AsksChangedAfterStatement = `select a.id from unnest($1::text[]) as a(id)
+	where exists (
+		select from public.events e
+		where e.payload->>'id' = a.id and e.type in ` + sqlList(askStateTypes) + `
+			and e.created_at > $2::timestamptz)`
+
 // postCreatedTypes are the events that create a comment: comment.created, and comment.answered,
 // which a delivery callback's reply is created with (api/comment_delivery.go).
 var postCreatedTypes = []string{"comment.created", "comment.answered"}
