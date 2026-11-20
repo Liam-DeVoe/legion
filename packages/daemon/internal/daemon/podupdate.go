@@ -103,7 +103,7 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 		}
 		return
 	}
-	sweep := s.beginPodUpdateSweep(now, byIssue)
+	sweep := s.beginPodUpdateSweep(byIssue)
 	var replacements []podReplacement
 	for _, issue := range issues {
 		if ctx.Err() != nil {
@@ -368,7 +368,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		live = s.liveGroup(group)
 	}
 	if s.openPodUpdate(ctx, issue, live, pod, terms, clock) && opening {
-		s.recordPodUpdateOpening(sweep, issue, round, s.plan.clock.Now())
+		s.recordPodUpdateOpening(sweep, issue, round)
 	}
 	return nil
 }
